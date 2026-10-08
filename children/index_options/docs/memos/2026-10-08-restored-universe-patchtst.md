@@ -1,6 +1,6 @@
 ## TL;DR
 
-Execution is in progress. All 15 feature fits completed; base features won with +0.878415% paired weighted-CRPS skill in development. HPO completed and retained the default; confirmation passed the frozen numerical continuation gate; the final 27 evaluation refits are running. This improves on the earlier development result, but evaluation remains unresolved and this is not production qualification.
+All 66 new fits completed without failures. Feature selection and HPO retained the base PatchTST32 default; confirmation passed its frozen continuation gate. Across 99,225 paired 2024–2025 forecasts per seed, evaluation weighted-CRPS skills are +0.278858%, +0.240921% and +0.254481% for seeds 11/29/47. Seed11 remains nominal. Gains are modest, and its nominal95% interval covers only91.616% of outcomes. All stage recovery checks passed. The [inference inventory](../reports/production-universe-rerun-20261008/model-inventory.json) contains66 unique fitted packages. Closing reviews and publication are recorded below; no production qualification or calibrated uncertainty set is claimed.
 
 ## Frozen execution contract
 
@@ -48,7 +48,7 @@ Nine existing synthetic arithmetic/format assertions passed again for this rerun
 
 Early-stopping data is not independent calibration. The repeatedly inspected 2021–2025 periods are developmental. A numerical radius, validated CDF bands and a confidence guarantee require separately justified post-selection calibration evidence and a predeclared criterion; a capped-payoff radius study also requires the excluded decision layer. Until then, radius and calibration identity remain null and future decision use must abstain. Descriptive PIT and interval coverage do not fill that gap.
 
-Before any separately authorized next stage, freeze a model/checkpoint, feature and universe policy, nominal seed, baseline, loss metric, label-maturity lag and acceptance rule. Use a designated untouched chronological calibration interval, then a later untouched validation interval; keep 2026 closed unless explicitly authorized. Synchronize date blocks across tickers, primary length 60 trading dates with 30-trading-date sensitivity, and check calendar span covers the 31-calendar-day target horizon. Freeze any radius/band choices before validation. A 95% paired date-block interval whose lower improvement bound exceeds zero would support the primary forecast comparison; insufficient independent blocks yield an inconclusive result. Predeclare support/fallback rules and do not tune on validation, choose a better seed afterwards or infer qualification from nine aggregate window totals.
+Before any separately authorized next stage, freeze a model/checkpoint, feature and universe policy, nominal seed, baseline, loss metric, label-maturity lag and acceptance rule. Use a designated untouched chronological calibration interval, then a later untouched validation interval; keep 2026 closed unless explicitly authorized. Synchronize date blocks across tickers, primary length 60 trading dates with 30-trading-date sensitivity, and check calendar span covers the 31-calendar-day target horizon. Freeze any radius/band choices before validation. These60/30-date blocks describe the forecast-comparison proposal; calibration must also predeclare a sensitivity block longer than its primary block, as the Claude handoff explains. A 95% paired date-block interval whose lower improvement bound exceeds zero would support the primary forecast comparison; insufficient independent blocks yield an inconclusive result. Predeclare support/fallback rules and do not tune on validation, choose a better seed afterwards or infer qualification from nine aggregate window totals.
 
 The concrete next-stage proposal retains the previous cycle's starting design: 126 eligible exchange sessions for calibration, wait until all labels plus the frozen publication lag mature, then 252 later sessions for validation and wait again. Exact dates and point-in-time membership must be fixed before accessing those observations. Keep protected 2026 entirely closed, including any feature lookback; a post-2026 start needs enough later warm-up history. These durations are proposed collection targets, not evidence of enough independent information. Prespecify the primary paired weighted-skill gate and a tail-loss gate (upper 95% bound for relative tail-loss deterioration below the previously proposed 0.5% margin). Too few effective date blocks or intervals too wide to decide means inconclusive, not automatic qualification or extra development fits. Radius calibration still needs its own approved criterion and evidence.
 
@@ -72,7 +72,7 @@ All five arms completed three folds with 86,328 paired forecasts each, with no f
 
 On this new base model's saved forecasts, the original 85 names have 21,297 forecasts and +0.503541% skill; the restored cohort has 65,031 forecasts and +1.002395% skill. Both cohorts improve on their paired empirical references. This is a within-rerun descriptive split, not a controlled estimate of the universe change.
 
-The private features-report-appendix-v2.json includes all 393 configured names for each of five arms, including CORZ and names without eligible forecasts: 1,965 ticker aggregate rows, plus all 15 training/monitor curves and the frozen admission counts. Aggregate sums reconcile to the verified stage result. The final published appendix will retain aggregate-only records.
+The private features-report-appendix-v2.json includes all 393 configured names for each of five arms, including CORZ and names without eligible forecasts: 1,965 ticker aggregate rows, plus all 15 training/monitor curves and the frozen admission counts. Aggregate sums reconcile to the verified stage result. The published appendix retains aggregate-only records.
 
 Stage1 recovery verified all 15 fitted packages and 4,880 score shards, then reproduced seven AAPL forecasts from base/fold3 with original source/data/environment paths blocked. The bundle contains 29,565 files and 386,530,478 bytes; no original was removed. HPO conformance review passed with zero findings. The 15 new HPO fits were reserved at a cumulative ceiling of 97/216 and launched once, alongside three exact same-cycle Stage1 references.
 
@@ -127,7 +127,7 @@ Confirmation cohort differences remain visible. Original85 weighted skills are -
 
 Nominal confirmation central-interval coverage is 24,742/51,228 (48.298%) for a nominal50%, 39,866/51,228 (77.821%) for80%, 47,542/51,228 (92.805%) for95%, and49,898/51,228 (97.404%) for99%. Mean PIT is0.504408; tail/interval undercoverage remains visible despite positive weighted skill. These are descriptive, dependent development observations, not independently calibrated CDF bands or a confidence guarantee. No post-result correction or radius is fitted.
 
-The backup contains 20,516 files and 278,689,524 bytes. All nine fits and 3,366 score shards verified; seven AAPL forecasts from nominal seed11/fold3 reproduced from the second copy with original roots denied. Actual-result and evaluation-configuration independent reviews both closed with zero findings. Fresh gate and candidate-freeze receipts bind the current results, recovery, chosen configuration and fixed nominal seed. No evaluation result is claimed.
+The backup contains 20,516 files and 278,689,524 bytes. All nine fits and 3,366 score shards verified; seven AAPL forecasts from nominal seed11/fold3 reproduced from the second copy with original roots denied. Actual-result and evaluation-configuration independent reviews both closed with zero findings. Fresh gate and candidate-freeze receipts bind the current results, recovery, chosen configuration and fixed nominal seed. This was the pre-evaluation transition; completed evaluation results appear below.
 
 ## Recovery instructions for saved inference packages
 
@@ -141,7 +141,7 @@ Retain all chronological refit packages and their fixed nominal seed. Do not sub
 
 ## Execution results and pickup
 
-Pending: complete the 27 evaluation fits already running; preserve/recover evaluation; append verified evaluation/calibration results and final recommendation. Current launch/status receipts are authoritative. Never relaunch a running job or delete this pinned checkout. The final memo will distinguish completed empirical evidence from assumptions and future work.
+The finite experiment cycle is complete:15 feature +15 new HPO +9 confirmation +27 evaluation fits, with no new-cycle fit failures. Three HPO references reuse this rerun's Stage1 packages. All stage backups passed recovery checks. No fit job remains, and this closed cycle authorizes no further retries/search. Preserve the pinned checkout and all source/fit/forecast artifacts. Next: finish the two scoped closing reviews and authorized wrap, then use the linked Claude memo for the next-session calibration walkthrough.
 
 
 ## Evaluation dispatch
@@ -158,24 +158,108 @@ The following aggregate-only artifacts include every configured ticker, includin
 - [Confirmation: all three seeds and 1,179 ticker rows](../reports/production-universe-rerun-20261008/confirmation-appendix.json).
 - [Matched old/new base comparison: all original85 names](../reports/production-universe-rerun-20261008/old-new-original85-comparison.json).
 
-Evaluation is still running and its complete appendix will be added after verification. The HPO appendix repeats the three verified Stage1 reference records for traceability; these must not be counted as new fits. No raw source records, per-forecast datasets or model weights are in these appendices.
+The complete evaluation [ticker/training appendix](../reports/production-universe-rerun-20261008/evaluation-appendix.json) and [fold/seed summary](../reports/production-universe-rerun-20261008/evaluation-summary.json) are now included. The HPO appendix repeats the three verified Stage1 reference records for traceability; these must not be counted as new fits. No raw source records, per-forecast datasets or model weights are in these appendices.
 
 ## Where the models are for inference
 
 All paths below are inside WSL2. Fitted weights stay in private data storage; GitHub receives the report, aggregate evidence and model locations/identities.
 
-The preserved rerun packages live under `/home/russell/data/index_options/production-universe-rerun-20261008/runs/`. Evaluation uses `evaluation/seed11/pooled/base/PatchTST32/<fold>/pooled/fit/` for the nominal model at each of the nine chronological cutoffs. Seeds29 and47 are stability checks, not alternatives to select after inspecting evaluation. A completed package contains `complete.json`, outer `metadata.json`, `model/state.json` and `model/weights.pt`. The final report will identify the exact onboarded snapshot and hashes for every completed refit; evaluation fold9 is still pending at this writing.
+The preserved rerun packages live under `/home/russell/data/index_options/production-universe-rerun-20261008/runs/`. Evaluation uses `evaluation/seed11/pooled/base/PatchTST32/<fold>/pooled/fit/` for the nominal model at each of the nine chronological cutoffs. Seeds29 and47 are stability checks, not alternatives to select after inspecting evaluation. A completed package contains `complete.json`, outer `metadata.json`, `model/state.json` and `model/weights.pt`. The complete inventory identifies the immutable snapshot, exact file hashes and backup path for every refit. All27 evaluation packages are recovered and available for inference.
 
-A currently completed, verified nominal package is confirmation seed11/fold3: `/home/russell/data/index_options/ob/raw/universe-confirmation-runs-20261008/20261008T171158Z-backfill-ffb477d9/payload/files/seed11/pooled/base/PatchTST32/3/pooled/fit/`. Its fit identity is `86c44ca9422984a7951ac374a716313056bbb304d8fef9bd56169caa1484f217` and checkpoint identity is `9c02cc91ff670276c80d4cf526905a852097d6ad7bf02da0a7ece5d35feb6f15`. It supports376 ticker heads and42 ordered base features; the full392-name universe does not imply every historical checkpoint supports every name.
+The earlier verified confirmation seed11/fold3 package is retained at: `/home/russell/data/index_options/ob/raw/universe-confirmation-runs-20261008/20261008T171158Z-backfill-ffb477d9/payload/files/seed11/pooled/base/PatchTST32/3/pooled/fit/`. Its fit identity is `86c44ca9422984a7951ac374a716313056bbb304d8fef9bd56169caa1484f217` and checkpoint identity is `9c02cc91ff670276c80d4cf526905a852097d6ad7bf02da0a7ece5d35feb6f15`. It supports376 ticker heads and42 ordered base features; the full392-name universe does not imply every historical checkpoint supports every name.
 
 The runtime is `/home/russell/dskit/.venv/bin/python`, source checkout `/home/russell/dskit-production-universe-rerun-20261008`, and retained library runtime `/home/russell/data/index_options/production-development-retained-20261007/historical-advanced/runtime`. Preserve these pinned dependencies, or use their verified backup copies described above. Load the full fitted package through the existing `TorchCDF.load_checkpoint(<fit>/model)` seam and reproduce the archived recovery recipe's input preparation: exact feature order, saved training medians and the checkpoint's ticker-head encoding, then call the loaded model so its saved scaler and feature mask apply exactly once. Do not infer preprocessing or head positions from a different retraining date.
 
 The saved output is the fitted mixture for standardized log return. Restore terminal-price units using the matching forecast reference scale and entry spot. The uncertainty handoff specifies how this nominal distribution relates to a coherent future uncertainty set. Model inference availability does not supply the missing calibrated radius, validated bands or independent qualification. The owner's next-stage MIO intent is recorded; this development cycle prepares its inputs without executing that next stage.
 
-After evaluation recovery, the final memo will point directly to nominal seed11/fold9, its immutable onboarded package and backup, with all earlier nominal cutoffs retained for chronological inference. This is a fixed latest-cutoff reference, not a best-performing-checkpoint selection. Merge/push the completed, reviewed report and verify its remote contents.
+The fixed latest evaluation reference is **seed11/fold9**, with390 supported heads,42 ordered features and19,340 parameters. Its immutable onboarded fit is:
+/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/9/pooled/fit.
+Source universe-evaluation-runs-20261008, stream files, snapshot 20261008T202544Z-backfill-28ec35cd. Fit identity 7336c15cbb9ec3989d852ea9a7e0fc15317a3be2988fbe7c79badb6d4b4d6894; checkpoint identity 1ec5ee6e18d056744215e5a482813f94b7c167cbdb4e9317f548c155dbff29b0.
+Its verified second copy is /home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/9/pooled/fit.
 
-The [model inventory](../reports/production-universe-rerun-20261008/model-inventory.json) records exact immutable source/backup paths, fit/checkpoint and constituent file hashes, input contracts, head/feature counts and training bands. The current inventory covers39 completed pre-evaluation fits; final evaluation entries remain pending. The three HPO reuse references point to existing entries instead of being counted twice. No fitted parameter values or weights are published.
+This package trained through quote2025-04-29/settlement2025-05-30, monitored through quote2025-09-09/settlement2025-10-10, then forecast2025-10-13–11-28. Best epoch61 was restored after81 total epochs. Never use this later checkpoint for earlier historical decisions. All earlier nominal cutoffs are retained for chronological inference; the latest pointer is fixed by cutoff, not chosen from later scores.
+
+The [model inventory](../reports/production-universe-rerun-20261008/model-inventory.json) records exact immutable source/backup paths, fit/checkpoint and constituent file hashes, input contracts, head/feature counts and training bands. The final inventory covers66 unique completed fits, including all27 evaluation packages, and verifies every listed original/backup constituent hash including complete.json. The three HPO reuse references point to existing entries instead of being counted twice. No fitted parameter values or weights are published.
 
 The owner-requested [Claude calibration and backtest handoff](2026-10-08-claude-calibration-backtest-handoff.md) lays out the next-session decisions, calibration requirements, chronological replay contract and MIO/backtest gates. It is a future-stage plan; no MIO or strategy backtest was executed here.
 
 The Claude handoff received an independent factual/authority review. One minor distinction between forecast-comparison block lengths and the longer calibration sensitivity check was corrected; the scoped correction review closed with zero unresolved findings. Reviewed memo SHA256:260a92a8b3a658b8b07a788a586b1ac4644da686f9886e2d8ff442cfbf245e29. Both review receipts and the exact memo are hash-verified in the private next-session-handoff-reviewed backup. This does not approve future model/calibration/MIO implementation.
+
+## Owned stock-option prices for the next stage
+
+Metadata/directory inspection located two existing stores: original stock universe at `/home/russell/wt/index-options-iterative-validation/children/stock_options/pipeline_runs/option-universe-100/root`, and added300 universe at `/home/russell/data/stock_options/option-universe-300`. Both have source `options`, with raw acquisitions under `raw/options/` and normalized observations under `observations/options/`. The configured collection is contract metadata plus daily option trade bars for30–45 nominal days to expiry, starting2024-02-01; this is not complete historical executable bid/ask coverage for every strike/expiry/ticker. Fees, spreads and slippage are separate backtest inputs. No protected2026 option rows were opened to establish these locations.
+
+The original store remains inside a historical worktree: preserve that directory, inventory its manifest/coverage and onboard/retain any relocation before using it across future runs. Do not delete it as checkout cleanup. This directory/config discovery does not certify every configured ticker or put/call is present, point-in-time availability, or matching horizons. The separate `/home/russell/data/options_archives/philippdubach_full` archive is SPY/QQQ/IWM history, not general392-stock chain coverage. Forecast model fitting here uses underlying prices; option-price acquisition is not part of the current rerun.
+
+## Proposed dates for the next-session MIO study
+
+At the owner's request for a date recommendation, the proposed retrospective split is calibration forecast dates2024-02-06 through2024-12-31, wait for their31-day labels through2025-01-31 plus verified publication lag, then backtest entries2025-02-04 through2025-11-28 with settlements no later than2025-12-29. These are proposed bounds, conditional on actual forecast/contract/quote coverage and availability; they are not a completed coverage census, approved execution config or guarantee of adequate independent sample size.2026 remains closed.
+
+This uses2024 because the stock-option collection is configured to start2024-02-01; matching2023 stock-option prices have not been established. The2023 forecasts remain supporting distribution diagnostics. Restrict decisions to contracts whose expiry and observation clock match the validated forecast horizon; the30–45DTE collection does not make the31-day forecast valid at every collected maturity.
+
+Calibrate rho first against a predefined robustness criterion, then admit Q bands only if justified. Freeze the calibration method before the2025 replay. A predeclared monthly update may use only then-settled, available prior outcomes, with fixed pooling, window, criterion and fallback rules. This tests a fixed adaptive procedure, not a constant rho; distinguish it from a separate fixed-parameter validation claim. Never rewrite earlier decisions or choose the method from later profits. Keep date-block dependence, simultaneous-band limitations, price-grid/tail and executable-quote assumptions visible.
+
+This future decision-study split does not change the completed2024–2025 forecasting evaluation, model/seed selection, fit budget or existing artifacts. It remains retrospective research because these periods have informed development. No MIO, calibration fit, optimizer or strategy backtest was executed to prepare this recommendation.
+
+
+## Final evaluation results
+
+All 27 fresh evaluation fits completed, with zero failures or skipped cells. Each seed forecasts the same 99,225 identities; all paired empirical-reference values match exactly across seeds. There are 297,675 seed/forecast records, not 297,675 independent observations. All quote and settlement dates remain before2026. Selection, nominal seed and settings were frozen before this stage.
+
+- Seed 11: weighted skill +0.278858%; ordinary +0.315857%; tail +0.213234%. Fold1–9 weighted skills: -0.616739%, +1.082882%, +0.419183%, -0.609946%, +0.403913%, +1.096829%, +0.350068%, +0.448160%, -0.001174%.
+- Seed 29: weighted skill +0.240921%; ordinary +0.266795%; tail +0.195030%. Fold1–9 weighted skills: -1.211563%, +1.175047%, +0.388843%, -0.514958%, +0.542779%, +1.120079%, +0.176927%, +0.450462%, +0.101223%.
+- Seed 47: weighted skill +0.254481%; ordinary +0.255980%; tail +0.251821%. Fold1–9 weighted skills: -0.438538%, +0.929089%, +0.331204%, -0.361083%, +0.536512%, +0.790219%, +0.508730%, -0.188421%, +0.403564%.
+
+Forecast windows and counts per seed: fold1 2024-02-06–04-22 (11,306); fold2 2024-04-23–07-08 (11,299); fold3 2024-07-09–09-20 (11,366); fold4 2024-09-23–12-02 (11,444); fold5 2024-12-03–2025-02-21 (11,452); fold6 2025-02-24–05-09 (11,587); fold7 2025-05-12–07-28 (11,652); fold8 2025-07-29–10-10 (11,729); fold9 2025-10-13–11-28 (7,390). Final settlements end2025-12-29.
+
+Nominal weighted loss is102,651.038837 versus paired empirical102,938.089597. Six of nine windows and185 of392 tickers have positive nominal skill; positive aggregate performance does not imply broad ticker-level dominance. Nominal fold1 (-0.616739%), fold4 (-0.609946%) and fold9 (-0.001174%) remain negative. Seeds29/47 have7/6 positive windows and188/199 positive tickers. Every leave-one-window-out aggregate remains positive; this is descriptive sensitivity, not a significance test. Full fold/seed sums and diagnostic records are in the [evaluation summary](../reports/production-universe-rerun-20261008/evaluation-summary.json).
+
+Nominal interval coverage is47,315/99,225 (47.685%) at50%, 75,444 (76.033%) at80%, 90,906 (91.616%) at95%, and96,079 (96.829%) at99%. Mean PIT is0.513995; its upper decile has13,166 outcomes versus9,922.5 under an ideal uniform reference. These overlapping outcomes show descriptive tail/interval undercoverage. Seed29 had one floating-point CDF overshoot of2.22e-16, within the predeclared8-machine-epsilon tolerance; the raw bound and adjustment are retained. No substantive probability correction, radius or band was fitted.
+
+The default won HPO on development dates; later-period skill is smaller than development (+0.878415%) and nominal confirmation (+1.331748%). HPO guarantees only that the selected complete candidate does not lose to its included default on that selection objective. It cannot guarantee later improvement. The earlier zoo, old85 cycle and this restored-universe cycle use different protocols; the matched original85 development comparison is the only exact identity/baseline comparison reported here.
+
+## Evaluation cohorts and saved training
+
+- Seed 11: original85 21,587 forecasts, weighted skill +0.106270%; restored307 77,638 forecasts, weighted skill +0.326588%.
+- Seed 29: original85 21,587 forecasts, weighted skill +0.118338%; restored307 77,638 forecasts, weighted skill +0.274822%.
+- Seed 47: original85 21,587 forecasts, weighted skill -0.112423%; restored307 77,638 forecasts, weighted skill +0.355951%.
+
+Seed47 original85 remains negative (-0.112423%); the universe restoration does not make every cohort/seed improve. No ticker or seed is removed after evaluation. The [complete evaluation appendix](../reports/production-universe-rerun-20261008/evaluation-appendix.json) includes all1,179 configured ticker/seed rows, 27 training records and exact per-fold admission counts/reasons. CORZ is an explicit exclusion. All cohort/ticker loss sums reconcile to the stage results.
+
+Nominal seed11 saved training histories by fold (online first→last training loss; best monitoring loss; best/total epochs; fit duration):
+
+- Fold1: 1.109940→1.036738; 1.081841; 8/28; 180.3s.
+- Fold2: 1.112168→1.030765; 1.012473; 29/49; 318.3s.
+- Fold3: 1.113080→1.032238; 0.998442; 32/52; 349.8s.
+- Fold4: 1.109061→1.028380; 0.996931; 42/62; 429.0s.
+- Fold5: 1.106537→1.030002; 1.019873; 33/53; 398.3s.
+- Fold6: 1.101961→1.023384; 1.163661; 64/84; 636.3s.
+- Fold7: 1.110367→1.036671; 1.111784; 11/31; 239.8s.
+- Fold8: 1.106646→1.036951; 0.870374; 12/32; 251.0s.
+- Fold9: 1.108060→1.026857; 1.049701; 61/81; 675.2s.
+
+The complete appendix retains every epoch for all three seeds. These are saved online training losses and purged early-stopping losses, not training accuracy, restored-checkpoint training re-scores or independent calibration. The final nominal fit has423,197 training rows,15,566 monitoring rows and7,390 evaluation forecasts,19,340 parameters and390 supported heads. Its training labels end2025-05-30; monitoring labels end2025-10-10 before the first forecast2025-10-13.
+
+## Recommendation and qualification boundary
+
+Retain the frozen base PatchTST32 configuration and nominal seed11 as the forecasting research candidate for the next calibration walkthrough. Its development winner remained the included default; all confirmation and evaluation seed aggregates beat their empirical references. Evaluation gains are small, less than half of nominal ticker aggregates are positive, and interval coverage is materially below nominal. Do not promote it to a production-qualified champion from these results.
+
+There is no qualified learned reserve from this single-family cycle. Preserve seeds29/47 as stability evidence, all feature/HPO trials as research artifacts, and the old85 cycle as historical rollback evidence; none is an evaluation-selected replacement. The paired empirical forecast remains the research comparator, not an automatically qualified live fallback. Future decision use must abstain until the model, uncertainty calibration, data/clock contract and fallback have separately passed their stated qualification gates.
+
+Implemented and exercised here: existing DS Kit JSON configurations, source reconciliation/admission, finite feature/HPO selection, frozen confirmation/evaluation, chronological checkpoint retention and aggregate reporting. Tested here: configuration/identity/purge/paired-baseline checks, checkpoint/score hashes and nine synthetic uncertainty-format checks. Empirically observed here: the reported developmental forecast losses, cohort/ticker variation and interval undercoverage. Proposed only: rho/Q-band calibration, future independent qualification and the next-session MIO/backtest study. No MIO solver, optimization, trading backtest, deployment or2026 access occurred.
+
+All66 new fits completed without failure; with the preserved prior67 charges, the cumulative conservative charge is133/216. The three HPO default references are reused Stage1 identities, not three extra fits. No automatic retries, model additions or budget expansion occurred. A report-only field-name error while rendering training prose was corrected using the existing appendix schema; its private reporting-events.jsonl entry is retained, with no effect on models, forecasts or selection.
+
+## Final recovery and publication record
+
+Evaluation recovery verified62,903 copied files (520,946,894 bytes), all27 fit identities and10,383 score shards. It reproduced seven AAPL forecasts and CRPS values from fixed nominal seed11/fold9 with original source, data, runtime and worktree roots denied. Maximum mixture/metric differences remained within rtol1e-6 and atol1e-7; no fit was started. Receipt SHA256:90bd47449fbea8cc86d73eb54f6d11ae8cd02c97105928b55a60d6d1925e2dec.
+
+The exact verified recovery invocation was:
+
+```text
+/usr/bin/python3 -B -S /home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/audit/restore-production-evaluation-v1.py /home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete
+```
+
+Do not rerun against that completed destination: it refuses replacing its receipt. For another recovery test, use a fresh sibling copy as described above. Preserve prerequisites-v2 and the old cycle's dependency backup. Same-disk copies are not off-device disaster recovery.
+
+The original execution candidate025f4bd5 and all66 pinned source files remain unchanged; core/tests are byte-identical to d4df4ab0. Only JSON experiment instances, documentation, aggregate reports and journal evidence were added in this lane. All new report data is aggregate-only; weights, source records, per-forecast data and private receipts remain outside GitHub. Two final scoped correctness/authority and integration/evidence reviews are pending on the immutable report candidate; publication is not yet final.

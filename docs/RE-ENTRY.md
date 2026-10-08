@@ -1,54 +1,47 @@
-# Active handoff — 2026-10-08: restored-universe PatchTST rerun in progress
+# Active handoff — 2026-10-08: restored-universe forecasting complete; wrap pending
 
-Owner-requested next-session Claude handoff: children/index_options/docs/memos/2026-10-08-claude-calibration-backtest-handoff.md. Finish this cycle first; handoff is a proposed calibration/MIO/backtest walkthrough, not execution authorization for this cycle.
+All66 new fits completed without failures:15feature +15newHPO +9confirmation
++27evaluation; three HPO references reuse this rerun's Stage1 identities.
+Prior67 charges plus66 gives133/216. No further fit/retry/search is authorized.
+Core/tests remain unchanged from d4df4ab0; execution candidate025f4bd5.
+All66 pinned source files and model original/backup hashes verified.
 
-Owner clarified one pooled PatchTST model with HPO and fresh scheduled retraining.
-ADR0254, reviewed candidate025f4bd5. Both independent configuration/execution
-lenses closed with zeroCritical/Major/Minor/Nit. No core code changed.
-The earlier85-name cycle below remains preserved; its no-new-cycle statement
-was superseded by the owner's explicit restored-universe rerun approval.
+The frozen base PatchTST32 default (42features, lr0.0003, fusiondropout0.1)
+won development+0.878415%. Confirmation passed all three seed aggregates.
+Evaluation seed11/29/47 weighted skills: +0.278858%, +0.240921%, +0.254481%,
+each99,225 paired forecasts. Nominal seed11 remains fixed;6/9 windows and
+185/392 tickers positive. Original85/restored nominal skills +0.106270%/
++0.326588%; seed47 original85 is -0.112423%. Nominal95% coverage91.616%.
+Research candidate only: no production-qualified champion/learned reserve,
+calibrated rho/CDF bands, MIO execution, strategy backtest or2026 access.
 
-392names admitted: prior85 plus307missing-action-inventory histories under
-explicit research assumptions; CORZ excluded for confirmed recapitalization.
-841559owned source dates reconcile to457919eligible panelrows with zero residual.
-Development folds admit303/319/354heads as histories become sufficient.
-No2026data access/scoring, MIO, strategies, providers, upgrades or fullsuite.
+Read children/index_options/docs/memos/2026-10-08-restored-universe-patchtst.md
+and reports/production-universe-rerun-20261008/ under the same child docs.
+Complete training/HPO/fold/seed/ticker/cohort reports are published as aggregates.
+model-inventory.json contains66 unique recovered packages,3 reuse references,
+and exact immutable paths/hashes. Fixed latest nominal is seed11/fold9,
+fit7336c15cbb9ec3989d852ea9a7e0fc15317a3be2988fbe7c79badb6d4b4d6894,
+checkpoint1ec5ee6e18d056744215e5a482813f94b7c167cbdb4e9317f548c155dbff29b0.
+Never use a later checkpoint for earlier replay decisions.
 
 WSL2 checkout /home/russell/dskit-production-universe-rerun-20261008.
 Private audit /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/.
 Data /home/russell/data/index_options/production-universe-rerun-20261008/.
 Backup /home/russell/data/backups/index_options/production-universe-rerun-20261008/.
-Read execution-lock.json, execution-plan.json and actual launch/status receipts.
-All15 feature fits completed; base selected at +0.8784146644% paired skill.
-Stage1 and HPO backups each verified15fits/4880score shards plus isolated inference.
-HPO finished15newfits; default trial3 won+0.8784146644% (lr0.0003/dropout0.1).
-Confirmation9fits completed; seed11/29/47 weighted skills +1.331748%,
-+0.818424%, +1.122986%. All pass the frozen aggregate gate; nominal seed11
-original85 skill is -0.043181%, restored +1.688151%. Keep this caveat visible.
-Confirmation backup verified9fits/3366score shards plus isolated inference.
-Actual-gate and evaluation conformance independent reviews closed zero findings.
+Evaluation recovery verified27fits/10383score shards and seven nominal
+seed11/fold9 forecasts with original roots denied. All66 unique fitted packages
+are retained; inference supported, interrupted-optimizer continuation is not.
+Preserve old85 artifacts and both pinned checkouts. Same-disk backups are not
+off-device disaster recovery. Keep raw records/forecasts/weights private.
 
-The27evaluation fits are already running from evaluation-batch-launch.json,
-PID3326789/proc_start35614608 at launch. Verify current PID/start and outputs
-before any dispatch; never duplicate. Cumulative reserved ceiling133/216.
-Next: after all27complete, onboard-evaluation.py once (includes analysis), then
-build-stage-report-appendix.py evaluation and backup-evaluation.py. Preserve
-all failures; no automatic retry or budget expansion. Finish aggregate report,
-memo, two closing scoped reviews and authorized merge/push/remote verification.
-Fresh actual-gate/champion-freeze receipts bind this rerun; no old85reuse.
-Feature ticker/training appendix is private features-report-appendix-v2.json;
-complete393 roster perarm (CORZ exclusion explicit),1965ticker aggregates.
-All sums match stage results; original85 base skill+0.503541%, restored+1.002395%.
-Exact matched old/new original85 base comparison also passed keys/baseline
-equality: -0.736555% to+0.503541%; descriptive, no causal attribution or qualification.
-Private old-new-base-original85-comparison.json; independent scoped review zero findings.
-Both comparison and report-v2 reviews passed; supplemental backups verified.
-Keep all artifacts and historicalcheckouts. Finalmemo/report/wrap remainpending.
-Owner follow-up: finalmemo must include training/early-stopping performance,
-all HPO candidates and selection, validation byfold/seed, and complete per-ticker
-aggregate performance with counts/baselines and original85/restored comparison.
-Latest modeltraining settings, features, folds and capacity equalpriorcycle;
-a performance change alone cannot prove the universe causedthe old decline.
+Next: close two final scoped reviews, merge/push the reviewed report, verify
+remote contents and delete only the safely merged task branch. Owner expressly
+requested /wrap after the report. Then use the owner-requested next-session
+children/index_options/docs/memos/2026-10-08-claude-calibration-backtest-handoff.md
+to walk through bounded calibration and the path to MIO/backtesting.
+That future-stage plan does not authorize execution in this cycle.
+Keep2026 entirely closed. The392-name universe includes307 explicitly unknown
+action-inventory histories; never relabel them verified no-split.
 
 ---
 

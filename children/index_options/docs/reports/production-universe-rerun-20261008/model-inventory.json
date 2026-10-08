@@ -1,8 +1,8 @@
 {
-  "status": "partial inventory:39 completed pre-evaluation fits;27 evaluation refits running",
+  "status": "complete research inventory:66 unique fitted packages;3 same-rerun HPO reuse references; all stage recovery checks passed",
   "execution_candidate": "025f4bd5344552d72450171049e962c585171fe8",
   "nominal_seed": 11,
-  "final_nominal_evaluation_fit": null,
+  "final_nominal_evaluation_fit": "7336c15cbb9ec3989d852ea9a7e0fc15317a3be2988fbe7c79badb6d4b4d6894",
   "production_qualified": false,
   "optimizer_continuation_supported": false,
   "models": [
@@ -80,7 +80,8 @@
       "total_epochs": [
         48
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "17e64a02cc8e751e2da58123027c89c238f799d3b43829ed1c8514c0955c615e"
     },
     {
       "fit_identity": "943b5e247a86936de6df69b1e97acd0e0ec0440e2ca3c341147b02bd427a9d3c",
@@ -156,7 +157,8 @@
       "total_epochs": [
         43
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "78f43cfdd5e48b2aef9d1085b9062c85f50d0ece0042a2196a8789fe8a51d515"
     },
     {
       "fit_identity": "390c695ae42794592273b7933980ec643632cd633511426b7d8b0ffa6faabd19",
@@ -232,7 +234,8 @@
       "total_epochs": [
         37
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "ad89dff7a4a0d8ddc0748cdd4e86093fff50844ea0d797da160d345eb1a5df1e"
     },
     {
       "fit_identity": "bef8b6aacf4a7c3c8f6ec500e518d118e433082076f7a80d3ec49e60fc12018e",
@@ -300,7 +303,8 @@
       "total_epochs": [
         67
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "f459c32bd5cf9a8dbe1459a7d0fc3b29e5dbda57274a89d5a466088a6e6c1df3"
     },
     {
       "fit_identity": "fb54952f3b9e8407f4422a4b287be66b6e5f5affecccb18871d283912ff955bc",
@@ -368,7 +372,8 @@
       "total_epochs": [
         40
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "5a7f78d36f894ec0064bdde4505e0953b7a4bc3a99834e29a074f55cc10ca290"
     },
     {
       "fit_identity": "461282780255faa123c4c1ddf087befd517d4a150f638acfdaf822694e945e80",
@@ -436,7 +441,8 @@
       "total_epochs": [
         41
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "16e77c96042e04c8de47d40ffada6b4b28760d278ac677822fe97dcbeb16c648"
     },
     {
       "fit_identity": "223afd2ce90291c3134ad9c719e03dd66f06d3d5971511bef99897e750dcd34d",
@@ -504,7 +510,8 @@
       "total_epochs": [
         54
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "b73cf01393c58237d4484707b3674b3c63aecd0a8deb4890e9344e9141093569"
     },
     {
       "fit_identity": "9d66d61d257a252497dc2e478374bb83c6f7931ceef3f2da8d2d2f7ec1dd89be",
@@ -572,7 +579,8 @@
       "total_epochs": [
         40
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "aabd447e18abe0c2087f9fde36cbfead84b106e91ff2f3a0e85cf5604a017e49"
     },
     {
       "fit_identity": "ce79615ffddda75834568323b1e7aeed28c615efac537ab4f5af75e20795c98b",
@@ -640,7 +648,8 @@
       "total_epochs": [
         41
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "b3b03cee515e01cb5bbb1673c073acd6b49c0b1143a7db1cd2eca06a13d6b6f4"
     },
     {
       "fit_identity": "79ffcb05b41e30262aa9eb66fc86d408ad748298aa5b159b2c73e753b85df46b",
@@ -708,7 +717,8 @@
       "total_epochs": [
         50
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "8febeb2651a6bf2ebdf74281fb9e2c9a6241d7cc6a9fdb8a87d948aaaea4fe4c"
     },
     {
       "fit_identity": "44353d9b9a1bf843235875624391f3078067b21c99413a4e0e38a97162b76923",
@@ -776,7 +786,8 @@
       "total_epochs": [
         30
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "d5e5f20d3c2b53d94e9783dae6cb3e7e6073d1a15eb2556a16cabed83a8503f7"
     },
     {
       "fit_identity": "b654637fb0eac5ee3c2ee29dfeca7d614b22cb3604b27ec5876c0389b23d61cc",
@@ -844,7 +855,8 @@
       "total_epochs": [
         32
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "e6c8fd4512d540180a52eff6ff8a76af20d32b4da1c5906dabac84a90a9aad6e"
     },
     {
       "fit_identity": "3ffdbe547e2b26719fe887722945d07fe122976cfdd7520129851a478de3fd65",
@@ -912,7 +924,8 @@
       "total_epochs": [
         54
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "c9a2951a60b879459c08bef83660c904d71f7238f7479be79ffe7cb2c820baf6"
     },
     {
       "fit_identity": "e6b7792045d6ae273ec78e1c343978d19876e4a729fc5bdd6ee5e526f2f78320",
@@ -980,7 +993,8 @@
       "total_epochs": [
         40
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "d449cd97addffe7194f7d0b185388e66ee1965cb716b8de60d3cbd220d70ded9"
     },
     {
       "fit_identity": "ef63905dff10303fc8716bf30fa486bbe48b76e29ef0c6053dac728e240bf2d9",
@@ -1048,7 +1062,8 @@
       "total_epochs": [
         41
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "f5e57b98190206d82971f0d8944cf8b0fa56711d088df6092806090de44b9aa2"
     },
     {
       "fit_identity": "9a283fc34e89d8fd2186369b9bcccd92e87e4bdb3330f79dd3539e4477ca2d5f",
@@ -1116,7 +1131,8 @@
       "total_epochs": [
         88
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "fb9b338a5da13fb23b53594f3a6924f50d173875a8ad5e66ab3dc27d57a0f0ea"
     },
     {
       "fit_identity": "793cd91371d25db71fd97525ac6500f3f0f674b4e3368eabb5e7da9bd7c21f05",
@@ -1184,7 +1200,8 @@
       "total_epochs": [
         78
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "d423a236cf98a6353afecb788f938c306e24e6e94906e43d652094b2f413f04a"
     },
     {
       "fit_identity": "f2916a9ec415271ab7267a9753e544b90e55817f45f8023292dbf08d8484cfbc",
@@ -1252,7 +1269,8 @@
       "total_epochs": [
         74
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "bebf45b6819b9ce34570c568eec528fe66cc27c6335b9b596cece8fa467cdc4f"
     },
     {
       "fit_identity": "c8820d7d911d80dff04406783f7765deb40a91f0e2f5e552bb2ad360f4ef7fb9",
@@ -1320,7 +1338,8 @@
       "total_epochs": [
         84
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "a79e74f100d46c634da30645a8d8b246891b45ad57906f9a9b0487c96b395c5d"
     },
     {
       "fit_identity": "c8e48eb60b28c3f66e92f481058a59f1fe0c2529222b5f59b0151b740b973625",
@@ -1388,7 +1407,8 @@
       "total_epochs": [
         73
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "162161e1f1556b4b7a3bd4d7da768725b6ce4a1dae8e1fec7d3623944b47bbe9"
     },
     {
       "fit_identity": "d8d04f11779fd752e1ab7e9825c9e17b62c36eec41a9bc8b2295912dad71ee95",
@@ -1456,7 +1476,8 @@
       "total_epochs": [
         73
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "2955c7fea35db2865ccec17f3cdcf20b4bad98b475dfc09963331bb440944af9"
     },
     {
       "fit_identity": "4a13e5f238c4797fda89976aff5423e81aa38e272db85c1fb507b7ea6407fd76",
@@ -1524,7 +1545,8 @@
       "total_epochs": [
         44
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "a393b80dbeed10cae298aa5ced1869e24b7744050e55d268ce4a3a5c091ce356"
     },
     {
       "fit_identity": "b226552d9c6557655ee02b960ae9c0e9c553bbf935b453989721cb2385aa38a3",
@@ -1592,7 +1614,8 @@
       "total_epochs": [
         34
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "cc92dc32378ab4a033de8503f55cc7c0b2aaf09208cc05ea7a611847203449c3"
     },
     {
       "fit_identity": "77900855463b7e73d3a1d7fef5ac6dac8cf252f2b8fe7eb87c7a7db1e9f78861",
@@ -1660,7 +1683,8 @@
       "total_epochs": [
         39
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "35027f7bb74aefa96a83778cd6620f4d680c421ecf81f20fc0a4e3c4b4137109"
     },
     {
       "fit_identity": "ba68f8ee936b66e7370aa668c8d02e095d8991904c4ee7775e201681e51cfcdb",
@@ -1728,7 +1752,8 @@
       "total_epochs": [
         25
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "d4a42e909832cdba846c9a0e3aa59cf0a53d72b27bf6db04405e986633bfa18f"
     },
     {
       "fit_identity": "dc0c5e67d71cd008515885369297e8630a88a748d5c8c1b26fe79c5d3cca2d63",
@@ -1796,7 +1821,8 @@
       "total_epochs": [
         28
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "02654ecf942e006f1ba315f12c81a83298df5168a321db1292d61904878af7b2"
     },
     {
       "fit_identity": "9fe38d7f28204b35399e606f0f0fdff414acb4567c4adc75d65dad40a7cf95ba",
@@ -1864,7 +1890,8 @@
       "total_epochs": [
         24
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "56b1b3481cd709d8bdcd399ee5f181321f48c97e20dc52c90ef26234714e14ef"
     },
     {
       "fit_identity": "82a5224810dd0952075044f82b162a888cafc41c6fdf9f04625e611808392229",
@@ -1932,7 +1959,8 @@
       "total_epochs": [
         44
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "380b3da04f6dc56e380819b20b5d6aaa4b588cadcbae59d13d839a0cb123226d"
     },
     {
       "fit_identity": "00bc6e348f85051fce508520a0cf9958c4752fbfc3b0c29d46b2986ff4aa1a1c",
@@ -2000,7 +2028,8 @@
       "total_epochs": [
         27
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "e8c3ff67673cf71e244584d424003851d88661cf81d90cdfcc9442efcb3bfebd"
     },
     {
       "fit_identity": "c481e7aed626139dff7ae52912b4308bf31f0c72b6d0cc5d4f15d675a0d266e7",
@@ -2068,7 +2097,8 @@
       "total_epochs": [
         25
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "0e4bffd6f9eaefaed549d2c4188a77782d4e648f3c617ebf44651e521157f899"
     },
     {
       "fit_identity": "598347343768fca8ecbdd48648b37f0dc3371749da4973a7b53ca5e9f2fef781",
@@ -2136,7 +2166,8 @@
       "total_epochs": [
         45
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "06fa730e7fc3a9ef21566535cae4c62566845a7c42dd958922f906d7a25a3dad"
     },
     {
       "fit_identity": "520d4bb97f0eb6f15507d5a7142f41e0f7f603af504ae2f3a57fe69a179df802",
@@ -2204,7 +2235,8 @@
       "total_epochs": [
         36
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "9c8b583d4e5c2a857f424140dbc48ae912a96208ac7c304aeef532cf1896dcb2"
     },
     {
       "fit_identity": "86c44ca9422984a7951ac374a716313056bbb304d8fef9bd56169caa1484f217",
@@ -2272,7 +2304,8 @@
       "total_epochs": [
         29
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "29f86163b9ad0ab291870d362c5d639282e290fb719b570a4158c2c972b22231"
     },
     {
       "fit_identity": "fb6c8a861b308e991299c932726bdeb1438713522e51f030c9325a32b311a9ac",
@@ -2340,7 +2373,8 @@
       "total_epochs": [
         46
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "7288e5b333f737e75c266ace4cf4697fd847de72515d150d45e13004c9b9f76b"
     },
     {
       "fit_identity": "eb5834bbc6d35a5ee68d358bcb552ecf27516b60fc0d2e3fd190b1240614e746",
@@ -2408,7 +2442,8 @@
       "total_epochs": [
         84
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "b0f80e74f14f20040731f05630aea9f0bbf8d063eb2597177d0f52d388a06015"
     },
     {
       "fit_identity": "bf55517a5300b8b1e7876ed899313f49c09e3db2fc94c614842e511b2f04d659",
@@ -2476,7 +2511,8 @@
       "total_epochs": [
         26
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "e1c85c323d87b26b70c268438a34114e5491af6b3afc9d89bfab74f0df949f90"
     },
     {
       "fit_identity": "54b587f837316135e0385ab21351666e298989fafa9a3ea74152eba857d0c26e",
@@ -2544,7 +2580,8 @@
       "total_epochs": [
         37
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "6404e9e24516e77319a4f854f6138ebbd76cdd78ef466a3edc277af89850239e"
     },
     {
       "fit_identity": "2766a4bbdaadde78d4486a614c295aaac393d0d66013403de8844c385351b153",
@@ -2612,7 +2649,8 @@
       "total_epochs": [
         33
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "c0c7581eeebeeedfd746930dbe0e71dd2f96034ab24c4538ca2b90a7535ac274"
     },
     {
       "fit_identity": "cd85d70741563803d98d84bca200408d298738ef70e7f1cedf901175a1cf431a",
@@ -2680,12 +2718,1886 @@
       "total_epochs": [
         26
       ],
-      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone."
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "f238b90465cd307563bf8db3618223d82ee2a0470b3dd5abdded49440d85446c"
+    },
+    {
+      "fit_identity": "7ee86d9980553df18ab19fb9d66599df473a54f75b22c34f8d043c2458fef2ef",
+      "checkpoint": "100e450f35ce61a5908ddc10eb9849f60bd07f40dabec60a0ce9bcb197a03a7d",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/1/pooled/fit",
+      "parameters": 19016,
+      "best_epochs": [
+        8
+      ],
+      "total_epochs": [
+        28
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/1/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "00cecc5a5ea6a627ab82486aa52971174e2375d3d238900d54f1f5a8153a6aef",
+        "model/state.json": "dac75447ac3568e84733d6b518298c0c832960c1157e5170e527c8d44e848607",
+        "model/weights.pt": "b399c4d9573d960d6057c5c3ea3fcd5f8e8630ccc6af1281d3ba2396be08dddc"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 1,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 378,
+      "band_counts": [
+        332298,
+        15052,
+        11306
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2023-08-21"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2023-09-21"
+          ]
+        },
+        {
+          "quote_date": [
+            "2023-09-22",
+            "2024-01-05"
+          ],
+          "settlement_date": [
+            "2023-10-23",
+            "2024-02-05"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-02-06",
+            "2024-04-22"
+          ],
+          "settlement_date": [
+            "2024-03-08",
+            "2024-05-23"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "c19ff31fb76ce4eb3fda5a543b9886bb33cf47ced1c236001fb8b297386c59e9"
+    },
+    {
+      "fit_identity": "082bb1698812409d021cc695da5ae83fc69f59c1dc9184f6cb8476d196bafa0f",
+      "checkpoint": "4d0e9c54004f637c17c733d1b0281a847faf4aae1e1d0613e89bcae4cdb1abac",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/2/pooled/fit",
+      "parameters": 19016,
+      "best_epochs": [
+        29
+      ],
+      "total_epochs": [
+        49
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/2/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "274043442dacd856047662055a1ac02b70e8fee5141d9bf3d4161e479b39cbf0",
+        "model/state.json": "2ddeeee52c51cf6e573e447aaf16b7932c1cd0a385f7eaa70b9c8a7cbc73c02e",
+        "model/weights.pt": "f6fccc1f053fabf27af8ec17a50a19c54e0a7fc3582ac2725e0923e95cb965fc"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 2,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 378,
+      "band_counts": [
+        342724,
+        15104,
+        11299
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2023-11-03"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2023-12-04"
+          ]
+        },
+        {
+          "quote_date": [
+            "2023-12-05",
+            "2024-03-22"
+          ],
+          "settlement_date": [
+            "2024-01-05",
+            "2024-04-22"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-04-23",
+            "2024-07-08"
+          ],
+          "settlement_date": [
+            "2024-05-24",
+            "2024-08-08"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "119b5979c830429ced3c8ee3423f04c169de368d4536dd771c99e43e7a7ed600"
+    },
+    {
+      "fit_identity": "37ff05f7ecb33b49ad90f62f3ace9efe48101ca166ea48e151a98c2eb6d039ba",
+      "checkpoint": "6fa916cccdc1bcd7a9993c075bb59e3c70db1b80d19f2ad79345d0e14ed52a28",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/3/pooled/fit",
+      "parameters": 19070,
+      "best_epochs": [
+        32
+      ],
+      "total_epochs": [
+        52
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/3/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "fd1f805525f0716cacc9a1ef1be47214503c606e38c1a728ce373902dd7eee17",
+        "model/state.json": "12a8837d5bf854ac31ffab8ea71aeb41824ea311a732fb1175087093fdb55fdb",
+        "model/weights.pt": "1848aaac4699269eae536e1efa78410223f353f27c89da1b2a113409b2c74d53"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 3,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 380,
+      "band_counts": [
+        354225,
+        15119,
+        11366
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-01-23"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-02-23"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-02-26",
+            "2024-06-07"
+          ],
+          "settlement_date": [
+            "2024-03-28",
+            "2024-07-08"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-07-09",
+            "2024-09-20"
+          ],
+          "settlement_date": [
+            "2024-08-09",
+            "2024-10-21"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "90430b9b7f28909cb90a9d912a4b315914e13f27a77f30b5a5ef904ac6e52d7b"
+    },
+    {
+      "fit_identity": "14cd6abdb2e8028056a8bce8c6361334957d15062764e2d7304e1335700e86fa",
+      "checkpoint": "33c709d9518c6837baa5a503421e9614eb1a000be2d9e14cd145298d8a1bcee7",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/4/pooled/fit",
+      "parameters": 19124,
+      "best_epochs": [
+        42
+      ],
+      "total_epochs": [
+        62
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/4/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "f68ef03c249554b65400c2bf15be1819f8f930057d887b8ce3a9d8c479daf0fc",
+        "model/state.json": "a621b08bd48aa297604df93b2a3bb158f60a2444add9128fd06d11d7377625c9",
+        "model/weights.pt": "1028911f163570882fb6b2717ffabb525297c2ea13880934420d27f522185d25"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 4,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 382,
+      "band_counts": [
+        366209,
+        15195,
+        11444
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-04-12"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-05-13"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-05-14",
+            "2024-08-20"
+          ],
+          "settlement_date": [
+            "2024-06-14",
+            "2024-09-20"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-09-23",
+            "2024-12-02"
+          ],
+          "settlement_date": [
+            "2024-10-24",
+            "2025-01-02"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "61a96bcb6daa7b885d07d24509aebf7cf222f4c295b3e1a13792ba2dde6a7ec5"
+    },
+    {
+      "fit_identity": "fefe4747ada99a0fdae41b3333c65405648310520311cc42bbf1e290a4260b7c",
+      "checkpoint": "4ac00a45ef82ab674f143ebc26b43a5633d87cd70e5616c752154a3d64f560dc",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/5/pooled/fit",
+      "parameters": 19151,
+      "best_epochs": [
+        33
+      ],
+      "total_epochs": [
+        53
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/5/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "0d832c7117aee83a9ca96a35f4cbbf9a3dccce6012afda038f27a63a583dd741",
+        "model/state.json": "d8bcf3180be79eae7cb025ae4c6bd86666af8b9db9ae455c186377f2df3c1181",
+        "model/weights.pt": "0cafa2950ba24470986db0a8e98d4203d0662ef770d477bfe32441714b2a1f09"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 5,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 383,
+      "band_counts": [
+        377225,
+        15271,
+        11452
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-06-24"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-07-25"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-07-26",
+            "2024-11-01"
+          ],
+          "settlement_date": [
+            "2024-08-26",
+            "2024-12-02"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-12-03",
+            "2025-02-21"
+          ],
+          "settlement_date": [
+            "2025-01-03",
+            "2025-03-24"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "966e58de9d3cd54bd1bcdc15bf2a877fa279c9692f132e92c306fe8f33a5b050"
+    },
+    {
+      "fit_identity": "5ed4a9c3ed19d6c34944478edad1093db0d7e6ba2b21178c0e3533334df7d1db",
+      "checkpoint": "b6983852c74935fe735a23a7df8308551b50d479ade5650e8be8bc82cc502f2b",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/6/pooled/fit",
+      "parameters": 19286,
+      "best_epochs": [
+        64
+      ],
+      "total_epochs": [
+        84
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/6/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "e9a6ed352c91fd2c8793c2281c956afb1759213c30878bf4595d83b3722c7279",
+        "model/state.json": "3177994d9fc4a71e04064d88adb5b9586689ae5a6177392b5de46f6b217350aa",
+        "model/weights.pt": "ae33252216ab920b268b6e8b196cdf9affb07b91c1943b6486230a85d14f34e6"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 6,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 388,
+      "band_counts": [
+        388280,
+        15480,
+        11587
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-09-09"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-10-10"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-10-11",
+            "2025-01-21"
+          ],
+          "settlement_date": [
+            "2024-11-11",
+            "2025-02-21"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-02-24",
+            "2025-05-09"
+          ],
+          "settlement_date": [
+            "2025-03-27",
+            "2025-06-09"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "efcc20897c546d99c1672205e489a2296e1921d347d809ababfc4040ab10f972"
+    },
+    {
+      "fit_identity": "cb52650eb821785e3515fcc69146a83160b770fde4b3784929f3a40c560e26e9",
+      "checkpoint": "e99a828357416bd17d2bae09092c6fd36632c908a32f59558f880fd0ea02e755",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/7/pooled/fit",
+      "parameters": 19340,
+      "best_epochs": [
+        11
+      ],
+      "total_epochs": [
+        31
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/7/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "31713541e2d7902e946672dae9c2c4b95865db0bdcc612c19ce26d0ff4f1ab8f",
+        "model/state.json": "a1cf7fc94f90070b233d2c3cf9ce21a3adf5c378cddd6606ed8744def48f3b10",
+        "model/weights.pt": "92ff3f422b0e26479a9cbd929fe422606ec78f6cc256c7c3c4d41cba1bd5561c"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 7,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 390,
+      "band_counts": [
+        400808,
+        15517,
+        11652
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-11-26"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-12-27"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-12-30",
+            "2025-04-08"
+          ],
+          "settlement_date": [
+            "2025-01-30",
+            "2025-05-09"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-05-12",
+            "2025-07-28"
+          ],
+          "settlement_date": [
+            "2025-06-12",
+            "2025-08-28"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "ab0eb788fe1e019dd4fbe97c86f0e10493ff7e4d43484a3edd8bd8ed7ed9328c"
+    },
+    {
+      "fit_identity": "74a7b6af77c66f0dba134bbdb726e9cb780544200321a7d9b5f9d2d92637541b",
+      "checkpoint": "a686e4d623e37a134606e453a035ca5a027427e7e5a3f9611cdebdf03da87cde",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/8/pooled/fit",
+      "parameters": 19394,
+      "best_epochs": [
+        12
+      ],
+      "total_epochs": [
+        32
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/8/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "6a97aa3a1fdcca027d889a368e45540cf609aece6713bc4c5a951a3b3e0dc676",
+        "model/state.json": "9a8701294ec3596d753a6e8f9944ee78c14dc702223611958823a72ebd246b2a",
+        "model/weights.pt": "fd80fe1805a5d59bcf11285726117a49ef7aefb4137433046643faf466af811a"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 8,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 392,
+      "band_counts": [
+        413898,
+        15545,
+        11729
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2025-02-10"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2025-03-13"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-03-14",
+            "2025-06-27"
+          ],
+          "settlement_date": [
+            "2025-04-14",
+            "2025-07-28"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-07-29",
+            "2025-10-10"
+          ],
+          "settlement_date": [
+            "2025-08-29",
+            "2025-11-10"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "83d224b5e29baac48be0a7c2b2f5d4b71cb4c9eb75f2abac07594d4e5f1691b5"
+    },
+    {
+      "fit_identity": "7336c15cbb9ec3989d852ea9a7e0fc15317a3be2988fbe7c79badb6d4b4d6894",
+      "checkpoint": "1ec5ee6e18d056744215e5a482813f94b7c167cbdb4e9317f548c155dbff29b0",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed11/pooled/base/PatchTST32/9/pooled/fit",
+      "parameters": 19340,
+      "best_epochs": [
+        61
+      ],
+      "total_epochs": [
+        81
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed11/pooled/base/PatchTST32/9/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "e1552b818e889f5d534abaf4551c0d35237dabf69eacb0692c8f23c880f2d875",
+        "model/state.json": "c26ffc1802f943b327b4d3dd7188731e17402c38f3a7341c1d91b341bd7fb878",
+        "model/weights.pt": "30fd2a622163754adc1d67666167743aecd111d2669f16322865027aebda8b12"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 11,
+          "fold": 9,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 390,
+      "band_counts": [
+        423197,
+        15566,
+        7390
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2025-04-29"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2025-05-30"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-06-02",
+            "2025-09-09"
+          ],
+          "settlement_date": [
+            "2025-07-03",
+            "2025-10-10"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-10-13",
+            "2025-11-28"
+          ],
+          "settlement_date": [
+            "2025-11-13",
+            "2025-12-29"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "718b1a00e0a2fa1c46677f2e31f5a7e980cdf3208ac7fe6e66647c1354acb630"
+    },
+    {
+      "fit_identity": "b2e417fee79a84ae4056b156eb5070ceb074c8cab0c051ed91c8aaf6db5039ef",
+      "checkpoint": "926b383466aff34d041492addbbfd1bced9456454e7fd2f0a79b2305f3ad12b9",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/1/pooled/fit",
+      "parameters": 19016,
+      "best_epochs": [
+        6
+      ],
+      "total_epochs": [
+        26
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/1/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "6ee2649bbb6d9dd0e2d32e37bdfb4804a8347cf1c1d3b07d2a3c1b0454410ca5",
+        "model/state.json": "b3bdcd72dc57c6826d5c36716c159f2b1b409a56dd36f1c3f2a1fea2acf8c390",
+        "model/weights.pt": "0776f9e09f2f14c61800b57c29515f1c753905797e4f871e7a9963f913877239"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 1,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 378,
+      "band_counts": [
+        332298,
+        15052,
+        11306
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2023-08-21"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2023-09-21"
+          ]
+        },
+        {
+          "quote_date": [
+            "2023-09-22",
+            "2024-01-05"
+          ],
+          "settlement_date": [
+            "2023-10-23",
+            "2024-02-05"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-02-06",
+            "2024-04-22"
+          ],
+          "settlement_date": [
+            "2024-03-08",
+            "2024-05-23"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "b2f15cdd96e0ad300b4c5906741a88ce334e46abf2d35c70f9d2a5904d6ba092"
+    },
+    {
+      "fit_identity": "0c662a2f9873e7494d390f0173571bc362086efed5e7a152db39c48b579ebca2",
+      "checkpoint": "354e4583850c31ed626a01c467939ea38123bdbb15e83d30b5f79068950cd3a7",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/2/pooled/fit",
+      "parameters": 19016,
+      "best_epochs": [
+        22
+      ],
+      "total_epochs": [
+        42
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/2/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "13df40324720bcc642389bf124fc75de5e999d490140e582ca75cac0e1d9dc2c",
+        "model/state.json": "cdf82859ad5537f7d2a4a8c3159afbc79ad57511dbca1933153ef04c210dc0fb",
+        "model/weights.pt": "4886fc7f4da40a649a778ec1e1079f35b48c462e7c6d8639ae5cebf28818704d"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 2,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 378,
+      "band_counts": [
+        342724,
+        15104,
+        11299
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2023-11-03"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2023-12-04"
+          ]
+        },
+        {
+          "quote_date": [
+            "2023-12-05",
+            "2024-03-22"
+          ],
+          "settlement_date": [
+            "2024-01-05",
+            "2024-04-22"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-04-23",
+            "2024-07-08"
+          ],
+          "settlement_date": [
+            "2024-05-24",
+            "2024-08-08"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "a95655c36a62e041ff57fa48876b01bfccc61e43d0a5259796085173f0044d58"
+    },
+    {
+      "fit_identity": "b1ba52b03e2d19cbae70eeb0a7d8ba5de080c8212a47d8616e129cc1579f7f93",
+      "checkpoint": "4a4436d6a58ac898e1b9ffa3e04046bceeeca6ee3286c01a4a7e8833ead2db43",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/3/pooled/fit",
+      "parameters": 19070,
+      "best_epochs": [
+        18
+      ],
+      "total_epochs": [
+        38
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/3/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "1750c3a555ed41e02632ec1ffa14b781e8725b20da9cd62b523a5f2839ae1f32",
+        "model/state.json": "24b852cfb6ac7afff88b116d5f19915e188a85e5e6ba23cc060e70c9ced9194e",
+        "model/weights.pt": "660ca648334e9f33cd38d569a9ca772af1553b3b3c46376a99b3c7eff86c1f3d"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 3,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 380,
+      "band_counts": [
+        354225,
+        15119,
+        11366
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-01-23"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-02-23"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-02-26",
+            "2024-06-07"
+          ],
+          "settlement_date": [
+            "2024-03-28",
+            "2024-07-08"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-07-09",
+            "2024-09-20"
+          ],
+          "settlement_date": [
+            "2024-08-09",
+            "2024-10-21"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "72a2af33c07594fa8c29f08f93765dd2e0e918c48e9d91358b3ee118fc26841b"
+    },
+    {
+      "fit_identity": "71f4c3065005f7a25b14a3a2afefd33557e2eb224d1dafd8987977f09eb82151",
+      "checkpoint": "738bfccdbce9b6318d177b2387c3bdf4224bab3d1984daa7913b35972085f182",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/4/pooled/fit",
+      "parameters": 19124,
+      "best_epochs": [
+        34
+      ],
+      "total_epochs": [
+        54
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/4/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "c687096e10d2b718c8ccae2dee3e56107faeafedb3d5c0ed33950051a0034ee3",
+        "model/state.json": "731dc7e71c9079ad9adf638fd40831e4a64e6742f527900cdc229cc7247c66b2",
+        "model/weights.pt": "e68392e00d8e67301f0a485f7fe701c814d869651e817f530e55449d0ba6cf66"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 4,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 382,
+      "band_counts": [
+        366209,
+        15195,
+        11444
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-04-12"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-05-13"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-05-14",
+            "2024-08-20"
+          ],
+          "settlement_date": [
+            "2024-06-14",
+            "2024-09-20"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-09-23",
+            "2024-12-02"
+          ],
+          "settlement_date": [
+            "2024-10-24",
+            "2025-01-02"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "5d6a887e1a359007ba74c06d8e99a8fb28b13cdc1e08f730c143011faf495d47"
+    },
+    {
+      "fit_identity": "0896377c4c1ea5e6fecfbaa997ab62ebd8d5ac562987a3b1f0a970fbb3d6d4e9",
+      "checkpoint": "230aa84452a48c15545840dcd43e813b8460ef73e8e09da545c936938a3b2723",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/5/pooled/fit",
+      "parameters": 19151,
+      "best_epochs": [
+        22
+      ],
+      "total_epochs": [
+        42
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/5/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "a23b4c41c60f186f60b094f6946c3876f8ebd17837a8c1200323eb8caec33b6e",
+        "model/state.json": "215c7f1ae327470b8398602afa53bfce2e4b770047e52ad816c5a95123e18d13",
+        "model/weights.pt": "941e057d463d9365e8d5f28e9782944cd1cc3c0ecc665cd762bdf5f8e4b8460e"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 5,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 383,
+      "band_counts": [
+        377225,
+        15271,
+        11452
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-06-24"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-07-25"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-07-26",
+            "2024-11-01"
+          ],
+          "settlement_date": [
+            "2024-08-26",
+            "2024-12-02"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-12-03",
+            "2025-02-21"
+          ],
+          "settlement_date": [
+            "2025-01-03",
+            "2025-03-24"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "4cd6cf73220acf33d424856c320ab3f2359c0da9cfa13fb747e14456bfb7d3bf"
+    },
+    {
+      "fit_identity": "15a97253977272c79c76c904424f41f6ed8549a40f5274ad6c5ad68462e0ef3b",
+      "checkpoint": "42a11aec199fb789f27e840a90c2adb403871db3e0d53d78bc1916b1c11f7b5c",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/6/pooled/fit",
+      "parameters": 19286,
+      "best_epochs": [
+        54
+      ],
+      "total_epochs": [
+        74
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/6/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "03adb3b2e98b6b9b164612f66c533271b3f6a2d3bca9c8fa9549ddd7ea5bef16",
+        "model/state.json": "795087b6275cea01d6870072930427869a2b1d1d0efd3c6b2cf6dd281f7affcf",
+        "model/weights.pt": "ac76b9a73529db923e27d0922b5a666240084295589b57ff6e33232fc6e5bf44"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 6,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 388,
+      "band_counts": [
+        388280,
+        15480,
+        11587
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-09-09"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-10-10"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-10-11",
+            "2025-01-21"
+          ],
+          "settlement_date": [
+            "2024-11-11",
+            "2025-02-21"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-02-24",
+            "2025-05-09"
+          ],
+          "settlement_date": [
+            "2025-03-27",
+            "2025-06-09"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "2f99757279b370d72304a894c4649f900b6a245bf9a6877eabbdde5752a5d779"
+    },
+    {
+      "fit_identity": "06ca4e7cf7e878367890b896c0520a86485da130db55cbde21b62631cd37158c",
+      "checkpoint": "1ac7791a130d2d6724486c0cf194f55ec5b7777350f8f99b04c53515e12a5f83",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/7/pooled/fit",
+      "parameters": 19340,
+      "best_epochs": [
+        10
+      ],
+      "total_epochs": [
+        30
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/7/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "16a6c036d3251c00099392e1cf621e9f089cd3575d662d4f9e6ec96b27624e3a",
+        "model/state.json": "05a0b769d17e4e71d82594d664269e6b986b462d4a2adb47a3ffca8bade4e1c8",
+        "model/weights.pt": "69f370ae672227076c3019089bb02ade710606f20b53f7e40bb0a8dccf17186c"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 7,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 390,
+      "band_counts": [
+        400808,
+        15517,
+        11652
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-11-26"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-12-27"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-12-30",
+            "2025-04-08"
+          ],
+          "settlement_date": [
+            "2025-01-30",
+            "2025-05-09"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-05-12",
+            "2025-07-28"
+          ],
+          "settlement_date": [
+            "2025-06-12",
+            "2025-08-28"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "5e7dae9043df8189d72280f5fc03b7e51fc992550ae44b3782e08347e8995a8e"
+    },
+    {
+      "fit_identity": "2ad33ab79477b126089d02101247821d01101501dc5d5d881eff7c15ad01913e",
+      "checkpoint": "ae825d763a07bca2995ee01eaaf1a08a9d845f18ba823ae80ac38abd1e73a93d",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/8/pooled/fit",
+      "parameters": 19394,
+      "best_epochs": [
+        14
+      ],
+      "total_epochs": [
+        34
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/8/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "02fc5e998e68450604a380078e6f5f2f1853ae8d7f4f13993c8d5b9ae6202501",
+        "model/state.json": "334c527db466d55fd273798ba337843c402444587eaa4fb8161b7401aa82e634",
+        "model/weights.pt": "d695f42080cf21074dcb93fb418cce3760cf03e328535f9ef181320c17d47a40"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 8,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 392,
+      "band_counts": [
+        413898,
+        15545,
+        11729
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2025-02-10"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2025-03-13"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-03-14",
+            "2025-06-27"
+          ],
+          "settlement_date": [
+            "2025-04-14",
+            "2025-07-28"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-07-29",
+            "2025-10-10"
+          ],
+          "settlement_date": [
+            "2025-08-29",
+            "2025-11-10"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "c7e6d9ca652ed8af2440e62f753d7a9e70c11d94f8c6b3905f7c4ba08bad1301"
+    },
+    {
+      "fit_identity": "9714bc0a678d0ca59e56eb235bfa4661a53891f00d427597ab784f63f2223321",
+      "checkpoint": "4807827f7a2f22277a924f3828e3c48a229c91b22c00940d2556586f5ee73949",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed29/pooled/base/PatchTST32/9/pooled/fit",
+      "parameters": 19340,
+      "best_epochs": [
+        46
+      ],
+      "total_epochs": [
+        66
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed29/pooled/base/PatchTST32/9/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "ed70f1a4a5d08ea44186ba6c2f862f75fb6c3c7f7f215022e5fc6010e4d8c7ce",
+        "model/state.json": "56cddf456d29292fadce42a06e523e133df7c8db49618f8097faa151eb52b9b2",
+        "model/weights.pt": "fec129297639b61993af16792e7cf2ac39dd11e6329a8653748ebc99f88595f5"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 29,
+          "fold": 9,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 390,
+      "band_counts": [
+        423197,
+        15566,
+        7390
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2025-04-29"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2025-05-30"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-06-02",
+            "2025-09-09"
+          ],
+          "settlement_date": [
+            "2025-07-03",
+            "2025-10-10"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-10-13",
+            "2025-11-28"
+          ],
+          "settlement_date": [
+            "2025-11-13",
+            "2025-12-29"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "9b0271ad7b0cdbd8b74b6f8b9fd9b6841372a2e3bc6c3e46824e64afe11022d6"
+    },
+    {
+      "fit_identity": "8fc6f728e1e83e1cde80651e08fd339db099ca7f033985e479dd981bf0ecf880",
+      "checkpoint": "94b456ca7604209b1481415409e7ad1fdd88e02c4eebfa48291c181c7908b590",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/1/pooled/fit",
+      "parameters": 19016,
+      "best_epochs": [
+        12
+      ],
+      "total_epochs": [
+        32
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/1/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "0e9c437c20b41744671bc20281a5422e58f59e2cc2ad7bcf7da3ee18bae14ae2",
+        "model/state.json": "7fc762f6bdbb549f2988287a119c64c9602b58c52106cc54c8510422552d39a0",
+        "model/weights.pt": "d80a42f33bcf624e51a01a5fddcfb2a914922a01532bd45174dfbe8d27cfb410"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 1,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 378,
+      "band_counts": [
+        332298,
+        15052,
+        11306
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2023-08-21"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2023-09-21"
+          ]
+        },
+        {
+          "quote_date": [
+            "2023-09-22",
+            "2024-01-05"
+          ],
+          "settlement_date": [
+            "2023-10-23",
+            "2024-02-05"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-02-06",
+            "2024-04-22"
+          ],
+          "settlement_date": [
+            "2024-03-08",
+            "2024-05-23"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "12f5317101115e06f02b394ea499532eb172f179f19dcddfd61d3866ae1f7ef2"
+    },
+    {
+      "fit_identity": "5e5710d809b9504cedcaf5b950d0772468e53ba1d043b360fa3c3bbea7039da4",
+      "checkpoint": "e3538aebe8cef59a5caf8752683f883187408773aedfbaa5b40c29bd8e8d5121",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/2/pooled/fit",
+      "parameters": 19016,
+      "best_epochs": [
+        27
+      ],
+      "total_epochs": [
+        47
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/2/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "50c1ad0e64afe86e2c706e21292024ccc986f87dc5889725b73b78027097fec0",
+        "model/state.json": "0b00153a3feb7c3db0f8b4765a288bcb4b9a59eb77163e89a917a123aa4bf682",
+        "model/weights.pt": "7ae70a8f97dab294600e7fff0e7dd4dd2f02d9453036758975ce5fd24749f967"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 2,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 378,
+      "band_counts": [
+        342724,
+        15104,
+        11299
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2023-11-03"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2023-12-04"
+          ]
+        },
+        {
+          "quote_date": [
+            "2023-12-05",
+            "2024-03-22"
+          ],
+          "settlement_date": [
+            "2024-01-05",
+            "2024-04-22"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-04-23",
+            "2024-07-08"
+          ],
+          "settlement_date": [
+            "2024-05-24",
+            "2024-08-08"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "14559e5700ce9bf3f2a8d8fe3ff286d744463d11dcc3e7460ec3f4b00041a151"
+    },
+    {
+      "fit_identity": "7d795ea3807328cbffea9906635d1edb50643281536ce7b9668e2e69c97443fd",
+      "checkpoint": "0464ef388c282ed032ab716f4862aff80bb18c283f3279b1d0db3da5a05295ae",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/3/pooled/fit",
+      "parameters": 19070,
+      "best_epochs": [
+        28
+      ],
+      "total_epochs": [
+        48
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/3/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "7402805e4ce3a376a916a6bcf28618049131d6ad90e077527d1d93e97f1d74ed",
+        "model/state.json": "4f71791d34a1d5024f179d285a9b9ebd156f4d25cad10e70d1f61d79250b4b48",
+        "model/weights.pt": "2ead568475556275de1d58a6462fe9d656a9bb8f19713e20a6a035d8b7fd13d3"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 3,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 380,
+      "band_counts": [
+        354225,
+        15119,
+        11366
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-01-23"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-02-23"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-02-26",
+            "2024-06-07"
+          ],
+          "settlement_date": [
+            "2024-03-28",
+            "2024-07-08"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-07-09",
+            "2024-09-20"
+          ],
+          "settlement_date": [
+            "2024-08-09",
+            "2024-10-21"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "d9b72d29803213049a2a7901ad40307dca3ac754f43b1ab1e5040cbbf2aee51c"
+    },
+    {
+      "fit_identity": "e71bf5fea66435bf27b739a85bf5070f805ae40861b2e47c9437b9557671abca",
+      "checkpoint": "74392cb2484a9790e0a3c1cbe66d82bbd079e7c4af7b3a55b353ac7d7bccf636",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/4/pooled/fit",
+      "parameters": 19124,
+      "best_epochs": [
+        40
+      ],
+      "total_epochs": [
+        60
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/4/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "c8032df17246b4b244baa778fc334389f52664b2f143b74f3ee9f36313a76bd4",
+        "model/state.json": "52da0239164f32881cae814af70fb3ce996e44de385d03226e3255a0f384e0d9",
+        "model/weights.pt": "a02bbaa4d6a2a2297b1a2345ce8eb73c6763d84d2376a773494e6fa9ae6102c7"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 4,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 382,
+      "band_counts": [
+        366209,
+        15195,
+        11444
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-04-12"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-05-13"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-05-14",
+            "2024-08-20"
+          ],
+          "settlement_date": [
+            "2024-06-14",
+            "2024-09-20"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-09-23",
+            "2024-12-02"
+          ],
+          "settlement_date": [
+            "2024-10-24",
+            "2025-01-02"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "eb243438de40630b19eb92326146d3ead0ac23989ad61e3591c5bd224ce87faf"
+    },
+    {
+      "fit_identity": "5c80351354606460044090a08bf36fe09c7723f5e5b621f81a2ef481f752ef81",
+      "checkpoint": "bfd4846919790e707bc81157078cd9db39b93237c8102624c1b852d09dea5cae",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/5/pooled/fit",
+      "parameters": 19151,
+      "best_epochs": [
+        26
+      ],
+      "total_epochs": [
+        46
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/5/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "a8998969fba0c04cbeadaa0a57d4aa607ed54432c3f5294b0706b8d986982a37",
+        "model/state.json": "ded0e003c06fa5eb812e3c7fe028f54b59da54d8fb728cd816cf0390cbe560a3",
+        "model/weights.pt": "ca0b5d5763fa4616b53022853651c1e9dc95094a4de2059c5598a3fb641d6b72"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 5,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 383,
+      "band_counts": [
+        377225,
+        15271,
+        11452
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-06-24"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-07-25"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-07-26",
+            "2024-11-01"
+          ],
+          "settlement_date": [
+            "2024-08-26",
+            "2024-12-02"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-12-03",
+            "2025-02-21"
+          ],
+          "settlement_date": [
+            "2025-01-03",
+            "2025-03-24"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "f26d94ba11a2a75807e2da5a588f45dbb85cd6e8910cb71ac19fb215a8cb5e5b"
+    },
+    {
+      "fit_identity": "6b8c1d55bccb8d265d674671781c7b9a3a8ff31632e1d1e8cadb7c2dfa35f360",
+      "checkpoint": "e36089c4bfc2f5bf2ecc358c26f05a058596f5b11deae922e817b8a5a0faec64",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/6/pooled/fit",
+      "parameters": 19286,
+      "best_epochs": [
+        62
+      ],
+      "total_epochs": [
+        82
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/6/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "a00e0301db6e81c0b0ef9b10f4bb6fade3b7fa18f313e5f22da498d0d1f0a181",
+        "model/state.json": "55f647f213c71bee7d90108157d8c3da69b2b8bd967fd2b19e24ab602b6f2b34",
+        "model/weights.pt": "920a222889ebf14a1a8668c485f55fb64fe7671c5d9ffbb1129946408f687e70"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 6,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 388,
+      "band_counts": [
+        388280,
+        15480,
+        11587
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-09-09"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-10-10"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-10-11",
+            "2025-01-21"
+          ],
+          "settlement_date": [
+            "2024-11-11",
+            "2025-02-21"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-02-24",
+            "2025-05-09"
+          ],
+          "settlement_date": [
+            "2025-03-27",
+            "2025-06-09"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "5b8fb426ce09c230dd0215a065d2a9d836df60c46317c1d395ed4b392cf513d9"
+    },
+    {
+      "fit_identity": "5fe807b3fea94550697eaa21d8f8d4719387d4757f9d9a0de0f445b3087ae502",
+      "checkpoint": "c14429439ec135c77adc180031c23d670619f9efb2f096f185f97ba13091cf41",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/7/pooled/fit",
+      "parameters": 19340,
+      "best_epochs": [
+        19
+      ],
+      "total_epochs": [
+        39
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/7/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "08b0e0258437661b31fdd8cd206cb39c301a79cafd554e38c1b835029f8669d2",
+        "model/state.json": "23dc122107301462373f66a124002c5577caeff5b2b3dd31280b7b7d25a08840",
+        "model/weights.pt": "b26b90ccfd7c95f353e277870a29ddcc4d8366e539fc433b4be620011b3354ff"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 7,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 390,
+      "band_counts": [
+        400808,
+        15517,
+        11652
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2024-11-26"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2024-12-27"
+          ]
+        },
+        {
+          "quote_date": [
+            "2024-12-30",
+            "2025-04-08"
+          ],
+          "settlement_date": [
+            "2025-01-30",
+            "2025-05-09"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-05-12",
+            "2025-07-28"
+          ],
+          "settlement_date": [
+            "2025-06-12",
+            "2025-08-28"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "752d5f49d6d97e32e55969dc6029a758979192d7ec6b3331bd99e449c9b420ce"
+    },
+    {
+      "fit_identity": "4d820e96599c274ab6e6712064d11a19da619ead36f8feebe4bff974e5b3fd98",
+      "checkpoint": "14812c9e757abf46b5414c1cd862dcd99cf2a3dc31bde79068b2e71e1907377e",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/8/pooled/fit",
+      "parameters": 19394,
+      "best_epochs": [
+        31
+      ],
+      "total_epochs": [
+        51
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/8/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "20c7d5521a8c14fa3f99b4a3c8ecc4979fe371df94535b9fb1f2bf1e12df8ee8",
+        "model/state.json": "43aaca0566b44bfd8590e9f898ab9f8075e13c92fec632a26994b8cb46304785",
+        "model/weights.pt": "99107ff82336b3879c6f969e31f9e76a0491c8d583c42f0da74c019f0b330788"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 8,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 392,
+      "band_counts": [
+        413898,
+        15545,
+        11729
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2025-02-10"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2025-03-13"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-03-14",
+            "2025-06-27"
+          ],
+          "settlement_date": [
+            "2025-04-14",
+            "2025-07-28"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-07-29",
+            "2025-10-10"
+          ],
+          "settlement_date": [
+            "2025-08-29",
+            "2025-11-10"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "441ddd6f5966f93b99679c9e656442bee32cf59ca6bd00bf18115e511a766ac0"
+    },
+    {
+      "fit_identity": "9738189f5b8fcb7e94ca31aafb8e14eb30dfeff2db8cfff344d589038b1b6852",
+      "checkpoint": "068089f1afd49480ea3794520debad82fdc76b8d419a0b028e170b32d0b4fc64",
+      "fit_root": "/home/russell/data/index_options/ob/raw/universe-evaluation-runs-20261008/20261008T202544Z-backfill-28ec35cd/payload/files/seed47/pooled/base/PatchTST32/9/pooled/fit",
+      "parameters": 19340,
+      "best_epochs": [
+        29
+      ],
+      "total_epochs": [
+        49
+      ],
+      "backup_fit_root": "/home/russell/data/backups/index_options/production-universe-rerun-20261008/evaluation-complete/recovery/runs/evaluation/seed47/pooled/base/PatchTST32/9/pooled/fit",
+      "files_sha256": {
+        "metadata.json": "9fbff553d29e0e8f6e045cdb2b1b7b9e77e07e05834a29d8b1ef12db57aec8b7",
+        "model/state.json": "8a39a4097b9cc17b1d22225b24904a84fcdcd66dc185ca4b1636d2eaac693d72",
+        "model/weights.pt": "9aa2542cb90608483e279cf5abfe769eeb67cb15d9590f644032ac8caaa7397e"
+      },
+      "occurrences": [
+        {
+          "stage": "evaluation",
+          "arm": "base",
+          "trial": null,
+          "seed": 47,
+          "fold": 9,
+          "reused": false
+        }
+      ],
+      "feature_count": 42,
+      "head_count": 390,
+      "band_counts": [
+        423197,
+        15566,
+        7390
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "1997-06-17",
+            "2025-04-29"
+          ],
+          "settlement_date": [
+            "1997-07-18",
+            "2025-05-30"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-06-02",
+            "2025-09-09"
+          ],
+          "settlement_date": [
+            "2025-07-03",
+            "2025-10-10"
+          ]
+        },
+        {
+          "quote_date": [
+            "2025-10-13",
+            "2025-11-28"
+          ],
+          "settlement_date": [
+            "2025-11-13",
+            "2025-12-29"
+          ]
+        }
+      ],
+      "input_contract": "metadata.json owns ordered features, training medians and groups; model/state.json owns saved scaler/mask/settings. Use the archived verified recovery recipe; no inference from weights alone.",
+      "complete_sha256": "4e47894a014cda3d0d38eeae4f9dcebe3c99ae370b73e112ca3a20322ff9f4b3"
     }
   ],
   "source_result_hashes": {
     "production-feature-results-v2.json": "2689d628e3860b43540f99ca510ec6421a9a154830d294d35a27c538a52aa3c2",
     "production-hpo-results-v1.json": "3c6953351bc6e3a941813ac4a6d3a1d8eec95ee4bb77845e0a8b17cf26f80a64",
-    "production-confirmation-results-v1.json": "184e9f1ae204fdb54739b4ea5013c05aff95ed83dcaf2bae54b786b684da5655"
-  }
+    "production-confirmation-results-v1.json": "184e9f1ae204fdb54739b4ea5013c05aff95ed83dcaf2bae54b786b684da5655",
+    "production-evaluation-results-v1.json": "97c1f213b94c5725b395f1d4662694a07d09dfb150292b1080da57f1abf34a91"
+  },
+  "unique_fit_count": 66,
+  "hpo_reuse_reference_count": 3,
+  "evaluation_artifact_source": {
+    "source": "universe-evaluation-runs-20261008",
+    "stream": "files",
+    "snapshot": "20261008T202544Z-backfill-28ec35cd",
+    "manifest_sha256": "28ec35cd67c7ae044a614ae20e23b6e52f538f5d4e40c701002fc5e62dc7e5b6"
+  },
+  "evaluation_recovery_sha256": "90bd47449fbea8cc86d73eb54f6d11ae8cd02c97105928b55a60d6d1925e2dec"
 }
