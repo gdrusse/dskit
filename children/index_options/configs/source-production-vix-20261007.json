@@ -1,0 +1,13 @@
+{
+  "path": "/home/russell/data/index_options/production-development-audit-20261007/vix-projected-winners-v2",
+  "layout": "file",
+  "effective_field": "date",
+  "effective_unit": "iso",
+  "streams": [
+    "index_daily"
+  ],
+  "formats": [
+    "jsonl"
+  ],
+  "notes": "Immutable derived source: protected original VIX revisions deduplicated by existing scan_stream; source recipe, clocks, hashes and zero-member counts retained in audit. New acquisition time is not historical availability."
+}

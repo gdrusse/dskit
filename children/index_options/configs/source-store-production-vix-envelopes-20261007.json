@@ -1,0 +1,9 @@
+{
+  "path": "/home/russell/data/index_options/production-development-audit-20261007/vix-protected-envelope-tree-v2",
+  "as_of": "2026-10-08T01:19:00+00:00",
+  "stream": "files",
+  "include": [
+    "observations/*/*/index_daily.jsonl"
+  ],
+  "notes": "Owned pre2026 VIX envelopes, original acquisition clocks and all admitted revisions preserved; pins in private v2 projection receipt. Local acquisition only; historical publication availability remains an explicit research assumption."
+}

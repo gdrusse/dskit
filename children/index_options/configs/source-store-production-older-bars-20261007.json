@@ -1,0 +1,9 @@
+{
+  "path": "/home/russell/data/index_options/production-development-20261007/inputs/older-bars",
+  "as_of": "2026-10-08T01:19:00+00:00",
+  "stream": "files",
+  "include": [
+    "*/underlying_prices.parquet"
+  ],
+  "notes": "AMZN bounded owned history, 1997-2025; exact normalized values from production-history-audit-20261007. Formatting only; no MSFT unknown-action history admitted."
+}
