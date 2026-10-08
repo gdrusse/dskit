@@ -1,0 +1,9 @@
+{
+  "path": "/home/russell/data/index_options/production-universe-rerun-20261008/inputs/older-bars",
+  "as_of": "2026-10-08T13:52:22+00:00",
+  "stream": "files",
+  "include": [
+    "*/underlying_prices.parquet"
+  ],
+  "notes": "Owned MSFT5747pre2026 rows; missing split inventory explicitly unverified owner-accepted assumption. Consumed fields exact over2514overlap dates. Preserve string dates."
+}
