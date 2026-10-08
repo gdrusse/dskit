@@ -229,6 +229,15 @@ def test_each_edge_is_clipped_before_a_between_band_combines_them():
     assert row["dig_upper"] == pytest.approx(0.95)
 
 
+def test_a_refusal_row_names_the_quote_by_its_declared_chain_columns():
+    quotes = [{**q, "und": "X", "exp": 20261016} for q in HAND] + [
+        {"und": "X", "exp": 20261016, "right": "C", "strike": 105, "bid": 1.3, "ask": 1.2}]
+    params = {"chain_fields": ["und", "exp"], "quote_chain_fields": ["und", "exp"]}
+    rows = [{"payoff": "above", "lo": 100.0, "und": "X", "exp": 20261016}]
+    refused = [r for r in run(rows, quotes, **params)["refusals"] if r["strike"] == 105]
+    assert refused and all(r["chain"] == ["X", 20261016] and r["right"] == "C" for r in refused)
+
+
 def test_a_strike_and_right_listed_twice_is_refused_both_times_by_name():
     quotes = list(HAND) + [quote("C", 100, 4.1, 4.3)]
     out = run([contract("above", lo=100.0)], quotes)

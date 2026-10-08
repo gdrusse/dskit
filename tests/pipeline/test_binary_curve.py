@@ -222,6 +222,16 @@ class _Liar(str):
         return "P"
 
 
+class _LyingInt(int):
+    """An int subclass whose own ``__index__`` and ``__int__`` lie: the key is its value, never theirs."""
+
+    def __index__(self):
+        return 9
+
+    def __int__(self):
+        return 9
+
+
 class Three(enum.IntEnum):
     THREE = 3
 
@@ -237,10 +247,11 @@ except ImportError:  # pragma: no cover - pandas is optional
 SPEC = [
     ("C", np.str_("C"), "same"), ("C", _Right.C, "same"), (_LyingRight.C, "C", "same"), (_Liar("C"), "C", "same"),
     (7, np.int64(7), "same"), (3, Three.THREE, "same"), (np.int32(5), np.uint8(5), "same"),
-    (10 ** 40, 10 ** 40, "same"),
+    (10 ** 40, 10 ** 40, "same"), (_LyingInt(3), 3, "same"), (" ", " ", "same"),
     (1, "1", "different"), (_LyingRight.C, "P", "different"), (_Liar("C"), "P", "different"), ("a", "A", "different"),
     ("é", "é", "different"),   # NFC vs NFD: pinned DIFFERENT, no Unicode normalisation
-    (10 ** 40, 10 ** 40 + 1, "different"),
+    (10 ** 40, 10 ** 40 + 1, "different"), (_LyingInt(3), 9, "different"),
+    ("C ", "C", "different"), (" C", "C", "different"),   # read by its characters: no stripping
     (True, 1, "refused"), (np.bool_(True), 1, "refused"), (False, 0, "refused"), (1.0, 1, "refused"),
     (float("nan"), "nan", "refused"), (-0.0, 0, "refused"), (np.float64(2.0), 2, "refused"),
     (Decimal("1"), 1, "refused"), (["X"], "X", "refused"), (("X",), "X", "refused"), ({"k": 1}, "k", "refused"),
@@ -350,6 +361,9 @@ def test_a_fair_field_that_would_overwrite_a_key_column_is_refused():
 
 @pytest.mark.parametrize("bad, needle", [
     ({"curve_key_fields": "curve"}, "curve_key_fields"), ({"curve_id_fields": []}, "curve_id_fields"),
+    # equal-length sides, so only the list's own rule can refuse them (a length mismatch would mask it)
+    ({"curve_key_fields": [], "curve_id_fields": []}, "non-empty list"),
+    ({"curve_key_fields": ["a", ""], "curve_id_fields": ["x", "y"]}, "non-empty list"),
     ({"curve_key_fields": ["a", "b"]}, "same number"), ({"curve_id_fields": ["id", ""]}, "curve_id_fields"),
     ({"curve_key_fields": ["a", "a"], "curve_id_fields": ["x", "y"]}, "more than once"),
     ({"curve_key_field": "curve"}, "unknown")])
