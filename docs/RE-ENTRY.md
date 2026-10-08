@@ -117260,3 +117260,9 @@ Reviewed file SHA256 identities (unchanged by this evidence-only append):
 - docs/architecture/decision-log.md: d7b56b7dfdfb85e6ece1793f8b3d1a59a650cb78dcb75c9cf44c63178f7d2b45
 - children/index_options/configs/run-equity-condor-robust-backtest.json: 434a5590bd5d718eda024b4fd0444d558224ab0fbeed7973cb1041a99aeb3bc2
 - children/index_options/tests/test_configs.py: 4b2175c9cf9e920ac2c5216128c770cb930912a427a3b93c20cd564bf57af497
+
+### Owner-requested dual formulation memo
+
+The [dual memo](../children/index_options/docs/memos/2026-10-08-robust-condor-dual.md) publishes the reviewed primal, dual derivation, full MILP embedding, units and no-trade rule. Documentation only; ADR/config blobs remain byte-identical to reviewed3f8ea439. Owner explicitly requested this new memo and publication. No main merge, solver implementation/execution, data copying or fitting.
+
+Focused exact-manifest check initially failed on15 already-published ADR0254 files (confirmed in origin/main). Explicitly listed them plus the new memo; no ignore/assertion weakening. The one focused manifest/parity test now passes; memo relative links and diff check pass. New memo math and publication-integration review pending; earlier design review remains intact.
