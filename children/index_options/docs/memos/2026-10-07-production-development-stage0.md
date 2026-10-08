@@ -505,3 +505,43 @@ clean software reviews; no code, tests, configurations or behavioral contracts
 changed. Full-suite and fit counts remain zero for this follow-up. The broader
 H1/C1/S1 prerequisites and complete R1 package recovery remain open; all 216
 fit attempts remain. No new champion/reserve or uncertainty radius exists.
+
+
+## Continuing prerequisites: bounded JSON projection packet
+
+Base 38d2fba5; the owner requested continuation without repeating authorization.
+Independent /root/prerequisite_path_review (GPT-6) clarified that the fixed
+393-name retrospective development cohort is permissible when explicitly
+disclosed; a historically known universe is required for later independent
+qualification. S1 requires internally consistent rebasing plus owned action
+evidence, not necessarily two independently captured vendor vintages. Research
+publication clocks can be explicit conservative assumptions, never observed
+historical timestamps. R1 concerns the candidate dependency closure, and U1
+allows an uncalibrated radius with abstention. These distinctions do not waive
+protected reads, split/volume accounting or paired coverage before fitting.
+
+The review found three remaining Major families before fits: unprotected JSON
+auxiliary reads, absolute log-volume rebasing, and incomplete source coverage.
+The starting base bundle includes volume inputs; its accounting must be fixed
+before the full authorized five-bundle comparison, not silently dropped.
+No new fit or source-policy change is made by this implementation packet.
+
+ADR-0250 adds one reusable JsonSQLProjection helper in the existing localtables
+module. Trusted JSON recipes supply SELECT/check queries and scalar bindings;
+SQLite parses opaque bytes internally, and Python receives projected fields.
+Strict JSON/duplicate-member checks, read-only SQL authorization, reserved
+document binding, exact check-result shape and payload-free refusals apply.
+The helper itself does not recognize time policy: source-specific recipes need
+separate sentinel/schema validation before real conversion and must publish
+derived inputs through existing onboarding. Legacy source paths are unchanged.
+
+Phase-0 reviewer /root/prerequisite_path_review (GPT-6): Critical 0, Major 0,
+Minor 2, Nit 0; both clarifications adopted (reserved document binding and
+one-row/one-column SQLite integer 1 checks). RED on unchanged code reproduced
+a forbidden synthetic payload entering Python's JSON decoder before legacy
+post-read filtering. The new helper passed 34 focused projection cases; full
+localtables compatibility plus onboarding purity total 71 passed. Ruff passed.
+An initial GREEN attempt caught six check-error-message mismatches because
+AssetError derives from ValueError; preserving AssetError fixed the family.
+No real raw archive conversion or training is counted here. Two fresh final
+lenses remain required before this helper is declared ready.

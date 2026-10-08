@@ -151,7 +151,7 @@ dskit/onboarding/
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file (ADR-0225)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
-│   ├── localtables.py parquet / newline-JSON tables + abstract PinnedArchiveConnector
+│   ├── localtables.py parquet / newline-JSON tables, PinnedArchiveConnector, JsonSQLProjection
 │   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain, sha256-pinned (pyarrow inside verbs, ADR-0182)
 │   ├── polymarket.py  Polymarket Gamma/CLOB REST + pmxt HF hour archive (stdlib urllib; hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
@@ -169,3 +169,9 @@ ADR-0213: AlpacaOptionArchiveConnector and YahooChartArchiveConnector read
 SHA-256-pinned local files through PinnedArchiveConnector. No provider access.
 Contracts, daily trade bars and indicative snapshots remain separate streams.
 See children/stock_options/docs/plans/README.md for the tested JSON workflow.
+
+ADR-0250: JsonSQLProjection in localtables projects opaque JSON with trusted
+read-only SQLite queries before Python records. Queries/checks/bindings are
+configuration; document is reserved. Recipes own time policy and schema checks.
+Legacy readers are unchanged; publish protected derived slices through existing
+onboarding before downstream use. Internal SQL decoding is not physical isolation.
