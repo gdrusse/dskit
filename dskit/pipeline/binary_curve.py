@@ -28,25 +28,32 @@ Import cost: stdlib only.
 """
 
 import math
+import numbers
+import operator
 from bisect import bisect_left
 from collections import Counter
 
 from dskit.pipeline.binary_pricing import PAYOFFS, STATUS_SUFFIX
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
-from dskit.pipeline.trust import _canonical_bytes
 
 __all__ = [
     "AXES",
     "AXIS_LEVEL",
     "AXIS_LOG_RETURN",
+    "KEY_MISSING",
     "STATUSES",
     "STATUS_OK",
     "STATUS_SUFFIX",
     "CurveBinaryFairValue",
     "CurveSurvival",
-    "canonical_key",
+    "fields_key",
+    "key_fields_problems",
+    "row_key",
 ]
+
+#: The problem :func:`row_key` reports for a cell that names nothing: ``None``, absent, or ``""``.
+KEY_MISSING = "missing"
 
 #: The two abscissa conventions a curve's knots may be on.
 AXIS_LEVEL = "level"
@@ -196,6 +203,10 @@ class CurveBinaryFairValue(Node):
     and the same column trio, with the survival function read off a curve instead of a law.
     Inputs: ``records``, the contract rows (payoff name, bounds, the curve key); and ``curves``,
     one row per curve with its id, knots and (for a ``log_return`` axis) its reference level.
+    Keys are matched column by column through :func:`row_key` (str and non-bool int scalars; ``1``
+    and ``"1"`` differ): a contract whose key has a missing cell (None, absent or ``""``) is
+    ``no_curve``, one with a refused cell ``bad_curve_key``; a curve row whose id has a missing cell
+    is never read, and a refused cell or a repeated id is an input problem.
     Outputs: ``records``, every row with ``<fair_field>`` (P(YES), or None) and
     ``<fair_field>_status`` (one of :data:`STATUSES`); and ``census``,
     ``{"rows", "priced", "by_status"}``.
@@ -203,9 +214,10 @@ class CurveBinaryFairValue(Node):
     Parameters
     ----------
     params : dict
-        REQUIRED: ``payoff_field``, ``lower_field``, ``upper_field``, ``curve_key_field`` (on a
-        contract row), ``curve_id_field``, ``values_field``, ``probabilities_field`` (on a curve
-        row), ``axis`` (one of :data:`AXES`) and ``fair_field`` (the output column).
+        REQUIRED: ``payoff_field``, ``lower_field``, ``upper_field``, ``curve_key_fields`` (a
+        list of columns on a contract row), ``curve_id_fields`` (the same number of columns on a
+        curve row, matched in order), ``values_field``, ``probabilities_field`` (on a curve row),
+        ``axis`` (one of :data:`AXES`) and ``fair_field`` (the output column).
         ``reference_field`` (the curve row's reference level) is required for a ``log_return``
         axis and refused for ``level``. OPTIONAL ``eligible_field``: a curve row whose value
         there is not ``True`` prices nothing (``ineligible_curve``).
@@ -216,7 +228,7 @@ class CurveBinaryFairValue(Node):
 
         node = CurveBinaryFairValue("fair", {
             "payoff_field": "payoff", "lower_field": "lo", "upper_field": "hi",
-            "curve_key_field": "snapshot", "curve_id_field": "snapshot",
+            "curve_key_fields": ["snapshot"], "curve_id_fields": ["snapshot"],
             "values_field": "log_returns", "probabilities_field": "probabilities",
             "axis": "log_return", "reference_field": "spot", "eligible_field": "eligible",
             "fair_field": "fair"})
@@ -226,9 +238,11 @@ class CurveBinaryFairValue(Node):
 
     role = "transform"
     outputs = ("records", "census")
-    _CONTRACT_FIELDS = ("payoff_field", "lower_field", "upper_field", "curve_key_field")
-    _CURVE_FIELDS = ("curve_id_field", "values_field", "probabilities_field")
-    _PARAMS = (*_CONTRACT_FIELDS, *_CURVE_FIELDS, "axis", "reference_field", "eligible_field", "fair_field")
+    _CONTRACT_FIELDS = ("payoff_field", "lower_field", "upper_field")
+    _CURVE_FIELDS = ("values_field", "probabilities_field")
+    _KEY_PARAMS = ("curve_key_fields", "curve_id_fields")
+    _PARAMS = (*_CONTRACT_FIELDS, *_KEY_PARAMS, *_CURVE_FIELDS, "axis", "reference_field", "eligible_field",
+               "fair_field")
 
     @classmethod
     def validate_params(cls, params):
@@ -249,6 +263,7 @@ class CurveBinaryFairValue(Node):
         for name in (*cls._CONTRACT_FIELDS, *cls._CURVE_FIELDS, "fair_field"):
             if not _name_ok(params.get(name)):
                 problems.append(f"{name} is required: a non-empty column name, got {params.get(name)!r}")
+        problems += key_fields_problems(params, *cls._KEY_PARAMS)
         axis = params.get("axis")
         if axis not in AXES:
             problems.append(f"axis is required: one of {AXES}, got {axis!r}")
@@ -268,7 +283,10 @@ class CurveBinaryFairValue(Node):
         if not _name_ok(name):
             return []
         outputs = {name, name + STATUS_SUFFIX}
-        clash = sorted(outputs & {params.get(k) for k in cls._CONTRACT_FIELDS if _name_ok(params.get(k))})
+        named = {params.get(k) for k in cls._CONTRACT_FIELDS if _name_ok(params.get(k))}
+        keys = params.get("curve_key_fields")
+        named |= {f for f in keys if _name_ok(f)} if isinstance(keys, list) else set()
+        clash = sorted(outputs & named)
         return [f"fair_field {name!r} writes {sorted(outputs)}, which would overwrite the input column(s) {clash}"
                 ] if clash else []
 
@@ -307,14 +325,18 @@ class CurveBinaryFairValue(Node):
                     for port in ("records", "curves") if not isinstance(inputs.get(port), list)]
         if problems:
             return problems
-        ids = [curve.get(self.params["curve_id_field"]) if isinstance(curve, dict) else None
-               for curve in inputs["curves"]]
-        keyed = [_key_or_problem(i) for i in ids]
-        problems = [f"curves[{n}] id cannot be a key: {why}" for n, (_, why) in enumerate(keyed) if why]
+        keyed = [self._curve_id(curve) if isinstance(curve, dict) else (None, "not a row")
+                 for curve in inputs["curves"]]
+        problems = [f"curves[{n}] id cannot be a key: {why}" for n, (_, why) in enumerate(keyed)
+                    if why not in (None, KEY_MISSING)]
         counts = Counter(key for key, why in keyed if not why)
-        repeated = sorted({key for key, why in keyed if not why and counts[key] > 1})
+        repeated = sorted({repr(key) for key, why in keyed if not why and counts[key] > 1})
         return problems + ([f"curves lists the id(s) {repeated} more than once: a contract could not say which "
                             "it reads"] if repeated else [])
+
+    def _curve_id(self, curve):
+        """Return ``(key, problem)`` of a curve row's id (:func:`fields_key`)."""
+        return fields_key(curve, self.params["curve_id_fields"])
 
     def _survival(self, curve):
         """Return ``(CurveSurvival, None)`` for a curve row, or ``(None, status)``."""
@@ -344,8 +366,11 @@ class CurveBinaryFairValue(Node):
     def _priced(self, row, curves):
         """Write the fair-value pair onto ``row`` (a copy)."""
         p, name = self.params, self.params["fair_field"]
-        key, why = _key_or_problem(row.get(p["curve_key_field"]))
-        survival, status = (None, "bad_curve_key") if why else curves.get(key, (None, "no_curve"))
+        key, why = fields_key(row, p["curve_key_fields"])
+        if why is None:
+            survival, status = curves.get(key, (None, "no_curve"))
+        else:
+            survival, status = None, ("no_curve" if why == KEY_MISSING else "bad_curve_key")
         if status is None:
             status = self._refusal(row, survival)
         fair = None
@@ -370,7 +395,7 @@ class CurveBinaryFairValue(Node):
         dict
             ``{"records": [...], "census": {...}}``, new row dicts in input order.
         """
-        keyed = ((_key_or_problem(curve.get(self.params["curve_id_field"]))[0], curve) for curve in inputs["curves"])
+        keyed = ((self._curve_id(curve)[0], curve) for curve in inputs["curves"])
         curves = {key: self._survival(curve) for key, curve in keyed if key is not None}
         records = [self._priced(dict(row), curves) for row in inputs["records"]]
         statuses = [row[self.params["fair_field"] + STATUS_SUFFIX] for row in records]
@@ -385,28 +410,26 @@ def _name_ok(value):
     return isinstance(value, str) and bool(value)
 
 
-def canonical_key(value):
-    """Return the canonical JSON TEXT of a cell used as an id or a chain key.
+def row_key(value):
+    """Return ``(key, problem)`` for one cell used as an id, a chain key or a right: exactly one is None.
 
     The one owner of "do these two cells name the same thing" for the binary-pricing nodes
-    (:class:`CurveBinaryFairValue` curve ids and contract keys, ``digital_bounds.DigitalBounds``
-    chain keys). The key is the text itself, rendered by the repo's canonical-JSON recipe (sorted
-    keys, compact separators, ASCII escapes, NaN refused), so two cells are one key exactly when
-    their JSON is byte-identical: ``1`` and ``True`` never coalesce by Python equality, a list and
-    a tuple of the same items are one key (a row read from JSON and the same row built in Python
-    agree), and ``["X"]`` is not the string ``"['X']"``.
+    (:class:`CurveBinaryFairValue` curve keys, ``digital_bounds.DigitalBounds`` chain keys and
+    rights, ``libs.binary_coherence.BinaryCoherence`` ids). A key is a SCALAR, nothing else:
 
-    Accepted, checked recursively: ``str`` (a subclass — ``numpy.str_``, a ``StrEnum`` — by its
-    characters, ``str.__str__``, never ``str(x)``, which spells a str enum ``'E.C'``); ``int``
-    that is not ``bool`` (a subclass by its value); ``bool``; ``None``; ``list`` and ``tuple``
-    (encoded alike); ``dict`` with ``str`` keys. A numpy scalar is converted by ``.item()`` and
-    checked again.
+    - a ``str``, read by its characters (``str.__str__``, never ``str(x)``, so ``numpy.str_`` and a
+      ``StrEnum`` whose ``__str__`` lies are the plain string they hold). No Unicode normalisation:
+      an NFC and an NFD spelling are two keys;
+    - a non-bool integer (``int`` and its subclasses such as ``IntEnum`` by ``int.__index__``,
+      numpy ints by ``operator.index``), read to a plain ``int`` of any size.
 
-    REFUSED by name: ``float`` of any value (``-0.0``, NaN and infinity too: ``1.0`` would key
-    apart from ``1``, and a pandas int column with a missing cell arrives as float), ``Decimal``,
-    sets, dates, datetimes and timestamps (use an ISO string key), ``bytes``, a ``dict`` with a
-    non-``str`` key (JSON would merge ``{1: ...}`` with ``{"1": ...}``), a container that holds
-    itself, and any other object.
+    The key is that plain ``str`` or ``int``, so ``1`` and ``"1"`` are DIFFERENT keys. A missing
+    cell is ``None`` (an absent column reads as ``None``) or the empty string, the CSV spelling of
+    nothing: ``problem`` is then :data:`KEY_MISSING`. Everything else is refused by name
+    (``problem`` starts ``"refused "``): ``bool`` and ``numpy.bool_``, every float (``-0.0``, NaN,
+    numpy floats), ``Decimal``, pandas ``NA``/``NaT``, lists, tuples, dicts, sets, bytes, dates and
+    any other object. A composite key is declared in config as a list of columns
+    (:func:`fields_key`), never carried in one cell.
 
     Parameters
     ----------
@@ -415,71 +438,106 @@ def canonical_key(value):
 
     Returns
     -------
-    str
-        The canonical JSON text, equal for two cells exactly when they name the same thing.
-
-    Raises
-    ------
-    ValueError
-        Naming the refused type when ``value`` holds anything above that is refused.
+    tuple
+        ``(key, None)`` with ``key`` a plain ``str`` or ``int``, or ``(None, problem)`` with
+        ``problem`` :data:`KEY_MISSING` or ``"refused <module>.<type> ..."``.
 
     Examples
     --------
-    A JSON list and a Python tuple are one chain; its printed form is not::
+    One key however it is spelled, and never across types::
 
-        canonical_key(["X", 1]) == canonical_key(("X", 1))   # True
-        canonical_key(["X"]) == canonical_key("['X']")       # False
-        canonical_key(1) == canonical_key(True)              # False
-        canonical_key(1.0)
-        # -> ValueError: a key cannot hold a float (1.0) ...
+        row_key(numpy.int64(7)) == row_key(7)      # True: (7, None)
+        row_key("1") == row_key(1)                 # False
+        row_key("")
+        # -> (None, 'missing')
+        row_key(True)
+        # -> (None, "refused builtins.bool (True): a key is a non-empty str or a non-bool int")
     """
-    return _canonical_bytes(_plain(value, frozenset())).decode("ascii")
-
-
-def _plain(value, ancestors):
-    """``value`` as plain JSON types for :func:`canonical_key`, or a ValueError naming what is refused."""
-    kind = type(value)
-    if kind.__module__ == "numpy" and getattr(value, "shape", None) == () and kind.__name__ not in _NUMPY_TIMES:
-        return _plain(value.item(), ancestors)
-    if value is None or kind is bool:
-        return value
+    if value is None:
+        return None, KEY_MISSING
     if isinstance(value, str):
-        return str.__str__(value)
-    if isinstance(value, int) and not isinstance(value, bool):
-        return int.__index__(value)
-    if isinstance(value, (list, tuple, dict)):
-        if id(value) in ancestors:
-            raise ValueError(f"a key cannot hold a {kind.__qualname__} that contains itself")
-        inner = ancestors | {id(value)}
-        if isinstance(value, dict):
-            return _plain_mapping(value, inner)
-        return [_plain(item, inner) for item in value]
-    raise ValueError(f"a key cannot hold a {kind.__module__}.{kind.__qualname__} ({value!r}): keys are str, "
-                     "int, bool, None, lists and str-keyed dicts (a float never; a date or timestamp as an ISO "
-                     "string)")
+        text = str.__str__(value)
+        return (text, None) if text else (None, KEY_MISSING)
+    if isinstance(value, bool):
+        pass                                        # refused below, never the int it subclasses
+    elif isinstance(value, int):
+        return int.__index__(value), None           # an int subclass by its value, never its own __index__
+    elif isinstance(value, numbers.Integral):       # numpy ints (numpy.bool_ is not Integral)
+        try:
+            return int.__index__(operator.index(value)), None
+        except TypeError:
+            pass
+    kind = type(value)
+    return None, (f"refused {kind.__module__}.{kind.__qualname__} ({value!r}): a key is a non-empty str or a "
+                  "non-bool int")
 
 
-def _plain_mapping(value, inner):
-    """Return a str-keyed dict as plain JSON types; refuse a non-str or repeated key."""
-    plain = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise ValueError(f"a key cannot hold a dict key {key!r} of type {type(key).__qualname__}: JSON would "
-                             "merge it with its string spelling")
-        text = str.__str__(key)
-        if text in plain:
-            raise ValueError(f"a key cannot hold a dict that names the dict key {text!r} twice")
-        plain[text] = _plain(item, inner)
-    return plain
+def fields_key(row, fields):
+    """Return ``(key, problem)`` for the composite key a row's ``fields`` spell, each read by :func:`row_key`.
+
+    Parameters
+    ----------
+    row : dict
+        The row; an absent column reads as missing.
+    fields : sequence of str
+        The key's columns, in the order the other side declares its own.
+
+    Returns
+    -------
+    tuple
+        ``(tuple of keys, None)``, or ``(None, problem)``: the first refused cell's problem (named
+        with its column) when any cell is refused — a refusal wins over a missing cell, since it is a
+        defect in the data, not an absence — else :data:`KEY_MISSING` when any is missing.
+
+    Examples
+    --------
+    A chain named by its underlying and its expiry::
+
+        fields_key({"root": "X", "expiry": "2026-10-16"}, ["root", "expiry"])
+        # -> (('X', '2026-10-16'), None)
+    """
+    keys, missing = [], False
+    for field in fields:
+        key, problem = row_key(row.get(field))
+        if problem == KEY_MISSING:
+            missing = True
+        elif problem is not None:
+            return None, f"column {field!r} {problem}"
+        keys.append(key)
+    return (None, KEY_MISSING) if missing else (tuple(keys), None)
 
 
-def _key_or_problem(value):
-    """Return ``(canonical_key(value), None)``, or ``(None, why)`` when the cell cannot be a key."""
-    try:
-        return canonical_key(value), None
-    except ValueError as exc:
-        return None, str(exc)
+def key_fields_problems(params, left, right):
+    """List what is wrong with two params naming the columns of one composite key, one list per side.
 
+    Parameters
+    ----------
+    params : dict
+        The node's params.
+    left, right : str
+        The two params' names; each must be a non-empty list of distinct, non-empty column names,
+        and the two the same length (column ``i`` on one side is matched with column ``i`` on the other).
 
-#: numpy scalar types whose ``.item()`` would turn an instant into a bare int: refused, never converted.
-_NUMPY_TIMES = ("datetime64", "timedelta64")
+    Returns
+    -------
+    list of str
+        Every problem found, empty when none.
+
+    Examples
+    --------
+    Two sides of different lengths cannot be matched::
+
+        key_fields_problems({"a": ["x"], "b": ["x", "y"]}, "a", "b")
+        # -> ['a and b must list the same number of columns, got 1 and 2']
+    """
+    problems = []
+    for name in (left, right):
+        value = params.get(name)
+        if not (isinstance(value, list) and value and all(_name_ok(f) for f in value)):
+            problems.append(f"{name} is required: a non-empty list of non-empty column names, got {value!r}")
+        elif len(set(value)) != len(value):
+            problems.append(f"{name} lists a column more than once: {value!r}")
+    if not problems and len(params[left]) != len(params[right]):
+        problems.append(f"{left} and {right} must list the same number of columns, got {len(params[left])} and "
+                        f"{len(params[right])}")
+    return problems

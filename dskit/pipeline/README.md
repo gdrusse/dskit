@@ -731,9 +731,11 @@ they register only into private registries, never the default one.
   `solver` must name one that solves QPs, e.g. pyomo's `highs`, not `appsi_highs`).
   `CurveBinaryFairValue` reads curve rows keyed by one id column; `OptionCDFPanel`'s `cdfs` artifact needs an adapter
   step first. `DigitalBounds` reads quotes as forward prices unless `discount_field` is named.
-  Ids and chain keys match by `binary_curve.canonical_key`, a cell's canonical JSON text (a list and a tuple are
-  one key, `["X"]` is not `"['X']"`, `True` is not `1`); a float, Decimal, set, date or bytes key is refused by
-  name (`bad_chain_key` / `bad_curve_key`; use an ISO string for a date). Each `DigitalBounds` edge carries a
+  Ids, chain keys and rights match by `binary_curve.row_key`: a non-empty str or a non-bool int (`1` is not
+  `"1"`); None, an absent column or `""` is missing (`no_chain` / `no_curve`), and anything else (bool, float,
+  Decimal, list, tuple, dict, date, ...) is refused by name (`bad_chain_key` / `bad_curve_key`). A composite key
+  is a list of columns per side: `chain_fields` + `quote_chain_fields`, `curve_key_fields` + `curve_id_fields`,
+  matched in order. A nonzero price, strike or discount below `PRICE_FLOOR` is refused. Each `DigitalBounds` edge carries a
   proven float-error bound; an edge whose bound exceeds `EDGE_MAX_ERROR` is unusable and the next farther pair is
   tried, and `crossed_band` means a crossing beyond both edges' errors. `BinaryCoherence`'s `tolerance` gates only
   the feasible verdict (legs use `LEG_DUST`); an infeasible verdict with no profitable position raises.
@@ -898,8 +900,8 @@ dskit/pipeline/
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 ├── binary_pricing.py  fair value of a binary contract that settles on an average: AveragedLognormal law,
 │                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
-├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; canonical_key, the one id/chain key rule: canonical JSON text (by import path, ADR-0249)
-├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR) + quote_problems (by import path, ADR-0249)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0249)
+├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0249)
 ├── binary_decisions.py DecisionRows (one row per market x lead; I, E = I + lag, tau) + QuoteState (the
 │                      quote bar that ended by I, age-capped, never carried forward) + the shared binary-market
 │                      column names (by import path, ADR-0248)

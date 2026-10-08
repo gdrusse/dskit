@@ -82,8 +82,23 @@ disagree beyond their spreads, a parity violation) is reported as ``crossed_band
 
 Quotes. :func:`quote_problems` is the one owner of the quote rule (graduated from a child's
 contracts module, unchanged): nonnegative and uncrossed, a provider 0 on the side traded is no
-market, and a size must cover the count asked for. Every refused quote side is listed by name on
-the ``refusals`` output; a refused side is never used.
+market, and a size must cover the count asked for. This node adds ONE rule of its own, the proof's
+premise: a traded price, a strike or a discount factor whose magnitude is nonzero and below
+:data:`PRICE_FLOOR` is refused by name, because a subnormal input rounds with an ABSOLUTE error the
+relative bound above does not cover. Every refused quote side is listed by name on the
+``refusals`` output; a refused side is never used.
+
+Keys. A chain is named by the columns ``chain_fields`` (contract side) and ``quote_chain_fields``
+(quote side) list, matched in order; each cell is read by :func:`~dskit.pipeline.binary_curve.row_key`
+(a str or a non-bool int; ``1`` and ``"1"`` are different chains). A contract whose chain has a
+missing cell (None, absent or ``""``) is ``no_chain``, one with a refused cell ``bad_chain_key``; a
+quote with either is refused on both sides. The right column is read by the same rule
+(:meth:`DigitalBounds._right`).
+
+Accepted limit, cost. Each side tries the nearest usable pair first and falls back farther only
+when an edge is unusable, so a chain whose near pairs are all unusable costs ``O(n^2)`` pairs per
+strike side (``n`` listed strikes); every real chain stops at the first pair. Bands are memoised
+per strike.
 
 Import cost: stdlib only.
 """
@@ -93,7 +108,7 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from decimal import Decimal
 
-from dskit.pipeline.binary_curve import _key_or_problem, canonical_key
+from dskit.pipeline.binary_curve import KEY_MISSING, fields_key, key_fields_problems, row_key
 from dskit.pipeline.binary_pricing import PAYOFFS, STATUS_SUFFIX
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
@@ -102,6 +117,7 @@ __all__ = [
     "DEFAULT_MIN_SIZE",
     "EDGE_MAX_ERROR",
     "LOWER_SUFFIX",
+    "PRICE_FLOOR",
     "STATUSES",
     "STATUS_OK",
     "STATUS_SUFFIX",
@@ -121,6 +137,10 @@ STATUSES = (
 #: The largest proven float error an edge may carry and still be used (module docstring, "Float
 #: error, proved"). An edge whose bound exceeds it is unusable: the next farther pair is tried.
 EDGE_MAX_ERROR = 1e-9
+
+#: The smallest nonzero magnitude a traded price, a strike or a discount factor may have (module
+#: docstring, "Quotes"): far below any real price, far above the subnormal range the proof excludes.
+PRICE_FLOOR = 1e-12
 
 #: Suffixes of the columns written beside ``bound_field``.
 LOWER_SUFFIX = "_lower"
@@ -345,8 +365,9 @@ class DigitalBounds(Node):
     ----------
     params : dict
         REQUIRED column names: ``payoff_field``, ``lower_field``, ``upper_field`` and
-        ``chain_field`` on a contract row; ``quote_chain_field``, ``strike_field``,
-        ``right_field``, ``bid_field`` and ``ask_field`` on a quote row; ``call_value`` and
+        ``chain_fields`` (a list of columns) on a contract row; ``quote_chain_fields`` (the same
+        number of columns, matched in order), ``strike_field``, ``right_field``, ``bid_field`` and
+        ``ask_field`` on a quote row; ``call_value`` and
         ``put_value``, the two values ``right_field`` carries (distinct); ``bound_field``, the
         output prefix. OPTIONAL: ``discount_field`` (a quote's discount factor to expiry; absent
         means undiscounted), ``bid_size_field`` and ``ask_size_field`` (both or neither) with
@@ -358,7 +379,7 @@ class DigitalBounds(Node):
 
         node = DigitalBounds("bounds", {
             "payoff_field": "payoff", "lower_field": "lo", "upper_field": "hi",
-            "chain_field": "snapshot", "quote_chain_field": "snapshot", "strike_field": "strike",
+            "chain_fields": ["snapshot"], "quote_chain_fields": ["snapshot"], "strike_field": "strike",
             "right_field": "right", "call_value": "C", "put_value": "P", "bid_field": "bid",
             "ask_field": "ask", "bound_field": "digital"})
         out = node.run(ctx, {"records": contracts, "quotes": chain_quotes})
@@ -367,11 +388,12 @@ class DigitalBounds(Node):
 
     role = "transform"
     outputs = ("records", "refusals", "census")
-    _CONTRACT_FIELDS = ("payoff_field", "lower_field", "upper_field", "chain_field")
-    _QUOTE_FIELDS = ("quote_chain_field", "strike_field", "right_field", "bid_field", "ask_field")
+    _CONTRACT_FIELDS = ("payoff_field", "lower_field", "upper_field")
+    _QUOTE_FIELDS = ("strike_field", "right_field", "bid_field", "ask_field")
     _REQUIRED = (*_CONTRACT_FIELDS, *_QUOTE_FIELDS, "call_value", "put_value", "bound_field")
+    _KEY_PARAMS = ("chain_fields", "quote_chain_fields")
     _SIZE_FIELDS = ("bid_size_field", "ask_size_field")
-    _PARAMS = (*_REQUIRED, "discount_field", *_SIZE_FIELDS, "min_size")
+    _PARAMS = (*_REQUIRED, *_KEY_PARAMS, "discount_field", *_SIZE_FIELDS, "min_size")
 
     @classmethod
     def validate_params(cls, params):
@@ -392,6 +414,7 @@ class DigitalBounds(Node):
         for name in cls._REQUIRED:
             if not _name_ok(params.get(name)):
                 problems.append(f"{name} is required: a non-empty string, got {params.get(name)!r}")
+        problems += key_fields_problems(params, *cls._KEY_PARAMS)
         for name in ("discount_field", *cls._SIZE_FIELDS):
             if name in params and not _name_ok(params[name]):
                 problems.append(f"{name} must be a non-empty column name, got {params[name]!r}")
@@ -415,7 +438,10 @@ class DigitalBounds(Node):
         if not _name_ok(name):
             return []
         outputs = {name + LOWER_SUFFIX, name + UPPER_SUFFIX, name + STATUS_SUFFIX}
-        clash = sorted(outputs & {params.get(k) for k in cls._CONTRACT_FIELDS if _name_ok(params.get(k))})
+        named = {params.get(k) for k in cls._CONTRACT_FIELDS if _name_ok(params.get(k))}
+        chains = params.get("chain_fields")
+        named |= {f for f in chains if _name_ok(f)} if isinstance(chains, list) else set()
+        clash = sorted(outputs & named)
         return [f"bound_field {name!r} writes {sorted(outputs)}, which would overwrite the input column(s) {clash}"
                 ] if clash else []
 
@@ -462,13 +488,17 @@ class DigitalBounds(Node):
     def _right(self, quote):
         """Return ``"call"``, ``"put"`` or None: the right a quote's cell names, read by its characters.
 
-        The one reading of the right column (R1's key rule): ``numpy.str_("C")`` and a ``StrEnum``
-        whose value is ``"C"`` are ``"C"``; anything that is not a key, or not one of the two
-        declared values, is None.
+        The one reading of the right column, by :func:`~dskit.pipeline.binary_curve.row_key`:
+        ``numpy.str_("C")`` and a ``StrEnum`` whose value is ``"C"`` are ``"C"``; a missing or refused
+        cell, or one that is neither declared value, is None.
         """
-        p = self.params
-        key, _ = _key_or_problem(quote.get(p["right_field"]))
-        return {canonical_key(p["call_value"]): _CALL, canonical_key(p["put_value"]): _PUT}.get(key)
+        p = self.params    # a missing or refused cell's key is None, which neither declared value is
+        return {row_key(p["call_value"])[0]: _CALL, row_key(p["put_value"])[0]: _PUT}.get(
+            row_key(quote.get(p["right_field"]))[0])
+
+    def _chain(self, row, fields_param):
+        """Return ``(key, problem)`` of the chain a row's ``fields_param`` columns name."""
+        return fields_key(row, self.params[fields_param])
 
     def _row_problems(self, quote):
         """Problems that make a quote row unusable on both sides."""
@@ -479,32 +509,38 @@ class DigitalBounds(Node):
         if self._right(quote) is None:
             problems.append(f"right must be {p['call_value']!r} or {p['put_value']!r}, got "
                             f"{quote.get(p['right_field'])!r}")
-        chain = quote.get(p["quote_chain_field"])
-        why = "is missing" if chain is None else _key_or_problem(chain)[1]
+        why = self._chain(quote, "quote_chain_fields")[1]
         if why:
-            problems.append(f"chain key {why}")
+            problems.append(f"chain key {'is missing' if why == KEY_MISSING else why}")
         if "discount_field" in p and not price_ok(quote.get(p["discount_field"])):
             problems.append(f"discount factor must be a positive finite number, got {quote.get(p['discount_field'])!r}")
+        for name in ("strike_field", "discount_field"):
+            if name in p and _below_floor(quote.get(p[name])):
+                problems.append(f"{name[:-6]} {quote.get(p[name])!r} is below PRICE_FLOOR {PRICE_FLOOR}")
         return problems
 
     def _side_problems(self, quote, side):
         """Return what :func:`quote_problems` says about trading ``quote`` on ``side``."""
         p = self.params
         sized = "bid_size_field" in p
-        return quote_problems(quote.get(p["bid_field"]), quote.get(p["ask_field"]),
-                              quote.get(p["bid_size_field"]) if sized else 0,
-                              quote.get(p["ask_size_field"]) if sized else 0, self._count(), side)
+        problems = quote_problems(quote.get(p["bid_field"]), quote.get(p["ask_field"]),
+                                  quote.get(p["bid_size_field"]) if sized else 0,
+                                  quote.get(p["ask_size_field"]) if sized else 0, self._count(), side)
+        price = quote.get(p["bid_field" if side == _SELL else "ask_field"])
+        if not problems and _below_floor(price):
+            problems.append(f"{'bid' if side == _SELL else 'ask'} {price!r} is below PRICE_FLOOR {PRICE_FLOOR}")
+        return problems
 
     def _quote_key(self, quote):
         """Return the key two listings of one strike and right share (``100`` and ``100.0`` are one strike)."""
         p = self.params
-        return canonical_key(quote[p["quote_chain_field"]]), self._right(quote), float(quote[p["strike_field"]])
+        return self._chain(quote, "quote_chain_fields")[0], self._right(quote), float(quote[p["strike_field"]])
 
     def _file(self, quote, chains, base):
         """File a usable quote's sides into its chain; return a refusal row per side it cannot trade."""
         p = self.params
         discount = float(quote[p["discount_field"]]) if "discount_field" in p else None
-        chain = chains.setdefault(canonical_key(quote[p["quote_chain_field"]]), _Chain())
+        chain = chains.setdefault(self._chain(quote, "quote_chain_fields")[0], _Chain())
         strip = chain.calls if self._right(quote) == _CALL else chain.puts
         refusals = []
         for side, book, field in ((_SELL, strip.bids, "bid_field"), (_BUY, strip.asks, "ask_field")):
@@ -522,7 +558,7 @@ class DigitalBounds(Node):
         counts = Counter(self._quote_key(q) for q, found in zip(quotes, problems) if not found)
         chains, refusals, refused = {}, [], 0
         for quote, found in zip(quotes, problems):
-            base = {"chain": quote.get(p["quote_chain_field"]), "strike": quote.get(p["strike_field"]),
+            base = {"chain": [quote.get(f) for f in p["quote_chain_fields"]], "strike": quote.get(p["strike_field"]),
                     "right": quote.get(p["right_field"])}
             if not found and counts[self._quote_key(quote)] > 1:
                 found = ["duplicate quote: the chain lists this strike and right more than once"]
@@ -543,9 +579,9 @@ class DigitalBounds(Node):
         given = {"lower": lower, "upper": upper}
         if geometry.bounds_problem(lower, upper) is not None or not all(price_ok(given[b]) for b in geometry.bounds):
             return "bad_bounds"
-        key, why = _key_or_problem(row.get(p["chain_field"]))
-        if why:
-            return "bad_chain_key"
+        key, why = self._chain(row, "chain_fields")
+        if why is not None:
+            return "no_chain" if why == KEY_MISSING else "bad_chain_key"
         if key not in chains:
             return "no_chain"
         return None
@@ -558,7 +594,7 @@ class DigitalBounds(Node):
         if status is None:
             geometry = PAYOFFS[row[p["payoff_field"]]]
             constant, terms = _affine_terms(geometry, row.get(p["lower_field"]), row.get(p["upper_field"]))
-            low, high = _interval(constant, terms, chains[canonical_key(row.get(p["chain_field"]))].band)
+            low, high = _interval(constant, terms, chains[self._chain(row, "chain_fields")[0]].band)
             status = _band_status(low, high)
         row.update({name + LOWER_SUFFIX: None if low is None else low[0],
                     name + UPPER_SUFFIX: None if high is None else high[0], name + STATUS_SUFFIX: status})
@@ -595,6 +631,11 @@ class DigitalBounds(Node):
 def _name_ok(value):
     """Say whether ``value`` is a non-empty string."""
     return isinstance(value, str) and bool(value)
+
+
+def _below_floor(value):
+    """Say whether ``value`` is a finite number whose magnitude is nonzero and below :data:`PRICE_FLOOR`."""
+    return _amount(value) and 0 < abs(value) < PRICE_FLOOR
 
 
 def _interval(constant, terms, band):

@@ -5,12 +5,15 @@ and requires ``CurveBinaryFairValue`` to agree with ``BinaryFairValue`` to 1e-6.
 """
 
 import enum
+import inspect
 import math
 from datetime import date, datetime
 from decimal import Decimal
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from dskit.pipeline import binary_curve
 from dskit.pipeline.binary_curve import STATUS_OK, STATUSES, CurveBinaryFairValue, CurveSurvival
@@ -18,8 +21,8 @@ from dskit.pipeline.binary_pricing import BinaryFairValue
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 
 PARAMS = {
-    "payoff_field": "payoff", "lower_field": "lo", "upper_field": "hi", "curve_key_field": "curve",
-    "curve_id_field": "id", "values_field": "log_returns", "probabilities_field": "probabilities",
+    "payoff_field": "payoff", "lower_field": "lo", "upper_field": "hi", "curve_key_fields": ["curve"],
+    "curve_id_fields": ["id"], "values_field": "log_returns", "probabilities_field": "probabilities",
     "axis": "log_return", "reference_field": "spot", "fair_field": "fair",
 }
 
@@ -191,74 +194,200 @@ def test_only_a_literal_true_makes_a_curve_eligible(flag):
     assert out["records"][0]["fair_status"] == "ineligible_curve"
 
 
-# -- canonical_key: the one id/chain key rule, a cell's canonical JSON text ---------------------------
+# -- row_key: the one id/chain/right key rule, scalars only (ADR-0249 R1/R2) -------------------------
+#
+# The SPEC table. Each row is (a, b, expected): ``same`` and ``different`` say whether two keyable
+# cells name one thing; ``refused`` and ``missing`` describe ``a`` (``b`` is then a look-alike that a
+# looser rule would have matched it with). The same table runs against ``row_key`` here and end to
+# end through every node that keys rows (here, test_digital_bounds.py and test_binary_coherence.py).
 
 
 class _Right(enum.StrEnum):
     C = "C"
 
 
-class _Liar(str):
-    """A str subclass whose own ``__str__`` lies: the key must read the characters, not ``str(x)``."""
+class _LyingRight(enum.StrEnum):
+    """A str enum whose ``__str__`` lies: the key is its characters, never ``str(x)``."""
+
+    C = "C"
 
     def __str__(self):
         return "P"
 
 
-@pytest.mark.parametrize("a, b", [
-    (["X"], ("X",)), (["X", 1], ("X", 1)), ({"a": [1], "b": 2}, {"b": 2, "a": (1,)}), ("X", "X"), (None, None),
-    (_Right.C, "C"), (np.str_("C"), "C"), (_Liar("C"), "C"), (np.int64(7), 7), (np.bool_(True), True),
-    (["C", {"k": np.int32(1)}], ["C", {"k": 1}])])
-def test_canonical_key_merges_the_same_thing_spelled_two_ways(a, b):
-    assert binary_curve.canonical_key(a) == binary_curve.canonical_key(b)
+class _Liar(str):
+    """A str subclass whose own ``__str__`` lies."""
+
+    def __str__(self):
+        return "P"
 
 
-def test_canonical_key_is_the_canonical_json_text_itself():
-    assert binary_curve.canonical_key(["X", 1, None, True]) == '["X",1,null,true]'
-    assert binary_curve.canonical_key({"b": 1, "a": "é"}) == '{"a":"\\u00e9","b":1}'
-    assert binary_curve.canonical_key(_Right.C) == '"C"'
+class Three(enum.IntEnum):
+    THREE = 3
 
 
-@pytest.mark.parametrize("a, b", [
-    (["X"], "['X']"), (1, True), (0, False), ("1", 1), (None, "None"), (["X"], ["X", None]),
-    ((1, 2), (2, 1)), ([["X"]], ["X"]), ({"1": 1}, {"1": True})])
-def test_canonical_key_never_merges_different_things(a, b):
-    assert binary_curve.canonical_key(a) != binary_curve.canonical_key(b)
+#: Stands for a cell whose column the row does not have at all.
+ABSENT = object()
+
+try:
+    import pandas as _pd
+except ImportError:  # pragma: no cover - pandas is optional
+    _pd = None
+
+SPEC = [
+    ("C", np.str_("C"), "same"), ("C", _Right.C, "same"), (_LyingRight.C, "C", "same"), (_Liar("C"), "C", "same"),
+    (7, np.int64(7), "same"), (3, Three.THREE, "same"), (np.int32(5), np.uint8(5), "same"),
+    (10 ** 40, 10 ** 40, "same"),
+    (1, "1", "different"), (_LyingRight.C, "P", "different"), (_Liar("C"), "P", "different"), ("a", "A", "different"),
+    ("é", "é", "different"),   # NFC vs NFD: pinned DIFFERENT, no Unicode normalisation
+    (10 ** 40, 10 ** 40 + 1, "different"),
+    (True, 1, "refused"), (np.bool_(True), 1, "refused"), (False, 0, "refused"), (1.0, 1, "refused"),
+    (float("nan"), "nan", "refused"), (-0.0, 0, "refused"), (np.float64(2.0), 2, "refused"),
+    (Decimal("1"), 1, "refused"), (["X"], "X", "refused"), (("X",), "X", "refused"), ({"k": 1}, "k", "refused"),
+    ({"X"}, "X", "refused"), (b"X", "X", "refused"), (datetime(2026, 10, 7), "2026-10-07", "refused"),
+    (date(2026, 10, 7), "2026-10-07", "refused"), (object(), "x", "refused"),
+    (None, "None", "missing"), ("", "", "missing"), (ABSENT, None, "missing"),
+] + ([(_pd.NA, "NA", "refused"), (_pd.NaT, "NaT", "refused")] if _pd is not None else [])
+
+SPEC_IDS = [f"{n}-{e}" for n, (_, _, e) in enumerate(SPEC)]
 
 
-def _loop():
-    loop = []
-    loop.append(loop)
-    return loop
+def spec_cell(value):
+    return None if value is ABSENT else value
 
 
-@pytest.mark.parametrize("value, needle", [
-    (1.0, "float"), (-0.0, "float"), (float("nan"), "float"), (float("inf"), "float"), (np.float64(1.0), "float"),
-    (np.float32(1.0), "float"), (Decimal("1"), "Decimal"), ({1, 2}, "set"), (frozenset({1}), "frozenset"),
-    (datetime(2026, 10, 7), "datetime"), (date(2026, 10, 7), "date"), (np.datetime64("2026-10-07"), "datetime64"),
-    (b"X", "bytes"), (bytearray(b"X"), "bytearray"), (object(), "object"), (["X", 1.5], "float"),
-    ({1: "a"}, "dict key"), ({"a": {2: "b"}}, "dict key"), (_loop(), "itself")])
-def test_canonical_key_refuses_by_name_what_json_could_not_key_faithfully(value, needle):
-    with pytest.raises(ValueError, match=needle):
-        binary_curve.canonical_key(value)
+@pytest.mark.parametrize("a, b, expected", SPEC, ids=SPEC_IDS)
+def test_row_key_follows_the_spec_table(a, b, expected):
+    key_a, problem_a = binary_curve.row_key(spec_cell(a))
+    assert (key_a is None) != (problem_a is None), "exactly one of key and problem is None"
+    if expected == "missing":
+        assert problem_a == binary_curve.KEY_MISSING == "missing"
+        return
+    if expected == "refused":
+        assert problem_a.startswith("refused ") and type(a).__qualname__ in problem_a
+        return
+    key_b, problem_b = binary_curve.row_key(b)
+    assert problem_a is None and problem_b is None
+    assert type(key_a) in (str, int) and type(key_b) in (str, int), "a key is a PLAIN str or int"
+    assert (key_a == key_b and type(key_a) is type(key_b)) is (expected == "same")
 
 
-def test_curve_ids_are_matched_and_deduplicated_by_the_canonical_key():
+def _contract_with_key(value, column="curve"):
+    row = {"payoff": "above", "lo": 100.0}
+    if value is not ABSENT:
+        row[column] = value
+    return row
+
+
+@pytest.mark.parametrize("a, b, expected", SPEC, ids=SPEC_IDS)
+def test_the_spec_table_end_to_end_through_curve_binary_fair_value(a, b, expected):
+    # the contract's key cell is a, the only curve's id is b
+    curve = dict(CURVE)
+    del curve["id"]
+    if b is not ABSENT:
+        curve["id"] = b
+    status = run([_contract_with_key(a)], curves=(curve,))["records"][0]["fair_status"]
+    assert status == {"same": STATUS_OK, "different": "no_curve", "refused": "bad_curve_key",
+                      "missing": "no_curve"}[expected]
+
+
+@pytest.mark.parametrize("a, b, expected", [r for r in SPEC if r[2] in ("same", "different")], ids=[
+    i for i, r in zip(SPEC_IDS, SPEC) if r[2] in ("same", "different")])
+def test_the_spec_table_decides_duplicate_curve_ids(a, b, expected):
     node = CurveBinaryFairValue("c", PARAMS)
-    assert node.validate_inputs({"records": [], "curves": [{**CURVE, "id": ["k"]}, {**CURVE, "id": ("k",)}]})
-    assert node.validate_inputs({"records": [], "curves": [{**CURVE, "id": ["k"]}, {**CURVE, "id": "['k']"}]}) == []
-    out = run([{"payoff": "above", "lo": 100.0, "curve": ("k", 1)}, {"payoff": "above", "lo": 100.0, "curve": True}],
-              curves=({**CURVE, "id": ["k", 1]}, {**CURVE, "id": 1}))
-    assert [r["fair_status"] for r in out["records"]] == ["ok", "no_curve"]
+    problems = node.validate_inputs({"records": [], "curves": [{**CURVE, "id": a}, {**CURVE, "id": b}]})
+    assert bool(problems) is (expected == "same")
 
 
-def test_a_curve_id_or_a_contract_key_that_cannot_be_keyed_is_refused_by_name():
-    node = CurveBinaryFairValue("c", PARAMS)
-    problems = node.validate_inputs({"records": [], "curves": [{**CURVE, "id": 1.0}]})
-    assert problems and "float" in problems[0]
-    out = run([{"payoff": "above", "lo": 100.0, "curve": float("nan")}, {"payoff": "above", "lo": 100.0, "curve": "k"}])
-    assert [r["fair_status"] for r in out["records"]] == ["bad_curve_key", "ok"]
-    assert "bad_curve_key" in binary_curve.STATUSES
+@pytest.mark.parametrize("a, b, expected", [r for r in SPEC if r[2] == "refused"],
+                         ids=[i for i, r in zip(SPEC_IDS, SPEC) if r[2] == "refused"])
+def test_a_refused_curve_id_is_an_input_problem_named_by_type(a, b, expected):
+    problems = CurveBinaryFairValue("c", PARAMS).validate_inputs({"records": [], "curves": [{**CURVE, "id": a}]})
+    assert problems and "refused" in problems[0] and type(a).__qualname__ in problems[0]
+
+
+def test_a_contract_with_no_curve_cell_never_prices_from_a_curve_with_no_id():
+    # the (None, None) case: two absences are not one key (canonical JSON once priced this as ok)
+    curve = {k: v for k, v in CURVE.items() if k != "id"}
+    out = run([{"payoff": "above", "lo": 100.0}, {"payoff": "above", "lo": 100.0, "curve": None},
+               {"payoff": "above", "lo": 100.0, "curve": ""}],
+              curves=(curve, {**CURVE, "id": None}, {**CURVE, "id": ""}))
+    assert [r["fair_status"] for r in out["records"]] == ["no_curve"] * 3
+    assert all(r["fair"] is None for r in out["records"])
+    assert CurveBinaryFairValue("c", PARAMS).validate_inputs({"records": [], "curves": [curve, dict(curve)]}) == [], (
+        "curves with no id are never read, so two of them are not a duplicate")
+
+
+# declared orders that sorting would NOT keep aligned: the key side sorts reversed, the id side does not
+COMPOSITE = {"curve_key_fields": ["und", "day"], "curve_id_fields": ["root", "when"]}
+
+
+def test_a_composite_curve_key_is_matched_column_by_column_in_declared_order():
+    curves = ({**CURVE, "root": "X", "when": 20261016},)
+    rows = [{"payoff": "above", "lo": 100.0, "und": np.str_("X"), "day": np.int64(20261016)},
+            {"payoff": "above", "lo": 100.0, "und": 20261016, "day": "X"},
+            {"payoff": "above", "lo": 100.0, "und": "X", "day": "20261016"},
+            {"payoff": "above", "lo": 100.0, "und": "X"},
+            {"payoff": "above", "lo": 100.0, "und": "X", "day": 2.0261016e7},
+            {"payoff": "above", "lo": 100.0, "und": "", "day": True}]
+    out = run(rows, curves=curves, **COMPOSITE)
+    # a refused cell outranks a missing one: the last row is bad_curve_key, not no_curve
+    assert [r["fair_status"] for r in out["records"]] == [STATUS_OK, "no_curve", "no_curve", "no_curve",
+                                                          "bad_curve_key", "bad_curve_key"]
+
+
+def test_fields_key_names_the_refused_column_and_keeps_declared_order():
+    assert binary_curve.fields_key({"a": "X", "b": 2}, ["b", "a"]) == ((2, "X"), None)
+    key, problem = binary_curve.fields_key({"a": None, "b": 1.5}, ["a", "b"])
+    assert key is None and problem.startswith("column 'b' refused builtins.float")
+    assert binary_curve.fields_key({"a": "X"}, ["a", "b"]) == (None, "missing")
+
+
+def test_a_fair_field_that_would_overwrite_a_key_column_is_refused():
+    params = {**PARAMS, "curve_key_fields": ["fair_status"], "curve_id_fields": ["id"]}
+    assert any("overwrite" in p for p in CurveBinaryFairValue.validate_params(params))
+
+
+@pytest.mark.parametrize("bad, needle", [
+    ({"curve_key_fields": "curve"}, "curve_key_fields"), ({"curve_id_fields": []}, "curve_id_fields"),
+    ({"curve_key_fields": ["a", "b"]}, "same number"), ({"curve_id_fields": ["id", ""]}, "curve_id_fields"),
+    ({"curve_key_fields": ["a", "a"], "curve_id_fields": ["x", "y"]}, "more than once"),
+    ({"curve_key_field": "curve"}, "unknown")])
+def test_curve_key_field_lists_are_refused_by_name_when_malformed(bad, needle):
+    assert any(needle in p for p in CurveBinaryFairValue.validate_params({**PARAMS, **bad}))
+
+
+def test_the_nested_key_machinery_is_gone():
+    assert not hasattr(binary_curve, "canonical_key") and not hasattr(binary_curve, "_key_or_problem")
+    assert {"row_key", "fields_key", "KEY_MISSING"} <= set(binary_curve.__all__)
+    source = inspect.getsource(binary_curve)
+    assert "_canonical_bytes" not in source and "dskit.pipeline.trust" not in source
+
+
+def _spellings(base):
+    """Strategies for ways one base scalar may be spelled in a cell."""
+    if isinstance(base, str):
+        kinds = [st.just(base), st.just(np.str_(base)), st.just(_Liar(base)),
+                 st.just(enum.StrEnum("S", {"V": base}).V)]
+    else:
+        kinds = [st.just(base), st.just(type("Sub", (int,), {})(base)), st.just(enum.IntEnum("I", {"V": base}).V)]
+        if -(2 ** 63) <= base < 2 ** 63:
+            kinds.append(st.just(np.int64(base)))
+    return st.one_of(kinds)
+
+
+_BASES = st.one_of(st.text(min_size=1), st.integers(min_value=-(10 ** 30), max_value=10 ** 30))
+
+
+@settings(max_examples=300, deadline=None)
+@given(data=st.data(), x=_BASES, y=_BASES)
+def test_values_equal_by_the_spec_share_a_key_and_different_ones_never_do(data, x, y):
+    a1, a2 = data.draw(_spellings(x)), data.draw(_spellings(x))
+    b = data.draw(_spellings(y))
+    key_a1, key_a2, key_b = (binary_curve.row_key(v)[0] for v in (a1, a2, b))
+    assert key_a1 is not None and key_a1 == key_a2 and type(key_a1) is type(key_a2)
+    same = type(x) is type(y) and x == y
+    assert (key_a1 == key_b and type(key_a1) is type(key_b)) is same
 
 
 def test_the_module_declares_its_public_api():

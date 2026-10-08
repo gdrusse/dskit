@@ -32,6 +32,14 @@ a QP-less solver is therefore not built. Both solves go through the base's
 ``_resolve_solver``/``_solve``; the LP through the base lifecycle (its ``SolveRecord`` is kept),
 the QP as a second solve of the same instance.
 
+Ids. Every contract id — a row's ``id_field`` cell and every id a relation declares — is read by
+:func:`dskit.pipeline.binary_curve.row_key`: a non-empty str (by its characters) or a non-bool int,
+so ``numpy.str_("a")`` is ``"a"`` and ``numpy.int64(3)`` is ``3``, while ``3`` and ``"3"`` are two
+ids. A missing or refused row id, or two rows with one id, is an input problem; a relation id that
+is missing or refused is a params problem, and one no row carries skips that relation by name. A row
+whose id is not a key reaches :meth:`BinaryCoherence.run` only when its input check was bypassed; it
+is then marked ``bad_id`` and never linked.
+
 Relations are strategy objects (:class:`Relation`, registry :data:`RELATIONS`): a new identity is
 a subclass and a registry entry, never a branch in the model builder.
 
@@ -42,8 +50,10 @@ Import cost: stdlib + toolkit only. pyomo is imported strictly inside run-path m
 """
 
 from abc import ABC, abstractmethod
+from collections import Counter
 from types import MappingProxyType
 
+from dskit.pipeline.binary_curve import row_key
 from dskit.pipeline.binary_pricing import STATUS_SUFFIX
 from dskit.pipeline.libs.pyomo import PyomoSolve
 from dskit.pipeline.records import number_ok
@@ -74,7 +84,7 @@ LEG_DUST = 1e-9
 
 #: The status a projected contract carries; the others name why it has no coherent value.
 STATUS_OK = "ok"
-STATUSES = (STATUS_OK, "bad_quote", "unrelated")
+STATUSES = (STATUS_OK, "bad_id", "bad_quote", "unrelated")
 
 
 class Relation(ABC):
@@ -398,9 +408,11 @@ class BinaryCoherence(PyomoSolve):
         records = inputs.get("records")
         if not isinstance(records, list):
             return [f"records must be a list of rows, got {type(records).__name__}"]
-        ids = [row.get(self.params["id_field"]) if isinstance(row, dict) else None for row in records]
-        problems = [f"records[{i}] has no usable id, got {cid!r}" for i, cid in enumerate(ids) if not _id_ok(cid)]
-        repeated = sorted({repr(c) for c in ids if _id_ok(c) and ids.count(c) > 1})
+        keyed = [row_key(row.get(self.params["id_field"])) if isinstance(row, dict) else (None, "not a row")
+                 for row in records]
+        problems = [f"records[{i}] has no usable id: {why}" for i, (_, why) in enumerate(keyed) if why]
+        counts = Counter(key for key, why in keyed if why is None)
+        repeated = sorted({repr(key) for key, why in keyed if why is None and counts[key] > 1})
         if repeated:
             problems.append(f"records list the id(s) {repeated} more than once: one row per contract")
         return problems
@@ -414,12 +426,13 @@ class BinaryCoherence(PyomoSolve):
 
     def _prepare(self, inputs):
         """Return the usable rows by id, the active relations and the skipped ones (with reasons)."""
-        rows = {row[self.params["id_field"]]: row for row in inputs["records"]}
+        keyed = ((row_key(row.get(self.params["id_field"]))[0], row) for row in inputs["records"])
+        rows = {cid: row for cid, row in keyed if cid is not None}
         usable = {cid: row for cid, row in rows.items() if self._quote_ok(row)}
         active, skipped = [], []
         for kind in RELATION_KINDS:
             relation = RELATIONS[kind]
-            for index, ids in enumerate(self.params.get(kind, [])):
+            for index, ids in enumerate(_relation_keys(self.params.get(kind, []))):
                 missing = [cid for cid in ids if cid not in rows]
                 unusable = [cid for cid in ids if cid in rows and cid not in usable]
                 if missing or unusable:
@@ -596,8 +609,10 @@ class BinaryCoherence(PyomoSolve):
 
     def _annotated(self, row, prepared, projected):
         """Write the coherent value and its status onto ``row`` (a copy)."""
-        name, cid = self.params["fair_field"], row.get(self.params["id_field"])
-        if cid not in prepared["usable"]:
+        name, cid = self.params["fair_field"], row_key(row.get(self.params["id_field"]))[0]
+        if cid is None:
+            status = "bad_id"
+        elif cid not in prepared["usable"]:
             status = "bad_quote"
         else:
             status = STATUS_OK if cid in projected else "unrelated"
@@ -650,20 +665,25 @@ def _name_ok(value):
     return isinstance(value, str) and bool(value)
 
 
-def _id_ok(value):
-    """Say whether ``value`` can be a contract id: a non-empty string or a non-bool int."""
-    return _name_ok(value) or (isinstance(value, int) and not isinstance(value, bool))
+def _relation_keys(declared):
+    """Return each declared id list as its :func:`row_key` keys (``validate_params`` refused every bad id)."""
+    return [[row_key(cid)[0] for cid in ids] for ids in declared]
 
 
 def _relation_problems(kind, relation, declared):
-    """Problems with one relation kind's declared id lists."""
+    """Problems with one relation kind's declared id lists, every id read by :func:`row_key`."""
     if not isinstance(declared, list):
         return [f"{kind} must be a list of id lists, got {declared!r}"]
     problems = []
-    for index, ids in enumerate(declared):
-        if not isinstance(ids, list) or not all(_id_ok(cid) for cid in ids):
-            problems.append(f"{kind}[{index}] must be a list of contract ids, got {ids!r}")
+    for index, raw in enumerate(declared):
+        if not isinstance(raw, list):
+            problems.append(f"{kind}[{index}] must be a list of contract ids, got {raw!r}")
             continue
+        bad = [f"{cid!r} {why}" for cid, why in ((cid, row_key(cid)[1]) for cid in raw) if why]
+        if bad:
+            problems.append(f"{kind}[{index}] holds an id that cannot be a key: {'; '.join(bad)}")
+            continue
+        ids = _relation_keys([raw])[0]
         if len(set(ids)) != len(ids):
             problems.append(f"{kind}[{index}] lists an id more than once: {ids!r}")
             continue

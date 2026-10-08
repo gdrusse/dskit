@@ -4,15 +4,18 @@ Every expected arbitrage is worked by hand in the comments: the legs, the credit
 the position pays nothing net in every outcome the declared relations allow.
 """
 
+import numpy as np
 import pytest
 
 pytest.importorskip("pyomo")
 pytest.importorskip("highspy")
 
+from dskit.pipeline import binary_curve
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.libs import binary_coherence
-from dskit.pipeline.libs.binary_coherence import RELATIONS, BinaryCoherence, Relation
+from dskit.pipeline.libs.binary_coherence import RELATIONS, STATUS_OK, BinaryCoherence, Relation
 from dskit.pipeline.libs.pyomo import PyomoSolve
+from tests.pipeline.test_binary_curve import ABSENT, SPEC, SPEC_IDS, spec_cell, Three
 
 BASE = {"id_field": "id", "bid_field": "bid", "ask_field": "ask", "fair_field": "coherent",
         "min_spread": 0.01, "solver": "highs"}
@@ -344,6 +347,97 @@ def test_duplicate_ids_and_non_list_records_are_refused_at_the_input():
     assert node.validate_inputs({"records": [contract("a", .1, .2), contract("a", .1, .2)]})
     assert node.validate_inputs({"records": iter([])})
     assert node.validate_inputs({"records": [contract("a", .1, .2)]}) == []
+
+
+# -- every id through row_key: the SPEC table end to end (R3/R5) -----------------------------------------
+
+
+def _spec(*kinds):
+    rows = [r for r in SPEC if r[2] in kinds]
+    return pytest.mark.parametrize("a, b, expected", rows, ids=[i for i, r in zip(SPEC_IDS, SPEC) if r[2] in kinds])
+
+
+def _row(cid, bid, ask):
+    row = {"bid": bid, "ask": ask}
+    if cid is not ABSENT:
+        row["id"] = cid
+    return row
+
+
+@_spec("same", "different")
+def test_the_spec_table_decides_duplicate_record_ids(a, b, expected):
+    node = BinaryCoherence("coh", {**BASE, "chains": [["p", "q"]]})
+    problems = node.validate_inputs({"records": [_row(a, .1, .2), _row(b, .1, .2)]})
+    assert bool(problems) is (expected == "same")
+
+
+@_spec("refused", "missing")
+def test_the_spec_table_refuses_a_record_id_that_is_not_a_key(a, b, expected):
+    problems = BinaryCoherence("coh", {**BASE, "chains": [["p", "q"]]}).validate_inputs({"records": [_row(a, .1, .2)]})
+    assert len(problems) == 1 and ("missing" if expected == "missing" else "refused") in problems[0]
+
+
+@_spec("same", "different")
+def test_the_spec_table_decides_whether_a_relation_id_names_a_row(a, b, expected):
+    # the relation declares a; the row carries b. The inverted ladder is found only when they are one id.
+    out = run([_row(b, 0.38, 0.40), contract("k110", 0.45, 0.47)], chains=[[a, "k110"]])
+    if expected == "same":
+        assert out["arbitrage"]["feasible"] is False
+        assert {leg["side"] for leg in out["arbitrage"]["legs"]} == {"buy", "sell"}
+        assert out["records"][0]["coherent_status"] == STATUS_OK
+    else:
+        assert out["summary"]["skipped_relations"][0]["missing"] == [binary_curve.row_key(a)[0]]
+        assert out["records"][0]["coherent_status"] == "unrelated"
+
+
+@_spec("refused", "missing")
+def test_the_spec_table_refuses_a_relation_id_that_is_not_a_key_by_name(a, b, expected):
+    for kind in ("chains", "partitions"):
+        problems = BinaryCoherence.validate_params({**BASE, kind: [[spec_cell(a), "k110"]]})
+        assert any(kind in p and "cannot be a key" in p for p in problems), problems
+
+
+class _EqLiar(str):
+    """A str id whose ``__eq__`` lies: only row_key's reading of its characters may match it."""
+
+    def __eq__(self, other):
+        return False
+
+    __hash__ = str.__hash__
+
+
+@pytest.mark.parametrize("twin", [np.str_("a"), _EqLiar("a")])
+def test_relation_ids_are_normalised_before_the_repeat_check(twin):
+    problems = BinaryCoherence.validate_params({**BASE, "chains": [["a", twin]]})
+    assert any("more than once" in p for p in problems)
+
+
+def test_a_record_id_whose_eq_lies_joins_its_relation_by_its_characters():
+    out = run([_row(_EqLiar("k100"), 0.38, 0.40), contract("k110", 0.45, 0.47)], chains=[["k100", "k110"]])
+    assert out["arbitrage"]["feasible"] is False and out["records"][0]["coherent_status"] == STATUS_OK
+    assert not BinaryCoherence.validate_params({**BASE, "chains": [[3, "3"]]}), "3 and '3' are two ids"
+
+
+def test_a_row_whose_id_is_not_a_key_is_marked_by_name_when_run_directly():
+    out = run([_row(True, 0.38, 0.40), contract("k110", 0.45, 0.47), _row(ABSENT, 0.1, 0.2)],
+              chains=[["k100", "k110"]])
+    assert [r["coherent_status"] for r in out["records"]] == ["bad_id", "unrelated", "bad_id"]
+    assert "bad_id" in binary_coherence.STATUSES
+
+
+def test_numpy_and_enum_ids_join_their_plain_relation_ids():
+    rows = [_row(np.str_("k100"), 0.38, 0.40), _row(Three.THREE, 0.45, 0.47)]
+    arb = run(rows, chains=[["k100", np.int64(3)]])["arbitrage"]
+    assert {leg["id"]: leg["side"] for leg in arb["legs"]} == {"k100": "buy", 3: "sell"}
+    assert all(type(leg["id"]) in (str, int) for leg in arb["legs"])
+
+
+def test_the_coherence_pack_has_no_private_id_rule_of_its_own():
+    import inspect
+
+    source = inspect.getsource(binary_coherence)
+    assert "def _id_ok" not in source and "ids.count(" not in source
+    assert "from dskit.pipeline.binary_curve import row_key" in source
 
 
 def _probes(tmp_path):

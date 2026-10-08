@@ -506,6 +506,25 @@ on it without breaking its rulings.
   wing side by a normalized density (1/4 per unit on `[[-2.5,-.5],[.5,2.5]]`).
   Train on `tail_crps` to match `weighted_crps`; `TorchCDF` and
   `BoostedTorchCDF` share ONE loss through `_CompositeLossCDF` — never copy it.
+- **Binary-market readers take the venue's field map as params** (ADR-0248):
+  every `*_field` is required with no default and the vocabularies are params;
+  the venue's map lives in the child's config. `instant_ms` restates
+  `production.base.parse_utc_ms` (a pack may not import production); a test pins them.
+- **`BinaryCoherence` needs a QP-capable solver** (ADR-0249): `solver` has no default; pyomo's
+  `appsi_highs` refuses a quadratic objective, `highs` solves it. An LP that is infeasible because the
+  declared relations contradict each other raises, it is not a coherence verdict. `tolerance` gates only the
+  verdict; leg and relation dust is `LEG_DUST` relative to the largest dual, and an infeasible verdict whose legs
+  are empty or cannot profit raises by name.
+- **Binary keys are SCALARS** (`binary_curve.row_key`, ADR-0249): a non-empty str (read by
+  `str.__str__`, never `str(x)`; no Unicode normalisation) or a non-bool int (numpy ints and `IntEnum` by
+  value). `1` and `"1"` differ. None, absent and `""` are MISSING (`no_chain` / `no_curve`); bool, floats,
+  Decimal, pandas NA, lists, tuples, dicts and every other object are REFUSED by name (`bad_chain_key` /
+  `bad_curve_key`). Never widen it back to nested values: a composite key is a LIST of columns in config
+  (`chain_fields`/`quote_chain_fields`, `curve_key_fields`/`curve_id_fields`, read by `fields_key`).
+  `BinaryCoherence` reads every id (rows and relation params) through `row_key`. `DigitalBounds` reads a
+  right through ONE method, `_right`, and refuses a nonzero price, strike or discount below `PRICE_FLOOR`
+  on its own check (never `records.price_ok`). Never reintroduce a chain-wide tolerance: each edge carries
+  its own proven error (module docstring).
 
 ## Contents
 
@@ -575,8 +594,8 @@ dskit/pipeline/
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
-├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; canonical_key, the one id/chain key rule: canonical JSON text (by import path, ADR-0249)
-├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR) + quote_problems (by import path, ADR-0249)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0249)
+├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0249)
 ├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0248)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:

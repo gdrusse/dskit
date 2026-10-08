@@ -11,15 +11,18 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from dskit.pipeline import digital_bounds
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.digital_bounds import STATUS_OK, STATUSES, DigitalBounds, quote_problems
 from dskit.pipeline.option_pricing import black76
+from tests.pipeline.test_binary_curve import ABSENT, SPEC, SPEC_IDS
 
 PARAMS = {
-    "payoff_field": "payoff", "lower_field": "lo", "upper_field": "hi", "chain_field": "chain",
-    "quote_chain_field": "chain", "strike_field": "strike", "right_field": "right",
+    "payoff_field": "payoff", "lower_field": "lo", "upper_field": "hi", "chain_fields": ["chain"],
+    "quote_chain_fields": ["chain"], "strike_field": "strike", "right_field": "right",
     "call_value": "C", "put_value": "P", "bid_field": "bid", "ask_field": "ask", "bound_field": "dig",
 }
 
@@ -285,7 +288,7 @@ def test_a_lying_right_is_accepted_and_filed_as_the_right_its_characters_name():
     assert (out["records"][0]["dig_lower"], out["records"][0]["dig_upper"]) == (pytest.approx(0.28), pytest.approx(0.74))
 
 
-@pytest.mark.parametrize("key", [1.0, float("nan"), {1, 2}, b"x"])
+@pytest.mark.parametrize("key", [1.0, float("nan"), {1, 2}, b"x", ["X"], ("X",), True])
 def test_a_chain_key_that_cannot_be_keyed_is_refused_by_name_on_quotes_and_contracts(key):
     out = run([contract("above", lo=100.0, chain=key), contract("above", lo=100.0)],
               list(HAND) + [quote("C", 120, 0.1, 0.2, chain=key)])
@@ -295,35 +298,51 @@ def test_a_chain_key_that_cannot_be_keyed_is_refused_by_name_on_quotes_and_contr
     assert "bad_chain_key" in STATUSES
 
 
-def test_a_list_valued_chain_key_is_one_chain_not_a_crash():
-    key = ["X", "2026-10-16"]
-    quotes = [{**q, "chain": list(key)} for q in HAND]
-    row = run([contract("above", lo=100.0, chain=list(key))], quotes)["records"][0]
-    assert row["dig_status"] == STATUS_OK
-    assert row["dig_lower"] == pytest.approx(0.29)
+COMPOSITE = {"chain_fields": ["root", "expiry"], "quote_chain_fields": ["und", "exp"]}
 
 
-def test_a_list_keyed_chain_refuses_a_strike_listed_as_100_and_as_100_point_0():
-    # the same strike spelled int and float under a list chain key is one quote listed twice
-    calls = [quote("C", 90, 11.0, 11.4, chain=["X"]), quote("C", 100, 4.0, 4.2, chain=["X"]),
-             quote("C", 110, 1.0, 1.2, chain=["X"]), quote("C", 100.0, 4.1, 4.3, chain=["X"])]
-    out = run([contract("above", lo=100.0, chain=["X"])], calls)
+def test_a_composite_chain_is_declared_as_columns_and_matched_in_order():
+    quotes = [{**q, "und": "X", "exp": "2026-10-16"} for q in HAND]
+    rows = [{**contract("above", lo=100.0), "root": "X", "expiry": "2026-10-16"},
+            {**contract("above", lo=100.0), "root": "2026-10-16", "expiry": "X"},
+            {**contract("above", lo=100.0), "root": "X"}]
+    out = run(rows, quotes, **COMPOSITE)
+    assert [r["dig_status"] for r in out["records"]] == [STATUS_OK, "no_chain", "no_chain"]
+    assert out["records"][0]["dig_lower"] == pytest.approx(0.29)
+
+
+def test_a_composite_chain_refuses_a_strike_listed_as_100_and_as_100_point_0():
+    # the same strike spelled int and float under one composite chain is one quote listed twice
+    calls = [quote("C", k, b, a, und="X", exp=7) for k, b, a in ((90, 11.0, 11.4), (100, 4.0, 4.2),
+                                                                  (110, 1.0, 1.2), (100.0, 4.1, 4.3))]
+    out = run([{**contract("above", lo=100.0), "root": "X", "expiry": np.int64(7)}], calls, **COMPOSITE)
     duplicates = [r for r in out["refusals"] if any("duplicate quote" in m for m in r["problems"])]
     assert len(duplicates) == 2
-    # neither C100 is used: 110 has no strike above it to buy, 90 none below it, so no pair either side
     assert out["records"][0]["dig_status"] == "no_bracket"
 
 
-def test_a_chain_spelled_as_a_list_and_as_a_tuple_is_one_chain_for_duplicates_too():
-    quotes = [{**q, "chain": ["X"]} for q in HAND] + [quote("C", 100, 4.1, 4.3, chain=("X",))]
-    out = run([contract("above", lo=100.0, chain=("X",))], quotes)
-    assert len([r for r in out["refusals"] if any("duplicate quote" in m for m in r["problems"])]) == 2
+@pytest.mark.parametrize("bad", [{"chain_fields": "chain"}, {"chain_fields": []}, {"quote_chain_fields": ["c", ""]},
+                                 {"chain_fields": ["a", "b"]}, {"chain_fields": ["a", "a"],
+                                                                "quote_chain_fields": ["b", "c"]}])
+def test_chain_field_lists_are_refused_by_name_when_malformed(bad):
+    assert any("chain_fields" in p for p in DigitalBounds.validate_params({**PARAMS, **bad}))
 
 
-def test_a_chain_keyed_by_a_list_is_not_the_chain_keyed_by_that_lists_repr():
-    quotes = [{**q, "chain": ["X"]} for q in HAND]
-    out = run([contract("above", lo=100.0, chain="['X']"), contract("above", lo=100.0, chain=("X",))], quotes)
+def test_a_chain_key_spelled_1_is_not_the_chain_spelled_one_as_text():
+    quotes = [{**q, "chain": 1} for q in HAND]
+    out = run([contract("above", lo=100.0, chain="1"), contract("above", lo=100.0, chain=np.int64(1))], quotes)
     assert [r["dig_status"] for r in out["records"]] == ["no_chain", STATUS_OK]
+
+
+@pytest.mark.parametrize("missing", [None, "", "absent"])
+def test_a_contract_with_a_missing_chain_cell_is_no_chain_even_beside_a_quote_missing_it_too(missing):
+    quotes = [{**q, "chain": None} for q in HAND]
+    row = contract("above", lo=100.0, chain=missing)
+    if missing == "absent":
+        del row["chain"]
+    out = run([row], quotes)
+    assert out["records"][0]["dig_status"] == "no_chain"
+    assert all(any("chain key is missing" in m for m in r["problems"]) for r in out["refusals"])
 
 
 def test_a_locked_cent_priced_chain_far_from_the_money_is_not_a_crossed_band():
@@ -519,7 +538,8 @@ def test_a_negative_strike_bound_is_bad_bounds():
 
 @pytest.mark.parametrize("field, value, needle", [
     ("strike", -100, "strike must be a positive"), ("strike", "100", "strike must be a positive"),
-    ("right", "p", "right must be"), ("chain", None, "chain key is missing")])
+    ("right", "p", "right must be"), ("chain", None, "chain key is missing"), ("chain", "", "chain key is missing"),
+    ("chain", 1.5, "refused builtins.float"), ("right", True, "right must be")])
 def test_a_quote_row_with_an_unusable_strike_right_or_chain_is_refused_on_both_sides(field, value, needle):
     bad = {**quote("P", 100, 4.0, 4.2), field: value}
     out = run([contract("above", lo=100.0)], [q for q in HAND if not (q["right"] == "P" and q["strike"] == 100)] + [bad])
@@ -555,6 +575,174 @@ def test_a_locked_chain_whose_edges_differ_by_float_dust_is_not_a_crossed_band()
     row = run([contract("above", lo=100.0)], calls)["records"][0]
     assert row["dig_status"] == STATUS_OK
     assert row["dig_lower"] == pytest.approx(0.45) and row["dig_upper"] == pytest.approx(0.45)
+
+
+# -- the row_key SPEC table, end to end (R5) ------------------------------------------------------
+
+
+@pytest.mark.parametrize("a, b, expected", SPEC, ids=SPEC_IDS)
+def test_the_spec_table_end_to_end_through_digital_bounds_chains(a, b, expected):
+    # the contract's chain cell is a, every quote's chain cell is b
+    row = contract("above", lo=100.0, chain=a)
+    if a is ABSENT:
+        del row["chain"]
+    out = run([row], [{**q, "chain": b} for q in HAND])
+    assert out["records"][0]["dig_status"] == {"same": STATUS_OK, "different": "no_chain", "refused": "bad_chain_key",
+                                               "missing": "no_chain"}[expected]
+
+
+@pytest.mark.parametrize("a, b, expected", [r for r in SPEC if r[2] in ("same", "different")],
+                         ids=[i for i, r in zip(SPEC_IDS, SPEC) if r[2] in ("same", "different")])
+def test_the_spec_table_decides_whether_two_quotes_share_a_chain(a, b, expected):
+    # C100 listed once under chain a and once under chain b: a duplicate exactly when a and b are one chain
+    quotes = [quote("C", 100, 4.0, 4.2, chain=a), quote("C", 100, 4.1, 4.3, chain=b)]
+    duplicates = [r for r in run([], quotes)["refusals"] if any("duplicate quote" in m for m in r["problems"])]
+    assert len(duplicates) == (2 if expected == "same" else 0)
+
+
+@pytest.mark.parametrize("a, b, expected", [r for r in SPEC if r[2] in ("refused", "missing")],
+                         ids=[i for i, r in zip(SPEC_IDS, SPEC) if r[2] in ("refused", "missing")])
+def test_the_spec_table_refuses_a_right_cell_that_is_not_a_key(a, b, expected):
+    bad = quote("C", 100, 4.0, 4.2)
+    if a is ABSENT:
+        del bad["right"]
+    else:
+        bad["right"] = a
+    refused = [r for r in run([], [bad])["refusals"] if r["side"] == "both"]
+    assert len(refused) == 1 and any("right must be" in m for m in refused[0]["problems"])
+
+
+def test_a_composite_spec_key_needs_every_column_to_agree():
+    quotes = [{**q, "und": np.str_("X"), "exp": np.int64(16)} for q in HAND]
+    rows = [{**contract("above", lo=100.0), "root": "X", "expiry": 16},
+            {**contract("above", lo=100.0), "root": "X", "expiry": "16"},
+            {**contract("above", lo=100.0), "root": "X", "expiry": True},
+            {**contract("above", lo=100.0), "root": "", "expiry": 16},
+            {**contract("above", lo=100.0), "root": "", "expiry": True}]
+    out = run(rows, quotes, **COMPOSITE)
+    assert [r["dig_status"] for r in out["records"]] == [STATUS_OK, "no_chain", "bad_chain_key", "no_chain",
+                                                         "bad_chain_key"]
+
+
+def test_a_bound_field_that_would_overwrite_a_chain_column_is_refused():
+    params = {**PARAMS, "chain_fields": ["dig_status"], "quote_chain_fields": ["chain"]}
+    assert any("overwrite" in p for p in DigitalBounds.validate_params(params))
+
+
+@pytest.mark.parametrize("df", [0.0, -0.0])
+def test_a_zero_discount_is_refused_once_by_price_ok_never_by_the_floor(df):
+    quotes = [{**q, "df": 1.0} for q in HAND]
+    quotes[1]["df"] = df
+    refused = [r for r in run([contract("above", lo=100.0)], quotes, discount_field="df")["refusals"]
+               if r["side"] == "both"]
+    assert len(refused) == 1 and len(refused[0]["problems"]) == 1, "zero is not below the floor: it is no price"
+
+
+# -- the interval arithmetic's own error, against exact rationals (R7a) -------------------------------
+
+
+_EDGES = st.tuples(st.floats(-2.0, 2.0, allow_nan=False, allow_subnormal=False),
+                   st.sampled_from([0.0, 1e-17, 1e-12, 3e-10]))
+
+
+@settings(max_examples=500, deadline=None)
+@given(constant=st.sampled_from([0.0, 1.0]), coefficients=st.lists(st.sampled_from([1.0, -1.0, 0.5, -2.0]),
+                                                                    min_size=1, max_size=3),
+       edges=st.lists(st.tuples(_EDGES, _EDGES), min_size=3, max_size=3), corner=st.integers(0, 2 ** 6 - 1))
+def test_the_interval_error_covers_every_exact_value_its_edges_allow(constant, coefficients, edges, corner):
+    terms = {100.0 + i: c for i, c in enumerate(coefficients)}
+    bands = {k: (lo, hi) for k, (lo, hi) in zip(terms, edges)}
+    low, high = digital_bounds._interval(constant, terms, bands.__getitem__)
+    for out, side in ((low, 0), (high, 1)):
+        exact = Fraction(constant)
+        for i, (strike, coefficient) in enumerate(terms.items()):
+            take = side if coefficient > 0 else 1 - side
+            value, error = bands[strike][take]
+            sign = 1 if (corner >> (2 * i + side)) & 1 else -1
+            exact += Fraction(coefficient) * (Fraction(value) + sign * Fraction(error))
+        clip = max(Fraction(0), exact) if side == 0 else min(Fraction(1), exact)
+        # the error sum is itself a float sum and may round down by an ulp of the bound: real edges carry
+        # _SLACK = 2 on their own errors, far more than that ulp, so the test grants it explicitly
+        assert abs(Fraction(out[0]) - clip) <= Fraction(out[1]) * (1 + 4 * _U), (out, float(clip))
+
+
+# -- the price floor on this node's own quote check (R7b) --------------------------------------------
+
+
+def test_the_price_floor_is_one_public_name_far_below_any_real_price():
+    assert digital_bounds.PRICE_FLOOR == 1e-12 and "PRICE_FLOOR" in digital_bounds.__all__
+
+
+@pytest.mark.parametrize("field, value, side", [
+    ("bid", 5e-13, "sell"), ("bid", 5e-324, "sell"), ("ask", 1e-300, "buy"), ("strike", 1e-13, "both"),
+    ("df", 5e-324, "both")])
+def test_a_nonzero_price_below_the_floor_is_refused_by_name(field, value, side):
+    quotes = [{**q, "df": 1.0} for q in HAND]
+    quotes[1] = {**quotes[1], field: value}   # C100
+    if field == "ask":
+        quotes[1]["bid"] = 0.0
+    out = run([contract("above", lo=100.0)], quotes, discount_field="df")
+    named = [r for r in out["refusals"] if r["side"] == side and any("PRICE_FLOOR" in m for m in r["problems"])]
+    assert len(named) == 1
+
+
+def test_a_price_at_the_floor_is_used_and_records_price_ok_is_untouched():
+    from dskit.pipeline.records import price_ok
+
+    calls = [quote("C", 90, 2e-12, 2e-12), quote("C", 100, 1e-12, 1e-12), quote("C", 110, 1e-12, 1e-12)]
+    assert run([contract("above", lo=100.0)], calls)["refusals"] == []
+    assert price_ok(1e-300), "the floor is DigitalBounds' own rule, never records.price_ok's"
+
+
+def test_a_subnormal_quote_cannot_reach_the_proven_bound():
+    # a subnormal rounds with an absolute error the relative proof does not cover; it never becomes an edge
+    calls = [quote("C", 90, 3e-320, 3e-320), quote("C", 100, 2e-320, 2e-320), quote("C", 110, 1e-320, 1e-320)]
+    out = run([contract("above", lo=100.0)], calls)
+    assert out["records"][0]["dig_status"] == "no_bracket"
+    assert out["census"]["quotes"]["refused"] == 3
+
+
+# -- a locked, coherent chain never reports crossed_band (R7a) ----------------------------------------
+
+
+@st.composite
+def _locked_chain(draw):
+    """Calls and puts of an exact discrete law on a strike grid, each quote the correctly rounded float."""
+    step = Fraction(draw(st.sampled_from(["0.05", "0.5", "1", "2.5", "5"])))
+    base = Fraction(draw(st.integers(1, 10 ** 5))) * step
+    n = draw(st.integers(6, 14))
+    strikes = [base + i * step for i in range(n)]
+    atoms = draw(st.lists(st.integers(-3, n + 3), min_size=1, max_size=3, unique=True))
+    weights = [draw(st.integers(1, 9)) for _ in atoms]
+    law = [(base + a * step, Fraction(w, sum(weights))) for a, w in zip(atoms, weights)]
+    law = [(s, p) for s, p in law if s > 0] or [(base, Fraction(1))]
+    forward = sum(s * p for s, p in law)
+    quotes = []
+    for k in strikes:
+        call = sum(p * max(s - k, 0) for s, p in law)
+        for right, value in (("C", call), ("P", call - (forward - k))):
+            price = float(value)
+            quotes.append(quote(right, float(k), price, price))
+    inner = strikes[1:-1]
+    lo, hi = sorted(draw(st.lists(st.sampled_from(inner), min_size=2, max_size=2, unique=True)))
+    k = draw(st.sampled_from(inner))
+
+    def above(x):
+        return sum(p for s, p in law if s >= x)
+
+    truths = (above(k), 1 - above(k), above(lo) - above(hi))
+    return quotes, float(k), float(lo), float(hi), truths
+
+
+@settings(max_examples=400, deadline=None)
+@given(chain=_locked_chain())
+def test_a_locked_coherent_chain_never_reports_crossed_band(chain):
+    quotes, k, lo, hi, truths = chain
+    out = run([contract("above", lo=k), contract("below", hi=k), contract("between", lo=lo, hi=hi)], quotes)
+    assert [r["dig_status"] for r in out["records"]].count("crossed_band") == 0, out["records"]
+    for row, truth in zip(out["records"], truths):   # and every edge present holds the law's own digital
+        assert row["dig_lower"] is None or row["dig_lower"] - 1e-9 <= truth, (row, float(truth))
+        assert row["dig_upper"] is None or truth <= row["dig_upper"] + 1e-9, (row, float(truth))
 
 
 # -- the graduated quote rule ---------------------------------------------------------------------
