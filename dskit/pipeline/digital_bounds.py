@@ -66,6 +66,7 @@ from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = [
+    "BAND_TOLERANCE",
     "DEFAULT_MIN_SIZE",
     "LOWER_SUFFIX",
     "STATUSES",
@@ -83,6 +84,10 @@ STATUSES = (
     STATUS_OK, "unknown_payoff", "bad_bounds", "no_chain", "no_bracket", "no_lower_bracket",
     "no_upper_bracket", "crossed_band",
 )
+
+#: Float dust allowed before a lower edge above the upper edge counts as ``crossed_band``: a locked,
+#: arbitrage-free chain can compute its two edges a few ulps apart, which is no parity violation.
+BAND_TOLERANCE = 1e-12
 
 #: Suffixes of the columns written beside ``bound_field``.
 LOWER_SUFFIX = "_lower"
@@ -429,7 +434,7 @@ class DigitalBounds(Node):
                 refused += 1
                 continue
             discount = float(quote[p["discount_field"]]) if "discount_field" in p else 1.0
-            strip = chains.setdefault(chain, _Chain())
+            strip = chains.setdefault(_hashable(chain), _Chain())
             strip = strip.calls if right == p["call_value"] else strip.puts
             any_refused = False
             for side, book, field in ((_SELL, strip.bids, "bid_field"), (_BUY, strip.asks, "ask_field")):
@@ -533,4 +538,4 @@ def _band_status(low, high):
         return "no_lower_bracket"
     if high is None:
         return "no_upper_bracket"
-    return "crossed_band" if low > high else STATUS_OK
+    return "crossed_band" if low > high + BAND_TOLERANCE else STATUS_OK

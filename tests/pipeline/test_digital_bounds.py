@@ -187,6 +187,65 @@ def test_crossed_call_and_put_bands_are_reported_not_hidden():
     assert row["dig_lower"] == pytest.approx(0.9) and row["dig_upper"] == pytest.approx(0.74)
 
 
+def test_the_tighter_upper_edge_is_kept_when_the_puts_cap_lower_than_the_calls():
+    # calls cap P(S >= 100) at (11.4 - 4.0) / 10 = 0.74; a put at 90 offered at 1.0 gives
+    # P(S < 100) >= (4.0 - 1.0) / 10 = 0.30, so P(S >= 100) <= 0.70: the put edge must win.
+    quotes = [q for q in HAND if not (q["right"] == "P" and q["strike"] == 90)] + [quote("P", 90, 0.8, 1.0)]
+    row = run([contract("above", lo=100.0)], quotes)["records"][0]
+    assert row["dig_upper"] == pytest.approx(0.70)
+    assert row["dig_status"] == STATUS_OK
+
+
+def test_a_wide_chain_is_clipped_to_the_unit_interval_on_both_edges():
+    # calls only: lower (bid C100 - ask C110) / 10 = (1.0 - 6.0) / 10 = -0.5 -> 0;
+    #             upper (ask C90 - bid C100) / 10 = (11.4 - 1.0) / 10 = 1.04 -> 1
+    calls = [quote("C", 90, 11.0, 11.4), quote("C", 100, 1.0, 4.2), quote("C", 110, 1.0, 6.0)]
+    row = run([contract("above", lo=100.0)], calls)["records"][0]
+    assert (row["dig_lower"], row["dig_upper"]) == (0.0, 1.0)
+
+
+def test_each_edge_is_clipped_before_a_between_band_combines_them():
+    # between(100, 110) upper = upper P(S >= 100) - lower P(S >= 110).
+    # upper P(S >= 100) = (ask C90 - bid C100) / 10 = (11.4 - 4.0) / 10 = 0.74
+    # lower P(S >= 110) = (bid C110 - ask C120) / 10 = (1.0 - 8.0) / 10 = -0.7 -> clipped to 0
+    # so the band's upper edge is 0.74; an unclipped edge would loosen it to min(1, 1.44) = 1.
+    calls = [quote("C", 90, 11.0, 11.4), quote("C", 100, 4.0, 4.2), quote("C", 110, 1.0, 1.2),
+             quote("C", 120, 1.0, 8.0)]
+    row = run([contract("between", lo=100.0, hi=110.0)], calls)["records"][0]
+    assert row["dig_upper"] == pytest.approx(0.74)
+    assert row["dig_lower"] == 0.0  # (4.0 - 1.2) / 10 - (4.2 - 1.0) / 10 = -0.04 -> 0
+    # the other direction: upper P(S >= 100) = (15.0 - 4.0) / 10 = 1.1 -> clipped to 1, and
+    # lower P(S >= 110) = (1.0 - 0.5) / 10 = 0.05, so the upper edge is 0.95, not min(1, 1.05) = 1
+    calls = [quote("C", 90, 11.0, 15.0), quote("C", 100, 4.0, 4.2), quote("C", 110, 1.0, 1.2),
+             quote("C", 120, 0.3, 0.5)]
+    row = run([contract("between", lo=100.0, hi=110.0)], calls)["records"][0]
+    assert row["dig_upper"] == pytest.approx(0.95)
+
+
+def test_a_strike_and_right_listed_twice_is_refused_both_times_by_name():
+    quotes = list(HAND) + [quote("C", 100, 4.1, 4.3)]
+    out = run([contract("above", lo=100.0)], quotes)
+    duplicates = [r for r in out["refusals"] if any("duplicate quote" in m for m in r["problems"])]
+    assert len(duplicates) == 2, "neither copy of a repeated strike/right may be used"
+
+
+def test_a_list_valued_chain_key_is_one_chain_not_a_crash():
+    key = ["X", "2026-10-16"]
+    quotes = [{**q, "chain": list(key)} for q in HAND]
+    row = run([contract("above", lo=100.0, chain=list(key))], quotes)["records"][0]
+    assert row["dig_status"] == STATUS_OK
+    assert row["dig_lower"] == pytest.approx(0.29)
+
+
+def test_a_locked_chain_whose_edges_differ_by_float_dust_is_not_a_crossed_band():
+    # zero-spread, linear calls: both edges are 0.45 exactly, but float division gives
+    # lower 0.45 and upper 0.4499999999999999 -- dust, not a parity violation
+    calls = [quote("C", 90, 9.2, 9.2), quote("C", 100, 4.7, 4.7), quote("C", 110, 0.2, 0.2)]
+    row = run([contract("above", lo=100.0)], calls)["records"][0]
+    assert row["dig_status"] == STATUS_OK
+    assert row["dig_lower"] == pytest.approx(0.45) and row["dig_upper"] == pytest.approx(0.45)
+
+
 # -- the graduated quote rule ---------------------------------------------------------------------
 
 

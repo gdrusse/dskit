@@ -58,6 +58,24 @@ def test_a_partition_that_bids_over_one_is_a_sell_everything_arbitrage():
     assert arb["executable_units"] is None  # no size columns named
 
 
+def test_a_partition_whose_asks_sum_under_one_is_a_buy_everything_arbitrage():
+    # asks sum to 0.30 + 0.38 + 0.29 = 0.97: buy all three, receive exactly 1 at settlement
+    rows = [contract("lo", 0.28, 0.30), contract("mid", 0.36, 0.38), contract("hi", 0.27, 0.29)]
+    out = run(rows, partitions=[["lo", "mid", "hi"]])
+    arb = out["arbitrage"]
+    assert arb["feasible"] is False and arb["violation"] == pytest.approx(0.03)
+    assert {leg["id"]: leg["side"] for leg in arb["legs"]} == {"lo": "buy", "mid": "buy", "hi": "buy"}
+    fair = {r["id"]: r["coherent"] for r in out["records"]}
+    assert sum(fair.values()) == pytest.approx(1.0), "the projection must land on the coherent set"
+
+
+def test_the_tolerance_decides_whether_a_small_violation_counts():
+    rows = [contract("lo", 0.28, 0.30), contract("mid", 0.36, 0.38), contract("hi", 0.27, 0.29)]
+    assert run(rows, partitions=[["lo", "mid", "hi"]])["arbitrage"]["feasible"] is False
+    loose = run(rows, partitions=[["lo", "mid", "hi"]], tolerance=0.05)["arbitrage"]
+    assert loose["feasible"] is True and loose["legs"] == []
+
+
 def test_an_inverted_threshold_ladder_is_found_on_the_chain():
     # above(100) asks 0.40 but above(110) bids 0.45: buy the lower strike, sell the higher, credit 0.05
     rows = [contract("k100", 0.38, 0.40), contract("k110", 0.45, 0.47)]

@@ -729,6 +729,8 @@ they register only into private registries, never the default one.
   interpolated), a binary priced from any CDF curve through the existing payoffs (`CurveBinaryFairValue`), and an
   LP coherence check plus a weighted projection across linked binaries (`BinaryCoherence`; the projection is a QP, so
   `solver` must name one that solves QPs, e.g. pyomo's `highs`, not `appsi_highs`).
+  `CurveBinaryFairValue` reads curve rows keyed by one id column; `OptionCDFPanel`'s `cdfs` artifact needs an adapter
+  step first. `DigitalBounds` reads quotes as forward prices unless `discount_field` is named.
 
 ## Writing your own node
 
