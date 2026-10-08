@@ -872,6 +872,18 @@ class JsonSQLProjection:
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 
+    @staticmethod
+    def _memory_only(connection):
+        """Refuse runtimes that cannot guarantee memory-only transient storage."""
+        modes = [row[0] for row in connection.execute("PRAGMA compile_options").fetchall()
+                 if row[0].startswith("TEMP_STORE=")]
+        if len(modes) != 1 or modes[0] not in {"TEMP_STORE=1", "TEMP_STORE=2", "TEMP_STORE=3"}:
+            raise AssetError(["JSON projection cannot verify memory-only temporary storage"])
+        connection.execute("PRAGMA temp_store=MEMORY")
+        mode = connection.execute("PRAGMA temp_store").fetchone()
+        if mode is None or len(mode) != 1 or type(mode[0]) is not int or mode[0] != 2:
+            raise AssetError(["JSON projection cannot verify memory-only temporary storage"])
+
     def rows(self, raw):
         """Return only the configured projection as Python records.
 
@@ -898,6 +910,7 @@ class JsonSQLProjection:
             raise AssetError(["JSON projection input must be UTF-8 bytes or text"])
         connection = sqlite3.connect(":memory:")
         try:
+            self._memory_only(connection)
             text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
             # Initialize built-in virtual-table schemas before installing the
             # read-only authorizer; these fixed queries contain no source data.

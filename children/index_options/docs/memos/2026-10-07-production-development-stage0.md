@@ -545,3 +545,27 @@ An initial GREEN attempt caught six check-error-message mismatches because
 AssetError derives from ValueError; preserving AssetError fixed the family.
 No real raw archive conversion or training is counted here. Two fresh final
 lenses remain required before this helper is declared ready.
+
+
+**Stopped candidate and correction:** Final correctness review of 59d35c6 proved
+SQLite temporary-file spill during its duplicate-key GROUP BY, despite the
+in-memory database. Only synthetic data was used. The candidate was stopped.
+Independent Phase-0 correction review by /root/stage0_execution_checkpoint
+required checking compile-time TEMP_STORE mode as well as setting/reading
+temp_store=MEMORY. Both are now mandatory before schema or source SQL; absent,
+forced-file or unknown evidence refuses. Caller PRAGMAs remain denied.
+The 80,000-object descriptor-observation regression failed on 59d35c6 and then
+passed over duplicate/check/projection sort families after correction.
+Focused compatibility/projection/purity checks: 77 passed; Ruff passed.
+Two complete independent final reviews of the corrected candidate are pending.
+
+**Exact historical coverage now reconciled:** Independent
+/root/coverage_reconciliation_review verified all 833,637 source dates and all
+455,149 cached forecast identities with zero residual. The 7,172 omissions
+are 2,425 action-path and 4,747 missing-reference exclusions. VALE's difference
+is 11 pre-2026 origins whose calendar-derived targets reach January 2-29,
+2026, within the older January 30 holdout boundary. The current January 1
+boundary excludes them before action accounting. No protected outcomes were
+inspected. The retained h1-exact-coverage-20261007-r2 receipt and per-date ledger
+pin this reproduction; older-source admission and economic correctness remain
+separate from historical coverage arithmetic.

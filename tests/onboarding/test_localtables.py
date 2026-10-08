@@ -664,3 +664,76 @@ def test_json_projection_snapshots_config_and_recovers_after_error():
     with pytest.raises(AssetError):
         reader.rows("{")
     assert reader.rows("{}") == [{"x": 1}]
+
+
+def test_json_projection_no_sqlite_temp_files(monkeypatch):
+    import os
+    import sqlite3
+
+    if not os.path.isdir("/proc/self/fd"):
+        pytest.skip("Linux descriptor inspection required for the spill regression")
+    opened = set()
+    real_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+
+        def inspect_files():
+            for fd in os.listdir("/proc/self/fd"):
+                try:
+                    target = os.readlink("/proc/self/fd/" + fd)
+                except FileNotFoundError:
+                    continue
+                if "etilqs_" in target:
+                    opened.add(target)
+            return 0
+
+        connection.set_progress_handler(inspect_files, 1000)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    raw = json.dumps([{"id": n, "value": 80000-n} for n in range(80000)])
+    reader = localtables.JsonSQLProjection({
+        "checks": ["SELECT count(*) > 0 FROM (SELECT value FROM json_each(:document) "
+                   "GROUP BY value ORDER BY value DESC)"],
+        "query": "SELECT count(*) AS count FROM (SELECT row_number() OVER "
+                 "(ORDER BY value DESC) AS n FROM json_each(:document))"})
+    assert reader.rows(raw) == [{"count": 80000}]
+    assert not opened, "SQLite spilled temporary storage to disk"
+
+
+@pytest.mark.parametrize("options,readback", [
+    ([], 2), (["TEMP_STORE=0"], 2), (["TEMP_STORE=9"], 2),
+    (["TEMP_STORE=1"], 0), (["TEMP_STORE=1"], 1)])
+def test_json_projection_refuses_unverified_temp_mode(monkeypatch, options, readback):
+    import sqlite3
+
+    class FakeConnection:
+        closed = False
+        seen = []
+        def execute(self, sql, *args):
+            self.seen.append(sql)
+            assert ":document" not in sql
+            if sql == "PRAGMA compile_options":
+                return iter_cursor([(value,) for value in options])
+            if sql == "PRAGMA temp_store":
+                return iter_cursor([(readback,)])
+            if sql == "PRAGMA temp_store=MEMORY":
+                return iter_cursor([])
+            raise AssertionError(sql)
+        def close(self):
+            self.closed = True
+
+    class iter_cursor:
+        def __init__(self, rows):
+            self.values = rows
+        def fetchall(self):
+            return self.values
+        def fetchone(self):
+            return self.values[0] if self.values else None
+
+    connection = FakeConnection()
+    monkeypatch.setattr(sqlite3, "connect", lambda *args: connection)
+    with pytest.raises(AssetError, match="temporary storage"):
+        localtables.JsonSQLProjection({"query": "SELECT 1"}).rows("{}")
+    assert connection.closed
