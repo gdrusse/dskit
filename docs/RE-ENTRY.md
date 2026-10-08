@@ -117314,3 +117314,10 @@ Reviewed code/test Git blob identities:
 - tests/pipeline_libs/test_pyomo.py: 18557425ec229bf4cfa0174d1a8537a268c17e2d
 - children/index_options/tests/test_nodes.py: 8476639c459bfeff90e4c69f9b10230a3f70c43b
 - children/index_options/tests/test_quote_backtest.py: 4e9d064253a01dc899d3aa3d1ac54ed3f83f2156
+
+
+### ADR-0255 owner selected calibration criterion A
+
+Owner explicitly selected expected-loss calibration (2026-10-08). Use realized expiry loss minus robust expected loss on the prespecified audit-template population, with the reviewed dependence-aware mean-bound diagnostic. Pooled CDF distance is not the primary rho criterion. This does not validate every conditional forecast or every optimizer-selected trade; later selected-policy evaluation remains separate.
+
+Only the criterion is settled. Next owner choice, asked one at a time per ADR0255: finite configured rho grid versus continuous bisection. Search/selection/update phases, projection-error policy and remaining numerical settings are not inferred from this answer. Runtime/config/test blobs and the clean component ReviewExit remain unchanged. No market records, numerical calibration, fits or replay were run.
