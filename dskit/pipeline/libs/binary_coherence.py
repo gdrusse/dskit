@@ -50,6 +50,7 @@ from dskit.pipeline.records import number_ok
 
 __all__ = [
     "DEFAULT_TOLERANCE",
+    "LEG_DUST",
     "NODE_KINDS",
     "RELATIONS",
     "RELATION_KINDS",
@@ -62,8 +63,14 @@ __all__ = [
     "Relation",
 ]
 
-#: Below this a widening, a dual weight or a leg's units are read as zero.
+#: The default ``tolerance``: a widening at or below it is read as coherent. It gates the
+#: feasible/infeasible VERDICT only; it never sizes a leg or decides which relations are named.
 DEFAULT_TOLERANCE = 1e-7
+
+#: Solver dust, relative to the largest ``|dual|`` of the LP: a leg's net units, or a relation row's
+#: dual, at or below ``LEG_DUST * max|dual|`` is read as zero. Fixed, never the ``tolerance`` knob:
+#: dropping a real leg would turn a riskless position into a risky one.
+LEG_DUST = 1e-9
 
 #: The status a projected contract carries; the others name why it has no coherent value.
 STATUS_OK = "ok"
@@ -303,7 +310,8 @@ class BinaryCoherence(PyomoSolve):
         and ``solver`` (a pyomo solver that takes a quadratic objective, e.g. ``"highs"``).
         At least one of ``partitions``, ``chains`` and ``differences``: each a list of id
         lists (:data:`RELATIONS`). OPTIONAL: ``bid_size_field`` and ``ask_size_field`` (both
-        or neither), ``tolerance`` (>= 0, default :data:`DEFAULT_TOLERANCE`) and
+        or neither), ``tolerance`` (>= 0, default :data:`DEFAULT_TOLERANCE`; it gates only the
+        feasible/infeasible verdict, legs and relations use :data:`LEG_DUST`) and
         ``solver_options``.
 
     Examples
@@ -477,28 +485,36 @@ class BinaryCoherence(PyomoSolve):
         ------
         RuntimeError
             When the LP did not finish optimal (the declared relations admit no probability
-            vector at all, or the solver failed).
+            vector at all, or the solver failed); and when the verdict is infeasible but the duals
+            recover no position (no leg survives :data:`LEG_DUST`) or one that cannot profit (its
+            credit plus the units it buys, its best payout, is not positive): a verdict with no
+            usable trade is refused by name, never reported as an empty or losing trade.
         """
         from pyomo.environ import value
 
         _require_optimal(results, "the widening LP (the declared relations may admit no probability vector)")
-        data, tol = model._coherence, self.params.get("tolerance", DEFAULT_TOLERANCE)
+        data = model._coherence
         violation = max(0.0, float(value(model.widening)))
-        legs = self._legs(model, data, tol) if violation > tol else []
+        feasible = violation <= self.params.get("tolerance", DEFAULT_TOLERANCE)
+        if feasible:
+            return {"arbitrage": {"feasible": True, "violation": violation, "legs": [], "relations": [],
+                                  "credit_per_unit": 0.0, "executable_units": None}}
+        dust = LEG_DUST * max((abs(d) for d in model.dual.values()), default=0.0)
+        legs = self._legs(model, data, dust)
+        credit = sum(leg["units"] * (leg["price"] if leg["side"] == "sell" else -leg["price"]) for leg in legs)
+        _require_position(legs, credit, violation)
         violated = [r.describe() for r in data["active"]
-                    if violation > tol and any(abs(model.dual.get(row, 0.0)) > tol for row in _rows_of(model, r))]
+                    if any(abs(model.dual.get(row, 0.0)) > dust for row in _rows_of(model, r))]
         return {"arbitrage": {
-            "feasible": violation <= tol, "violation": violation, "legs": legs, "relations": violated,
-            "credit_per_unit": sum(leg["units"] * (leg["price"] if leg["side"] == "sell" else -leg["price"])
-                                   for leg in legs),
-            "executable_units": self._executable_units(legs, data["usable"]) if legs else None}}
+            "feasible": False, "violation": violation, "legs": legs, "relations": violated,
+            "credit_per_unit": credit, "executable_units": self._executable_units(legs, data["usable"])}}
 
-    def _legs(self, model, data, tol):
+    def _legs(self, model, data, dust):
         """Return the riskless position the LP's duals certify: units sold at bids, bought at asks."""
         legs = []
         for i, cid in enumerate(data["linked"]):
             net = -model.dual.get(model.at_ask[i], 0.0) - model.dual.get(model.at_bid[i], 0.0)
-            if abs(net) > tol:
+            if abs(net) > dust:
                 side = "buy" if net > 0 else "sell"
                 legs.append({"id": cid, "side": side, "units": abs(net),
                              "price": data["ask"][i] if side == "buy" else data["bid"][i]})
@@ -609,6 +625,17 @@ def _component_name(relation):
 def _rows_of(model, relation):
     """Every row of ``relation`` in a built model."""
     return list(model.component(_component_name(relation)).values())
+
+
+def _require_position(legs, credit, violation):
+    """Refuse an infeasible verdict whose recovered position is empty or cannot profit, naming it."""
+    if not legs:
+        raise RuntimeError(f"the widening LP found a violation of {violation:.6g} but its duals recover no riskless "
+                           "position (every leg is solver dust): refused rather than reported as an empty trade")
+    best = credit + sum(leg["units"] for leg in legs if leg["side"] == "buy")
+    if not best > 0.0:
+        raise RuntimeError(f"the widening LP found a violation of {violation:.6g} but the recovered position cannot "
+                           f"profit (credit {credit:.6g}, at most {best:.6g} at settlement): refused, not reported")
 
 
 def _require_optimal(results, what):

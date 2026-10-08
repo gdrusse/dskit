@@ -36,10 +36,41 @@ for ``S <= a``, 1 for ``S >= b`` and between them in ``[0, 1]``; the put spread
 In all four the leg nearest ``K`` is SOLD at its bid and the next listed strike away is BOUGHT at
 its ask, which is how :class:`_Strip` finds them: the nearest strike on the right side of ``K``
 whose bid is sellable, then the nearest strike beyond it whose ask is buyable. Any such pair is
-valid; the nearest is the tightest a convex price curve allows and the one the ADR names. The
-call and put bands bound the same number, so the TIGHTER edge of each is kept (the larger lower,
-the smaller upper), clipped to ``[0, 1]``. A ``K`` with no usable pair on a side has no bound on
+valid; the nearest is the tightest a convex price curve allows and the one the ADR names. When
+the nearest pair's edge is UNUSABLE (below), the next farther pair is tried (the next ask out,
+then the next bid out), because any pair bounds the digital. The call and put bands bound the
+same number, so the TIGHTER edge of each is kept (the larger lower, the smaller upper), clipped
+to ``[0, 1]``, each carrying its own error. A ``K`` with no usable pair on a side has no bound on
 that side and is marked, never interpolated between strikes.
+
+Float error, proved. Every input float ``x`` (a quote, a strike, a discount factor) is read as
+standing for some real within half an ulp, ``|x* - x| <= u |x|``, ``u = 2^-53``; every float
+operation rounds with ``fl(a op b) = (a op b)(1 + e)``, ``|e| <= u`` (no underflow: values far above
+``1e-290``). An edge ``offset + sign * (q_n - q_f) / h`` then carries the bound ``E`` that
+:func:`_spread_edge` computes, derived term by term:
+
+- a price ``q = fl(b / d)`` against ``q* = b* / d*`` is within ``e_q = 3u|q|`` (one rounding plus the
+  two inputs' half ulps, to first order); undiscounted, ``q = b`` is within ``e_q = u|q|``;
+- the spread ``n = fl(q_n - q_f)`` is within ``E_n = u|n| + e_qn + e_qf`` of ``n* = q_n* - q_f*``;
+- the width ``h = fl(|K_f - K_n|)`` is within ``E_h = u(h + |K_n| + |K_f|)`` of ``h*``: the strikes'
+  own half ulps, ``u(|K_n| + |K_f|)``, dominate when two strikes are nearly one (``0.1 + 0.2`` and
+  ``0.3``). A pair is usable only when ``h > 2 E_h``, so ``h* >= h - E_h > 0`` and the strikes'
+  order is known;
+- ``c = fl(n / h)`` is within ``E_c = (E_n + |c| E_h) / (h - E_h) + u|c|`` of ``c* = n* / h*``, from
+  ``|n/h - n*/h*| <= |n - n*| / h* + |n| |h - h*| / (h h*)`` and ``h* >= h - E_h``;
+- ``fl(1 + sign c)`` adds ``u|edge|`` when the offset is 1; a sign flip is exact.
+
+The first-order sum is DOUBLED (``_SLACK``), which covers every dropped second-order term (each
+below ``4u`` relative) and the rounding of the bound's own arithmetic, so ``|edge - edge*| <= E``
+always; ``tests/pipeline/test_digital_bounds.py`` checks it against exact ``fractions.Fraction``
+arithmetic on random edges, input half-ulps included. An edge whose ``E`` exceeds
+:data:`EDGE_MAX_ERROR` is UNUSABLE and never reported. Clipping to ``[0, 1]`` is 1-Lipschitz, so a
+clipped edge keeps its ``E``. The interval arithmetic below adds ``|coefficient| E`` per term plus
+its own roundings, and a band is ``crossed_band`` only when ``lower > upper + E_lower + E_upper``: a
+crossing larger than both edges' proven error is a parity violation, never float dust, and no
+quote elsewhere in the chain moves the allowance. Accepted limit: strikes near ``1e5`` spaced one
+cent apart carry ``|c| E_h / h`` of about ``4e-9`` per unit edge, above the cap, so such a pair is
+unusable (with no farther pair, the side is marked ``no_*_bracket``).
 
 Geometries. Every shipped geometry is affine in the survival values it reads (above:
 ``s(L)``; below: ``1 - s(U)``; between: ``s(L) - s(U)``), so its band follows from each read
@@ -62,14 +93,14 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from decimal import Decimal
 
-from dskit.pipeline.binary_curve import canonical_key
+from dskit.pipeline.binary_curve import _key_or_problem, canonical_key
 from dskit.pipeline.binary_pricing import PAYOFFS, STATUS_SUFFIX
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = [
-    "BAND_RELATIVE_TOLERANCE",
     "DEFAULT_MIN_SIZE",
+    "EDGE_MAX_ERROR",
     "LOWER_SUFFIX",
     "STATUSES",
     "STATUS_OK",
@@ -83,16 +114,13 @@ __all__ = [
 STATUS_OK = "ok"
 #: Every status the node writes, in the order its checks run.
 STATUSES = (
-    STATUS_OK, "unknown_payoff", "bad_bounds", "no_chain", "no_bracket", "no_lower_bracket",
+    STATUS_OK, "unknown_payoff", "bad_bounds", "bad_chain_key", "no_chain", "no_bracket", "no_lower_bracket",
     "no_upper_bracket", "crossed_band",
 )
 
-#: Float dust allowed before a lower edge above the upper edge counts as ``crossed_band``, as a
-#: fraction of the chain's price scale: a locked, arbitrage-free chain can compute its two edges a few
-#: ulps apart, and the rounding of ``(a - b) / h`` grows with ``|price| / h``. The allowance is this
-#: times ``max(1, scale)``, ``scale`` being the chain's largest quoted forward value over its smallest
-#: strike spacing (``_Chain.tolerance``).
-BAND_RELATIVE_TOLERANCE = 1e-12
+#: The largest proven float error an edge may carry and still be used (module docstring, "Float
+#: error, proved"). An edge whose bound exceeds it is unusable: the next farther pair is tried.
+EDGE_MAX_ERROR = 1e-9
 
 #: Suffixes of the columns written beside ``bound_field``.
 LOWER_SUFFIX = "_lower"
@@ -103,6 +131,13 @@ DEFAULT_MIN_SIZE = 1
 
 _SIDES = (None, "sell", "buy")
 _SELL, _BUY = "sell", "buy"
+_CALL, _PUT = "call", "put"
+
+#: The unit roundoff of a binary64 float, ``2**-53``.
+_U = 2.0 ** -53
+#: The factor the first-order error sum is multiplied by: it covers every dropped second-order term
+#: and the rounding of the bound's own arithmetic (module docstring).
+_SLACK = 2.0
 
 
 def _amount(value):
@@ -197,8 +232,39 @@ def _affine_terms(geometry, lower, upper):
     return constant, terms
 
 
+def _forward(quote, discount):
+    """Return ``(forward value, proven error)`` of a quote, divided by ``discount`` unless it is None."""
+    if discount is None:
+        return quote, _U * abs(quote)
+    value = quote / discount
+    return value, 3.0 * _U * abs(value)
+
+
+def _spread_edge(near_k, near, far_k, far, offset, sign):
+    """Return ``(offset + sign * (near - far) / |far_k - near_k|, its proven error)``, or None.
+
+    ``near`` and ``far`` are ``(value, error)`` pairs from :func:`_forward`. None when the two
+    strikes are too close for their order to be known (module docstring, "Float error, proved").
+    """
+    h = abs(far_k - near_k)
+    e_h = _U * (h + abs(near_k) + abs(far_k))
+    if not h > 2.0 * e_h:
+        return None
+    n = near[0] - far[0]
+    credit = n / h
+    e_c = (_U * abs(n) + near[1] + far[1] + abs(credit) * e_h) / (h - e_h) + _U * abs(credit)
+    edge = offset + sign * credit
+    return edge, _SLACK * (e_c + (_U * abs(edge) if offset else 0.0))
+
+
+def _clip(edge, lower):
+    """Clip a lower edge at 0 or an upper edge at 1, keeping its error (clipping is 1-Lipschitz)."""
+    value, error = edge
+    return (max(0.0, value) if lower else min(1.0, value)), error
+
+
 class _Strip:
-    """One right of one chain: sellable bids and buyable asks by strike, as forward values."""
+    """One right of one chain: sellable bids and buyable asks by strike, as ``(forward value, error)``."""
 
     def __init__(self):
         self.bids, self.asks = {}, {}
@@ -208,28 +274,18 @@ class _Strip:
         self.bid_strikes, self.ask_strikes = sorted(self.bids), sorted(self.asks)
 
     def ahead(self, strike):
-        """Return ``(near bid, far ask, width)`` selling the first strike >= ``strike``, or None."""
-        i = bisect_left(self.bid_strikes, strike)
-        if i == len(self.bid_strikes):
-            return None
-        near = self.bid_strikes[i]
-        j = bisect_right(self.ask_strikes, near)
-        if j == len(self.ask_strikes):
-            return None
-        far = self.ask_strikes[j]
-        return self.bids[near], self.asks[far], far - near
+        """Yield ``(near, near bid, far, far ask)`` selling a strike >= ``strike``, the nearest pair first."""
+        for i in range(bisect_left(self.bid_strikes, strike), len(self.bid_strikes)):
+            near = self.bid_strikes[i]
+            for far in self.ask_strikes[bisect_right(self.ask_strikes, near):]:
+                yield near, self.bids[near], far, self.asks[far]
 
     def behind(self, strike):
-        """Return ``(near bid, far ask, width)`` selling the last strike <= ``strike``, or None."""
-        i = bisect_right(self.bid_strikes, strike)
-        if i == 0:
-            return None
-        near = self.bid_strikes[i - 1]
-        j = bisect_left(self.ask_strikes, near)
-        if j == 0:
-            return None
-        far = self.ask_strikes[j - 1]
-        return self.bids[near], self.asks[far], near - far
+        """Yield ``(near, near bid, far, far ask)`` selling a strike <= ``strike``, the nearest pair first."""
+        for i in range(bisect_right(self.bid_strikes, strike) - 1, -1, -1):
+            near = self.bid_strikes[i]
+            for far in reversed(self.ask_strikes[:bisect_left(self.ask_strikes, near)]):
+                yield near, self.bids[near], far, self.asks[far]
 
 
 class _Chain:
@@ -238,40 +294,39 @@ class _Chain:
     def __init__(self):
         self.calls, self.puts = _Strip(), _Strip()
         self._bands = {}
-        self.tolerance = BAND_RELATIVE_TOLERANCE
 
     def freeze(self):
-        """Sort both strips and size the float-dust allowance to the chain's price scale."""
+        """Sort both strips once every quote is filed."""
         self.calls.freeze()
         self.puts.freeze()
-        books = (self.calls.bids, self.calls.asks, self.puts.bids, self.puts.asks)
-        strikes = sorted({k for book in books for k in book})
-        gaps = [b - a for a, b in zip(strikes, strikes[1:])]
-        if gaps:
-            largest = max(abs(price) for book in books for price in book.values())
-            self.tolerance = BAND_RELATIVE_TOLERANCE * max(1.0, largest / min(gaps))
 
     def band(self, strike):
-        """Return ``(lower, upper)`` of ``P(S >= strike)``, each None when no spread bounds it."""
+        """Return ``(lower, upper)`` of ``P(S >= strike)``: each ``(value, error)``, or None when no spread bounds it."""
         if strike not in self._bands:
             self._bands[strike] = self._band(strike)
         return self._bands[strike]
 
     def _band(self, strike):
-        """Return the tighter of the call and put edges (module docstring, cases 1-4), clipped to [0, 1]."""
+        """Return the tighter usable call and put edges (module docstring, cases 1-4), each with its own error."""
         # Every case sells the near leg and buys the far one, so its credit is
         # c = (near bid - far ask) / h. Case 1 (calls ahead): lower = c. Case 2 (calls behind):
         # upper = -c. Case 3 (puts ahead): P(S < K) <= -c, so lower = 1 + c. Case 4 (puts behind):
         # P(S < K) >= c, so upper = 1 - c.
-        lowers, uppers = [], []
-        for spread, edges, offset, sign in ((self.calls.ahead(strike), lowers, 0.0, 1.0),
-                                            (self.calls.behind(strike), uppers, 0.0, -1.0),
-                                            (self.puts.ahead(strike), lowers, 1.0, 1.0),
-                                            (self.puts.behind(strike), uppers, 1.0, -1.0)):
-            if spread is not None:
-                near_bid, far_ask, width = spread
-                edges.append(offset + sign * (near_bid - far_ask) / width)
-        return (max(0.0, max(lowers)) if lowers else None, min(1.0, min(uppers)) if uppers else None)
+        lowers = [e for e in (_usable_edge(self.calls.ahead(strike), 0.0, 1.0, True),
+                              _usable_edge(self.puts.ahead(strike), 1.0, 1.0, True)) if e is not None]
+        uppers = [e for e in (_usable_edge(self.calls.behind(strike), 0.0, -1.0, False),
+                              _usable_edge(self.puts.behind(strike), 1.0, -1.0, False)) if e is not None]
+        return (max(lowers, key=lambda e: e[0]) if lowers else None,
+                min(uppers, key=lambda e: e[0]) if uppers else None)
+
+
+def _usable_edge(pairs, offset, sign, lower):
+    """Return the clipped ``(edge, error)`` of the nearest pair whose error is within :data:`EDGE_MAX_ERROR`, or None."""
+    for near_k, near, far_k, far in pairs:
+        edge = _spread_edge(near_k, near, far_k, far, offset, sign)
+        if edge is not None and edge[1] <= EDGE_MAX_ERROR:
+            return _clip(edge, lower)
+    return None
 
 
 class DigitalBounds(Node):
@@ -404,17 +459,30 @@ class DigitalBounds(Node):
             return 0
         return self.params.get("min_size", DEFAULT_MIN_SIZE)
 
+    def _right(self, quote):
+        """Return ``"call"``, ``"put"`` or None: the right a quote's cell names, read by its characters.
+
+        The one reading of the right column (R1's key rule): ``numpy.str_("C")`` and a ``StrEnum``
+        whose value is ``"C"`` are ``"C"``; anything that is not a key, or not one of the two
+        declared values, is None.
+        """
+        p = self.params
+        key, _ = _key_or_problem(quote.get(p["right_field"]))
+        return {canonical_key(p["call_value"]): _CALL, canonical_key(p["put_value"]): _PUT}.get(key)
+
     def _row_problems(self, quote):
         """Problems that make a quote row unusable on both sides."""
         p = self.params
         problems = []
         if not price_ok(quote.get(p["strike_field"])):
             problems.append(f"strike must be a positive finite number, got {quote.get(p['strike_field'])!r}")
-        if quote.get(p["right_field"]) not in (p["call_value"], p["put_value"]):
+        if self._right(quote) is None:
             problems.append(f"right must be {p['call_value']!r} or {p['put_value']!r}, got "
                             f"{quote.get(p['right_field'])!r}")
-        if quote.get(p["quote_chain_field"]) is None:
-            problems.append("chain key is missing")
+        chain = quote.get(p["quote_chain_field"])
+        why = "is missing" if chain is None else _key_or_problem(chain)[1]
+        if why:
+            problems.append(f"chain key {why}")
         if "discount_field" in p and not price_ok(quote.get(p["discount_field"])):
             problems.append(f"discount factor must be a positive finite number, got {quote.get(p['discount_field'])!r}")
         return problems
@@ -430,22 +498,21 @@ class DigitalBounds(Node):
     def _quote_key(self, quote):
         """Return the key two listings of one strike and right share (``100`` and ``100.0`` are one strike)."""
         p = self.params
-        return (canonical_key(quote[p["quote_chain_field"]]), canonical_key(quote[p["right_field"]]),
-                float(quote[p["strike_field"]]))
+        return canonical_key(quote[p["quote_chain_field"]]), self._right(quote), float(quote[p["strike_field"]])
 
     def _file(self, quote, chains, base):
         """File a usable quote's sides into its chain; return a refusal row per side it cannot trade."""
         p = self.params
-        discount = float(quote[p["discount_field"]]) if "discount_field" in p else 1.0
+        discount = float(quote[p["discount_field"]]) if "discount_field" in p else None
         chain = chains.setdefault(canonical_key(quote[p["quote_chain_field"]]), _Chain())
-        strip = chain.calls if quote[p["right_field"]] == p["call_value"] else chain.puts
+        strip = chain.calls if self._right(quote) == _CALL else chain.puts
         refusals = []
         for side, book, field in ((_SELL, strip.bids, "bid_field"), (_BUY, strip.asks, "ask_field")):
             side_problems = self._side_problems(quote, side)
             if side_problems:
                 refusals.append({**base, "side": side, "problems": side_problems})
             else:
-                book[float(quote[p["strike_field"]])] = float(quote[p[field]]) / discount
+                book[float(quote[p["strike_field"]])] = _forward(float(quote[p[field]]), discount)
         return refusals
 
     def _chains(self, quotes):
@@ -476,7 +543,10 @@ class DigitalBounds(Node):
         given = {"lower": lower, "upper": upper}
         if geometry.bounds_problem(lower, upper) is not None or not all(price_ok(given[b]) for b in geometry.bounds):
             return "bad_bounds"
-        if canonical_key(row.get(p["chain_field"])) not in chains:
+        key, why = _key_or_problem(row.get(p["chain_field"]))
+        if why:
+            return "bad_chain_key"
+        if key not in chains:
             return "no_chain"
         return None
 
@@ -488,10 +558,10 @@ class DigitalBounds(Node):
         if status is None:
             geometry = PAYOFFS[row[p["payoff_field"]]]
             constant, terms = _affine_terms(geometry, row.get(p["lower_field"]), row.get(p["upper_field"]))
-            chain = chains[canonical_key(row.get(p["chain_field"]))]
-            low, high = _interval(constant, terms, chain.band)
-            status = _band_status(low, high, chain.tolerance)
-        row.update({name + LOWER_SUFFIX: low, name + UPPER_SUFFIX: high, name + STATUS_SUFFIX: status})
+            low, high = _interval(constant, terms, chains[canonical_key(row.get(p["chain_field"]))].band)
+            status = _band_status(low, high)
+        row.update({name + LOWER_SUFFIX: None if low is None else low[0],
+                    name + UPPER_SUFFIX: None if high is None else high[0], name + STATUS_SUFFIX: status})
         return row
 
     def run(self, ctx, inputs):
@@ -528,22 +598,36 @@ def _name_ok(value):
 
 
 def _interval(constant, terms, band):
-    """Interval arithmetic over an affine geometry: ``(lower, upper)``, a side None when an edge it needs is."""
-    low = high = constant
+    """Interval arithmetic over an affine geometry: ``(lower, upper)`` as ``(value, error)``, None where an edge is.
+
+    Each term adds ``|coefficient| * error`` of the edge it takes, plus the rounding of its own
+    multiply and add; the final clip to ``[0, 1]`` keeps the error (it is 1-Lipschitz).
+    """
+    low = high = (constant, 0.0)
     for strike, coefficient in terms.items():
         edges = band(strike)
         take_low, take_high = (edges[0], edges[1]) if coefficient > 0 else (edges[1], edges[0])
-        low = None if low is None or take_low is None else low + coefficient * take_low
-        high = None if high is None or take_high is None else high + coefficient * take_high
-    return (None if low is None else max(0.0, low), None if high is None else min(1.0, high))
+        low = _add_term(low, coefficient, take_low)
+        high = _add_term(high, coefficient, take_high)
+    return (None if low is None else (max(0.0, low[0]), low[1]),
+            None if high is None else (min(1.0, high[0]), high[1]))
 
 
-def _band_status(low, high, tolerance):
-    """Return the status of a computed band, ``tolerance`` being its chain's float-dust allowance."""
+def _add_term(total, coefficient, edge):
+    """Return ``total + coefficient * edge`` as ``(value, error)``, or None when either is None."""
+    if total is None or edge is None:
+        return None
+    product = coefficient * edge[0]
+    value = total[0] + product
+    return value, total[1] + abs(coefficient) * edge[1] + _SLACK * _U * (abs(product) + abs(value))
+
+
+def _band_status(low, high):
+    """Return the status of a computed band: crossed only beyond both edges' proven errors."""
     if low is None and high is None:
         return "no_bracket"
     if low is None:
         return "no_lower_bracket"
     if high is None:
         return "no_upper_bracket"
-    return "crossed_band" if low > high + tolerance else STATUS_OK
+    return "crossed_band" if low[0] > high[0] + low[1] + high[1] else STATUS_OK

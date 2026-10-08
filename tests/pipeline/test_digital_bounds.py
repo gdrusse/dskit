@@ -4,8 +4,12 @@ Every expected number is worked by hand in the comments or is a Black-76 closed 
 (``N(d2)``), never read back from the module under test.
 """
 
+import enum
 import math
+import random
+from fractions import Fraction
 
+import numpy as np
 import pytest
 
 from dskit.pipeline import digital_bounds
@@ -229,6 +233,68 @@ def test_a_strike_and_right_listed_twice_is_refused_both_times_by_name():
     assert len(duplicates) == 2, "neither copy of a repeated strike/right may be used"
 
 
+class _Right(enum.StrEnum):
+    C = "C"
+    P = "P"
+
+
+@pytest.mark.parametrize("right", [np.str_("C"), _Right.C], ids=["numpy_str", "str_enum"])
+def test_a_duplicate_whose_right_is_a_str_subclass_is_refused_with_the_plain_copy(right):
+    # np.str_("C") and a StrEnum C are the call right; listed beside a plain "C" C100 they are the
+    # same strike and right twice, never a second quote that silently overwrites the first
+    quotes = list(HAND) + [quote(right, 100, 9.0, 9.1)]
+    out = run([contract("above", lo=100.0)], quotes)
+    duplicates = [r for r in out["refusals"] if any("duplicate quote" in m for m in r["problems"])]
+    assert len(duplicates) == 2
+    assert out["records"][0]["dig_lower"] == pytest.approx(0.29)  # the puts alone: neither C100 is used
+
+
+@pytest.mark.parametrize("right", [np.str_("P"), _Right.P])
+def test_a_str_subclass_right_is_filed_on_the_side_its_characters_name(right):
+    quotes = [q for q in HAND if not (q["right"] == "P" and q["strike"] == 100)] + [quote(right, 100, 4.0, 4.2)]
+    out = run([contract("above", lo=100.0)], quotes)
+    assert out["refusals"] == []
+    assert out["records"][0]["dig_lower"] == pytest.approx(0.29)  # the put band read P100
+
+
+class _Liar(str):
+    """A str subclass whose ``__str__`` and ``__eq__`` lie: only its characters say which right it is."""
+
+    def __str__(self):
+        return "P"
+
+    def __eq__(self, other):
+        return False
+
+    __hash__ = str.__hash__
+
+
+def test_a_right_whose_own_str_and_eq_lie_is_read_by_its_characters():
+    quotes = list(HAND) + [quote(_Liar("C"), 100, 9.0, 9.1)]
+    duplicates = [r for r in run([contract("above", lo=100.0)], quotes)["refusals"]
+                  if any("duplicate quote" in m for m in r["problems"])]
+    assert len(duplicates) == 2
+
+
+def test_a_lying_right_is_accepted_and_filed_as_the_right_its_characters_name():
+    # calls only, C100 spelled by the liar: filed as a call it bounds as HAND's calls do,
+    # lower (4.0 - 1.2) / 10 = 0.28 and upper (11.4 - 4.0) / 10 = 0.74
+    calls = [quote("C", 90, 11.0, 11.4), quote(_Liar("C"), 100, 4.0, 4.2), quote("C", 110, 1.0, 1.2)]
+    out = run([contract("above", lo=100.0)], calls)
+    assert out["refusals"] == []
+    assert (out["records"][0]["dig_lower"], out["records"][0]["dig_upper"]) == (pytest.approx(0.28), pytest.approx(0.74))
+
+
+@pytest.mark.parametrize("key", [1.0, float("nan"), {1, 2}, b"x"])
+def test_a_chain_key_that_cannot_be_keyed_is_refused_by_name_on_quotes_and_contracts(key):
+    out = run([contract("above", lo=100.0, chain=key), contract("above", lo=100.0)],
+              list(HAND) + [quote("C", 120, 0.1, 0.2, chain=key)])
+    refused = [r for r in out["refusals"] if r["side"] == "both"]
+    assert len(refused) == 1 and any("chain key" in m for m in refused[0]["problems"])
+    assert [r["dig_status"] for r in out["records"]] == ["bad_chain_key", STATUS_OK]
+    assert "bad_chain_key" in STATUSES
+
+
 def test_a_list_valued_chain_key_is_one_chain_not_a_crash():
     key = ["X", "2026-10-16"]
     quotes = [{**q, "chain": list(key)} for q in HAND]
@@ -279,29 +345,160 @@ def test_a_genuine_crossing_of_one_millionth_at_cent_prices_is_still_crossed():
     assert row["dig_lower"] - row["dig_upper"] == pytest.approx(1e-6, rel=1e-3)
 
 
-@pytest.mark.parametrize("multiple, status", [(0.5, STATUS_OK), (2.0, "crossed_band")])
-def test_the_allowance_is_the_relative_tolerance_times_top_price_over_the_narrowest_spacing(multiple, status):
-    # linear calls 0.05 per unit strike at uneven strikes 6695, 6696, 6700 (spacings 1 and 4):
-    # both edges of P(S >= 6696) are 0.05. The allowance is 1e-12 * 8799 / 1 (the NARROWEST
-    # spacing), so a crossing of half of it is dust and twice it is reported.
-    allowance = digital_bounds.BAND_RELATIVE_TOLERANCE * 8799.0 / 1.0
-    far = 8798.75 - 4 * multiple * allowance  # lowers the far ask: lower edge rises by multiple * allowance
-    calls = [quote("C", 6695, 8799.0, 8799.0), quote("C", 6696, 8798.95, 8798.95), quote("C", 6700, far, far)]
-    assert run([contract("above", lo=6696.0)], calls)["records"][0]["dig_status"] == status
-
-
-@pytest.mark.parametrize("multiple, status", [(0.5, STATUS_OK), (2.0, "crossed_band")])
-def test_a_chain_priced_below_one_unit_per_spacing_keeps_the_absolute_floor(multiple, status):
-    # calls 0.30 / 0.20 / 0.10 at 90 / 100 / 110: scale 0.03, so the allowance is 1e-12 itself
-    far = 0.10 - 10 * multiple * digital_bounds.BAND_RELATIVE_TOLERANCE
+def test_a_crossing_far_below_the_old_chain_allowance_is_reported_on_a_cheap_chain():
+    # calls 0.30 / 0.20 / 0.10 at 90 / 100 / 110: each edge's proven error is ~1e-17 here, so a
+    # 1e-12 crossing is a parity violation, not dust (the chain-wide allowance used to swallow it)
+    far = 0.10 - 10 * 1e-12
     calls = [quote("C", 90, 0.30, 0.30), quote("C", 100, 0.20, 0.20), quote("C", 110, far, far)]
-    assert run([contract("above", lo=100.0)], calls)["records"][0]["dig_status"] == status
+    assert run([contract("above", lo=100.0)], calls)["records"][0]["dig_status"] == "crossed_band"
 
 
-def test_the_band_tolerance_is_relative_to_the_chains_price_scale():
-    assert digital_bounds.BAND_RELATIVE_TOLERANCE == 1e-12
-    assert "BAND_RELATIVE_TOLERANCE" in digital_bounds.__all__
-    assert not hasattr(digital_bounds, "BAND_TOLERANCE"), "one tolerance name, not two"
+def test_one_edge_error_cap_and_no_chain_wide_tolerance():
+    assert digital_bounds.EDGE_MAX_ERROR == 1e-9 and "EDGE_MAX_ERROR" in digital_bounds.__all__
+    assert not hasattr(digital_bounds, "BAND_RELATIVE_TOLERANCE"), "the chain-wide scale is gone"
+    assert not hasattr(digital_bounds, "BAND_TOLERANCE")
+
+
+# A chain with a GENUINE 26-point parity violation at K = 100: calls say P(S >= 100) >= 0.9, puts
+# say P(S >= 100) <= 1 - (bid P100 - ask P95) / 5 = 1 - (1.0 - 0.4) / 5 = 0.88... and the calls
+# behind cap it at (ask C95 - bid C100) / 5 = (9.2 - 6.0) / 5 = 0.64, so the band is [0.9, 0.64].
+CROSSED = [quote("C", 95, 9.0, 9.2), quote("C", 100, 6.0, 6.1), quote("C", 105, 1.4, 1.5),
+           quote("C", 110, 0.5, 0.6), quote("P", 95, 0.3, 0.4), quote("P", 100, 1.0, 1.1),
+           quote("P", 105, 3.5, 3.6), quote("P", 110, 7.4, 7.5)]
+
+
+def test_the_planted_crossing_is_reported():
+    row = run([contract("above", lo=100.0)], CROSSED)["records"][0]
+    assert row["dig_status"] == "crossed_band"
+    assert (row["dig_lower"], row["dig_upper"]) == (pytest.approx(0.9), pytest.approx(0.64))
+
+
+def test_float_noise_strikes_elsewhere_in_the_chain_cannot_hide_the_planted_crossing():
+    # 0.1 + 0.2 and 0.3 are one strike to any reader; their "spacing" of 5.6e-17 used to inflate the
+    # chain-wide allowance to ~1.7e5 and mark the crossing ok. Their own edge is unusable, nothing else moves.
+    noisy = CROSSED + [quote("P", 0.1 + 0.2, 0.0001, 0.0002), quote("P", 0.3, 0.0001, 0.0002)]
+    row = run([contract("above", lo=100.0)], noisy)["records"][0]
+    assert row["dig_status"] == "crossed_band"
+    assert (row["dig_lower"], row["dig_upper"]) == (pytest.approx(0.9), pytest.approx(0.64))
+
+
+def test_a_near_duplicate_strike_at_k_cannot_produce_an_ok_band():
+    # 100.00000000000001 is 100 to any reader: its pair with 100 is an edge of width 1.4e-14 whose
+    # error is enormous, so the next farther pair (100, 105) is used and the crossing still shows
+    row = run([contract("above", lo=100.0)], CROSSED + [quote("C", 100.00000000000001, 6.2, 6.3)])["records"][0]
+    assert row["dig_status"] == "crossed_band"
+    assert row["dig_lower"] == pytest.approx(0.9)
+
+
+def test_an_unusable_nearest_pair_falls_back_to_the_next_farther_pair():
+    # C100's nearest ask above is a near-duplicate strike offered at 3.9 (an edge of 7e12, clipped
+    # to 1, a false crossing); the fallback pair (C100, C110) gives (4.0 - 1.2) / 10 = 0.28 and the
+    # puts' 0.29 stays the tighter lower edge
+    row = run([contract("above", lo=100.0)], HAND + [quote("C", 100.00000000000001, 3.8, 3.9)])["records"][0]
+    assert row["dig_status"] == STATUS_OK
+    assert row["dig_lower"] == pytest.approx(0.29) and row["dig_upper"] == pytest.approx(0.74)
+
+
+def test_an_unusable_nearest_pair_behind_falls_back_to_the_next_farther_ask():
+    # the mirror of the case above: C100's nearest ask below is a near-duplicate strike, so the
+    # upper edge comes from (C90, C100): (11.4 - 4.0) / 10 = 0.74
+    calls = [quote("C", 90, 11.0, 11.4), quote("C", 99.99999999999999, 4.3, 4.4), quote("C", 100, 4.0, 4.2),
+             quote("C", 110, 1.0, 1.2)]
+    row = run([contract("above", lo=100.0)], calls)["records"][0]
+    assert row["dig_upper"] == pytest.approx(0.74) and row["dig_status"] == STATUS_OK
+
+
+def test_an_unusable_nearest_bid_falls_back_to_the_next_bid_out():
+    # C100 is quoted at 1e9: every pair it sells carries an error far above the cap, so the lower
+    # edge sells the next bid out, (bid C105 - ask C110) / 5 = (2.0 - 1.2) / 5 = 0.16
+    calls = [quote("C", 100, 1e9, 1e9), quote("C", 105, 2.0, 2.1), quote("C", 110, 1.0, 1.2)]
+    row = run([contract("above", lo=100.0)], calls)["records"][0]
+    assert row["dig_lower"] == pytest.approx(0.16)
+
+
+def test_a_band_crosses_only_beyond_the_sum_of_both_edges_errors():
+    status = digital_bounds._band_status
+    assert status((0.5 + 1.5e-10, 1e-10), (0.5, 1e-10)) == STATUS_OK            # inside either error's sum
+    assert status((0.5, 1e-10), (0.5 - 1.5e-10, 1e-10)) == STATUS_OK
+    assert status((0.5 + 2.5e-10, 1e-10), (0.5, 1e-10)) == "crossed_band"
+    assert status((0.5, 0.0), (0.5, 0.0)) == STATUS_OK                         # equal edges are a point, not a crossing
+
+
+def test_strikes_near_one_hundred_thousand_spaced_one_cent_have_no_usable_edge():
+    # the accepted limit: h = 0.01 at K ~ 1e5 carries a strike-rounding error of ~4e-11 per cent of
+    # spacing, so every edge's bound exceeds EDGE_MAX_ERROR and no pair is usable
+    calls = [quote("C", 100000.00, 5.02, 5.02), quote("C", 100000.01, 5.01, 5.01), quote("C", 100000.02, 5.0, 5.0)]
+    row = run([contract("above", lo=100000.01)], calls)["records"][0]
+    assert row["dig_status"] == "no_bracket"
+
+
+#: Unit roundoff of a binary64 float, restated (not read from the module under test).
+_U = Fraction(1, 2 ** 53)
+
+
+def _meant(x, rng):
+    """A rational the float ``x`` may stand for, ``|meant - x| <= u |x|``: mostly a corner of that range."""
+    return Fraction(x) * (1 + _U * rng.choice([-1, 1, -1, 1, 0, Fraction(rng.random())]))
+
+
+def _random_edge(rng):
+    """A random spread: magnitudes over eleven decades, near-duplicate strikes and near-equal prices included."""
+    scale = 10.0 ** rng.randint(-3, 6)
+    near_k = scale * rng.uniform(0.5, 2.0)
+    gap = scale * 10.0 ** rng.choice([-16, -14, -12, -9, -6, -3, -2, -1, 0])
+    far_k = near_k + gap * rng.choice([-1, 1]) * rng.uniform(1.0, 3.0)
+    price = 10.0 ** rng.randint(-4, 5)
+    near_q = price * rng.uniform(0.5, 2.0)
+    far_q = near_q * (1 + rng.choice([0.0, 1e-15, 1e-9, 1e-3, 0.5]) * rng.choice([-1, 1]))
+    discounts = (rng.choice([None, 0.97, 0.5]),) * 2 if rng.random() < 0.7 else (rng.uniform(0.3, 1), rng.uniform(0.3, 1))
+    return near_k, far_k, near_q, far_q, discounts
+
+
+def _exact_edge(near_k, far_k, near_q, far_q, discounts, offset, sign, rng):
+    """The edge the module computes, in exact rational arithmetic from the values the inputs MEANT."""
+    d_near, d_far = (Fraction(1) if d is None else _meant(d, rng) for d in discounts)
+    credit = (_meant(near_q, rng) / d_near - _meant(far_q, rng) / d_far) / abs(_meant(far_k, rng) - _meant(near_k, rng))
+    return offset + sign * credit
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_every_usable_edge_lies_within_its_proven_error_of_the_exact_rational_edge(seed):
+    rng = random.Random(seed)
+    near_k, far_k, near_q, far_q, discounts = _random_edge(rng)
+    prices = [digital_bounds._forward(q, d) for q, d in zip((near_q, far_q), discounts)]
+    for offset, sign in ((0, 1), (0, -1), (1, 1), (1, -1)):
+        edge = digital_bounds._spread_edge(near_k, prices[0], far_k, prices[1], offset, sign)
+        if edge is None:
+            continue
+        value, error = edge   # the bound must hold for every edge, usable or not
+        for _ in range(32):   # admissible readings of what the floats meant
+            exact = _exact_edge(near_k, far_k, near_q, far_q, discounts, offset, sign, rng)
+            assert abs(Fraction(value) - exact) <= Fraction(error), (seed, value, float(exact), error)
+
+
+def test_the_discounted_price_bound_covers_its_inputs_and_its_division_at_their_worst():
+    # a locked pair (both legs the same float quote and discount) computes a credit of exactly 0;
+    # the quotes and discounts it stands for may differ by their half ulps in OPPOSITE directions,
+    # and the division rounds. Search for the quote whose division rounds worst, then take the
+    # adversarial corner: the edge's bound must still cover the exact credit.
+    d = 0.7
+    q = max((1.0 + i / 997.0 for i in range(997)), key=lambda b: abs(Fraction(b / d) - Fraction(b) / Fraction(d)))
+    price = digital_bounds._forward(q, d)
+    value, error = digital_bounds._spread_edge(1.0, price, 2.0, price, 0, 1)
+    up, down = 1 + _U, 1 - _U
+    worst = (Fraction(q) * up / (Fraction(d) * down) - Fraction(q) * down / (Fraction(d) * up)) / (
+        Fraction(2.0) * down - Fraction(1.0) * up)
+    assert value == 0.0 and Fraction(error) >= worst
+
+
+def test_the_random_edges_exercise_both_usable_and_unusable_pairs():
+    usable = 0
+    for seed in range(200):
+        near_k, far_k, near_q, far_q, discounts = _random_edge(random.Random(seed))
+        prices = [digital_bounds._forward(q, d) for q, d in zip((near_q, far_q), discounts)]
+        edge = digital_bounds._spread_edge(near_k, prices[0], far_k, prices[1], 0, 1)
+        usable += edge is not None and edge[1] <= digital_bounds.EDGE_MAX_ERROR
+    assert 40 < usable < 190, usable
 
 
 @pytest.mark.parametrize("payoff, present", [("above", {"lo": 100.0}), ("below", {"hi": 100.0})])

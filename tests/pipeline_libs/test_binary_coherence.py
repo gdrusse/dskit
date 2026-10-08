@@ -89,7 +89,9 @@ def test_the_tolerance_decides_whether_a_small_violation_counts():
     rows = [contract("lo", 0.28, 0.30), contract("mid", 0.36, 0.38), contract("hi", 0.27, 0.29)]
     assert run(rows, partitions=[["lo", "mid", "hi"]])["arbitrage"]["feasible"] is False
     loose = run(rows, partitions=[["lo", "mid", "hi"]], tolerance=0.05)["arbitrage"]
-    assert loose["feasible"] is True and loose["legs"] == []
+    assert loose["feasible"] is True
+    assert loose["legs"] == [] and loose["relations"] == [], "a feasible verdict reports no position at all"
+    assert loose["credit_per_unit"] == 0.0 and loose["executable_units"] is None
 
 
 def test_the_executable_size_divides_each_legs_size_by_its_units():
@@ -134,15 +136,65 @@ def test_the_projection_stays_inside_the_unit_interval_where_the_unconstrained_o
     assert fair["A"] == pytest.approx(fair["B"], abs=1e-6)
 
 
-def test_the_tolerance_also_reads_a_small_legs_units_as_zero():
+def test_the_tolerance_gates_only_the_verdict_never_a_legs_units():
     # A + C = 1, C = A - B, A >= B: violation 0.9 from buying A (1 unit) and selling half a B.
-    # With tolerance 0.7 the violation still counts but B's 0.5 units are read as zero.
+    # A tolerance of 0.7 still calls it infeasible, and must not drop B's 0.5 units: a position
+    # without them is not riskless.
     rows = [contract("A", 0.06, 0.08), contract("B", 0.96, 0.98), contract("C", 0.02, 0.04)]
     relations = {"chains": [["A", "B"]], "differences": [["C", "A", "B"]], "partitions": [["A", "C"]]}
     exact = run(rows, **relations)["arbitrage"]
     assert {leg["id"]: leg["units"] for leg in exact["legs"]} == {"A": pytest.approx(1.0), "B": pytest.approx(0.5)}
     loose = run(rows, tolerance=0.7, **relations)["arbitrage"]
-    assert loose["feasible"] is False and [leg["id"] for leg in loose["legs"]] == ["A"]
+    assert loose["feasible"] is False
+    assert {leg["id"]: leg["units"] for leg in loose["legs"]} == {"A": pytest.approx(1.0), "B": pytest.approx(0.5)}
+    assert loose["relations"] == exact["relations"]
+
+
+def test_leg_dust_is_one_named_constant_relative_to_the_largest_dual():
+    assert binary_coherence.LEG_DUST == 1e-9 and "LEG_DUST" in binary_coherence.__all__
+
+
+def test_leg_dust_scales_with_the_largest_dual_never_an_absolute_floor(monkeypatch):
+    # an LP whose duals all come back scaled by 1e-12 (a solver that scales its objective) still
+    # names the same legs: dust is relative to the largest |dual|, never a fixed absolute number
+    from pyomo.environ import Suffix
+
+    real_solve = BinaryCoherence._solve
+
+    def scaled(self, solver, model):
+        results = real_solve(self, solver, model)
+        if isinstance(getattr(model, "dual", None), Suffix):
+            for row in list(model.dual):
+                model.dual[row] *= 1e-12
+        return results
+
+    rows = [contract("k100", 0.38, 0.40), contract("k110", 0.45, 0.47)]
+    monkeypatch.setattr(BinaryCoherence, "_solve", scaled)
+    arb = run(rows, chains=[["k100", "k110"]])["arbitrage"]
+    assert {leg["id"]: leg["side"] for leg in arb["legs"]} == {"k100": "buy", "k110": "sell"}
+    assert arb["relations"] == [{"kind": "chains", "index": 0, "ids": ["k100", "k110"]}]
+
+
+def test_an_infeasible_verdict_with_no_recoverable_legs_is_refused_by_name(monkeypatch):
+    monkeypatch.setattr(BinaryCoherence, "_legs", lambda self, *args: [])
+    with pytest.raises(RuntimeError, match="no riskless position"):
+        run([contract("k100", 0.38, 0.40), contract("k110", 0.45, 0.47)], chains=[["k100", "k110"]])
+
+
+def test_an_infeasible_verdict_whose_legs_cannot_profit_is_refused_by_name(monkeypatch):
+    # a sale-only position owes at settlement, so it profits at most its credit: here 0
+    sold = [{"id": "k110", "side": "sell", "units": 1.0, "price": 0.0}]
+    monkeypatch.setattr(BinaryCoherence, "_legs", lambda self, *args: sold)
+    with pytest.raises(RuntimeError, match="cannot profit"):
+        run([contract("k100", 0.38, 0.40), contract("k110", 0.45, 0.47)], chains=[["k100", "k110"]])
+
+
+def test_a_buy_everything_arbitrage_has_a_negative_credit_and_is_still_reported():
+    # paying 0.97 for a partition that settles at exactly 1: the net premium is negative, the
+    # position's best profit (credit + bought units) is positive, so it is not refused
+    rows = [contract("lo", 0.28, 0.30), contract("mid", 0.36, 0.38), contract("hi", 0.27, 0.29)]
+    arb = run(rows, partitions=[["lo", "mid", "hi"]])["arbitrage"]
+    assert arb["credit_per_unit"] == pytest.approx(-0.97) and len(arb["legs"]) == 3
 
 
 def test_a_solve_that_does_not_finish_optimal_is_refused_by_name(monkeypatch):

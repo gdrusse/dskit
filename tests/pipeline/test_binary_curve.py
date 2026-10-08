@@ -4,8 +4,12 @@ The equivalence test builds a curve that IS the averaged-lognormal law (window 0
 and requires ``CurveBinaryFairValue`` to agree with ``BinaryFairValue`` to 1e-6.
 """
 
+import enum
 import math
+from datetime import date, datetime
+from decimal import Decimal
 
+import numpy as np
 import pytest
 
 from dskit.pipeline import binary_curve
@@ -187,33 +191,56 @@ def test_only_a_literal_true_makes_a_curve_eligible(flag):
     assert out["records"][0]["fair_status"] == "ineligible_curve"
 
 
-# -- canonical_key: the one id/chain key rule -----------------------------------------------------------
+# -- canonical_key: the one id/chain key rule, a cell's canonical JSON text ---------------------------
+
+
+class _Right(enum.StrEnum):
+    C = "C"
+
+
+class _Liar(str):
+    """A str subclass whose own ``__str__`` lies: the key must read the characters, not ``str(x)``."""
+
+    def __str__(self):
+        return "P"
 
 
 @pytest.mark.parametrize("a, b", [
-    (["X"], ("X",)), (["X", 1], ("X", 1.0)), (1, 1.0), ({"a": [1], "b": 2}, {"b": 2, "a": (1,)}),
-    ({1, 2}, frozenset({2, 1})), ("X", "X"), (None, None)])
+    (["X"], ("X",)), (["X", 1], ("X", 1)), ({"a": [1], "b": 2}, {"b": 2, "a": (1,)}), ("X", "X"), (None, None),
+    (_Right.C, "C"), (np.str_("C"), "C"), (_Liar("C"), "C"), (np.int64(7), 7), (np.bool_(True), True),
+    (["C", {"k": np.int32(1)}], ["C", {"k": 1}])])
 def test_canonical_key_merges_the_same_thing_spelled_two_ways(a, b):
     assert binary_curve.canonical_key(a) == binary_curve.canonical_key(b)
-    assert hash(binary_curve.canonical_key(a)) == hash(binary_curve.canonical_key(b))
+
+
+def test_canonical_key_is_the_canonical_json_text_itself():
+    assert binary_curve.canonical_key(["X", 1, None, True]) == '["X",1,null,true]'
+    assert binary_curve.canonical_key({"b": 1, "a": "é"}) == '{"a":"\\u00e9","b":1}'
+    assert binary_curve.canonical_key(_Right.C) == '"C"'
 
 
 @pytest.mark.parametrize("a, b", [
     (["X"], "['X']"), (1, True), (0, False), ("1", 1), (None, "None"), (["X"], ["X", None]),
-    ((1, 2), (2, 1)), ([["X"]], ["X"]), (b"X", "X")])
+    ((1, 2), (2, 1)), ([["X"]], ["X"]), ({"1": 1}, {"1": True})])
 def test_canonical_key_never_merges_different_things(a, b):
     assert binary_curve.canonical_key(a) != binary_curve.canonical_key(b)
 
 
-def test_canonical_key_never_raises_on_an_unhashable_or_self_containing_value():
+def _loop():
     loop = []
     loop.append(loop)
+    return loop
 
-    class Opaque:
-        __hash__ = None
 
-    for value in (loop, {"k": [{"x": {1, 2}}]}, Opaque(), bytearray(b"x")):
-        hash(binary_curve.canonical_key(value))
+@pytest.mark.parametrize("value, needle", [
+    (1.0, "float"), (-0.0, "float"), (float("nan"), "float"), (float("inf"), "float"), (np.float64(1.0), "float"),
+    (np.float32(1.0), "float"), (Decimal("1"), "Decimal"), ({1, 2}, "set"), (frozenset({1}), "frozenset"),
+    (datetime(2026, 10, 7), "datetime"), (date(2026, 10, 7), "date"), (np.datetime64("2026-10-07"), "datetime64"),
+    (b"X", "bytes"), (bytearray(b"X"), "bytearray"), (object(), "object"), (["X", 1.5], "float"),
+    ({1: "a"}, "dict key"), ({"a": {2: "b"}}, "dict key"), (_loop(), "itself")])
+def test_canonical_key_refuses_by_name_what_json_could_not_key_faithfully(value, needle):
+    with pytest.raises(ValueError, match=needle):
+        binary_curve.canonical_key(value)
 
 
 def test_curve_ids_are_matched_and_deduplicated_by_the_canonical_key():
@@ -221,8 +248,17 @@ def test_curve_ids_are_matched_and_deduplicated_by_the_canonical_key():
     assert node.validate_inputs({"records": [], "curves": [{**CURVE, "id": ["k"]}, {**CURVE, "id": ("k",)}]})
     assert node.validate_inputs({"records": [], "curves": [{**CURVE, "id": ["k"]}, {**CURVE, "id": "['k']"}]}) == []
     out = run([{"payoff": "above", "lo": 100.0, "curve": ("k", 1)}, {"payoff": "above", "lo": 100.0, "curve": True}],
-              curves=({**CURVE, "id": ["k", 1.0]}, {**CURVE, "id": 1}))
+              curves=({**CURVE, "id": ["k", 1]}, {**CURVE, "id": 1}))
     assert [r["fair_status"] for r in out["records"]] == ["ok", "no_curve"]
+
+
+def test_a_curve_id_or_a_contract_key_that_cannot_be_keyed_is_refused_by_name():
+    node = CurveBinaryFairValue("c", PARAMS)
+    problems = node.validate_inputs({"records": [], "curves": [{**CURVE, "id": 1.0}]})
+    assert problems and "float" in problems[0]
+    out = run([{"payoff": "above", "lo": 100.0, "curve": float("nan")}, {"payoff": "above", "lo": 100.0, "curve": "k"}])
+    assert [r["fair_status"] for r in out["records"]] == ["bad_curve_key", "ok"]
+    assert "bad_curve_key" in binary_curve.STATUSES
 
 
 def test_the_module_declares_its_public_api():

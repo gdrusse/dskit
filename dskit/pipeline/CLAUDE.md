@@ -718,7 +718,13 @@ on it without breaking its rulings.
   `production.base.parse_utc_ms` (a pack may not import production); a test pins them.
 - **`BinaryCoherence` needs a QP-capable solver** (ADR-0249): `solver` has no default; pyomo's
   `appsi_highs` refuses a quadratic objective, `highs` solves it. An LP that is infeasible because the
-  declared relations contradict each other raises, it is not a coherence verdict.
+  declared relations contradict each other raises, it is not a coherence verdict. `tolerance` gates only the
+  verdict; leg and relation dust is `LEG_DUST` relative to the largest dual, and an infeasible verdict whose legs
+  are empty or cannot profit raises by name.
+- **Binary keys are canonical JSON TEXT** (`binary_curve.canonical_key`, the trust module's canonical
+  recipe): a float, Decimal, set, date or bytes key is refused by name, never coerced; a str subclass is
+  read by `str.__str__`, never `str(x)`. `DigitalBounds` reads a right through ONE method, `_right`.
+  Never reintroduce a chain-wide tolerance: each edge carries its own proven error (module docstring).
 - **`ParquetSeries` reads bytes once**: it hashes the bytes it then parses, so
   a file that drifts refuses the run. Its age cap can reach over a missing day;
   `age_ms` reports it (ADR-0243).
@@ -800,8 +806,8 @@ dskit/pipeline/
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 ├── binary_pricing.py  AveragedLognormal law, Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
-├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; canonical_key, the one id/chain key rule (by import path, ADR-0249)
-├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds) + quote_problems (by import path, ADR-0249)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; canonical_key, the one id/chain key rule: canonical JSON text (by import path, ADR-0249)
+├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR) + quote_problems (by import path, ADR-0249)
 ├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0248)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
