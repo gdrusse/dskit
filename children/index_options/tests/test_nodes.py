@@ -1140,3 +1140,169 @@ def test_a_cohort_column_the_read_lacks_refuses_by_name(stub_panel):
     node = ExactExpiryPanelRead("panel", _panel_read_params(cohort_columns=["nope"]))
     with pytest.raises(ValueError, match="nope"):
         node.run(None, {})
+
+
+@pytest.mark.parametrize("seed", range(15))
+@pytest.mark.parametrize("banded", [False, True])
+def test_robust_condor_all_strikes_matches_enumeration(seed, banded):
+    import index_options.nodes as nodes
+    assert hasattr(nodes, "RobustCondorSelect"), "missing exact robust condor selector"
+    from itertools import combinations
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+    grid = [70., 82., 91., 103., 116., 135.]
+    masses = [.05, .15, .3, .25, .15, .1]
+    context = dict(decision_id="fixture", arm_id="base", symbol="SYNTH",
+                   quote_date="2025-02-04", expiry="2025-03-07",
+                   grid=grid, masses=masses, spot=100., rho=.003, legs={})
+    for role, prices in {"LP":[20,14,8,5,3,1], "SP":[21,15,9,6,4,2],
+                         "SC":[1,3,5,8,14,20], "LC":[2,4,6,9,15,21]}.items():
+        context["legs"][role] = [
+            dict(index=i, price=float(price), haircut=.03, contract_id=f"{role}-{i}")
+            for i, price in enumerate(prices)]
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    context["rho"] = [0., .003, .03][seed % 3]
+    for role in context["legs"]:
+        for row in context["legs"][role]:
+            row["price"] += float(rng.uniform(0, 4))
+        if seed % 2:
+            context["legs"][role] = [r for r in context["legs"][role] if r["index"] != 2]
+    if banded:
+        cumulative = np.cumsum(masses)
+        context["q_lo"] = np.maximum(0., cumulative-.02).tolist()
+        context["q_hi"] = np.minimum(1., cumulative+.02).tolist()
+        context["q_lo"][-1] = context["q_hi"][-1] = 1.
+    params = dict(multiplier=100, fee_per_contract_usd=.65, tie_tolerance_usd=1e-7,
+                  max_absolute_gap_usd=1e-7, max_relative_gap=1e-8)
+    node = nodes.RobustCondorSelect("select", params)
+    out = node.run(None, {"context":context})
+    primal = DiscreteCDFGrid.from_masses(grid, masses)
+    scores = []
+    for indices in combinations(range(len(grid)), 4):
+        by_role = {role:{r["index"]:r for r in context["legs"][role]}
+                   for role in ("LP","SP","SC","LC")}
+        if any(i not in by_role[role] for role,i in zip(("LP","SP","SC","LC"),indices)):
+            continue
+        lp, sp, sc, lc = [grid[i] for i in indices]
+        losses = [max(sp-s,0)-max(lp-s,0)+max(s-sc,0)-max(s-lc,0) for s in grid]
+        credit = sum((1 if role in ("SP","SC") else -1) *
+                     by_role[role][i]["price"]-.03
+                     for role,i in zip(("LP","SP","SC","LC"),indices))
+        scores.append(100*(credit-primal.worst_expected_loss(losses,context["rho"],100,
+                      q_lo=context.get("q_lo"),q_hi=context.get("q_hi"))) - 2.60)
+    assert out["decision"]["robust_value_usd"] == pytest.approx(max(0.,max(scores)), abs=1e-6)
+    assert len(out["evidence"]["solves"]) == 2
+
+
+def _robust_tie_fixture(credit=1., fee=0.):
+    from index_options.nodes import RobustCondorSelect
+    params = dict(multiplier=100, fee_per_contract_usd=fee, tie_tolerance_usd=1e-6,
+                  max_absolute_gap_usd=1e-7, max_relative_gap=1e-8)
+    context = dict(decision_id="fixture", arm_id="base", symbol="SYNTH",
+                   quote_date="2025-02-04", expiry="2025-03-07",
+                   grid=[80.,90.,110.,120.], masses=[.05,.45,.45,.05],
+                   spot=100., rho=0., legs={})
+    for i,role in enumerate(("LP","SP","SC","LC")):
+        context["legs"][role] = [dict(index=i,price=1.+(credit/2 if role in ("SP","SC") else 0.),
+                                     haircut=0.,contract_id=role)]
+    return RobustCondorSelect("select",params), context
+
+
+@pytest.mark.parametrize("credit,fee,status", [(1.,0.,"no_trade"), (1.02,.65,"no_trade"),
+                                              (1.03,.65,"trade")])
+def test_robust_condor_tie_and_fee_units(credit, fee, status):
+    node, context = _robust_tie_fixture(credit, fee)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == status
+    assert len(result["evidence"]["solves"]) == 2
+    if status == "trade":
+        assert result["decision"]["robust_value_usd"] == pytest.approx(.4,abs=1e-7)
+        assert sum(x["fee_usd"] for x in result["decision"]["legs"]) == 2.6
+
+
+def test_robust_condor_empty_eligibility_retains_no_trade():
+    node, context = _robust_tie_fixture(20.)
+    context["legs"]["LP"] = []
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "no_trade"
+    assert result["decision"]["legs"] == []
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda c: c.update(rho=float("nan")),
+    lambda c: c.update(spot=0.),
+    lambda c: c.update(masses=[.1,.1,.1,.1]),
+    lambda c: c.update(q_lo=[.1,.1,.1,1.], q_hi=[.2,.2,.2,1.]),
+    lambda c: c["legs"]["LP"].append(dict(c["legs"]["LP"][0])),
+    lambda c: c["legs"]["LP"][0].update(price=float("inf")),
+    lambda c: c["legs"]["LP"][0].update(index=True),
+    lambda c: c["legs"]["SP"][0].update(haircut=100.),
+])
+def test_robust_condor_invalid_context_refuses_before_solver(mutate, monkeypatch):
+    node, context = _robust_tie_fixture()
+    mutate(context)
+    monkeypatch.setattr(node, "_resolve_solver",
+                        lambda: pytest.fail("invalid input woke the solver"))
+    with pytest.raises(ValueError):
+        node.run(None, {"context":context})
+
+
+def test_robust_condor_missing_explicit_tie_policy_refuses():
+    node, _ = _robust_tie_fixture()
+    params = dict(node.params)
+    del params["tie_tolerance_usd"]
+    with pytest.raises(ConfigError, match="tie_tolerance_usd"):
+        type(node)("select", params)
+
+
+def test_robust_condor_uncertified_primary_skips(monkeypatch):
+    node, context = _robust_tie_fixture()
+    monkeypatch.setattr(node, "_certified", lambda record: False)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "skipped"
+    assert result["decision"]["reason"] == "uncertified_primary"
+    assert len(result["evidence"]["solves"]) == 1
+
+
+def test_robust_condor_uncertified_secondary_skips(monkeypatch):
+    node, context = _robust_tie_fixture()
+    monkeypatch.setattr(node, "_secondary_certified", lambda record: False)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "skipped"
+    assert result["decision"]["reason"] == "uncertified_tie"
+    assert "legs" not in result["decision"]
+    assert len(result["evidence"]["solves"]) == 2
+
+
+def test_robust_condor_solver_failure_escapes_without_a_decision(monkeypatch):
+    node, context = _robust_tie_fixture()
+    before = copy.deepcopy(context)
+
+    class FailedSolver:
+        def solve(self, model):
+            raise RuntimeError("controlled backend failure")
+
+    monkeypatch.setattr(node, "_resolve_solver", lambda: FailedSolver())
+    with pytest.raises(RuntimeError, match="controlled backend failure"):
+        node.run(None, {"context":context})
+    assert node.solve_record is None
+    assert node._certificates == []
+    assert context == before
+
+
+def test_robust_condor_binary_certificate_has_dimensionless_bounds():
+    from types import SimpleNamespace
+    node, _ = _robust_tie_fixture()
+    assert node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=1., bound=.5))
+    assert not node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=1., bound=0.))
+    assert node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=0., bound=0.))
+
+
+@pytest.mark.parametrize("multiplier", [100., True, 0, -1])
+def test_robust_condor_contract_multiplier_is_a_positive_integer(multiplier):
+    node, _ = _robust_tie_fixture()
+    with pytest.raises(ConfigError, match="multiplier"):
+        type(node)("select", {**node.params, "multiplier":multiplier})

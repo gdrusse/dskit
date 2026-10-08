@@ -21,6 +21,7 @@ from dskit.pipeline.distribution_scores import (
     row_in_split,
 )
 from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
+from dskit.pipeline.libs.pyomo import BINDING_TOLERANCE, DEFAULT_SOLVER, PyomoSolve, WassersteinDual
 from dskit.pipeline.option_pricing import VolIndexSmileQuotes, black76_delta
 from dskit.pipeline.records import number_ok, price_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
@@ -65,7 +66,7 @@ __all__ = ["CondorExpirySettle", "CondorBacktest", "CondorDistributionReport", "
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
-           "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
+           "RobustCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
            "t_or_zero"]
 
 
@@ -3204,3 +3205,257 @@ class CondorExpirySettle(Node):
                     "skips": skips, "raw_orders": orders, "raw_fills": fills,
                     "units": "USD per one-lot condor; no portfolio return"}
         return {"outcomes": outcomes, "skips": skips, "evidence": evidence}
+
+
+class RobustCondorSelect(PyomoSolve):
+    """Select one all-strike robust condor from an already governed context.
+
+    This narrow adapter accepts explicit per-leg eligibility and costs. It does
+    not infer liquidity, dates, uncertainty calibration or execution policies.
+    An empty eligible leg set gives the mathematically feasible no-trade choice.
+
+    Parameters
+    ----------
+    params : dict
+        Required multiplier, fee_per_contract_usd, tie_tolerance_usd,
+        max_absolute_gap_usd and max_relative_gap; optional base solver knobs.
+        Input context contains grid/masses/spot/rho, optional q_lo/q_hi, identity
+        fields, and legs mapping LP/SP/SC/LC to eligible contract dictionaries:
+        index, price, haircut, contract_id. Prices and haircuts are USD/share.
+
+    Examples
+    --------
+    Construct without choosing any calibration or market-data policy::
+
+        node = RobustCondorSelect("select", {
+            "multiplier": 100, "fee_per_contract_usd": .65,
+            "tie_tolerance_usd": 1e-6, "max_absolute_gap_usd": 1e-7,
+            "max_relative_gap": 1e-8})
+    """
+
+    role = "transform"
+    outputs = ("decision", "evidence")
+    _ROLES = ("LP", "SP", "SC", "LC")
+    _IDENTITY = ("decision_id", "arm_id", "symbol", "quote_date", "expiry")
+    _PARAMS = PyomoSolve._PARAMS + (
+        "multiplier", "fee_per_contract_usd", "tie_tolerance_usd",
+        "max_absolute_gap_usd", "max_relative_gap",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Validate explicit solver/cost/tie limits without supplying policies.
+
+        Parameters
+        ----------
+        params : dict
+            Proposed node parameters.
+
+        Returns
+        -------
+        list of str
+            All parameter defects; an empty list means valid.
+        """
+        problems = super().validate_params(params)
+        for key in cls._PARAMS[len(PyomoSolve._PARAMS):]:
+            value = params.get(key)
+            if not number_ok(value) or value < 0 or (key == "multiplier" and value == 0):
+                problems.append(f"{key} must be an explicit finite "
+                                + ("positive" if key == "multiplier" else "nonnegative") + " number")
+        if isinstance(params.get("multiplier"), bool) or not isinstance(params.get("multiplier"), int):
+            problems.append("multiplier must be a positive integer")
+        return problems
+
+    def build_model(self, inputs, params):
+        """Build the all-ordered-strike binary program with the shared dual.
+
+        Parameters
+        ----------
+        inputs, params : dict
+            One prepared context and the explicitly configured policies.
+
+        Returns
+        -------
+        pyomo.environ.ConcreteModel
+            One all-strike selection program, including no trade.
+
+        Raises
+        ------
+        ValueError
+            Invalid probabilities, bands, eligibility, costs or identities.
+        """
+        from pyomo.environ import Binary, ConcreteModel, Constraint, Expression, Objective, Var, maximize
+
+        context = inputs.get("context")
+        if not isinstance(context, dict):
+            raise ValueError("context must be a mapping")
+        for key in self._IDENTITY:
+            if not isinstance(context.get(key), str) or not context[key]:
+                raise ValueError(f"context requires {key}")
+        dual = WassersteinDual(context["grid"], context["masses"], context["rho"],
+                               context["spot"], q_lo=context.get("q_lo"), q_hi=context.get("q_hi"))
+        grid = dual.distribution.grid
+        if (grid <= 0).any():
+            raise ValueError("equity strikes must be positive")
+        if not isinstance(context.get("legs"), dict) or set(context["legs"]) != set(self._ROLES):
+            raise ValueError("legs must declare LP/SP/SC/LC eligibility separately")
+        contracts = {}
+        for role in self._ROLES:
+            rows = context["legs"][role]
+            if not isinstance(rows, (list, tuple)):
+                raise ValueError("eligible legs must be finite sequences")
+            for row in rows:
+                if not isinstance(row, dict) or set(row) != {"index", "price", "haircut", "contract_id"}:
+                    raise ValueError("eligible contract must carry index/price/haircut/contract_id")
+                index = row["index"]
+                if (isinstance(index, bool) or not isinstance(index, int)
+                        or not 0 <= index < len(grid) or (role, index) in contracts):
+                    raise ValueError("duplicate or invalid eligible strike index")
+                if (not isinstance(row["contract_id"], str) or not row["contract_id"]
+                        or any(not number_ok(row[k]) or row[k] < 0 for k in ("price", "haircut"))):
+                    raise ValueError("invalid contract identity, price or haircut")
+                if role in ("SP", "SC") and row["haircut"] > row["price"]:
+                    raise ValueError("short-leg haircut exceeds price")
+                contracts[role, index] = dict(row)
+        self._context, self._dual, self._contracts = dict(context), dual, contracts
+        self._certificates, self._skip = [], None
+        model = ConcreteModel()
+        model.z = Var(domain=Binary)
+        model.y = Var(self._ROLES, range(len(grid)), domain=Binary)
+        for role in self._ROLES:
+            for i in range(len(grid)):
+                if (role, i) not in contracts:
+                    model.y[role, i].fix(0)
+        model.one = Constraint(self._ROLES, rule=lambda m, role:
+                               sum(m.y[role, i] for i in range(len(grid))) == m.z)
+        pairs = tuple(zip(self._ROLES[:-1], self._ROLES[1:]))
+        model.order = Constraint(range(3), range(len(grid)), rule=lambda m, a, k:
+                                 sum(m.y[pairs[a][0], i] for i in range(k, len(grid)))
+                                 <= sum(m.y[pairs[a][1], i] for i in range(k+1, len(grid))))
+        losses = [
+            sum((model.y["SP", i]-model.y["LP", i]) * max(float(grid[i]-s), 0.)
+                + (model.y["SC", i]-model.y["LC", i]) * max(float(s-grid[i]), 0.)
+                for i in range(len(grid))) for s in grid]
+        block = dual.attach(model, losses)
+        credit = sum(((1 if role in ("SP", "SC") else -1) * row["price"] - row["haircut"])
+                     * model.y[role, i] for (role, i), row in contracts.items())
+        model.robust_value = Expression(expr=params["multiplier"] * (credit-block.cost)
+                                       - 4 * params["fee_per_contract_usd"] * model.z)
+        model.objective = Objective(expr=model.robust_value, sense=maximize)
+        return model
+
+    def _certified(self, record):
+        """Require an optimal termination and explicit finite gap limits."""
+        return (record.termination == "optimal" and record.objective is not None
+                and record.bound is not None and record.gap is not None
+                and abs(record.objective-record.bound) <= self.params["max_absolute_gap_usd"]
+                and record.gap <= self.params["max_relative_gap"])
+
+    @staticmethod
+    def _secondary_certified(record):
+        """Prove a binary minimum from its incumbent and dimensionless lower bound."""
+        if (record.termination != "optimal" or record.objective is None
+                or record.bound is None):
+            return False
+        incumbent = round(record.objective)
+        if (incumbent not in (0, 1)
+                or abs(record.objective-incumbent) > BINDING_TOLERANCE
+                or record.bound > incumbent+BINDING_TOLERANCE):
+            return False
+        # z is binary: z=0 is the domain lower bound. A z=1 incumbent
+        # is optimal only if its certified lower bound excludes zero.
+        return incumbent == 0 or record.bound > BINDING_TOLERANCE
+
+    def _solve(self, solver, model):
+        """Use the existing lifecycle twice, retaining primary and tie certificates."""
+        import time
+        from pyomo.environ import Constraint, Objective, minimize
+
+        name = self.params.get("solver", DEFAULT_SOLVER)
+        started = time.perf_counter()
+        results = super()._solve(solver, model)
+        primary = self._build_solve_record(solver, model, results, name, time.perf_counter()-started)
+        self._certificates.append(primary.to_obj())
+        if not self._certified(primary):
+            self._skip = "uncertified_primary"
+            return results
+        if primary.bound-primary.objective > self.params["tie_tolerance_usd"]:
+            self._skip = "primary_gap_exceeds_tie_tolerance"
+            return results
+        model.objective.deactivate()
+        model.tie_floor = Constraint(expr=model.robust_value >= primary.bound-self.params["tie_tolerance_usd"])
+        model.tie_objective = Objective(expr=model.z, sense=minimize)
+        return super()._solve(solver, model)
+
+    def extract(self, model, results):
+        """Return a checked selection and both solver certificates.
+
+        Parameters
+        ----------
+        model : pyomo.environ.ConcreteModel
+            Solved selection program.
+        results : object
+            Solver results retained by the base lifecycle.
+
+        Returns
+        -------
+        dict
+            Decision and evidence; uncertified solves explicitly skip.
+
+        Raises
+        ------
+        ValueError
+            Selected legs or their independently recomputed value violate the model.
+        """
+        from pyomo.environ import value
+
+        if self._skip is None:
+            self._certificates.append(self.solve_record.to_obj())
+            if not self._secondary_certified(self.solve_record):
+                self._skip = "uncertified_tie"
+        identity = {key:self._context[key] for key in self._IDENTITY}
+        evidence = {"solves":self._certificates, "rho":self._dual.radius,
+                    "multiplier":self.params["multiplier"], "decision_eligible":False,
+                    "eligible_contracts":[dict(role=role, **row)
+                                          for (role, _), row in self._contracts.items()]}
+        if self._skip:
+            return {"decision":{**identity, "status":"skipped", "reason":self._skip},
+                    "evidence":evidence}
+        z = value(model.z)
+        if abs(z-round(z)) > BINDING_TOLERANCE:
+            raise ValueError("nonintegral trade solution")
+        legs, indices = [], []
+        for role in self._ROLES:
+            selected = [i for i in range(len(self._dual.distribution.grid))
+                        if value(model.y[role, i]) > .5]
+            if len(selected) != round(z):
+                raise ValueError("invalid leg count")
+            for i in selected:
+                row = self._contracts[role, i]
+                short = role in ("SP", "SC")
+                indices.append(i)
+                legs.append(dict(role=role, contract=row["contract_id"],
+                                 right="put" if role in ("LP","SP") else "call",
+                                 strike=float(self._dual.distribution.grid[i]),
+                                 side="sell" if short else "buy",
+                                 price_usd_per_share=row["price"] + (-1 if short else 1)*row["haircut"],
+                                 fee_usd=self.params["fee_per_contract_usd"]))
+        if indices and not all(a < b for a,b in zip(indices,indices[1:])):
+            raise ValueError("strikes are not strictly ordered")
+        credit = sum((1 if leg["side"] == "sell" else -1)*leg["price_usd_per_share"] for leg in legs)
+        grid = self._dual.distribution.grid
+        losses = [sum((1 if leg["side"] == "sell" else -1)
+                      * (max(leg["strike"]-s,0.) if leg["right"] == "put" else max(s-leg["strike"],0.))
+                      for leg in legs) for s in grid]
+        bands = self._dual.bands
+        worst = self._dual.distribution.worst_expected_loss(
+            losses, self._dual.radius, self._dual.scale,
+            q_lo=None if bands is None else bands[0], q_hi=None if bands is None else bands[1])
+        robust = self.params["multiplier"]*(credit-worst)-sum(leg["fee_usd"] for leg in legs)
+        floor = self._certificates[0]["bound"]-self.params["tie_tolerance_usd"]
+        if robust < floor-BINDING_TOLERANCE:
+            raise ValueError("selected primal value fails certified tie floor")
+        return {"decision":{**identity, "status":"trade" if legs else "no_trade",
+                            "legs":legs, "multiplier":self.params["multiplier"],
+                            "robust_value_usd":robust, "worst_loss_usd_per_share":worst},
+                "evidence":evidence}
