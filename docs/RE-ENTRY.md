@@ -117297,3 +117297,20 @@ One batch correction: refuse an unresolved zero-versus-trade classification when
 Corrected affected solver/child/import-purity command:990passed/7existing skips. Projection-focused command:22passed/489deselected. Changed child files Ruff and diffcheck clean; projection Ruff unchanged baseline51 findings. New candidate needs both fresh independent final lenses; this is the first correction cycle, not closure.
 
 Metadata-only G1 inventory: both existing option stores' raw manifests list one bars.jsonl member and one contracts.jsonl member, not trusted date-partitioned payloads. Both bars manifests declare2024-01-18 through2026-08-25 effective ranges. This is metadata, not an actual maximum quote-date census. No records were opened. Under the reviewed mixed-JSON refusal rule these members cannot be fed through the ordinary reader before a safe pre2026 boundary is established; no blanket source scan or silent date-filter workaround is authorized.
+
+### ADR-0255 bounded component ReviewExit closed
+
+Locked candidate623e800e8c3b10a8ad532b7d8699264f8e90d564, base43eabca5. Fresh independent GPT-6 /root/condor_build_skeptic_math_r2 and /root/condor_build_skeptic_integration_r2 each report0C/0Major/0Minor/0Nit; full actual reports and independent probe commands are retained in their task transcripts. Prior9dbdf9f0 four-Major candidate remains historical; one correction cycle closed all families. No minor/nit backlog.
+
+Owner-authorized scope: reviewed reusable projection/banded primal, generic dual and one-context all-strike selector, exact expiry-accounting adapter, existing-file synthetic tests. Actors/contracts/matrix remain as recorded above and in ADR0255; no boundary/threat-model narrowing. Checks990pass/7existing skips plus22projection checks; math independently120couplingLP+100atomic cases, integration16selector+40accounting cases and compatibility/cold-import checks. Environment is unchanged shared WSL venv; no dependency upgrades. No post-lock code/test changes; only evidence appended. No extra hunt follows closure.
+
+Draft plan still refuses missing ParquetStreamRows, ExactDteBarChain, CheckpointCDFInference, NominalStrikeMasses and HeldOutRhoCalibration. Existing-class presence alone does not make its batch/raw JSON contract implemented. Next required work is G1 protected intake/basis and G2 verified schedule/input wiring, plus owner G3 criterion and remaining settings; then focused adapter implementation and candidate review before any real replay. The pending first owner choice is expected-loss bound versus pooled CDF distance. No numerical rho or bands were invented. Main merge remains unauthorized for this task. Preserve original data stores, all fitted models and other sessions.
+
+Reviewed code/test Git blob identities:
+- dskit/pipeline/libs/predictive_cdf.py: a580f9f426034ed3aea39e13cf294fe77597143f
+- dskit/pipeline/libs/pyomo.py: c7f5405ab9d12bd0c4568a37efccfeb4e8030265
+- children/index_options/index_options/nodes.py: 2382df13f688db41adfd8b742da855057860b887
+- tests/pipeline_libs/test_predictive_cdf.py: 41df1316330df503dddde920a608c348da13dae9
+- tests/pipeline_libs/test_pyomo.py: 18557425ec229bf4cfa0174d1a8537a268c17e2d
+- children/index_options/tests/test_nodes.py: 8476639c459bfeff90e4c69f9b10230a3f70c43b
+- children/index_options/tests/test_quote_backtest.py: 4e9d064253a01dc899d3aa3d1ac54ed3f83f2156

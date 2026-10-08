@@ -4,7 +4,7 @@
 
 The dual replaces the inner “worst plausible price distribution” calculation with linear constraints. Embedding them lets one mixed-integer linear program choose four eligible strikes, including the choice not to trade.
 
-This memo publishes the mathematics reviewed in ADR-0255 at candidate 3f8ea439c96afa14f5776346738fa12746d82c54. The reusable projection, one-context solver and expiry-accounting components are now implemented and synthetically tested; independent integrated review is pending. No numerical radius, production qualification or historical backtest result is supplied.
+This memo publishes the mathematics reviewed in ADR-0255 at candidate 3f8ea439c96afa14f5776346738fa12746d82c54. The reusable projection, one-context solver and expiry-accounting components are now implemented and synthetically tested; two independent integrated skeptic reviews have closed with zero findings. No numerical radius, production qualification or historical backtest result is supplied.
 
 ## Contract and notation
 
@@ -146,4 +146,10 @@ The selector accepts one prepared context with governed eligibility and per-leg 
 
 Still required before the requested real research replay: protected source intake and basis/action checks; verified checkpoint-schedule and42-feature input wiring with saved-forecast parity; batch/phase/liquidity adapters; owner-selected calibration/search/update/Delta and numeric policies; and the calendar/template calibration adapter. The draft JSON remains deliberately unresolved. The completed model packages and the published evaluation calendar are unchanged.
 
-The first integrated skeptic round found four Major defects and withheld approval. The corrected candidate adds pre-solver chronology/contract-identity checks, non-trade settlement refusal, an uncertain-primary tie refusal, and quadrature-error propagation into both projection payoff and W1 admission. New analytic and malformed-input regressions demonstrated RED before fixes. Updated checks pass990 affected tests (7 existing skips) plus22 projection-focused tests; fresh two-lens review is pending. Quadrature errors remain estimates, not guarantees for arbitrary callable CDFs.
+The first integrated skeptic round found four Major defects and withheld approval. The corrected candidate adds pre-solver chronology/contract-identity checks, non-trade settlement refusal, an uncertain-primary tie refusal, and quadrature-error propagation into both projection payoff and W1 admission. New analytic and malformed-input regressions demonstrated RED before fixes. Updated checks pass990 affected tests (7 existing skips) plus22 projection-focused tests; fresh two-lens review subsequently closed with zero findings. Quadrature errors remain estimates, not guarantees for arbitrary callable CDFs.
+
+## Component review closure
+
+Candidate623e800e8c3b10a8ad532b7d8699264f8e90d564 passed independent GPT-6 correctness/math and integration/test-quality reviews, each0 Critical/0 Major/0 Minor/0 Nit. Reviewer transcripts are /root/condor_build_skeptic_math_r2 and /root/condor_build_skeptic_integration_r2; the earlier four Major findings and failed candidate remain recorded in RE-ENTRY. All four defect families are closed.
+
+The math reviewer additionally compared120 independent transport-coupling LP cases with the cumulative primal and dual (maximum difference1.28e-13), and100 atomic-distribution projection cases. The integration reviewer added16 independent selector/oracle cases,40 independent accounting cases, malformed-input no-effect probes, backward-compatibility checks and cold imports without site-packages. Exact commands and outputs remain in the reviewer transcripts. This closes only the reusable synthetic component packet. The full draft replay still refuses five unresolved component references, and its real-data/calibration gates remain open. No main merge or historical replay was performed.
