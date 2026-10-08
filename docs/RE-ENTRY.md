@@ -1,3 +1,57 @@
+# Active handoff — 2026-10-08: restored-universe PatchTST rerun in progress
+
+Owner-requested next-session Claude handoff: children/index_options/docs/memos/2026-10-08-claude-calibration-backtest-handoff.md. Finish this cycle first; handoff is a proposed calibration/MIO/backtest walkthrough, not execution authorization for this cycle.
+
+Owner clarified one pooled PatchTST model with HPO and fresh scheduled retraining.
+ADR0254, reviewed candidate025f4bd5. Both independent configuration/execution
+lenses closed with zeroCritical/Major/Minor/Nit. No core code changed.
+The earlier85-name cycle below remains preserved; its no-new-cycle statement
+was superseded by the owner's explicit restored-universe rerun approval.
+
+392names admitted: prior85 plus307missing-action-inventory histories under
+explicit research assumptions; CORZ excluded for confirmed recapitalization.
+841559owned source dates reconcile to457919eligible panelrows with zero residual.
+Development folds admit303/319/354heads as histories become sufficient.
+No2026data access/scoring, MIO, strategies, providers, upgrades or fullsuite.
+
+WSL2 checkout /home/russell/dskit-production-universe-rerun-20261008.
+Private audit /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/.
+Data /home/russell/data/index_options/production-universe-rerun-20261008/.
+Backup /home/russell/data/backups/index_options/production-universe-rerun-20261008/.
+Read execution-lock.json, execution-plan.json and actual launch/status receipts.
+All15 feature fits completed; base selected at +0.8784146644% paired skill.
+Stage1 and HPO backups each verified15fits/4880score shards plus isolated inference.
+HPO finished15newfits; default trial3 won+0.8784146644% (lr0.0003/dropout0.1).
+Confirmation9fits completed; seed11/29/47 weighted skills +1.331748%,
++0.818424%, +1.122986%. All pass the frozen aggregate gate; nominal seed11
+original85 skill is -0.043181%, restored +1.688151%. Keep this caveat visible.
+Confirmation backup verified9fits/3366score shards plus isolated inference.
+Actual-gate and evaluation conformance independent reviews closed zero findings.
+
+The27evaluation fits are already running from evaluation-batch-launch.json,
+PID3326789/proc_start35614608 at launch. Verify current PID/start and outputs
+before any dispatch; never duplicate. Cumulative reserved ceiling133/216.
+Next: after all27complete, onboard-evaluation.py once (includes analysis), then
+build-stage-report-appendix.py evaluation and backup-evaluation.py. Preserve
+all failures; no automatic retry or budget expansion. Finish aggregate report,
+memo, two closing scoped reviews and authorized merge/push/remote verification.
+Fresh actual-gate/champion-freeze receipts bind this rerun; no old85reuse.
+Feature ticker/training appendix is private features-report-appendix-v2.json;
+complete393 roster perarm (CORZ exclusion explicit),1965ticker aggregates.
+All sums match stage results; original85 base skill+0.503541%, restored+1.002395%.
+Exact matched old/new original85 base comparison also passed keys/baseline
+equality: -0.736555% to+0.503541%; descriptive, no causal attribution or qualification.
+Private old-new-base-original85-comparison.json; independent scoped review zero findings.
+Both comparison and report-v2 reviews passed; supplemental backups verified.
+Keep all artifacts and historicalcheckouts. Finalmemo/report/wrap remainpending.
+Owner follow-up: finalmemo must include training/early-stopping performance,
+all HPO candidates and selection, validation byfold/seed, and complete per-ticker
+aggregate performance with counts/baselines and original85/restored comparison.
+Latest modeltraining settings, features, folds and capacity equalpriorcycle;
+a performance change alone cannot prove the universe causedthe old decline.
+
+---
+
 # Active handoff — 2026-10-08: bounded production development complete; no promotion
 
 All66actual fits completed:15feature +15newHPO +9confirmation +27evaluation.
