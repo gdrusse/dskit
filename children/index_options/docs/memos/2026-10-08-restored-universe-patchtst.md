@@ -141,7 +141,7 @@ Retain all chronological refit packages and their fixed nominal seed. Do not sub
 
 ## Execution results and pickup
 
-The finite experiment cycle is complete:15 feature +15 new HPO +9 confirmation +27 evaluation fits, with no new-cycle fit failures. Three HPO references reuse this rerun's Stage1 packages. All stage backups passed recovery checks. No fit job remains, and this closed cycle authorizes no further retries/search. Preserve the pinned checkout and all source/fit/forecast artifacts. Next: finish the two scoped closing reviews and authorized wrap, then use the linked Claude memo for the next-session calibration walkthrough.
+The finite experiment cycle is complete:15 feature +15 new HPO +9 confirmation +27 evaluation fits, with no new-cycle fit failures. Three HPO references reuse this rerun's Stage1 packages. All stage backups passed recovery checks. No fit job remains, and this closed cycle authorizes no further retries/search. Preserve the pinned checkout and all source/fit/forecast artifacts. Both scoped closing reviews closed with zero findings. Use the linked Claude memo for the next-session calibration walkthrough; actual publication and branch cleanup are recorded in the private final-wrap-receipt.json.
 
 
 ## Evaluation dispatch
@@ -262,4 +262,9 @@ The exact verified recovery invocation was:
 
 Do not rerun against that completed destination: it refuses replacing its receipt. For another recovery test, use a fresh sibling copy as described above. Preserve prerequisites-v2 and the old cycle's dependency backup. Same-disk copies are not off-device disaster recovery.
 
-The original execution candidate025f4bd5 and all66 pinned source files remain unchanged; core/tests are byte-identical to d4df4ab0. Only JSON experiment instances, documentation, aggregate reports and journal evidence were added in this lane. All new report data is aggregate-only; weights, source records, per-forecast data and private receipts remain outside GitHub. Two final scoped correctness/authority and integration/evidence reviews are pending on the immutable report candidate; publication is not yet final.
+The original execution candidate025f4bd5 and all66 pinned source files remain unchanged; core/tests are byte-identical to d4df4ab0. Only JSON experiment instances, documentation, aggregate reports and journal evidence were added in this lane. All new report data is aggregate-only; weights, source records, per-forecast data and private receipts remain outside GitHub. Two fresh scoped correctness/authority and integration/evidence reviews closed candidate d9ec2b8dba7116109cdc46a481dfb40d94bdf034, each with zero Critical/Major/Minor/Nit. No correction was required; subsequent changes append closure evidence and update completion status only.
+
+
+Final reviewers: /root/final_report_correctness (GPT-6), report final-closeout-correctness.txt SHA256a17c202d7f97f6b95a334a530ff32fb98755a6b9d7683dfa486f5f670b1fb0a7; /root/final_report_integration (GPT-6), report final-closeout-integration.txt SHA2562f96246cc043c63795a19ba5fbb27b3e41252219fc42eab3c8d17ae2a18e224b. Exact reports and final-review-lock.json are retained under the private audit root. The first lens independently checked all evaluation records/aggregates/PIT and69 training occurrences; the second checked all66 packages, backup manifests,190 dependency versions and41,967 retained dependency files, publication and handoff boundaries. No fits, full suite or future-stage execution were added by review.
+
+The owner authorized /wrap, main merge/push and safe task-branch purge. The private final-wrap-receipt.json records actual remote verification and branch cleanup. Preserve all historical and current inference/data/dependency artifacts and the pinned checkout; purge refers only to safely merged task branch references. The next owner prompt will define the MIO portion.

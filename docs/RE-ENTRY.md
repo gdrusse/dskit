@@ -1,4 +1,4 @@
-# Active handoff — 2026-10-08: restored-universe forecasting complete; wrap pending
+# Active handoff — 2026-10-08: restored-universe forecasting closed; calibration walkthrough next
 
 All66 new fits completed without failures:15feature +15newHPO +9confirmation
 +27evaluation; three HPO references reuse this rerun's Stage1 identities.
@@ -34,9 +34,10 @@ are retained; inference supported, interrupted-optimizer continuation is not.
 Preserve old85 artifacts and both pinned checkouts. Same-disk backups are not
 off-device disaster recovery. Keep raw records/forecasts/weights private.
 
-Next: close two final scoped reviews, merge/push the reviewed report, verify
-remote contents and delete only the safely merged task branch. Owner expressly
-requested /wrap after the report. Then use the owner-requested next-session
+Both final independent lenses closed report candidate d9ec2b8d with zero
+Critical/Major/Minor/Nit. See private final-review-lock.json and actual
+publication/cleanup receipt final-wrap-receipt.json. Preserve the pinned
+checkout/data; only safely merged task branches may be purged. Next use the
 children/index_options/docs/memos/2026-10-08-claude-calibration-backtest-handoff.md
 to walk through bounded calibration and the path to MIO/backtesting.
 That future-stage plan does not authorize execution in this cycle.
