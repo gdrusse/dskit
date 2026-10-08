@@ -1,0 +1,5 @@
+{
+  "path": "/home/russell/data/index_options/production-universe-rerun-20261008/inputs/model-inputs",
+  "as_of": "2026-10-08T14:07:18+00:00",
+  "notes": "Owned bounded pre2026 model inputs;392retrospective names including307owner-accepted missing-action-inventory assumptions. Immutable folds copied exactly from reviewed previouscycle; training-only featureprojection, no market acquisition."
+}
