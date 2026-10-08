@@ -30660,6 +30660,8 @@ Configuration and SQL are trusted program inputs. Source documents are untrusted
 
 ## ADR-0255 — Equity iron-condor robust-selection research replay (PROPOSED)
 
+**Implementation authorization (2026-10-08):** owner explicitly requested targeted parallel build sessions and skeptic review after the cross-branch capability audit. This authorizes the reviewed reusable mathematical mechanisms and integration code with synthetic tests now. Unanswered G3 numerical/statistical choices remain required explicit configuration; no default may represent owner approval, and G1/G2 plus selected G3 settings still gate a real replay. Existing-file edits only in this build; no new package or market data access.
+
 **Status:** owner-frozen scope, otherwise PROPOSED. Fresh reviews of66ad1c1e found the families recorded in RE-ENTRY; corrections below await re-review. No code/data relocation/run until G1-G4 close; no main merge without owner approval. No2026 records, acquisition, fits or spend. ADR0254 and the restored-universe inventory are published on main; the old85 result is not this model. Already-inspected2024-2025 remains research evidence.
 
 **Scope:** one-lot equity condor per ticker-date, exact DTE31, single-trade expiry payoff; early assignment ignored and labeled. Own-date close-based forecast with own-date VWAP is explicitly look-ahead, not executable. All strictly ordered eligible strike combinations, no width/OTM/count cap. Grid is all chain strikes before liquidity; mean-preserving bounding-strike placement. Config owns values. Node names refer to shared pipeline or foreach.pipeline; fan-out is only declared comparison arms, not tickers.
