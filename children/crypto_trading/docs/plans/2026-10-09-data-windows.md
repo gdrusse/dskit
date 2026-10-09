@@ -40,3 +40,15 @@ Kalshi settled market, by owner decision, before W2 is read.
   an EWMA-volatility Student-t. Beating the baseline is the bar.
 - The settlement average and the index-Binance basis are not modelled here;
   they enter at W4.
+
+## Zoo grid (owner-approved 2026-10-09)
+
+- Models: PatchTST, 1D-CNN, GRU, three-component mixture MLP, VanillaTransformer
+  (chosen from the options child's zoo results; its gains over an empirical
+  baseline were small, so none is presumed to win).
+- Losses: pinball (quantile head), CRPS, mixture likelihood, CRPS plus tail CRPS.
+- Regimes: pooled over BTC and ETH with an asset indicator (one trunk, one
+  head), and unpooled per asset. 5 models x 4 losses x 2 regimes = 40 cells,
+  scored on W1 only.
+- Not yet decided: the feature set and its selection (next), and the HPO
+  space for the winner.
