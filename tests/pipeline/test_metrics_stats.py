@@ -1272,3 +1272,98 @@ class TestCalendarBlockBootstrap:
                       [datetime(2024,1,1)], []):
             with pytest.raises(ValueError, match="dates"):
                 CalendarBlockBootstrap(dates, 1)
+
+
+class TestEdgePaddedCalendarBlockBootstrap:
+    def padded(self, days, width, month=1):
+        from datetime import date
+        from dskit.pipeline.stats import EdgePaddedCalendarBlockBootstrap
+
+        return EdgePaddedCalendarBlockBootstrap(
+            [date(2024, month, d) for d in days], width)
+
+    def legacy(self, days, width):
+        from datetime import date
+        from dskit.pipeline.stats import CalendarBlockBootstrap
+
+        return CalendarBlockBootstrap([date(2024, 1, d) for d in days], width)
+
+    def test_legacy_class_is_byte_identical_to_pre_hook_behaviour(self):
+        sampler = self.legacy([1, 2, 3, 5, 6, 7], 2)
+        assert sampler.evidence == {
+            "block_days": 2, "date_count": 6,
+            "eligible_starts": ["2024-01-01", "2024-01-02", "2024-01-03",
+                                "2024-01-05", "2024-01-06"],
+            "distinct_blocks": 5, "inclusion_counts": [1, 2, 2, 1, 2, 1],
+            "zero_inclusion_dates": [], "supported": True}
+        assert sampler.sample_indices(3, 5) == [
+            [4, 5, 2, 2, 4, 5], [0, 1, 3, 4, 1, 2], [0, 1, 1, 2, 0, 1]]
+        assert "truncated_blocks" not in sampler.evidence
+
+    def test_trailing_date_uncovered_by_legacy_is_covered_when_padded(self):
+        days = [1, 2, 4, 5, 8]
+        legacy = self.legacy(days, 3)
+        assert legacy.evidence["zero_inclusion_dates"] == ["2024-01-08"]
+        assert not legacy.supported
+        padded = self.padded(days, 3)
+        evidence = padded.evidence
+        assert evidence["zero_inclusion_dates"] == []
+        assert evidence["inclusion_counts"] == [3] * 5
+        assert padded.supported
+        assert any(4 in draw for draw in padded.sample_indices(50, 3))
+
+    def test_starts_are_every_calendar_day_from_first_minus_b_minus_1_to_last(self):
+        evidence = self.padded([3, 4, 6], 3).evidence
+        assert evidence["eligible_starts"] == [
+            f"2024-01-{d:02d}" for d in range(1, 7)]
+        # Starts 1,2 begin before day 3; starts 5,6 end after day 6.
+        assert evidence["truncated_blocks"] == 4
+
+    def test_blocks_are_half_open_intervals_intersected_with_observed_dates(self):
+        sampler = self.padded([1, 2, 5], 2)
+        # Starts Dec 31..Jan 5; empty blocks (start Jan 3 -> [3,5) has none
+        # observed, start Jan 4 -> [4,6) has Jan 5) are dropped.
+        assert sampler.evidence["eligible_starts"] == [
+            "2023-12-31", "2024-01-01", "2024-01-02", "2024-01-04",
+            "2024-01-05"]
+        assert sampler._blocks == ((0,), (0, 1), (1,), (2,), (2,))
+
+    def test_every_observed_date_lies_in_exactly_b_blocks(self):
+        for days, width in (([1, 2, 5, 6, 7, 20], 4), ([1, 30], 31),
+                            ([5], 1), ([1, 2, 3], 7)):
+            counts = self.padded(days, width).evidence["inclusion_counts"]
+            assert counts == [width] * len(days)
+
+    def test_span_floor_requires_two_block_lengths(self):
+        # span 4 days, B=3 -> floor(4/3) == 1: refuses although blocks differ.
+        short = self.padded([1, 2, 3, 4], 3)
+        assert len(set(short._blocks)) >= 2
+        assert not short.supported
+        assert not short.evidence["supported"]
+        with pytest.raises(ValueError, match="support"):
+            short.sample_indices(20, 1)
+        # span 6, B=3 -> floor(6/3) == 2: supported.
+        assert self.padded([1, 2, 5, 6], 3).supported
+
+    def test_sample_indices_deterministic_and_full_length(self):
+        sampler = self.padded([1, 2, 5, 6, 9], 2)
+        draws = sampler.sample_indices(40, 11)
+        assert draws == sampler.sample_indices(40, 11)
+        assert all(len(draw) == 5 for draw in draws)
+
+    def test_underflow_below_date_min_refuses(self):
+        from datetime import date
+        from dskit.pipeline.stats import EdgePaddedCalendarBlockBootstrap
+
+        with pytest.raises(ValueError, match="earliest"):
+            EdgePaddedCalendarBlockBootstrap([date.min, date(1, 1, 3)], 5)
+        # Exactly representable padding is accepted.
+        EdgePaddedCalendarBlockBootstrap([date(1, 1, 5), date(1, 1, 20)], 5)
+
+    def test_valid_date_max_is_accepted(self):
+        from datetime import date
+        from dskit.pipeline.stats import EdgePaddedCalendarBlockBootstrap
+
+        sampler = EdgePaddedCalendarBlockBootstrap(
+            [date(9999, 12, 1), date.max], 3)
+        assert sampler.evidence["eligible_starts"][-1] == "9999-12-31"

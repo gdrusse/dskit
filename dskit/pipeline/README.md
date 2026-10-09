@@ -888,6 +888,8 @@ dskit/pipeline/
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
+│                      CalendarBlockBootstrap + EdgePaddedCalendarBlockBootstrap:
+│                      calendar-day block resampling, one `_blocks_for` hook (ADR-0256)
 ├── binary_pricing.py  fair value of a binary contract that settles on an average: AveragedLognormal law,
 │                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market Brier / log-loss, take-rule profit, a
