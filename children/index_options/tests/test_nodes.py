@@ -1534,3 +1534,237 @@ def test_robust_batch_missing_ticker_calibration_has_no_implicit_tier():
     assert not out["decisions"] and not out["selections"]
     assert {r["reason"] for r in out["skips"]}=={"missing_calibration_tier"}
     assert {r["arm_id"] for r in out["skips"]}==set(params["arms"])
+
+
+# -- ADR-0256 (6): relative-gap diagnostic, primal parity, ordering pin, context_error ----
+
+ROBUST_LEGACY_CONFIG = "configs/run-equity-condor-robust-backtest.json"
+ROBUST_LEGACY_HASH = "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55"
+
+
+def _parity_params(**overrides):
+    return {"solver_options": {"mip_rel_gap": 0, "mip_abs_gap": 1e-7},
+            "multiplier": 100, "fee_per_contract_usd": .65, "tie_tolerance_usd": 1e-6,
+            "max_absolute_gap_usd": 1e-6, "max_relative_gap": 1e-8,
+            "objective_parity_usd": 1e-5, **overrides}
+
+
+def _without_parity(node):
+    return type(node)("select", {k: v for k, v in node.params.items()
+                                 if k != "objective_parity_usd"})
+
+
+def _parity_node(rho=0., **overrides):
+    from index_options.nodes import RobustCondorSelect
+    _, context = _robust_tie_fixture(2.)
+    context["rho"] = rho
+    return RobustCondorSelect("select", _parity_params(**overrides)), context
+
+
+def test_robust_legacy_config_still_validates_with_its_identity(child_root):
+    import json
+    from dskit.pipeline.document import PipelineDocument
+    from index_options.nodes import RobustCondorBatchSelect
+    document = json.loads((child_root / ROBUST_LEGACY_CONFIG).read_text())
+    assert RobustCondorBatchSelect.validate_params(document["pipeline"]["select"]["params"]) == []
+    assert PipelineDocument.from_obj(document).hash == ROBUST_LEGACY_HASH
+
+
+def _shift_primary(node, monkeypatch, bound_offset=0., objective_offset=0.):
+    from dataclasses import replace
+    build = node._build_solve_record
+    calls = []
+
+    def shifted(*args):
+        record = build(*args)
+        calls.append(record)
+        if len(calls) > 1:
+            return record
+        objective, bound = record.objective+objective_offset, record.bound+objective_offset+bound_offset
+        return replace(record, objective=objective, bound=bound,
+                       gap=abs(objective-bound)/max(abs(objective), 1e-10))
+    monkeypatch.setattr(node, "_build_solve_record", shifted)
+
+
+def test_robust_null_relative_gap_validates_and_accepts_tiny_gap(monkeypatch):
+    from index_options.nodes import RobustCondorSelect
+    assert RobustCondorSelect.validate_params(_parity_params(max_relative_gap=None)) == []
+    assert RobustCondorSelect.validate_params({k: v for k, v in _parity_params().items()
+                                               if k != "max_relative_gap"})
+    assert RobustCondorSelect.validate_params(_parity_params(max_relative_gap=-1.))
+    outcomes = {}
+    for relative in (0., None):
+        node, context = _parity_node(max_relative_gap=relative)
+        _shift_primary(node, monkeypatch, bound_offset=5e-8)
+        out = node.run(None, {"context": context})
+        outcomes[relative] = out["decision"]
+        assert out["evidence"]["solves"][0]["gap"] > 0
+    assert outcomes[0.]["reason"] == "uncertified_primary"
+    assert outcomes[None]["status"] == "trade"
+
+
+@pytest.mark.parametrize("rho", [0., .03])
+def test_robust_parity_passes_on_a_correct_solve(rho):
+    grid = [70., 82., 91., 103., 116., 135.]
+    from index_options.nodes import RobustCondorSelect
+    context = dict(decision_id="fixture", arm_id="base", symbol="SYNTH",
+                   quote_date="2025-02-04", expiry="2025-03-07", grid=grid,
+                   masses=[.05, .15, .3, .25, .15, .1], spot=100., rho=rho, legs={})
+    for role, prices in {"LP": [20, 14, 8, 5, 3, 1], "SP": [21, 15, 9, 6, 4, 2],
+                         "SC": [1, 3, 5, 8, 14, 20], "LC": [2, 4, 6, 9, 15, 21]}.items():
+        context["legs"][role] = [dict(index=i, price=float(p) + (12. if role in ("SP", "SC") else 0.), haircut=.03,
+                                      contract_id=f"{role}-{i}") for i, p in enumerate(prices)]
+    out = RobustCondorSelect("select", _parity_params()).run(None, {"context": context})
+    assert out["decision"]["status"] == "trade"
+    for certificate in out["evidence"]["solves"]:
+        parity = certificate["parity"]
+        assert parity["passed"] and parity["discrepancy_usd"] <= 1e-5
+        assert parity["recomputed_usd"] == pytest.approx(parity["model_usd"], abs=1e-5)
+    assert out["decision"]["robust_value_usd"] == pytest.approx(
+        out["evidence"]["solves"][1]["parity"]["recomputed_usd"], abs=1e-9)
+
+
+def test_robust_parity_absent_leaves_certificates_legacy():
+    node, context = _robust_tie_fixture(2.)
+    out = node.run(None, {"context": context})
+    assert all("parity" not in row for row in out["evidence"]["solves"])
+
+
+def test_robust_corrupted_primary_objective_fails_parity_before_the_tie_solve(monkeypatch):
+    node, context = _parity_node()
+    _shift_primary(node, monkeypatch, objective_offset=.5)
+    out = node.run(None, {"context": context})
+    assert out["decision"] == {**{k: context[k] for k in node._IDENTITY},
+                               "status": "skipped", "reason": "parity_failed"}
+    assert len(out["evidence"]["solves"]) == 1
+    parity = out["evidence"]["solves"][0]["parity"]
+    assert not parity["passed"] and parity["discrepancy_usd"] == pytest.approx(.5)
+
+
+def test_robust_corrupted_tie_structure_fails_tie_parity_before_the_floor(monkeypatch):
+    node, context = _parity_node()
+    primal, calls = node._primal_value, []
+
+    def drifting(legs):
+        calls.append(1)
+        robust, worst = primal(legs)
+        return (robust-.5, worst) if len(calls) == 2 else (robust, worst)
+
+    monkeypatch.setattr(node, "_primal_value", drifting)
+    out = node.run(None, {"context": context})
+    assert out["decision"]["reason"] == "parity_failed_tie"
+    assert len(out["evidence"]["solves"]) == 2
+    assert not out["evidence"]["solves"][1]["parity"]["passed"]
+
+
+@pytest.mark.parametrize("parity", [True, False])
+def test_robust_floor_failure_has_its_own_reason_in_parity_mode_and_raises_in_legacy(
+        parity, monkeypatch):
+    node, context = _parity_node()
+    if not parity:
+        node = _without_parity(node)
+    certified = node._secondary_certified
+
+    def lowered_floor(record):
+        node._certificates[0]["bound"] += 1.
+        return certified(record)
+
+    monkeypatch.setattr(node, "_secondary_certified", lowered_floor)
+    if parity:
+        assert node.run(None, {"context": context})["decision"]["reason"] == "tie_floor_failed"
+    else:
+        with pytest.raises(ValueError, match="tie floor"):
+            node.run(None, {"context": context})
+
+
+@pytest.mark.parametrize("parity", [True, False])
+def test_robust_nonintegral_solution_skips_only_in_parity_mode(parity, monkeypatch):
+    import pyomo.environ as pe
+    node, context = _parity_node()
+    if not parity:
+        node = _without_parity(node)
+    real = pe.value
+
+    def fractional(expr, *args, **kwargs):
+        return .4 if getattr(expr, "name", None) == "z" else real(expr, *args, **kwargs)
+
+    monkeypatch.setattr(pe, "value", fractional)
+    if parity:
+        decision = node.run(None, {"context": context})["decision"]
+        assert (decision["status"], decision["reason"]) == ("skipped", "nonintegral_solution")
+    else:
+        with pytest.raises(ValueError, match="nonintegral"):
+            node.run(None, {"context": context})
+
+
+@pytest.mark.parametrize("change,fragment", [
+    ({"solver_options": {"mip_abs_gap": 1e-5}}, "mip_abs_gap <= max_absolute_gap_usd"),
+    ({"max_absolute_gap_usd": 1e-4, "tie_tolerance_usd": 1e-4},
+     "max_absolute_gap_usd <= objective_parity_usd"),
+    ({"tie_tolerance_usd": 1e-8}, "tie_tolerance_usd >= max_absolute_gap_usd"),
+    ({"objective_parity_usd": -1.}, "objective_parity_usd must be"),
+    ({"objective_parity_usd": None}, "objective_parity_usd must be"),
+])
+def test_robust_parity_ordering_pin_names_the_violated_inequality(change, fragment):
+    from index_options.nodes import RobustCondorSelect
+    problems = RobustCondorSelect.validate_params(_parity_params(**change))
+    assert any(fragment in problem for problem in problems), problems
+    with pytest.raises(ConfigError):
+        RobustCondorSelect("select", _parity_params(**change))
+
+
+def test_robust_ordering_pin_is_off_without_parity_and_unset_mip_gap_is_unpinned():
+    from index_options.nodes import RobustCondorSelect
+    legacy = {k: v for k, v in _parity_params().items() if k != "objective_parity_usd"}
+    legacy.update(tie_tolerance_usd=50., max_absolute_gap_usd=101., max_relative_gap=1.1)
+    assert RobustCondorSelect.validate_params(legacy) == []
+    unset = _parity_params(solver_options={"mip_rel_gap": 0})
+    assert RobustCondorSelect.validate_params(unset) == []
+    node = RobustCondorSelect("select", unset)
+    _, context = _parity_node()
+    parity = node.run(None, {"context": context})["evidence"]["solves"][0]["parity"]
+    assert parity["mip_abs_gap"] == "unset"
+
+
+def _parity_batch_params(**overrides):
+    return {**_robust_batch_params(), **_parity_params(), **overrides}
+
+
+def test_robust_batch_context_error_is_counted_and_the_batch_completes():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _parity_batch_params(), _robust_batch_inputs()
+    good = dict(inputs["projected_masses"][0])
+    bad = dict(good, decision_id="bad-masses", expiry="2025-03-14",
+               settlement_date="2025-03-14", masses=[.1, .1, .1, .1])
+    inputs["projected_masses"] = [good, bad]
+    inputs["chain"] = inputs["chain"] + [dict(row, expiry="2025-03-14")
+                                         for row in inputs["chain"] if row["quote_date"] == "2025-02-04"]
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    errors = [row for row in out["skips"] if row.get("reason") == "context_error"]
+    assert {row["decision_id"] for row in errors} == {"bad-masses"}
+    assert len(errors) == len(params["arms"]) and all(row["detail"] for row in errors)
+    assert {row["decision_id"] for row in out["decisions"]} == {"batch-fixture"}
+    assert len(out["decisions"]) == len(params["arms"])
+
+
+def test_robust_batch_bad_chain_row_is_context_error_only_with_parity():
+    from index_options.nodes import RobustCondorBatchSelect
+    inputs = _robust_batch_inputs()
+    inputs["chain"][2]["vwap"] = float("nan")
+    out = RobustCondorBatchSelect("batch", _parity_batch_params()).run(None, inputs)
+    assert {r["reason"] for r in out["skips"]} == {"context_error"}
+    with pytest.raises(ValueError, match="invalid strike, VWAP"):
+        RobustCondorBatchSelect("batch", _robust_batch_params()).run(None, inputs)
+
+
+def test_robust_batch_integrity_skips_are_never_context_error(monkeypatch):
+    import pyomo.environ as pe
+    from index_options.nodes import RobustCondorBatchSelect
+    real = pe.value
+
+    def fractional(expr, *args, **kwargs):
+        return .4 if getattr(expr, "name", None) == "z" else real(expr, *args, **kwargs)
+
+    monkeypatch.setattr(pe, "value", fractional)
+    out = RobustCondorBatchSelect("batch", _parity_batch_params()).run(None, _robust_batch_inputs())
+    assert {r["reason"] for r in out["skips"]} == {"nonintegral_solution"}
