@@ -32,7 +32,9 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
            "DiscreteCDFGrid", "MeanPreservingCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
-           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel", "NominalStrikeMasses"]
+           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel", "NominalStrikeMasses",
+           "MixtureLossSpec", "mixture_family", "MIXTURE_FAMILY_KINDS",
+           "mlp_stack", "MLP_ACTIVATIONS", "mixture_parts"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
 # CRPS terms (training) and the numpy curve rule (evaluation), so a loss and the
@@ -2552,6 +2554,90 @@ class _RoundPatienceStop(_PatienceStop):
 #: The positive standardized scale floor of every mixture parameter transform.
 _MIN_SCALE = .1
 
+#: Hidden activation name -> ``torch.nn`` class name: the one vocabulary of
+#: ``mlp_stack`` and ``MixtureMLPCDF``.
+MLP_ACTIVATIONS = {"tanh": "Tanh", "relu": "ReLU", "silu": "SiLU"}
+
+
+def mlp_stack(features, hidden, activation, dropout, outputs):
+    """Build the plain MLP trunk-plus-linear-head that ``MixtureMLPCDF`` trains.
+
+    Parameters
+    ----------
+    features : int
+        Input width.
+    hidden : list of int
+        One width per hidden layer, in order (positive).
+    activation : str
+        A key of ``MLP_ACTIVATIONS``.
+    dropout : float
+        Dropout probability in ``[0, 1)`` after each hidden activation; 0 adds none.
+    outputs : int
+        Width of the final linear layer (positive).
+
+    Returns
+    -------
+    torch.nn.Sequential
+        On the CPU; the caller moves it. Layers are created in the order
+        Linear, activation, [Dropout] per hidden width, then the head, so a
+        fixed torch seed gives the same weights as before this was public.
+
+    Raises
+    ------
+    ValueError
+        For an unknown activation, a non-positive or non-integer width, an
+        empty ``hidden``, or a dropout outside ``[0, 1)``.
+
+    Examples
+    --------
+    A two-layer ReLU trunk with a six-wide head::
+
+        net = mlp_stack(5, [16, 16], "relu", 0.1, 6)
+    """
+    import torch
+    widths = [features, *hidden, outputs] if isinstance(hidden, (list, tuple)) else None
+    if (activation not in MLP_ACTIVATIONS or not widths or len(widths) < 3
+            or any(type(v) is not int or v <= 0 for v in widths)
+            or isinstance(dropout, bool) or not 0 <= dropout < 1):
+        raise ValueError("invalid MLP stack settings")
+    act = getattr(torch.nn, MLP_ACTIVATIONS[activation])
+    layers = []
+    for width in hidden:
+        layers.extend([torch.nn.Linear(features, width), act()])
+        if dropout:
+            layers.append(torch.nn.Dropout(dropout))
+        features = width
+    layers.append(torch.nn.Linear(features, outputs))
+    return torch.nn.Sequential(*layers)
+
+
+def mixture_parts(output, min_scale):
+    """Split raw mixture outputs into log-weights, means and positive scales.
+
+    Parameters
+    ----------
+    output : torch.Tensor
+        ``(rows, 3 * K)`` raw logits, means and pre-softplus scales, concatenated.
+    min_scale : float
+        Positive floor added to every softplus scale.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        ``(log_weights, means, scales)``, each ``(rows, K)``; log-weights are a
+        log-softmax over components and scales exceed ``min_scale``.
+
+    Examples
+    --------
+    Decode a head's output for three components::
+
+        logw, mu, sigma = mixture_parts(head(x), 0.1)
+    """
+    import torch
+    logits, means, raw_scale = output.chunk(3, dim=1)
+    return (torch.log_softmax(logits, dim=1), means,
+            torch.nn.functional.softplus(raw_scale) + min_scale)
+
 
 class _MixtureParameterCDF(CDFEstimator):
     """Estimator predicting ``3 * components`` raw mixture parameters per row.
@@ -2695,11 +2781,7 @@ class _MixtureParameterCDF(CDFEstimator):
         return x if self.feature_indices is None else x[:, self.feature_indices]
 
     def _parts(self, output):
-        import torch
-
-        logits, means, raw_scale = output.chunk(3, dim=1)
-        return (torch.log_softmax(logits, dim=1), means,
-                torch.nn.functional.softplus(raw_scale) + self.min_scale)
+        return mixture_parts(output, self.min_scale)
 
 
 class MixtureMLPCDF(_MixtureParameterCDF):
@@ -2748,7 +2830,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                 or not self._shared_settings_ok(components, batch_size, learning_rate, min_scale,
                                                 deterministic)
                 or not all(self._finite(v) for v in [weight_decay, dropout]) or weight_decay < 0
-                or not 0 <= dropout < 1 or activation not in ("tanh", "relu", "silu")
+                or not 0 <= dropout < 1 or activation not in MLP_ACTIVATIONS
                 or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)):
             raise ValueError("invalid mixture training parameters")
         head_features = self._checked_heads(head_features)
@@ -2782,19 +2864,11 @@ class MixtureMLPCDF(_MixtureParameterCDF):
     def _activation(self):
         """Return the configured hidden activation's torch module class."""
         import torch
-        return {"tanh": torch.nn.Tanh, "relu": torch.nn.ReLU, "silu": torch.nn.SiLU}[self.activation]
+        return getattr(torch.nn, MLP_ACTIVATIONS[self.activation])
 
     def _build_module(self, features):
-        import torch
-        activation = self._activation()
-        layers = []
-        for width in self.hidden:
-            layers.extend([torch.nn.Linear(features, width), activation()])
-            if self.dropout:
-                layers.append(torch.nn.Dropout(self.dropout))
-            features = width
-        layers.append(torch.nn.Linear(features, 3*self.components*max(1, len(self.head_features))))
-        return torch.nn.Sequential(*layers).to(self.device)
+        return mlp_stack(features, self.hidden, self.activation, self.dropout,
+                         3*self.components*max(1, len(self.head_features))).to(self.device)
 
     def _forward(self, model, x, heads):
         import torch
@@ -3206,6 +3280,12 @@ class DecisionRegionScores:
         bias[counts == 0] = np.nan
         return {"decision_strike_brier": brier, "decision_bias": bias,
                 "decision_strike_count": counts}
+
+    @classmethod
+    def overlapping(cls, intervals):
+        """Say whether any two ``[low, high]`` intervals overlap (touching is not overlap)."""
+        pairs = sorted(cls._checked_intervals(intervals).tolist())
+        return any(b[0] < a[1] for a, b in zip(pairs, pairs[1:]))
 
     @staticmethod
     def _checked_intervals(intervals):
@@ -3937,6 +4017,11 @@ class _CompositeLossCDF:
                "tail_crps": _CDFTailCRPS}
     _WING_KEYS = _CDFWingTwCRPS.context_keys
 
+    @staticmethod
+    def _scopes_ok(scopes):
+        """Say whether a loss list's set of term scopes is acceptable: here exactly both."""
+        return scopes == {"global", "local"}
+
     def _set_composite(self, losses, family):
         """Validate and bind the loss terms and the component family."""
         import copy
@@ -3951,8 +4036,7 @@ class _CompositeLossCDF:
                        or not math.isfinite(term["weight"]) or term["weight"] <= 0
                        for term in losses)
                 or len({term["kind"] for term in losses}) != len(losses)
-                or {self._LOSSES[term["kind"]].scope for term in losses}
-                != {"global", "local"}):
+                or not self._scopes_ok({self._LOSSES[term["kind"]].scope for term in losses})):
             raise ValueError("invalid composite loss terms")
         self.loss_config = copy.deepcopy(losses)
         self.family_config = copy.deepcopy(family)
@@ -4071,6 +4155,135 @@ class _CompositeLossCDF:
         return {"composite": total if all(t["n"] for t in terms.values()) else None,
                 "terms": terms, "n": len(y), "eligible_n": int((counts > 0).sum()),
                 "threshold_n": int(counts.sum())}
+
+
+#: The component-family kinds ``mixture_family`` builds.
+MIXTURE_FAMILY_KINDS = tuple(_CompositeLossCDF._FAMILIES)
+
+
+def mixture_family(config):
+    """Build a torch-side mixture component family from its configuration.
+
+    Parameters
+    ----------
+    config : dict
+        ``{"kind": "gaussian"}`` or ``{"kind": "student", "degrees": k}`` with
+        integer ``k >= 3``; the kinds are ``MIXTURE_FAMILY_KINDS``.
+
+    Returns
+    -------
+    _MixtureFamily
+        The family: exact ``standard_cdf``, ``log_density``, ``mixture_cdf``
+        and ``crps`` on torch tensors.
+
+    Raises
+    ------
+    ValueError
+        For a non-dict, an unknown kind, or invalid family settings.
+
+    Examples
+    --------
+    A Student-5 family::
+
+        family = mixture_family({"kind": "student", "degrees": 5})
+    """
+    if not isinstance(config, dict) or config.get("kind") not in _CompositeLossCDF._FAMILIES:
+        raise ValueError("unknown CDF family")
+    return _CompositeLossCDF._FAMILIES[config["kind"]](config)
+
+
+class MixtureLossSpec(_CompositeLossCDF):
+    """The composite mixture loss as a standalone callable, for any torch head.
+
+    It is ``_CompositeLossCDF``'s objective with no estimator around it: the
+    same terms, the same family and the same weighting rule (``loss`` calls
+    ``_objective_loss``), but global-only lists are allowed (``TorchCDF``
+    still requires one global and one local term). Only ``nll``, ``crps`` and
+    ``tail_crps`` are offered: the decision terms read per-row context a bare
+    head does not have. ``tail_crps`` integrates ``tail_intervals``, the same
+    wings for every row, in the units of the targets.
+
+    Parameters
+    ----------
+    losses : list of dict
+        Unique ``{"kind", "weight"}`` terms, weight above zero, kinds from
+        ``nll``, ``crps``, ``tail_crps`` (at least one term).
+    family : dict or None
+        As ``mixture_family``; absent means Gaussian components.
+    tail_intervals : list of [low, high] or None
+        Required exactly when ``tail_crps`` is a term: finite, ``low < high``,
+        and not overlapping (touching is fine).
+
+    Examples
+    --------
+    CRPS plus a tail term over two wings, Student components::
+
+        spec = MixtureLossSpec(
+            losses=[{"kind": "crps", "weight": 1.0}, {"kind": "tail_crps", "weight": 1.0}],
+            family={"kind": "student", "degrees": 5},
+            tail_intervals=[[-6.0, -2.0], [2.0, 6.0]])
+        value = spec.loss(y, logw, mu, sigma)
+    """
+
+    _LOSSES = {kind: _CompositeLossCDF._LOSSES[kind] for kind in ("nll", "crps", "tail_crps")}
+
+    @staticmethod
+    def _scopes_ok(scopes):
+        """Say whether every term is global or local (the wing term): any nonempty subset."""
+        return bool(scopes) and scopes <= {"global", "local"}
+
+    def __init__(self, losses, family=None, tail_intervals=None):
+        self._set_composite(losses, family)
+        wings = any(term["kind"] == "tail_crps" for term in self.loss_config)
+        intervals = (DecisionRegionScores._checked_intervals(tail_intervals)
+                     if tail_intervals is not None else None)
+        if wings != (intervals is not None and len(intervals) > 0):
+            raise ValueError("tail_intervals are required exactly when tail_crps is a term")
+        if wings and DecisionRegionScores.overlapping(intervals):
+            raise ValueError("tail_crps over overlapping tail_intervals is not their metric")
+        self.tail_intervals = None if intervals is None else intervals.tolist()
+
+    def _context(self, rows, like):
+        """Return the constant per-row wing context, in ``like``'s dtype and device."""
+        import torch
+        if not self.tail_intervals:
+            return {"weights": torch.ones(rows, 1, dtype=like.dtype, device=like.device)}
+        pairs = torch.as_tensor(self.tail_intervals, dtype=like.dtype, device=like.device)
+        lower, upper = (pairs[:, i].expand(rows, -1) for i in (0, 1))
+        return {"weights": torch.ones(rows, 1, dtype=like.dtype, device=like.device),
+                "lower": lower, "upper": upper, "density": torch.ones_like(lower)}
+
+    def loss(self, y, logw, mu, sigma):
+        """Return the scalar composite loss over every row, as ``_objective_loss`` computes it.
+
+        Parameters
+        ----------
+        y : torch.Tensor
+            Targets, ``(rows,)`` or ``(rows, 1)``.
+        logw, mu, sigma : torch.Tensor
+            ``(rows, K)`` log-weights, means and positive scales (see
+            ``mixture_parts``); ``y``'s dtype is the compute dtype of the
+            quadrature terms.
+
+        Returns
+        -------
+        torch.Tensor
+            A 0-d tensor that carries gradient to ``logw``, ``mu`` and ``sigma``.
+
+        Raises
+        ------
+        ValueError
+            When the shapes do not pair ``rows`` targets with ``(rows, K)`` parts.
+        """
+        import torch
+        target = y[:, None] if y.dim() == 1 else y
+        if (target.dim() != 2 or target.shape[1] != 1 or logw.dim() != 2
+                or not logw.shape == mu.shape == sigma.shape
+                or logw.shape[0] != target.shape[0]):
+            raise ValueError("loss needs targets (rows,) and parts (rows, K)")
+        rows = target.shape[0]
+        return self._objective_loss(target, logw, mu, sigma, torch.arange(rows, device=y.device),
+                                    self._context(rows, target))
 
 
 class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
@@ -5639,9 +5852,7 @@ class ChronologicalCDFStudy:
             if config.get("decision_context"):
                 raise ValueError(f"{name} trains on tail_crps under a decision_context: its "
                                  "wings, not tail_intervals, would be integrated")
-            pairs = sorted(DecisionRegionScores._checked_intervals(
-                config["tail_intervals"]).tolist())
-            if any(b[0] < a[1] for a, b in zip(pairs, pairs[1:])):
+            if DecisionRegionScores.overlapping(config["tail_intervals"]):
                 raise ValueError(f"{name} trains on tail_crps over overlapping tail_intervals: "
                                  "the loss integrates their union, tail_crps each interval")
             if (set(terms) != {"crps", "tail_crps"}

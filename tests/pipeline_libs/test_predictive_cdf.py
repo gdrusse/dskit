@@ -5227,3 +5227,197 @@ def test_nominal_projection_context_matching_scales_with_chain_size():
     assert {r["symbol"] for r in out["masses"]} == {str(i) for i in range(20)}
     # Bound matching work independently of the number of other contexts.
     assert CountedRow.lookups <= 6 * len(chain)
+
+
+# ---- cdf-public-seams: the public factories and the global-only loss spec ---
+
+def _state_digest(module):
+    """Digest of a module's state_dict names, shapes and float64 values."""
+    h = hashlib.sha256()
+    for name, value in module.state_dict().items():
+        h.update(f"{name}:{tuple(value.shape)}".encode())
+        h.update(value.double().numpy().tobytes())
+    return h.hexdigest()
+
+
+_STACK_GOLDEN = {
+    "relu_drop": "a1d8025db7f54a47ac865f513f0926369aa81c10e03fb849f4643933dbec3271",
+    "tanh_plain": "cc7322a00fd0e0d9604d0323dfdf9fdc42989db19acc956369ce148293434200",
+}
+
+
+@pytest.mark.parametrize(("label", "activation", "dropout"), [
+    ("relu_drop", "relu", .2), ("tanh_plain", "tanh", 0.)])
+def test_mlp_stack_and_build_module_keep_the_state_dict_byte_identical(
+        label, activation, dropout):
+    torch = pytest.importorskip("torch")
+    model = MixtureMLPCDF(components=2, hidden=[6, 4], activation=activation,
+                          dropout=dropout, device="cpu")
+    torch.manual_seed(3)
+    built = model._build_module(5)
+    torch.manual_seed(3)
+    stacked = predictive_cdf.mlp_stack(5, [6, 4], activation, dropout, 6)
+    assert _state_digest(built) == _state_digest(stacked) == _STACK_GOLDEN[label]
+    assert [type(m) for m in built] == [type(m) for m in stacked]
+
+
+def test_mlp_activations_has_one_owner_and_stack_refuses_unknown():
+    pytest.importorskip("torch")
+    assert set(predictive_cdf.MLP_ACTIVATIONS) == {"tanh", "relu", "silu"}
+    with pytest.raises(ValueError):
+        predictive_cdf.mlp_stack(3, [4], "gelu", 0., 2)
+    with pytest.raises(ValueError):
+        MixtureMLPCDF(activation="gelu", device="cpu")
+
+
+def test_mixture_parts_is_the_estimators_parts_transform():
+    torch = pytest.importorskip("torch")
+    model = MixtureMLPCDF(components=3, device="cpu", min_scale=.2)
+    raw = torch.randn(5, 9, dtype=torch.float64)
+    for got, want in zip(predictive_cdf.mixture_parts(raw, .2), model._parts(raw)):
+        torch.testing.assert_close(got, want, rtol=0, atol=0)
+    logw, mu, sigma = predictive_cdf.mixture_parts(raw, .2)
+    np.testing.assert_allclose(logw.exp().sum(1).numpy(), 1., atol=1e-12)
+    assert (sigma > .2).all()
+
+
+def test_mixture_family_is_the_registered_family_and_refuses_unknown():
+    assert set(predictive_cdf.MIXTURE_FAMILY_KINDS) == {"gaussian", "student"}
+    assert isinstance(predictive_cdf.mixture_family(dict(_GAUSSIAN)),
+                      predictive_cdf._GaussianFamily)
+    student = predictive_cdf.mixture_family(dict(_STUDENT))
+    assert isinstance(student, predictive_cdf._StudentFamily) and student.degrees == 5
+    for bad in ({"kind": "laplace"}, {}, None, {"kind": "student"},
+                {"kind": "student", "degrees": 2}):
+        with pytest.raises(ValueError):
+            predictive_cdf.mixture_family(bad)
+
+
+def test_torch_cdf_still_refuses_a_global_only_loss_list():
+    for losses in ([{"kind": "crps", "weight": 1.}], [{"kind": "nll", "weight": 1.}],
+                   [{"kind": "tail_crps", "weight": 1.}]):
+        with pytest.raises(ValueError, match="composite loss"):
+            predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses, device="cpu")
+
+
+_SPEC_WINGS = [[-6., -2.], [2., 6.]]
+
+
+def _spec(losses, **kw):
+    return predictive_cdf.MixtureLossSpec(losses=losses, **kw)
+
+
+@pytest.mark.parametrize("losses", [
+    [{"kind": "crps", "weight": 1.}], [{"kind": "nll", "weight": 2}],
+    [{"kind": "nll", "weight": 1.}, {"kind": "crps", "weight": .5}]])
+def test_mixture_loss_spec_accepts_global_only_terms(losses):
+    assert _spec(losses).loss_config == losses
+
+
+def test_mixture_loss_spec_accepts_crps_plus_tail_crps_with_intervals():
+    spec = _spec([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+                 tail_intervals=_SPEC_WINGS, family={"kind": "student", "degrees": 5})
+    assert isinstance(spec.family, predictive_cdf._StudentFamily)
+
+
+@pytest.mark.parametrize(("losses", "kw"), [
+    ([], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "crps", "weight": 1.}], {}),
+    ([{"kind": "decision_brier", "weight": 1.}], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "decision_log", "weight": 1.}], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}],
+     {"tail_intervals": _SPEC_WINGS}),
+    ([{"kind": "crps", "weight": 0.}], {}),
+    ([{"kind": "crps", "weight": 1., "extra": 1}], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+     {"tail_intervals": []}),
+    ([{"kind": "crps", "weight": 1.}], {"tail_intervals": _SPEC_WINGS}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+     {"tail_intervals": [[-6., -2.], [-3., 1.]]}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+     {"tail_intervals": [[2., -2.]]}),
+    ([{"kind": "crps", "weight": 1.}], {"family": {"kind": "laplace"}}),
+])
+def test_mixture_loss_spec_refuses_invalid_specs(losses, kw):
+    with pytest.raises(ValueError):
+        _spec(losses, **kw)
+
+
+def test_mixture_loss_spec_allows_touching_intervals():
+    _spec([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+          tail_intervals=[[-6., -2.], [-2., 0.]])
+
+
+def test_mixture_loss_spec_refuses_unknown_arguments():
+    with pytest.raises(TypeError):
+        _spec([{"kind": "crps", "weight": 1.}], tail_weight=1.)
+
+
+def _flat_batch(rows=6):
+    import torch
+    w, m, s, y = _draw_mixture(rows=rows, seed=9)
+    return [torch.tensor(a, dtype=torch.float64) for a in (y, np.log(w), m, s)]
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_mixture_loss_spec_crps_tail_equals_torch_cdf_objective(name):
+    torch = pytest.importorskip("torch")
+    config = dict(_GAUSSIAN if name == "gaussian" else _STUDENT)
+    losses = [{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]
+    y, logw, mu, sigma = _flat_batch()
+    spec = _spec(losses, family=config, tail_intervals=WINGS)
+    got = spec.loss(y, logw, mu, sigma)
+    model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses,
+                                    family=config, device="cpu")
+    context = _zoo_context(len(y))
+    model.fit_decision_context(context, context)
+    training = model._training_context(np.zeros((len(y), 1)))
+    want = model._objective_loss(y[:, None], logw, mu, sigma, torch.arange(len(y)), training)
+    assert got.dim() == 0
+    assert got.item() == pytest.approx(want.item(), rel=0, abs=1e-9)
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_mixture_loss_spec_global_terms_are_the_family_means(name):
+    torch = pytest.importorskip("torch")
+    config = dict(_GAUSSIAN if name == "gaussian" else _STUDENT)
+    y, logw, mu, sigma = _flat_batch()
+    family = _family(name)
+    crps, nll = family.crps(y[:, None], logw, mu, sigma), -torch.logsumexp(
+        logw + family.log_density(y[:, None], mu, sigma), dim=1)
+    got = _spec([{"kind": "crps", "weight": .4}, {"kind": "nll", "weight": 1.5}],
+                family=config).loss(y, logw, mu, sigma)
+    assert got.item() == pytest.approx((.4*crps.mean() + 1.5*nll.mean()).item(), abs=1e-12)
+    # A (rows, 1) target is the same objective as the flat one.
+    again = _spec([{"kind": "crps", "weight": .4}, {"kind": "nll", "weight": 1.5}],
+                  family=config).loss(y[:, None], logw, mu, sigma)
+    assert again.item() == got.item()
+
+
+def test_mixture_loss_spec_is_differentiable_and_float32_matches_float64():
+    torch = pytest.importorskip("torch")
+    losses = [{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]
+    spec = _spec(losses, tail_intervals=WINGS)
+    y, logw, mu, sigma = _flat_batch()
+    want = spec.loss(y, logw, mu, sigma).item()
+    f32 = [t.float().clone() for t in (y, logw, mu, sigma)]
+    for t in f32[1:]:
+        t.requires_grad_(True)
+    got = spec.loss(*f32)
+    assert got.dtype == torch.float32
+    got.backward()
+    assert all(torch.isfinite(t.grad).all() and t.grad.abs().sum() > 0 for t in f32[1:])
+    assert got.item() == pytest.approx(want, rel=1e-5)
+
+
+def test_mixture_loss_spec_refuses_malformed_tensors():
+    pytest.importorskip("torch")
+    spec = _spec([{"kind": "crps", "weight": 1.}])
+    y, logw, mu, sigma = _flat_batch()
+    with pytest.raises(ValueError):
+        spec.loss(y[:-1], logw, mu, sigma)
+    with pytest.raises(ValueError):
+        spec.loss(y, logw, mu[:, :2], sigma)
+    with pytest.raises(ValueError):
+        spec.loss(y.reshape(2, 3), logw, mu, sigma)
