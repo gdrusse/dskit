@@ -1,3 +1,32 @@
+# Active handoff — 2026-10-09: PatchTST condor replay completed
+
+The authorized single replay completed all10nodes, exit0, run
+793013c0e7ab77e4802d9e24927a91b41d2545e08ddef3424e22bcc2c928b238.
+Read children/index_options/docs/memos/2026-10-09-robust-condor-replay.md
+and its aggregate appendices. Nominal131condors net$5354.85; all7calibrated
+arms abstained because all10monthly rho values lacked sampler support.
+1128nominal primary solves failed the frozen zero-relative-gap acceptance
+rule despite optimal termination. Do not silently relax or rerun.
+All131settlements reconcile exactly and end flat; the largest win exceeds
+total profit. This is same-day-look-ahead research, not qualification.
+
+Execution candidate ada4169b; runtime/config remain frozen. The private audit
+/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008
+contains launch/lock, aggregate recipes, reviews and complete recovery receipt.
+Backup /home/russell/data/backups/index_options/production-universe-rerun-20261008/condor-replay-complete-v1
+verified22run files and131outcomes with originals denied; same-disk only.
+All66forecast models remain at the published model-inventory paths.
+This replay job is no longer active; never duplicate it.
+
+Next iteration needs a prospectively reviewed sampler-support and numerical
+certificate contract, retaining this run as development evidence. No new fits,
+provider acquisition, protected2026 market evaluation or live/deploy activity.
+Publish completed reviewed work on this task branch; main merge remains under
+the MIO task's explicit owner-approval rule. Earlier active/blocked text below
+is historical and superseded by this completion record.
+
+---
+
 # Active handoff — 2026-10-08: rho explanation and calibration direction
 
 Owner agreed to start with average expected-loss underestimation protection,
@@ -117593,7 +117622,5 @@ Both final binding reviews close0Critical/Major/Minor/Nit. Existing core,
 projection and preparation locks remain intact. The private convergence
 record preserves the prior failed correction rounds. The current run is
 research using same-day average fills and assumed costs, not executable
-profitability or independent qualification. Next: finish this run, preserve
-calibration/solver/accounting evidence and backups, evaluate every arm including
-unsupported/skipped outcomes, write the requested performance memo, and close
-scoped reporting reviews. Do not change settings after observing performance.
+profitability or independent qualification. Completed result and recovery are now recorded in the top handoff and the
+2026-10-09 performance memo; the original launch record is retained here. Do not change settings after observing performance.

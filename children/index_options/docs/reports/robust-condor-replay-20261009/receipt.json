@@ -1,0 +1,18 @@
+{
+  "cohort_source_sha256": "33a231bfe5d47a7f72377ee41be47f3214447a1cecd2c14ffbd142bc6c30e268",
+  "forecast_source_sha256": "814b832baf659dd88d2011969fa25523084b6e0b546299092a3076efcdf644be",
+  "haircut_aggregate_sha256": "8bc0763851e5bf751fcfc612aa8cda1ef77e94e9cc1e55e0e78e0005ae101fdc",
+  "haircut_recipe": "/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/calculate-condor-selected-haircut-v1.py",
+  "haircut_recipe_sha256": "25546a29542b22869af02f0e32a5eec04ab572882210e11f3959791caa9ff48c",
+  "outputs": {
+    "calibration.json": "731ead0fdd7f6a909d99ba6ffe53e82c9fc04706c8ea311e558c652cffbd9c4a",
+    "summary.json": "bbd9846ef4ed08d2e792ab95183e16588668dace3372720b116a8dc34acd67b4",
+    "ticker-aggregates.json": "abda3b9211debf435f52b7659f8651b1a10bd10fea83c0e542f0e1ab995424bc"
+  },
+  "prior_versions_preserved": [
+    "/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-aggregate-v1-archive",
+    "/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-aggregate-v2-archive"
+  ],
+  "recipe": "/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/build-condor-replay-aggregates-v3.py",
+  "recipe_sha256": "7d092471af0722a2b5088cf9b318c8249fc3057254962c4702f821128d18037e"
+}

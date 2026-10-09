@@ -1,0 +1,310 @@
+{
+  "accounting": {
+    "raw_fills": 1048,
+    "raw_orders": 1048
+  },
+  "all_phase_forecast_contexts": 99225,
+  "arms": {
+    "haircut_0": {
+      "arm_refused_contexts": 2752,
+      "arm_specific_refusals": {
+        "missing_calibrated_rho": 2710,
+        "missing_calibration_tier": 42
+      },
+      "decision_statuses": {},
+      "decisions": 0,
+      "empirical_fifth_percentile_pnl_usd": null,
+      "fees_usd": 0,
+      "gross_expiry_pnl_before_fees_usd": 0,
+      "interpretation": "unsupported radius; zero booked P&L by abstention, performance unavailable",
+      "loss_frequency": null,
+      "losses": 0,
+      "mean_pnl_usd": null,
+      "median_pnl_usd": null,
+      "net_pnl_usd": 0,
+      "outcomes": 0,
+      "selected_leg_haircut_charge_usd": 0.0,
+      "trade_dates": 0,
+      "trade_symbols": 0,
+      "win_rate": null,
+      "wins": 0
+    },
+    "haircut_double": {
+      "arm_refused_contexts": 2752,
+      "arm_specific_refusals": {
+        "missing_calibrated_rho": 2710,
+        "missing_calibration_tier": 42
+      },
+      "decision_statuses": {},
+      "decisions": 0,
+      "empirical_fifth_percentile_pnl_usd": null,
+      "fees_usd": 0,
+      "gross_expiry_pnl_before_fees_usd": 0,
+      "interpretation": "unsupported radius; zero booked P&L by abstention, performance unavailable",
+      "loss_frequency": null,
+      "losses": 0,
+      "mean_pnl_usd": null,
+      "median_pnl_usd": null,
+      "net_pnl_usd": 0,
+      "outcomes": 0,
+      "selected_leg_haircut_charge_usd": 0.0,
+      "trade_dates": 0,
+      "trade_symbols": 0,
+      "win_rate": null,
+      "wins": 0
+    },
+    "haircut_half": {
+      "arm_refused_contexts": 2752,
+      "arm_specific_refusals": {
+        "missing_calibrated_rho": 2710,
+        "missing_calibration_tier": 42
+      },
+      "decision_statuses": {},
+      "decisions": 0,
+      "empirical_fifth_percentile_pnl_usd": null,
+      "fees_usd": 0,
+      "gross_expiry_pnl_before_fees_usd": 0,
+      "interpretation": "unsupported radius; zero booked P&L by abstention, performance unavailable",
+      "loss_frequency": null,
+      "losses": 0,
+      "mean_pnl_usd": null,
+      "median_pnl_usd": null,
+      "net_pnl_usd": 0,
+      "outcomes": 0,
+      "selected_leg_haircut_charge_usd": 0.0,
+      "trade_dates": 0,
+      "trade_symbols": 0,
+      "win_rate": null,
+      "wins": 0
+    },
+    "liquidity_10": {
+      "arm_refused_contexts": 2752,
+      "arm_specific_refusals": {
+        "missing_calibrated_rho": 2710,
+        "missing_calibration_tier": 42
+      },
+      "decision_statuses": {},
+      "decisions": 0,
+      "empirical_fifth_percentile_pnl_usd": null,
+      "fees_usd": 0,
+      "gross_expiry_pnl_before_fees_usd": 0,
+      "interpretation": "unsupported radius; zero booked P&L by abstention, performance unavailable",
+      "loss_frequency": null,
+      "losses": 0,
+      "mean_pnl_usd": null,
+      "median_pnl_usd": null,
+      "net_pnl_usd": 0,
+      "outcomes": 0,
+      "selected_leg_haircut_charge_usd": 0.0,
+      "trade_dates": 0,
+      "trade_symbols": 0,
+      "win_rate": null,
+      "wins": 0
+    },
+    "liquidity_20": {
+      "arm_refused_contexts": 2752,
+      "arm_specific_refusals": {
+        "missing_calibrated_rho": 2710,
+        "missing_calibration_tier": 42
+      },
+      "decision_statuses": {},
+      "decisions": 0,
+      "empirical_fifth_percentile_pnl_usd": null,
+      "fees_usd": 0,
+      "gross_expiry_pnl_before_fees_usd": 0,
+      "interpretation": "unsupported radius; zero booked P&L by abstention, performance unavailable",
+      "loss_frequency": null,
+      "losses": 0,
+      "mean_pnl_usd": null,
+      "median_pnl_usd": null,
+      "net_pnl_usd": 0,
+      "outcomes": 0,
+      "selected_leg_haircut_charge_usd": 0.0,
+      "trade_dates": 0,
+      "trade_symbols": 0,
+      "win_rate": null,
+      "wins": 0
+    },
+    "liquidity_3": {
+      "arm_refused_contexts": 2752,
+      "arm_specific_refusals": {
+        "missing_calibrated_rho": 2710,
+        "missing_calibration_tier": 42
+      },
+      "decision_statuses": {},
+      "decisions": 0,
+      "empirical_fifth_percentile_pnl_usd": null,
+      "fees_usd": 0,
+      "gross_expiry_pnl_before_fees_usd": 0,
+      "interpretation": "unsupported radius; zero booked P&L by abstention, performance unavailable",
+      "loss_frequency": null,
+      "losses": 0,
+      "mean_pnl_usd": null,
+      "median_pnl_usd": null,
+      "net_pnl_usd": 0,
+      "outcomes": 0,
+      "selected_leg_haircut_charge_usd": 0.0,
+      "trade_dates": 0,
+      "trade_symbols": 0,
+      "win_rate": null,
+      "wins": 0
+    },
+    "nominal": {
+      "arm_refused_contexts": 1170,
+      "arm_specific_refusals": {
+        "missing_calibration_tier": 42,
+        "uncertified_primary": 1128
+      },
+      "decision_statuses": {
+        "no_trade": 1451,
+        "skipped": 1128,
+        "trade": 131
+      },
+      "decisions": 2710,
+      "empirical_fifth_percentile_pnl_usd": -2385.3867769999997,
+      "fees_usd": 340.6,
+      "gross_expiry_pnl_before_fees_usd": 5695.453762,
+      "interpretation": "nominal comparison",
+      "loss_frequency": 0.4580152671755725,
+      "losses": 60,
+      "mean_pnl_usd": 40.87674627480917,
+      "median_pnl_usd": 33.29060800000001,
+      "net_pnl_usd": 5354.853762000002,
+      "outcomes": 131,
+      "selected_leg_haircut_charge_usd": 11893.066238,
+      "trade_dates": 43,
+      "trade_symbols": 40,
+      "win_rate": 0.5419847328244275,
+      "wins": 71
+    },
+    "rho_base": {
+      "arm_refused_contexts": 2752,
+      "arm_specific_refusals": {
+        "missing_calibrated_rho": 2710,
+        "missing_calibration_tier": 42
+      },
+      "decision_statuses": {},
+      "decisions": 0,
+      "empirical_fifth_percentile_pnl_usd": null,
+      "fees_usd": 0,
+      "gross_expiry_pnl_before_fees_usd": 0,
+      "interpretation": "unsupported radius; zero booked P&L by abstention, performance unavailable",
+      "loss_frequency": null,
+      "losses": 0,
+      "mean_pnl_usd": null,
+      "median_pnl_usd": null,
+      "net_pnl_usd": 0,
+      "outcomes": 0,
+      "selected_leg_haircut_charge_usd": 0.0,
+      "trade_dates": 0,
+      "trade_symbols": 0,
+      "win_rate": null,
+      "wins": 0
+    }
+  },
+  "checks": {
+    "aggregate_only": true,
+    "per_ticker_per_arm_entry_partition": "all392x8 exactly cover entry forecasts once"
+  },
+  "cohorts": {
+    "original85": {
+      "entry_forecast_contexts": 9668,
+      "intended_tickers": 85,
+      "nominal": {
+        "empirical_fifth_percentile_pnl_usd": -2385.3867769999997,
+        "fees_usd": 340.6,
+        "gross_expiry_pnl_before_fees_usd": 5695.453762,
+        "loss_frequency": 0.4580152671755725,
+        "losses": 60,
+        "mean_pnl_usd": 40.87674627480917,
+        "median_pnl_usd": 33.29060800000001,
+        "net_pnl_usd": 5354.853762000002,
+        "outcomes": 131,
+        "win_rate": 0.5419847328244275,
+        "wins": 71
+      },
+      "shared_entry_refused_contexts": 6916
+    },
+    "restored307": {
+      "entry_forecast_contexts": 35355,
+      "intended_tickers": 307,
+      "nominal": {
+        "empirical_fifth_percentile_pnl_usd": null,
+        "fees_usd": 0,
+        "gross_expiry_pnl_before_fees_usd": 0,
+        "loss_frequency": null,
+        "losses": 0,
+        "mean_pnl_usd": null,
+        "median_pnl_usd": null,
+        "net_pnl_usd": 0,
+        "outcomes": 0,
+        "win_rate": null,
+        "wins": 0
+      },
+      "shared_entry_refused_contexts": 35355
+    }
+  },
+  "entry_forecast_contexts": 45023,
+  "evidence_sha256": "a595d0d7f1283eff4058a09daf54bf184fb46050b7794efdaa32cf0981d8a747",
+  "haircut_method": "Sum selected one-lot decision legs: multiplier*(fill-vwap) for buys and multiplier*(vwap-fill) for sells; fixed selected legs only, not an alternate strategy replay",
+  "intended_tickers": 392,
+  "lower_tail_method": "Unweighted empirical type-7 fifth percentile, not expected shortfall or a future guarantee",
+  "nominal": {
+    "all_end_flat": true,
+    "arm_refused_contexts": 1170,
+    "arm_specific_refusals": {
+      "missing_calibration_tier": 42,
+      "uncertified_primary": 1128
+    },
+    "best_trade_pnl_usd": 5623.657076,
+    "decision_statuses": {
+      "no_trade": 1451,
+      "skipped": 1128,
+      "trade": 131
+    },
+    "decisions": 2710,
+    "empirical_fifth_percentile_pnl_usd": -2385.3867769999997,
+    "fees_usd": 340.6,
+    "gross_expiry_pnl_before_fees_usd": 5695.453762,
+    "interpretation": "nominal comparison",
+    "loss_frequency": 0.4580152671755725,
+    "losses": 60,
+    "max_closed_form_reconciliation_error_usd": 0.0,
+    "mean_pnl_usd": 40.87674627480917,
+    "median_pnl_usd": 33.29060800000001,
+    "net_excluding_best_trade_usd": -268.80331399999886,
+    "net_pnl_usd": 5354.853762000002,
+    "outcomes": 131,
+    "selected_leg_haircut_charge_usd": 11893.066238,
+    "trade_dates": 43,
+    "trade_symbols": 40,
+    "win_rate": 0.5419847328244275,
+    "wins": 71,
+    "worst_trade_pnl_usd": -4047.7433
+  },
+  "projected_entry_contexts": 2752,
+  "run": "/home/russell/data/index_options/production-universe-rerun-20261008/condor-replay-run-v1/equity-condor-robust-backtest-2025-12-31-793013c0",
+  "run_hash": "793013c0e7ab77e4802d9e24927a91b41d2545e08ddef3424e22bcc2c928b238",
+  "shared_entry_refused_contexts": 42271,
+  "status": "completed_replay_aggregate_only_v3",
+  "strict_gap": {
+    "absolute_gap_leq_1e_6": 1128,
+    "absolute_gap_max_usd": 1.683706827293463e-07,
+    "absolute_gap_median_usd": 5.684341886080802e-14,
+    "absolute_gap_min_usd": 4.440892098500626e-16,
+    "certificates": 4292,
+    "primary": 2710,
+    "relative_gap_max": 6.590422566811287e-09,
+    "relative_gap_median": 5.150611850366507e-16,
+    "relative_gap_min": 1.116878264923107e-16,
+    "relative_gap_positive": 1128,
+    "secondary": 1582,
+    "statuses": {
+      "ok": 4292
+    },
+    "terminations": {
+      "optimal": 4292
+    },
+    "uncertified_primary": 1128
+  }
+}
