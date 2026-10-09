@@ -31,6 +31,9 @@ from dskit.pipeline.libs.torch_ts import (  # noqa: E402
     NODE_KINDS,
     TimeSeriesPredict,
     TimeSeriesTrain,
+    ArchSequenceEncoder,
+    SequenceEncoderAdapter,
+    arch_module,
     register,
     register_arch,
 )
@@ -674,3 +677,339 @@ def test_categorical_temporal_fusion_keeps_static_features_outside_time(arch):
     assert np.isfinite(prediction).all()
     assert model._module.static[0].in_features == 2
     assert model._module.head.in_features == 4 + 3 + 2
+
+
+# ---------------------------------------------------------------------------
+# Multi-horizon multi-quantile head (``quantiles`` + ``n_ahead``)
+# ---------------------------------------------------------------------------
+
+QUANTILES = [0.1, 0.5, 0.9]
+Q_PARAMS = {
+    **TRAIN_PARAMS,
+    "arch": "mlp",
+    "n_ahead": 2,
+    "label": ["y0", "y1"],
+    "quantiles": QUANTILES,
+}
+
+
+def quantile_rows(n=32):
+    rows = ts_rows(n)
+    for row in rows:
+        row["y0"] = row["y"]
+        row["y1"] = 2.0 * row["y"] + 0.1
+    return rows
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [0.5],  # fewer than two
+        [0.9, 0.1],  # unsorted
+        [0.1, 0.1, 0.9],  # duplicate
+        [0.0, 0.5],  # open interval
+        [0.5, 1.0],
+        [0.1, True],  # bool is not a probability
+        [0.1, "0.9"],
+        "0.1,0.9",  # not a list
+    ],
+)
+def test_bad_quantiles_are_refused_at_plan(bad):
+    problems = TimeSeriesTrain.validate_params({**Q_PARAMS, "quantiles": bad})
+    expected = (
+        "quantiles must be a list of at least two floats, strictly "
+        f"increasing, each in (0, 1), got {bad!r}"
+    )
+    assert problems == [expected], bad
+
+
+def test_quantiles_are_regression_only_and_own_the_objective():
+    binary = TimeSeriesTrain.validate_params({**Q_PARAMS, "head": "binary"})
+    assert any("quantiles" in p and "binary" in p for p in binary)
+    for knob, value in (
+        ("loss", "torch.nn.functional:mse_loss"),
+        ("loss_params", {"reduction": "sum"}),
+    ):
+        problems = TimeSeriesTrain.validate_params({**Q_PARAMS, knob: value})
+        assert any("quantiles" in p and knob in p for p in problems), knob
+    # Present-but-falsy still competes: run_train would overwrite it.
+    for knob, value in (("loss", ""), ("loss_params", {})):
+        problems = TimeSeriesTrain.validate_params({**Q_PARAMS, knob: value})
+        assert any("quantiles" in p and knob in p for p in problems), knob
+    assert TimeSeriesTrain.validate_params({**Q_PARAMS, "loss": None}) == []
+    assert TimeSeriesTrain.validate_params(Q_PARAMS) == []
+    assert TimeSeriesPredict.validate_params(
+        {"artifact": "x.pt", "quantiles": QUANTILES}
+    ) == []
+
+
+@pytest.mark.parametrize("arch", SHIPPED)
+def test_quantile_head_maps_to_B_H_K_and_never_crosses(arch):
+    params = {**Q_PARAMS, "arch": arch}
+    module = TimeSeriesTrain("m", params).build_module(params)
+    torch.manual_seed(0)
+    out = module(torch.randn(5, SEQ * CH))
+    assert tuple(out.shape) == (5, 2, len(QUANTILES))
+    assert bool((out[..., 1:] >= out[..., :-1]).all()), arch
+
+
+def test_pinball_loss_value_on_a_hand_computed_case():
+    from dskit.pipeline.libs.torch_ts import quantile_pinball_loss
+
+    taus = [0.25, 0.75]
+    target = torch.tensor([[1.0]])  # (B=1, H=1)
+    # pred 0 under both taus: err = 1 -> 0.25*1 and 0.75*1 -> mean 0.5
+    flat = torch.zeros(2)
+    assert float(quantile_pinball_loss(flat, target, taus=taus)) == pytest.approx(0.5)
+    # pred (0, 2): 0.25*1 and (0.75-1)*(-1) = 0.25 -> mean 0.25
+    shaped = torch.tensor([[[0.0, 2.0]]])
+    assert float(quantile_pinball_loss(shaped, target, taus=taus)) == pytest.approx(0.25)
+
+
+def test_quantile_fit_lowers_the_loss_and_serves_ordered_horizons(tmp_path):
+    def fit(epochs):
+        torch.manual_seed(0)
+        node = TimeSeriesTrain("q", {**Q_PARAMS, "epochs": epochs})
+        ctx = NodeContext(
+            name="q", asof="2026-01-01", run_dir=str(tmp_path / f"run{epochs}"),
+        )
+        return node.run(ctx, {"rows": quantile_rows()})
+
+    short, long_ = fit(1), fit(40)
+    assert long_["metrics"]["final_loss"] < short["metrics"]["final_loss"]
+    record = {name: 0.3 for name in FEATURES}
+    served = long_["signal"].predict(record)
+    assert len(served) == 2 * len(QUANTILES)  # row-major (H, K)
+    for h in range(2):
+        row = served[h * 3:(h + 1) * 3]
+        assert row == sorted(row)
+    # The predictor restores the quantile head from the sidecar alone.
+    restored = TimeSeriesPredict("p", {"artifact": long_["artifact_path"]}).run(
+        NodeContext(name="p", asof="2026-01-01", run_dir=str(tmp_path / "p")),
+        {},
+    )["signal"]
+    assert restored.predict(record) == pytest.approx(served)
+
+
+#: Recorded from the pre-quantile ``torch_ts.py`` (18904a8f): the mlp
+#: no-quantiles module under ``torch.manual_seed(0)``, n_ahead=2.
+BASELINE_SHAPES = {
+    "inner.net.0.weight": (32, 4),
+    "inner.net.0.bias": (32,),
+    "inner.net.2.weight": (2, 32),
+    "inner.net.2.bias": (2,),
+}
+BASELINE_OUT = [
+    [-0.6327322125434875, -0.12880131602287292],
+    [-0.18870355188846588, -0.023759394884109497],
+    [0.1639236956834793, 0.07405223697423935],
+]
+
+
+def test_without_quantiles_the_head_and_objective_are_unchanged(tmp_path):
+    params = {**TRAIN_PARAMS, "arch": "mlp", "n_ahead": 2, "label": ["y0", "y1"]}
+    torch.manual_seed(0)
+    module = TimeSeriesTrain("m", params).build_module(params)
+    shapes = {k: tuple(v.shape) for k, v in module.state_dict().items()}
+    assert shapes == BASELINE_SHAPES
+    out = module(torch.linspace(-1, 1, 12).reshape(3, 4))
+    assert out.flatten().tolist() == pytest.approx(
+        [v for row in BASELINE_OUT for v in row], abs=1e-6
+    )
+    node = TimeSeriesTrain("m", dict(TRAIN_PARAMS))
+    node.run(
+        NodeContext(name="m", asof="2026-01-01", run_dir=str(tmp_path / "r")),
+        {"rows": ts_rows()},
+    )
+    assert node.params.get("loss") == "torch.nn.functional:mse_loss"
+    assert "loss_params" not in node.params
+
+
+def test_quantile_predict_refuses_a_mean_only_artifact(tmp_path):
+    mean_params = {**TRAIN_PARAMS, "arch": "mlp", "epochs": 1}
+    trained = TimeSeriesTrain("m", mean_params).run(
+        NodeContext(name="m", asof="2026-01-01", run_dir=str(tmp_path / "m")),
+        {"rows": ts_rows()},
+    )
+    node = TimeSeriesPredict(
+        "p", {"artifact": trained["artifact_path"], "quantiles": [0.1, 0.9]},
+    )
+    with pytest.raises(Exception, match="trained without quantiles"):
+        node.run(
+            NodeContext(name="p", asof="2026-01-01", run_dir=str(tmp_path / "p")),
+            {},
+        )
+
+
+# --- shared arch builder, extended tcn, ArchSequenceEncoder ---------------
+
+#: sha256 over the pre-change ``tcn`` defaults module's state_dict (key,
+#: shape, bytes) at ``torch.manual_seed(0)``, hidden 16, L=4, C=3, n_ahead=2.
+#: Recompute only on a deliberate change to the tcn default module.
+TCN_DEFAULT_DIGEST = (
+    "1b68badec1173dcefffb91e3667c90b272ff1d04ee0e40335abb3b1a38724d71"
+)
+
+
+def _state_digest(module):
+    h = hashlib.sha256()
+    for key, value in module.state_dict().items():
+        h.update(key.encode())
+        h.update(str(tuple(value.shape)).encode())
+        h.update(value.numpy().tobytes())
+    return h.hexdigest()
+
+
+def test_tcn_defaults_reproduce_the_pre_change_module_exactly():
+    torch.manual_seed(0)
+    module = arch_module("tcn", {"hidden_size": 16}, 4, 3, 2)
+    assert list(module.state_dict()) == [
+        "c1.weight", "c1.bias", "c2.weight", "c2.bias",
+        "head.weight", "head.bias",
+    ]
+    assert _state_digest(module) == TCN_DEFAULT_DIGEST
+
+
+def test_a_pre_change_tcn_state_dict_loads_strictly_into_the_new_module():
+    """The old hand-written two-layer net is the pre-change artifact shape."""
+
+    class OldTCN(torch.nn.Module):
+        def __init__(self, channels, hidden, n_ahead):
+            super().__init__()
+            self.c1 = torch.nn.Conv1d(channels, hidden, 2, dilation=1)
+            self.c2 = torch.nn.Conv1d(hidden, hidden, 2, dilation=2)
+            self.head = torch.nn.Linear(hidden, n_ahead)
+
+        def forward(self, x):
+            y = x.transpose(1, 2)
+            y = torch.nn.functional.pad(y, (1, 0))
+            y = torch.relu(self.c1(y))
+            y = torch.nn.functional.pad(y, (2, 0))
+            y = torch.relu(self.c2(y))
+            return self.head(y[:, :, -1])
+
+    torch.manual_seed(1)
+    old = OldTCN(3, 16, 2)
+    new = arch_module("tcn", {}, 6, 3, 2)
+    new.load_state_dict(old.state_dict(), strict=True)
+    x = torch.randn(5, 6, 3)
+    assert torch.equal(old(x), new(x))
+
+
+TCN_DEEP = {"hidden_size": 8, "kernel_size": 3, "dilations": [1, 2, 4]}
+
+
+def test_a_deeper_tcn_is_causal_and_has_the_declared_receptive_field():
+    torch.manual_seed(0)
+    length = 20
+    module = arch_module("tcn", TCN_DEEP, length, 2, 3)
+    assert ARCHS["tcn"]["receptive"](
+        {**ARCHS["tcn"]["defaults"], **TCN_DEEP}
+    ) == 15
+    seen = {}
+    module.c3.register_forward_hook(lambda m, i, o: seen.__setitem__("o", o))
+    base = torch.randn(1, length, 2)
+    module(base)
+    ref = seen["o"].clone()
+    later = base.clone()
+    later[0, 9] += 1.0
+    module(later)
+    assert torch.equal(seen["o"][..., :9], ref[..., :9])
+    assert not torch.equal(seen["o"][..., 9:], ref[..., 9:])
+    # the pooled-last output sees exactly the last 15 steps
+    out = module(base)
+    for step, moves in ((length - 15, True), (length - 16, False)):
+        bumped = base.clone()
+        bumped[0, step] += 1.0
+        assert (not torch.equal(module(bumped), out)) is moves, step
+
+
+def test_a_deeper_tcn_is_row_independent():
+    torch.manual_seed(0)
+    module = arch_module("tcn", TCN_DEEP, 20, 2, 3).eval()
+    batch = torch.randn(8, 20, 2)
+    full = module(batch)
+    assert torch.allclose(module(batch[3:4]), full[3:4], atol=1e-6)
+
+
+@pytest.mark.parametrize("block", [
+    {"kernel_size": 0}, {"kernel_size": True}, {"kernel_size": "3"},
+    {"dilations": []}, {"dilations": [1, 0]}, {"dilations": 2},
+    {"dilations": [1, True]},
+])
+def test_tcn_refuses_bad_kernel_and_dilations(block):
+    problems = TimeSeriesTrain.validate_params({
+        **TRAIN_PARAMS, "arch": "tcn", "arch_params": {"tcn": block},
+    })
+    assert any(next(iter(block)) in p for p in problems), problems
+
+
+def test_only_tcn_declares_a_receptive_field():
+    assert {n for n, e in ARCHS.items() if e["receptive"] is not None} == {"tcn"}
+
+
+def test_register_arch_receptive_is_optional():
+    register_arch(
+        "toy_rf", lambda p, s, c, h: None, problems=lambda p: [], defaults={},
+    )
+    try:
+        assert ARCHS["toy_rf"]["receptive"] is None
+    finally:
+        del ARCHS["toy_rf"]
+
+
+@pytest.mark.parametrize("arch,block,length", [
+    ("gru", {"hidden_size": 8}, 20),
+    ("tcn", TCN_DEEP, 15),  # receptive field 15 covers a 15-step window
+])
+def test_arch_sequence_encoder_maps_B_T_C_to_B_width(arch, block, length):
+    enc = ArchSequenceEncoder(arch=arch, arch_params=block, width=6)
+    assert isinstance(enc, SequenceEncoderAdapter)
+    assert enc.output_width(5) == 6
+    module = enc.build_module(length, 5)
+    assert tuple(module(torch.randn(4, length, 5)).shape) == (4, 6)
+
+
+@pytest.mark.parametrize("kwargs,needle", [
+    ({"arch": "nope", "width": 4}, "nope"),
+    ({"arch": "gru", "arch_params": {"hidde_size": 4}, "width": 4}, "hidde_size"),
+    ({"arch": "tcn", "arch_params": {"kernel_size": 0}, "width": 4}, "kernel_size"),
+    ({"arch": "gru", "width": 0}, "width"),
+    ({"arch": "gru", "width": True}, "width"),
+])
+def test_arch_sequence_encoder_refuses_bad_settings_by_name(kwargs, needle):
+    with pytest.raises(ValueError, match=needle):
+        ArchSequenceEncoder(**kwargs)
+
+
+def test_arch_sequence_encoder_refuses_a_receptive_field_below_the_window():
+    enc = ArchSequenceEncoder(arch="tcn", width=4)  # shipped k=2, d=[1,2]: 4
+    assert enc.build_module(4, 2) is not None
+    with pytest.raises(ValueError, match="receptive"):
+        enc.build_module(31, 2)
+    deep = ArchSequenceEncoder(
+        arch="tcn", width=4, arch_params={
+            "kernel_size": 3, "dilations": [1, 2, 4, 8, 16, 32, 64, 128],
+        },
+    )
+    assert deep.build_module(240, 2) is not None  # 511 >= 240
+
+
+def test_ts_model_and_the_adapter_both_build_through_arch_module(monkeypatch):
+    import dskit.pipeline.libs.torch_ts as mod
+
+    calls = []
+    real = mod.arch_module
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "arch_module", spy)
+    params = {**TRAIN_PARAMS, "arch": "gru"}
+    TimeSeriesTrain("m", params).build_module(params)
+    assert [c[0] for c in calls] == ["gru"], "TimeSeriesTrain bypassed arch_module"
+    del calls[:]
+    ArchSequenceEncoder(arch="gru", width=3).build_module(5, 2)
+    assert [c[0] for c in calls] == ["gru"], "the adapter bypassed arch_module"
+    assert calls[0][-3:] == (5, 2, 3)  # window, channels, projection IS width
