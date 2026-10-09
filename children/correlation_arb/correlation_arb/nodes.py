@@ -52,15 +52,28 @@ _reject_unknown = reject_unknown_params
 
 
 class SampleRecords(Node):
-    """Emit the sample table's records (role ``data`` — a source: no
-    inputs, fully literal params) — the ``correlation_arb-sample`` kind.
+    """Emit the sample table's records (role ``data``, a source).
 
-    Params: ``limit`` — optional int >= 1 capping how many records are
-    emitted; absent = the whole table.
+    The ``correlation_arb-sample`` kind. One instance is one view: the first
+    ``fingerprint()``/``run()`` copies the table onto the instance, so the
+    driver's resolve/execute straddle consumes exactly the snapshot its run
+    identity hashed.
 
-    One instance is one view: the first ``fingerprint()``/``run()`` copies
-    the table onto the instance, so the driver's resolve/execute straddle
-    consumes exactly the snapshot its run identity hashed.
+    Parameters
+    ----------
+    key : str
+        Node key within the document.
+    params : dict, optional
+        ``limit`` (int >= 1, optional) caps how many records are emitted;
+        absent means the whole table. Any other key is refused.
+
+    Examples
+    --------
+    Emit the first two sample records::
+
+        node = SampleRecords("sample", {"limit": 2})
+        out = node.run(ctx, {})
+        # -> {"records": [<first two rows of SAMPLE_ROWS>]}
     """
 
     role = "data"
@@ -75,6 +88,18 @@ class SampleRecords(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Check ``params`` against the declared knobs.
+
+        Parameters
+        ----------
+        params : dict
+            The node's params as written in the document.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when ``params`` is valid.
+        """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         limit = params.get("limit")
@@ -85,16 +110,22 @@ class SampleRecords(Node):
         return problems
 
     def _scan(self):
-        """The memoized snapshot — rows are COPIED so a writer mutating
-        the store in place cannot reach back into this instance's view."""
+        """Return the memoized snapshot, copied so in-place writes cannot reach it."""
         if self._snap is None:
             self._snap = [dict(row) for row in SAMPLE_ROWS]
         return self._snap
 
     def fingerprint(self):
-        """Content-derived, JSON-small: moves whenever the data a run
-        would consume changes — a count-only or params-echo fingerprint
-        is content-blind and fails conformance."""
+        """Fingerprint the table's content so identity moves when the data does.
+
+        A count-only or params-echo fingerprint is content-blind and fails
+        conformance.
+
+        Returns
+        -------
+        dict
+            ``kind``, ``rows`` (count) and ``sha256`` of the canonical rows.
+        """
         rows = self._scan()
         digest = hashlib.sha256(
             json.dumps(rows, sort_keys=True).encode("utf-8")
@@ -102,6 +133,20 @@ class SampleRecords(Node):
         return {"kind": "correlation_arb-sample", "rows": len(rows), "sha256": digest}
 
     def run(self, ctx, inputs):
+        """Emit the snapshot's rows, capped by ``limit`` when set.
+
+        Parameters
+        ----------
+        ctx : object
+            The run context; unread by a source.
+        inputs : dict
+            Upstream values; empty for a source.
+
+        Returns
+        -------
+        dict
+            ``{"records": [dict, ...]}`` -- copies of the snapshot rows.
+        """
         records = [dict(row) for row in self._scan()[: self.params.get("limit")]]
         self.log.info("emitting %d record(s)", len(records))
         return {"records": records}
@@ -168,16 +213,30 @@ class SampleRecords(Node):
 
 
 class EnrichRecords(Node):
-    """Derive a field per record from a required numeric param (role
-    ``transform``) — the ``correlation_arb-enrich`` kind.
+    """Derive a field per record from a required numeric param (role ``transform``).
 
-    Inputs: ``records`` — a list of record dicts. Params: ``factor``
-    (REQUIRED — the bar must be stated, there is no default): each output
-    record gains ``derived = value * factor``.
+    The ``correlation_arb-enrich`` kind. Input ``records`` is a list of
+    record dicts; each output record gains ``derived = value * factor``.
 
-    Sparse-record semantics, the toolkit's rule: a record without a
-    numeric ``value`` cannot be enriched and is DROPPED (and logged),
-    never crashed on — sparse records are data, not shape errors.
+    Sparse-record semantics, the toolkit's rule: a record without a numeric
+    ``value`` cannot be enriched and is DROPPED (and logged), never crashed
+    on -- sparse records are data, not shape errors.
+
+    Parameters
+    ----------
+    key : str
+        Node key within the document.
+    params : dict
+        ``factor`` (finite int or float, REQUIRED -- the derivation must be
+        stated, there is no default). Any other key is refused.
+
+    Examples
+    --------
+    Double every record's ``value``::
+
+        node = EnrichRecords("enrich", {"factor": 2})
+        out = node.run(ctx, {"records": [{"id": "a", "value": 1.5}]})
+        # -> {"records": [{"id": "a", "value": 1.5, "derived": 3.0}]}
     """
 
     role = "transform"
@@ -188,6 +247,18 @@ class EnrichRecords(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Check ``params``: ``factor`` is required and must be a finite number.
+
+        Parameters
+        ----------
+        params : dict
+            The node's params as written in the document.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when ``params`` is valid.
+        """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         if "factor" not in params:
@@ -206,6 +277,18 @@ class EnrichRecords(Node):
         return problems
 
     def validate_inputs(self, inputs):
+        """Refuse a non-list ``records`` input without consuming it.
+
+        Parameters
+        ----------
+        inputs : dict
+            Upstream values keyed by port.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when ``records`` is a list.
+        """
         # Refuse a non-list LOUDLY without walking it: this runs right
         # before run() on the SAME objects, and consuming a one-shot
         # stream here would hand run() an exhausted iterator.
@@ -217,6 +300,20 @@ class EnrichRecords(Node):
         return []
 
     def run(self, ctx, inputs):
+        """Add ``derived = value * factor`` to each record, dropping sparse ones.
+
+        Parameters
+        ----------
+        ctx : object
+            The run context; unread by this transform.
+        inputs : dict
+            ``records`` -- a list of record dicts.
+
+        Returns
+        -------
+        dict
+            ``{"records": [dict, ...]}`` -- the enriched records.
+        """
         # A HEAVY import (numpy, torch, a vendor SDK) belongs exactly
         # HERE, inside run() — never at module top, so documents naming
         # this kind still plan on machines without it installed.
