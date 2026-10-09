@@ -720,7 +720,10 @@ on it without breaking its rulings.
   `appsi_highs` refuses a quadratic objective, `highs` solves it. An LP that is infeasible because the
   declared relations contradict each other raises, it is not a coherence verdict. `tolerance` gates only the
   verdict; leg and relation dust is `LEG_DUST` relative to the largest dual, and an infeasible verdict whose legs
-  are empty or cannot profit raises by name.
+  are empty or cannot profit raises by name. The projection is WHITENED (`u = p / s`); never go back to
+  scaling by the largest weight (it hung HiGHS and returned wrong optima). HiGHS gets
+  `qp_iteration_limit`/`time_limit` defaults under `solver_options`; a stop is refused, never reported.
+  One quote reader, `_sides`: a one-sided row stays in its relations, fair None, `bad_quote` (owner ruling B).
 - **Binary keys are SCALARS** (`binary_curve.row_key`, ADR-0257): a non-empty str (read by
   `str.__str__`, never `str(x)`; no Unicode normalisation) or a non-bool int (numpy ints and `IntEnum` by
   value). `1` and `"1"` differ. None, absent and `""` are MISSING (`no_chain` / `no_curve`); bool, floats,
