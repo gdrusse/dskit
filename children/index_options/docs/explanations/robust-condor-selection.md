@@ -319,8 +319,12 @@ The [draft JSON](../../configs/run-equity-condor-robust-backtest.json) and
 [evaluation calendar](../memos/2026-10-08-forecast-mio-evaluation-scheme.md)
 own the remaining proposals: calibration forecast dates2024-02-06..2024-12-31,
 later entries2025-02-04..2025-11-28, with settled/available labels only.
-Monthly calibration-plus-entry updates are approved. Exact weights,
-projection-offset policy and numerical settings still require closure. Existing candidates/settings are not permission to
+Monthly calibration-plus-entry updates are approved. The owner also chose
+to calibrate directly on the strike-grid probabilities used by the optimizer,
+without adding a separate forecast-to-grid buffer. Report projection
+diagnostics separately; this does not establish continuous-distribution
+coverage or waive numerical mesh checks. Exact weights and numerical settings
+still require closure. Existing candidates/settings are not permission to
 read protected rows or launch an unresolved pipeline.
 
 Optional Q bands remain disabled pending separate evidence. More rho does

@@ -117338,3 +117338,8 @@ Owner then selected monthly updates appending only2025 outcomes settled and publ
 
 
 Monthly-history candidatec23cd605ec13b4dd1728fe31704fc1cd68d81115 closed fresh independent GPT-6 /root/rho_monthly_contract_review and /root/rho_monthly_integration_review, each0C/0Major/0Minor/0Nit. Full actual verdicts retained in their transcripts. Only graded delta from54381811 is phase=calibration replaced by history_phases=[calibration,entry]; other values unchanged. Shape validation32nodes/hashac48991979a5d2ecd3007ea41f46560278667fa5ac16466fdd78ec6016483095 and diff checks pass. No source/test changes; earlier component lock and initial grid review preserved. Publication is task-branch only, not launch/main-merge readiness. Next owner choice is direct strike-grid calibration versus a separately verified full forecast-to-grid allowance; question pending.
+
+
+### ADR-0255 owner selected direct strike-grid calibration
+
+Owner answered A to calibrating rho on the actual strike-grid probabilities and reporting projection diagnostics separately, with no additional forecast-to-grid allowance. Proposed rho_calibration.params.projection_offset_policy=diagnostic_only records that choice. It does not waive mesh checks, approve numeric tolerances or claim coverage of the full continuous distribution. Correct the draft projection evidence description to the implemented clipped-support diagnostic; full Delta remains unavailable unless separately verified. Source/test blobs remain unchanged; this documentation/config decision awaits the final remaining-settings scoped review before real execution. No empirical calibration, market records, fits or replay. Remaining G3 questions start with mesh/score weights, then tie/publication/liquidity/tiering/roots.
