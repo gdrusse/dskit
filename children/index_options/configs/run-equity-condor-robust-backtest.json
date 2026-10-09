@@ -107,11 +107,11 @@
       "params": {
         "quadrature_tolerance": 1e-08,
         "payoff_tolerance": 1e-06,
-        "cdf_tolerance": "PENDING-explicit-mesh-limit",
-        "w1_tolerance": "PENDING-explicit-mesh-limit",
+        "cdf_tolerance": null,
+        "w1_tolerance": null,
         "integration_limit": 100
       },
-      "notes": "Implemented projection. Numerical integration tolerances are explicit proposed research settings, not empirical calibration. CDF/W1 admission limits remain unresolved and intentionally fail validation. Grid is all pre-liquidity strikes; clipped tails and placement diagnostics do not supply continuous-distribution coverage or added rho."
+      "notes": "Implemented projection. Numerical integration tolerances are explicit proposed research settings, not empirical calibration. CDF/W1 values are retained as diagnostics only; null disables only their admission cutoffs. Grid is all pre-liquidity strikes; clipped tails and placement diagnostics do not supply continuous-distribution coverage or added rho."
     },
     "rho_calibration": {
       "uses": "index_options.cdf_study:HeldOutRhoCalibration",

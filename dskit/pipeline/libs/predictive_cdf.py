@@ -419,10 +419,11 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
         Positive absolute integration-error budget and maximum estimated
         discrepancy for capped 1-Lipschitz payoffs, in outcome units. The latter
         includes moment quadrature uncertainty, not just reconstruction residual.
-    cdf_tolerance, w1_tolerance : float
+    cdf_tolerance, w1_tolerance : float or None
         Maximum conservative CDF-deviation bound (probability units), and maximum
         clipped-support W1 divided by spot including distance quadrature and
-        moment-projection uncertainty. These are explicit admission limits.
+        moment-projection uncertainty. Each explicit None disables only that
+        admission limit; measured diagnostics are always retained.
     integration_limit : int
         Positive QUADPACK subdivision limit per interval.
     breakpoints : sequence of float
@@ -453,13 +454,15 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
         from dskit.pipeline.records import number_ok
 
         points = np.asarray(grid, dtype=float)
-        tolerances = (spot, quadrature_tolerance, payoff_tolerance,
-                      cdf_tolerance, w1_tolerance)
+        tolerances = (spot, quadrature_tolerance, payoff_tolerance)
+        mesh_limits = (cdf_tolerance, w1_tolerance)
         if (points.ndim != 1 or len(points) < 2
                 or not np.isfinite(points).all()
                 or not (np.diff(points) > 0).all() or not callable(cdf)
                 or any(not number_ok(v) or v <= 0 for v in tolerances)
-                or cdf_tolerance > 1
+                or any(v is not None and (not number_ok(v) or v <= 0)
+                       for v in mesh_limits)
+                or (cdf_tolerance is not None and cdf_tolerance > 1)
                 or type(integration_limit) is not int or integration_limit < 1):
             raise ValueError("invalid projection grid, CDF or explicit tolerances")
         knots = np.asarray(breakpoints, dtype=float)
@@ -533,7 +536,8 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
             raise ValueError("projection quadrature tolerance exceeded")
         if payoff_error > payoff_tolerance:
             raise ValueError("projection payoff tolerance exceeded")
-        if cdf_bound > cdf_tolerance or w1_upper / spot > w1_tolerance:
+        if ((cdf_tolerance is not None and cdf_bound > cdf_tolerance)
+                or (w1_tolerance is not None and w1_upper / spot > w1_tolerance)):
             raise ValueError("projection mesh tolerance exceeded")
         self.evidence = {
             "tail_policy": "collapse_to_extreme_support",
@@ -554,8 +558,8 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
             "quadrature_error_estimate": self._integration_error,
             "quadrature_tolerance": float(quadrature_tolerance),
             "payoff_tolerance": float(payoff_tolerance),
-            "cdf_tolerance": float(cdf_tolerance),
-            "w1_tolerance": float(w1_tolerance),
+            "cdf_tolerance": None if cdf_tolerance is None else float(cdf_tolerance),
+            "w1_tolerance": None if w1_tolerance is None else float(w1_tolerance),
             "integration_limit": integration_limit,
             "cdf_evaluations": len(self._samples),
             "breakpoints": knots.tolist(),
@@ -7561,7 +7565,8 @@ class NominalStrikeMasses(Node):
     ----------
     params : dict
         Explicit quadrature, payoff, CDF and normalized W1 tolerances and
-        integration_limit, forwarded to MeanPreservingCDFGrid. Supported
+        integration_limit, forwarded to MeanPreservingCDFGrid. Explicit None for
+        CDF or W1 retains diagnostics without that admission limit. Supported
         serialized families are Gaussian mixture and Student mixture. Forecast rows
         retain spot and a separate positive reference (return scale).
 
@@ -7608,6 +7613,8 @@ class NominalStrikeMasses(Node):
 
             for name in cls._PARAMS[:-1]:
                 value = params[name]
+                if name in ("cdf_tolerance", "w1_tolerance") and value is None:
+                    continue
                 if (
                     isinstance(value, bool)
                     or not isinstance(value, (int, float))

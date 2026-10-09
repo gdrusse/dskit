@@ -30742,3 +30742,40 @@ a forecast label. Named eight-arm definitions bind their single-factor meanings;
 missing ticker calibration history produces an explicit pricing-tier refusal,
 never an invented tier. These are corrections to the existing stated protocol,
 not new historical evidence or permission to cross the protected data boundary.
+
+
+Owner decision2026-10-09 supersedes the earlier B refusal: A is approved.
+Limited exception: process owned mixed-year files solely to extract pre2026
+option records, and inspect split dates/ratios including2026 actions to restore
+historical stock/strike units. SQLite may internally parse excluded values.
+No2026 market prices, forecasts or outcomes may be returned, retained, scored
+or used in the replay. Preserve explicit projection SQL, schema checks,
+snapshots, source hashes, original envelopes and deduplication evidence.
+No acquisition, fits or spending. This closes the permission gate only;
+historical basis, actual source conversion and numerical limits still require
+evidence before launch. Existing synthetic adapter review remains scoped to
+candidate a103b701; actual conversion recipes require their own review.
+
+
+Owner decision2026-10-09: neither proposed distribution-distortion cutoff is
+approved. Do not adopt either 5-percentage-point/0.1%-of-spot or
+10-percentage-point/0.25%-of-spot limits, or substitute arbitrary replacements.
+Withdraw that multiple-choice question. This rejection does not relax numerical
+payoff preservation, probability coherence, solver certificates or LP/MILP parity.
+The current draft still requires numerical cdf_tolerance/w1_tolerance values;
+reconcile that interface with this decision before replay rather than silently
+inserting permissive numbers. Existing code reviews remain scoped to the
+unchanged implementation. No real replay has launched.
+
+
+ADR0255 owner-directed launch correction (2026-10-09): rejection of both
+proposed distribution cutoffs plus instruction to continue authorizes explicit
+diagnostics-only CDF/W1 projection settings. Represent disabled admission limits
+as JSON null, not arbitrary large numeric values. Existing positive finite
+numeric limits retain their prior behavior. Probability coherence, finite data,
+quadrature/payoff budgets and solver/parity checks remain enforced. Retain both
+distortion diagnostics in run evidence; do not imply continuous-ball equivalence.
+Acceptance: null/null and each independently disabled limit, legacy numeric
+refusals, malformed values, mandatory numerical refusals and node/config parity.
+Modify only existing projection owner, its node, existing tests and draft JSON;
+scoped independent review before real use.

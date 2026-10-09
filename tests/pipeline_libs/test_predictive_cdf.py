@@ -4785,13 +4785,14 @@ def test_a_dead_group_worker_fails_the_run_naming_the_unfinished_groups(tmp_path
     assert not (tmp_path/'dead'/'scores.parquet').exists()
 
 
-def test_mean_preserving_projection_has_payoff_and_tail_evidence():
+@pytest.mark.parametrize("cdf_limit,w1_limit", [(.5, .5), (None, .5), (.5, None), (None, None)])
+def test_mean_preserving_projection_has_payoff_and_tail_evidence(cdf_limit, w1_limit):
     assert hasattr(predictive_cdf, "MeanPreservingCDFGrid"), (
         "missing mean-preserving projection; right-endpoint CDF masses bias payoffs")
     project = predictive_cdf.MeanPreservingCDFGrid(
         [1., 2., 3.], lambda x: np.clip(x / 4., 0., 1.), spot=2.,
         quadrature_tolerance=1e-9, payoff_tolerance=1e-9,
-        cdf_tolerance=.5, w1_tolerance=.5, integration_limit=100)
+        cdf_tolerance=cdf_limit, w1_tolerance=w1_limit, integration_limit=100)
     np.testing.assert_allclose(project.masses, [.375, .25, .375], atol=1e-10)
     assert project.masses @ project.grid == pytest.approx(2.)
     assert project.evidence["lower_tail_mass"] == pytest.approx(.25)
@@ -4799,6 +4800,9 @@ def test_mean_preserving_projection_has_payoff_and_tail_evidence():
     assert project.evidence["clipped_w1_over_spot"] == pytest.approx(.0625)
     assert project.evidence["full_w1_over_spot"] is None
     assert project.evidence["max_payoff_error"] < 1e-9
+
+    assert project.evidence["cdf_tolerance"] == cdf_limit
+    assert project.evidence["w1_tolerance"] == w1_limit
 
 
 def test_discrete_grid_bands_restrict_worst_loss_and_refuse_invalid_sets():
@@ -4853,6 +4857,11 @@ def test_mean_preserving_projection_atoms_empty_cells_and_all_linear_payoffs():
     ({"integration_limit": 1.5}, "tolerances"),
     ({"cdf_tolerance": .01}, "mesh"),
     ({"w1_tolerance": .001}, "mesh"),
+    ({"cdf_tolerance": None, "w1_tolerance": .001}, "mesh"),
+    ({"w1_tolerance": None, "cdf_tolerance": .01}, "mesh"),
+    ({"cdf_tolerance": True, "w1_tolerance": None}, "tolerances"),
+    ({"cdf_tolerance": None, "w1_tolerance": float("inf")}, "tolerances"),
+    ({"cdf_tolerance": None, "w1_tolerance": None, "payoff_tolerance": None}, "tolerances"),
     ({"breakpoints": [4.]}, "breakpoints"),
     ({"breakpoints": [2., 1.5]}, "breakpoints"),
 ])
@@ -4871,11 +4880,12 @@ def test_mean_preserving_projection_requires_explicit_numerical_limits(override,
     lambda x: [0.5],
     lambda x: 1.-x/4.,
 ])
-def test_mean_preserving_projection_refuses_invalid_cdf(cdf):
+@pytest.mark.parametrize("limit", [1., None])
+def test_mean_preserving_projection_refuses_invalid_cdf(cdf, limit):
     with pytest.raises(ValueError, match="CDF"):
         predictive_cdf.MeanPreservingCDFGrid(
             [1., 2., 3.], cdf, spot=1., quadrature_tolerance=1e-8,
-            payoff_tolerance=1e-8, cdf_tolerance=1., w1_tolerance=1.,
+            payoff_tolerance=1e-8, cdf_tolerance=limit, w1_tolerance=limit,
             integration_limit=100)
 
 
@@ -4962,14 +4972,15 @@ def test_projection_w1_admission_accounts_for_quadrature_and_projection_uncertai
             [0., 1., 2., 3.], lambda x: (x/3.)**exponent, **kwargs)
 
 
-def test_nominal_strike_masses_projects_context_and_retains_curve():
+@pytest.mark.parametrize("cdf_limit,w1_limit", [(1., 1.), (None, 1.), (1., None), (None, None)])
+def test_nominal_strike_masses_projects_context_and_retains_curve(cdf_limit, w1_limit):
     node = predictive_cdf.NominalStrikeMasses(
         "m",
         dict(
             quadrature_tolerance=1e-8,
             payoff_tolerance=1e-7,
-            cdf_tolerance=1.0,
-            w1_tolerance=1.0,
+            cdf_tolerance=cdf_limit,
+            w1_tolerance=w1_limit,
             integration_limit=100,
         ),
     )
