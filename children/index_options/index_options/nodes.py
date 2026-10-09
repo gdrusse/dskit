@@ -2974,7 +2974,7 @@ class CondorExpirySettle(Node):
 
     Notes
     -----
-    ADR-0256: entry fills are dated ``fill_date`` when a selection carries one
+    ADR-0258: entry fills are dated ``fill_date`` when a selection carries one
     (strictly between quote_date and expiry), else quote_date. A selection with
     ``status: "unfilled"`` and an ``unfilled_reason`` is skipped (reason
     ``unfilled``) and counted in ``evidence["unfilled_by_reason"]``. With the
@@ -3311,7 +3311,7 @@ class _BatchContextError(ValueError):
 def liquid_leg_haircut(price, trade_count, volume, liquidity, tier_terms, multiplier):
     """Return one leg's tiered haircut and short eligibility, or ``None`` if it is illiquid.
 
-    The one owner (ADR-0256) of the decision liquidity rule and the tiered haircut
+    The one owner (ADR-0258) of the decision liquidity rule and the tiered haircut
     that :class:`RobustCondorBatchSelect` applies to a leg at the decision bar and
     again, with the same arm, at the fill bar.
 
@@ -3455,7 +3455,7 @@ class RobustCondorSelect(PyomoSolve):
             # The tie solve leaves the dual variables anywhere above the tie
             # floor, so the traded structure's dual value can sit a full
             # tie_tolerance below its primal recompute (measured 1.00001e-6 in
-            # the ADR-0256 dry run); a parity bound at or below it would skip
+            # the ADR-0258 dry run); a parity bound at or below it would skip
             # legitimate ties as parity_failed_tie.
             if number_ok(tie) and parity <= tie:
                 problems.append("ordering violated: objective_parity_usd > tie_tolerance_usd")
@@ -3999,7 +3999,7 @@ class RobustCondorBatchSelect(RobustCondorSelect):
 
     @staticmethod
     def _fill_credit_flags(decision):
-        """Name the disclosure flags a filled credit earns (ADR-0256 rev 4 refuses neither)."""
+        """Name the disclosure flags a filled credit earns (ADR-0258 rev 4 refuses neither)."""
         strikes = {leg["role"]: leg["strike"] for leg in decision["legs"]}
         width = decision["multiplier"] * max(strikes["SP"] - strikes["LP"], strikes["LC"] - strikes["SC"])
         credit = decision["fill_credit_usd"]
@@ -4277,7 +4277,7 @@ class ExactDteBarChain(Node):
         evidence = {"input_rows": len(rows), "eligible_rows": len(records), "skips": skips}
         if nxt:
             # t' comes from the fills stream's own session calendar, never from the
-            # bars a context happens to have (ADR-0256 S3 lens M1): a context with no
+            # bars a context happens to have (ADR-0258 S3 lens M1): a context with no
             # bar on the true next session is unfilled, not filled later.
             sessions = sorted({bar["date"] for bars in fills.values() for bar in bars})
             records = [{**record, **self._fill_for(fills, sessions, record)} for record in records]

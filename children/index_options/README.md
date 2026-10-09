@@ -384,7 +384,7 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   than one contract: a `note:` line says so. A core with no tail loss, or
   a combined book with none (k would not be a positive scale), refuses with one
   `error:` line.
-- Executable decision clock and account study (ADR-0256, PROPOSED; never
+- Executable decision clock and account study (ADR-0258, PROPOSED; never
   decision-eligible). `configs/run-equity-condor-robust-backtest-v2.json` is the
   robust condor replay decided after the close of t and filled at the first later
   session's VWAP: `ExactDteBarChain` `fill_session: "next"` (default `"same"` =
@@ -551,7 +551,7 @@ journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0256);
+                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258);
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
@@ -562,7 +562,7 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # -index-wide.json (wide recorder + vol indices)
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
-                           # run-equity-condor-robust-backtest-v2.json (ADR-0256: the robust
+                           # run-equity-condor-robust-backtest-v2.json (ADR-0258: the robust
                            # condor replay with fill_session next, a fills stream, exercise flags)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,

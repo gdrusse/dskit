@@ -1,4 +1,4 @@
-# ADR-0256 correction and replay v2 — result, 2026-10-09
+# ADR-0258 correction and replay v2 — result, 2026-10-09
 
 ## TL;DR
 
@@ -50,7 +50,7 @@ Same-day average fill (owner-accepted; a look-ahead relative to a close-time dec
 ## Locations
 
 - Run: `/home/russell/data/index_options/production-universe-rerun-20261008/condor-replay-run-v2/equity-condor-robust-backtest-v2-2025-12-31-a1c35e4b` (22 files; evidence.json holds every decision, solve, certificate, outcome and refusal). Second copy: `/home/russell/data/backups/index_options/production-universe-rerun-20261008/condor-replay-v2-complete-v1` (same disk; `sha256sums.txt`).
-- Audit: `condor-replay-v2-launch.json`, `condor-replay-v2.log`, `condor-replay-v2-aggregate-v1.json`, `condor-replay-v2-comparison-v1.json`, `condor-replay-v2-account-study-v1.txt` (the refusal), the ADR-0256 gate receipts and review reports, all under `/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/`.
+- Audit: `condor-replay-v2-launch.json`, `condor-replay-v2.log`, `condor-replay-v2-aggregate-v1.json`, `condor-replay-v2-comparison-v1.json`, `condor-replay-v2-account-study-v1.txt` (the refusal), the ADR-0258 gate receipts and review reports, all under `/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/`.
 - Models: unchanged — [model inventory](../reports/production-universe-rerun-20261008/model-inventory.json); run 793013c0 and its backups untouched.
 - Execution this session: the parity dry run, the fills census over owned raw stores, and this one replay. No fits, 2026 access, acquisition, spending, deployment or live trading.
 

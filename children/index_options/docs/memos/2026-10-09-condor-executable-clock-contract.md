@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-[ADR-0256](../../../../docs/architecture/decision-log.md) (revision 4, owner-approved contract, trimmed to the minimal correction) specifies fixes for the seven confirmed findings. **No code, data, fit or replay ran this session.** The strongest honest label for the result is a *bar-proxy replay on an executable decision clock*: the decision can be made after the close and ordered for the next session, but the owned data are daily trade bars and cannot establish quotes, depth, partial fills or assignment, so nothing here may be called production-realistic. If no radius is supported again, the run is the nominal comparator only. The audit's separate publication-clock item is not addressed.
+[ADR-0258](../../../../docs/architecture/decision-log.md) (revision 4, owner-approved contract, trimmed to the minimal correction) specifies fixes for the seven confirmed findings. **No code, data, fit or replay ran this session.** The strongest honest label for the result is a *bar-proxy replay on an executable decision clock*: the decision can be made after the close and ordered for the next session, but the owned data are daily trade bars and cannot establish quotes, depth, partial fills or assignment, so nothing here may be called production-realistic. If no radius is supported again, the run is the nominal comparator only. The audit's separate publication-clock item is not addressed.
 
 ## Finding → disposition
 

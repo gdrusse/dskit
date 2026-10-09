@@ -1,4 +1,4 @@
-# Why the robust condor selector picks what it picks, and why that misleads (ADR-0256 v2, nominal arm)
+# Why the robust condor selector picks what it picks, and why that misleads (ADR-0258 v2, nominal arm)
 
 ## Question
 

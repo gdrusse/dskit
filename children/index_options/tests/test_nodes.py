@@ -1482,7 +1482,7 @@ class TestExactDteBarChain:
         with pytest.raises(ValueError, match="duplicate"):
             self.node().run(None, {"records": [row, dict(row)]})
 
-    # ADR-0256: fill_session. "same" is the legacy identity; "next" joins the t' bar.
+    # ADR-0258: fill_session. "same" is the legacy identity; "next" joins the t' bar.
     def next_node(self, **over):
         base = self.node().params
         return type(self.node())("chain", {**base, "fill_session": "next", **over})
@@ -1520,7 +1520,7 @@ class TestExactDteBarChain:
         assert out["evidence"].value["fill_sessions"] == 3
 
     def test_next_leaves_a_contract_without_a_bar_on_t_prime_unfilled_not_filled_later(self):
-        # ADR-0256 S3 lens M1: t' is the stream's calendar; a later bar of this contract
+        # ADR-0258 S3 lens M1: t' is the stream's calendar; a later bar of this contract
         # never substitutes for the missing t' bar
         fills = [self.row(contract="other", date="2025-02-05", vwap=1.),
                  self.row(date="2025-02-06", vwap=3.)]
@@ -1628,7 +1628,7 @@ def test_robust_batch_missing_ticker_calibration_has_no_implicit_tier():
     assert {r["arm_id"] for r in out["skips"]}==set(params["arms"])
 
 
-# -- ADR-0256 (6): relative-gap diagnostic, primal parity, ordering pin, context_error ----
+# -- ADR-0258 (6): relative-gap diagnostic, primal parity, ordering pin, context_error ----
 
 ROBUST_LEGACY_CONFIG = "configs/run-equity-condor-robust-backtest.json"
 ROBUST_LEGACY_HASH = "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55"
@@ -1863,7 +1863,7 @@ def test_robust_batch_integrity_skips_are_never_context_error(monkeypatch):
     assert {r["reason"] for r in out["skips"]} == {"nonintegral_solution"}
 
 
-# -- ADR-0256 S3: the decision liquidity/haircut owner, the executable fill clock ----------------
+# -- ADR-0258 S3: the decision liquidity/haircut owner, the executable fill clock ----------------
 
 _PIN_COUNTS = {"put-80.0": 6, "put-90.0": 12, "call-110.0": 25, "call-120.0": 4}
 _PIN_VWAPS = {"put-80.0": .1, "put-90.0": 3., "call-110.0": 3., "call-120.0": .1}

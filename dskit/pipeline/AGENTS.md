@@ -506,6 +506,33 @@ on it without breaking its rulings.
   wing side by a normalized density (1/4 per unit on `[[-2.5,-.5],[.5,2.5]]`).
   Train on `tail_crps` to match `weighted_crps`; `TorchCDF` and
   `BoostedTorchCDF` share ONE loss through `_CompositeLossCDF` — never copy it.
+- **Binary-market readers take the venue's field map as params** (ADR-0256):
+  every `*_field` is required with no default and the vocabularies are params;
+  the venue's map lives in the child's config. `instant_ms` restates
+  `production.base.parse_utc_ms` (a pack may not import production); a test pins them.
+- **`BinaryCoherence` needs a QP-capable solver** (ADR-0257): `solver` has no default; pyomo's
+  `appsi_highs` refuses a quadratic objective, `highs` solves it. An LP that is infeasible because the
+  declared relations contradict each other raises, it is not a coherence verdict. `tolerance` gates only the
+  verdict; leg and relation dust is `LEG_DUST` relative to the largest dual, and an infeasible verdict whose legs
+  are empty or cannot profit raises by name. The projection is WHITENED (`u = p / s`); never go back to
+  scaling by the largest weight (it hung HiGHS and returned wrong optima). `min_spread` is in
+  [`MIN_SPREAD_FLOOR`, `MIN_SPREAD_CEILING`] = [0.01, 1] (below the floor HiGHS returned suboptimal points as
+  optimal; above the ceiling every weight is equal), and EVERY projection is certified: `_certify` bounds its
+  error by the duality gap of the QP's relation multipliers and refuses a bound above `PROJECTION_BOUND_LIMIT`
+  (1e-2) by name; `summary["projection_bound"]` reports it (0.0 on the exact shortcut, None if nothing was
+  projected). A multiplier of the wrong sign counts as zero (it can only loosen the bound). HiGHS gets
+  `qp_iteration_limit`/`time_limit` defaults under `solver_options`; a stop is refused, never reported.
+  One quote reader, `_sides`: a one-sided row stays in its relations, fair None, `bad_quote` (owner ruling B).
+- **Binary keys are SCALARS** (`binary_curve.row_key`, ADR-0257): a non-empty str (read by
+  `str.__str__`, never `str(x)`; no Unicode normalisation) or a non-bool int (numpy ints and `IntEnum` by
+  value). `1` and `"1"` differ. None, absent and `""` are MISSING (`no_chain` / `no_curve`); bool, floats,
+  Decimal, pandas NA, lists, tuples, dicts and every other object are REFUSED by name (`bad_chain_key` /
+  `bad_curve_key`). Never widen it back to nested values: a composite key is a LIST of columns in config
+  (`chain_fields`/`quote_chain_fields`, `curve_key_fields`/`curve_id_fields`, read by `fields_key`).
+  `BinaryCoherence` reads every id (rows and relation params) through `row_key`. `DigitalBounds` reads a
+  right through ONE method, `_right`, and refuses a nonzero price, strike or discount below `PRICE_FLOOR`
+  on its own check (never `records.price_ok`). Never reintroduce a chain-wide tolerance: each edge carries
+  its own proven error (module docstring).
 
 ## Contents
 
@@ -575,6 +602,9 @@ dskit/pipeline/
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)
+├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0257)
+├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0256)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
@@ -597,7 +627,9 @@ dskit/pipeline/
 │                      pyomo, sb3, matplotlib,
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
-│                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment)
+│                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
+│                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0256),
+│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          user-facing docs
 └── AGENTS.md          this file
 ```

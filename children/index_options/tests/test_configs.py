@@ -58,7 +58,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-production-liquidity-20261007.json",
         # ADR-0255 (PROPOSED): the robust equity iron-condor research replay.
         "configs/run-equity-condor-robust-backtest.json",
-        # ADR-0256 (PROPOSED): the executable-decision-clock variant and its contract memo; plus
+        # ADR-0258 (PROPOSED): the executable-decision-clock variant and its contract memo; plus
         # the robust-replay memo and four report artifacts the previous wrap added unlisted.
         "configs/run-equity-condor-robust-backtest-v2.json",
         "docs/memos/2026-10-09-condor-executable-clock-contract.md",
@@ -326,7 +326,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus eleven protected-source/panel/feature experiment JSON declarations = 460.
     # Plus ADR-0255's robust-condor run config and requested dual memo = 462.
     # Plus the six docs the previous wrap left out of the manifest (robust replay memo and four
-    # report artifacts, the executable-clock contract memo) = 484, plus ADR-0256's executable-clock
+    # report artifacts, the executable-clock contract memo) = 484, plus ADR-0258's executable-clock
     # run config = 485; the executable-clock result memo = 486; the selection-intuition research note = 487.
     assert len(actual) == 487
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
@@ -3783,7 +3783,7 @@ def test_the_perticker_workflow_leaves_the_worker_width_to_the_machine(child_roo
         assert os.path.normpath(flow.path(step, out)) == os.path.join(output, tail)
 
 
-# -- ADR-0256: the executable-decision-clock replay document ---------------------------------------
+# -- ADR-0258: the executable-decision-clock replay document ---------------------------------------
 def _clock_docs(child_root):
     configs = child_root / "configs"
     return tuple(json.loads((configs / name).read_text(encoding="utf-8")) for name in (
@@ -3819,9 +3819,9 @@ def test_executable_clock_config_differs_from_the_robust_backtest_only_where_dec
                     "assignment and share delivery not simulated"}
     settle["labels"] = base["pipeline"]["settle"]["params"]["labels"]
     assert _without_notes(pipeline) == _without_notes(base["pipeline"])
-    # every changed key is explained: each touched node's notes name ADR-0256
+    # every changed key is explained: each touched node's notes name ADR-0258
     for name in ("option_chain", "rho_calibration", "select", "settle"):
-        assert "ADR-0256" in clock["pipeline"][name]["notes"], name
+        assert "ADR-0258" in clock["pipeline"][name]["notes"], name
     assert clock["name"] != base["name"]
     assert clock["outputs"]["run_root"] != base["outputs"]["run_root"]
 

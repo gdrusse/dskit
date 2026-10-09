@@ -10,7 +10,7 @@ the report's ledger holds one entry per entry date. Two commands ship over walks
     python -m index_options.ledger_studies allocate <walk dir> <walk dir> [...] [--book model]
     python -m index_options.ledger_studies hedge <core walk dir> <sleeve walk dir> [--book model]
 
-and a third, ``account`` (ADR-0256), over ONE completed robust-replay run directory (see
+and a third, ``account`` (ADR-0258), over ONE completed robust-replay run directory (see
 :class:`AccountStudy`; it needs ``--max-concurrent``, ``--max-per-symbol``, ``--max-per-date`` and
 ``--max-reserved-fraction``).
 
@@ -737,7 +737,7 @@ class AdmissionCaps(NamedTuple):
 
     Examples
     --------
-    The caps the ADR-0256 account study was frozen with::
+    The caps the ADR-0258 account study was frozen with::
 
         AdmissionCaps(max_concurrent=10, max_per_symbol=1, max_per_date=3,
                       max_reserved_fraction=1.0)

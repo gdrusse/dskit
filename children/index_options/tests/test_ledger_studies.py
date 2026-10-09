@@ -1172,7 +1172,7 @@ def test_the_studys_t_is_the_backtests_own_so_a_noise_constant_series_reads_zero
     assert table["alone:QQQ"][2] == 0.0           # three exactly equal trades
 
 
-# -- ADR-0256 S3: the read-only account study over a completed robust replay run ------------------
+# -- ADR-0258 S3: the read-only account study over a completed robust replay run ------------------
 RIGHTS_SIDES = (("LP", "put", "buy"), ("SP", "put", "sell"), ("SC", "call", "sell"),
                 ("LC", "call", "buy"))
 

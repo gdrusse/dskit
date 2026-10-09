@@ -1,0 +1,17 @@
+{
+  "notes": "Registration input, not a run input: 1-minute candles (yes_bid/yes_ask OHLC, volume, open interest) of the four index series from the kalshi_history pack (ADR-0239). Kalshi keeps no historical order book, so these candles are the only historical top-of-book: gate G0.2 measures, per strike, the share of 15:00-16:00 ET minutes with a two-sided quote, and the Stage-1 kill test reads the quote as of each decision instant. candle_grouping 'event' asks every strike of a LIVE event in one request chain; an ARCHIVED market is always one request each, so run the markets pull first and size this pull from its census (the S&P/NDX ladders carry about 30 range and 40-400 above/below strikes per event). Register: python -m dskit.onboarding register-source kalshi-history-candles-index --catalog-source kalshi-history-candles-index --connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector --config @configs/source-kalshi-history-candles-index.json --activate --root <store root>; acquire --stream candles --mode backfill.",
+  "series": [
+    "KXINX",
+    "KXINXU",
+    "KXNASDAQ100",
+    "KXNASDAQ100U"
+  ],
+  "period_interval": 1,
+  "candle_grouping": "event",
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

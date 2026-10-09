@@ -1,0 +1,15 @@
+{
+  "notes": "Registration input, not a run input: every trade (trade_id, ticker, created_time, yes_price, count, taker_side) of the four index series from the kalshi_history pack (ADR-0239), each market asked of the archive that owns each period of its life. Gate G0.2 uses it for volume by strike and distance from spot; Stage 4 uses taker_side to estimate how often a resting maker quote would have been hit. Pulled per market, so size it from the markets census first. Register: python -m dskit.onboarding register-source kalshi-history-trades-index --catalog-source kalshi-history-trades-index --connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector --config @configs/source-kalshi-history-trades-index.json --activate --root <store root>; acquire --stream trades --mode backfill.",
+  "series": [
+    "KXINX",
+    "KXINXU",
+    "KXNASDAQ100",
+    "KXNASDAQ100U"
+  ],
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

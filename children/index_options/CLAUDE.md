@@ -80,7 +80,7 @@ Use README.md for installation, the temporary demo and focused tests.
   the same CVaR5 (k = CVaR5(core+sleeve) / CVaR5(core); the sleeve earns its
   place only if core+sleeve's mean exceeds k*core's at the printed cent; k > 1
   is flagged). Never decision-eligible.
-- ADR-0256 (PROPOSED), executable decision clock for the robust condor replay:
+- ADR-0258 (PROPOSED), executable decision clock for the robust condor replay:
   decide after the close of t, fill all four legs at the first later session's
   VWAP with the ARM's haircut and liquidity rule (`nodes.liquid_leg_haircut` is
   the one owner, also used at the decision; repricing stays inside
@@ -146,7 +146,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # cdf_study.py: exact-expiry panel + JSON CDF/HPO CLI (ADR-0189/0190/0191)
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0256)
+                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258)
                            # pooled.py (generates configs/run-pooled-zoo-417{,-folds}.json, workflow-pooled-zoo-417.json
                            # and templates/report-spec-pooled-zoo-417.json (owner, 2026-10-04), the
                            # ADR-0236 zoo over both stock universes read via ADR-0237; and, through
@@ -169,7 +169,7 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # -index-wide.json (wide recorder + vol indices)
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
-                           # run-equity-condor-robust-backtest-v2.json (ADR-0256: the robust
+                           # run-equity-condor-robust-backtest-v2.json (ADR-0258: the robust
                            # condor replay with fill_session next, a fills stream, exercise flags)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,

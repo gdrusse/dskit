@@ -2486,7 +2486,7 @@ def _weekly_rho_inputs(weeks):
 
 
 def test_held_out_rho_run_threads_edge_padded_to_primary_and_sensitivity_support():
-    """ADR-0256 (5): the node, not only the owner, samples both horizons on padded blocks."""
+    """ADR-0258 (5): the node, not only the owner, samples both horizons on padded blocks."""
     params = dict(rho_grid=[0., .01], min_dates=2, block_days={"primary": 7, "sensitivity": 14},
                   replicates=20, alpha=.1, seed=7, short_q=.1, wing_strikes=1,
                   min_trade_count=1, min_volume=1, publication_lag_sessions=1,

@@ -3414,7 +3414,7 @@ def test_expiry_condor_preserves_forecast_label_date_when_supplied():
     assert out["skips"][0]["reason"] == "forecast_settlement_mismatch"
 
 
-# -- ADR-0256 S3: entry dated at the fill, unfilled selections, expiry disclosure flags ------------
+# -- ADR-0258 S3: entry dated at the fill, unfilled selections, expiry disclosure flags ------------
 def _filled(**over):
     row = _expiry_selection()
     row.update(status="trade", fill_date="2025-01-03", **over)
