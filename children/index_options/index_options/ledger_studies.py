@@ -5,10 +5,14 @@ A study reads what a walk-forward already recorded and writes nothing, like
 directories (:func:`~dskit.pipeline.runs.walk_fold_dirs`); a fold's backtest node
 record (``<run dir>/nodes/NN-backtest.json``) names its ``report`` as a JSON artifact
 (:func:`~dskit.pipeline.driver.resolve_json_artifact` checks its size and digest), and
-the report's ledger holds one entry per entry date. Two commands ship::
+the report's ledger holds one entry per entry date. Two commands ship over walks::
 
     python -m index_options.ledger_studies allocate <walk dir> <walk dir> [...] [--book model]
     python -m index_options.ledger_studies hedge <core walk dir> <sleeve walk dir> [--book model]
+
+and a third, ``account`` (ADR-0256), over ONE completed robust-replay run directory (see
+:class:`AccountStudy`; it needs ``--max-concurrent``, ``--max-per-symbol``, ``--max-per-date`` and
+``--max-reserved-fraction``).
 
 Both take the chosen book's ENTERED cells of each walk (``--book``: ``model``, the default,
 or ``always``; the ``implied`` book trades other strikes than the model's expectation was
@@ -59,17 +63,21 @@ backtests' metrics use.
 
 import argparse
 import json
+import math
 import os
 import sys
 from abc import ABC, abstractmethod
+from collections import Counter
+from datetime import date
+from fractions import Fraction
 from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
 from dskit.pipeline.records import number_ok
-from dskit.pipeline.runs import NODES_DIR, WALKFORWARD_FILE, walk_fold_dirs
+from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_fold_dirs
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
-from .contracts import STRUCTURES, structure_max_loss
+from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss
 from .nodes import (
     CondorQuoteBacktest,
     LongCallSpreadQuoteBacktest,
@@ -81,8 +89,10 @@ from .nodes import (
     t_or_zero,
 )
 
-__all__ = ["BACKTEST_NODE", "COLUMNS", "CVAR_ALPHA", "STUDIES", "AllocationStudy", "EnteredCell",
-           "HedgeStudy", "LedgerStudy", "WalkLedger", "main"]
+__all__ = ["ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
+           "REJECTION_REASONS", "STUDIES", "AccountRow", "AccountStudy", "AdmissionCaps",
+           "AllocationStudy", "EnteredCell", "HedgeStudy", "LedgerStudy", "Order", "ReplayRun",
+           "WalkLedger", "main"]
 
 #: The key the shipped grid documents give their backtest node.
 BACKTEST_NODE = "backtest"
@@ -685,8 +695,525 @@ class HedgeStudy(LedgerStudy):
         return "\n\n".join([facts, table, self._verdict(combined, scaled)])
 
 
+#: The run-report artifact (under a run directory) whose ``stages`` hold each stage's evidence.
+EVIDENCE_ARTIFACT = os.path.join("artifacts", "diagnostics", "evidence.json")
+#: The report stage whose evidence lists the selector's decisions, and the one whose evidence lists
+#: the settlement node's outcomes: the stage names the shipped replay config gives them.
+SELECT_STAGE, SETTLE_STAGE = "sizing", "replay"
+#: The arm whose unconstrained peak reservation sizes the capital levels.
+NOMINAL_ARM = "nominal"
+#: Why an order is refused, in the order the caps are checked: an order failing several is
+#: counted once, under the first.
+REJECTION_REASONS = ("max_concurrent", "max_per_symbol", "max_per_date", "max_reserved_fraction")
+#: The capital levels, as ``(label, fraction)`` of the nominal arm's unconstrained peak reservation.
+CAPITAL_LEVELS = (("1", Fraction(1)), ("1/2", Fraction(1, 2)), ("1/4", Fraction(1, 4)))
+#: The level label of the row that admits every order: the single-trade view.
+UNCAPPED = "uncapped"
+#: The decision statuses that are orders (the others never placed one).
+_ORDER_STATUSES = ("trade", "unfilled")
+#: The printed account table's columns: the facts, then one column per rejection reason.
+ACCOUNT_COLUMNS = ("arm", "level", "capital_usd", "admitted", "unfilled", "rejected", "pnl_usd",
+                   "peak_reserved_usd", *REJECTION_REASONS)
+#: The one line every account report ends with.
+_ACCOUNT_NOTE = ("note: this is not a margin, mark-to-market or delivery model: admission uses "
+                 "decision-time facts only, reservation is the decision max loss, and P&L is "
+                 "cash-basis at settlement")
+
+
+class AdmissionCaps(NamedTuple):
+    """The frozen admission caps of the account study.
+
+    Parameters
+    ----------
+    max_concurrent : int
+        Most orders open at once.
+    max_per_symbol : int
+        Most open orders of one underlying.
+    max_per_date : int
+        Most orders admitted on one decision date.
+    max_reserved_fraction : float
+        The share of the capital level that open reservations may fill.
+
+    Examples
+    --------
+    The caps the ADR-0256 account study was frozen with::
+
+        AdmissionCaps(max_concurrent=10, max_per_symbol=1, max_per_date=3,
+                      max_reserved_fraction=1.0)
+    """
+
+    max_concurrent: int
+    max_per_symbol: int
+    max_per_date: int
+    max_reserved_fraction: float
+
+
+class Order(NamedTuple):
+    """One order the selector placed, with only what admission may know.
+
+    Parameters
+    ----------
+    arm_id, decision_id, symbol : str
+        The order's identity.
+    date : str
+        The decision date, ISO: admission happens after that day's close.
+    release_date : str
+        The date the reservation is released at the close: the outcome's saved settlement
+        date, else (never settled) the selection's forecast settlement date.
+    reservation : float
+        The decision legs' maximum loss in USD, fees counted once.
+    score : float
+        The ex-ante robust value per unit of reservation: the priority.
+    status : str
+        ``trade`` or ``unfilled``: a fact learned AFTER the decision, never used to admit.
+    pnl_usd : float or None
+        The settled P&L, ``None`` for an order that never settled.
+
+    Examples
+    --------
+    An order reserving 300 USD::
+
+        Order("nominal", "d1", "AAA", "2025-02-04", "2025-03-07", 300.0, 0.1, "trade", 12.0)
+    """
+
+    arm_id: str
+    decision_id: str
+    symbol: str
+    date: str
+    release_date: str
+    reservation: float
+    score: float
+    status: str
+    pnl_usd: object
+
+
+class AccountRow(NamedTuple):
+    """One arm at one capital level: what was admitted, refused and earned.
+
+    Parameters
+    ----------
+    arm_id, level : str
+        The arm and the level label (:data:`CAPITAL_LEVELS`, or ``uncapped``).
+    capital_usd : float or None
+        The level's capital; ``None`` for ``uncapped``.
+    admitted, unfilled : int
+        Orders admitted, and how many of those never filled.
+    rejected : dict
+        Refusals by reason (:data:`REJECTION_REASONS`); absent reasons are zero.
+    pnl_usd : float
+        The cash-basis P&L of the admitted orders that settled.
+    peak_reserved_usd : float
+        The largest total reservation open at once.
+
+    Examples
+    --------
+    A row that admitted two orders::
+
+        AccountRow("nominal", "1", 900.0, 2, 0, {"max_per_date": 1}, 5.0, 600.0)
+    """
+
+    arm_id: str
+    level: str
+    capital_usd: object
+    admitted: int
+    unfilled: int
+    rejected: dict
+    pnl_usd: float
+    peak_reserved_usd: float
+
+
+def _iso(value):
+    """Say whether ``value`` is a canonical ISO calendar date string."""
+    try:
+        return isinstance(value, str) and date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+class ReplayRun:
+    """The orders and outcomes of one completed robust replay run directory, read back and checked.
+
+    The selector's selections and the settlement node's outcomes are lists, which the driver
+    records in a node record only as ``{"type": "list"}``; their content is in the run-report
+    artifact (``artifacts/<report node>/evidence.json``, ``stages.<stage>``), which is what is read.
+
+    Parameters
+    ----------
+    run_dir : str
+        A run directory whose ``result.json`` says ``ran``.
+    evidence : str, optional
+        The run-report artifact, relative to ``run_dir`` (default :data:`EVIDENCE_ARTIFACT`).
+    select_stage, settle_stage : str, optional
+        The report stages holding the selector's ``decisions`` and the settlement ``outcomes``.
+
+    Raises
+    ------
+    ValueError
+        With one line, when the run did not finish ``ran`` or its result is unreadable, the
+        evidence or a stage is missing or malformed, an order repeats, an outcome has no order
+        (or belongs to an unfilled one), an order has malformed legs, dates or prices, or its
+        reservation is not positive (no priority can be formed).
+
+    Examples
+    --------
+    Read a finished replay and list its orders::
+
+        run = ReplayRun("pipeline_runs/condor-replay/2026-01-01-ab12cd")
+        run.arms, len(run.orders)
+        # -> (("nominal", "rho_base"), 8584)
+    """
+
+    def __init__(self, run_dir, evidence=EVIDENCE_ARTIFACT, select_stage=SELECT_STAGE,
+                 settle_stage=SETTLE_STAGE):
+        self.run_dir = os.fspath(run_dir)
+        self._require_ran()
+        stages = self._stages(os.path.join(self.run_dir, evidence), evidence)
+        decisions = self._listed(stages, select_stage, "decisions")
+        outcomes = self._outcomes(self._listed(stages, settle_stage, "outcomes"))
+        #: Every order, in the run's own order.
+        self.orders = self._orders(decisions, outcomes)
+        #: The arms, in the order they first appear.
+        self.arms = tuple(dict.fromkeys(order.arm_id for order in self.orders))
+
+    def _require_ran(self):
+        """Refuse a run whose ``result.json`` is unreadable or whose state is not ``ran``."""
+        try:
+            with open(os.path.join(self.run_dir, RESULT_FILE), encoding="utf-8") as handle:
+                state = json.load(handle).get("state")
+        except (OSError, ValueError, AttributeError):
+            raise ValueError(f"{self.run_dir}: {RESULT_FILE} is missing or unreadable") from None
+        if state != "ran":
+            raise ValueError(f"{self.run_dir}: the run's state is {state!r}, not 'ran'")
+
+    def _stages(self, path, name):
+        """Return the run-report evidence's ``stages`` mapping."""
+        try:
+            with open(path, encoding="utf-8") as handle:
+                stages = json.load(handle).get("stages")
+        except (OSError, ValueError, AttributeError):
+            raise ValueError(f"{self.run_dir}: the report evidence {name} is missing or "
+                             "unreadable") from None
+        if not isinstance(stages, dict):
+            raise ValueError(f"{self.run_dir}: {name} has no stages")
+        return stages
+
+    def _listed(self, stages, stage, key):
+        """Return ``stages[stage][key]``, a list of objects."""
+        rows = stages.get(stage, {}).get(key) if isinstance(stages.get(stage), dict) else None
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise ValueError(f"{self.run_dir}: stage {stage!r} lacks a list of {key}")
+        return rows
+
+    def _outcomes(self, rows):
+        """Return the outcomes by ``(arm, decision)``, refusing a repeated identity."""
+        found = {}
+        for row in rows:
+            key = (row.get("arm_id"), row.get("decision_id"))
+            if key in found:
+                raise ValueError(f"{self.run_dir}: two outcomes for arm/decision {key}")
+            found[key] = row
+        return found
+
+    def _orders(self, decisions, outcomes):
+        """Build every order from the selector's trade and unfilled decisions."""
+        orders, seen = [], set()
+        for row in decisions:
+            if row.get("status") not in _ORDER_STATUSES:
+                continue
+            key = (row.get("arm_id"), row.get("decision_id"))
+            if key in seen:
+                raise ValueError(f"{self.run_dir}: two selections for arm/decision {key}")
+            seen.add(key)
+            orders.append(self._order(row, outcomes.get(key)))
+        orphans = sorted(set(outcomes) - seen, key=str)
+        if orphans:
+            raise ValueError(f"{self.run_dir}: outcome for arm/decision {orphans[0]} has no "
+                             "selection")
+        return orders
+
+    def _legs(self, row, where):
+        """Return the decision-time ``(strikes, credit_usd)`` of an order's four condor legs."""
+        legs, multiplier = row.get("legs"), row.get("multiplier")
+        if (not isinstance(legs, list) or len(legs) != len(CONDOR_LEGS)
+                or isinstance(multiplier, bool) or not isinstance(multiplier, int)
+                or multiplier < 1):
+            raise ValueError(f"{where}: needs a positive multiplier and {len(CONDOR_LEGS)} legs")
+        credit, strikes = 0.0, []
+        for leg, (right, sign) in zip(legs, CONDOR_LEGS):
+            price = leg.get("decision_price_usd_per_share", leg.get("price_usd_per_share"))
+            if (leg.get("right") != right or leg.get("side") != ("buy" if sign > 0 else "sell")
+                    or not all(number_ok(v) for v in (price, leg.get("fee_usd"), leg.get("strike")))):
+                raise ValueError(f"{where}: an ordered condor leg is malformed")
+            credit += -sign * price * multiplier - leg["fee_usd"]
+            strikes.append(leg["strike"])
+        return strikes, credit, multiplier
+
+    def _order(self, row, outcome):
+        """Build one order: its reservation, priority and release date, from decision facts only."""
+        where = f"{self.run_dir} arm/decision {(row.get('arm_id'), row.get('decision_id'))}"
+        if row["status"] == "unfilled" and outcome is not None:
+            raise ValueError(f"{where}: an unfilled selection has a settlement outcome")
+        for key in ("arm_id", "decision_id", "symbol"):
+            if not isinstance(row.get(key), str) or not row[key]:
+                raise ValueError(f"{where}: lacks {key}")
+        strikes, credit, multiplier = self._legs(row, where)
+        reservation = structure_max_loss(CONDOR_LEGS, strikes, credit, multiplier)
+        if not (math.isfinite(reservation) and reservation > 0 and number_ok(
+                row.get("robust_value_usd"))):
+            raise ValueError(f"{where}: its reservation {reservation!r} is not positive, so no "
+                             "priority can be formed (or its robust value is not a number)")
+        release = (outcome.get("settlement_date") if outcome is not None
+                   else row.get("forecast_settlement_date", row.get("expiry")))
+        if not _iso(row.get("quote_date")) or not _iso(release) or release <= row["quote_date"]:
+            raise ValueError(f"{where}: needs a decision date before its settlement date")
+        pnl = None if outcome is None else outcome.get("pnl_usd")
+        if outcome is not None and not number_ok(pnl):
+            raise ValueError(f"{where}: its outcome has no finite pnl_usd")
+        return Order(row["arm_id"], row["decision_id"], row["symbol"], row["quote_date"], release,
+                     reservation, row["robust_value_usd"] / reservation, row["status"], pnl)
+
+
+class _Account:
+    """Admit one arm's orders under the caps, chronologically, and tally the result.
+
+    Parameters
+    ----------
+    caps : AdmissionCaps or None
+        The caps; ``None`` admits every order (the single-trade view and the peak).
+    capital_usd : float or None
+        The level's capital, which ``caps.max_reserved_fraction`` limits.
+    """
+
+    def __init__(self, caps, capital_usd):
+        self.caps, self.capital_usd = caps, capital_usd
+
+    @staticmethod
+    def _priority(order):
+        """Sort key: higher ex-ante value per reservation first, then symbol ascending."""
+        return (-order.score, order.symbol, order.decision_id)
+
+    def _refusal(self, order, held, today):
+        """Return the first cap ``order`` would break given ``held`` open orders, or ``None``."""
+        caps = self.caps
+        if caps is None:
+            return None
+        if len(held) >= caps.max_concurrent:
+            return REJECTION_REASONS[0]
+        if sum(o.symbol == order.symbol for o in held) >= caps.max_per_symbol:
+            return REJECTION_REASONS[1]
+        if today >= caps.max_per_date:
+            return REJECTION_REASONS[2]
+        if sum(o.reservation for o in held) + order.reservation > (
+                caps.max_reserved_fraction * self.capital_usd):
+            return REJECTION_REASONS[3]
+        return None
+
+    def admit(self, orders):
+        """Return ``(admitted orders, rejected Counter, peak reserved USD)``.
+
+        Parameters
+        ----------
+        orders : list of Order
+            One arm's orders.
+
+        Returns
+        -------
+        tuple
+            The admitted orders, refusals by reason and the largest reservation held at once.
+        """
+        by_day = {}
+        for order in orders:
+            by_day.setdefault(order.date, []).append(order)
+        held, admitted, rejected, peak = [], [], Counter(), 0.0
+        for day in sorted(by_day):
+            # settlement is at the close, decisions come after it: a release dated today is done
+            held = [o for o in held if o.release_date > day]
+            today = 0
+            for order in sorted(by_day[day], key=self._priority):
+                reason = self._refusal(order, held, today)
+                if reason is not None:
+                    rejected[reason] += 1
+                    continue
+                held.append(order)
+                admitted.append(order)
+                today += 1
+                peak = max(peak, sum(o.reservation for o in held))
+        return admitted, rejected, peak
+
+
+class AccountStudy(LedgerStudy):
+    """Admit a robust replay's orders under account caps, from decision-time facts only.
+
+    Orders are admitted in decision-date order. On one date they are ranked by the ex-ante robust
+    value per unit of reservation, then symbol ascending, and admitted while the caps hold: at
+    most ``max_concurrent`` open, ``max_per_symbol`` open per underlying, ``max_per_date``
+    admitted that date, and open reservations within ``max_reserved_fraction`` of the capital.
+    The reservation is the decision legs' maximum loss
+    (:func:`~index_options.contracts.structure_max_loss`, fees counted once). A reservation is
+    released at the order's saved settlement date, before that day's decisions; an order that
+    is later unfilled, or never settles, keeps its reservation to that date and earns nothing:
+    nothing learned after the decision frees a slot. Capital levels are the fractions 1, 1/2 and
+    1/4 of the nominal arm's unconstrained peak reservation; every arm is accounted at each.
+    The output is, per arm and level, the admitted and refused counts (refusals by the first
+    cap broken) and the cash-basis P&L of the admitted orders, beside an ``uncapped`` row that
+    is the single-trade view. It is not a margin, mark-to-market or delivery model.
+
+    Examples
+    --------
+    Account a finished replay under the frozen caps::
+
+        study = AccountStudy()
+        args = argparse.Namespace(
+            run_dir="pipeline_runs/condor-replay/2026-01-01-ab12cd", max_concurrent=10,
+            max_per_symbol=1, max_per_date=3, max_reserved_fraction=1.0,
+            nominal_arm="nominal", evidence=EVIDENCE_ARTIFACT, select_stage="sizing",
+            settle_stage="replay")
+        print(study.report(args))
+    """
+
+    name = "account"
+    summary = "decision-time admission of a robust replay's orders under account caps"
+
+    @staticmethod
+    def _positive_int(text):
+        """Parse a positive integer command-line value."""
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
+        if value < 1:
+            raise argparse.ArgumentTypeError(f"{text!r} must be at least 1")
+        return value
+
+    @staticmethod
+    def _positive_number(text):
+        """Parse a positive finite number command-line value."""
+        try:
+            value = float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+        if not (math.isfinite(value) and value > 0):
+            raise argparse.ArgumentTypeError(f"{text!r} must be a positive finite number")
+        return value
+
+    @classmethod
+    def add_arguments(cls, parser):
+        """Take the run directory, the four required caps and the run-layout names.
+
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            The ``account`` subparser.
+        """
+        parser.add_argument("run_dir", metavar="RUN_DIR",
+                            help="a completed robust replay run directory (state ran)")
+        for flag, kind, text in (
+                ("--max-concurrent", cls._positive_int, "most orders open at once"),
+                ("--max-per-symbol", cls._positive_int, "most open orders of one underlying"),
+                ("--max-per-date", cls._positive_int, "most orders admitted on one decision date"),
+                ("--max-reserved-fraction", cls._positive_number,
+                 "the share of the capital level open reservations may fill")):
+            parser.add_argument(flag, type=kind, required=True, help=text)
+        parser.add_argument("--nominal-arm", default=NOMINAL_ARM,
+                            help=f"the arm whose peak reservation sizes the capital "
+                                 f"(default: {NOMINAL_ARM})")
+        parser.add_argument("--evidence", default=EVIDENCE_ARTIFACT,
+                            help="the run-report evidence artifact, relative to RUN_DIR")
+        parser.add_argument("--select-stage", default=SELECT_STAGE,
+                            help="the report stage listing the selector's decisions")
+        parser.add_argument("--settle-stage", default=SETTLE_STAGE,
+                            help="the report stage listing the settlement outcomes")
+
+    @staticmethod
+    def _peak(orders):
+        """Return the largest total reservation open at once when every order is admitted."""
+        return _Account(None, None).admit(orders)[2]
+
+    @classmethod
+    def rows(cls, run, caps, nominal_arm=NOMINAL_ARM):
+        """Return one :class:`AccountRow` per arm and level, ``uncapped`` first for each arm.
+
+        Parameters
+        ----------
+        run : ReplayRun
+            The completed run.
+        caps : AdmissionCaps
+            The admission caps.
+        nominal_arm : str, optional
+            The arm whose unconstrained peak reservation sizes the capital levels.
+
+        Returns
+        -------
+        list of AccountRow
+            Arms in the run's order; per arm ``uncapped`` then the levels of
+            :data:`CAPITAL_LEVELS`.
+
+        Raises
+        ------
+        ValueError
+            When ``nominal_arm`` has no orders in the run.
+        """
+        by_arm = {arm: [o for o in run.orders if o.arm_id == arm] for arm in run.arms}
+        if not by_arm.get(nominal_arm):
+            raise ValueError(f"the nominal arm {nominal_arm!r} has no orders in {run.run_dir}: "
+                             "the capital levels have no peak to take fractions of")
+        peak = cls._peak(by_arm[nominal_arm])
+        levels = ((UNCAPPED, None, None), *((label, fraction, float(fraction) * peak)
+                                            for label, fraction in CAPITAL_LEVELS))
+        out = []
+        for arm, orders in by_arm.items():
+            for label, _, capital in levels:
+                admitted, rejected, held = _Account(None if capital is None else caps,
+                                                    capital).admit(orders)
+                out.append(AccountRow(
+                    arm, label, capital, len(admitted),
+                    sum(o.status == "unfilled" for o in admitted), dict(rejected),
+                    sum(o.pnl_usd for o in admitted if o.pnl_usd is not None), held))
+        return out
+
+    @staticmethod
+    def _cells(row):
+        """Return one row's printed cells."""
+        money = f"{{:.{_MONEY_DECIMALS}f}}".format
+        return [row.arm_id, row.level, "-" if row.capital_usd is None else money(row.capital_usd),
+                str(row.admitted), str(row.unfilled), str(sum(row.rejected.values())),
+                money(row.pnl_usd), money(row.peak_reserved_usd),
+                *(str(row.rejected.get(reason, 0)) for reason in REJECTION_REASONS)]
+
+    def report(self, args):
+        """Return the caps line, the account table and the not-a-margin-model line.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            ``run_dir``, the four caps, ``nominal_arm``, ``evidence``, ``select_stage`` and
+            ``settle_stage``.
+
+        Returns
+        -------
+        str
+            Three blocks: the caps; the table of :data:`ACCOUNT_COLUMNS`, one row per arm and
+            level; the note that this is not a margin, mark-to-market or delivery model.
+
+        Raises
+        ------
+        ValueError
+            When the run is refused (see :class:`ReplayRun`) or the nominal arm has no orders.
+        """
+        run = ReplayRun(args.run_dir, args.evidence, args.select_stage, args.settle_stage)
+        caps = AdmissionCaps(args.max_concurrent, args.max_per_symbol, args.max_per_date,
+                             args.max_reserved_fraction)
+        rows = self.rows(run, caps, args.nominal_arm)
+        facts = (f"account: {len(run.orders)} orders over {len(run.arms)} arms in {run.run_dir}; "
+                 + ", ".join(f"{name}={value}" for name, value in caps._asdict().items())
+                 + f"; capital = 1, 1/2, 1/4 of the {args.nominal_arm} arm's unconstrained peak "
+                   "reservation")
+        table = self._grid([list(ACCOUNT_COLUMNS)] + [self._cells(row) for row in rows])
+        return "\n\n".join([facts, table, _ACCOUNT_NOTE])
+
+
 #: The studies by command.
-STUDIES = {study.name: study for study in (AllocationStudy, HedgeStudy)}
+STUDIES = {study.name: study for study in (AllocationStudy, HedgeStudy, AccountStudy)}
 
 
 def main(argv=None):

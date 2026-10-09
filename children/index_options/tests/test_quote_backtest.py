@@ -3412,3 +3412,110 @@ def test_expiry_condor_preserves_forecast_label_date_when_supplied():
                                    bars=_expiry_bars(),skips=[]))
     assert not out["outcomes"]
     assert out["skips"][0]["reason"] == "forecast_settlement_mismatch"
+
+
+# -- ADR-0256 S3: entry dated at the fill, unfilled selections, expiry disclosure flags ------------
+def _filled(**over):
+    row = _expiry_selection()
+    row.update(status="trade", fill_date="2025-01-03", **over)
+    return row
+
+
+def _settle(selections, close=100, **params):
+    return _expiry_node(**params).run(None, {"selections": selections,
+                                             "bars": _expiry_bars(close), "skips": []})
+
+
+def test_expiry_condor_entry_fills_are_dated_at_fill_date_when_present():
+    out = _settle([_filled()])
+    entry = [row for row in out["evidence"]["raw_fills"] if row["phase"] == "entry"]
+    assert {row["date"] for row in entry} == {"2025-01-03"}
+    assert {row["date"] for row in out["evidence"]["raw_fills"] if row["phase"] == "expiry"} \
+        == {"2025-02-02"}
+    legacy = _settle([_expiry_selection()])
+    assert {row["date"] for row in legacy["evidence"]["raw_fills"] if row["phase"] == "entry"} \
+        == {"2025-01-02"}
+    # only the date moves: the P&L is the same intrinsic settlement
+    assert out["outcomes"][0]["pnl_usd"] == legacy["outcomes"][0]["pnl_usd"]
+    assert out["outcomes"][0]["quote_date"] == "2025-01-02"
+
+
+@pytest.mark.parametrize("day", ["2025-01-02", "2025-01-01", "2025-02-02", "2025-02-03", "x", 5])
+def test_expiry_condor_fill_date_must_fall_between_decision_and_expiry(day):
+    row = _filled()
+    row["fill_date"] = day
+    with pytest.raises(ValueError, match="fill_date"):
+        _settle([row])
+
+
+def _unfilled(decision="u", reason="missing_fill_bar"):
+    row = _expiry_selection(decision)
+    row.update(status="unfilled", unfilled_reason=reason)
+    return row
+
+
+def test_expiry_condor_unfilled_selections_are_skipped_and_counted_never_settled():
+    out = _settle([_filled(), _unfilled("u1"), _unfilled("u2", "fill_liquidity"),
+                   _unfilled("u3")])
+    assert len(out["outcomes"]) == 1 and len(out["evidence"]["raw_fills"]) == 8
+    assert [(s["decision_id"], s["reason"], s["unfilled_reason"]) for s in out["skips"]] == [
+        ("u1", "unfilled", "missing_fill_bar"), ("u2", "unfilled", "fill_liquidity"),
+        ("u3", "unfilled", "missing_fill_bar")]
+    assert out["evidence"]["unfilled_by_reason"] == {"fill_liquidity": 1, "missing_fill_bar": 2}
+    assert out["evidence"]["totals"]["n_condors"] == 1
+    # no unfilled selections: the legacy evidence has no such key
+    assert "unfilled_by_reason" not in _settle([_filled()])["evidence"]
+
+
+def test_expiry_condor_unfilled_still_needs_identity_and_a_reason():
+    bad = _unfilled()
+    del bad["unfilled_reason"]
+    with pytest.raises(ValueError, match="unfilled"):
+        _settle([bad])
+    with pytest.raises(ValueError, match="duplicate"):
+        _settle([_unfilled(), _unfilled()])
+    with pytest.raises(ValueError, match="status"):
+        _settle([{**_expiry_selection("z"), "status": "pending"}])
+
+
+@pytest.mark.parametrize("close,itm,pin,shares", [
+    (100, [], [], 0),
+    (93, ["SP"], [], 100),
+    (87, ["LP", "SP"], [], 0),
+    (107, ["SC"], [], -100),
+    (120, ["SC", "LC"], [], 0),
+    (94.99, ["SP"], [], 100),
+    (94.995, [], ["SP"], 0),
+    (95, [], ["SP"], 0),
+    (95.01, [], [], 0),
+])
+def test_expiry_condor_discloses_itm_pin_zone_and_would_deliver_shares(close, itm, pin, shares):
+    out = _settle([_filled()], close, exercise_threshold_usd=0.01)
+    outcome = out["outcomes"][0]
+    flags = {flag["role"]: flag for flag in outcome["exercise_flags"]}
+    assert [flag["role"] for flag in outcome["exercise_flags"]] == ["LP", "SP", "SC", "LC"]
+    assert sorted(r for r, f in flags.items() if f["itm"]) == sorted(itm)
+    assert sorted(r for r, f in flags.items() if f["pin_zone"]) == sorted(pin)
+    assert outcome["would_deliver_shares"] == shares
+    assert outcome["pnl_usd"] == _settle([_filled()], close)["outcomes"][0]["pnl_usd"]
+    disclosure = out["evidence"]["exercise_disclosure"]
+    assert disclosure == {"exercise_threshold_usd": 0.01, "n_itm_legs": len(itm),
+                          "n_pin_zone_legs": len(pin),
+                          "n_would_deliver_shares": int(shares != 0)}
+
+
+def test_expiry_condor_without_a_threshold_omits_every_flag():
+    out = _settle([_filled()], 93)
+    assert "exercise_flags" not in out["outcomes"][0]
+    assert "would_deliver_shares" not in out["outcomes"][0]
+    assert "exercise_disclosure" not in out["evidence"]
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "0.01", None])
+def test_expiry_condor_exercise_threshold_must_be_a_positive_number(value):
+    cls = nodes.CondorExpirySettle
+    params = {"settlement_field": "x", "max_settlement_gap_days": 4, "end_before": "2026-01-01",
+              "labels": {"fill": "a", "exercise": "b"}}
+    assert cls.validate_params(params) == []
+    assert cls.validate_params({**params, "exercise_threshold_usd": value})
+    assert cls.validate_params({**params, "exercise_threshold_usd": 0.01}) == []
