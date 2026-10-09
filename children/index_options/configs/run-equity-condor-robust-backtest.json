@@ -1,105 +1,30 @@
 {
   "name": "equity-condor-robust-backtest",
-  "notes": "DRAFT ADR-0255, PROPOSED; owner decisions and G1-G4 must close before code or runs. Restored-universe inventory is published; schedule and input-profile onboarding remain pending. Research only, already-seen2024-2025, no2026 records/acquisition/fits/spend. Owner-frozen same-day VWAP look-ahead, equity31-day one-lot expiry payoff, strike-only mean-preserving grid and all-combinations dual MILP. Three store roots need owner confirmation. Eight explicitly declared one-factor comparison arms use existing foreach; tickers are not fanned into a chosen subset. Numeric PLACEHOLDERs and unresolved source profiles fail closed. Node names refer to pipeline or foreach.pipeline.",
+  "notes": "DRAFT, NOT LAUNCHABLE: G1 protected mixed-year intake and historical stock/strike basis require resolution; two mesh admission limits remain explicit placeholders. Implemented component interfaces replace old proposed names. No current backtest result. Exact saved seed11 forecasts are preserved and onboarded; final strike-basis inputs are deliberately PENDING. One batch selector executes eight frozen arms exactly once. No2026 price/outcome access, acquisitions, fits, spend, live trading, or main merge permission inferred.",
   "outputs": {
     "run_root": "",
     "notes": "'' resolves to ./pipeline_runs (dskit/pipeline/README.md:176); excluded from the identity hash."
   },
   "pipeline": {
-    "schedule": {
-      "uses": "table-file",
-      "params": {
-        "path": "PLACEHOLDER-checkpoint-schedule.json",
-        "source": "PLACEHOLDER: derive/onboard nominal evaluation schedule from published restored-universe model-inventory.json",
-        "retrieved": "0000-00-00",
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-      },
-      "notes": "Stand-in only. Inventory now exists on main under children/index_options/docs/reports/production-universe-rerun-20261008/model-inventory.json. G2 derives/onboards nine seed11 evaluation rows with fit/checkpoint/source hashes, all-label information cutoff INCLUDING monitoring/early stopping and availability, and archived forecast-valid interval. Never infer from training cutoff alone. Replace table-file with the existing registered-source read seam only after verification. Zero date/hash/path remain fail-closed."
-    },
-    "stock_bars": {
-      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+    "option_rows": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
         "root": "/home/russell/data/index_options/ob",
-        "sources": [
-          {
-            "source": "stock-daily-bars",
-            "stream": "files",
-            "columns": {
-              "symbol": "symbol",
-              "date": "date",
-              "close": "close",
-              "split_coefficient": "split_coefficient"
-            },
-            "read_bounds": {
-              "date": {
-                "end_before": "2026-01-01"
-              }
-            }
-          },
-          {
-            "source": "stock-daily-bars-300",
-            "stream": "files",
-            "columns": {
-              "symbol": "symbol",
-              "date": "date",
-              "close": "close",
-              "split_coefficient": "split_coefficient"
-            },
-            "read_bounds": {
-              "date": {
-                "end_before": "2026-01-01"
-              }
-            }
-          }
-        ]
-      },
-      "notes": "PROPOSED multi-file onboarded parquet reader; inventory reuse before building. DateBoundedParquet protects reads before materialization. G1 source profile must pin a common adjustment vintage and allowed split inventory that reconstruct as-traded prices without2026; unknown basis refuses. Schema and full-vs-incremental snapshot semantics must be verified, never infer them from source names."
-    },
-    "as_traded": {
-      "uses": "dskit.pipeline.libs.bar_features:AsTradedClose",
-      "inputs": {
-        "bars": "$stock_bars.records"
-      },
-      "params": {
-        "entity_field": "symbol",
-        "date_field": "date",
-        "close_field": "close",
-        "split_field": "split_coefficient",
-        "output_field": "as_traded_close",
-        "irregular_field": "split_irregular",
-        "irregular_tolerance": 1e-06
-      },
-      "notes": "EXISTS; input profile must prove later split ratios present in this bounded source explain its adjustment vintage. A 2026-adjusted close cannot be repaired by silently dropping2026 splits. Reject unresolved basis before this transform. Irregular and unsupported holding-period actions are excluded downstream; unknown action histories remain labeled assumptions. Pin irregular_tolerance to the existing feature workflow."
-    },
-    "option_chain": {
-      "uses": "dskit.pipeline.libs.observations:ExactDteBarChain",
-      "params": {
-        "sources": [
-          {
-            "root": "/home/russell/data/stock_options/option-universe-100",
-            "source": "options",
-            "stream": "bars",
-            "read_bounds": {
-              "quote_date": {
-                "end_before": "2026-01-01"
-              }
-            }
-          },
-          {
-            "root": "/home/russell/data/stock_options/option-universe-300",
-            "source": "options",
-            "stream": "bars",
-            "read_bounds": {
-              "quote_date": {
-                "end_before": "2026-01-01"
-              }
-            }
-          }
-        ],
+        "source": "PENDING-condor-verified-strike-basis-inputs",
+        "stream": "chain",
         "key_fields": [
           "contract",
           "quote_date"
-        ],
+        ]
+      },
+      "notes": "G1 BLOCKED. Consume only separately onboarded pre2026 chain records after protected extraction and vintage/deliverable checks. Never point this reader at either mixed-year original options stream."
+    },
+    "option_chain": {
+      "uses": "index_options.nodes:ExactDteBarChain",
+      "inputs": {
+        "records": "$option_rows.records"
+      },
+      "params": {
         "fields": {
           "contract": "contract",
           "symbol": "symbol",
@@ -109,9 +34,12 @@
           "date": "quote_date",
           "vwap": "vwap",
           "trade_count": "trade_count",
-          "volume": "volume"
+          "volume": "volume",
+          "multiplier": "multiplier"
         },
         "dte": 31,
+        "multiplier": 100,
+        "end_before": "2026-01-01",
         "windows": [
           {
             "name": "calibration",
@@ -125,87 +53,76 @@
           }
         ]
       },
-      "notes": "PROPOSED. Protected intake selects metadata-proven pre2026 members/partitions BEFORE parsing/dedup; filtering ObservationStreamRows output is NOT sufficient. Missing trusted member bounds or mixed JSON members refuse rather than scan2026. Preserve dedup/fingerprints across per-source roots. Only then apply exact DTE and named phase windows and field mapping. G1 verifies registrations/fields/standard deliverables and safe metadata census; quote and expiry both before2026. No provider acquisition."
+      "notes": "Implemented pure exact-DTE adapter; source conversion must normalize verified integral contract multiplier/volume/count values. This node does not provide a protected reader or certify price basis."
     },
-    "model_inputs": {
-      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+    "as_traded": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
         "root": "/home/russell/data/index_options/ob",
-        "source": "universe-model-inputs-20261008",
-        "stream": "files",
-        "relpath_by_key": {
-          "frozen": "panel/frame.parquet"
-        },
-        "key": "frozen",
-        "columns": {
-          "quote_date": "quote_date",
-          "settlement_date": "settlement_date",
-          "symbol": "symbol",
-          "PLACEHOLDER_FROZEN_FEATURE_SCALE_COLUMNS": "PLACEHOLDER_FROZEN_FEATURE_SCALE_COLUMNS"
-        },
-        "read_bounds": {
-          "quote_date": {
-            "end_before": "2026-01-01"
-          },
-          "settlement_date": {
-            "end_before": "2026-01-01"
-          }
-        }
-      },
-      "notes": "Existing ParquetRows, not a new feature builder. G2 replaces the placeholder projection from the verified archived42-feature/scale contract and pins the source snapshot/hash to the inference package. No guesses or all-column imputation. Both date bounds apply before materialization; forward labels are not passed as model features. Missing or incompatible profile refuses. This source already exists; no acquisition of new market data."
-    },
-    "forecasts": {
-      "uses": "dskit.pipeline.libs.predictive_cdf:CheckpointCDFInference",
-      "inputs": {
-        "schedule": "$schedule.table",
-        "bars": "$as_traded.records",
-        "chain": "$option_chain.records",
-        "features": "$model_inputs.records"
-      },
-      "params": {
-        "estimator": "TorchCDF",
-        "seed": 11,
-        "recovery_steps": [
-          "order_features",
-          "apply_saved_training_medians",
-          "add_saved_ticker_head_encoding",
-          "call_loaded_model_once"
-        ],
-        "phases": [
-          "calibration",
-          "entry"
+        "source": "PENDING-condor-verified-strike-basis-inputs",
+        "stream": "bars",
+        "key_fields": [
+          "symbol",
+          "date"
         ]
       },
-      "notes": "PROPOSED inference wrapper. Use verified42-feature rows, exact order, scale and ticker encoding, archived training medians for admitted missing values, then loaded scaler/mask exactly once. G2 pins snapshots/schema/preprocessing and parity against saved forecasts. Schedule cutoff includes monitoring and other fitted selection labels, plus availability; require origin within archived forecast-valid interval. No compatible checkpoint/feature/head/profile -> explicit skip. Seed and estimator must match loaded state. As-traded spot has G1 verified strike basis. Own-date forecast uses own-date data and retains look-ahead fill label."
+      "notes": "G1 BLOCKED. Canonical as_traded_close in historical USD/share, backed by verified source-vintage split reconstruction. End-before2026 applies before onboarding. Do not substitute split-adjusted panel prices."
+    },
+    "holding_exclusions": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "PENDING-condor-verified-strike-basis-inputs",
+        "stream": "holding_exclusions",
+        "key_fields": [
+          "symbol",
+          "quote_date",
+          "expiry",
+          "reason"
+        ]
+      },
+      "notes": "G1 bounded explicit holding-window action/recapitalization/deliverable exclusions. Preserve reasons and action provenance; unknown histories remain declared research assumptions."
+    },
+    "forecasts": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "PENDING-condor-verified-strike-basis-inputs",
+        "stream": "forecasts",
+        "key_fields": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ]
+      },
+      "notes": "G2 exact saved seed11 curves are already onboarded as condor-archived-forecasts-20261008-v2/forecasts, 99225 records, canonical record hash ec9b4e1584740d2bc132790a2772c31d7c5d3720516e92f2eb2143bd2783ff90. G1 must first join verified historical as-traded spot and preserve the original model reference/curve/fit/checkpoint/input identities plus basis provenance. PENDING source deliberately prevents accidental use of adjusted spot against historical strikes. No new inference/fits or later-checkpoint substitution."
     },
     "masses": {
       "uses": "dskit.pipeline.libs.predictive_cdf:NominalStrikeMasses",
       "inputs": {
-        "forecasts": "$forecasts.forecasts",
+        "forecasts": "$forecasts.records",
         "chain": "$option_chain.records",
-        "bars": "$as_traded.records",
-        "skips": "$forecasts.skips"
+        "skips": "$option_chain.skips"
       },
       "params": {
-        "placement": "mean_preserving",
-        "tails": "collapse_to_extreme_strikes",
-        "mesh_tolerance": {
-          "loss_usd_per_share": "PLACEHOLDER",
-          "w1_fraction_of_spot": "PLACEHOLDER"
-        }
+        "quadrature_tolerance": 1e-08,
+        "payoff_tolerance": 1e-06,
+        "cdf_tolerance": "PENDING-explicit-mesh-limit",
+        "w1_tolerance": "PENDING-explicit-mesh-limit",
+        "integration_limit": 100
       },
-      "notes": "PROPOSED mean-preserving strike projection; grid all chain strikes before liquidity, tails at extremes. Report clipped-support W1 in spot units, CDF deviations and nominal payoff-integral discrepancy; full-distribution Delta is unavailable unless separately verified. Mesh limits unresolved -> refuse. Continuous F-ball containment is NOT claimed for a discrete ball. Owner selected direct strike-grid calibration; do not add clipped or full projection distance to rho. Emit masses and a JSON evidence dict with all date-level mesh/refusal records for RunReport; forward forecast skips."
+      "notes": "Implemented projection. Numerical integration tolerances are explicit proposed research settings, not empirical calibration. CDF/W1 admission limits remain unresolved and intentionally fail validation. Grid is all pre-liquidity strikes; clipped tails and placement diagnostics do not supply continuous-distribution coverage or added rho."
     },
     "rho_calibration": {
       "uses": "index_options.cdf_study:HeldOutRhoCalibration",
       "inputs": {
         "masses": "$masses.masses",
         "chain": "$option_chain.records",
-        "bars": "$as_traded.records"
+        "bars": "$as_traded.records",
+        "holding_exclusions": "$holding_exclusions.records",
+        "skips": "$masses.skips"
       },
       "params": {
-        "target_phase": "entry",
-        "rule": "expected_loss_bound",
         "rho_grid": [
           0,
           0.001,
@@ -213,190 +130,144 @@
           0.005,
           0.01
         ],
-        "update": "monthly",
-        "availability": {
-          "publication_lag_sessions": 1,
-          "reference": "first_entry_date_of_month",
-          "usable_when": "publication_session_strictly_before_reference"
-        },
+        "min_dates": 8,
         "block_days": {
           "primary": 31,
           "sensitivity": 62
         },
-        "alpha": 0.05,
         "replicates": 500,
+        "alpha": 0.05,
         "seed": 1900,
-        "min_dates": 8,
-        "audit_candidates": {
-          "template": "short_quantile_wings",
-          "short_q": 0.1,
-          "wing_strikes": 1
+        "min_trade_count": 5,
+        "min_volume": 1,
+        "short_q": 0.1,
+        "wing_strikes": 1,
+        "publication_lag_sessions": 1,
+        "max_settlement_gap_days": 4,
+        "settlement_field": "as_traded_close",
+        "end_before": "2026-01-01"
+      },
+      "notes": "Child audit adapter candidate over shared generic bootstrap/grid owners; tier decision remains G3. Expected-loss candidate uses realized MINUS robust loss; upper mean bound <=0. Template evidence covers only that fixed population, not all MILP-selected trades. Match SP to F^-1(short_q) and SC to F^-1(1-short_q), each at the nearest same-type strike (distance tie lower), longs wing_strikes distinct same-type positions outward; require this node's explicit liquidity params, pinned equal to select base liquidity, standard contract and strict ordering, otherwise missing-template refusal. Payoff-only audit never uses completed-window pricing tiers. Calendar blocks: starts are observed dates; complete [start,start+B) date groups require start+B <= last_observed+1 day; uniform eligible-start sampling with replacement, concatenate until n dates and truncate; no calendar wrap. Before bounding, require every target date to have positive inclusion probability under this exact sampler and at least two distinct supported blocks; otherwise emit unsupported, never a passing bound. A passing bound also requires the full observed-date residual mean <=0. Refuse insufficient min_dates/no complete blocks/degenerate support, retain inclusion counts and full mean. This is an approximate block stress diagnostic, not a finite-sample confidence guarantee. Primary selection only; longer sensitivity reported. Legacy observed-count behavior stays unchanged. Owner approved expected-loss criterion and the finite-grid/smallest-passing procedure; Owner approved direct strike-grid calibration without adding a projection offset; weights remain G3. Projection diagnostics are reported separately, not added to rho. No passing grid value means unsupported, without automatic expansion. Compute fixed-template/radius loss values once per exact forecast/checkpoint/input/grid/payoff/band/numerical identity; rho0 may use nominal expected loss directly. Bootstrap reuses cached residuals, never repeats LP solves. Final candidate review and G1 data gates remain. Owner approved monthly updates using calibration and entry-phase fixed audit-template outcomes, whether or not the optimizer traded. Admit only outcomes settled and published strictly before the configured monthly reference. The rule and template stay frozen; actual selected-trade outcomes do not replace the audit population. Recompute the bound from eligible past residuals, reusing matching loss values; never revise earlier decisions. Every used outcome is published strictly before monthly reference. Emit rho and JSON audit dict (bounds/residuals/blocks/counts/all refusals), consumed by diagnostics. No test-profit selection. Base-template liquidity is unchanged across all sensitivity arms; they reuse the same rho, never recalibrate."
+    },
+    "select": {
+      "uses": "index_options.nodes:RobustCondorBatchSelect",
+      "inputs": {
+        "chain": "$option_chain.records",
+        "projected_masses": "$masses.masses",
+        "rho": "$rho_calibration.rho",
+        "skips": "$masses.skips",
+        "holding_exclusions": "$holding_exclusions.records"
+      },
+      "params": {
+        "solver": "appsi_highs",
+        "solver_options": {
+          "mip_rel_gap": 0,
+          "mip_abs_gap": 1e-06,
+          "threads": 1,
+          "random_seed": 0
         },
+        "multiplier": 100,
+        "fee_per_contract_usd": 0.65,
+        "tie_tolerance_usd": 1e-06,
         "liquidity": {
           "min_trade_count": 5,
           "min_volume": 1
         },
-        "search": "finite_grid",
-        "selection": "smallest_passing",
-        "history_phases": [
-          "calibration",
-          "entry"
-        ],
-        "projection_offset_policy": "diagnostic_only"
-      },
-      "notes": "PROPOSED child audit adapter over shared generic bootstrap/grid owners; tier decision remains G3. Expected-loss candidate uses realized MINUS robust loss; upper mean bound <=0. Template evidence covers only that fixed population, not all MILP-selected trades. Match SP to F^-1(short_q) and SC to F^-1(1-short_q), each at the nearest same-type strike (distance tie lower), longs wing_strikes distinct same-type positions outward; require this node's explicit liquidity params, pinned equal to select base liquidity, standard contract and strict ordering, otherwise missing-template refusal. Payoff-only audit never uses completed-window pricing tiers. Calendar blocks: starts are observed dates; complete [start,start+B) date groups require start+B <= last_observed+1 day; uniform eligible-start sampling with replacement, concatenate until n dates and truncate; no calendar wrap. Before bounding, require every target date to have positive inclusion probability under this exact sampler and at least two distinct supported blocks; otherwise emit unsupported, never a passing bound. A passing bound also requires the full observed-date residual mean <=0. Refuse insufficient min_dates/no complete blocks/degenerate support, retain inclusion counts and full mean. This is an approximate block stress diagnostic, not a finite-sample confidence guarantee. Primary selection only; longer sensitivity reported. Legacy observed-count behavior stays unchanged. Owner approved expected-loss criterion and the finite-grid/smallest-passing procedure; Owner approved direct strike-grid calibration without adding a projection offset; weights remain G3. Projection diagnostics are reported separately, not added to rho. No passing grid value means unsupported, without automatic expansion. Compute fixed-template/radius loss values once per exact forecast/checkpoint/input/grid/payoff/band/numerical identity; rho0 may use nominal expected loss directly. Bootstrap reuses cached residuals, never repeats LP solves. This adapter is still proposed; these keys do not make it executable. Owner approved monthly updates using calibration and entry-phase fixed audit-template outcomes, whether or not the optimizer traded. Admit only outcomes settled and published strictly before the configured monthly reference. The rule and template stay frozen; actual selected-trade outcomes do not replace the audit population. Recompute the bound from eligible past residuals, reusing matching loss values; never revise earlier decisions. Every used outcome is published strictly before monthly reference. Emit rho and JSON audit dict (bounds/residuals/blocks/counts/all refusals), consumed by diagnostics. No test-profit selection. Base-template liquidity is unchanged across all sensitivity arms; they reuse the same rho, never recalibrate."
-    }
-  },
-  "foreach": {
-    "keys": [
-      "nominal",
-      "rho_base",
-      "haircut_0",
-      "haircut_half",
-      "haircut_double",
-      "liquidity_3",
-      "liquidity_10",
-      "liquidity_20"
-    ],
-    "pipeline": {
-      "select": {
-        "uses": "index_options.nodes:RobustCondorSelect",
-        "inputs": {
-          "chain": "$option_chain.records",
-          "masses": "$masses.masses",
-          "rho": "$rho_calibration.rho",
-          "skips": "$masses.skips"
+        "max_absolute_gap_usd": 1e-06,
+        "max_relative_gap": 0.0,
+        "calibration_window": {
+          "start": "2024-02-06",
+          "end": "2024-12-31"
         },
-        "params": {
-          "phase": "entry",
-          "solver": "appsi_highs",
-          "solver_options": {
-            "mip_rel_gap": 0,
-            "mip_abs_gap": 1e-06,
-            "threads": 1,
-            "random_seed": 0
+        "entry_window": {
+          "start": "2025-02-04",
+          "end": "2025-11-28"
+        },
+        "protected_end_before": "2026-01-01",
+        "standard_multiplier": 100,
+        "haircut_tiers": {
+          "high": {
+            "pct": 0.02,
+            "floor_usd": 0.01
           },
-          "multiplier": 100,
-          "price_field": "vwap",
-          "haircut": {
-            "rule": "max(floor_usd, pct * vwap)",
-            "tiers": {
-              "high": {
-                "pct": 0.02,
-                "floor_usd": 0.01
-              },
-              "mid": {
-                "pct": 0.04,
-                "floor_usd": 0.02
-              },
-              "low": {
-                "pct": 0.08,
-                "floor_usd": 0.03
-              }
-            },
-            "tier_by_ticker": {
-              "rule": "calibration_window_median_trade_count_terciles",
-              "labels": [
-                "low",
-                "mid",
-                "high"
-              ]
-            },
-            "sweep_multiplier": [
-              0,
-              0.5,
-              1,
-              2
-            ]
+          "mid": {
+            "pct": 0.04,
+            "floor_usd": 0.02
           },
-          "fee_per_contract_usd": 0.65,
-          "fee_status": "PROVISIONAL placeholder until the owner supplies the real figure",
-          "tie_tolerance_usd": 1e-06,
-          "liquidity": {
-            "min_trade_count": 5,
-            "min_volume": 1
-          },
-          "liquidity_sensitivity": {
-            "min_trade_count": [
-              3,
-              5,
-              10,
-              20
-            ]
-          },
-          "bands": {
-            "enabled": false
-          },
-          "arm": "$each",
-          "arm_definitions": {
-            "nominal": {
-              "radius": "zero"
-            },
-            "rho_base": {
-              "radius": "calibrated"
-            },
-            "haircut_0": {
-              "radius": "calibrated",
-              "haircut_sweep_index": 0
-            },
-            "haircut_half": {
-              "radius": "calibrated",
-              "haircut_sweep_index": 1
-            },
-            "haircut_double": {
-              "radius": "calibrated",
-              "haircut_sweep_index": 3
-            },
-            "liquidity_3": {
-              "radius": "calibrated",
-              "liquidity_sweep_index": 0
-            },
-            "liquidity_10": {
-              "radius": "calibrated",
-              "liquidity_sweep_index": 2
-            },
-            "liquidity_20": {
-              "radius": "calibrated",
-              "liquidity_sweep_index": 3
-            }
+          "low": {
+            "pct": 0.08,
+            "floor_usd": 0.03
           }
         },
-        "notes": "PROPOSED PyomoSolve child subclass with explicit non-capital role. One all-ordered-strike dual MILP per ticker-date per declared arm. Resolve only the named arm override from the existing sweep list; base settings otherwise. No product/automatic expansion. rho_base uses calibrated rho; nominal uses0 even if calibration unsupported, as a labeled research comparator; calibrated arms with null rho no-trade. Validate same frozen candidate/contract policy and G1 action basis; known holding-window split/recap/nonstandard/irregular deliverables refuse, unknown action history stays an assumption. Per-contract prices separate puts/calls, haircut as configured and fee once per leg. Negative/missing/nonfinite premium or negative sell proceeds refuse that contract. Tiers estimated from completed calibration-window median trade_count are frozen for ENTRY pricing only. Primary maximize then second solve minimize z within certified dollar tolerance; report bounds/gaps and skip uncertified solves. Band support deferred; validate nonempty nominal-containing set if admitted. Emit decisions/selections/solves/skips with arm_id, unique decision_id and actual contracts, plus JSON evidence including per-ticker/arm counts and refusals."
-      },
-      "settle": {
-        "uses": "index_options.nodes:CondorExpirySettle",
-        "inputs": {
-          "selections": "$select.selections",
-          "bars": "$as_traded.records",
-          "skips": "$select.skips"
-        },
-        "params": {
-          "settlement_field": "as_traded_close",
-          "max_settlement_gap_days": 4,
-          "labels": {
-            "fill": "assumed same-day average fill",
-            "exercise": "early exercise and assignment ignored"
+        "arms": {
+          "nominal": {
+            "radius": "zero"
+          },
+          "rho_base": {
+            "radius": "calibrated"
+          },
+          "haircut_0": {
+            "radius": "calibrated",
+            "haircut_multiplier": 0
+          },
+          "haircut_half": {
+            "radius": "calibrated",
+            "haircut_multiplier": 0.5
+          },
+          "haircut_double": {
+            "radius": "calibrated",
+            "haircut_multiplier": 2
+          },
+          "liquidity_3": {
+            "radius": "calibrated",
+            "min_trade_count": 3
+          },
+          "liquidity_10": {
+            "radius": "calibrated",
+            "min_trade_count": 10
+          },
+          "liquidity_20": {
+            "radius": "calibrated",
+            "min_trade_count": 20
           }
         },
-        "notes": "PROPOSED child adapter reuses public dskit.production.accounting.WindowBook as sole accounting fold. Preserve raw entry and opposite-side synthetic expiry orders/fills for EACH leg, including zero intrinsic and zero expiry fee; these are evidence records, NOT dskit-eval-v1 events. Fold share-equivalent quantity=contracts*multiplier, USD/share prices and total USD fee (entry fee once per contract, zero expiry fee); never multiply fee again. Instrument is decision-scoped position_id encoding arm/decision/actual contract; retain actual contract and one-lot mapping. Both fills carry fill_label, expiry also labels.exercise. Reuse shared bounded settlement-close rule; later confirming bar itself pre2026. Assert per-position signed quantities end zero and WindowBook.realised equals independent closed-form multiplier*(credit-intrinsic)-entry fees. Do not use leg closes as trade counts. One condor outcome per decision. Evidence retains all raw records, mappings, reconciliation, arm/ticker outcomes/skips; no portfolio return or generic leg-statistic claims."
+        "tier_tie_policy": "symbol_ascending_rank"
       },
-      "diagnostics": {
-        "uses": "run-report",
-        "inputs": {
-          "validation": "$masses.evidence",
-          "edge": "$rho_calibration.audit",
-          "sizing": "$select.evidence",
-          "replay": "$settle.evidence"
-        },
-        "params": {
-          "title": "Robust condor calibration and single-trade evidence",
-          "sections": [
-            "stages"
-          ]
-        },
-        "notes": "EXISTS RunReport with stages enabled. Stage labels identify mesh, calibration, selection and settlement. Exhaustive JSON preserves every raw decision/order/fill/solver/outcome/refusal record, diagnostic and reconciliation; Markdown renders stage summaries with its documented row cap and full-JSON pointer. Existing node-scoped artifact writer isolates arms. Condor outcomes are the statistical unit, not leg trips; no portfolio return. Shared base calibration is unchanged across comparison arms."
-      }
+      "notes": "Candidate batch adapter runs the eight explicitly declared one-factor arms once; no foreach duplicates them. Tiers use actual calibration-window ticker medians with symbol-rank ties. Own-date VWAP, fee0.65 and haircut assumptions remain research conventions. Calibrated arms refuse null rho; nominal is explicitly a research comparator. All ordered eligible strikes; no cap. Preserves solver certificates, model provenance, holding exclusions and skips."
     },
-    "notes": "Eight explicit one-factor arms, base settings except declared index override. No Cartesian product, ticker fan-out or fits. Existing foreach expands refs/$each and RunReport artifacts are node-scoped per arm. No RowsToEvents/EvaluationReport route."
+    "settle": {
+      "uses": "index_options.nodes:CondorExpirySettle",
+      "inputs": {
+        "selections": "$select.selections",
+        "bars": "$as_traded.records",
+        "skips": "$select.skips"
+      },
+      "params": {
+        "settlement_field": "as_traded_close",
+        "max_settlement_gap_days": 4,
+        "labels": {
+          "fill": "assumed same-day average fill",
+          "exercise": "early exercise and assignment ignored"
+        },
+        "end_before": "2026-01-01"
+      },
+      "notes": "Implemented child adapter reuses public dskit.production.accounting.WindowBook as sole accounting fold. Preserve raw entry and opposite-side synthetic expiry orders/fills for EACH leg, including zero intrinsic and zero expiry fee; these are evidence records, NOT dskit-eval-v1 events. Fold share-equivalent quantity=contracts*multiplier, USD/share prices and total USD fee (entry fee once per contract, zero expiry fee); never multiply fee again. Instrument is decision-scoped position_id encoding arm/decision/actual contract; retain actual contract and one-lot mapping. Both fills carry fill_label, expiry also labels.exercise. Reuse shared bounded settlement-close rule; later confirming bar itself pre2026. Assert per-position signed quantities end zero and WindowBook.realised equals independent closed-form multiplier*(credit-intrinsic)-entry fees. Do not use leg closes as trade counts. One condor outcome per decision. Evidence retains all raw records, mappings, reconciliation, arm/ticker outcomes/skips; no portfolio return or generic leg-statistic claims."
+    },
+    "diagnostics": {
+      "uses": "run-report",
+      "inputs": {
+        "validation": "$masses.evidence",
+        "edge": "$rho_calibration.audit",
+        "sizing": "$select.evidence",
+        "replay": "$settle.evidence"
+      },
+      "params": {
+        "title": "Robust condor calibration and single-trade evidence",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "EXISTS RunReport with stages enabled. Stage labels identify mesh, calibration, selection and settlement. Exhaustive JSON preserves every raw decision/order/fill/solver/outcome/refusal record, diagnostic and reconciliation; Markdown renders stage summaries with its documented row cap and full-JSON pointer. Existing node-scoped artifact writer isolates arms. Condor outcomes are the statistical unit, not leg trips; no portfolio return. Shared base calibration is unchanged across comparison arms."
+    }
   }
 }

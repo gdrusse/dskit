@@ -30730,3 +30730,15 @@ This avoids redundant inference infrastructure and does not assert strike-price
 basis compatibility, historical publication proof, or independent qualification.
 Fresh inference remains the archived checkpoint recipe for contexts it supports;
 no later-checkpoint substitution or new fits.
+
+ADR0255 adapter consistency clarification: calendar-day spans are independent
+of the minimum observed-date count; the legacy observed-count bootstrap remains
+unchanged. Publication availability is the later of settlement plus the
+configured session lag and the required confirming bar, without adding a second
+lag. Calibration must resolve the exact saved forecast settlement date, or
+refuse that context. Batch decisions preserve that date; settlement optionally
+checks it before accounting, retaining compatibility for older callers without
+a forecast label. Named eight-arm definitions bind their single-factor meanings;
+missing ticker calibration history produces an explicit pricing-tier refusal,
+never an invented tier. These are corrections to the existing stated protocol,
+not new historical evidence or permission to cross the protected data boundary.

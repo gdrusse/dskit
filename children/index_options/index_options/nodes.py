@@ -3075,6 +3075,10 @@ class CondorExpirySettle(Node):
                 raise ValueError(f"selection requires bounded {key}")
         if row["quote_date"] >= row["expiry"]:
             raise ValueError("expiry must follow quote_date")
+        if "forecast_settlement_date" in row:
+            day = row["forecast_settlement_date"]
+            if (not _iso_day(day) or not row["quote_date"] < day <= row["expiry"]):
+                raise ValueError("invalid forecast settlement date")
         multiplier = row.get("multiplier")
         if isinstance(multiplier, bool) or not isinstance(multiplier, int) or multiplier < 1:
             raise ValueError("multiplier must be a positive integer")
@@ -3196,6 +3200,12 @@ class CondorExpirySettle(Node):
                 skips.append({**{k: row[k] for k in ("decision_id", "arm_id", "symbol",
                                                    "quote_date", "expiry")},
                               "reason": "missing_settlement"})
+                continue
+            if ("forecast_settlement_date" in row
+                    and row["forecast_settlement_date"] != bars[at]["date"]):
+                skips.append({**{k: row[k] for k in
+                                  ("decision_id", "arm_id", "symbol", "quote_date", "expiry")},
+                              "reason": "forecast_settlement_mismatch"})
                 continue
             outcome, new_orders, new_fills = self._fold(row, bars[at], bars[at + 1]["date"])
             outcomes.append(outcome)
@@ -3485,8 +3495,17 @@ class RobustCondorBatchSelect(RobustCondorSelect):
 
     outputs = ("selections", "decisions", "solves", "skips", "evidence")
     _ARTIFACT_KEYS = ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")
-    _ARMS = ("nominal", "rho_base", "haircut_0", "haircut_half",
-             "haircut_double", "liquidity_3", "liquidity_10", "liquidity_20")
+    _ARM_RULES = {
+        "nominal": {"radius": "zero"},
+        "rho_base": {"radius": "calibrated"},
+        "haircut_0": {"radius": "calibrated", "haircut_multiplier": 0},
+        "haircut_half": {"radius": "calibrated", "haircut_multiplier": .5},
+        "haircut_double": {"radius": "calibrated", "haircut_multiplier": 2},
+        "liquidity_3": {"radius": "calibrated", "min_trade_count": 3},
+        "liquidity_10": {"radius": "calibrated", "min_trade_count": 10},
+        "liquidity_20": {"radius": "calibrated", "min_trade_count": 20},
+    }
+    _ARMS = tuple(_ARM_RULES)
     _BATCH_PARAMS = ("calibration_window", "entry_window", "protected_end_before",
                      "standard_multiplier", "liquidity", "haircut_tiers", "arms",
                      "tier_tie_policy")
@@ -3549,6 +3568,8 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                            or spec["min_trade_count"] < 0))
                   for spec in arms.values()):
             problems.append("arm definitions contain an invalid one-factor override")
+        if isinstance(arms, dict) and arms != cls._ARM_RULES:
+            problems.append("canonical arms must match their named one-factor definitions")
         return problems
 
     @staticmethod
@@ -3568,8 +3589,6 @@ class RobustCondorBatchSelect(RobustCondorSelect):
             if (isinstance(symbol, str) and symbol and window["start"] <= (day or "") <= window["end"]
                     and type(count) is int and count >= 0):
                 values.setdefault(symbol, []).append(count)
-        if not values:
-            raise ValueError("completed calibration window has no ticker trade counts")
         ranked = sorted((median(counts), symbol)
                         for symbol, counts in values.items())
         return {symbol: ("low", "mid", "high")[(3 * rank)//len(ranked)]
@@ -3584,6 +3603,8 @@ class RobustCondorBatchSelect(RobustCondorSelect):
             if (any(not isinstance(v, str) or not v for v in key)
                     or any(not isinstance(row.get(k), str) or not row[k] for k in identity_keys)
                     or not _iso_day(key[1]) or not _iso_day(key[2]) or key[1] >= key[2]
+                    or not _iso_day(row.get("settlement_date"))
+                    or not key[1] < row["settlement_date"] <= key[2]
                     or key in out or not isinstance(row.get("grid"), (list, tuple))
                     or not isinstance(row.get("masses"), (list, tuple))):
                 raise ValueError("projected masses require canonical context and artifact identities")
@@ -3679,6 +3700,12 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                 skips.append({**{k: mass[k] for k in ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS},
                               "reason": "missing_chain"})
                 continue
+            if mass["symbol"] not in tiers:
+                identity = {k: mass[k] for k in
+                            ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS}
+                skips.extend({**identity, "arm_id": arm, "reason": "missing_calibration_tier"}
+                             for arm in self._ARMS)
+                continue
             for arm in self._ARMS:
                 rho = 0. if self.params["arms"][arm]["radius"] == "zero" else rhos.get(mass["quote_date"][:7])
                 identity = {k: mass[k] for k in ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS}
@@ -3686,8 +3713,9 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                     skips.append({**identity, "arm_id": arm, "reason": "missing_calibrated_rho"})
                     continue
                 result = RobustCondorSelect.run(self, ctx, {"context": self._batch_context(
-                    mass, chain[key], tiers.get(mass["symbol"], "low"), arm, rho)})
+                    mass, chain[key], tiers[mass["symbol"]], arm, rho)})
                 decision = result["decision"]
+                decision["forecast_settlement_date"] = mass["settlement_date"]
                 decision.update({name: mass[name] for name in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")})
                 decisions.append(decision)
                 solves.extend({**identity, "arm_id": arm, **solve}

@@ -117467,3 +117467,31 @@ The batch adapter resolves the eight arms once, so final wiring must not
 wrap it in the old eight-arm foreach. Calibration uses explicit flat settings,
 prior-only publication cutoffs, existing curve/grid/bootstrap owners and
 holding exclusions. Existing draft JSON is not yet runnable.
+
+Round1 candidate23fc31eb did not close: /root/condor_build_skeptic_math
+reported0C/4Major (calendar/count settings, arm semantics, tier fallback,
+publication offset); Luna app reviewer01a11e50-d663-7891-8cc9-15ff97cd3fe5
+reported0C/3Major (overlapping arm/tier defects plus forecast-label settlement
+mismatch). Full reports remain in those transcripts. Root accepted all five
+families. Ten new regressions failed on that candidate; corrected candidate
+validates actual31/62-day settings, names all arm semantics, skips unknown tiers,
+uses settlement-relative publication with confirmation, and binds label dates
+through calibration and final settlement. New review round required.
+
+The saved-input backup under production-universe-rerun-20261008/condor-inputs-v2
+recovered all99225 rows with both original input roots denied. Private
+condor-inputs-v2-recovery-receipt.json preserves hashes and limits. Same disk,
+not off-device recovery. No cleanup or MIO execution.
+
+Draft JSON now uses actual implemented interfaces and one batch-eight-arm
+selector, not eight duplicated batch calls. Four final input streams remain
+deliberately PENDING until G1 protected conversion and strike-basis proof.
+Two numerical mesh-admission limits remain explicit nonnumeric placeholders;
+planning must refuse them. No run or empirical calibration result exists.
+
+Candidate2 verification: 1408 affected tests passed on the initial four-module
+run; five CLI subprocess checks imported another worktree because PYTHONPATH
+was relative. All five pass with both checkout and child absolute paths, no
+code/test/environment change. Thus all1413 affected cases pass; no full suite.
+Ruff remains11 unchanged findings; diff check passes. Review candidate2
+closes only implemented adapter families, not pending source/mesh launch gates.

@@ -1398,7 +1398,7 @@ def _robust_batch_inputs():
                         volume=1, multiplier=100)
                    for symbol in ("AAA", "ZZZ")]
     mass = dict(decision_id="batch-fixture", symbol="AAA", quote_date="2025-02-04",
-                expiry="2025-03-07", grid=[80., 90., 110., 120.],
+                expiry="2025-03-07", settlement_date="2025-03-07", grid=[80., 90., 110., 120.],
                 masses=[.05, .45, .45, .05], spot=100., fit_identity="fit", checkpoint_identity="checkpoint", input_identity="input", source_identity="source")
     return dict(chain=calibration + entry, projected_masses=[mass],
                 rho={"2025-02": 0.}, #
@@ -1419,6 +1419,7 @@ def test_robust_condor_batch_delegates_to_single_context_solver():
                                            for key in RobustCondorSelect._PARAMS if key in params}).run(
                                                None, {"context": context})["decision"]
     direct.update({name: inputs["projected_masses"][0][name] for name in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")})
+    direct["forecast_settlement_date"] = inputs["projected_masses"][0]["settlement_date"]
     assert nominal == direct
     assert all(row["arm_id"] in params["arms"] for row in out["decisions"])
     assert all(len(row["legs"]) == 4 for row in out["selections"])
@@ -1509,3 +1510,27 @@ def test_robust_batch_tiers_use_even_sample_median_and_require_prior_window():
     assert node._tiers(rows)=={"A":"low","B":"mid"}
     params["calibration_window"]["end"]="2025-02-05"
     assert RobustCondorBatchSelect.validate_params(params)
+
+@pytest.mark.parametrize("arm,spec", [
+    ("rho_base", {"radius":"zero"}),
+    ("nominal", {"radius":"calibrated"}),
+    ("liquidity_3", {"radius":"calibrated"}),
+    ("liquidity_3", {"radius":"calibrated","min_trade_count":3,"haircut_multiplier":2}),
+    ("liquidity_3", {"radius":"calibrated","min_trade_count":5}),
+    ("haircut_half", {"radius":"calibrated","haircut_multiplier":2})])
+def test_robust_batch_canonical_arms_cannot_bypass_or_relabel_policy(arm,spec):
+    from index_options.nodes import RobustCondorBatchSelect
+    params=_robust_batch_params()
+    params["arms"][arm]=spec
+    assert RobustCondorBatchSelect.validate_params(params)
+
+
+def test_robust_batch_missing_ticker_calibration_has_no_implicit_tier():
+    from index_options.nodes import RobustCondorBatchSelect
+    params,inputs=_robust_batch_params(),_robust_batch_inputs()
+    inputs["chain"]=[r for r in inputs["chain"]
+                     if r["symbol"]!="AAA" or r["quote_date"]>"2024-12-31"]
+    out=RobustCondorBatchSelect("batch",params).run(None,inputs)
+    assert not out["decisions"] and not out["selections"]
+    assert {r["reason"] for r in out["skips"]}=={"missing_calibration_tier"}
+    assert {r["arm_id"] for r in out["skips"]}==set(params["arms"])

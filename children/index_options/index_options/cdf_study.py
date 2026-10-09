@@ -326,9 +326,11 @@ class HeldOutRhoCalibration(Node):
             problems.append("explicit settlement field and canonical end_before required")
         try:
             AdaptiveWassersteinRadius(params["rho_grid"], params["min_dates"],
-                                      params["block_days"]["primary"], params["replicates"],
+                                      1, params["replicates"],
                                       params["alpha"], params["seed"])
             if (params["block_days"].keys() != {"primary", "sensitivity"}
+                    or type(params["block_days"]["primary"]) is not int
+                    or params["block_days"]["primary"] < 1
                     or type(params["block_days"]["sensitivity"]) is not int
                     or params["block_days"]["sensitivity"] <= params["block_days"]["primary"]
                     or not 0 < params["short_q"] < .5
@@ -404,7 +406,12 @@ class HeldOutRhoCalibration(Node):
         index = _bounded_settlement_index(dates, mass["expiry"], max_gap)
         if index is None:
             raise ValueError("missing bounded settlement")
-        publication_index = index + 1 + publication_lag
+        if (not _iso_day(mass.get("settlement_date"))
+                or dates[index] != mass["settlement_date"]):
+            raise ValueError("forecast settlement date disagrees with resolved close")
+        # Publication lag starts at settlement; the later confirming bar is
+        # an independent minimum availability condition, not another lag.
+        publication_index = index + max(1, publication_lag)
         if publication_index >= len(dates):
             raise ValueError("unpublished settlement")
         value = float(rows[index][settlement_field])
@@ -491,9 +498,9 @@ class HeldOutRhoCalibration(Node):
             residuals = [{"quote_date": item["quote_date"], "radius": radius,
                           "residual": item["realized_loss"]-item["losses"][radius]}
                          for item in history for radius in self.params["rho_grid"]]
-            owner = AdaptiveWassersteinRadius(self.params["rho_grid"], self.params["min_dates"], self.params["block_days"]["primary"], self.params["replicates"], self.params["alpha"], self.params["seed"])
+            owner = AdaptiveWassersteinRadius(self.params["rho_grid"], self.params["min_dates"], 1, self.params["replicates"], self.params["alpha"], self.params["seed"])
             result = owner.select(pd.DataFrame(residuals, columns=("quote_date", "radius", "residual")), calendar_days=self.params["block_days"]["primary"]) if residuals else {"radius": None, "reason": "insufficient_or_uncovered_history"}
-            sensitivity = AdaptiveWassersteinRadius(self.params["rho_grid"], self.params["min_dates"], self.params["block_days"]["sensitivity"], self.params["replicates"], self.params["alpha"], self.params["seed"]).select(pd.DataFrame(residuals, columns=("quote_date", "radius", "residual")), calendar_days=self.params["block_days"]["sensitivity"]) if residuals else {"radius": None}
+            sensitivity = AdaptiveWassersteinRadius(self.params["rho_grid"], self.params["min_dates"], 1, self.params["replicates"], self.params["alpha"], self.params["seed"]).select(pd.DataFrame(residuals, columns=("quote_date", "radius", "residual")), calendar_days=self.params["block_days"]["sensitivity"]) if residuals else {"radius": None}
             monthly[month] = result["radius"]
             for item in records:
                 if item["quote_date"][:7] == month:

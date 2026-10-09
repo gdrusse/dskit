@@ -3404,3 +3404,11 @@ def test_expiry_explicit_trade_and_statusless_compatibility():
     row["status"] = "trade"
     actual = _expiry_node().run(None, {"selections": [row], "bars": _expiry_bars(), "skips": []})
     assert actual == expected
+
+def test_expiry_condor_preserves_forecast_label_date_when_supplied():
+    selection=_expiry_selection()
+    selection["forecast_settlement_date"]="2025-01-30"
+    out=_expiry_node().run(None,dict(selections=[selection],
+                                   bars=_expiry_bars(),skips=[]))
+    assert not out["outcomes"]
+    assert out["skips"][0]["reason"] == "forecast_settlement_mismatch"
