@@ -258,7 +258,7 @@ class QuantileHorizons(HorizonDistribution):
     """Piecewise-linear CDF through quantile knots, with a DECLARED tail rule.
 
     The first two knots are extended linearly to probability 0 and the last two
-    to probability 1; with ``bounds`` the extended endpoints are clipped into
+    to probability 1; with ``bounds`` (REQUIRED by :class:`CommonGrid`) the extended endpoints are clipped into
     ``[z_min, z_max]`` (never inside the outermost knot). Probabilities between
     levels are therefore interpolated, which is why scores on this CDF carry
     ``cdf_basis: extrapolated``.
@@ -523,13 +523,16 @@ class CommonGrid:
         Raises
         ------
         ValueError
-            For a row count other than ``n_rows`` or 1, missing grid levels, or
-            tail bounds other than the grid's.
+            For a row count other than ``n_rows`` or 1, missing grid levels, tail
+            bounds other than the grid's, or a knot distribution with no bounds
+            (its extended tails would escape the grid range).
         """
         if dist.n_rows not in (1, n_rows):
             raise ValueError(f"distribution has {dist.n_rows} rows for {n_rows} outcomes")
         if dist.levels is not None and self.missing_levels(dist.levels):
             raise ValueError(f"distribution levels lack grid level(s) {self.missing_levels(dist.levels)}")
+        if dist.levels is not None and dist.bounds is None:
+            raise ValueError(f"knot distribution has no bounds: its tails must be clipped to the grid's {self.bounds}")
         if dist.bounds is not None and tuple(dist.bounds) != self.bounds:
             raise ValueError(f"distribution bounds {dist.bounds} differ from the grid's {self.bounds}")
 
@@ -726,7 +729,7 @@ class EmpiricalHorizonFit:
     Fit on training labels, then forecast any number of rows::
 
         fit = EmpiricalHorizonFit(grid.levels).fit(train_labels)
-        dist = fit.predict()             # row-constant QuantileHorizons
+        dist = fit.predict(bounds=grid.bounds)   # row-constant QuantileHorizons
     """
 
     def __init__(self, levels):
@@ -778,7 +781,7 @@ class EmpiricalHorizonFit:
         w = (pos - lo).to(y.dtype).unsqueeze(1)
         return (s[lo] * (1 - w) + s[hi] * w).T
 
-    def predict(self, groups=None, bounds=None):
+    def predict(self, groups=None, *, bounds):
         """Emit the fitted distribution.
 
         Parameters
@@ -786,7 +789,9 @@ class EmpiricalHorizonFit:
         groups : torch.Tensor or None
             ``(R,)`` group per row; ``None`` for a pooled fit (row-constant output).
         bounds : tuple or None
-            The grid's ``(z_min, z_max)`` to clip the tail extension to.
+            Required keyword: the grid's ``(z_min, z_max)`` to clip the tail
+            extension to (``CommonGrid.bounds``); ``None`` leaves the tails
+            unclipped, which the grid refuses to score.
 
         Returns
         -------

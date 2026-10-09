@@ -40,6 +40,7 @@ _N = NormalDist()
 GAUSS = {"kind": "gaussian"}
 GRID = {"z_min": -10.0, "z_max": 10.0, "levels": [0.1, 0.5, 0.9],
         "tail_intervals": [[-10.0, -2.0], [2.0, 10.0]]}
+GRID_BOUNDS = (GRID["z_min"], GRID["z_max"])
 
 
 def _gauss(mu, sigma, dtype=torch.float64):
@@ -202,7 +203,7 @@ def test_extreme_outcomes_stay_finite():
     assert all(torch.isfinite(v).all() for v in out.values())
     # Outside the grid the outcome adds its distance to the edge, so CRPS grows ~linearly.
     assert out["crps"][0, 0].item() == pytest.approx(100 - 0.5642, abs=0.05)
-    knots = QuantileHorizons([.1, .5, .9], torch.tensor([[[-1., 0., 1.]]], dtype=torch.float64))
+    knots = QuantileHorizons([.1, .5, .9], torch.tensor([[[-1., 0., 1.]]], dtype=torch.float64), bounds=GRID_BOUNDS)
     out = grid.score(knots, y[:1])
     assert all(torch.isfinite(v).all() for v in out.values())
 
@@ -258,16 +259,16 @@ def test_a_forecaster_lacking_a_grid_level_refuses_so_pinball_is_never_interpola
     forecaster, y = _mixture_stub(levels=(0.1, 0.5))
     with pytest.raises(ValueError, match="level"):
         grid.evaluate(forecaster, None, torch.arange(8), y[:8])
-    short = QuantileHorizons([.1, .5], torch.tensor([[[-1., 0.]]], dtype=torch.float64))
+    short = QuantileHorizons([.1, .5], torch.tensor([[[-1., 0.]]], dtype=torch.float64), bounds=GRID_BOUNDS)
     with pytest.raises(ValueError, match="level"):
         grid.score(short, y[:2, :1])
-    full = QuantileHorizons([.05, .1, .5, .9], torch.tensor([[[-2., -1., 0., 1.]]], dtype=torch.float64))
+    full = QuantileHorizons([.05, .1, .5, .9], torch.tensor([[[-2., -1., 0., 1.]]], dtype=torch.float64), bounds=GRID_BOUNDS)
     assert torch.isfinite(grid.score(full, y[:2, :1])["pinball"]).all()
 
 
 def test_quantile_pinball_is_exact_at_the_knots():
     values = torch.tensor([[[-1.3, .1, 1.1]]], dtype=torch.float64)
-    dist = QuantileHorizons([.1, .5, .9], values)
+    dist = QuantileHorizons([.1, .5, .9], values, GRID_BOUNDS)
     y = torch.tensor([[.4]], dtype=torch.float64)
     q = values[0, 0].tolist()
     expected = sum(max(t * (.4 - v), (t - 1) * (.4 - v)) for t, v in zip((.1, .5, .9), q)) / 3
@@ -283,7 +284,7 @@ def test_a_distribution_clipped_to_other_bounds_than_the_grid_refuses():
 
 def test_cdf_basis_is_extrapolated_for_knots_and_parametric_for_mixtures():
     grid = CommonGrid(GRID)
-    knots = QuantileHorizons([.1, .5, .9], torch.tensor([[[-1., 0., 1.]]], dtype=torch.float64))
+    knots = QuantileHorizons([.1, .5, .9], torch.tensor([[[-1., 0., 1.]]], dtype=torch.float64), bounds=GRID_BOUNDS)
     scores = grid.new_scores()
     scores.add(knots, torch.zeros(1, 1, dtype=torch.float64))
     assert scores.summary()["cdf_basis"] == "extrapolated"
@@ -347,7 +348,7 @@ def test_quantile_horizons_refuses_malformed_knots():
 
 
 def test_row_constant_knots_broadcast_over_rows():
-    dist = QuantileHorizons([.1, .5, .9], torch.tensor([[[-1., 0., 1.], [-2., 0., 2.]]], dtype=torch.float64))
+    dist = QuantileHorizons([.1, .5, .9], torch.tensor([[[-1., 0., 1.], [-2., 0., 2.]]], dtype=torch.float64), bounds=GRID_BOUNDS)
     y = torch.tensor([[.2, .3], [-.4, 5.], [1., 0.]], dtype=torch.float64)
     out = CommonGrid(GRID).score(dist, y)
     assert out["crps"].shape == (3, 2)
@@ -366,7 +367,7 @@ def _panel(n=6000, h=3, seed=5):
 def test_empirical_fit_equals_numpy_quantiles_per_horizon():
     y = _panel()
     levels = [.05, .25, .5, .75, .95]
-    dist = EmpiricalHorizonFit(levels).fit(y).predict()
+    dist = EmpiricalHorizonFit(levels).fit(y).predict(bounds=GRID_BOUNDS)
     assert isinstance(dist, QuantileHorizons) and dist.n_rows == 1
     np.testing.assert_allclose(dist.quantile(levels)[0].numpy(),
                                np.quantile(y.numpy(), levels, axis=0).T, atol=1e-12)
@@ -377,7 +378,7 @@ def test_empirical_fit_equals_the_horizon_empirical_cdf_on_a_one_horizon_frame()
     levels = np.linspace(0, 1, 401)[1:-1]
     x = np.ones((y.shape[0], 2))
     study = HorizonEmpiricalCDF(0, 1, 401).fit(x, y[:, 0].numpy(), None, None)
-    dist = EmpiricalHorizonFit(levels.tolist()).fit(y).predict()
+    dist = EmpiricalHorizonFit(levels.tolist()).fit(y).predict(bounds=GRID_BOUNDS)
     np.testing.assert_allclose(dist.quantile(levels.tolist())[0, 0].numpy(),
                                study.curve(x[:1]).quantile(levels)[0], atol=1e-12)
 
@@ -390,7 +391,7 @@ def test_empirical_fit_matches_the_location_scale_shape_up_to_sample_resolution(
                                         "n_samples": 4000})
     shape = node.fit(rows, node.params)["shape"]
     levels = [.05, .5, .95]
-    got = EmpiricalHorizonFit(levels).fit(y).predict().quantile(levels)[0, 0].tolist()
+    got = EmpiricalHorizonFit(levels).fit(y).predict(bounds=GRID_BOUNDS).quantile(levels)[0, 0].tolist()
     for p, v in zip(levels, got):
         assert v == pytest.approx(shape[int(p * 4000)], abs=0.03)
 
@@ -399,14 +400,14 @@ def test_empirical_fit_groups_gather_per_row_and_refuse_unknown_groups():
     y = torch.cat([_panel(n=500, seed=1), _panel(n=500, seed=2) * 3])
     groups = torch.cat([torch.zeros(500), torch.ones(500)]).long()
     fit = EmpiricalHorizonFit([.1, .5, .9]).fit(y, groups)
-    dist = fit.predict(torch.tensor([1, 0, 1]))
+    dist = fit.predict(torch.tensor([1, 0, 1]), bounds=GRID_BOUNDS)
     assert dist.n_rows == 3
     q = dist.quantile([.1, .9])
     assert (q[0, :, 1] - q[0, :, 0]).gt(q[1, :, 1] - q[1, :, 0]).all()
     with pytest.raises(ValueError, match="group"):
-        fit.predict(torch.tensor([2]))
+        fit.predict(torch.tensor([2]), bounds=GRID_BOUNDS)
     with pytest.raises(ValueError, match="group"):
-        fit.predict()
+        fit.predict(bounds=GRID_BOUNDS)
 
 
 def test_empirical_fit_state_round_trips_through_json():
@@ -415,8 +416,8 @@ def test_empirical_fit_state_round_trips_through_json():
     fit = EmpiricalHorizonFit([.1, .5, .9]).fit(y, groups)
     again = EmpiricalHorizonFit.from_state(json.loads(json.dumps(fit.state())))
     ids = torch.tensor([0, 1, 1])
-    torch.testing.assert_close(again.predict(ids).quantile([.1, .5, .9]),
-                               fit.predict(ids).quantile([.1, .5, .9]))
+    torch.testing.assert_close(again.predict(ids, bounds=GRID_BOUNDS).quantile([.1, .5, .9]),
+                               fit.predict(ids, bounds=GRID_BOUNDS).quantile([.1, .5, .9]))
 
 
 def test_empirical_fit_refuses_unusable_input():
@@ -427,6 +428,25 @@ def test_empirical_fit_refuses_unusable_input():
         fit.fit(torch.tensor([[float("nan")]]))
     with pytest.raises(ValueError):
         fit.fit(torch.zeros(0, 2))
+
+
+def test_the_grid_refuses_knots_whose_tails_were_not_clipped_to_its_range():
+    narrow = {"z_min": -1.2, "z_max": 1.2, "levels": [.1, .5, .9],
+              "tail_intervals": [[-1.2, -.5], [.5, 1.2]]}
+    values = torch.tensor([[[-1., 0., 1.]]], dtype=torch.float64)
+    y = torch.tensor([[.3]], dtype=torch.float64)
+    grid = CommonGrid(narrow)
+    with pytest.raises(ValueError, match="bounds"):
+        grid.score(QuantileHorizons([.1, .5, .9], values), y)
+    clipped = QuantileHorizons([.1, .5, .9], values, grid.bounds)
+    assert clipped.cdf(torch.tensor([-1.2], dtype=torch.float64)).item() == 0.0
+    assert torch.isfinite(grid.score(clipped, y)["crps"]).all()
+    fit = EmpiricalHorizonFit([.1, .5, .9]).fit(torch.tensor([[-1.], [0.], [1.]], dtype=torch.float64))
+    with pytest.raises(TypeError):
+        fit.predict()
+    with pytest.raises(ValueError, match="bounds"):
+        grid.score(fit.predict(bounds=None), y)
+    assert torch.isfinite(grid.score(fit.predict(bounds=grid.bounds), y)["crps"]).all()
 
 
 # --------------------------------------------------------------------- the Student baseline
