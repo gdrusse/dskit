@@ -1,13 +1,17 @@
 """Thin, non-serving Nodes binding condor diagnostics and the condor, put-spread and debit-structure backtests."""
 
 import math
+import json
 from abc import ABC, abstractmethod
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from datetime import date, timedelta
 from itertools import product
+from fractions import Fraction
 from statistics import NormalDist
 from typing import NamedTuple
+
+from dskit.production.accounting import WindowBook
 
 from dskit.pipeline.distribution_models import REFERENCE_SCALE_FIELD
 from dskit.pipeline.distribution_scores import (
@@ -17,6 +21,8 @@ from dskit.pipeline.distribution_scores import (
     row_in_split,
 )
 from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
+from dskit.pipeline.base import value_hash
+from dskit.pipeline.libs.pyomo import BINDING_TOLERANCE, DEFAULT_SOLVER, PyomoSolve, WassersteinDual
 from dskit.pipeline.option_pricing import VolIndexSmileQuotes, black76_delta
 from dskit.pipeline.records import number_ok, price_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
@@ -48,6 +54,7 @@ from .contracts import (
     american_call_dividend,
     american_put_carry,
     dividends_paid,
+    leg_intrinsic,
     quote_problems,
     structure_credit,
     structure_max_loss,
@@ -56,11 +63,11 @@ from .contracts import (
 from .datafiles import entry_problems
 from .distribution import CondorGeometry, condor_payoff
 
-__all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
+__all__ = ["ExactDteBarChain", "CondorExpirySettle", "CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
-           "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
+           "RobustCondorBatchSelect", "RobustCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
            "t_or_zero"]
 
 
@@ -1266,13 +1273,8 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         """Return the ``(date, close)`` the entry settles at, or ``None`` when it cannot."""
         rows = self._closes.get(instrument, [])
         dates = self._close_dates.get(instrument, [])
-        at = bisect_right(dates, settle_date) - 1
-        if at < 0 or at + 1 >= len(rows):
-            return None
-        gap = (date.fromisoformat(settle_date) - date.fromisoformat(dates[at])).days
-        if gap > self.MAX_SETTLEMENT_GAP_DAYS:
-            return None
-        return rows[at]["date"], rows[at]["close"]
+        at = _bounded_settlement_index(dates, settle_date, self.MAX_SETTLEMENT_GAP_DAYS)
+        return None if at is None else (rows[at]["date"], rows[at]["close"])
 
     @staticmethod
     def _sessions(day, settle_date):
@@ -2927,3 +2929,953 @@ class ExactExpiryPanelRead(Node):
         snapshot = self._snapshot_once()
         return {"records": snapshot["records"], "provenance": snapshot["provenance"],
                 "cohort": snapshot["cohort"]}
+
+
+
+def _bounded_settlement_index(dates, settle_date, max_gap_days):
+    """One owner of preceding-close settlement with a later confirming date."""
+    at = bisect_right(dates, settle_date) - 1
+    if at < 0 or at + 1 >= len(dates):
+        return None
+    gap = (date.fromisoformat(settle_date) - date.fromisoformat(dates[at])).days
+    return at if gap <= max_gap_days else None
+
+
+class _ExpiryFill(NamedTuple):
+    """The raw fill attributes consumed by the public WindowBook."""
+
+    instrument: str
+    side: str
+    qty: int
+    price: Fraction
+    fee: Fraction
+
+
+class CondorExpirySettle(Node):
+    """Fold one-lot condor entry/expiry legs through WindowBook (ADR-0255).
+
+    Selections carry decision_id, arm_id, symbol, quote_date, expiry, multiplier
+    and four ordered legs: role, contract, right, side, strike,
+    price_usd_per_share and fee_usd. Entry prices already include haircuts.
+    Bars carry symbol/date and the configured settlement field. Status-less
+    hand-authored selections remain supported; an explicit status must be trade.
+    No I/O or broker action occurs. Evidence uses raw_fills rather than RunReport's
+    reserved fills fallback; one condor, never one leg, is the statistical unit.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node identity.
+    params : dict
+        Required settlement_field (str), max_settlement_gap_days (int >= 0),
+        end_before (ISO date, exclusive) and labels (dict with nonempty fill
+        and exercise text). The date boundary also applies to confirming bars.
+
+    Raises
+    ------
+    ConfigError
+        If required parameters are missing, unknown or malformed.
+
+    Examples
+    --------
+    Construct a research-only adapter with an explicit protected boundary::
+
+        node = CondorExpirySettle("settle", {
+            "settlement_field": "as_traded_close",
+            "max_settlement_gap_days": 4,
+            "end_before": "2026-01-01",
+            "labels": {
+                "fill": "assumed same-day average fill",
+                "exercise": "early exercise and assignment ignored",
+            },
+        })
+        out = node.run(None, {"selections": [], "bars": [], "skips": []})
+        # -> out["evidence"]["totals"]["n_condors"] is 0
+    """
+
+    role = "transform"
+    outputs = ("outcomes", "skips", "evidence")
+    _PARAMS = ("settlement_field", "max_settlement_gap_days", "labels", "end_before")
+    _ROLES = ("LP", "SP", "SC", "LC")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Require explicit settlement, availability boundary and research labels.
+
+        Parameters
+        ----------
+        params : dict
+            Candidate parameter declaration.
+
+        Returns
+        -------
+        list of str
+            All declaration problems; empty when the parameters are usable.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if not isinstance(params.get("settlement_field"), str) or not params["settlement_field"]:
+            problems.append("settlement_field must be nonempty text")
+        check_int_param(problems, "max_settlement_gap_days",
+                        params.get("max_settlement_gap_days"), ge=0)
+        if not _iso_day(params.get("end_before")):
+            problems.append("end_before must be an ISO date")
+        labels = params.get("labels")
+        if not isinstance(labels, dict) or set(labels) != {"fill", "exercise"}:
+            problems.append("labels must contain fill and exercise")
+        elif any(not isinstance(v, str) or not v.strip() for v in labels.values()):
+            problems.append("labels must be nonempty text")
+        return problems
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Keep research-only accounting out of served graphs.
+
+        Parameters
+        ----------
+        params : dict
+            Node parameter declaration; unused.
+        verified_run_evidence : dict
+            Recorded run evidence; unused.
+
+        Returns
+        -------
+        str
+            Always "forbidden".
+        """
+        return "forbidden"
+
+    def _bars(self, rows):
+        """Validate the complete bounded close input before any accounting."""
+        grouped = {}
+        field, bound = self.params["settlement_field"], self.params["end_before"]
+        for row in rows:
+            if (not isinstance(row, dict) or not isinstance(row.get("symbol"), str)
+                    or not row["symbol"] or not _iso_day(row.get("date"))
+                    or row["date"] >= bound or not price_ok(row.get(field))):
+                raise ValueError("settlement bars require symbol, bounded ISO date and positive close")
+            grouped.setdefault(row["symbol"], []).append(row)
+        for values in grouped.values():
+            values.sort(key=lambda r: r["date"])
+            if len({r["date"] for r in values}) != len(values):
+                raise ValueError("settlement bars repeat a symbol/date")
+        return grouped
+
+    def _selection(self, row):
+        """Refuse malformed or partial structures before creating any fills."""
+        if not isinstance(row, dict):
+            raise ValueError("selection must be a dict")
+        if "status" in row and row["status"] != "trade":
+            raise ValueError("selection status must be trade when declared")
+        for key in ("decision_id", "arm_id", "symbol"):
+            if not isinstance(row.get(key), str) or not row[key]:
+                raise ValueError(f"selection requires {key}")
+        for key in ("quote_date", "expiry"):
+            if not _iso_day(row.get(key)) or row[key] >= self.params["end_before"]:
+                raise ValueError(f"selection requires bounded {key}")
+        if row["quote_date"] >= row["expiry"]:
+            raise ValueError("expiry must follow quote_date")
+        if "forecast_settlement_date" in row:
+            day = row["forecast_settlement_date"]
+            if (not _iso_day(day) or not row["quote_date"] < day <= row["expiry"]):
+                raise ValueError("invalid forecast settlement date")
+        multiplier = row.get("multiplier")
+        if isinstance(multiplier, bool) or not isinstance(multiplier, int) or multiplier < 1:
+            raise ValueError("multiplier must be a positive integer")
+        legs = row.get("legs")
+        if not isinstance(legs, list) or len(legs) != len(CONDOR_LEGS):
+            raise ValueError("one condor needs four ordered legs")
+        for role, (right, sign), leg in zip(self._ROLES, CONDOR_LEGS, legs):
+            if (not isinstance(leg, dict) or leg.get("role") != role
+                    or leg.get("right") != right
+                    or leg.get("side") != ("buy" if sign > 0 else "sell")
+                    or not isinstance(leg.get("contract"), str) or not leg["contract"]
+                    or not price_ok(leg.get("strike"))):
+                raise ValueError("invalid ordered condor leg")
+            for field in ("price_usd_per_share", "fee_usd"):
+                if not number_ok(leg.get(field)) or leg[field] < 0:
+                    raise ValueError(f"{field} must be finite and nonnegative")
+            if "contracts" in leg and (type(leg["contracts"]) is not int or leg["contracts"] != 1):
+                raise ValueError("exactly one contract per leg is supported")
+            if "multiplier" in leg and (type(leg["multiplier"]) is not int
+                                       or leg["multiplier"] != multiplier):
+                raise ValueError("contract multiplier disagrees with selection")
+        if len({leg["contract"] for leg in legs}) != len(legs):
+            raise ValueError("condor contracts must be distinct")
+        if any(a["strike"] >= b["strike"] for a, b in zip(legs, legs[1:])):
+            raise ValueError("condor strikes must be strictly ordered")
+
+    def _fold(self, row, settled, confirmed_date):
+        """Emit auditable raw fills and reconcile exact closed-form expiry P&L."""
+        identity = {key: row[key] for key in ("decision_id", "arm_id", "symbol",
+                                             "quote_date", "expiry")}
+        book, positions, fills, orders = WindowBook(), Counter(), [], []
+        multiplier, level = row["multiplier"], Fraction(str(settled[self.params["settlement_field"]]))
+        credit, fees = Fraction(0), Fraction(0)
+        for leg, (_, sign) in zip(row["legs"], CONDOR_LEGS):
+            position = json.dumps([row["arm_id"], row["decision_id"], leg["contract"]],
+                                  separators=(",", ":"))
+            premium, fee = Fraction(str(leg["price_usd_per_share"])), Fraction(str(leg["fee_usd"]))
+            strike = Fraction(str(leg["strike"]))
+            intrinsic = leg_intrinsic(leg["right"], strike, level)
+            credit -= sign * premium
+            fees += fee
+            for phase, side, price, charge, day in (
+                ("entry", leg["side"], premium, fee, row["quote_date"]),
+                ("expiry", "sell" if sign > 0 else "buy", intrinsic, Fraction(0), row["expiry"]),
+            ):
+                signed = 1 if side == "buy" else -1
+                book.apply(_ExpiryFill(position, side, multiplier, price, charge))
+                positions[position] += signed * multiplier
+                raw = {**identity, "position_id": position, "contract": leg["contract"],
+                       "role": leg["role"], "phase": phase, "date": day, "side": side,
+                       "contracts": 1, "multiplier": multiplier, "qty": multiplier,
+                       "price_usd_per_share": float(price), "fee_usd": float(charge),
+                       "fill_label": self.params["labels"]["fill"]}
+                if phase == "expiry":
+                    raw.update(exercise_label=self.params["labels"]["exercise"],
+                               settlement_date=settled["date"],
+                               settlement_confirmed_date=confirmed_date)
+                orders.append({**raw, "order_id": position + ":" + phase})
+                fills.append({**raw, "order_id": position + ":" + phase,
+                              "fill_id": position + ":" + phase + ":fill"})
+        payoff = structure_payoff(CONDOR_LEGS, level,
+                                  [Fraction(str(leg["strike"])) for leg in row["legs"]])
+        expected = multiplier * (credit + payoff) - fees
+        if any(positions.values()) or book.realised != expected:
+            raise ValueError("expiry accounting did not reconcile")
+        outcome = {**identity, "settlement_date": settled["date"], "settlement": float(level),
+                   "settlement_confirmed_date": confirmed_date,
+                   "multiplier": multiplier, "fees_usd": float(fees),
+                   "credit_usd_per_share": float(credit), "pnl_usd": float(book.realised),
+                   "closed_form_pnl_usd": float(expected), "end_flat": True}
+        return outcome, orders, fills
+
+    def run(self, ctx, inputs):
+        """Return one outcome or explicit refusal for every validated selection.
+
+        Parameters
+        ----------
+        ctx : NodeContext or None
+            Pipeline context; unused because this adapter performs no I/O.
+        inputs : dict
+            selections, bars and skips lists. Selections follow the class
+            contract; bars contain symbol, date and the settlement price field.
+            All input rows are validated before accounting begins.
+
+        Returns
+        -------
+        dict
+            outcomes and skips lists, plus evidence containing exact-fold
+            reconciliation results, one-condor totals and raw_orders/raw_fills.
+            Missing bounded settlement evidence produces a skip, not a trade.
+
+        Raises
+        ------
+        ValueError
+            If identities, dates, prices, fees, leg structure or units are
+            malformed, dates reach end_before, identities repeat, or the
+            accounting result does not reconcile.
+        """
+        if not isinstance(inputs, dict) or set(inputs) != {"selections", "bars", "skips"}:
+            raise ValueError("inputs must contain selections, bars and skips")
+        if any(not isinstance(inputs[key], list) for key in inputs):
+            raise ValueError("settlement inputs must be lists")
+        if any(not isinstance(row, dict) for row in inputs["skips"]):
+            raise ValueError("upstream skips must be records")
+        grouped = self._bars(inputs["bars"])
+        seen = set()
+        for row in inputs["selections"]:
+            self._selection(row)
+            key = row["arm_id"], row["decision_id"]
+            if key in seen:
+                raise ValueError("duplicate arm/decision identity")
+            seen.add(key)
+        outcomes, orders, fills, skips = [], [], [], list(inputs["skips"])
+        for row in inputs["selections"]:
+            bars = grouped.get(row["symbol"], [])
+            at = _bounded_settlement_index([bar["date"] for bar in bars], row["expiry"],
+                                           self.params["max_settlement_gap_days"])
+            if at is None or bars[at]["date"] < row["quote_date"]:
+                skips.append({**{k: row[k] for k in ("decision_id", "arm_id", "symbol",
+                                                   "quote_date", "expiry")},
+                              "reason": "missing_settlement"})
+                continue
+            if ("forecast_settlement_date" in row
+                    and row["forecast_settlement_date"] != bars[at]["date"]):
+                skips.append({**{k: row[k] for k in
+                                  ("decision_id", "arm_id", "symbol", "quote_date", "expiry")},
+                              "reason": "forecast_settlement_mismatch"})
+                continue
+            outcome, new_orders, new_fills = self._fold(row, bars[at], bars[at + 1]["date"])
+            outcomes.append(outcome)
+            orders.extend(new_orders)
+            fills.extend(new_fills)
+        orders.sort(key=lambda r: (r["date"], r["order_id"]))
+        fills.sort(key=lambda r: (r["date"], r["fill_id"]))
+        totals = {"n_condors": len(outcomes), "n_skips": len(skips),
+                  "net_pnl_usd": sum(row["pnl_usd"] for row in outcomes)}
+        evidence = {"stage": "condor_expiry", "totals": totals, "outcomes": outcomes,
+                    "skips": skips, "raw_orders": orders, "raw_fills": fills,
+                    "units": "USD per one-lot condor; no portfolio return"}
+        return {"outcomes": outcomes, "skips": skips, "evidence": evidence}
+
+
+class RobustCondorSelect(PyomoSolve):
+    """Select one all-strike robust condor from an already governed context.
+
+    This narrow adapter accepts explicit per-leg eligibility and costs. It does
+    not infer liquidity, dates, uncertainty calibration or execution policies.
+    An empty eligible leg set gives the mathematically feasible no-trade choice.
+
+    Parameters
+    ----------
+    params : dict
+        Required multiplier, fee_per_contract_usd, tie_tolerance_usd,
+        max_absolute_gap_usd and max_relative_gap; optional base solver knobs.
+        Input context contains grid/masses/spot/rho, optional q_lo/q_hi, identity
+        fields, and legs mapping LP/SP/SC/LC to eligible contract dictionaries:
+        index, price, haircut, contract_id. Prices and haircuts are USD/share.
+
+    Examples
+    --------
+    Construct without choosing any calibration or market-data policy::
+
+        node = RobustCondorSelect("select", {
+            "multiplier": 100, "fee_per_contract_usd": .65,
+            "tie_tolerance_usd": 1e-6, "max_absolute_gap_usd": 1e-7,
+            "max_relative_gap": 1e-8})
+    """
+
+    role = "transform"
+    outputs = ("decision", "evidence")
+    _ROLES = ("LP", "SP", "SC", "LC")
+    _IDENTITY = ("decision_id", "arm_id", "symbol", "quote_date", "expiry")
+    _PARAMS = PyomoSolve._PARAMS + (
+        "multiplier", "fee_per_contract_usd", "tie_tolerance_usd",
+        "max_absolute_gap_usd", "max_relative_gap",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Validate explicit solver/cost/tie limits without supplying policies.
+
+        Parameters
+        ----------
+        params : dict
+            Proposed node parameters.
+
+        Returns
+        -------
+        list of str
+            All parameter defects; an empty list means valid.
+        """
+        problems = super().validate_params(params)
+        for key in cls._PARAMS[len(PyomoSolve._PARAMS):]:
+            value = params.get(key)
+            if not number_ok(value) or value < 0 or (key == "multiplier" and value == 0):
+                problems.append(f"{key} must be an explicit finite "
+                                + ("positive" if key == "multiplier" else "nonnegative") + " number")
+        if isinstance(params.get("multiplier"), bool) or not isinstance(params.get("multiplier"), int):
+            problems.append("multiplier must be a positive integer")
+        return problems
+
+    def build_model(self, inputs, params):
+        """Build the all-ordered-strike binary program with the shared dual.
+
+        Parameters
+        ----------
+        inputs, params : dict
+            One prepared context and the explicitly configured policies.
+
+        Returns
+        -------
+        pyomo.environ.ConcreteModel
+            One all-strike selection program, including no trade.
+
+        Raises
+        ------
+        ValueError
+            Invalid probabilities, bands, eligibility, costs or identities.
+        """
+        from pyomo.environ import Binary, ConcreteModel, Constraint, Expression, Objective, Var, maximize
+
+        context = inputs.get("context")
+        if not isinstance(context, dict):
+            raise ValueError("context must be a mapping")
+        for key in self._IDENTITY:
+            if not isinstance(context.get(key), str) or not context[key]:
+                raise ValueError(f"context requires {key}")
+        if (not _iso_day(context["quote_date"]) or not _iso_day(context["expiry"])
+                or context["quote_date"] >= context["expiry"]):
+            raise ValueError("context requires canonical quote_date before expiry")
+        dual = WassersteinDual(context["grid"], context["masses"], context["rho"],
+                               context["spot"], q_lo=context.get("q_lo"), q_hi=context.get("q_hi"))
+        grid = dual.distribution.grid
+        if (grid <= 0).any():
+            raise ValueError("equity strikes must be positive")
+        if not isinstance(context.get("legs"), dict) or set(context["legs"]) != set(self._ROLES):
+            raise ValueError("legs must declare LP/SP/SC/LC eligibility separately")
+        contracts, identities = {}, {}
+        for role in self._ROLES:
+            rows = context["legs"][role]
+            if not isinstance(rows, (list, tuple)):
+                raise ValueError("eligible legs must be finite sequences")
+            for row in rows:
+                if not isinstance(row, dict) or set(row) != {"index", "price", "haircut", "contract_id"}:
+                    raise ValueError("eligible contract must carry index/price/haircut/contract_id")
+                index = row["index"]
+                if (isinstance(index, bool) or not isinstance(index, int)
+                        or not 0 <= index < len(grid) or (role, index) in contracts):
+                    raise ValueError("duplicate or invalid eligible strike index")
+                if (not isinstance(row["contract_id"], str) or not row["contract_id"]
+                        or any(not number_ok(row[k]) or row[k] < 0 for k in ("price", "haircut"))):
+                    raise ValueError("invalid contract identity, price or haircut")
+                if role in ("SP", "SC") and row["haircut"] > row["price"]:
+                    raise ValueError("short-leg haircut exceeds price")
+                identity = ("put" if role in ("LP", "SP") else "call", index)
+                prior = identities.setdefault(row["contract_id"], identity)
+                if prior != identity:
+                    raise ValueError("contract identity has inconsistent right or strike")
+                contracts[role, index] = dict(row)
+        self._context, self._dual, self._contracts = dict(context), dual, contracts
+        self._certificates, self._skip = [], None
+        model = ConcreteModel()
+        model.z = Var(domain=Binary)
+        model.y = Var(self._ROLES, range(len(grid)), domain=Binary)
+        for role in self._ROLES:
+            for i in range(len(grid)):
+                if (role, i) not in contracts:
+                    model.y[role, i].fix(0)
+        model.one = Constraint(self._ROLES, rule=lambda m, role:
+                               sum(m.y[role, i] for i in range(len(grid))) == m.z)
+        pairs = tuple(zip(self._ROLES[:-1], self._ROLES[1:]))
+        model.order = Constraint(range(3), range(len(grid)), rule=lambda m, a, k:
+                                 sum(m.y[pairs[a][0], i] for i in range(k, len(grid)))
+                                 <= sum(m.y[pairs[a][1], i] for i in range(k+1, len(grid))))
+        losses = [
+            sum((model.y["SP", i]-model.y["LP", i]) * max(float(grid[i]-s), 0.)
+                + (model.y["SC", i]-model.y["LC", i]) * max(float(s-grid[i]), 0.)
+                for i in range(len(grid))) for s in grid]
+        block = dual.attach(model, losses)
+        credit = sum(((1 if role in ("SP", "SC") else -1) * row["price"] - row["haircut"])
+                     * model.y[role, i] for (role, i), row in contracts.items())
+        model.robust_value = Expression(expr=params["multiplier"] * (credit-block.cost)
+                                       - 4 * params["fee_per_contract_usd"] * model.z)
+        model.objective = Objective(expr=model.robust_value, sense=maximize)
+        return model
+
+    def _certified(self, record):
+        """Require an optimal termination and explicit finite gap limits."""
+        return (record.termination == "optimal" and record.objective is not None
+                and record.bound is not None and record.gap is not None
+                and abs(record.objective-record.bound) <= self.params["max_absolute_gap_usd"]
+                and record.gap <= self.params["max_relative_gap"])
+
+    @staticmethod
+    def _secondary_certified(record):
+        """Prove a binary minimum from its incumbent and dimensionless lower bound."""
+        if (record.termination != "optimal" or record.objective is None
+                or record.bound is None):
+            return False
+        incumbent = round(record.objective)
+        if (incumbent not in (0, 1)
+                or abs(record.objective-incumbent) > BINDING_TOLERANCE
+                or record.bound > incumbent+BINDING_TOLERANCE):
+            return False
+        # z is binary: z=0 is the domain lower bound. A z=1 incumbent
+        # is optimal only if its certified lower bound excludes zero.
+        return incumbent == 0 or record.bound > BINDING_TOLERANCE
+
+    def _solve(self, solver, model):
+        """Use the existing lifecycle twice, retaining primary and tie certificates."""
+        import time
+        from pyomo.environ import Constraint, Objective, minimize
+
+        name = self.params.get("solver", DEFAULT_SOLVER)
+        started = time.perf_counter()
+        results = super()._solve(solver, model)
+        primary = self._build_solve_record(solver, model, results, name, time.perf_counter()-started)
+        self._certificates.append(primary.to_obj())
+        if not self._certified(primary):
+            self._skip = "uncertified_primary"
+            return results
+        if primary.bound-primary.objective > self.params["tie_tolerance_usd"]:
+            self._skip = "primary_gap_exceeds_tie_tolerance"
+            return results
+        if primary.objective <= self.params["tie_tolerance_usd"] < primary.bound:
+            self._skip = "uncertified_no_trade_tie"
+            return results
+        model.objective.deactivate()
+        model.tie_floor = Constraint(expr=model.robust_value >= primary.bound-self.params["tie_tolerance_usd"])
+        model.tie_objective = Objective(expr=model.z, sense=minimize)
+        return super()._solve(solver, model)
+
+    def extract(self, model, results):
+        """Return a checked selection and both solver certificates.
+
+        Parameters
+        ----------
+        model : pyomo.environ.ConcreteModel
+            Solved selection program.
+        results : object
+            Solver results retained by the base lifecycle.
+
+        Returns
+        -------
+        dict
+            Decision and evidence; uncertified solves explicitly skip.
+
+        Raises
+        ------
+        ValueError
+            Selected legs or their independently recomputed value violate the model.
+        """
+        from pyomo.environ import value
+
+        if self._skip is None:
+            self._certificates.append(self.solve_record.to_obj())
+            if not self._secondary_certified(self.solve_record):
+                self._skip = "uncertified_tie"
+        identity = {key:self._context[key] for key in self._IDENTITY}
+        evidence = {"solves":self._certificates, "rho":self._dual.radius,
+                    "multiplier":self.params["multiplier"], "decision_eligible":False,
+                    "eligible_contracts":[dict(role=role, **row)
+                                          for (role, _), row in self._contracts.items()]}
+        if self._skip:
+            return {"decision":{**identity, "status":"skipped", "reason":self._skip},
+                    "evidence":evidence}
+        z = value(model.z)
+        if abs(z-round(z)) > BINDING_TOLERANCE:
+            raise ValueError("nonintegral trade solution")
+        legs, indices = [], []
+        for role in self._ROLES:
+            selected = [i for i in range(len(self._dual.distribution.grid))
+                        if value(model.y[role, i]) > .5]
+            if len(selected) != round(z):
+                raise ValueError("invalid leg count")
+            for i in selected:
+                row = self._contracts[role, i]
+                short = role in ("SP", "SC")
+                indices.append(i)
+                legs.append(dict(role=role, contract=row["contract_id"],
+                                 right="put" if role in ("LP","SP") else "call",
+                                 strike=float(self._dual.distribution.grid[i]),
+                                 side="sell" if short else "buy",
+                                 price_usd_per_share=row["price"] + (-1 if short else 1)*row["haircut"],
+                                 fee_usd=self.params["fee_per_contract_usd"]))
+        if indices and not all(a < b for a,b in zip(indices,indices[1:])):
+            raise ValueError("strikes are not strictly ordered")
+        credit = sum((1 if leg["side"] == "sell" else -1)*leg["price_usd_per_share"] for leg in legs)
+        grid = self._dual.distribution.grid
+        losses = [sum((1 if leg["side"] == "sell" else -1)
+                      * (max(leg["strike"]-s,0.) if leg["right"] == "put" else max(s-leg["strike"],0.))
+                      for leg in legs) for s in grid]
+        bands = self._dual.bands
+        worst = self._dual.distribution.worst_expected_loss(
+            losses, self._dual.radius, self._dual.scale,
+            q_lo=None if bands is None else bands[0], q_hi=None if bands is None else bands[1])
+        robust = self.params["multiplier"]*(credit-worst)-sum(leg["fee_usd"] for leg in legs)
+        floor = self._certificates[0]["bound"]-self.params["tie_tolerance_usd"]
+        if robust < floor-BINDING_TOLERANCE:
+            raise ValueError("selected primal value fails certified tie floor")
+        return {"decision":{**identity, "status":"trade" if legs else "no_trade",
+                            "legs":legs, "multiplier":self.params["multiplier"],
+                            "robust_value_usd":robust, "worst_loss_usd_per_share":worst},
+                "evidence":evidence}
+
+class RobustCondorBatchSelect(RobustCondorSelect):
+    """Prepare governed chain rows for the one-context robust selector.
+
+    The adapter owns no optimization.  It freezes calibration-window ticker
+    liquidity tiers, resolves one named arm, and delegates each prepared context
+    to :class:`RobustCondorSelect`.  Tied ticker medians sort by symbol before
+    assigning rank terciles; this rule makes the frozen entry-price tier stable.
+    """
+
+    outputs = ("selections", "decisions", "solves", "skips", "evidence")
+    _ARTIFACT_KEYS = ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")
+    _ARM_RULES = {
+        "nominal": {"radius": "zero"},
+        "rho_base": {"radius": "calibrated"},
+        "haircut_0": {"radius": "calibrated", "haircut_multiplier": 0},
+        "haircut_half": {"radius": "calibrated", "haircut_multiplier": .5},
+        "haircut_double": {"radius": "calibrated", "haircut_multiplier": 2},
+        "liquidity_3": {"radius": "calibrated", "min_trade_count": 3},
+        "liquidity_10": {"radius": "calibrated", "min_trade_count": 10},
+        "liquidity_20": {"radius": "calibrated", "min_trade_count": 20},
+    }
+    _ARMS = tuple(_ARM_RULES)
+    _BATCH_PARAMS = ("calibration_window", "entry_window", "protected_end_before",
+                     "standard_multiplier", "liquidity", "haircut_tiers", "arms",
+                     "tier_tie_policy")
+    _PARAMS = RobustCondorSelect._PARAMS + _BATCH_PARAMS
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return solver, chronology and declared-arm policy problems."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        problems.extend(RobustCondorSelect.validate_params({
+            key: params[key] for key in RobustCondorSelect._PARAMS if key in params}))
+        for key in cls._BATCH_PARAMS:
+            if key not in params:
+                problems.append(f"{key} is required")
+        for key in ("calibration_window", "entry_window"):
+            window = params.get(key)
+            if (not isinstance(window, dict) or set(window) != {"start", "end"}
+                    or not _iso_day(window.get("start")) or not _iso_day(window.get("end"))
+                    or window["start"] > window["end"]):
+                problems.append(f"{key} must be an ordered ISO start/end mapping")
+        windows = [params.get(key, {}) for key in ("calibration_window", "entry_window")]
+        if all(isinstance(w, dict) and _iso_day(w.get("start"))
+               and _iso_day(w.get("end")) for w in windows):
+            if windows[0]["end"] >= windows[1]["start"]:
+                problems.append("calibration must finish strictly before entry")
+            if (_iso_day(params.get("protected_end_before"))
+                    and windows[1]["end"] >= params["protected_end_before"]):
+                problems.append("entry window reaches protected boundary")
+        if params.get("standard_multiplier") != params.get("multiplier"):
+            problems.append("standard and solver multipliers must agree")
+        if not _iso_day(params.get("protected_end_before")):
+            problems.append("protected_end_before must be an ISO date")
+        for key in ("standard_multiplier",):
+            if type(params.get(key)) is not int or params[key] < 1:
+                problems.append(f"{key} must be a positive integer")
+        liquidity = params.get("liquidity")
+        if (not isinstance(liquidity, dict) or set(liquidity) != {"min_trade_count", "min_volume"}
+                or any(type(liquidity[k]) is not int or liquidity[k] < 0 for k in liquidity)):
+            problems.append("liquidity must contain nonnegative integer min_trade_count/min_volume")
+        tiers = params.get("haircut_tiers")
+        if not isinstance(tiers, dict) or set(tiers) != {"low", "mid", "high"}:
+            problems.append("haircut_tiers must contain low/mid/high")
+        elif any(not isinstance(v, dict) or set(v) != {"pct", "floor_usd"}
+                  or any(not number_ok(v[k]) or v[k] < 0 for k in v) for v in tiers.values()):
+            problems.append("haircut tier values must be finite nonnegative pct/floor_usd")
+        if params.get("tier_tie_policy") != "symbol_ascending_rank":
+            problems.append("tier_tie_policy must be symbol_ascending_rank")
+        arms = params.get("arms")
+        if not isinstance(arms, dict) or tuple(arms) != cls._ARMS:
+            problems.append("arms must declare the eight canonical arms in canonical order")
+        elif any(not isinstance(spec, dict) or set(spec) - {"radius", "haircut_multiplier",
+                                                            "min_trade_count"}
+                  or spec.get("radius") not in {"zero", "calibrated"}
+                  or ("haircut_multiplier" in spec
+                      and (not number_ok(spec["haircut_multiplier"])
+                           or spec["haircut_multiplier"] < 0))
+                  or ("min_trade_count" in spec
+                      and (type(spec["min_trade_count"]) is not int
+                           or spec["min_trade_count"] < 0))
+                  for spec in arms.values()):
+            problems.append("arm definitions contain an invalid one-factor override")
+        if isinstance(arms, dict) and arms != cls._ARM_RULES:
+            problems.append("canonical arms must match their named one-factor definitions")
+        return problems
+
+    @staticmethod
+    def _day(row):
+        value = row.get("quote_date", row.get("date"))
+        return value if _iso_day(value) else None
+
+    def _tiers(self, chain):
+        from statistics import median
+
+        values = {}
+        window = self.params["calibration_window"]
+        for row in chain:
+            day = self._day(row)
+            symbol = row.get("symbol") if isinstance(row, dict) else None
+            count = row.get("trade_count") if isinstance(row, dict) else None
+            if (isinstance(symbol, str) and symbol and window["start"] <= (day or "") <= window["end"]
+                    and type(count) is int and count >= 0):
+                values.setdefault(symbol, []).append(count)
+        ranked = sorted((median(counts), symbol)
+                        for symbol, counts in values.items())
+        return {symbol: ("low", "mid", "high")[(3 * rank)//len(ranked)]
+                for rank, (_, symbol) in enumerate(ranked)}
+    def _mass_rows(self, rows):
+        out = {}
+        identity_keys = self._ARTIFACT_KEYS
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("projected masses must be records")
+            key = tuple(row.get(k) for k in ("symbol", "quote_date", "expiry"))
+            if (any(not isinstance(v, str) or not v for v in key)
+                    or any(not isinstance(row.get(k), str) or not row[k] for k in identity_keys)
+                    or not _iso_day(key[1]) or not _iso_day(key[2]) or key[1] >= key[2]
+                    or not _iso_day(row.get("settlement_date"))
+                    or not key[1] < row["settlement_date"] <= key[2]
+                    or key in out or not isinstance(row.get("grid"), (list, tuple))
+                    or not isinstance(row.get("masses"), (list, tuple))):
+                raise ValueError("projected masses require canonical context and artifact identities")
+            decision_id = row.get("decision_id") or value_hash({k: row[k] for k in ("symbol", "quote_date", "expiry", "grid", "masses", "spot") + identity_keys})
+            out[key] = {**row, "decision_id": decision_id}
+        return out
+
+    @staticmethod
+    def _rho(rho):
+        if not isinstance(rho, dict):
+            raise ValueError("rho must be a YYYY-MM to finite nonnegative number/null mapping")
+        for month, value in rho.items():
+            if (not isinstance(month, str) or len(month) != 7 or not _iso_day(month+"-01")
+                    or (value is not None and (not number_ok(value) or value < 0))):
+                raise ValueError("rho must be a YYYY-MM to finite nonnegative number/null mapping")
+        return dict(rho)
+
+    def _batch_context(self, mass, rows, tier, arm, rho):
+        spec, liquidity = self.params["arms"][arm], dict(self.params["liquidity"])
+        liquidity["min_trade_count"] = spec.get("min_trade_count", liquidity["min_trade_count"])
+        by_role = {role: [] for role in self._ROLES}
+        grid = list(mass["grid"])
+        index_by_strike = {float(strike): index for index, strike in enumerate(grid)}
+        if len(index_by_strike) != len(grid):
+            raise ValueError("projected grid repeats a strike")
+        for row in rows:
+            right = row.get("right", row.get("type"))
+            if right not in ("put", "call") or not isinstance(row.get("contract"), str) or not row["contract"]:
+                raise ValueError("chain rows require contract and put/call right")
+            strike, price = row.get("strike"), row.get("vwap")
+            if (not number_ok(strike) or float(strike) not in index_by_strike
+                    or not number_ok(price) or price < 0
+                    or row.get("multiplier") != self.params["standard_multiplier"]
+                    or type(row.get("trade_count")) is not int or row["trade_count"] < 0
+                    or type(row.get("volume")) is not int or row["volume"] < 0):
+                raise ValueError("chain row has invalid strike, VWAP or liquidity")
+            if row["trade_count"] < liquidity["min_trade_count"] or row["volume"] < liquidity["min_volume"]:
+                continue
+            arm_multiplier = spec.get("haircut_multiplier", 1.)
+            haircut_cfg = self.params["haircut_tiers"][tier]
+            haircut = arm_multiplier * max(haircut_cfg["floor_usd"], haircut_cfg["pct"] * price)
+            side_roles = ("LP",) if right == "put" else ("LC",)
+            if haircut <= price:
+                side_roles += (("SP",) if right == "put" else ("SC",))
+            for selected in side_roles:
+                by_role[selected].append(dict(index=index_by_strike[float(strike)], price=float(price),
+                                               haircut=float(haircut), contract_id=row["contract"]))
+        return dict(decision_id=mass["decision_id"], arm_id=arm, symbol=mass["symbol"],
+                    quote_date=mass["quote_date"], expiry=mass["expiry"], grid=grid,
+                    masses=list(mass["masses"]), spot=mass["spot"], rho=rho, legs=by_role,
+                    **({k: mass[k] for k in ("q_lo", "q_hi") if k in mass}))
+
+    def run(self, ctx, inputs):
+        """Return decisions, settlement-compatible selections, and explicit skips."""
+        if not isinstance(inputs, dict) or set(inputs) != {
+                "chain", "projected_masses", "rho", "skips", "holding_exclusions"}:
+            raise ValueError("inputs require chain/projected_masses/rho/skips/holding_exclusions")
+        if any(not isinstance(inputs[key], list) for key in ("chain", "projected_masses", "skips", "holding_exclusions")):
+            raise ValueError("batch inputs must be lists")
+        if any(not isinstance(row, dict) for key in ("chain", "skips")
+               for row in inputs[key]):
+            raise ValueError("chain and upstream skips must be records")
+        tiers, masses, rhos = self._tiers(inputs["chain"]), self._mass_rows(inputs["projected_masses"]), self._rho(inputs["rho"])
+        excluded = set()
+        for row in inputs["holding_exclusions"]:
+            if not isinstance(row, dict) or not isinstance(row.get("reason"), str) or not row["reason"]:
+                raise ValueError("holding exclusions require an explicit reason")
+            key = tuple(row.get(k) for k in ("symbol", "quote_date", "expiry"))
+            if any(not isinstance(v, str) or not v for v in key):
+                raise ValueError("holding exclusions require canonical context identity")
+            excluded.add(key)
+        chain = {}
+        for row in inputs["chain"]:
+            if not isinstance(row, dict):
+                raise ValueError("chain rows must be records")
+            day = self._day(row)
+            key = (row.get("symbol"), day, row.get("expiry"))
+            if (any(not isinstance(v, str) or not v for v in key) or not _iso_day(row["expiry"])
+                    or day >= row["expiry"] or row["expiry"] >= self.params["protected_end_before"]
+                    or key in chain and any(r.get("contract") == row.get("contract") for r in chain[key])):
+                raise ValueError("chain has duplicate or unprotected context identity")
+            chain.setdefault(key, []).append(row)
+        decisions, selections, solves, skips = [], [], [], list(inputs["skips"])
+        for mass in masses.values():
+            key = (mass["symbol"], mass["quote_date"], mass["expiry"])
+            if not self.params["entry_window"]["start"] <= mass["quote_date"] <= self.params["entry_window"]["end"]:
+                continue
+            if mass["expiry"] >= self.params["protected_end_before"] or key in excluded:
+                skips.append({**{k: mass[k] for k in ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS},
+                              "reason": "holding_excluded" if key in excluded else "protected_date"})
+                continue
+            if key not in chain:
+                skips.append({**{k: mass[k] for k in ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS},
+                              "reason": "missing_chain"})
+                continue
+            if mass["symbol"] not in tiers:
+                identity = {k: mass[k] for k in
+                            ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS}
+                skips.extend({**identity, "arm_id": arm, "reason": "missing_calibration_tier"}
+                             for arm in self._ARMS)
+                continue
+            for arm in self._ARMS:
+                rho = 0. if self.params["arms"][arm]["radius"] == "zero" else rhos.get(mass["quote_date"][:7])
+                identity = {k: mass[k] for k in ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS}
+                if rho is None:
+                    skips.append({**identity, "arm_id": arm, "reason": "missing_calibrated_rho"})
+                    continue
+                result = RobustCondorSelect.run(self, ctx, {"context": self._batch_context(
+                    mass, chain[key], tiers[mass["symbol"]], arm, rho)})
+                decision = result["decision"]
+                decision["forecast_settlement_date"] = mass["settlement_date"]
+                decision.update({name: mass[name] for name in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")})
+                decisions.append(decision)
+                solves.extend({**identity, "arm_id": arm, **solve}
+                              for solve in result["evidence"]["solves"])
+                if decision["status"] == "trade":
+                    selections.append(decision)
+                elif decision["status"] == "skipped":
+                    skips.append(decision)
+        evidence = {"tiers": tiers, "decisions": decisions, "solves": solves, "skips": skips,
+                    "tier_tie_policy": self.params["tier_tie_policy"]}
+        return {"selections": selections, "decisions": decisions, "solves": solves,
+                "skips": skips, "evidence": evidence}
+
+class ExactDteBarChain(Node):
+    """Apply exact equity-option tenor and phase rules to already bounded rows.
+
+    This is a pure child adapter. It never opens sources, deduplicates conflicting
+    vintages, infers missing contract multipliers or certifies adjustment basis.
+    Upstream intake must establish those source and corporate-action facts.
+
+    Parameters
+    ----------
+    params : dict
+        Explicit fields mapping, positive dte and standard multiplier,
+        exclusive end_before date and disjoint named inclusive windows.
+
+    Examples
+    --------
+    Use the same external field names as the canonical contract::
+
+        fields = {key: key for key in ExactDteBarChain.FIELDS}
+        node = ExactDteBarChain("chain", {
+            "fields": fields, "dte": 31, "multiplier": 100,
+            "end_before": "2026-01-01",
+            "windows": [{"name": "entry", "start": "2025-02-04",
+                         "end": "2025-11-28"}]})
+    """
+
+    role = "transform"
+    outputs = ("records", "skips", "evidence")
+    _PARAMS = ("fields", "dte", "multiplier", "end_before", "windows")
+    FIELDS = ("contract", "symbol", "expiry", "right", "strike", "date",
+              "vwap", "trade_count", "volume", "multiplier")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Accumulate field, tenor and phase-policy problems.
+
+        Parameters
+        ----------
+        params : dict
+            Explicit adapter policy.
+
+        Returns
+        -------
+        list of str
+            All malformed declaration problems.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        fields = params.get("fields")
+        if (not isinstance(fields, dict) or set(fields) != set(cls.FIELDS)
+                or any(not isinstance(v, str) or not v for v in fields.values())
+                or len(set(fields.values())) != len(fields)):
+            problems.append("fields must map every canonical field uniquely")
+        for key in ("dte", "multiplier"):
+            check_int_param(problems, key, params.get(key), ge=1)
+        if not _iso_day(params.get("end_before")):
+            problems.append("end_before requires canonical date")
+        windows = params.get("windows")
+        if not isinstance(windows, list) or not windows:
+            return problems + ["windows must be a nonempty list"]
+        valid = []
+        for window in windows:
+            if (not isinstance(window, dict) or set(window) != {"name", "start", "end"}
+                    or not isinstance(window.get("name"), str) or not window["name"]
+                    or not _iso_day(window.get("start")) or not _iso_day(window.get("end"))
+                    or window["start"] > window["end"]):
+                problems.append("invalid named window")
+            else:
+                valid.append(window)
+                if _iso_day(params.get("end_before")) and window["end"] >= params["end_before"]:
+                    problems.append("window reaches protected boundary")
+        if len({w["name"] for w in valid}) != len(valid):
+            problems.append("window names must be unique")
+        ordered = sorted(valid, key=lambda w: w["start"])
+        if any(a["end"] >= b["start"] for a, b in zip(ordered, ordered[1:])):
+            problems.append("windows must not overlap")
+        return problems
+
+    def _project(self, row):
+        """Return one canonical eligible record or raise its precise refusal."""
+        fields = self.params["fields"]
+        values = {key: row[field] for key, field in fields.items()}
+        for key in ("contract", "symbol"):
+            if not isinstance(values[key], str) or not values[key]:
+                raise ValueError(f"missing {key}")
+        day, expiry = values["date"], values["expiry"]
+        if not _iso_day(day) or not _iso_day(expiry):
+            raise ValueError("invalid quote_date or expiry")
+        if max(day, expiry) >= self.params["end_before"]:
+            raise ValueError("protected date boundary")
+        if (date.fromisoformat(expiry)-date.fromisoformat(day)).days != self.params["dte"]:
+            raise ValueError("ineligible exact dte")
+        phase = next((w["name"] for w in self.params["windows"]
+                      if w["start"] <= day <= w["end"]), None)
+        if phase is None:
+            raise ValueError("outside declared phase window")
+        if values["right"] not in ("put", "call"):
+            raise ValueError("unsupported right")
+        for key in ("strike", "vwap"):
+            if not price_ok(values[key]):
+                raise ValueError(f"invalid {key}")
+        for key in ("trade_count", "volume"):
+            if type(values[key]) is not int or values[key] < 0:
+                raise ValueError(f"invalid {key}")
+        if type(values["multiplier"]) is not int or values["multiplier"] != self.params["multiplier"]:
+            raise ValueError("unsupported contract multiplier")
+        return {**row, **values, "quote_date": day, "type": values["right"],
+                "phase": phase, "calendar_dte": self.params["dte"]}
+
+    def run(self, ctx, inputs):
+        """Apply the declared domain filter and retain each rejected identity.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Pipeline context (unused).
+        inputs : dict
+            Finite records already selected by protected intake.
+
+        Returns
+        -------
+        dict
+            Eligible canonical records, explicit skips and aggregate counts.
+
+        Raises
+        ------
+        ValueError
+            Input shape or duplicate contract-date identities are ambiguous.
+        """
+        rows = inputs["records"]
+        if not isinstance(rows, (list, tuple)) or any(not isinstance(r, dict) for r in rows):
+            raise ValueError("records must be a finite sequence of mappings")
+        fields, seen = self.params["fields"], set()
+        for row in rows:
+            identity = (row.get(fields["contract"]), row.get(fields["date"]))
+            if all(isinstance(v, str) and v for v in identity):
+                if identity in seen:
+                    raise ValueError("duplicate contract quote_date")
+                seen.add(identity)
+        records, skips = [], []
+        for row in rows:
+            try:
+                records.append(self._project(row))
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                skips.append({key: row.get(fields[key])
+                              for key in ("contract", "symbol", "date", "expiry")}
+                             | {"reason": str(exc)})
+        return {"records": records, "skips": skips,
+                "evidence": JsonArtifact({"input_rows": len(rows),
+                                         "eligible_rows": len(records),
+                                         "skips": skips})}

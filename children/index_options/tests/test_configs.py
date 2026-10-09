@@ -56,6 +56,26 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/panel-production-development-20261007.json",
         "configs/production-feature-selection-20261007.json",
         "configs/run-production-liquidity-20261007.json",
+        # ADR-0255 (PROPOSED): the robust equity iron-condor research replay.
+        "configs/run-equity-condor-robust-backtest.json",
+        "docs/memos/2026-10-08-robust-condor-dual.md",
+        "docs/memos/2026-10-08-forecast-mio-evaluation-scheme.md",
+        # Previously published ADR-0254 artifacts omitted by the old manifest.
+        'configs/panel-universe-rerun-20261008.json',
+        'configs/run-universe-liquidity-20261008.json',
+        'configs/source-store-universe-model-inputs-20261008.json',
+        'configs/source-store-universe-older-bars-20261008.json',
+        'configs/source-universe-liquidity-20261008.json',
+        'configs/universe-feature-selection-20261008.json',
+        'docs/memos/2026-10-08-claude-calibration-backtest-handoff.md',
+        'docs/memos/2026-10-08-restored-universe-patchtst.md',
+        'docs/reports/production-universe-rerun-20261008/confirmation-appendix.json',
+        'docs/reports/production-universe-rerun-20261008/evaluation-appendix.json',
+        'docs/reports/production-universe-rerun-20261008/evaluation-summary.json',
+        'docs/reports/production-universe-rerun-20261008/features-appendix.json',
+        'docs/reports/production-universe-rerun-20261008/hpo-appendix.json',
+        'docs/reports/production-universe-rerun-20261008/model-inventory.json',
+        'docs/reports/production-universe-rerun-20261008/old-new-original85-comparison.json',
         "configs/source-production-liquidity-20261007.json",
         "configs/source-production-vix-20261007.json",
         "configs/source-store-production-history-audit-20261007.json",
@@ -293,7 +313,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the per-ticker study, its workflow manifest and report spec = 436,
     # plus ADR-0238 config, research and two interim report artifacts = 440; four final reports, evidence and memo = 446; production proposal = 447; Stage-0 evidence = 449
     # Plus eleven protected-source/panel/feature experiment JSON declarations = 460.
-    assert len(actual) == 460
+    # Plus ADR-0255's robust-condor run config and requested dual memo = 462.
+    assert len(actual) == 478
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

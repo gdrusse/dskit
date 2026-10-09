@@ -72,6 +72,7 @@ from dskit.pipeline.records import number_ok
 
 __all__ = [
     "CORRECTIONS",
+    "CalendarBlockBootstrap",
     "EULER_MASCHERONI",
     "METHODS",
     "NO_VARIANCE_RTOL",
@@ -1954,3 +1955,106 @@ register_correction(
     needs_weights=True,
     doc="Genovese-Roeder weighted BH on p/w with raw weights.",
 )
+
+
+class CalendarBlockBootstrap:
+    """Resample complete observed-date blocks spanning calendar days.
+
+    The caller supplies one value or group per distinct date. Returned indices
+    select entire date groups; they never split tickers within one date.
+    Eligible starts are observed dates with a complete half-open calendar
+    interval inside the observed range. No block wraps to the beginning.
+
+    Parameters
+    ----------
+    dates : sequence of datetime.date
+        Strictly increasing distinct dates, excluding datetime timestamps.
+    block_days : int
+        Positive calendar length for each complete block.
+
+    Examples
+    --------
+    Build a two-day block sampler with an observable support report::
+
+        from datetime import date
+        sampler = CalendarBlockBootstrap(
+            [date(2024, 1, d) for d in (1, 2, 3, 4)], 2)
+        draws = sampler.sample_indices(20, seed=7)
+    """
+
+    def __init__(self, dates, block_days):
+        from datetime import date
+
+        if (not isinstance(dates, (list, tuple)) or not dates
+                or any(type(day) is not date for day in dates)
+                or any(a >= b for a, b in zip(dates, dates[1:]))):
+            raise ValueError("dates must be nonempty, strictly increasing calendar dates")
+        if type(block_days) is not int or block_days < 1:
+            raise ValueError("block_days must be a positive integer")
+        self._dates = tuple(dates)
+        # Ordinals avoid overflow for valid date.max and arbitrarily long spans.
+        ordinals = [day.toordinal() for day in dates]
+        self._blocks = tuple(
+            tuple(range(start, bisect.bisect_left(ordinals, ordinal + block_days)))
+            for start, ordinal in enumerate(ordinals)
+            if ordinal + block_days <= ordinals[-1] + 1)
+        self._inclusion = tuple(
+            sum(index in block for block in self._blocks)
+            for index in range(len(dates)))
+        self._block_days = block_days
+
+    @property
+    def supported(self):
+        """Whether all dates have positive inclusion and two distinct blocks."""
+        return len(set(self._blocks)) >= 2 and all(self._inclusion)
+
+    @property
+    def evidence(self):
+        """Return support diagnostics without generating a bootstrap draw."""
+        return {
+            "block_days": self._block_days,
+            "date_count": len(self._dates),
+            "eligible_starts": [self._dates[block[0]].isoformat()
+                                for block in self._blocks],
+            "distinct_blocks": len(set(self._blocks)),
+            "inclusion_counts": list(self._inclusion),
+            "zero_inclusion_dates": [day.isoformat()
+                                     for day, count in zip(self._dates, self._inclusion)
+                                     if count == 0],
+            "supported": self.supported,
+        }
+
+    def sample_indices(self, replicates, seed):
+        """Draw equal-length date-index samples with replacement.
+
+        Parameters
+        ----------
+        replicates : int
+            Positive number of samples.
+        seed : int
+            Explicit deterministic seed.
+
+        Returns
+        -------
+        list of list of int
+            Each sample has exactly the original number of dates. Complete
+            blocks concatenate in drawn order; only the last is truncated.
+
+        Raises
+        ------
+        ValueError
+            If sampling parameters are invalid or support is insufficient.
+        """
+        if type(replicates) is not int or replicates < 1 or type(seed) is not int:
+            raise ValueError("replicates must be positive and seed must be an integer")
+        if not self.supported:
+            raise ValueError("insufficient complete calendar block support")
+        rng = random.Random(seed)
+        n = len(self._dates)
+        samples = []
+        for _ in range(replicates):
+            indices = []
+            while len(indices) < n:
+                indices.extend(rng.choice(self._blocks))
+            samples.append(indices[:n])
+        return samples

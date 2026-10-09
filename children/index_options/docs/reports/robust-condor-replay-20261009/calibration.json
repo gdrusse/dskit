@@ -1,0 +1,430 @@
+{
+  "artifact_sha256": "35eac785b48f8423808e4d8541a1100c0a50f4d2489b3de338e0ecaa4e2a3fce",
+  "loss_cache_count": 6870,
+  "monthly": [
+    {
+      "history_templates": 667,
+      "month": "2025-02",
+      "primary": {
+        "full_means": {
+          "0.0": 0.7842409350896294,
+          "0.001": 0.5539046592471893,
+          "0.0025": 0.25637950292451145,
+          "0.005": -0.15952397600357116,
+          "0.01": -0.8528162709179181
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 48,
+        "distinct_blocks": 43,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2024-12-31"
+        ]
+      },
+      "reference": "2025-02-04",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 48,
+        "distinct_blocks": 39,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2024-12-31"
+        ]
+      }
+    },
+    {
+      "history_templates": 667,
+      "month": "2025-03",
+      "primary": {
+        "full_means": {
+          "0.0": 0.7842409350896294,
+          "0.001": 0.5539046592471893,
+          "0.0025": 0.25637950292451145,
+          "0.005": -0.15952397600357116,
+          "0.01": -0.8528162709179181
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 48,
+        "distinct_blocks": 43,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2024-12-31"
+        ]
+      },
+      "reference": "2025-03-04",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 48,
+        "distinct_blocks": 39,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2024-12-31"
+        ]
+      }
+    },
+    {
+      "history_templates": 737,
+      "month": "2025-04",
+      "primary": {
+        "full_means": {
+          "0.0": 0.7977899489713841,
+          "0.001": 0.5718858435780604,
+          "0.0025": 0.2810305037424883,
+          "0.005": -0.12368162587928942,
+          "0.01": -0.7962175779367114
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 52,
+        "distinct_blocks": 48,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-02-04",
+          "2025-02-11",
+          "2025-02-18",
+          "2025-02-25"
+        ]
+      },
+      "reference": "2025-04-01",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 52,
+        "distinct_blocks": 47,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-02-25"
+        ]
+      }
+    },
+    {
+      "history_templates": 811,
+      "month": "2025-05",
+      "primary": {
+        "full_means": {
+          "0.0": 0.6733992624174516,
+          "0.001": 0.44792116713322594,
+          "0.0025": 0.15621593549846863,
+          "0.005": -0.2496190609052318,
+          "0.01": -0.9227953040781066
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 57,
+        "distinct_blocks": 52,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-04-01"
+        ]
+      },
+      "reference": "2025-05-06",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 57,
+        "distinct_blocks": 48,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-03-04",
+          "2025-03-11",
+          "2025-03-17",
+          "2025-03-25",
+          "2025-04-01"
+        ]
+      }
+    },
+    {
+      "history_templates": 859,
+      "month": "2025-06",
+      "primary": {
+        "full_means": {
+          "0.0": 0.6888692663657527,
+          "0.001": 0.46634531615302993,
+          "0.0025": 0.1790676186353656,
+          "0.005": -0.21975518456053067,
+          "0.01": -0.8796390112799952
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 60,
+        "distinct_blocks": 55,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-04-22"
+        ]
+      },
+      "reference": "2025-06-02",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 60,
+        "distinct_blocks": 51,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-04-22"
+        ]
+      }
+    },
+    {
+      "history_templates": 933,
+      "month": "2025-07",
+      "primary": {
+        "full_means": {
+          "0.0": 0.57086024380488,
+          "0.001": 0.35271656838353155,
+          "0.0025": 0.07252220363914448,
+          "0.005": -0.31549123191037015,
+          "0.01": -0.9563907067532412
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 65,
+        "distinct_blocks": 60,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-05-27"
+        ]
+      },
+      "reference": "2025-07-01",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 65,
+        "distinct_blocks": 56,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-05-27"
+        ]
+      }
+    },
+    {
+      "history_templates": 1009,
+      "month": "2025-08",
+      "primary": {
+        "full_means": {
+          "0.0": 0.50799790756901,
+          "0.001": 0.2909690137601333,
+          "0.0025": 0.013870108720533375,
+          "0.005": -0.36755263357203366,
+          "0.01": -0.9952539500597498
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 70,
+        "distinct_blocks": 65,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-07-01"
+        ]
+      },
+      "reference": "2025-08-05",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 70,
+        "distinct_blocks": 61,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-07-01"
+        ]
+      }
+    },
+    {
+      "history_templates": 1063,
+      "month": "2025-09",
+      "primary": {
+        "full_means": {
+          "0.0": 0.4816204049184427,
+          "0.001": 0.2636230017361085,
+          "0.0025": -0.01499667216730372,
+          "0.005": -0.398510047396752,
+          "0.01": -1.0285536246956515
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 73,
+        "distinct_blocks": 68,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-07-22"
+        ]
+      },
+      "reference": "2025-09-02",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 73,
+        "distinct_blocks": 64,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-07-22"
+        ]
+      }
+    },
+    {
+      "history_templates": 1152,
+      "month": "2025-10",
+      "primary": {
+        "full_means": {
+          "0.0": 0.5054084658732159,
+          "0.001": 0.2854894679242751,
+          "0.0025": 0.00532810069266663,
+          "0.005": -0.37726116697712214,
+          "0.01": -1.0052226412438294
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 79,
+        "distinct_blocks": 74,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-09-02"
+        ]
+      },
+      "reference": "2025-10-07",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 79,
+        "distinct_blocks": 70,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-09-02"
+        ]
+      }
+    },
+    {
+      "history_templates": 1223,
+      "month": "2025-11",
+      "primary": {
+        "full_means": {
+          "0.0": 0.47208864207945445,
+          "0.001": 0.2519727242934637,
+          "0.0025": -0.027527814386087833,
+          "0.005": -0.40913580025852575,
+          "0.01": -1.0360169874395142
+        },
+        "radius": null,
+        "reason": "insufficient_or_uncovered_history",
+        "upper_bounds": {
+          "0.0": null,
+          "0.001": null,
+          "0.0025": null,
+          "0.005": null,
+          "0.01": null
+        }
+      },
+      "primary_support": {
+        "date_count": 83,
+        "distinct_blocks": 78,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-09-30"
+        ]
+      },
+      "reference": "2025-11-04",
+      "sensitivity_radius": null,
+      "sensitivity_support": {
+        "date_count": 83,
+        "distinct_blocks": 74,
+        "supported": false,
+        "zero_inclusion_dates": [
+          "2025-09-30"
+        ]
+      }
+    }
+  ],
+  "skip_reasons": {
+    "fewer than two context strikes": 71349,
+    "float() argument must be a string or a real number, not 'NoneType'": 22377,
+    "missing distinct liquid wing": 2428,
+    "missing liquid template contracts": 1697
+  },
+  "source_aggregate_sha256": "e62bb81f35052e0f5b3f1860a868ab11ca8d3003dd63bda2468a97148dc653b8",
+  "status": "completed replay; all primary and sensitivity monthly radii unsupported",
+  "template_count": 1374,
+  "template_dates_by_phase": {
+    "calibration": 48,
+    "entry": 43
+  },
+  "template_phases": {
+    "calibration": 667,
+    "entry": 707
+  }
+}

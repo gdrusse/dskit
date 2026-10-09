@@ -1,3 +1,77 @@
+# Active handoff — 2026-10-09: correlation_arb child + ADR-0256/0257, merged to main
+
+**Landed.** New child `children/correlation_arb` (Stage-0 source configs on existing packs, survey, inventory, staged
+plan). Five additive dskit modules:
+- `pipeline/binary_decisions.py` and `pipeline/libs/binary_market_rows.py` (ADR-0256);
+- `pipeline/digital_bounds.py`, `pipeline/binary_curve.py` and `pipeline/libs/binary_coherence.py` (ADR-0257).
+
+The ADRs were renumbered from 0248/0249 at merge. No existing dskit code changed (docs only).
+
+**Owner rulings 2026-10-09.**
+- One-sided quotes: (B). The contract stays in its relations, with fair value None and status `bad_quote`.
+- Projection: `min_spread` must be in [0.01, 1]. Every projection is certified by a duality-gap bound and refused
+  above 1e-2.
+
+**Review.** Sonnet builders and lenses. The QP hang is fixed (whitened QP and HiGHS limits). The wrong-optimum
+family is closed by the owner's domain and certificate. Final candidate `93f81a31` (plus comment-only `aba047bc`):
+- correctness lens: 0 Critical, 0 Major, 2 Minor, 3 Nit;
+- tests lens: 0 Critical, 0 Major, 6 Minor, 6 Nit.
+
+The dskit suites' FAILED set equals origin/main's (environment: missing optional libraries). The child suite gives
+67 passed, 9 skipped.
+
+**Open Minors** (full ledger in ADR-0257):
+- the certificate rarely refuses a correct solve (3 in 16k worlds with one-sided members), and a refused projection
+  loses the LP verdict;
+- FeeColumns uses the newest schedule and treats a missing lag as 0, both look-ahead-optimistic;
+- inclusive end stamps are read up to one stamp unit ahead;
+- `CurveSurvival` crashes on log-axis underflow;
+- test gaps (relation index after a skip, `by_status`, leg-order determinism).
+
+**Next.** correlation_arb Stage 1 (kill test), per `children/correlation_arb/docs/plans/2026-10-07-implementation-plan.md`:
+1. Wire the venue field map into `BinaryMarketRows`, `QuoteBarRows` and `DecisionRows` in child configs.
+2. Then run `DigitalBounds` against the binary quotes.
+
+This file was rebuilt at merge: main's copy held three concatenated halves from two keep-both merges.
+
+# Active handoff — 2026-10-09: PatchTST condor replay completed
+
+Production-realism/integration candidate0c6f5226 closed two scoped reviews0all.
+Read condor-realism-final-lock-v1.json and condor-realism-wrap-receipt-v1.json
+in the private audit for reviewed wrap and remote/branch verification.
+
+Final reporting candidate6b82e0c7 closed both independent lenses with0C/M/Minor/Nit.
+Private condor-report-final-lock-v1.json binds actual reviews and focused checks.
+
+The authorized single replay completed all10nodes, exit0, run
+793013c0e7ab77e4802d9e24927a91b41d2545e08ddef3424e22bcc2c928b238.
+Read children/index_options/docs/memos/2026-10-09-robust-condor-replay.md
+and its aggregate appendices. Nominal131condors net$5354.85; all7calibrated
+arms abstained because all10monthly rho values lacked sampler support.
+1128nominal primary solves failed the frozen zero-relative-gap acceptance
+rule despite optimal termination. Do not silently relax or rerun.
+All131settlements reconcile exactly and end flat; the largest win exceeds
+total profit. This is same-day-look-ahead research, not qualification.
+
+Execution candidate ada4169b; runtime/config remain frozen. The private audit
+/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008
+contains launch/lock, aggregate recipes, reviews and complete recovery receipt.
+Backup /home/russell/data/backups/index_options/production-universe-rerun-20261008/condor-replay-complete-v1
+verified22run files and131outcomes with originals denied; same-disk only.
+All66forecast models remain at the published model-inventory paths.
+This replay job is no longer active; never duplicate it.
+
+Next iteration needs a prospectively reviewed sampler-support and numerical
+certificate contract, retaining this run as development evidence. No new fits,
+provider acquisition, protected2026 market evaluation or live/deploy activity.
+Owner requested wrap on2026-10-09: merge and publish the reviewed completed
+research work, preserving unrelated main changes. Production-realism audit in
+the performance memo identifies material timing/fill, assignment and account
+constraints; this run is not a faithful executable-production simulation. Earlier active/blocked text below
+is historical and superseded by this completion record.
+
+---
+
 # Active handoff — 2026-10-08: rho explanation and calibration direction
 
 Owner agreed to start with average expected-loss underestimation protection,
@@ -117211,3 +117285,392 @@ Candidate 5b150ca578b7eada44ff05aa5cbba03d138e18a7: fresh correctness and tests/
 ### 2026-10-07 verified advanced study publication
 
 Reviewed release d4d00d395a6fe44f35139ebb5f2180178054afb0 is on remote main; all four report blobs match local/view copies. Task remote branch codex/advanced-interim-report-20261006 deleted with expected-head guard and absence verified. Durable receipt and three earlier contained-branch removals are in final-verification.json. This follow-up is evidence-only; reviewed code/tests/config/HTML/ADR blobs remain unchanged. Preserve frozen run artifacts/local recipes and unreviewed/concurrent work. Disable the task monitor after final receipt commit verification.
+
+### 2026-10-08 ADR-0255 equity condor robust replay: design correction pending re-review
+
+Design only on claude/robust-condor-backtest; no main merge, data copy, records,
+fits or execution. Owner-frozen scope remains intact. Current main's completed
+restored-universe inventory/ADR0254 and rho explanation are integrated into
+THIS task branch; the old85 result is historical, not the chosen model.
+
+Fresh reviews of66ad1c1e: math /root/condor_design_math_r1 (0C/3Major/2Minor);
+integration /root/condor_design_integration_r1 (0C/6Major/2Minor);
+consistency /root/condor_design_consistency_r1 (additional reporting Major,
+template/block Minors plus confirmed families). Actual full reports are
+retained in those review-agent transcripts in this task. Deduplicated families:
+all-label checkpoint cutoff;42-feature inputs; protected intake; vintage and
+holding-action basis; expiry accounting; residual sign; finite-support claim;
+diagnostic/arm routing; stale status; banded primal seam; template scope;
+reproducible calendar blocks. Use highest reported severity per family.
+
+Shape validation passed (48 expanded nodes; identity a05839da59ed61d486995693f416d7a8b92da1ed477f92934e18ffb7e7436a7f). Plan reports 21 unresolved references to the seven proposed kinds; no execution or behavior tests run before approval.
+
+This correction tightens those contracts and shortens ADR0255. It remains
+PROPOSED; no claim of clean re-review yet. Eight declared one-factor comparison
+arms use existing foreach/reporting, with no Cartesian expansion or new
+worksets. Schedule/input/mesh/rho values remain unresolved; no invented data.
+
+Next: complete all three fresh re-review lenses to zero Critical/Major/Minor;
+then ask owner G3 decisions ONE AT A TIME with recommendations. After owner's
+ADR/data-copy OK, perform G1 relocation/verification and protected census,
+G2 verified schedule onboarding, then focused tests before minimal code.
+Do not infer main-merge approval. No GitHub PR found for this branch by API;
+review is against the explicitly supplied branch commit.
+
+### ADR-0255 second correction and convergence checkpoint
+
+Candidate f7f63fdc: math_r2 0C/1Major/1Minor; integration_r2 0C/2Major/1Minor; consistency_r2 adds template-liquidity Minor (full agent transcripts retained). Calendar target-date inclusion, explicit call quantile, liquidity binding, zero-price expiry and report populations corrected together.
+
+Integration reviewer independently checkpointed the repeated accounting family: R1 missed upstream Fill positivity and downstream mandatory leg/portfolio statistics. Bounded changed approach uses public WindowBook directly and RunReport stages; removes incompatible evaluator adapters, no new accounting/reporting framework. Reviewer authorizes this design correction only, not implementation/execution. Sampling now refuses omitted/degenerate support; no fabricated calibration when sparse dates cannot support the declared blocks. Fresh three-lens review pending; owner questions/ADR approval still next, no data/model/code action.
+
+Revised shape check:32 expanded nodes; JSON identity b17566fe688df3ae66490c966994530be18dc7c49b7b9fe8cdaa65b65821be14. Only existing ADR/JSON/pickup changed; runtime and inherited manifest-test blobs unchanged.
+
+### ADR-0255 G4 design review closed; G3 owner choices next
+
+Candidate 3f8ea439c96afa14f5776346738fa12746d82c54 passed three independent GPT-6 lenses, each0 Critical/0 Major/0 Minor/0 Nit: /root/condor_design_math_r3, /root/condor_design_integration_r3 and /root/condor_design_consistency_r3. Full actual reports are retained in those agent transcripts. Earlier findings remain historical and are closed by this corrected candidate, not erased. The integration convergence checkpoint changed the accounting approach; no evaluator schema/report framework was added.
+
+Validation:32-node shape identity b17566fe688df3ae66490c966994530be18dc7c49b7b9fe8cdaa65b65821be14; plan reports21 unresolved references to seven proposed kinds. Static liquidity/arm bindings and diff checks passed. Integration's memory-only WindowBook zero-expiry probe reconciled four legs to -2.60 USD with flat positions; RunReport preserved120 rows across four stages with capped Markdown/full JSON. These are seam checks, not an implemented replay.
+
+Implementation obligation: keep raw fills out of RunReport's reserved replay.fills fallback schema so generic leg-trade rollups are not generated; pin absence of those statistics. No market data/copy, fits, real optimization or replay occurred.
+
+G4 closes design review only. Next ask G3 owner decisions one at a time, beginning expected-loss-bound versus pooled-CDF-distance criterion, with recommendations. ADR remains PROPOSED. Data-copy/ADR approval, G1 protected census/basis, G2 verified schedule/profile and tests-first implementation remain mandatory; no main-merge approval. Further owner-selected contract changes receive scoped review before code.
+
+Reviewed file SHA256 identities (unchanged by this evidence-only append):
+- docs/architecture/decision-log.md: d7b56b7dfdfb85e6ece1793f8b3d1a59a650cb78dcb75c9cf44c63178f7d2b45
+- children/index_options/configs/run-equity-condor-robust-backtest.json: 434a5590bd5d718eda024b4fd0444d558224ab0fbeed7973cb1041a99aeb3bc2
+- children/index_options/tests/test_configs.py: 4b2175c9cf9e920ac2c5216128c770cb930912a427a3b93c20cd564bf57af497
+
+### Owner-requested dual formulation memo
+
+The [dual memo](../children/index_options/docs/memos/2026-10-08-robust-condor-dual.md) publishes the reviewed primal, dual derivation, full MILP embedding, units and no-trade rule. Documentation only; ADR/config blobs remain byte-identical to reviewed3f8ea439. Owner explicitly requested this new memo and publication. No main merge, solver implementation/execution, data copying or fitting.
+
+Focused exact-manifest check initially failed on15 already-published ADR0254 files (confirmed in origin/main). Explicitly listed them plus the new memo; no ignore/assertion weakening. The one focused manifest/parity test now passes; memo relative links and diff check pass. New memo math and publication-integration review pending; earlier design review remains intact.
+
+Memo publication reviews closed on7f4401c2ba38cfd95a3c6d9f86a2393ff9583576: GPT-6 /root/condor_design_math_r1 (scoped new memo algebra) and /root/rho_explanation_correctness (independent publication integration), each0C/0Major/0Minor/0Nit. Full reports retained in those reviewer transcripts; existing reviewer threads reused for this documentary delta because fresh spawning reached the thread limit. Neither reviewer authored the memo. Memo SHA2560f8350a7ee1637f1aca52e65bae41d00be20a006c3a4eaff81dac002c57b14d2. Integration confirmed unchanged manifest assertions/generators/ignore rules and15 prior-main files; one focused test passed. This evidence append changes no reviewed memo/test/ADR/config/runtime blob. Publish to the task branch only; first G3 calibration criterion remains pending, no main merge.
+
+### Owner-requested full evaluation calendar
+
+The [evaluation-scheme memo](../children/index_options/docs/memos/2026-10-08-forecast-mio-evaluation-scheme.md) records all15 nominal fold training/monitoring/scoring ranges, completed feature/HPO/confirmation/evaluation selection semantics, proposed2024 calibration and2025 MIO entry dates, maturity/availability gaps, owner-pending radius/band/update choices and qualification limits. Date ranges derive from published metadata; no records/fits/calibration/MIO/replay ran. Explicitly requested new memo; existing manifest now478 files and focused check passes. ADR/config blobs unchanged. Scoped factual and publication review pending; no main merge or new gate approval inferred.
+
+Evaluation-scheme publication reviews closed onb00525d0d05b86c87491c7793fc05f8df8e2770d: GPT-6 /root/condor_design_math_r1 factual/methodological lens and /root/rho_explanation_correctness integration lens, each0C/0Major/0Minor/0Nit; actual reports retained in those independent review-agent transcripts. All15 fold date records match published inventory; settings, skill aggregates and66 unique fits/3 references verified. One focused manifest test passes; links/hash/diff checks pass. Memo SHA2563d3674648626baf532ee73578332177715155a73f78884736e1e79b87bd1c352. Evidence-only append; reviewed memo/test/ADR/config/runtime blobs unchanged. Publish task branch only. G3 decisions, ADR approval and execution gates remain open.
+
+
+### ADR-0255 targeted parallel implementation authorized
+
+Owner requested targeted parallel build sessions followed by independent skeptic review. Base e7a8a1b3. Three isolated lanes own (1) generic W1 dual helper and all-strike selection, (2) CDF projection and optional-band primal parity, (3) checkpoint/replay integration inventory and protected-input contracts. Existing files only; synthetic focused TDD, no market records, fits, acquisition or real replay in these lanes. Reviewed ADR/formulation governs mathematical behavior; unresolved G3 settings stay explicit and fail closed. Root integrates, locks one candidate and obtains independent correctness and integration reviews; no main merge inferred.
+
+### ADR-0255 integrated mathematical/accounting candidate
+
+Reusable build only, not a launchable replay: projection48023113 + settlementc0cd7749/818a25c5 + dualdbe580b2 integrated; no new files. Root added three synthetic cross-component fixtures. Checks:971passed/7existing skips in affected solver/child modules and import purity;20projection-focused cases passed. Exact commands use /home/russell/dskit/.venv/bin/python with task-root/child PYTHONPATH. Projection Ruff baseline51 findings unchanged; other changed files Ruff clean. No raw records, weights, fits, data copy, calibration estimate or historical optimization/replay.
+
+Independent review matrix: (A) discrete primal/dual/banded feasibility, rho0, all ordered eligible combinations, leg costs/fees, solver primary bounds and binary tie proof; (B) clipped projection moments/tails/atoms/kinks/numerical refusal and honest full-Delta limits; (C) selector-to-settlement units, malformed-input effects, bounded/confirmed settlement chronology, zero intrinsic, flat independent positions and closed-form reconciliation; (D) existing no-band/legacy settlement compatibility, lazy imports, node contracts, no generic leg-report fallback, test independence and exact evidence. Actors are caller-provided finite data and trusted in-process code; no hostile-interpreter boundary. No serving/deployment authority. Final independent correctness and integration lenses pending on one immutable combined candidate.
+
+G1/G2 and owner G3 run choices remain open; no draft placeholders are silently filled. See existing dual memo's implementation evidence for exact remaining interfaces and limits. Model inventory's nine seed11 metadata hashes and all-label cutoffs were rechecked without market records. No main merge inferred.
+
+### ADR-0255 first integrated skeptic round and batched correction
+
+Candidate9dbdf9f0893ba4dd50b1ff77146f2b8d595e5585 was NOT approved. Independent GPT-6 math /root/condor_build_skeptic_math reported0C/2Major/0Minor/0Nit; integration /root/condor_build_skeptic_integration reported0C/2Major/0Minor/0Nit. Full reports/reproducers are retained in those task transcripts. Families: primary uncertainty can misclassify the no-trade tolerance; reused approximate integrals conceal projection payoff/W1 error; selector accepts noncanonical/reversed dates and inconsistent contract identity; settlement ignores explicitly non-trade status.
+
+One batch correction: refuse an unresolved zero-versus-trade classification when primary feasible value <= tolerance < primary upper bound; propagate moment/transport quadrature-error estimates through payoff and W1 admission, distinguishing reconstruction residual from uncertainty; validate canonical chronology and contract-to-right/strike mapping before solver access while retaining legitimate same-contract long/short eligibility; refuse explicit non-trade settlement status before any accounting while preserving documented status-less selections. No scope/threat-model narrowing. Root's19 regressions showed13 expected assertion failures/6 compatibility passes before correction, then19pass; projection's2 analytic regressions independently showed expected RED before correction.
+
+Corrected affected solver/child/import-purity command:990passed/7existing skips. Projection-focused command:22passed/489deselected. Changed child files Ruff and diffcheck clean; projection Ruff unchanged baseline51 findings. New candidate needs both fresh independent final lenses; this is the first correction cycle, not closure.
+
+Metadata-only G1 inventory: both existing option stores' raw manifests list one bars.jsonl member and one contracts.jsonl member, not trusted date-partitioned payloads. Both bars manifests declare2024-01-18 through2026-08-25 effective ranges. This is metadata, not an actual maximum quote-date census. No records were opened. Under the reviewed mixed-JSON refusal rule these members cannot be fed through the ordinary reader before a safe pre2026 boundary is established; no blanket source scan or silent date-filter workaround is authorized.
+
+### ADR-0255 bounded component ReviewExit closed
+
+Locked candidate623e800e8c3b10a8ad532b7d8699264f8e90d564, base43eabca5. Fresh independent GPT-6 /root/condor_build_skeptic_math_r2 and /root/condor_build_skeptic_integration_r2 each report0C/0Major/0Minor/0Nit; full actual reports and independent probe commands are retained in their task transcripts. Prior9dbdf9f0 four-Major candidate remains historical; one correction cycle closed all families. No minor/nit backlog.
+
+Owner-authorized scope: reviewed reusable projection/banded primal, generic dual and one-context all-strike selector, exact expiry-accounting adapter, existing-file synthetic tests. Actors/contracts/matrix remain as recorded above and in ADR0255; no boundary/threat-model narrowing. Checks990pass/7existing skips plus22projection checks; math independently120couplingLP+100atomic cases, integration16selector+40accounting cases and compatibility/cold-import checks. Environment is unchanged shared WSL venv; no dependency upgrades. No post-lock code/test changes; only evidence appended. No extra hunt follows closure.
+
+Draft plan still refuses missing ParquetStreamRows, ExactDteBarChain, CheckpointCDFInference, NominalStrikeMasses and HeldOutRhoCalibration. Existing-class presence alone does not make its batch/raw JSON contract implemented. Next required work is G1 protected intake/basis and G2 verified schedule/input wiring, plus owner G3 criterion and remaining settings; then focused adapter implementation and candidate review before any real replay. The pending first owner choice is expected-loss bound versus pooled CDF distance. No numerical rho or bands were invented. Main merge remains unauthorized for this task. Preserve original data stores, all fitted models and other sessions.
+
+Reviewed code/test Git blob identities:
+- dskit/pipeline/libs/predictive_cdf.py: a580f9f426034ed3aea39e13cf294fe77597143f
+- dskit/pipeline/libs/pyomo.py: c7f5405ab9d12bd0c4568a37efccfeb4e8030265
+- children/index_options/index_options/nodes.py: 2382df13f688db41adfd8b742da855057860b887
+- tests/pipeline_libs/test_predictive_cdf.py: 41df1316330df503dddde920a608c348da13dae9
+- tests/pipeline_libs/test_pyomo.py: 18557425ec229bf4cfa0174d1a8537a268c17e2d
+- children/index_options/tests/test_nodes.py: 8476639c459bfeff90e4c69f9b10230a3f70c43b
+- children/index_options/tests/test_quote_backtest.py: 4e9d064253a01dc899d3aa3d1ac54ed3f83f2156
+
+
+### ADR-0255 owner selected calibration criterion A
+
+Owner explicitly selected expected-loss calibration (2026-10-08). Use realized expiry loss minus robust expected loss on the prespecified audit-template population, with the reviewed dependence-aware mean-bound diagnostic. Pooled CDF distance is not the primary rho criterion. This does not validate every conditional forecast or every optimizer-selected trade; later selected-policy evaluation remains separate.
+
+Only the criterion is settled. Next owner choice, asked one at a time per ADR0255: finite configured rho grid versus continuous bisection. Search/selection/update phases, projection-error policy and remaining numerical settings are not inferred from this answer. Runtime/config/test blobs and the clean component ReviewExit remain unchanged. No market records, numerical calibration, fits or replay were run.
+
+
+### ADR-0255 owner approved finite-grid empirical rho procedure
+
+Owner approved the explained grid procedure after confirming that each audit template is evaluated at five candidate radii and bootstrap reuses cached losses. Record expected_loss_bound / finite_grid / smallest_passing in the proposed JSON; retain its five original radii and all other numerical values. Zero radius may use the nominal expectation directly; no passing value is unsupported, without automatic expansion.
+
+Correct the worked explanation: current ADR audits fixed templates, not a newly optimized trade at each radius. Evidence applies to those templates; later MILP-policy assessment remains separate. Cache identity includes all relevant forecast/model/source/grid/payoff/band/numerical inputs. These are proposed adapter semantics, not implemented caching or a real run. Exact residual weighting/update phases and remaining G3 settings are still open. Source/test blobs and prior clean component review remain unchanged. Scoped documentary/config consistency reviews pending; no market records, fits or replay.
+
+
+### Empirical grid publication review and monthly-history owner choice
+
+Candidate54381811af5606e337961b877425de1c179e5ec5 closed independent GPT-6 /root/rho_grid_explanation_math and /root/rho_grid_explanation_integration, each0C/0Major/0Minor/0Nit; full actual verdicts retained in their transcripts. Shape hash7fa7e0bbace265c58ea74b868bb2f2742759842d7e49a4174bb1713b413eecf9, one focused manifest check passed, changed links/diff check passed. Source/test blobs remain identical to623e800e.
+
+Owner then selected monthly updates appending only2025 outcomes settled and published before each monthly cutoff. Proposed config replaces calibration-only phase with explicit history_phases=[calibration,entry]. Keep the same fixed audit-template population regardless of optimizer trade/no-trade; no selected-policy substitution or retrospective decision changes. No new numeric lag/weights/Delta approval inferred. Scoped monthly-delta review pending; no market records, fits or real replay.
+
+
+Monthly-history candidatec23cd605ec13b4dd1728fe31704fc1cd68d81115 closed fresh independent GPT-6 /root/rho_monthly_contract_review and /root/rho_monthly_integration_review, each0C/0Major/0Minor/0Nit. Full actual verdicts retained in their transcripts. Only graded delta from54381811 is phase=calibration replaced by history_phases=[calibration,entry]; other values unchanged. Shape validation32nodes/hashac48991979a5d2ecd3007ea41f46560278667fa5ac16466fdd78ec6016483095 and diff checks pass. No source/test changes; earlier component lock and initial grid review preserved. Publication is task-branch only, not launch/main-merge readiness. Next owner choice is direct strike-grid calibration versus a separately verified full forecast-to-grid allowance; question pending.
+
+
+### ADR-0255 owner selected direct strike-grid calibration
+
+Owner answered A to calibrating rho on the actual strike-grid probabilities and reporting projection diagnostics separately, with no additional forecast-to-grid allowance. Proposed rho_calibration.params.projection_offset_policy=diagnostic_only records that choice. It does not waive mesh checks, approve numeric tolerances or claim coverage of the full continuous distribution. Correct the draft projection evidence description to the implemented clipped-support diagnostic; full Delta remains unavailable unless separately verified. Source/test blobs remain unchanged; this documentation/config decision awaits the final remaining-settings scoped review before real execution. No empirical calibration, market records, fits or replay. Remaining G3 questions start with mesh/score weights, then tie/publication/liquidity/tiering/roots.
+
+
+### Owner-authorized Terra adapter build lanes
+
+Owner requested Terra subagents to accomplish the remaining data/inference/calibration components. Base27e3a06a; latest approved choices are expected-loss finite-grid/smallest-passing, monthly prior-only calibration-plus-entry audit templates, and direct strike-grid calibration with diagnostics only. Three isolated lanes inventory/sweep before focused TDD: intake owns parquet/observations readers and child DTE adapter; inference owns predictive_cdf checkpoint/projection wrappers; calibration owns shared stats plus child cdf_study template/calendar/radius adapter. Root owns integration/configs/shared handoff; agents do not edit shared root docs or other lanes. Existing files only. Preserve old worktrees and artifacts.
+
+Reviewed ADR0255 governs existing design; a demonstrated new behavioral contract needs a scoped Phase0 review before code. Unresolved numeric settings remain required explicit parameters, not invented approvals. No2026 market records, raw mixed-year scans, acquisition, fits, spend, environment upgrades, real replay or main merge in these lanes. Synthetic fixtures and source/checkpoint metadata inventory only; actual data safety and inference recovery remain execution gates. Each lane must report expected RED, focused GREEN, source sweep, exact commit and remaining gaps; root then integrates and obtains two fresh independent final skeptic lenses. Do not claim a registered name alone makes the full replay runnable.
+
+
+Terra dispatch: /root/terra_replay_intake and /root/terra_replay_inference launched with explicit modelgpt-5.6-terra in isolated condor-terra-intake/inference-20261008 worktrees at9c281b56. Third spawn reached agent-thread limit; calibration worktree already exists at samebase and is explicitly queued to the intake Terra worker after its bounded intakecommit. It owns sharedstats+childcdf_study for that follow-on, not predictive_cdf. Root config/sharednotes remain exclusivelyowned here.
+
+Independent Phase0 reviewer /root/condor_build_skeptic_math identified nonexistent trusted perfield/member temporal authority and stale-dedup risk from skipping overlappingmixedmembers. No invented provenanceflag/schema is approved. Narrow intake to existing DateBoundedParquet/ParquetRows with explicit snapshot/duplicate semantics plus childDTEprojection overalreadyboundedrecords; protectedmixedJSON remains a genuine real-data gate. Reviewer is checking inference chronology/load boundary next. All realpayloads remain unopened. These are activebuild/review tasks, not a runningbacktest.
+
+### Autonomous replay completion resumed
+Owner requests autonomous completion through launch and an MIO evaluation memo. Root replaced stalled app reviewers with live Luna collaboration reviewers and took over bounded intake/sampler work. Existing numeric draft settings remain explicit research assumptions; no2026 intake exception is inferred. CalendarBlockBootstrap implements the already-reviewed ADR0255 complete-calendar-block contract in existing shared stats, leaving the legacy circular sampler unchanged. No new files or fits.
+
+
+### Intake and sampler bounded locks
+Parquet candidate fb6c70612a7ef3bf2d6552b036255612c202482b:
+Luna /root/luna_pinned_intake_correctness 0C/0Major/0Minor/0Nit;
+independent /root/luna_pinned_intake_tests 0C/0Major/1Minor/0Nit.
+Minor backlog: no isolated corruption-between-two-verifications test;
+both verification guards exist; hostile concurrent mutation is not claimed.
+71 focused tests, Ruff and diff check passed. Root copies exact reviewed
+parquet source/test blobs only, preserving other lane/current history.
+
+Calendar candidate70fdae216cbce382d3c47c1b50c7fdbf6e0a18f0:
+Luna /root/luna_calendar_correctness 0C/0Major/0Minor/0Nit;
+independent /root/luna_calendar_integration 0C/0Major/1Minor/0Nit.
+Minor backlog: draw-parameter/default-deny negative test coverage; implementation
+rejects correctly. 295 focused stats tests, Ruff, diff and reviewer cold-import
+probe passed. Legacy circular bootstrap unchanged. Neither lock is replay
+or empirical calibration approval. Full reports retained in named transcripts.
+
+Calendar-radius candidate: existing AdaptiveWassersteinRadius.select gains optional calendar_days; default circular recipe untouched. New mode uses paired daily counts, shared complete-calendar draws, observed-mean AND upper-bound gate, support diagnostics and no-LP resampling. Five focused radius tests pass; missing-date regression first failed DID NOT RAISE, then passes. Both child Ruff baselines unchanged (11 total). Await independent scoped review; not actual calibration.
+
+
+### Projection and calendar-radius locks; exact-DTE candidate
+Projection27178ad1: fresh Luna /root/luna_projection_r2_math and
+/root/luna_projection_r2_tests both0C/0Major. Minor backlog: huge integer
+policy input can raise OverflowError instead of accumulated config problems;
+positive Student projection fixture missing. Both fail closed or lack coverage,
+not silently valid real inputs. Gaussian/Student-only contract is explicit.
+31 author focused tests passed; reviewer supersets also passed. Existing grid
+owner unchanged; root imports exact reviewed source/test blobs. Rejected
+CheckpointCDFInference stub was removed, not delivered as working inference.
+
+Calendar-radius209d3e52: /root/luna_calendar_radius_math and
+/root/luna_calendar_radius_tests both0C/0Major/0Minor/0Nit. Five focused
+radius tests passed, default legacy algorithm retained, no actual calibration.
+
+ExactDteBarChain is a pure child transform of already bounded records:
+explicit mapped fields, disjoint named phases, exact DTE, standard declared
+multiplier, finite values, duplicate-contract/date refusal, identified skips.
+It is not a mixed-JSON reader or a split/deliverable verifier. Upstream source
+and adjustment gates remain. Nine new tests and Ruff pass; review pending.
+Owner's date-only screening question remains pending; do not parse mixed2026
+options records without the specific boundary decision.
+
+### Exact-DTE lock and replay completion lanes
+ExactDteBarChain candidate1e031b3340e05914b059aa5ccde9e04db813e48b:
+Luna /root/luna_dte_correctness:0Critical/0Major/2Minor/0Nit;
+Luna /root/luna_dte_integration:0Critical/0Major/0Minor/0Nit.
+Nine focused cases and Ruff pass (327 affected child tests passed earlier).
+Minor backlog: whitespace-only identities admitted; missing records raises
+KeyError instead of documented ValueError. Neither changes date/source gates.
+No post-lock code edits. Full actual reports are retained in reviewer transcripts.
+
+Owner now explicitly requests autonomous completion through actual replay and
+MIO performance memo. Terra finish_rho_adapter owns cdf_study/tests in isolated
+condor-rho-final-20261008; Terra finish_batch_selector owns child nodes/tests in
+condor-terra-intake-20261008. Preserve the dirty earlier calibration checkout.
+Root handles immutable saved-forecast preparation and final wiring; no new fits.
+Saved seed11 evaluation curves already exist in the onboarded restored-universe
+source. Private preparation recipes preserve failed v1 (wrong byte hash used
+instead of canonical snapshot identity) and corrected v2; no output produced by
+the failed attempt. This is input preparation, not a launched MIO backtest.
+
+The mixed-year option source date-only screening question remains pending.
+No2026 market values or mixed records have been parsed. Complete safe independent
+work while waiting. The fixed calendar-block support rule must remain explicit:
+sparse weekly dates may leave tail dates with zero inclusion and yield null rho.
+Do not hide unsupported calibration, discard its tail, or expand the grid.
+
+
+### Replay inputs recovered; batch/calibration integration candidate
+Archived seed11 preparation recipe v3 (SHA256
+0ba85f411a32b3915d6245b9042dad2365dbab595779a5f4cc722a1d50c836ca)
+closed two independent lenses: Luna app thread
+01a11e50-d663-7891-8cc9-15ff97cd3fe5 and /root/condor_build_skeptic_math,
+both zero Critical/Major; deferred Minor is the missing reversed-phase guard
+(actual frozen windows are correct). Its 99,225 exact saved curves were
+onboarded as condor-archived-forecasts-20261008-v2, stream forecasts, existing
+index_options/ob root. Acquisition 20261009T015247Z-backfill-a624eb4d;
+snapshot 2f9cd39f17329ca6d6da51e0dda3b80dca59ce6e6d329b3da67e9d1115e52bce.
+All rows round-trip exactly, canonical record SHA256
+ec9b4e1584740d2bc132790a2772c31d7c5d3720516e92f2eb2143bd2783ff90.
+No fits or inference calls. Spot remains split-adjusted, not strike-basis certified.
+
+Projection performance correction fddb32e44b35e91226e279a09c759f290a21085c
+closed the same two independent lenses with zero Critical/Major.
+The deferred fixture-discrimination issue was Minor in the second lens
+(Nit in the first); independent four-distinct-grid base/candidate outputs
+matched exactly. Numerical projection is unchanged. No further nit edits.
+
+Copied and verified the original 9.2GB option-universe-100 store to
+/home/russell/data/stock_options/option-universe-100: two snapshots checked,
+zero problems. Original worktree-hosted store preserved. Mixed-year records
+remain unopened pending date-only screening permission. A separate owner
+question requests corporate-action metadata only, including later split
+adjustments, to establish historical stock/strike units; no approval inferred.
+
+Root integrates Terra batch9f954d30 and calibration4b93bd4d in existing child
+source/test files only. Root RED exposed lost monthly references, missing
+skip provenance, upper-middle rather than actual even-sample median, and
+an accidental settlement-input regression. Seven targeted failures became
+passing after family corrections; a holding-exclusion calibration regression
+also failed then passed. All774 tests in the three affected child test modules
+pass. Ruff remains at11 pre-existing findings; no full suite. New adapter
+candidate needs two independent final lenses before use.
+The batch adapter resolves the eight arms once, so final wiring must not
+wrap it in the old eight-arm foreach. Calibration uses explicit flat settings,
+prior-only publication cutoffs, existing curve/grid/bootstrap owners and
+holding exclusions. Existing draft JSON is not yet runnable.
+
+Round1 candidate23fc31eb did not close: /root/condor_build_skeptic_math
+reported0C/4Major (calendar/count settings, arm semantics, tier fallback,
+publication offset); Luna app reviewer01a11e50-d663-7891-8cc9-15ff97cd3fe5
+reported0C/3Major (overlapping arm/tier defects plus forecast-label settlement
+mismatch). Full reports remain in those transcripts. Root accepted all five
+families. Ten new regressions failed on that candidate; corrected candidate
+validates actual31/62-day settings, names all arm semantics, skips unknown tiers,
+uses settlement-relative publication with confirmation, and binds label dates
+through calibration and final settlement. New review round required.
+
+The saved-input backup under production-universe-rerun-20261008/condor-inputs-v2
+recovered all99225 rows with both original input roots denied. Private
+condor-inputs-v2-recovery-receipt.json preserves hashes and limits. Same disk,
+not off-device recovery. No cleanup or MIO execution.
+
+Draft JSON now uses actual implemented interfaces and one batch-eight-arm
+selector, not eight duplicated batch calls. Four final input streams remain
+deliberately PENDING until G1 protected conversion and strike-basis proof.
+Two numerical mesh-admission limits remain explicit nonnumeric placeholders;
+planning must refuse them. No run or empirical calibration result exists.
+
+Candidate2 verification: 1408 affected tests passed on the initial four-module
+run; five CLI subprocess checks imported another worktree because PYTHONPATH
+was relative. All five pass with both checkout and child absolute paths, no
+code/test/environment change. Thus all1413 affected cases pass; no full suite.
+Ruff remains11 unchanged findings; diff check passes. Review candidate2
+closes only implemented adapter families, not pending source/mesh launch gates.
+
+Candidate a103b701 is now LOCKED for the five adapter correction families and
+static draft wiring: /root/condor_build_skeptic_math closes0C/0M/0Minor/0Nit
+(18 focused tests plus independent synthetic probes); fresh GPT-6 Luna
+/root/condor_adapter_integration_final closes0C/0M/1Minor/0Nit (16 focused
+tests). Deferred Minor: permanent tests lack positive matching-label settlement;
+math reviewer independently verified that success and197.40USD reconciliation.
+No post-lock code/test edits. Private condor-adapter-candidate2-lock.json binds
+source/test/config/contract/dependency SHA256 values and both transcript IDs.
+The earlier app review stalled awaiting approval; it is not counted as closure.
+Both requested memos now distinguish completed implementation/input recovery
+from unrun MIO performance and specify the eventual full aggregate report.
+
+Launch remains blocked: no approved mixed-year intake exception, no approved
+later-action metadata exception for as-traded basis, two unset mesh admission
+limits, and consequently no verified final four derived input streams. The
+existing SQLite projection can parse excluded JSON internally; it is not a
+proof that protected source values are never read. No2026 market evidence,
+real MIO run or empirical performance result is supplied. No main merge or
+branch purge while this bounded research run remains incomplete.
+
+
+Owner decision2026-10-09 supersedes the earlier B refusal: A is approved.
+Limited exception: process owned mixed-year files solely to extract pre2026
+option records, and inspect split dates/ratios including2026 actions to restore
+historical stock/strike units. SQLite may internally parse excluded values.
+No2026 market prices, forecasts or outcomes may be returned, retained, scored
+or used in the replay. Preserve explicit projection SQL, schema checks,
+snapshots, source hashes, original envelopes and deduplication evidence.
+No acquisition, fits or spending. This closes the permission gate only;
+historical basis, actual source conversion and numerical limits still require
+evidence before launch. Existing synthetic adapter review remains scoped to
+candidate a103b701; actual conversion recipes require their own review.
+
+
+Owner decision2026-10-09: neither proposed distribution-distortion cutoff is
+approved. Do not adopt either 5-percentage-point/0.1%-of-spot or
+10-percentage-point/0.25%-of-spot limits, or substitute arbitrary replacements.
+Withdraw that multiple-choice question. This rejection does not relax numerical
+payoff preservation, probability coherence, solver certificates or LP/MILP parity.
+The current draft still requires numerical cdf_tolerance/w1_tolerance values;
+reconcile that interface with this decision before replay rather than silently
+inserting permissive numbers. Existing code reviews remain scoped to the
+unchanged implementation. No real replay has launched.
+
+
+ADR0255 owner-directed launch correction (2026-10-09): rejection of both
+proposed distribution cutoffs plus instruction to continue authorizes explicit
+diagnostics-only CDF/W1 projection settings. Represent disabled admission limits
+as JSON null, not arbitrary large numeric values. Existing positive finite
+numeric limits retain their prior behavior. Probability coherence, finite data,
+quadrature/payoff budgets and solver/parity checks remain enforced. Retain both
+distortion diagnostics in run evidence; do not imply continuous-ball equivalence.
+Acceptance: null/null and each independently disabled limit, legacy numeric
+refusals, malformed values, mandatory numerical refusals and node/config parity.
+Modify only existing projection owner, its node, existing tests and draft JSON;
+scoped independent review before real use.
+
+
+ADR0255 bounded input execution clarification: the owned archived split inventory
+supports reconstruction conditional on its completeness, not certification of
+completeness. Pin action/raw/parquet/snapshot identities and label the assumption.
+The84 explicit current inventories and separately attested older-source evidence
+are evaluated individually; 307 missing-inventory histories remain UNKNOWN.
+Preserve every intended forecast context with an explicit price-basis refusal
+rather than silently changing the model universe or inventing as-traded prices.
+Numerical conversion, original-spot agreement, settlement identities and
+holding-window exclusions remain mandatory. This is retrospective research;
+coverage is reported separately from the392-name model training universe.
+Independent adjudication /root/finish_batch_selector and Luna thread
+01a11ff5-ee1b-7483-bfbc-e7c12402d602 close the clarified design with0Critical/Major;
+actual recipe review remains required. No new provider acquisition or fitting.
+
+
+## 2026-10-09 condor replay launched
+
+Actual authorized replay launched at10:44:26UTC from candidate
+ada4169b2c307a5585444193a73ed1344cc11b74 (pushed and remote verified).
+Private audit root remains
+/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008.
+Read condor-replay-launch-v1.json (PID3777999/start42100212),
+condor-replay-execution-lock-v1.json, and condor-replay-v1.log before
+any dispatch. Never duplicate this run. Output root:
+/home/russell/data/index_options/production-universe-rerun-20261008/condor-replay-run-v1.
+
+Four streams are registered as condor-replay-inputs-20261009-v5, verified,
+and recovered from second copies with originals denied. No off-device claim.
+Source population404; modeled chain388 of392 intended; all99225 saved
+forecasts retained. Before projection/template/liquidity checks, usable
+basis+chain covers2796 calibration contexts/72symbols/48dates and2772 entry
+contexts/79symbols/43dates. Actual entry input dates end2025-11-25; the
+frozen configured window still ends2025-11-28. Unknown price basis and known
+action overlaps are explicit refusals, not fabricated prices or changed models.
+
+Both final binding reviews close0Critical/Major/Minor/Nit. Existing core,
+projection and preparation locks remain intact. The private convergence
+record preserves the prior failed correction rounds. The current run is
+research using same-day average fills and assumed costs, not executable
+profitability or independent qualification. Completed result and recovery are now recorded in the top handoff and the
+2026-10-09 performance memo; the original launch record is retained here. Do not change settings after observing performance.

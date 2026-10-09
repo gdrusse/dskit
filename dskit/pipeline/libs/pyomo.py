@@ -128,6 +128,7 @@ __all__ = [
     "PyomoSolve",
     "ScenarioUtilitySolve",
     "SolveRecord",
+    "WassersteinDual",
     "register",
     "tangent_utility",
 ]
@@ -3235,3 +3236,103 @@ def register(registry=None) -> None:
     for name, cls in NODE_KINDS:
         if name not in registry:
             registry.register(name, cls)
+
+
+class WassersteinDual:
+    """Embed an exact finite-grid W1 worst-expectation dual in a Pyomo model.
+
+    Parameters
+    ----------
+    grid, masses : sequence of float
+        Ordered support and simplex probabilities, validated by DiscreteCDFGrid.
+    radius, scale : float
+        Nonnegative dimensionless radius and positive support-distance divisor.
+    q_lo, q_hi : sequence of float or None
+        Optional nominal-containing cumulative bands on every grid node.
+
+    Examples
+    --------
+    Construct the ambiguity set, then attach losses (constants or expressions)::
+
+        dual = WassersteinDual([80., 100., 120.], [.2, .6, .2], .01, 100.)
+    """
+
+    def __init__(self, grid, masses, radius, scale, *, q_lo=None, q_hi=None):
+        from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+
+        if (not number_ok(radius) or radius < 0
+                or not number_ok(scale) or scale <= 0):
+            raise ValueError("radius must be nonnegative and scale positive finite numbers")
+        self.distribution = DiscreteCDFGrid.from_masses(grid, masses)
+        self.bands = self.distribution.validate_bands(q_lo, q_hi)
+        self.radius, self.scale = float(radius), float(scale)
+
+    def attach(self, model, losses, name="wasserstein"):
+        """Add a block whose cost is the worst expected loss when minimized.
+
+        Parameters
+        ----------
+        model : pyomo.environ.ConcreteModel
+            Caller-owned model; the component name must be unused.
+        losses : sequence of numeric expressions
+            One finite numeric constant or caller-owned linear expression per node.
+        name : str
+            Unique block component name.
+
+        Returns
+        -------
+        pyomo.environ.Block
+            Dual variables, constraints and cost expression; no objective is added.
+
+        Raises
+        ------
+        ValueError
+            Invalid component name, loss shape, numeric constant or nonlinear loss.
+        """
+        from pyomo.environ import Block, Constraint, Expression, NonNegativeReals, Reals, Var
+        from pyomo.core.expr.numvalue import value
+        from pyomo.repn.standard_repn import generate_standard_repn
+        from pyomo.core.expr.visitor import identify_variables
+
+        grid = self.distribution.grid
+        losses = list(losses)
+        if len(losses) != len(grid) or not isinstance(name, str) or not name or hasattr(model, name):
+            raise ValueError("loss shape or unused block name is invalid")
+        for loss in losses:
+            repn = generate_standard_repn(loss)
+            if not repn.is_linear():
+                raise ValueError("losses must be linear expressions")
+            if any(not number_ok(value(coefficient, exception=False))
+                   for coefficient in (repn.constant, *repn.linear_coefs)):
+                raise ValueError("losses must have finite coefficients")
+            if any(variable.model() is not model
+                   for variable in identify_variables(loss, include_fixed=True)):
+                raise ValueError("losses reference foreign-model variables")
+        block = Block(concrete=True)
+        model.add_component(name, block)
+        indices = range(len(grid) - 1)
+        block.level = Var(domain=Reals)
+        block.alpha = Var(indices, domain=NonNegativeReals)
+        block.beta = Var(indices, domain=NonNegativeReals)
+        block.gamma = Var(domain=NonNegativeReals)
+        block.mu = Var(indices, domain=NonNegativeReals)
+        block.nu = Var(indices, domain=NonNegativeReals)
+        if self.bands is None:
+            for j in indices:
+                block.mu[j].fix(0.)
+                block.nu[j].fix(0.)
+        block.loss_bound = Constraint(
+            range(len(grid)), rule=lambda b, k:
+            b.level + sum(b.alpha[j] - b.beta[j] + b.mu[j] - b.nu[j]
+                          for j in indices if j >= k) >= losses[k])
+        block.transport = Constraint(
+            indices, rule=lambda b, j:
+            b.alpha[j] + b.beta[j] <= b.gamma * float(grid[j+1]-grid[j]) / self.scale)
+        cumulative = self.distribution.masses.cumsum()
+        band_cost = (0. if self.bands is None else
+                     sum(block.mu[j] * float(self.bands[1][j])
+                         - block.nu[j] * float(self.bands[0][j]) for j in indices))
+        block.cost = Expression(expr=block.level + self.radius * block.gamma
+                               + sum((block.alpha[j]-block.beta[j]) * float(cumulative[j])
+                                     for j in indices) + band_cost)
+        return block

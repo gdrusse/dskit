@@ -25,7 +25,7 @@ from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, reject_unknown_params
 
-__all__ = ["DateBoundedParquet", "NODE_KINDS", "ParquetFrameCache", "ParquetRows", "register"]
+__all__ = ["DateBoundedParquet", "NODE_KINDS", "ParquetFrameCache", "ParquetRows", "ParquetStreamRows", "register"]
 
 
 def _sha256(path):
@@ -375,6 +375,127 @@ class ParquetRows(Node):
         return {"records": records}
 
 
+class ParquetStreamRows(Node):
+    """Read every Parquet member of one or more onboarded snapshots.
+
+    Each source declares its own projection and non-empty protected date
+    bounds.  Each explicit manifest pin resolves one snapshot, every member
+    is hash-checked, and :class:`DateBoundedParquet` applies the bounds before
+    records are materialized.  Sources are read in declared order and members
+    in lexical manifest order; their records are concatenated in that order.
+    This node has no cross-source deduplication or latest-vintage claim: roots
+    are independent snapshots and a caller that needs a winner must name that
+    authority upstream.
+    """
+
+    role = "data"
+    outputs = ("records",)
+    _PARAMS = ("sources",)
+    _SOURCE_KEYS = ("root", "source", "stream", "snapshot", "columns", "read_bounds")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return declaration problems without opening an onboarded payload."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        sources = params.get("sources")
+        if not isinstance(sources, (list, tuple)) or not sources:
+            return problems + ["sources is required: a non-empty list of source declarations"]
+        for number, source in enumerate(sources):
+            prefix = f"sources[{number}]"
+            if not isinstance(source, dict):
+                problems.append(f"{prefix} must be a mapping")
+                continue
+            unknown = sorted(set(source) - set(cls._SOURCE_KEYS))
+            problems += [f"{prefix}: unknown key {key!r}" for key in unknown]
+            for key in ("root", "source", "stream"):
+                if not isinstance(source.get(key), str) or not source[key]:
+                    problems.append(f"{prefix}.{key} must be a non-empty string")
+            pin = source.get("snapshot")
+            if (not isinstance(pin, str) or len(pin) != 64
+                    or any(c not in "0123456789abcdef" for c in pin)):
+                problems.append(f"{prefix}.snapshot must be a lowercase SHA256 manifest pin")
+            columns = source.get("columns")
+            if (not isinstance(columns, dict) or not columns
+                    or not all(isinstance(k, str) and k and isinstance(v, str) and v
+                               for k, v in columns.items())
+                    or len(set(columns.values())) != len(columns)):
+                problems.append(f"{prefix}.columns must map unique output names from non-empty source names")
+            problems += [f"{prefix}.{problem}" for problem in
+                         DateBoundedParquet.problems(source.get("read_bounds"))]
+        return problems
+
+    def _snapshots(self):
+        """Resolve explicit, verified manifests; never infer a latest inventory."""
+        from pathlib import Path
+
+        from dskit.onboarding.observations import verified_payload_dir
+        from dskit.onboarding.snapshot import read_manifest, snapshot_hash
+
+        snapshots = []
+        for source in self.params["sources"]:
+            payload = Path(verified_payload_dir(
+                source["root"], source["snapshot"], source["stream"]))
+            snapshot_dir = payload.parent.parent
+            manifest = read_manifest(str(snapshot_dir))
+            if snapshot_hash(manifest) != source["snapshot"]:
+                raise ValueError(f"{self.key}: pinned manifest identity changed")
+            if manifest["source"] != source["source"]:
+                raise ValueError(f"{self.key}: snapshot belongs to another source")
+            prefix = f"{source['stream']}/"
+            files = sorted(
+                (entry["relpath"][len(prefix):],
+                 payload / entry["relpath"][len(prefix):], entry["sha256"])
+                for entry in manifest["files"]
+                if entry["relpath"].startswith(prefix))
+            if not files:
+                raise ValueError(f"{self.key}: pinned stream has no manifest members")
+            snapshots.append({
+                "source": source["source"], "stream": source["stream"],
+                "snapshot": snapshot_dir.name, "manifest_sha256": source["snapshot"],
+                "columns": source["columns"], "read_bounds": source["read_bounds"],
+                "files": files})
+        return snapshots
+
+    @staticmethod
+    def _identity(snapshots):
+        """Return the manifest-level identity, deliberately excluding local paths."""
+        return [{"source": snap["source"], "stream": snap["stream"],
+                 "snapshot": snap["snapshot"], "manifest_sha256": snap["manifest_sha256"],
+                 "members": [(rel, digest) for rel, _path, digest in snap["files"]]}
+                for snap in snapshots]
+
+    def fingerprint(self):
+        """Pin every source snapshot and every manifest member digest."""
+        if getattr(self, "_pinned", None) is None:
+            self._pinned = self._snapshots()
+        items = self._identity(self._pinned)
+        return {"kind": type(self).__name__, "snapshots": [
+            {"source": item["source"], "stream": item["stream"], "snapshot": item["snapshot"],
+             "manifest_sha256": item["manifest_sha256"],
+             "members": [rel for rel, _digest in item["members"]]} for item in items],
+                "sha256": value_hash(items)}
+
+    def run(self, ctx, inputs):
+        """Verify pinned members, bound them in Arrow, then emit projected records."""
+        pinned = getattr(self, "_pinned", None)
+        snapshots = self._snapshots()
+        if pinned is not None and self._identity(snapshots) != self._identity(pinned):
+            raise ValueError(f"{self.key}: source snapshot changed between fingerprint and run")
+        records = []
+        for snapshot in snapshots:
+            for rel, path, digest in snapshot["files"]:
+                if not self._verified_bytes_ok(path, digest):
+                    raise ValueError(f"{self.key}: {rel!r} no longer matches manifest sha256 {digest}")
+                columns = snapshot["columns"]
+                table = DateBoundedParquet(path, list(columns), snapshot["read_bounds"]).read()
+                data = {out: table.column(src).to_pylist() for src, out in columns.items()}
+                records.extend(dict(zip(data, row)) for row in zip(*data.values()))
+        return {"records": records}
+
+    _verified_bytes_ok = staticmethod(ParquetRows._verified_bytes_ok)
+
+
 class ParquetFrameCache:
     """Keep one built DataFrame on disk per identity, and reuse it while the identity holds.
 
@@ -586,7 +707,8 @@ class ParquetFrameCache:
 
 
 #: The pack's kinds.
-NODE_KINDS = (("parquet-rows", ParquetRows),)
+NODE_KINDS = (("parquet-rows", ParquetRows),
+              ("parquet-stream-rows", ParquetStreamRows))
 
 
 def register(registry=None):

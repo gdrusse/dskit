@@ -30658,6 +30658,143 @@ Configuration and SQL are trusted program inputs. Source documents are untrusted
 
 **Manifest/verification:** New dated JSON panel/source/liquidity/experiment instances; existing decision log, pickup, journal and dated memo/report. Reuse existing generic fit/checkpoint/score owners without code changes. Retain public split research, bounded source-to-panel reconciliation, configurations, dependencies, all fit/forecast/failure artifacts and recovery evidence privately beside existing data. Verify exact fold/purge and fixed config diffs, per-fold capacity/paired identities, source hashes and second-copy recovery before fitting. Existing unchanged code reviews remain valid; two fresh scoped configuration/evidence lenses before fits. Narrowed Phase0 /root/universe_policy_design (GPT-6) accepted with zeroCritical/Major; report patchtst-scope-phase0.txt SHA256e87874de0e6d05655d228a135d5c976025b01ce7d2ad0438133854f6e019ad99. No production qualification, confidence guarantee or invented uncertainty radius.
 
+## ADR-0255 — Equity iron-condor robust-selection research replay (PROPOSED)
+
+**Implementation authorization (2026-10-08):** owner explicitly requested targeted parallel build sessions and skeptic review after the cross-branch capability audit. This authorizes the reviewed reusable mathematical mechanisms and integration code with synthetic tests now. Unanswered G3 numerical/statistical choices remain required explicit configuration; no default may represent owner approval, and G1/G2 plus selected G3 settings still gate a real replay. Existing-file edits only in this build; no new package or market data access.
+
+**Status:** owner-frozen scope, otherwise PROPOSED. Fresh reviews of66ad1c1e found the families recorded in RE-ENTRY; corrections below await re-review. No code/data relocation/run until G1-G4 close; no main merge without owner approval. No2026 records, acquisition, fits or spend. ADR0254 and the restored-universe inventory are published on main; the old85 result is not this model. Already-inspected2024-2025 remains research evidence.
+
+**Scope:** one-lot equity condor per ticker-date, exact DTE31, single-trade expiry payoff; early assignment ignored and labeled. Own-date close-based forecast with own-date VWAP is explicitly look-ahead, not executable. All strictly ordered eligible strike combinations, no width/OTM/count cap. Grid is all chain strikes before liquidity; mean-preserving bounding-strike placement. Config owns values. Node names refer to shared pipeline or foreach.pipeline; fan-out is only declared comparison arms, not tickers.
+
+**Formulation:** research/distribution-modeling/simple-formulation-with-robustification.md (3)-(4), explained by I1-I5 in explanations/robust-condor-selection.md. Declared deviations: strike-only grid, collapsed tails, unrestricted ordered candidates, nominal/rho-only arms until bands are admitted. One common ambiguity set per context. Dualized MILP:
+
+Notation: $J=\lbrace 1..m-1\rbrace$, $w_j=(s_{j+1}-s_j)/S_t$, $M$ the multiplier. Each leg $\ell\in\lbrace LP,SP,SC,LC\rbrace$ has its own eligible set (contracts of that type passing the liquidity rule with a vwap that day), $y_i^{\ell}=0$ off it. Each contract has its own price $v_i^{\ell}$ and haircut $h_i^{\ell}=\max(\text{floor},\text{pct}\cdot v_i^{\ell})$ (a put and a call at one strike differ). $f(y)=4z\cdot\text{fee}/M$. $hi_j,lo_j$ are band constants (`bands`); $J^{\text{band}}\subseteq J$ is the band-constrained set, $\mu_j=\nu_j=0$ off it. $y,z\in\lbrace 0,1\rbrace$, $\lambda$ free, $\alpha,\beta,\gamma,\mu,\nu\ge0$.
+
+```math
+\begin{aligned}
+c(y)&=\textstyle\sum_{\ell\in\{SP,SC\}}\sum_i(v_i^{\ell}-h_i^{\ell})\,y_i^{\ell}-\sum_{\ell\in\{LP,LC\}}\sum_i(v_i^{\ell}+h_i^{\ell})\,y_i^{\ell},\\
+\max\ & M\Big[c(y)-f(y)-\lambda-\textstyle\sum_{j\in J}(\alpha_j-\beta_j)\widehat Q_j-\gamma\rho-\sum_{j\in J^{\text{band}}}(\mu_j\,hi_j-\nu_j\,lo_j)\Big]\\
+\text{s.t. }&\textstyle\sum_iy_i^{LP}=\sum_iy_i^{SP}=\sum_iy_i^{SC}=\sum_iy_i^{LC}=z,\quad \sum_{i\ge k}y_i^{LP}\le\sum_{i>k}y_i^{SP}\ (\text{likewise }SP\to SC\to LC),\\
+&\ell_k=\textstyle\sum_i\big[(y_i^{SP}-y_i^{LP})(s_i-s_k)^++(y_i^{SC}-y_i^{LC})(s_k-s_i)^+\big],\\
+&\lambda+\textstyle\sum_{j\ge k}(\alpha_j-\beta_j+\mu_j-\nu_j)\ge\ell_k\ \ (k=1..m),\qquad \alpha_j+\beta_j\le\gamma w_j\ \ (j\in J).
+\end{aligned}
+```
+
+**Solver:** primary maximize dollars, secondary minimize z within the configured tolerance of the certified optimum. Solver gap must satisfy select's absolute/relative limits or skip. Bands must be finite, ordered, nominal-containing and jointly nonempty. Extend the existing DiscreteCDFGrid primal owner with optional bands for parity, preserving its no-band API; no duplicate primal owner.
+
+**Projection:** interval mass p=F(b)-F(a), first moment bF(b)-aF(a)-integral_a^b F(s)ds. Its mean determines fractions on a/b; empty intervals add zero. Explicitly collapse tails. This preserves capped piecewise-linear nominal payoffs, not the full CDF or tail mean. Report clipped-support W1, CDF deviations and numerical payoff-integral diagnostics separately; full-distribution Delta remains unavailable unless separately verified. Mesh breaches refuse. An unrestricted-support triangle bound does NOT imply literal containment of continuous distributions in a strike-supported ball. No such claim; any payoff-equivalent projection claim requires proof/fixtures. Owner selected direct strike-grid calibration: rho is calibrated against losses using the actual placed masses, without adding a forecast-to-grid offset. Diagnostics do not become an extra radius or a continuous-distribution coverage guarantee.
+
+**Inference:** G2 pins the nine nominal evaluation entries from the published model inventory, with fit/checkpoint/source hashes, ordered features, scale, supported heads and archived forecast-valid intervals. Information cutoff includes training AND monitoring/early-stopping labels and applicable availability; training-only cutoff is forbidden. Frozen registered model_inputs supplies the42-feature contract, not closes reconstructed/imputed into42 columns. Follow the archived recovery recipe exactly; missing columns/profile/head or incompatible identities refuse. Pin parity to saved forecasts; no fitting or later-checkpoint substitution.
+
+**Protected data/basis:** G1 proves pre2026 intake before record parsing/dedup; post-ObservationStreamRows filtering is forbidden. Mixed JSON without a trusted date index is blocked. Use metadata for whole-store maximums and bounded safe members for admissible census; unknown remains unknown. Opaque copy/hash verification does not inspect records. Parquet uses DateBoundedParquet. Preserve dedup/fingerprint semantics.
+The source adjustment vintage and allowed split inventory must explain the historical strike basis without2026. Unknown basis/irregular adjustment refuses. Known holding-window splits, recaps or unsupported deliverables refuse absent an exact supported mapping; bind existing exclusions. Preserve the restored universe's UNKNOWN action histories as assumptions, not verified no-split. No larger corporate-action engine.
+
+**Calibration:** owner selected A, expected-loss calibration, on 2026-10-08. This chooses the realized-minus-robust expected-loss criterion below; pooled CDF distance is not the primary radius criterion. Owner then approved the explained finite-grid procedure: evaluate the configured five radii and use the smallest passing value. No passing value means unsupported, with no automatic expansion. Owner approved monthly updates using settled, published audit-template outcomes from calibration and entry phases. This approval does not establish individual-forecast ball coverage or protection for every MILP-selected trade. Expected-loss candidate residual is realized MINUS robust loss, upper mean bound<=0, matching AdaptiveWassersteinRadius. The fixed complementary-quantile template and explicit base liquidity, pinned to select base, apply only to that template population, not all selected trades; sensitivity arms reuse its rho. Audit the actual MILP policy separately on later dates. Payoff-only calibration does not use completed-window pricing tiers. Compute each fixed-template/radius loss once for exact matching input/model/grid/payoff/band/numerical identities; rho0 may use the nominal dot product. Bootstrap resampling reuses these residuals, not new LP solves. Later trade selection uses its assigned radius; no per-trade radius search. Missing/failed results remain refusals.
+rho_calibration.notes defines observed-date starts, complete calendar intervals and exact resampling; zero-inclusion target dates or degenerate block support refuse. Passing also requires nonpositive full observed-date mean. Primary selects, longer sensitivity reports; approximate stress evidence only. Preserve the legacy circular observed-count algorithm through separate shared bootstrap strategies. Refuse insufficient dates/no complete blocks; disclose effective/degenerate support. Publication strictly precedes update reference; monthly history includes only eligible prior calibration/entry audit-template outcomes. Entry pricing tiers freeze after calibration; no later-profit choice.
+
+**Accounting:** settle folds raw entry/opposite expiry fills through the existing public WindowBook, including zero intrinsic. Quantity=contracts*multiplier, prices USD/share, fees total USD charged once at entry; no expiry fee. Decision-scoped positions retain actual contracts and cannot cross-net. Assert zero signed quantities and realised P&L equals the independent closed-form condor outcome. One condor is the statistical unit. No new accounting engine or dskit-eval-v1 events: that schema rejects zero prices, and its report publishes leg/portfolio statistics.
+
+**Evidence:** eight one-factor arms, no Cartesian expansion. Existing RunReport with stages enabled consumes masses.evidence, rho_calibration.audit, select.evidence and settle.evidence. Node-scoped JSON retains exhaustive raw decisions/orders/fills/solves/outcomes/refusals, calibration/mesh diagnostics and per-ticker/arm reconciliation; Markdown is row-capped with the full-JSON pointer. Do not infer calibration from profits or publish portfolio/leg statistics.
+
+**Tier proposal (G3):** reuse existing ParquetRows for the frozen panel and inventory any multi-file-reader gap. Protected intake/multiple roots belong to onboarding/observations (ADR0234 amendment); DTE/phase constraints are the thin adapter. Inference, mass projection and reusable bootstrap belong to dskit packs; equity template/rho adapter remains child-side over them. Generic dual helper in libs/pyomo; RobustCondorSelect subclasses PyomoSolve and overrides role. CondorExpirySettle shares the existing settlement-date rule with CondorQuoteBacktest through one owner. Existing WindowBook/RunReport owners are reused. Exact node tiers/names await G3/sweep.
+
+**Tests before code:** independent enumeration/primal equals MILP with/without bands; rho0, no-trade tie, empty bands, per-leg prices/eligibility/fees, unequal wings, mean/payoff preservation, empty intervals, tails and mesh. Preserve pins:
+(a) pre2026 intake/windows/settlements; (a3) publication before entry/update;
+(b) phase agreement; (c) multiplier owner; (d) shared settlement gap;
+(e) horizon-length primary/longer complete calendar blocks;
+(f) owner-selected settings bind config, legacy unchanged;
+(g) entry/expiry labels on fills; (h) tier order;
+(i) all-label cutoff AND forecast-valid interval;
+(j) sweep keys/base; (k) settlement field; (l) solver certificate/tie;
+(m) seed; (n) source/contract multiplier; (o) irregular tolerance;
+(p) horizon; (q) base haircut arm; (r) estimator.
+Add regressions for never-opened protected members, missing features/parity,
+late monitoring labels, incompatible vintage/holding splits, residual sign,
+irregular-date/tail inclusion and degenerate block refusal; baseline-liquidity binding; zero-expiry fills, fee/multiplier units and per-arm end-flat accounting/overlap/evidence.
+
+**Gates:** G4 design review is closed as recorded in RE-ENTRY. Owner approved expected-loss criterion and finite-grid/smallest-passing procedure; continue remaining G3 choices ONE AT A TIME with recommendations: mesh/score weights, tie/publication/liquidity/tiering/three roots; obtain ADR/data-copy OK. After that G1 relocates option-universe-100, verifies and establishes safe census/schema/basis/action coverage. G2 derives/onboards the verified schedule/input profile; placeholders remain until complete. Changed contracts get scoped review before code. No main merge permission inferred.
+
+**Manifest:** this ADR, existing draft JSON/RE-ENTRY/config tests; demonstrated changes only in named onboarding/pipeline owners with focused tests/docs, child nodes/cdf_study/tests. Reuse reports, no new worksets. Exact new-file manifest settles with G3 before file creation.
+
+ADR0255 intake correction: ParquetStreamRows requires explicit per-source snapshot manifest pins, resolves them through verified_payload_dir and binds declared source, member digests and manifest identity. No implicit latest acquisition or cross-vintage winner. Mixed JSON intake remains a separate gate.
+
+ADR0255 G2 minimal reuse clarification (candidate for scoped review): existing
+onboarded nominal seed11 evaluation score shards already hold the recovered
+Gaussian-mixture curves. Reuse those exact saved forecasts when their verified
+fit/checkpoint identities, all-label cutoff and archived validity interval match.
+Join the frozen panel by symbol/quote_date/expiry with settlement/DTE agreement
+for spot and per-row return scale. Preserve every missing/duplicate refusal and
+source hash. A private preparation recipe uses existing bounded Parquet and
+AtomicFitStore owners; onboard derived replay inputs before consumption.
+This avoids redundant inference infrastructure and does not assert strike-price
+basis compatibility, historical publication proof, or independent qualification.
+Fresh inference remains the archived checkpoint recipe for contexts it supports;
+no later-checkpoint substitution or new fits.
+
+ADR0255 adapter consistency clarification: calendar-day spans are independent
+of the minimum observed-date count; the legacy observed-count bootstrap remains
+unchanged. Publication availability is the later of settlement plus the
+configured session lag and the required confirming bar, without adding a second
+lag. Calibration must resolve the exact saved forecast settlement date, or
+refuse that context. Batch decisions preserve that date; settlement optionally
+checks it before accounting, retaining compatibility for older callers without
+a forecast label. Named eight-arm definitions bind their single-factor meanings;
+missing ticker calibration history produces an explicit pricing-tier refusal,
+never an invented tier. These are corrections to the existing stated protocol,
+not new historical evidence or permission to cross the protected data boundary.
+
+
+Owner decision2026-10-09 supersedes the earlier B refusal: A is approved.
+Limited exception: process owned mixed-year files solely to extract pre2026
+option records, and inspect split dates/ratios including2026 actions to restore
+historical stock/strike units. SQLite may internally parse excluded values.
+No2026 market prices, forecasts or outcomes may be returned, retained, scored
+or used in the replay. Preserve explicit projection SQL, schema checks,
+snapshots, source hashes, original envelopes and deduplication evidence.
+No acquisition, fits or spending. This closes the permission gate only;
+historical basis, actual source conversion and numerical limits still require
+evidence before launch. Existing synthetic adapter review remains scoped to
+candidate a103b701; actual conversion recipes require their own review.
+
+
+Owner decision2026-10-09: neither proposed distribution-distortion cutoff is
+approved. Do not adopt either 5-percentage-point/0.1%-of-spot or
+10-percentage-point/0.25%-of-spot limits, or substitute arbitrary replacements.
+Withdraw that multiple-choice question. This rejection does not relax numerical
+payoff preservation, probability coherence, solver certificates or LP/MILP parity.
+The current draft still requires numerical cdf_tolerance/w1_tolerance values;
+reconcile that interface with this decision before replay rather than silently
+inserting permissive numbers. Existing code reviews remain scoped to the
+unchanged implementation. No real replay has launched.
+
+
+ADR0255 owner-directed launch correction (2026-10-09): rejection of both
+proposed distribution cutoffs plus instruction to continue authorizes explicit
+diagnostics-only CDF/W1 projection settings. Represent disabled admission limits
+as JSON null, not arbitrary large numeric values. Existing positive finite
+numeric limits retain their prior behavior. Probability coherence, finite data,
+quadrature/payoff budgets and solver/parity checks remain enforced. Retain both
+distortion diagnostics in run evidence; do not imply continuous-ball equivalence.
+Acceptance: null/null and each independently disabled limit, legacy numeric
+refusals, malformed values, mandatory numerical refusals and node/config parity.
+Modify only existing projection owner, its node, existing tests and draft JSON;
+scoped independent review before real use.
+
+
+ADR0255 bounded input execution clarification: the owned archived split inventory
+supports reconstruction conditional on its completeness, not certification of
+completeness. Pin action/raw/parquet/snapshot identities and label the assumption.
+The84 explicit current inventories and separately attested older-source evidence
+are evaluated individually; 307 missing-inventory histories remain UNKNOWN.
+Preserve every intended forecast context with an explicit price-basis refusal
+rather than silently changing the model universe or inventing as-traded prices.
+Numerical conversion, original-spot agreement, settlement identities and
+holding-window exclusions remain mandatory. This is retrospective research;
+coverage is reported separately from the392-name model training universe.
+Independent adjudication /root/finish_batch_selector and Luna thread
+01a11ff5-ee1b-7483-bfbc-e7c12402d602 close the clarified design with0Critical/Major;
+actual recipe review remains required. No new provider acquisition or fitting.
+
 ## ADR-0256 — Venue-neutral binary-market rows, decision instants and quote state graduate from `crypto_trading`
 
 **Status:** **ACCEPTED 2026-10-07 by the owner (approved ADR-0256 and ADR-0257 together: 'A').** Was PROPOSED 2026-10-07. Renumbered from ADR-0248 at the 2026-10-09 main merge (main took 0248..0254; an open branch holds 0255). Found planning `correlation_arb`, the second child that needs these readers: a child may not import a sibling, and a copy is the duplication CLAUDE.md forbids.

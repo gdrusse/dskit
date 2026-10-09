@@ -1140,3 +1140,397 @@ def test_a_cohort_column_the_read_lacks_refuses_by_name(stub_panel):
     node = ExactExpiryPanelRead("panel", _panel_read_params(cohort_columns=["nope"]))
     with pytest.raises(ValueError, match="nope"):
         node.run(None, {})
+
+
+@pytest.mark.parametrize("seed", range(15))
+@pytest.mark.parametrize("banded", [False, True])
+def test_robust_condor_all_strikes_matches_enumeration(seed, banded):
+    import index_options.nodes as nodes
+    assert hasattr(nodes, "RobustCondorSelect"), "missing exact robust condor selector"
+    from itertools import combinations
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+    grid = [70., 82., 91., 103., 116., 135.]
+    masses = [.05, .15, .3, .25, .15, .1]
+    context = dict(decision_id="fixture", arm_id="base", symbol="SYNTH",
+                   quote_date="2025-02-04", expiry="2025-03-07",
+                   grid=grid, masses=masses, spot=100., rho=.003, legs={})
+    for role, prices in {"LP":[20,14,8,5,3,1], "SP":[21,15,9,6,4,2],
+                         "SC":[1,3,5,8,14,20], "LC":[2,4,6,9,15,21]}.items():
+        context["legs"][role] = [
+            dict(index=i, price=float(price), haircut=.03, contract_id=f"{role}-{i}")
+            for i, price in enumerate(prices)]
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    context["rho"] = [0., .003, .03][seed % 3]
+    for role in context["legs"]:
+        for row in context["legs"][role]:
+            row["price"] += float(rng.uniform(0, 4))
+        if seed % 2:
+            context["legs"][role] = [r for r in context["legs"][role] if r["index"] != 2]
+    if banded:
+        cumulative = np.cumsum(masses)
+        context["q_lo"] = np.maximum(0., cumulative-.02).tolist()
+        context["q_hi"] = np.minimum(1., cumulative+.02).tolist()
+        context["q_lo"][-1] = context["q_hi"][-1] = 1.
+    params = dict(multiplier=100, fee_per_contract_usd=.65, tie_tolerance_usd=1e-7,
+                  max_absolute_gap_usd=1e-7, max_relative_gap=1e-8)
+    node = nodes.RobustCondorSelect("select", params)
+    out = node.run(None, {"context":context})
+    primal = DiscreteCDFGrid.from_masses(grid, masses)
+    scores = []
+    for indices in combinations(range(len(grid)), 4):
+        by_role = {role:{r["index"]:r for r in context["legs"][role]}
+                   for role in ("LP","SP","SC","LC")}
+        if any(i not in by_role[role] for role,i in zip(("LP","SP","SC","LC"),indices)):
+            continue
+        lp, sp, sc, lc = [grid[i] for i in indices]
+        losses = [max(sp-s,0)-max(lp-s,0)+max(s-sc,0)-max(s-lc,0) for s in grid]
+        credit = sum((1 if role in ("SP","SC") else -1) *
+                     by_role[role][i]["price"]-.03
+                     for role,i in zip(("LP","SP","SC","LC"),indices))
+        scores.append(100*(credit-primal.worst_expected_loss(losses,context["rho"],100,
+                      q_lo=context.get("q_lo"),q_hi=context.get("q_hi"))) - 2.60)
+    assert out["decision"]["robust_value_usd"] == pytest.approx(max(0.,max(scores)), abs=1e-6)
+    assert len(out["evidence"]["solves"]) == 2
+
+
+def _robust_tie_fixture(credit=1., fee=0.):
+    from index_options.nodes import RobustCondorSelect
+    params = dict(multiplier=100, fee_per_contract_usd=fee, tie_tolerance_usd=1e-6,
+                  max_absolute_gap_usd=1e-7, max_relative_gap=1e-8)
+    context = dict(decision_id="fixture", arm_id="base", symbol="SYNTH",
+                   quote_date="2025-02-04", expiry="2025-03-07",
+                   grid=[80.,90.,110.,120.], masses=[.05,.45,.45,.05],
+                   spot=100., rho=0., legs={})
+    for i,role in enumerate(("LP","SP","SC","LC")):
+        context["legs"][role] = [dict(index=i,price=1.+(credit/2 if role in ("SP","SC") else 0.),
+                                     haircut=0.,contract_id=role)]
+    return RobustCondorSelect("select",params), context
+
+
+@pytest.mark.parametrize("credit,fee,status", [(1.,0.,"no_trade"), (1.02,.65,"no_trade"),
+                                              (1.03,.65,"trade")])
+def test_robust_condor_tie_and_fee_units(credit, fee, status):
+    node, context = _robust_tie_fixture(credit, fee)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == status
+    assert len(result["evidence"]["solves"]) == 2
+    if status == "trade":
+        assert result["decision"]["robust_value_usd"] == pytest.approx(.4,abs=1e-7)
+        assert sum(x["fee_usd"] for x in result["decision"]["legs"]) == 2.6
+
+
+def test_robust_condor_empty_eligibility_retains_no_trade():
+    node, context = _robust_tie_fixture(20.)
+    context["legs"]["LP"] = []
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "no_trade"
+    assert result["decision"]["legs"] == []
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda c: c.update(rho=float("nan")),
+    lambda c: c.update(spot=0.),
+    lambda c: c.update(masses=[.1,.1,.1,.1]),
+    lambda c: c.update(q_lo=[.1,.1,.1,1.], q_hi=[.2,.2,.2,1.]),
+    lambda c: c["legs"]["LP"].append(dict(c["legs"]["LP"][0])),
+    lambda c: c["legs"]["LP"][0].update(price=float("inf")),
+    lambda c: c["legs"]["LP"][0].update(index=True),
+    lambda c: c["legs"]["SP"][0].update(haircut=100.),
+])
+def test_robust_condor_invalid_context_refuses_before_solver(mutate, monkeypatch):
+    node, context = _robust_tie_fixture()
+    mutate(context)
+    monkeypatch.setattr(node, "_resolve_solver",
+                        lambda: pytest.fail("invalid input woke the solver"))
+    with pytest.raises(ValueError):
+        node.run(None, {"context":context})
+
+
+def test_robust_condor_missing_explicit_tie_policy_refuses():
+    node, _ = _robust_tie_fixture()
+    params = dict(node.params)
+    del params["tie_tolerance_usd"]
+    with pytest.raises(ConfigError, match="tie_tolerance_usd"):
+        type(node)("select", params)
+
+
+def test_robust_condor_uncertified_primary_skips(monkeypatch):
+    node, context = _robust_tie_fixture()
+    monkeypatch.setattr(node, "_certified", lambda record: False)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "skipped"
+    assert result["decision"]["reason"] == "uncertified_primary"
+    assert len(result["evidence"]["solves"]) == 1
+
+
+def test_robust_condor_uncertified_secondary_skips(monkeypatch):
+    node, context = _robust_tie_fixture()
+    monkeypatch.setattr(node, "_secondary_certified", lambda record: False)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "skipped"
+    assert result["decision"]["reason"] == "uncertified_tie"
+    assert "legs" not in result["decision"]
+    assert len(result["evidence"]["solves"]) == 2
+
+
+def test_robust_condor_solver_failure_escapes_without_a_decision(monkeypatch):
+    node, context = _robust_tie_fixture()
+    before = copy.deepcopy(context)
+
+    class FailedSolver:
+        def solve(self, model):
+            raise RuntimeError("controlled backend failure")
+
+    monkeypatch.setattr(node, "_resolve_solver", lambda: FailedSolver())
+    with pytest.raises(RuntimeError, match="controlled backend failure"):
+        node.run(None, {"context":context})
+    assert node.solve_record is None
+    assert node._certificates == []
+    assert context == before
+
+
+def test_robust_condor_binary_certificate_has_dimensionless_bounds():
+    from types import SimpleNamespace
+    node, _ = _robust_tie_fixture()
+    assert node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=1., bound=.5))
+    assert not node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=1., bound=0.))
+    assert node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=0., bound=0.))
+
+
+@pytest.mark.parametrize("multiplier", [100., True, 0, -1])
+def test_robust_condor_contract_multiplier_is_a_positive_integer(multiplier):
+    node, _ = _robust_tie_fixture()
+    with pytest.raises(ConfigError, match="multiplier"):
+        type(node)("select", {**node.params, "multiplier":multiplier})
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda c: c.update(quote_date="not-a-date"),
+    lambda c: c.update(quote_date="2025-2-4"),
+    lambda c: c.update(expiry="2025-02-04"),
+    lambda c: c.update(expiry="2024-01-01"),
+    lambda c: c.update(expiry="2025-02-31"),
+    lambda c: c["legs"]["SP"][0].update(contract_id="LP"),
+    lambda c: c["legs"]["SC"][0].update(contract_id="LP"),
+])
+def test_robust_condor_inconsistent_identity_refuses_before_solver(mutate, monkeypatch):
+    node, context = _robust_tie_fixture(5.)
+    mutate(context)
+    monkeypatch.setattr(node, "_resolve_solver",
+                        lambda: pytest.fail("invalid identity woke the solver"))
+    with pytest.raises(ValueError):
+        node.run(None, {"context": context})
+
+
+def test_robust_condor_same_contract_may_be_eligible_on_both_sides():
+    node, context = _robust_tie_fixture(5.)
+    context["legs"]["SP"].append(dict(context["legs"]["LP"][0]))
+    decision = node.run(None, {"context": context})["decision"]
+    assert decision["status"] == "trade"
+    assert len({leg["contract"] for leg in decision["legs"]}) == 4
+
+
+@pytest.mark.parametrize("upper,tolerance,status", [
+    (200., 150., "skipped"), (120., 150., "no_trade"),
+    (120., 50., "trade"), (100., 100., "no_trade"), (100., 99., "trade"),
+])
+def test_robust_condor_primary_bounds_must_certify_the_no_trade_tie(
+        upper, tolerance, status, monkeypatch):
+    from dataclasses import replace
+    node, context = _robust_tie_fixture(2.)
+    node = type(node)("select", {**node.params, "tie_tolerance_usd": tolerance,
+                               "max_absolute_gap_usd": 101., "max_relative_gap": 1.1})
+    build_record = node._build_solve_record
+    calls = []
+
+    def valid_uncertain_primary(*args):
+        record = build_record(*args)
+        calls.append(record)
+        if len(calls) == 1:
+            assert record.objective == pytest.approx(100.)
+            return replace(record, bound=upper, gap=abs(upper-record.objective)/record.objective)
+        return record
+
+    monkeypatch.setattr(node, "_build_solve_record", valid_uncertain_primary)
+    result = node.run(None, {"context": context})
+    assert result["decision"]["status"] == status
+    if status == "skipped":
+        assert result["decision"]["reason"] == "uncertified_no_trade_tie"
+        assert len(result["evidence"]["solves"]) == 1
+
+def _robust_batch_params():
+    arms = {
+        "nominal": {"radius": "zero"}, "rho_base": {"radius": "calibrated"},
+        "haircut_0": {"radius": "calibrated", "haircut_multiplier": 0.},
+        "haircut_half": {"radius": "calibrated", "haircut_multiplier": .5},
+        "haircut_double": {"radius": "calibrated", "haircut_multiplier": 2.},
+        "liquidity_3": {"radius": "calibrated", "min_trade_count": 3},
+        "liquidity_10": {"radius": "calibrated", "min_trade_count": 10},
+        "liquidity_20": {"radius": "calibrated", "min_trade_count": 20},
+    }
+    return dict(multiplier=100, fee_per_contract_usd=.65, tie_tolerance_usd=1e-7,
+                max_absolute_gap_usd=1e-7, max_relative_gap=1e-8,
+                calibration_window={"start": "2024-01-01", "end": "2024-12-31"},
+                entry_window={"start": "2025-02-04", "end": "2025-02-04"},
+                protected_end_before="2026-01-01", standard_multiplier=100,
+                liquidity={"min_trade_count": 5, "min_volume": 1},
+                haircut_tiers={name: {"pct": .01, "floor_usd": .01}
+                               for name in ("low", "mid", "high")},
+                arms=arms, tier_tie_policy="symbol_ascending_rank")
+
+
+def _robust_batch_inputs():
+    entry = []
+    for right, values in (("put", [(80., .1), (90., 3.)]),
+                          ("call", [(110., 3.), (120., .1)])):
+        for strike, vwap in values:
+            entry.append(dict(contract=f"{right}-{strike}", symbol="AAA",
+                              quote_date="2025-02-04", expiry="2025-03-07",
+                              right=right, strike=strike, vwap=vwap,
+                              trade_count=10, volume=1, multiplier=100))
+    calibration = [dict(contract=f"cal-{symbol}", symbol=symbol,
+                        quote_date="2024-06-03", expiry="2024-07-05",
+                        right="put", strike=80., vwap=1., trade_count=7,
+                        volume=1, multiplier=100)
+                   for symbol in ("AAA", "ZZZ")]
+    mass = dict(decision_id="batch-fixture", symbol="AAA", quote_date="2025-02-04",
+                expiry="2025-03-07", settlement_date="2025-03-07", grid=[80., 90., 110., 120.],
+                masses=[.05, .45, .45, .05], spot=100., fit_identity="fit", checkpoint_identity="checkpoint", input_identity="input", source_identity="source")
+    return dict(chain=calibration + entry, projected_masses=[mass],
+                rho={"2025-02": 0.}, #
+                # monthly calibration map
+                skips=[], holding_exclusions=[])
+
+
+def test_robust_condor_batch_delegates_to_single_context_solver():
+    from index_options.nodes import RobustCondorBatchSelect, RobustCondorSelect
+    params, inputs = _robust_batch_params(), _robust_batch_inputs()
+    batch = RobustCondorBatchSelect("batch", params)
+    out = batch.run(None, inputs)
+    assert out["evidence"]["tiers"] == {"AAA": "low", "ZZZ": "mid"}
+    nominal = next(row for row in out["decisions"] if row["arm_id"] == "nominal")
+    context = batch._batch_context(inputs["projected_masses"][0], inputs["chain"][2:], "low",
+                             "nominal", 0.)
+    direct = RobustCondorSelect("single", {key: params[key]
+                                           for key in RobustCondorSelect._PARAMS if key in params}).run(
+                                               None, {"context": context})["decision"]
+    direct.update({name: inputs["projected_masses"][0][name] for name in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")})
+    direct["forecast_settlement_date"] = inputs["projected_masses"][0]["settlement_date"]
+    assert nominal == direct
+    assert all(row["arm_id"] in params["arms"] for row in out["decisions"])
+    assert all(len(row["legs"]) == 4 for row in out["selections"])
+
+
+def test_robust_condor_batch_null_calibration_rho_skips_only_calibrated_arms():
+    from index_options.nodes import RobustCondorBatchSelect
+    inputs = _robust_batch_inputs()
+    inputs["rho"] = {}
+    out = RobustCondorBatchSelect("batch", _robust_batch_params()).run(None, inputs)
+    assert [row["arm_id"] for row in out["decisions"]] == ["nominal"]
+    assert {(row["arm_id"], row["reason"]) for row in out["skips"]} == {
+        (arm, "missing_calibrated_rho") for arm in _robust_batch_params()["arms"]
+        if arm != "nominal"}
+
+class TestExactDteBarChain:
+    def node(self):
+        from index_options import nodes
+        cls = getattr(nodes, "ExactDteBarChain", None)
+        assert cls is not None, "exact-DTE adapter is missing"
+        return cls("chain", {
+            "fields": {key: key for key in ("contract", "symbol", "expiry", "right",
+                       "strike", "date", "vwap", "trade_count", "volume", "multiplier")},
+            "dte": 31, "multiplier": 100, "end_before": "2026-01-01",
+            "windows": [{"name": "calibration", "start": "2024-02-06",
+                         "end": "2024-12-31"},
+                        {"name": "entry", "start": "2025-02-04", "end": "2025-11-28"}]})
+
+    def row(self, **overrides):
+        return dict({"contract": "A-contract", "symbol": "A", "date": "2025-02-04",
+                     "expiry": "2025-03-07", "right": "put", "strike": 100.,
+                     "vwap": 2., "trade_count": 10, "volume": 20, "multiplier": 100,
+                     "source_identity": "saved-source"}, **overrides)
+
+    def test_valid_record_retains_provenance_and_named_phase(self):
+        out = self.node().run(None, {"records": [self.row()]})
+        assert len(out["records"]) == 1 and not out["skips"]
+        row = out["records"][0]
+        assert (row["quote_date"], row["phase"], row["type"]) == (
+            "2025-02-04", "entry", "put")
+        assert row["source_identity"] == "saved-source"
+
+    @pytest.mark.parametrize("changes,reason", [
+        ({"expiry": "2025-03-08"}, "dte"),
+        ({"date": "2025-12-02", "expiry": "2026-01-02"}, "boundary"),
+        ({"date": "2025-01-07", "expiry": "2025-02-07"}, "window"),
+        ({"vwap": float("nan")}, "vwap"),
+        ({"trade_count": True}, "trade_count"),
+        ({"multiplier": 10}, "multiplier"),
+        ({"right": "future"}, "right"),
+    ])
+    def test_ineligible_rows_have_explicit_reasons(self, changes, reason):
+        out = self.node().run(None, {"records": [self.row(**changes)]})
+        assert not out["records"]
+        assert reason in out["skips"][0]["reason"]
+        assert out["skips"][0]["contract"] == "A-contract"
+
+    def test_duplicate_contract_date_refuses_whole_input(self):
+        row = self.row()
+        with pytest.raises(ValueError, match="duplicate"):
+            self.node().run(None, {"records": [row, dict(row)]})
+
+def test_robust_batch_derived_identity_sell_only_refusal_and_skip_provenance():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _robust_batch_params(), _robust_batch_inputs()
+    inputs["projected_masses"][0].pop("decision_id")
+    inputs["rho"]={}
+    node=RobustCondorBatchSelect("batch",params)
+    mass=next(iter(node._mass_rows(inputs["projected_masses"]).values()))
+    assert isinstance(mass["decision_id"],str) and len(mass["decision_id"])==64
+    chain=[dict(row) for row in inputs["chain"][2:]]
+    chain[0]["vwap"]=.001
+    context=node._batch_context(mass,chain,"low","nominal",0.)
+    assert any(row["contract_id"]==chain[0]["contract"] for row in context["legs"]["LP"])
+    assert all(row["contract_id"]!=chain[0]["contract"] for row in context["legs"]["SP"])
+    out=node.run(None,inputs)
+    for row in out["skips"]+out["decisions"]:
+        for key in ("fit_identity","checkpoint_identity","input_identity","source_identity"):
+            assert row[key] == mass[key]
+
+
+def test_robust_batch_tiers_use_even_sample_median_and_require_prior_window():
+    from index_options.nodes import RobustCondorBatchSelect
+    params=_robust_batch_params()
+    node=RobustCondorBatchSelect("batch",params)
+    rows=[dict(symbol=symbol,quote_date="2024-06-03",trade_count=count)
+          for symbol,counts in (("A",[0,100]),("B",[60,60])) for count in counts]
+    assert node._tiers(rows)=={"A":"low","B":"mid"}
+    params["calibration_window"]["end"]="2025-02-05"
+    assert RobustCondorBatchSelect.validate_params(params)
+
+@pytest.mark.parametrize("arm,spec", [
+    ("rho_base", {"radius":"zero"}),
+    ("nominal", {"radius":"calibrated"}),
+    ("liquidity_3", {"radius":"calibrated"}),
+    ("liquidity_3", {"radius":"calibrated","min_trade_count":3,"haircut_multiplier":2}),
+    ("liquidity_3", {"radius":"calibrated","min_trade_count":5}),
+    ("haircut_half", {"radius":"calibrated","haircut_multiplier":2})])
+def test_robust_batch_canonical_arms_cannot_bypass_or_relabel_policy(arm,spec):
+    from index_options.nodes import RobustCondorBatchSelect
+    params=_robust_batch_params()
+    params["arms"][arm]=spec
+    assert RobustCondorBatchSelect.validate_params(params)
+
+
+def test_robust_batch_missing_ticker_calibration_has_no_implicit_tier():
+    from index_options.nodes import RobustCondorBatchSelect
+    params,inputs=_robust_batch_params(),_robust_batch_inputs()
+    inputs["chain"]=[r for r in inputs["chain"]
+                     if r["symbol"]!="AAA" or r["quote_date"]>"2024-12-31"]
+    out=RobustCondorBatchSelect("batch",params).run(None,inputs)
+    assert not out["decisions"] and not out["selections"]
+    assert {r["reason"] for r in out["skips"]}=={"missing_calibration_tier"}
+    assert {r["arm_id"] for r in out["skips"]}==set(params["arms"])
