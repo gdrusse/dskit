@@ -3,7 +3,7 @@
   "url_template": "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-{entity}.zip",
   "entities_file": "$CRYPTO_TRADING_ROOT/configs/binance_vision_dates.json",
   "entities_key": "dates",
-  "entities_sha256": "9a16650edfe8f7ea2ed5d16f5a225367d492b43e431dd134b9ca11d0cef178f6",
+  "entities_sha256": "3cb5c067df690c6b532962732428fbce21035f85adf14da251d61fdf365a841e",
   "relpath_template": "{entity}.parquet",
   "raw_relpath_template": "_raw/{entity}.zip",
   "transform": "dskit.onboarding.libs.zipcsv:ZipCsvToParquet",
@@ -80,6 +80,6 @@
   "max_retries": 4,
   "max_refused": 3,
   "max_bytes": 50000000,
-  "as_of": "2026-10-06T00:00:00+00:00",
+  "as_of": "2026-10-09T02:55:00+00:00",
   "stream": "files"
 }
