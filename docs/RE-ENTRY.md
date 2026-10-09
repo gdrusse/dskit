@@ -1,3 +1,19 @@
+# Active handoff — 2026-10-09 (late): ADR-0256 built and reviewed; replay blocked by data
+
+Candidate 497842b0+ holds the three ADR-0256 slices (next-session fill clock, edge-padded
+rho sampler, null relative gap + parity gate) plus the lifecycle flags and the read-only
+account study; eight Sonnet lenses closed with zero unresolved Critical/Major (private
+adr0256-*-review-v1.txt). The pre-registered fills census FAILED by data structure: the owned
+option archive carries only DTE 31-45 per session, so no decision contract has a t' bar
+(0 of 286,120). The revised replay was NOT launched and must not be launched on this data.
+Read children/index_options/docs/memos/2026-10-09-condor-executable-clock-result.md.
+Padded sampler is supported 20/20 on the saved date sets; objective_parity_usd frozen 1e-5.
+Closing the timing gap needs a full-expiry chain archive or a forward collection (not
+authorized). Run 793013c0, its backups, the model inventory and all locks are unchanged.
+No 2026 access, fits, acquisition, spending or deployment.
+
+---
+
 # Active handoff — 2026-10-09: ADR-0256 minimal executable-clock correction in build
 
 ADR-0256 revision 4 (tail of docs/architecture/decision-log.md) is the owner-approved,

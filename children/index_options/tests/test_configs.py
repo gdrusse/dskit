@@ -62,6 +62,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         # the robust-replay memo and four report artifacts the previous wrap added unlisted.
         "configs/run-equity-condor-executable-clock.json",
         "docs/memos/2026-10-09-condor-executable-clock-contract.md",
+        "docs/memos/2026-10-09-condor-executable-clock-result.md",
         "docs/memos/2026-10-09-robust-condor-replay.md",
         "docs/reports/robust-condor-replay-20261009/calibration.json",
         "docs/reports/robust-condor-replay-20261009/receipt.json",
@@ -325,8 +326,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus ADR-0255's robust-condor run config and requested dual memo = 462.
     # Plus the six docs the previous wrap left out of the manifest (robust replay memo and four
     # report artifacts, the executable-clock contract memo) = 484, plus ADR-0256's executable-clock
-    # run config = 485.
-    assert len(actual) == 485
+    # run config = 485; the executable-clock result memo = 486.
+    assert len(actual) == 486
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

@@ -30820,4 +30820,6 @@ actual recipe review remains required. No new provider acquisition or fitting.
 
 **Plan.** A: three parallel Sonnet TDD slices (sampler; gap/parity; fill clock + account study), focused tests only. B: two fresh Sonnet lenses. C: dates-only support table, parity dry run, t' census. D (separately authorized): one replay, memo.
 
+**Gate outcome (2026-10-09):** the fills census found 0 of 286,120 liquid decision-day rows with a t' bar: the owned archive carries only DTE 31–45 per session, so the decision contract (DTE 30 on t') is never present. The replay was NOT launched. Closing the timing gap needs a full-expiry chain archive or a forward collection, neither authorized. Code, config (`41273680…`) and gates are retained; the memo `2026-10-09-condor-executable-clock-result.md` is the record.
+
 **Deferred, not authorized:** `open_print`/`limit_touch`/`adverse_extreme` scenarios; share delivery and assignment simulation with as-traded open/dividend conversion; a tier-1 capital-admission module (graduate the study only if a second project asks); brute-force optimality audit; the publication/available-at clock.
