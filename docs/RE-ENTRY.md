@@ -117567,3 +117567,33 @@ coverage is reported separately from the392-name model training universe.
 Independent adjudication /root/finish_batch_selector and Luna thread
 01a11ff5-ee1b-7483-bfbc-e7c12402d602 close the clarified design with0Critical/Major;
 actual recipe review remains required. No new provider acquisition or fitting.
+
+
+## 2026-10-09 condor replay launched
+
+Actual authorized replay launched at10:44:26UTC from candidate
+ada4169b2c307a5585444193a73ed1344cc11b74 (pushed and remote verified).
+Private audit root remains
+/home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008.
+Read condor-replay-launch-v1.json (PID3777999/start42100212),
+condor-replay-execution-lock-v1.json, and condor-replay-v1.log before
+any dispatch. Never duplicate this run. Output root:
+/home/russell/data/index_options/production-universe-rerun-20261008/condor-replay-run-v1.
+
+Four streams are registered as condor-replay-inputs-20261009-v5, verified,
+and recovered from second copies with originals denied. No off-device claim.
+Source population404; modeled chain388 of392 intended; all99225 saved
+forecasts retained. Before projection/template/liquidity checks, usable
+basis+chain covers2796 calibration contexts/72symbols/48dates and2772 entry
+contexts/79symbols/43dates. Actual entry input dates end2025-11-25; the
+frozen configured window still ends2025-11-28. Unknown price basis and known
+action overlaps are explicit refusals, not fabricated prices or changed models.
+
+Both final binding reviews close0Critical/Major/Minor/Nit. Existing core,
+projection and preparation locks remain intact. The private convergence
+record preserves the prior failed correction rounds. The current run is
+research using same-day average fills and assumed costs, not executable
+profitability or independent qualification. Next: finish this run, preserve
+calibration/solver/accounting evidence and backups, evaluate every arm including
+unsupported/skipped outcomes, write the requested performance memo, and close
+scoped reporting reviews. Do not change settings after observing performance.

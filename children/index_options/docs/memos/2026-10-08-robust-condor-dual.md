@@ -4,7 +4,7 @@
 
 The dual replaces the inner “worst plausible price distribution” calculation with linear constraints. Embedding them lets one mixed-integer linear program choose four eligible strikes, including the choice not to trade.
 
-This memo publishes the mathematics reviewed in ADR-0255 at candidate 3f8ea439c96afa14f5776346738fa12746d82c54. The reusable projection, one-context solver and expiry-accounting components are now implemented and synthetically tested; two independent integrated skeptic reviews have closed with zero findings. No numerical radius, production qualification or historical backtest result is supplied.
+This memo publishes the mathematics reviewed in ADR-0255 at candidate 3f8ea439c96afa14f5776346738fa12746d82c54. The reusable projection, one-context solver and expiry-accounting components are now implemented and synthetically tested; two independent integrated skeptic reviews have closed with zero findings. This mathematics memo supplies no numerical radius or replay result; the verified launch state is recorded below. No performance claim is made while the run is active.
 
 ## Contract and notation
 
@@ -128,9 +128,9 @@ Increasing $\rho$ weakly enlarges the fixed-grid set and increases worst expecte
 
 The design at 3f8ea439 passed three independent GPT-6 reviews with zero Critical/Major/Minor/Nit, recorded in [RE-ENTRY](../../../../docs/RE-ENTRY.md). This memo makes that design inspectable; it neither approves ADR-0255 nor implements its proposed nodes.
 
-Bounding-strike placement preserves nominal capped piecewise-linear payoffs, not the entire continuous CDF. A finite strike-supported ball does not literally contain continuous distributions. The owner chose direct calibration on the strike-grid probabilities, with no added forecast-to-grid offset; report projection diagnostics separately. The owner approved expected-loss calibration and the finite-grid/smallest-passing procedure and monthly prior-only calibration-plus-entry updates; bands, mesh and score-weight tolerances remain separate gates; no numerical rho or confidence guarantee is invented.
+Bounding-strike placement preserves nominal capped piecewise-linear payoffs, not the entire continuous CDF. A finite strike-supported ball does not literally contain continuous distributions. The owner chose direct calibration on the strike-grid probabilities, with no added forecast-to-grid offset; report projection diagnostics separately. The owner approved expected-loss calibration and the finite-grid/smallest-passing procedure and monthly prior-only calibration-plus-entry updates; bands remain disabled. Direct strike-grid rho and monthly prior-only updates are approved; CDF/W1 projection thresholds are diagnostic-only. No confidence guarantee is invented.
 
-Reproduce the contract from the candidate and draft JSON. Use published checkpoints only through a verified chronological schedule including training and monitoring-label availability. No market records, model fits, option-store copying, MIO execution or trading backtest occurred for this publication. Next: continue the owner's one-at-a-time design decisions, then obtain ADR/data-copy approval before remaining gates and tests-first implementation.
+Reproduce the contract from the candidate and draft JSON. Use published checkpoints only through a verified chronological schedule including training and monitoring-label availability. No market records, model fits, option-store copying, MIO execution or trading backtest occurred for this publication. At original publication, the next step was to continue the owner's one-at-a-time design decisions, then obtain ADR/data-copy approval before remaining gates and tests-first implementation.
 
 ## Targeted implementation evidence
 
@@ -161,7 +161,7 @@ The owner approved expected-loss calibration and its finite-grid/smallest-passin
 
 Owner subsequently approved monthly calibration-plus-entry updates, using only settled/published fixed audit-template outcomes strictly before each reference, regardless of optimizer trade/no-trade. The frozen rule reuses matching losses and recomputes the bound; historical decisions remain unchanged. Exact lag/numerical settings and other launch gates are not approved by this phase choice.
 
-## Current adapter preparation status
+## Historical adapter preparation status — 2026-10-08
 
 The later owner instruction authorizes the bounded research replay after its
 data and numerical gates close. Candidate a103b701 implements the batch-eight-
@@ -176,3 +176,11 @@ thresholds also remain unset. Neither empirical rho nor historical MIO
 performance exists yet. See the current preparation status in the
 [evaluation scheme](2026-10-08-forecast-mio-evaluation-scheme.md) for exact
 artifacts, remaining gates and the required performance report.
+
+## Replay launch status — 2026-10-09
+
+The bounded eight-arm research replay launched at 2026-10-09T10:44:26Z (PID3777999) from frozen config commit ada4169b; launch and execution-lock receipts are /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-launch-v1.json and /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-execution-lock-v1.json. This is an active computation, not a result: no P&L, empirical rho, or performance conclusion is available yet.
+
+The recovered basis and onboarding inputs passed their recorded checks. They retain 655,174 raw chain rows, 644,799 kept rows and 10,375 outside-model rows; 404 option-source symbols are present, with 388 of the 392 forecast symbols accepted. All 99,225 forecasts remain represented. Price-basis/chain matching yields 2,796 calibration contexts (72 symbols, 48 dates, 2024-02-06 through 2024-12-31) and 2,772 entry contexts (79 symbols, 43 dates, 2025-02-04 through 2025-11-25) before numerical, template or leg-liquidity gates.
+
+Historical price basis is conditional: 84 explicit split inventories are reconstructed from hash-pinned archived evidence assuming completeness; 307 missing inventories are refused and are not treated as certified no-action histories. The run retains those refusals and the full intended-universe denominators. Same-day VWAP with same-day-close forecasts remains an explicit research look-ahead assumption. CDF/W1 projection thresholds are diagnostic-only; direct grid-rho and monthly prior-only calibration are frozen. Settlement, solver, calibration and performance outputs remain pending the active run.

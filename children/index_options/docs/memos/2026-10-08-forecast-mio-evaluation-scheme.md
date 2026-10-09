@@ -4,7 +4,7 @@
 
 Feature selection and HPO used three 2021–2022 development windows; frozen settings passed a 2023 confirmation gate and were evaluated through November 2025. Those forecasting runs are complete.
 
-The proposed MIO scheme calibrates on February–December 2024 forecasts, waits for settlement and publication, then evaluates entries from February–November 2025. The numerical and source-data launch gates remain open; implementation checks are recorded below. These already-inspected years support retrospective research, not independent production qualification.
+The proposed MIO scheme calibrates on February–December 2024 forecasts, waits for settlement and publication, then evaluates entries from February–November 2025. The verified source, numerical and onboarding gates closed for one frozen research launch on 2026-10-09; implementation checks and launch limits are recorded below. These already-inspected years support retrospective research, not independent production qualification.
 
 ## Sources, status and what “warmup” means
 
@@ -67,9 +67,9 @@ All66 unique fitted packages are retained:15 feature +15 new HPO +9 confirmation
 
 **Historical inference rule:** choose the verified seed11 package whose archived forecast interval contains the decision date, after all training AND monitoring labels plus required availability have matured. Otherwise skip. For example, fold9's training labels end2025-05-30 but its monitoring labels end2025-10-10; it cannot be used for June2025 decisions. Its archived forecast interval starts2025-10-13.
 
-The inventory contains full fit/checkpoint/file identities and original/backup locations; the short identifiers above are lookup aids only. The saved nominal seed11 schedule and exact curves have now been verified and onboarded as described in the current preparation status below. Final strike-basis inputs remain pending. Load using TorchCDF.load_checkpoint and the archived recovery recipe; retain saved ordering, medians, head encoding and scaler/mask exactly once. No new fits are proposed in this build.
+The inventory contains full fit/checkpoint/file identities and original/backup locations; the short identifiers above are lookup aids only. The saved nominal seed11 schedule and exact curves have now been verified and onboarded as described in the current preparation status below. The recovered strike-basis inputs are conditionally onboarded as described in the launch status below. Load using TorchCDF.load_checkpoint and the archived recovery recipe; retain saved ordering, medians, head encoding and scaler/mask exactly once. No new fits are proposed in this build.
 
-## 4. MIO calibration and evaluation calendar — proposed, not executed
+## 4. MIO calibration and evaluation calendar — frozen launch contract
 
 The draft fixes exact DTE31 and the following entry-date windows, subject to verified matched coverage and availability:
 
@@ -79,7 +79,7 @@ The draft fixes exact DTE31 and the following entry-date windows, subject to ver
 - **Evaluation entries: 2025-02-04–2025-11-28.** Use nominal forecast folds5–9 according to their valid intervals. Hold each eligible condor to expiry.
 - **Final nominal expiry: 2025-12-29.** Any allowed confirming settlement observation must also be strictly before2026-01-01. No protected2026 access is authorized to complete missing outcomes.
 
-The draft publication rule adds one exchange session and requires publication strictly before the first entry date of the update month. For a label settled Friday2025-01-31, an assumed one-session lag gives Monday2025-02-03, before Tuesday2025-02-04. This illustrates the configured assumption, not verified source publication timestamps; the lag rule is still an owner choice.
+The draft publication rule adds one exchange session and requires publication strictly before the first entry date of the update month. For a label settled Friday2025-01-31, an assumed one-session lag gives Monday2025-02-03, before Tuesday2025-02-04. This is the frozen launch assumption, not verified historical source-publication timing.
 
 The design handoff reported48 DTE31 calibration dates and43 entry dates before full admission. Those are prior reported coverage counts, **not** a new census or final eligible counts. G1 must verify protected intake, coverage, basis/actions and contract terms. Many tickers on one date do not supply that many independent time observations. Unsupported calibration must remain visible.
 
@@ -87,7 +87,7 @@ The design handoff reported48 DTE31 calibration dates and43 entry dates before f
 
 **Forecast model:** no more feature selection, HPO, seed choice or performance-based checkpoint selection on these MIO windows. Scheduled inference changes checkpoint by historical availability, not by later profit.
 
-**Radius rule:** owner approved expected-loss calibration on fixed audit templates and the finite-grid/smallest-passing procedure on2026-10-08. Grid:0,0.001,0.0025,0.005,0.01 of spot. Compute each template/radius loss once for matching identities; bootstrap reuses cached residuals, and rho0 permits direct nominal expectation. No passing value means unsupported, with no automatic expansion. This evidence covers the audit-template population, not every optimizer-selected trade. Monthly calibration-plus-entry updates and direct strike-grid calibration without an added projection offset are approved. Projection diagnostics remain separate; numerical settings are unresolved. No empirical rho has been computed.
+**Radius rule:** owner approved expected-loss calibration on fixed audit templates and the finite-grid/smallest-passing procedure on2026-10-08. Grid:0,0.001,0.0025,0.005,0.01 of spot. Compute each template/radius loss once for matching identities; bootstrap reuses cached residuals, and rho0 permits direct nominal expectation. No passing value means unsupported, with no automatic expansion. This evidence covers the audit-template population, not every optimizer-selected trade. Monthly calibration-plus-entry updates and direct strike-grid calibration without an added projection offset are approved. Projection diagnostics remain separate. Direct strike-grid rho and monthly prior-only updates are approved; no empirical rho is reported until the active run completes.
 
 The draft template matches short-put q=0.1 and short-call1-q quantiles, then one outward strike per long wing, using explicit baseline liquidity. Its calibration claim concerns that template population; later selected MILP trades require their own audit. Do not infer protection for every candidate from one template's result.
 
@@ -95,13 +95,13 @@ The draft template matches short-put q=0.1 and short-call1-q quantiles, then one
 
 **Monthly updates:** owner approved calibration and entry-phase history under a frozen rule. Use the same fixed audit-template population, including dates when the optimizer did not trade; actual selected-trade outcomes do not replace it. At each monthly reference admit only outcomes already settled and published strictly before that reference. Reuse identity-matching loss values and recompute the bound from eligible past residuals. Never use future monthly results, change the rule on full2025 performance or revise past decisions. Retain each update's data identities, cutoff, support and radius.
 
-**Bands and numerical settings:** Qlo/Qhi remain separately validated restrictions on the same cumulative probability vector, not values automatically produced by rho. Bands are disabled initially. Freeze numerical mesh/score-weight normalization, tie/solver tolerances and no-trade/refusal rules before evaluating choices. No fitted band widths or numerical calibrated radius currently exist.
+**Bands and numerical settings:** Qlo/Qhi remain separately validated restrictions on the same cumulative probability vector, not values automatically produced by rho. Bands are disabled initially. The launch freezes its mesh/score-weight, tie/solver and no-trade/refusal settings. CDF/W1 projection thresholds are diagnostic-only; bands remain disabled. No fitted band widths or numerical calibrated radius is claimed while the run is active.
 
-**Costs and sensitivity arms:** entry-date VWAP, assumed liquidity-tier haircuts and the provisional0.65USD entry fee are disclosed research inputs. Base liquidity is trade_count>=5, volume>=1, pending the owner's listed threshold decision. Compare the eight declared one-factor arms: nominalrho0, base calibratedrho, haircut multipliers0/0.5/2 relative to base1, and trade-count thresholds3/10/20 relative to base5. They share baseline calibration; no Cartesian expansion or recalibration per arm. Report every arm rather than selecting a winner from2025 profits.
+**Costs and sensitivity arms:** entry-date VWAP, assumed liquidity-tier haircuts and the provisional0.65USD entry fee are disclosed research inputs. Base liquidity is trade_count>=5 and volume>=1 under the frozen launch contract. Compare the eight declared one-factor arms: nominalrho0, base calibratedrho, haircut multipliers0/0.5/2 relative to base1, and trade-count thresholds3/10/20 relative to base5. They share baseline calibration; no Cartesian expansion or recalibration per arm. Report every arm rather than selecting a winner from2025 profits.
 
 ## 6. Validation and claims
 
-Before any real replay, complete owner decisions/ADR approval, source relocation approval and protected census, exact checkpoint/profile onboarding, and tests-first implementation. Prove MILP versus enumerated primal-LP parity on small fixtures, rho0 and no-trade behavior, band feasibility, units, feature/forecast parity and accounting reconciliation. These implementation checks do not require training or a trading backtest.
+The listed prerequisites were resolved for the single frozen launch below; they remain the contract for interpreting it, not evidence of a completed replay. Prove MILP versus enumerated primal-LP parity on small fixtures, rho0 and no-trade behavior, band feasibility, units, feature/forecast parity and accounting reconciliation. These implementation checks do not require training or a trading backtest.
 
 For the later research evaluation, retain every decision, no-trade, refusal, candidate policy, forecast/checkpoint, calibration update and settlement. Report template/selected-policy loss diagnostics separately from one-condor-per-decision net P&L, with date/ticker/arm counts and cost assumptions. Reconcile zero-intrinsic expiry records through WindowBook and use the existing stage report; do not report four legs as four independent trades or infer portfolio returns from this single-trade design.
 
@@ -117,7 +117,7 @@ Inventory SHA256: 49e22ce58cc52b0d5379386600551121ab2b526b51b4eccde2fcdb85cbd334
 Reviewed design candidate:3f8ea439c96afa14f5776346738fa12746d82c54.
 The forecasting artifact report is authoritative for completed outcomes; ADR-0255 and its draft JSON own the proposed replay. This memo changes neither. The current preparation status below supersedes this document's original design-only pickup.
 
-## Current preparation status and performance-report contract
+## Historical preparation status and performance-report contract — 2026-10-08
 
 The owner subsequently authorized completing the implementation, launching the
 bounded research replay, evaluating MIO performance and writing its result memo.
@@ -178,3 +178,13 @@ The evaluation memo must report:
 Use the existing stage artifacts and aggregate-only publication. A zero or
 unsupported radius result must be reported, not replaced by a profitable
 post-hoc threshold or a larger unapproved search.
+
+## Replay launch status and performance-report contract — 2026-10-09
+
+The actual bounded replay launched at 2026-10-09T10:44:26Z (PID3777999), using config commit ada4169b. /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-launch-v1.json, /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-execution-lock-v1.json, /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-basis-v5-recovery.json and /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-onboard-v5-recovery.json record the reviewed launch and recovered inputs. This memo makes no result or performance claim while that replay runs.
+
+The input accounting retains 655,174 raw chain rows, 644,799 kept rows and 10,375 outside-model rows. The option source has 404 symbols; 388 of the 392 forecast symbols are accepted. All 99,225 forecast rows remain represented. Before numerical, template or leg-liquidity gates, price-basis/chain matching yields 2,796 calibration contexts across 72 symbols and 48 dates (2024-02-06 through 2024-12-31), and 2,772 entry contexts across 79 symbols and 43 dates (2025-02-04 through 2025-11-25). These are input-stage counts, not trades or settled outcomes.
+
+The basis contract is deliberately conditional: 84 explicit split inventories are reconstructed from hash-pinned archived evidence assuming completeness. The 307 missing-inventory histories are explicit refusals, not certified no-action histories. This can restrict the admitted population and comparability; it does not silently narrow the intended universe. Same-day VWAP remains a declared research look-ahead with same-day-close forecasts. CDF/W1 projection thresholds are diagnostic-only; monthly prior-only calibration and direct strike-grid rho are frozen.
+
+When the active run completes, report its arm/date/ticker denominators, refusals, calibration support and rho, solver certificates, no-trades, actual trades, settlements, fees/haircuts and accounting reconciliation. Do not infer portfolio returns, deployability, confidence guarantees or independent production qualification from this retrospective research replay.
