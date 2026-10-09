@@ -1778,6 +1778,7 @@ def test_robust_nonintegral_solution_skips_only_in_parity_mode(parity, monkeypat
     ({"max_absolute_gap_usd": 1e-4, "tie_tolerance_usd": 1e-4},
      "max_absolute_gap_usd <= objective_parity_usd"),
     ({"tie_tolerance_usd": 1e-8}, "tie_tolerance_usd >= max_absolute_gap_usd"),
+    ({"objective_parity_usd": 1e-6}, "objective_parity_usd > tie_tolerance_usd"),
     ({"objective_parity_usd": -1.}, "objective_parity_usd must be"),
     ({"objective_parity_usd": None}, "objective_parity_usd must be"),
 ])

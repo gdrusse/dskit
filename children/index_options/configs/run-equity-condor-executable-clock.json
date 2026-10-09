@@ -191,6 +191,7 @@
         },
         "max_absolute_gap_usd": 1e-06,
         "max_relative_gap": null,
+        "objective_parity_usd": 1e-05,
         "calibration_window": {
           "start": "2024-02-06",
           "end": "2024-12-31"
@@ -249,7 +250,7 @@
         },
         "tier_tie_policy": "symbol_ascending_rank"
       },
-      "notes": "Candidate batch adapter runs the eight explicitly declared one-factor arms once; no foreach duplicates them. Tiers use actual calibration-window ticker medians with symbol-rank ties. Own-date VWAP, fee0.65 and haircut assumptions remain research conventions. Calibrated arms refuse null rho; nominal is explicitly a research comparator. All ordered eligible strikes; no cap. Preserves solver certificates, model provenance, holding exclusions and skips. ADR-0256: when chain rows carry 'fill', each trade is repriced leg by leg at the t' VWAP with THIS arm's haircut multiplier, liquidity thresholds and ticker tier, all-or-none (status 'unfilled' with unfilled_reason, counted in evidence.fill, never replaced); a filled selection records fill_date, decision and fill credit, slippage_usd and remaining_dte. max_relative_gap null (ADR-0256 (6)) makes the relative gap diagnostic only; the absolute gap 1e-6 and the tie rules still decide. The null is accepted by the gap slice; until that lands, validation refuses it."
+      "notes": "Candidate batch adapter runs the eight explicitly declared one-factor arms once; no foreach duplicates them. Tiers use actual calibration-window ticker medians with symbol-rank ties. Own-date VWAP, fee0.65 and haircut assumptions remain research conventions. Calibrated arms refuse null rho; nominal is explicitly a research comparator. All ordered eligible strikes; no cap. Preserves solver certificates, model provenance, holding exclusions and skips. ADR-0256: when chain rows carry 'fill', each trade is repriced leg by leg at the t' VWAP with THIS arm's haircut multiplier, liquidity thresholds and ticker tier, all-or-none (status 'unfilled' with unfilled_reason, counted in evidence.fill, never replaced); a filled selection records fill_date, decision and fill credit, slippage_usd and remaining_dte. max_relative_gap null (ADR-0256 (6)) makes the relative gap diagnostic only; the absolute gap 1e-6 and the tie rules still decide. The null is accepted by the gap slice; until that lands, validation refuses it. ADR-0256 (6): objective_parity_usd 1e-5 is frozen by the pre-declared rule max(max_absolute_gap_usd, 10 x the largest discrepancy) over the no-outcome parity dry run adr0256-parity-dryrun-v1.json (300 solves, 60 seeded contexts x 5 radii; largest 1.0000106e-6, on the tie structure, which equals the tie slack); it must exceed tie_tolerance_usd. max_relative_gap null = diagnostic only. Never revised after results."
     },
     "settle": {
       "uses": "index_options.nodes:CondorExpirySettle",

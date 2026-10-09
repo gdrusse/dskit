@@ -3367,7 +3367,8 @@ class RobustCondorSelect(PyomoSolve):
         (``parity_failed`` before the tie solve, ``parity_failed_tie`` after),
         and the ordering ``solver_options.mip_abs_gap`` <= ``max_absolute_gap_usd``
         <= ``objective_parity_usd`` with ``tie_tolerance_usd`` >=
-        ``max_absolute_gap_usd`` is enforced (an unset ``mip_abs_gap`` is not
+        ``max_absolute_gap_usd`` and ``objective_parity_usd`` >
+        ``tie_tolerance_usd`` is enforced (an unset ``mip_abs_gap`` is not
         pinned). Structural guards then skip with their own reasons instead of
         raising. Absent, behaviour and config identity are the legacy ones.
         Input context contains grid/masses/spot/rho, optional q_lo/q_hi, identity
@@ -3426,7 +3427,7 @@ class RobustCondorSelect(PyomoSolve):
 
     @staticmethod
     def _ordering_problems(params):
-        """Name each violated link of mip_abs_gap <= max_absolute_gap <= parity, tie >= max_absolute_gap."""
+        """Name each violated link of mip_abs_gap <= max_absolute_gap <= parity, tie >= max_absolute_gap, parity > tie."""
         problems = []
         gap, parity = params.get("max_absolute_gap_usd"), params["objective_parity_usd"]
         mip = (params.get("solver_options") or {}).get("mip_abs_gap")
@@ -3438,6 +3439,13 @@ class RobustCondorSelect(PyomoSolve):
             tie = params.get("tie_tolerance_usd")
             if number_ok(tie) and tie < gap:
                 problems.append("ordering violated: tie_tolerance_usd >= max_absolute_gap_usd")
+            # The tie solve leaves the dual variables anywhere above the tie
+            # floor, so the traded structure's dual value can sit a full
+            # tie_tolerance below its primal recompute (measured 1.00001e-6 in
+            # the ADR-0256 dry run); a parity bound at or below it would skip
+            # legitimate ties as parity_failed_tie.
+            if number_ok(tie) and parity <= tie:
+                problems.append("ordering violated: objective_parity_usd > tie_tolerance_usd")
         return problems
 
     def build_model(self, inputs, params):
