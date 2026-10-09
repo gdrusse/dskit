@@ -1,4 +1,4 @@
-"""Pricing a binary from any CDF curve (ADR-0249 part 2).
+"""Pricing a binary from any CDF curve (ADR-0257 part 2).
 
 The equivalence test builds a curve that IS the averaged-lognormal law (window 0) sampled densely
 and requires ``CurveBinaryFairValue`` to agree with ``BinaryFairValue`` to 1e-6.
@@ -202,7 +202,7 @@ def test_only_a_literal_true_makes_a_curve_eligible(flag):
     assert out["records"][0]["fair_status"] == "ineligible_curve"
 
 
-# -- row_key: the one id/chain/right key rule, scalars only (ADR-0249 R1/R2) -------------------------
+# -- row_key: the one id/chain/right key rule, scalars only (ADR-0257 R1/R2) -------------------------
 #
 # The SPEC table. Each row is (a, b, expected): ``same`` and ``different`` say whether two keyable
 # cells name one thing; ``refused`` and ``missing`` describe ``a`` (``b`` is then a look-alike that a

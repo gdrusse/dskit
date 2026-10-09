@@ -720,11 +720,11 @@ they register only into private registries, never the default one.
 - `kinds_run_write.py` (ADR-0247): `records-write-run` needs exactly one `{run}` in the file stem of `path`. The
   document-name half of the run-name rule cannot be checked at plan time; apply `run_name_problems(document.name)`
   in a config test.
-- `binary_decisions.py` and `libs/binary_market_rows.py` (ADR-0248): read a binary-market venue's markets, quote
+- `binary_decisions.py` and `libs/binary_market_rows.py` (ADR-0256): read a binary-market venue's markets, quote
   bars and fee schedules (`BinaryMarketRows`, `QuoteBarRows`, `FeeScheduleRows`; every input field name is a
   required `*_field` param, every vocabulary a param), expand markets into one row per lead (`DecisionRows`), add
   the quote known at the decision (`QuoteState`) and the taker fee (`FeeColumns`, over `fee_mechanics`).
-- `digital_bounds.py`, `binary_curve.py`, `libs/binary_coherence.py` (ADR-0249): executable vertical-spread
+- `digital_bounds.py`, `binary_curve.py`, `libs/binary_coherence.py` (ADR-0257): executable vertical-spread
   bounds on a digital from option bid/ask (`DigitalBounds`; a strike without bracketing quotes is marked, never
   interpolated), a binary priced from any CDF curve through the existing payoffs (`CurveBinaryFairValue`), and an
   LP coherence check plus a weighted projection across linked binaries (`BinaryCoherence`; the projection is a QP, so
@@ -900,11 +900,11 @@ dskit/pipeline/
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 ├── binary_pricing.py  fair value of a binary contract that settles on an average: AveragedLognormal law,
 │                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
-├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0249)
-├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0249)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)
+├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0257)
 ├── binary_decisions.py DecisionRows (one row per market x lead; I, E = I + lag, tau) + QuoteState (the
 │                      quote bar that ended by I, age-capped, never carried forward) + the shared binary-market
-│                      column names (by import path, ADR-0248)
+│                      column names (by import path, ADR-0256)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market Brier / log-loss, take-rule profit, a
 │                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
@@ -967,8 +967,8 @@ dskit/pipeline/
 │                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows over the observations seam, every
-│                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0248),
-│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0249)
+│                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0256),
+│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
 ```
@@ -978,8 +978,8 @@ Tests: `python -m pytest tests/pipeline -q` (tier-1 + purity gate),
 ADR-0243..0247 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binary_contract_e2e,binary_contract_pins,fee_mechanics,fee_mechanics_pins,kinds_run_write}.py`,
 `tests/pipeline_libs/test_{parquet_series,parquet_series_guards,vol_estimators,vol_estimators_golden}.py`
 (the `*_golden` file holds the former child's output, frozen in `golden/`).
-ADR-0248: `tests/pipeline/test_binary_decisions.py`, `tests/pipeline_libs/test_binary_market_rows.py`.
-ADR-0249: `tests/pipeline/test_{digital_bounds,binary_curve}.py`, `tests/pipeline_libs/test_binary_coherence.py`.
+ADR-0256: `tests/pipeline/test_binary_decisions.py`, `tests/pipeline_libs/test_binary_market_rows.py`.
+ADR-0257: `tests/pipeline/test_{digital_bounds,binary_curve}.py`, `tests/pipeline_libs/test_binary_coherence.py`.
 
 ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
 ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and

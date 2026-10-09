@@ -1,4 +1,4 @@
-"""Coherence across linked binaries (ADR-0249 part 3): LP feasibility, the riskless set, the projection.
+"""Coherence across linked binaries (ADR-0257 part 3): LP feasibility, the riskless set, the projection.
 
 Every expected arbitrage is worked by hand in the comments: the legs, the credit and the fact that
 the position pays nothing net in every outcome the declared relations allow.

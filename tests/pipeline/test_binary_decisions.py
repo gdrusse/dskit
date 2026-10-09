@@ -1,4 +1,4 @@
-"""Decision rows and the quote state at the decision instant (ADR-0248).
+"""Decision rows and the quote state at the decision instant (ADR-0256).
 
 Ported from the first child that built them, with every column read through the
 module's own constants: these nodes read rows the binary-market readers wrote, so

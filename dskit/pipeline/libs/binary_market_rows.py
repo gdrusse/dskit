@@ -1,4 +1,4 @@
-"""Readers that project a binary-market venue's acquired streams into the toolkit's row vocabulary (ADR-0248).
+"""Readers that project a binary-market venue's acquired streams into the toolkit's row vocabulary (ADR-0256).
 
 A connector pack stores the venue's own field names and units (ISO instants, a quote bar's
 END instant in epoch SECONDS, a result spelled in the venue's words). Each reader here

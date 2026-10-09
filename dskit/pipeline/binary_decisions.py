@@ -1,4 +1,4 @@
-"""Decision rows over settled binary markets, and the market's own quote at each decision (ADR-0248).
+"""Decision rows over settled binary markets, and the market's own quote at each decision (ADR-0256).
 
 A model is asked, at each declared lead before a binary contract's close, for P(YES). So the
 unit of observation is ``(market, lead)``, and two transforms build it from rows a binary-market

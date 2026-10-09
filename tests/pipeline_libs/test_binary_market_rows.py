@@ -1,4 +1,4 @@
-"""Binary-market readers and the fee columns (ADR-0248), venue-neutral.
+"""Binary-market readers and the fee columns (ADR-0256), venue-neutral.
 
 Ported from the first child that built them. Every input field name is a param, so each
 projection test runs twice: once under a conventional field map and once under a map whose
@@ -501,7 +501,7 @@ def test_the_no_side_is_priced_at_one_minus_the_bid_under_an_asymmetric_mechanic
 
 @pytest.mark.parametrize("multiplier", [0, 0.0])
 def test_a_zero_multiplier_is_a_free_schedule_priced_ok_as_the_first_child_prices_it(multiplier):
-    # pinned to children/crypto_trading's fees.py (ADR-0248 parity): zero is a rate, not a missing one
+    # pinned to children/crypto_trading's fees.py (ADR-0256 parity): zero is a rate, not a missing one
     out = fees([fee_row()], [schedule(multiplier=multiplier)])[0]
     assert out[bd.FEE_STATUS] == "ok" and out[bd.FEE_RATE] == 0.0
     assert out[bd.FEE_BUY_YES] == 0.0 and out[bd.FEE_BUY_NO] == 0.0

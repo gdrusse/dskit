@@ -55,7 +55,7 @@ and needs an ADR before code:
 6. A maker quoting policy. Mark-outs already exist in production reporting, and the strictly-prior sub-day
    as-of read already exists (`libs/parquet_series.prior_index`, ADR-0243).
 
-The proposed homes and tiers are ADR-0248 (graduating crypto_trading's readers) and ADR-0249
+The proposed homes and tiers are ADR-0256 (graduating crypto_trading's readers) and ADR-0257
 (bounds, curve pricing, coherence); see `docs/plans/2026-10-07-implementation-plan.md`.
 
 **Data gap.** No connector gives historical intraday index-option quotes.

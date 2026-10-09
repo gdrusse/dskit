@@ -712,16 +712,16 @@ on it without breaking its rulings.
 - **A node sees no document name until `run()`.** `records-write-run` therefore
   refuses a bad `path` at validation but the run-name rule (`run_name_problems`)
   only at run; apply it to `document.name` in a config test (ADR-0247).
-- **Binary-market readers take the venue's field map as params** (ADR-0248):
+- **Binary-market readers take the venue's field map as params** (ADR-0256):
   every `*_field` is required with no default and the vocabularies are params;
   the venue's map lives in the child's config. `instant_ms` restates
   `production.base.parse_utc_ms` (a pack may not import production); a test pins them.
-- **`BinaryCoherence` needs a QP-capable solver** (ADR-0249): `solver` has no default; pyomo's
+- **`BinaryCoherence` needs a QP-capable solver** (ADR-0257): `solver` has no default; pyomo's
   `appsi_highs` refuses a quadratic objective, `highs` solves it. An LP that is infeasible because the
   declared relations contradict each other raises, it is not a coherence verdict. `tolerance` gates only the
   verdict; leg and relation dust is `LEG_DUST` relative to the largest dual, and an infeasible verdict whose legs
   are empty or cannot profit raises by name.
-- **Binary keys are SCALARS** (`binary_curve.row_key`, ADR-0249): a non-empty str (read by
+- **Binary keys are SCALARS** (`binary_curve.row_key`, ADR-0257): a non-empty str (read by
   `str.__str__`, never `str(x)`; no Unicode normalisation) or a non-bool int (numpy ints and `IntEnum` by
   value). `1` and `"1"` differ. None, absent and `""` are MISSING (`no_chain` / `no_curve`); bool, floats,
   Decimal, pandas NA, lists, tuples, dicts and every other object are REFUSED by name (`bad_chain_key` /
@@ -812,9 +812,9 @@ dskit/pipeline/
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 ├── binary_pricing.py  AveragedLognormal law, Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
-├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0249)
-├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0249)
-├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0248)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)
+├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0257)
+├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0256)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
@@ -858,8 +858,8 @@ dskit/pipeline/
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries + prior_index + the stream-manifests node, ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
-│                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0248),
-│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0249)
+│                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0256),
+│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file
 ```

@@ -1,4 +1,4 @@
-"""Executable digital bounds from vertical spreads (ADR-0249 part 1).
+"""Executable digital bounds from vertical spreads (ADR-0257 part 1).
 
 Every expected number is worked by hand in the comments or is a Black-76 closed form restated here
 (``N(d2)``), never read back from the module under test.

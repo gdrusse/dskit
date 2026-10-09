@@ -38,18 +38,18 @@ ruling). Nothing is rebuilt that dskit already ships.
 
 | Item | ADR | Tier | Module |
 |---|---|---|---|
-| Venue-neutral market rows, fee columns (from crypto_trading) | 0248 | 2 | `pipeline/libs/binary_market_rows.py` |
-| Decision instants, quote state (from crypto_trading) | 0248 | 1 | `pipeline/binary_decisions.py` |
-| Executable vertical-spread bounds; `quote_problems` graduates | 0249 | 1 | `pipeline/digital_bounds.py` |
-| Price a binary from any CDF curve | 0249 | 1 | `pipeline/binary_curve.py` |
-| Coherence LP + projection across linked binaries | 0249 | 2 | `pipeline/libs/binary_coherence.py` |
+| Venue-neutral market rows, fee columns (from crypto_trading) | 0256 | 2 | `pipeline/libs/binary_market_rows.py` |
+| Decision instants, quote state (from crypto_trading) | 0256 | 1 | `pipeline/binary_decisions.py` |
+| Executable vertical-spread bounds; `quote_problems` graduates | 0257 | 1 | `pipeline/digital_bounds.py` |
+| Price a binary from any CDF curve | 0257 | 1 | `pipeline/binary_curve.py` |
+| Coherence LP + projection across linked binaries | 0257 | 2 | `pipeline/libs/binary_coherence.py` |
 | Smile fit (SVI/spline) | later, Stage 2 | 2 | — |
 | Maker quoting proposer | later, Stage 4 | 1 | — |
 | Copula/dependence pack | later, Stage 5 | 2 | — |
 
 ## Owner decisions
 
-1. Approve ADR-0248 and ADR-0249: (a) both (b) 0249 only (c) neither yet.
+1. Approve ADR-0256 and ADR-0257: (a) both (b) 0257 only (c) neither yet.
 2. Choose option history:
    - (a) pilot on the Cboe recording, which is free;
    - (b) Databento cbbo-1m at $199/mo;
@@ -74,7 +74,7 @@ pins the series lists across all of them.
 | G0.3 usable SPXW/NDXP 0DTE chains | ≥ 10 days |
 | G0.4 live book recorder running | started |
 
-## Stage 1: kill test (after ADR-0248/0249)
+## Stage 1: kill test (after ADR-0256/0257)
 
 `configs/run-kill-index.json` runs this chain:
 

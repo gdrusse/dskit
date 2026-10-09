@@ -6,7 +6,7 @@ arb, options dispersion, and event contracts hedged with correlated liquid
 instruments). Status: **Stage 0 configured, nothing pulled.** The `source-kalshi-*`,
 `source-cboe-0dte` and `suite-kalshi-history-index-markets` configs register dskit's
 existing packs; the child adds no code. Plan: `docs/plans/2026-10-07-implementation-plan.md`;
-new dskit capability awaits ADR-0248/0249.
+new dskit capability awaits ADR-0256/0257.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds

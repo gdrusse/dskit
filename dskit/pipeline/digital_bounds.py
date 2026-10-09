@@ -185,7 +185,7 @@ def _size(value):
 def quote_problems(bid, ask, bid_size, ask_size, count, side=None):
     """List what stops a quote from filling ``count`` contracts on ``side``.
 
-    The one owner of the quote rules (ADR-0187, graduated by ADR-0249): a quote is nonnegative
+    The one owner of the quote rules (ADR-0187, graduated by ADR-0257): a quote is nonnegative
     and uncrossed; with ``side=None`` both sizes must cover ``count``; a sale (``"sell"``) needs a
     positive bid and a bid size that covers it; a purchase (``"buy"``) needs a positive ask and an
     ask size that covers it. A provider ``0`` on the side traded means no market, never a free
