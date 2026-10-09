@@ -117376,3 +117376,5 @@ Minor backlog: draw-parameter/default-deny negative test coverage; implementatio
 rejects correctly. 295 focused stats tests, Ruff, diff and reviewer cold-import
 probe passed. Legacy circular bootstrap unchanged. Neither lock is replay
 or empirical calibration approval. Full reports retained in named transcripts.
+
+Calendar-radius candidate: existing AdaptiveWassersteinRadius.select gains optional calendar_days; default circular recipe untouched. New mode uses paired daily counts, shared complete-calendar draws, observed-mean AND upper-bound gate, support diagnostics and no-LP resampling. Five focused radius tests pass; missing-date regression first failed DID NOT RAISE, then passes. Both child Ruff baselines unchanged (11 total). Await independent scoped review; not actual calibration.

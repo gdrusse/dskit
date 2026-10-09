@@ -182,8 +182,29 @@ class AdaptiveWassersteinRadius:
         self.min_dates, self.block_dates = min_dates, block_dates
         self.replicates, self.alpha, self.seed = replicates, float(alpha), seed
 
-    def select(self, history):
-        """Return a radius and multiplicity-adjusted upper bounds, or abstain."""
+    def select(self, history, *, calendar_days=None):
+        """Return a radius and multiplicity-adjusted upper bounds, or abstain.
+
+        Parameters
+        ----------
+        history : pandas.DataFrame
+            quote_date, radius and realized-minus-robust loss residual.
+        calendar_days : int or None
+            Complete calendar-block span. None preserves the legacy circular
+            observed-count rule; a span also requires the full observed mean
+            to pass and refuses unequal radius/date populations.
+
+        Returns
+        -------
+        dict
+            Smallest passing radius or None, bounds and refusal reason.
+            Calendar mode adds observed means and support diagnostics.
+
+        Raises
+        ------
+        ValueError
+            Invalid residual history, calendar span or unpaired date counts.
+        """
         import numpy as np
 
         required = {"quote_date", "radius", "residual"}
@@ -192,6 +213,8 @@ class AdaptiveWassersteinRadius:
         if len(history) and (not np.isfinite(history.residual).all()
                              or not set(history.radius).issubset(self.radii)):
             raise ValueError("invalid radius history")
+        if calendar_days is not None:
+            return self._select_calendar(history, calendar_days)
         bounds = {}
         quantile = 1.-self.alpha/len(self.radii)
         for offset, radius in enumerate(self.radii):
@@ -214,6 +237,52 @@ class AdaptiveWassersteinRadius:
         return {"radius": (passing[0] if passing else None),
                 "upper_bounds": bounds,
                 "reason": (None if passing else "insufficient_or_uncovered_history")}
+
+    def _select_calendar(self, history, calendar_days):
+        """Use the shared complete-calendar sampler on paired daily means."""
+        from datetime import date
+        import numpy as np
+        from dskit.pipeline.stats import CalendarBlockBootstrap
+
+        if type(calendar_days) is not int or calendar_days < 1:
+            raise ValueError("calendar_days must be a positive integer")
+        if any(not isinstance(day, str) or date.fromisoformat(day).isoformat() != day
+               for day in history.quote_date):
+            raise ValueError("calendar history requires canonical quote_date")
+        bounds = dict.fromkeys(self.radii)
+        means = dict.fromkeys(self.radii)
+        dates_by_radius, counts_by_radius, daily_by_radius = [], [], []
+        for radius in self.radii:
+            rows = history[history.radius == radius]
+            groups = rows.groupby("quote_date", sort=True).residual
+            daily = groups.mean()
+            days = list(daily.index)
+            dates_by_radius.append(days)
+            counts_by_radius.append(list(groups.size()))
+            daily_by_radius.append(daily.to_numpy())
+            means[radius] = float(daily.mean()) if len(daily) else None
+        if any(days != dates_by_radius[0] for days in dates_by_radius[1:]) or any(
+                counts != counts_by_radius[0] for counts in counts_by_radius[1:]):
+            raise ValueError("calendar radius histories must have paired date populations")
+        days = dates_by_radius[0]
+        support = {"supported": False, "date_count": len(days),
+                   "block_days": calendar_days, "reason": "insufficient_dates"}
+        if len(days) >= self.min_dates:
+            sampler = CalendarBlockBootstrap([date.fromisoformat(day) for day in days],
+                                             calendar_days)
+            support = sampler.evidence
+            if sampler.supported:
+                # Shared draws pair every radius; no LP is solved during resampling.
+                indices = np.asarray(sampler.sample_indices(self.replicates, self.seed))
+                quantile = 1.-self.alpha/len(self.radii)
+                for radius, daily in zip(self.radii, daily_by_radius):
+                    bounds[radius] = float(np.quantile(daily[indices].mean(axis=1), quantile))
+        passing = [radius for radius in self.radii
+                   if bounds[radius] is not None and bounds[radius] <= 0.
+                   and means[radius] <= 0.]
+        return {"radius": passing[0] if passing else None, "upper_bounds": bounds,
+                "full_means": means, "support": support,
+                "reason": None if passing else "insufficient_or_uncovered_history"}
 
 
 class EligibleCondorChain:

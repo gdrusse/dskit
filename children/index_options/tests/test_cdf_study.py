@@ -2186,3 +2186,65 @@ def test_decision_region_prepare_pins_the_archive_it_read(tmp_path, monkeypatch,
     else:
         assert written['store'] == manifest['store']
         assert [r['source'] for r in written['store']] == ['options-archive']
+
+
+def test_calendar_radius_uses_complete_blocks_and_keeps_legacy_result():
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0., .01], min_dates=4, block_dates=1,
+        replicates=100, alpha=.1, seed=7)
+    rows = [{"quote_date": f"2024-01-{day:02d}", "radius": radius,
+             "residual": residual}
+            for day in range(1, 7)
+            for radius, residual in ((0., .2), (.01, -.2))]
+    history = pd.DataFrame(rows)
+    before = owner.select(history)
+    assert "calendar_days" in __import__("inspect").signature(owner.select).parameters
+    result = owner.select(history, calendar_days=2)
+    assert result["radius"] == .01
+    assert result["full_means"] == {0.: pytest.approx(.2), .01: pytest.approx(-.2)}
+    assert result["support"]["supported"]
+    assert before == owner.select(history)
+
+
+def test_calendar_radius_refuses_uncovered_tail_and_unpaired_radius_dates():
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0., .01], min_dates=2, block_dates=1,
+        replicates=100, alpha=.1, seed=7)
+    assert "calendar_days" in __import__("inspect").signature(owner.select).parameters
+    history = pd.DataFrame([
+        {"quote_date": day, "radius": radius, "residual": -.2}
+        for day in ("2024-01-01", "2024-01-03")
+        for radius in (0., .01)])
+    result = owner.select(history, calendar_days=2)
+    assert result["radius"] is None
+    assert result["support"]["zero_inclusion_dates"] == ["2024-01-03"]
+    with pytest.raises(ValueError, match="paired"):
+        owner.select(history.iloc[:-1], calendar_days=1)
+
+
+def test_calendar_radius_full_observed_mean_must_pass(monkeypatch):
+    from dskit.pipeline.stats import CalendarBlockBootstrap
+
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0.], min_dates=2, block_dates=1,
+        replicates=100, alpha=.1, seed=7)
+    assert "calendar_days" in __import__("inspect").signature(owner.select).parameters
+    history = pd.DataFrame({"quote_date": ["2024-01-01", "2024-01-02"],
+                            "radius": [0., 0.], "residual": [-1., 3.]})
+    # Force a pessimistically unrepresentative draw to isolate the observed-mean gate.
+    monkeypatch.setattr(CalendarBlockBootstrap, "sample_indices",
+                        lambda self, replicates, seed: [[0, 0]] * replicates)
+    result = owner.select(history, calendar_days=1)
+    assert result["upper_bounds"][0.] == -1.
+    assert result["full_means"][0.] == 1.
+    assert result["radius"] is None
+
+
+def test_calendar_radius_does_not_silently_drop_missing_date():
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0.], min_dates=2, block_dates=1,
+        replicates=100, alpha=.1, seed=7)
+    history = pd.DataFrame({"quote_date": ["2024-01-01", "2024-01-02", None],
+                            "radius": [0., 0., 0.], "residual": [-1., -1., 100.]})
+    with pytest.raises(ValueError, match="quote_date"):
+        owner.select(history, calendar_days=1)
