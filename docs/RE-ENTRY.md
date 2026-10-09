@@ -24,8 +24,10 @@ This replay job is no longer active; never duplicate it.
 Next iteration needs a prospectively reviewed sampler-support and numerical
 certificate contract, retaining this run as development evidence. No new fits,
 provider acquisition, protected2026 market evaluation or live/deploy activity.
-Publish completed reviewed work on this task branch; main merge remains under
-the MIO task's explicit owner-approval rule. Earlier active/blocked text below
+Owner requested wrap on2026-10-09: merge and publish the reviewed completed
+research work, preserving unrelated main changes. Production-realism audit in
+the performance memo identifies material timing/fill, assignment and account
+constraints; this run is not a faithful executable-production simulation. Earlier active/blocked text below
 is historical and superseded by this completion record.
 
 ---
