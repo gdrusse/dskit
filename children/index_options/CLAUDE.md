@@ -80,6 +80,18 @@ Use README.md for installation, the temporary demo and focused tests.
   the same CVaR5 (k = CVaR5(core+sleeve) / CVaR5(core); the sleeve earns its
   place only if core+sleeve's mean exceeds k*core's at the printed cent; k > 1
   is flagged). Never decision-eligible.
+- ADR-0256 (PROPOSED), executable decision clock for the robust condor replay:
+  decide after the close of t, fill all four legs at the first later session's
+  VWAP with the ARM's haircut and liquidity rule (`nodes.liquid_leg_haircut` is
+  the one owner, also used at the decision; repricing stays inside
+  RobustCondorBatchSelect), all-or-none, `unfilled` orders counted by reason and
+  never replaced. `ExactDteBarChain` `fill_session` (`same` default = legacy,
+  `next` + a `fills` port) attaches the t' bar; `CondorExpirySettle` dates
+  entries `fill_date`, skips `unfilled`, and with `exercise_threshold_usd` adds
+  per-leg `itm`/`pin_zone` and `would_deliver_shares` (disclosure only, P&L
+  stays intrinsic). `ledger_studies account` is the read-only decision-time
+  admission study over a completed replay's run-report evidence; it is not a
+  margin, mark-to-market or delivery model. Never decision-eligible.
 - contracts.py owns instrument/quote/settlement validation and exact money.
   observations.py subclasses ObservationRows; nodes.py delegates to that owner.
 - Children are wrappers: Black-76 + VolIndexSmileQuotes (option_pricing),
@@ -134,7 +146,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # cdf_study.py: exact-expiry panel + JSON CDF/HPO CLI (ADR-0189/0190/0191)
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197)
+                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0256)
                            # pooled.py (generates configs/run-pooled-zoo-417{,-folds}.json, workflow-pooled-zoo-417.json
                            # and templates/report-spec-pooled-zoo-417.json (owner, 2026-10-04), the
                            # ADR-0236 zoo over both stock universes read via ADR-0237; and, through
@@ -157,6 +169,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # -index-wide.json (wide recorder + vol indices)
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
+                           # run-equity-condor-executable-clock.json (ADR-0256: the robust
+                           # condor replay with fill_session next, a fills stream, exercise flags)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner

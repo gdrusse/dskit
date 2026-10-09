@@ -1145,7 +1145,7 @@ def test_the_book_choices_are_the_backtests_forecast_books_and_model_is_the_defa
     assert ledger_studies.STUDIES["hedge"] is ledger_studies.HedgeStudy
     assert ledger_studies.HedgeStudy.BOOKS == ledger_studies.AllocationStudy.BOOKS
     assert ledger_studies.HedgeStudy.DEFAULT_BOOK == ledger_studies.AllocationStudy.DEFAULT_BOOK
-    assert set(ledger_studies.STUDIES) == {"allocate", "hedge"}
+    assert set(ledger_studies.STUDIES) == {"allocate", "hedge", "account"}
 
 
 def test_the_tail_level_is_the_backtests_default_and_the_column_says_five_percent():
@@ -1170,3 +1170,263 @@ def test_the_studys_t_is_the_backtests_own_so_a_noise_constant_series_reads_zero
     table = _allocation(lines).shared
     assert table["alone:SPY"][2] == 0.0          # spread 4e-16 of the magnitude: no variance
     assert table["alone:QQQ"][2] == 0.0           # three exactly equal trades
+
+
+# -- ADR-0256 S3: the read-only account study over a completed robust replay run ------------------
+RIGHTS_SIDES = (("LP", "put", "buy"), ("SP", "put", "sell"), ("SC", "call", "sell"),
+                ("LC", "call", "buy"))
+
+
+def _sel(decision, symbol="AAA", day="2025-02-04", expiry="2025-03-07", arm="nominal", value=30.,
+         status="trade", prices=(1., 2., 2., 1.), strikes=(90., 95., 105., 110.), fee=0.,
+         fill=None, reason="missing_fill_bar"):
+    """One saved selection: reservation 300 (width 5 x 100 less credit 200) by default."""
+    legs = []
+    for (role, right, side), strike, price in zip(RIGHTS_SIDES, strikes, prices):
+        leg = {"role": role, "contract": f"{symbol}-{role}-{decision}", "right": right,
+               "side": side, "strike": strike, "price_usd_per_share": price, "fee_usd": fee}
+        if fill is not None:
+            leg["decision_price_usd_per_share"] = price
+            leg["price_usd_per_share"] = fill[len(legs)]
+        legs.append(leg)
+    row = {"decision_id": decision, "arm_id": arm, "symbol": symbol, "quote_date": day,
+           "expiry": expiry, "multiplier": 100, "legs": legs, "robust_value_usd": value,
+           "status": status, "forecast_settlement_date": expiry}
+    if status == "unfilled":
+        row["unfilled_reason"] = reason
+    return row
+
+
+def _out(decision, arm="nominal", settle="2025-03-07", pnl=100.):
+    return {"decision_id": decision, "arm_id": arm, "settlement_date": settle, "pnl_usd": pnl}
+
+
+def _replay(root, selections, outcomes, state="ran", name="run"):
+    """A completed run directory in the layout the driver and run-report write."""
+    run = Path(root) / name
+    (run / "artifacts" / "diagnostics").mkdir(parents=True, exist_ok=True)
+    (run / "result.json").write_text(json.dumps({
+        "name": "fixture", "asof": "2026-01-01", "run_hash": "r" * 8, "state": state,
+        "document_hash": "d" * 8}))
+    evidence = {"title": "t", "stages": {
+        "sizing": {"decisions": selections + [
+            {"decision_id": "n", "arm_id": "nominal", "symbol": "ZZZ", "quote_date": "2025-02-04",
+             "expiry": "2025-03-07", "status": "no_trade"}]},
+        "replay": {"outcomes": outcomes, "skips": []}}}
+    (run / "artifacts" / "diagnostics" / "evidence.json").write_text(json.dumps(evidence))
+    return str(run)
+
+
+def _caps(**over):
+    return ledger_studies.AdmissionCaps(**{"max_concurrent": 99, "max_per_symbol": 99,
+                                           "max_per_date": 99, "max_reserved_fraction": 1.0,
+                                           **over})
+
+
+def _row(rows, arm="nominal", level="1"):
+    return next(r for r in rows if (r.arm_id, r.level) == (arm, level))
+
+
+def _account(tmp_path, selections, outcomes, **caps):
+    run = ledger_studies.ReplayRun(_replay(tmp_path, selections, outcomes))
+    return ledger_studies.AccountStudy.rows(run, _caps(**caps))
+
+
+def test_account_priority_is_ex_ante_value_per_reservation_then_symbol(tmp_path):
+    wide = dict(strikes=(90., 95., 105., 115.), prices=(1., 2., 2., 1.))     # reservation 800
+    selections = [_sel("a", "AAA", value=60.),                               # 60/300 = .2
+                  _sel("b", "BBB", value=100., **wide),                      # 100/800 = .125
+                  _sel("c", "CCC", value=60.), _sel("d", "DDD", value=30.)]  # tie .2 / .1
+    outcomes = [_out(d, pnl=p) for d, p in (("a", 1.), ("b", 2.), ("c", 4.), ("d", 8.))]
+    got = _row(_account(tmp_path, selections, outcomes, max_per_date=2))
+    # a and c tie on the ratio, symbol ascending: a first, then c; b and d lose on the ratio
+    assert (got.admitted, got.pnl_usd, got.rejected) == (2, 5., {"max_per_date": 2})
+
+
+def test_account_reservation_is_the_decision_max_loss_with_fees_counted_once(tmp_path):
+    selections = [_sel("a", fee=.65, value=30.)]
+    run = ledger_studies.ReplayRun(_replay(tmp_path, selections, [_out("a")]))
+    # credit 100*(2+2-1-1) - 4*.65 = 197.4; most the condor can lose: 500 - 197.4
+    assert run.orders[0].reservation == pytest.approx(302.6)
+    assert run.orders[0].score == pytest.approx(30. / 302.6)
+
+
+def test_account_admission_uses_decision_prices_not_the_fill_prices(tmp_path):
+    filled = _sel("a", fill=(1.5, 1.5, 1.5, 1.5))      # fill credit 0: a fill-based reservation is 500
+    run = ledger_studies.ReplayRun(_replay(tmp_path, [filled], [_out("a")]))
+    assert run.orders[0].reservation == pytest.approx(300.)
+
+
+def test_account_unfilled_order_still_takes_the_date_slot_from_a_lower_ranked_one(tmp_path):
+    # A outranks B; A is unfilled at t'.  B must still be rejected: admission is a decision fact.
+    selections = [_sel("A", "AAA", value=90., status="unfilled"), _sel("B", "BBB", value=30.)]
+    got = _row(_account(tmp_path, selections, [_out("B", pnl=7.)], max_per_date=1))
+    assert (got.admitted, got.unfilled, got.rejected, got.pnl_usd) == (
+        1, 1, {"max_per_date": 1}, 0.)
+
+
+@pytest.mark.parametrize("first", ["unfilled", "skipped_downstream"])
+def test_account_admitted_unfilled_or_skipped_order_keeps_its_reservation_until_settlement(
+        tmp_path, first):
+    # A is admitted at its decision; it never settles (no t' fill, or no settlement bar), yet
+    # its slot is held to its settlement date: nothing learned after the decision frees it.
+    selections = [_sel("A", "AAA", day="2025-02-04",
+                       status="unfilled" if first == "unfilled" else "trade"),
+                  _sel("B", "BBB", day="2025-02-06"),
+                  _sel("C", "CCC", day="2025-03-07", expiry="2025-04-07")]
+    outcomes = [_out("B"), _out("C", settle="2025-04-07", pnl=11.)]
+    got = _row(_account(tmp_path, selections, outcomes, max_concurrent=1))
+    # B is refused while A holds the slot; C, decided after the close of 03-07, is admitted
+    assert got.admitted == 2 and got.rejected == {"max_concurrent": 1}
+    assert got.unfilled == (first == "unfilled") and got.pnl_usd == 11.
+
+
+def test_account_releases_at_the_saved_settlement_date_before_that_days_decisions(tmp_path):
+    early = _sel("A", "AAA", day="2025-02-04", expiry="2025-03-07")
+    same_day = _sel("B", "BBB", day="2025-03-07", expiry="2025-04-07")
+    nxt = _sel("C", "CCC", day="2025-03-06", expiry="2025-04-07")
+    got = _row(_account(tmp_path, [early, same_day], [_out("A"), _out("B", settle="2025-04-07")],
+                        max_concurrent=1))
+    assert got.admitted == 2 and got.rejected == {}
+    got = _row(_account(tmp_path, [early, nxt], [_out("A"), _out("C")], max_concurrent=1))
+    assert got.admitted == 1 and got.rejected == {"max_concurrent": 1}
+
+
+def test_account_uses_the_outcomes_settlement_date_not_the_nominal_expiry(tmp_path):
+    holiday = _sel("A", "AAA", day="2025-03-19", expiry="2025-04-18")      # Good Friday
+    later = _sel("B", "BBB", day="2025-04-17", expiry="2025-05-19")
+    got = _row(_account(tmp_path, [holiday, later],
+                        [_out("A", settle="2025-04-17"), _out("B", settle="2025-05-19")],
+                        max_concurrent=1))
+    assert got.admitted == 2
+    got = _row(_account(tmp_path, [holiday, later],
+                        [_out("A", settle="2025-04-18"), _out("B", settle="2025-05-19")],
+                        max_concurrent=1))
+    assert got.admitted == 1
+
+
+def test_account_symbol_cap_and_reason_order(tmp_path):
+    selections = [_sel("a", "AAA", day="2025-02-04"), _sel("b", "AAA", day="2025-02-05"),
+                  _sel("c", "BBB", day="2025-02-05")]
+    got = _row(_account(tmp_path, selections, [_out(d) for d in "abc"], max_per_symbol=1))
+    assert (got.admitted, got.rejected) == (2, {"max_per_symbol": 1})
+    # an order failing several caps is counted once, under the first in the documented order
+    got = _row(_account(tmp_path, selections, [_out(d) for d in "abc"], max_concurrent=1,
+                        max_per_symbol=1, max_per_date=1))
+    assert got.rejected == {"max_concurrent": 2}
+
+
+def test_account_capital_levels_are_fractions_of_the_nominal_unconstrained_peak(tmp_path):
+    selections = [_sel(d, s) for d, s in (("a", "AAA"), ("b", "BBB"), ("c", "CCC"))]
+    nominal = [_out(d, pnl=p) for d, p in (("a", 1.), ("b", 2.), ("c", 4.))]
+    rows = _account(tmp_path, selections, nominal)
+    assert [(r.arm_id, r.level) for r in rows] == [("nominal", "uncapped"), ("nominal", "1"),
+                                                   ("nominal", "1/2"), ("nominal", "1/4")]
+    assert [r.capital_usd for r in rows] == [None, 900., 450., 225.]
+    assert [r.admitted for r in rows] == [3, 3, 1, 0]
+    assert [r.pnl_usd for r in rows] == [7., 7., 1., 0.]
+    assert rows[2].rejected == {"max_reserved_fraction": 2}
+    assert rows[3].rejected == {"max_reserved_fraction": 3}
+    assert rows[0].peak_reserved_usd == rows[1].peak_reserved_usd == 900.
+    # the fraction of capital allowed to be reserved scales the cap
+    rows = _account(tmp_path, selections, nominal, max_reserved_fraction=.5)
+    assert [r.admitted for r in rows] == [3, 1, 0, 0]
+
+
+def test_account_every_arm_is_accounted_on_the_nominal_arms_capital(tmp_path):
+    selections = [_sel("a", "AAA"), _sel("b", "BBB"), _sel("a", "AAA", arm="haircut_0"),
+                  _sel("b", "BBB", arm="haircut_0"), _sel("c", "CCC", arm="haircut_0")]
+    outcomes = [_out("a"), _out("b"), _out("a", "haircut_0"), _out("b", "haircut_0"),
+                _out("c", "haircut_0")]
+    rows = _account(tmp_path, selections, outcomes)
+    assert [(r.arm_id, r.level) for r in rows][:5] == [
+        ("nominal", "uncapped"), ("nominal", "1"), ("nominal", "1/2"), ("nominal", "1/4"),
+        ("haircut_0", "uncapped")]
+    assert _row(rows, "haircut_0", "1").capital_usd == 600.
+    assert _row(rows, "haircut_0", "1").admitted == 2
+    assert _row(rows, "haircut_0", "1").rejected == {"max_reserved_fraction": 1}
+
+
+def test_account_the_nominal_arm_is_required_and_named_by_the_caller(tmp_path):
+    run = ledger_studies.ReplayRun(_replay(tmp_path, [_sel("a", arm="rho_base")],
+                                           [_out("a", "rho_base")]))
+    with pytest.raises(ValueError, match="nominal"):
+        ledger_studies.AccountStudy.rows(run, _caps())
+    assert ledger_studies.AccountStudy.rows(run, _caps(), nominal_arm="rho_base")
+
+
+def test_account_refuses_a_run_that_did_not_finish_ran(tmp_path):
+    for state in ("halted", "error"):
+        with pytest.raises(ValueError, match="state"):
+            ledger_studies.ReplayRun(_replay(tmp_path, [_sel("a")], [_out("a")], state=state,
+                                             name=state))
+
+
+@pytest.mark.parametrize("damage", ["no_evidence", "no_stage", "dup", "orphan_outcome",
+                                    "free_lunch", "outcome_for_unfilled", "bad_json"])
+def test_account_refuses_what_it_cannot_account(tmp_path, damage):
+    selections, outcomes = [_sel("a")], [_out("a")]
+    if damage == "dup":
+        selections.append(_sel("a"))
+    elif damage == "orphan_outcome":
+        outcomes.append(_out("zz"))
+    elif damage == "free_lunch":     # a credit above the width: the structure cannot lose
+        selections = [_sel("a", prices=(1., 9., 9., 1.))]
+    elif damage == "outcome_for_unfilled":
+        selections = [_sel("a", status="unfilled")]
+    path = Path(_replay(tmp_path, selections, outcomes))
+    evidence = path / "artifacts" / "diagnostics" / "evidence.json"
+    if damage == "no_evidence":
+        evidence.unlink()
+    elif damage == "no_stage":
+        evidence.write_text(json.dumps({"stages": {}}))
+    elif damage == "bad_json":
+        evidence.write_text("{")
+    with pytest.raises(ValueError):
+        ledger_studies.AccountStudy.rows(ledger_studies.ReplayRun(str(path)), _caps())
+
+
+def test_account_cli_prints_the_table_and_the_not_a_margin_model_line(tmp_path, capsys):
+    run = _replay(tmp_path, [_sel("a"), _sel("b", "BBB")], [_out("a"), _out("b")])
+    code, lines, _ = _run(capsys, "account", run, "--max-concurrent", "10", "--max-per-symbol", "1",
+                          "--max-per-date", "3", "--max-reserved-fraction", "1.0")
+    assert code == 0
+    text = "\n".join(lines)
+    assert "not a margin, mark-to-market or delivery model" in text
+    header = next(line for line in lines if line.split()[:2] == ["arm", "level"])
+    assert "admitted" in header and "pnl_usd" in header and "max_per_date" in header
+    assert sum(1 for line in lines if line.startswith("nominal")) == 4
+    assert code == 0 and capsys.readouterr().err == ""
+
+
+def test_account_cli_refuses_in_one_error_line_and_requires_every_cap(tmp_path, capsys):
+    run = _replay(tmp_path, [_sel("a")], [_out("a")], state="halted")
+    code, lines, _ = _run(capsys, "account", run, "--max-concurrent", "10", "--max-per-symbol", "1",
+                          "--max-per-date", "3", "--max-reserved-fraction", "1.0")
+    assert code == 1 and len(lines) == 1 and lines[0].startswith("error: ")
+    for argv in (["account", run], ["account", run, "--max-concurrent", "10"]):
+        with pytest.raises(SystemExit) as exit_:
+            ledger_studies.main(argv)
+        assert exit_.value.code == 2
+    for bad in ("0", "-1", "x"):
+        with pytest.raises(SystemExit):
+            ledger_studies.main(["account", run, "--max-concurrent", bad, "--max-per-symbol", "1",
+                                 "--max-per-date", "1", "--max-reserved-fraction", "1"])
+    for bad in ("0", "-1", "nan", "x"):
+        with pytest.raises(SystemExit):
+            ledger_studies.main(["account", run, "--max-concurrent", "1", "--max-per-symbol", "1",
+                                 "--max-per-date", "1", "--max-reserved-fraction", bad])
+
+
+def test_account_study_reads_and_never_writes(tmp_path, capsys):
+    run = _replay(tmp_path, [_sel("a")], [_out("a")])
+    before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+              for p in Path(run).rglob("*") if p.is_file()}
+    assert _run(capsys, "account", run, "--max-concurrent", "1", "--max-per-symbol", "1",
+                "--max-per-date", "1", "--max-reserved-fraction", "1")[0] == 0
+    assert before == {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+                      for p in Path(run).rglob("*") if p.is_file()}
+
+
+def test_account_study_is_registered():
+    assert ledger_studies.STUDIES["account"] is ledger_studies.AccountStudy

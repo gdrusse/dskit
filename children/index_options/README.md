@@ -384,6 +384,28 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   than one contract: a `note:` line says so. A core with no tail loss, or
   a combined book with none (k would not be a positive scale), refuses with one
   `error:` line.
+- Executable decision clock and account study (ADR-0256, PROPOSED; never
+  decision-eligible). `configs/run-equity-condor-executable-clock.json` is the
+  robust condor replay decided after the close of t and filled at the first later
+  session's VWAP: `ExactDteBarChain` `fill_session: "next"` (default `"same"` =
+  legacy) joins a `fills` stream, `RobustCondorBatchSelect` reprices each trade
+  leg by leg with the ARM's own haircut and liquidity rule
+  (`nodes.liquid_leg_haircut`, the one owner also used at the decision),
+  all-or-none: a missing t' bar, a failed arm rule or a negative net short price
+  makes it `unfilled`, counted by reason and never replaced. `CondorExpirySettle`
+  dates entries at `fill_date`, skips `unfilled`, and with
+  `exercise_threshold_usd` flags each leg `itm` / `pin_zone` and each condor
+  `would_deliver_shares` (disclosure only; P&L stays intrinsic).
+  `python -m index_options.ledger_studies account <run dir> --max-concurrent N
+  --max-per-symbol N --max-per-date N --max-reserved-fraction F` reads a
+  completed (`ran`) replay's run-report evidence (`artifacts/diagnostics/evidence.json`,
+  stages `sizing` and `replay`; node records hold only list lengths) and admits
+  orders at decision time: priority is ex-ante robust value per reservation
+  (decision max loss, fees once), then symbol; a reservation is released at the
+  outcome's saved settlement date before that day's decisions, and an order later
+  unfilled keeps its slot. Capital is 1, 1/2 and 1/4 of the nominal arm's
+  unconstrained peak reservation. It is not a margin, mark-to-market or delivery
+  model.
 
 > Data rule: every dataset a run reads is an onboarded source and configs name it by catalog
 > source, never by an absolute path (repo `CLAUDE.md`, "Data enters through onboarding").
@@ -529,7 +551,7 @@ journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197);
+                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0256);
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
@@ -540,6 +562,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # -index-wide.json (wide recorder + vol indices)
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
+                           # run-equity-condor-executable-clock.json (ADR-0256: the robust
+                           # condor replay with fill_session next, a fills stream, exercise flags)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner

@@ -67,7 +67,7 @@ __all__ = ["ExactDteBarChain", "CondorExpirySettle", "CondorBacktest", "CondorDi
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
-           "RobustCondorBatchSelect", "RobustCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
+           "RobustCondorBatchSelect", "RobustCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "liquid_leg_haircut", "mean_or_zero",
            "t_or_zero"]
 
 
@@ -2970,6 +2970,19 @@ class CondorExpirySettle(Node):
         Required settlement_field (str), max_settlement_gap_days (int >= 0),
         end_before (ISO date, exclusive) and labels (dict with nonempty fill
         and exercise text). The date boundary also applies to confirming bars.
+        Optional exercise_threshold_usd (positive number; absent = no flags).
+
+    Notes
+    -----
+    ADR-0256: entry fills are dated ``fill_date`` when a selection carries one
+    (strictly between quote_date and expiry), else quote_date. A selection with
+    ``status: "unfilled"`` and an ``unfilled_reason`` is skipped (reason
+    ``unfilled``) and counted in ``evidence["unfilled_by_reason"]``. With the
+    threshold, each outcome adds ``exercise_flags`` (per leg: ``itm`` when
+    ITM by at least the threshold, ``pin_zone`` when |settlement - strike| is
+    below it) and ``would_deliver_shares`` (signed shares moved when exactly one
+    leg of a wing is past the threshold, else 0); P&L stays intrinsic and no
+    exercise, assignment or delivery is simulated.
 
     Raises
     ------
@@ -2995,7 +3008,8 @@ class CondorExpirySettle(Node):
 
     role = "transform"
     outputs = ("outcomes", "skips", "evidence")
-    _PARAMS = ("settlement_field", "max_settlement_gap_days", "labels", "end_before")
+    _PARAMS = ("settlement_field", "max_settlement_gap_days", "labels", "end_before",
+               "exercise_threshold_usd")
     _ROLES = ("LP", "SP", "SC", "LC")
 
     @classmethod
@@ -3025,6 +3039,10 @@ class CondorExpirySettle(Node):
             problems.append("labels must contain fill and exercise")
         elif any(not isinstance(v, str) or not v.strip() for v in labels.values()):
             problems.append("labels must be nonempty text")
+        threshold = params.get("exercise_threshold_usd")
+        if "exercise_threshold_usd" in params and (
+                isinstance(threshold, bool) or not number_ok(threshold) or threshold <= 0):
+            problems.append("exercise_threshold_usd must be a positive finite number")
         return problems
 
     @classmethod
@@ -3075,6 +3093,9 @@ class CondorExpirySettle(Node):
                 raise ValueError(f"selection requires bounded {key}")
         if row["quote_date"] >= row["expiry"]:
             raise ValueError("expiry must follow quote_date")
+        if "fill_date" in row and (not _iso_day(row["fill_date"])
+                                   or not row["quote_date"] < row["fill_date"] < row["expiry"]):
+            raise ValueError("fill_date must fall strictly between quote_date and expiry")
         if "forecast_settlement_date" in row:
             day = row["forecast_settlement_date"]
             if (not _iso_day(day) or not row["quote_date"] < day <= row["expiry"]):
@@ -3105,6 +3126,39 @@ class CondorExpirySettle(Node):
         if any(a["strike"] >= b["strike"] for a, b in zip(legs, legs[1:])):
             raise ValueError("condor strikes must be strictly ordered")
 
+    @staticmethod
+    def _unfilled(row):
+        """Refuse an ``unfilled`` selection that lacks its identity or its reason."""
+        for key in ("decision_id", "arm_id", "symbol", "quote_date", "expiry", "unfilled_reason"):
+            if not isinstance(row.get(key), str) or not row[key]:
+                raise ValueError(f"unfilled selection requires {key}")
+
+    def _exercise(self, row, level):
+        """Return per-leg ITM/pin-zone flags and the signed shares an exercise would move."""
+        threshold = Fraction(str(self.params["exercise_threshold_usd"]))
+        flags, itm = [], []
+        for leg in row["legs"]:
+            distance = level - Fraction(str(leg["strike"]))
+            moneyness = distance if leg["right"] == "call" else -distance
+            itm.append(moneyness >= threshold)
+            flags.append({"role": leg["role"], "contract": leg["contract"], "itm": itm[-1],
+                          "pin_zone": abs(distance) < threshold})
+        shares = 0
+        for wing in ((0, 1), (2, 3)):
+            if sum(itm[i] for i in wing) == 1:
+                leg = row["legs"][wing[0] if itm[wing[0]] else wing[1]]
+                shares += (row["multiplier"] * (-1 if leg["right"] == "call" else 1)
+                           * (1 if leg["side"] == "sell" else -1))
+        return flags, shares
+
+    def _disclosure(self, outcomes):
+        """Return the exercise-disclosure counts over every settled outcome."""
+        legs = [flag for outcome in outcomes for flag in outcome["exercise_flags"]]
+        return {"exercise_threshold_usd": self.params["exercise_threshold_usd"],
+                "n_itm_legs": sum(flag["itm"] for flag in legs),
+                "n_pin_zone_legs": sum(flag["pin_zone"] for flag in legs),
+                "n_would_deliver_shares": sum(o["would_deliver_shares"] != 0 for o in outcomes)}
+
     def _fold(self, row, settled, confirmed_date):
         """Emit auditable raw fills and reconcile exact closed-form expiry P&L."""
         identity = {key: row[key] for key in ("decision_id", "arm_id", "symbol",
@@ -3121,7 +3175,7 @@ class CondorExpirySettle(Node):
             credit -= sign * premium
             fees += fee
             for phase, side, price, charge, day in (
-                ("entry", leg["side"], premium, fee, row["quote_date"]),
+                ("entry", leg["side"], premium, fee, row.get("fill_date", row["quote_date"])),
                 ("expiry", "sell" if sign > 0 else "buy", intrinsic, Fraction(0), row["expiry"]),
             ):
                 signed = 1 if side == "buy" else -1
@@ -3149,6 +3203,8 @@ class CondorExpirySettle(Node):
                    "multiplier": multiplier, "fees_usd": float(fees),
                    "credit_usd_per_share": float(credit), "pnl_usd": float(book.realised),
                    "closed_form_pnl_usd": float(expected), "end_flat": True}
+        if "exercise_threshold_usd" in self.params:
+            outcome["exercise_flags"], outcome["would_deliver_shares"] = self._exercise(row, level)
         return outcome, orders, fills
 
     def run(self, ctx, inputs):
@@ -3184,15 +3240,24 @@ class CondorExpirySettle(Node):
         if any(not isinstance(row, dict) for row in inputs["skips"]):
             raise ValueError("upstream skips must be records")
         grouped = self._bars(inputs["bars"])
-        seen = set()
+        seen, unfilled = set(), Counter()
         for row in inputs["selections"]:
-            self._selection(row)
+            if isinstance(row, dict) and row.get("status") == "unfilled":
+                self._unfilled(row)
+            else:
+                self._selection(row)
             key = row["arm_id"], row["decision_id"]
             if key in seen:
                 raise ValueError("duplicate arm/decision identity")
             seen.add(key)
         outcomes, orders, fills, skips = [], [], [], list(inputs["skips"])
         for row in inputs["selections"]:
+            if row.get("status") == "unfilled":
+                unfilled[row["unfilled_reason"]] += 1
+                skips.append({**{k: row[k] for k in ("decision_id", "arm_id", "symbol",
+                                                   "quote_date", "expiry")},
+                              "reason": "unfilled", "unfilled_reason": row["unfilled_reason"]})
+                continue
             bars = grouped.get(row["symbol"], [])
             at = _bounded_settlement_index([bar["date"] for bar in bars], row["expiry"],
                                            self.params["max_settlement_gap_days"])
@@ -3218,6 +3283,10 @@ class CondorExpirySettle(Node):
         evidence = {"stage": "condor_expiry", "totals": totals, "outcomes": outcomes,
                     "skips": skips, "raw_orders": orders, "raw_fills": fills,
                     "units": "USD per one-lot condor; no portfolio return"}
+        if unfilled:
+            evidence["unfilled_by_reason"] = dict(sorted(unfilled.items()))
+        if "exercise_threshold_usd" in self.params:
+            evidence["exercise_disclosure"] = self._disclosure(outcomes)
         return {"outcomes": outcomes, "skips": skips, "evidence": evidence}
 
 
@@ -3235,6 +3304,48 @@ class _IntegrityError(ValueError):
 
 class _BatchContextError(ValueError):
     """A batch row set could not be prepared into one context."""
+
+
+def liquid_leg_haircut(price, trade_count, volume, liquidity, tier_terms, multiplier):
+    """Return one leg's tiered haircut and short eligibility, or ``None`` if it is illiquid.
+
+    The one owner (ADR-0256) of the decision liquidity rule and the tiered haircut
+    that :class:`RobustCondorBatchSelect` applies to a leg at the decision bar and
+    again, with the same arm, at the fill bar.
+
+    Parameters
+    ----------
+    price : float
+        The bar's VWAP in USD per share, finite and nonnegative.
+    trade_count, volume : int
+        The bar's liquidity, nonnegative.
+    liquidity : dict
+        ``min_trade_count`` and ``min_volume`` (the arm's, inclusive thresholds).
+    tier_terms : dict
+        ``pct`` and ``floor_usd`` of the ticker's haircut tier.
+    multiplier : float
+        The arm's haircut multiplier.
+
+    Returns
+    -------
+    tuple or None
+        ``None`` when the bar is below either threshold; else
+        ``(haircut, short_ok)`` with ``haircut = multiplier * max(floor_usd,
+        pct * price)`` and ``short_ok = haircut <= price`` (a short leg's net
+        price is nonnegative).
+
+    Examples
+    --------
+    A liquid leg priced at 2 under a 1 percent tier with a 1 cent floor::
+
+        terms = {"pct": .01, "floor_usd": .01}
+        liquid_leg_haircut(2., 5, 1, {"min_trade_count": 5, "min_volume": 1}, terms, 1.)
+        # -> (0.02, True)
+    """
+    if trade_count < liquidity["min_trade_count"] or volume < liquidity["min_volume"]:
+        return None
+    haircut = multiplier * max(tier_terms["floor_usd"], tier_terms["pct"] * price)
+    return haircut, haircut <= price
 
 
 class RobustCondorSelect(PyomoSolve):
@@ -3738,9 +3849,14 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                 raise ValueError("rho must be a YYYY-MM to finite nonnegative number/null mapping")
         return dict(rho)
 
-    def _batch_context(self, mass, rows, tier, arm, rho):
+    def _arm_terms(self, arm, tier):
+        """Return the arm's liquidity thresholds, its ticker tier's haircut terms and multiplier."""
         spec, liquidity = self.params["arms"][arm], dict(self.params["liquidity"])
         liquidity["min_trade_count"] = spec.get("min_trade_count", liquidity["min_trade_count"])
+        return liquidity, self.params["haircut_tiers"][tier], spec.get("haircut_multiplier", 1.)
+
+    def _batch_context(self, mass, rows, tier, arm, rho):
+        liquidity, tier_terms, arm_multiplier = self._arm_terms(arm, tier)
         by_role = {role: [] for role in self._ROLES}
         grid = list(mass["grid"])
         index_by_strike = {float(strike): index for index, strike in enumerate(grid)}
@@ -3757,13 +3873,13 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                     or type(row.get("trade_count")) is not int or row["trade_count"] < 0
                     or type(row.get("volume")) is not int or row["volume"] < 0):
                 raise ValueError("chain row has invalid strike, VWAP or liquidity")
-            if row["trade_count"] < liquidity["min_trade_count"] or row["volume"] < liquidity["min_volume"]:
+            terms = liquid_leg_haircut(price, row["trade_count"], row["volume"], liquidity,
+                                       tier_terms, arm_multiplier)
+            if terms is None:
                 continue
-            arm_multiplier = spec.get("haircut_multiplier", 1.)
-            haircut_cfg = self.params["haircut_tiers"][tier]
-            haircut = arm_multiplier * max(haircut_cfg["floor_usd"], haircut_cfg["pct"] * price)
+            haircut, short_ok = terms
             side_roles = ("LP",) if right == "put" else ("LC",)
-            if haircut <= price:
+            if short_ok:
                 side_roles += (("SP",) if right == "put" else ("SC",))
             for selected in side_roles:
                 by_role[selected].append(dict(index=index_by_strike[float(strike)], price=float(price),
@@ -3780,6 +3896,73 @@ class RobustCondorBatchSelect(RobustCondorSelect):
         except ValueError as exc:
             raise _BatchContextError(str(exc)) from exc
         return RobustCondorSelect.run(self, ctx, {"context": context})
+
+
+    _FILL_KEYS = ("date", "vwap", "trade_count", "volume")
+
+    def _fill_bar(self, row, day):
+        """Return a chain row's ``fill`` bar after refusing a malformed or non-later one."""
+        fill = row["fill"]
+        if fill is None:
+            return None
+        if (not isinstance(fill, dict) or set(fill) != set(self._FILL_KEYS)
+                or not _iso_day(fill["date"]) or not number_ok(fill["vwap"]) or fill["vwap"] < 0
+                or any(type(fill[k]) is not int or fill[k] < 0 for k in ("trade_count", "volume"))):
+            raise ValueError("chain fill must be null or a date/vwap/trade_count/volume bar")
+        if not day < fill["date"] < row["expiry"]:
+            raise ValueError("chain fill must fall strictly after the decision date and before expiry")
+        return fill
+
+    def _fill_session(self, rows, day):
+        """Return t', the first session with any bar after the decision date, in one context."""
+        dates = [bar["date"] for bar in (self._fill_bar(r, day) for r in rows) if bar is not None]
+        return min(dates) if dates else None
+
+    @staticmethod
+    def _credit(legs, key, multiplier):
+        """Return the one-lot USD credit of ``legs`` at the per-share price under ``key``."""
+        return multiplier * sum((1 if leg["side"] == "sell" else -1) * leg[key] for leg in legs)
+
+    def _fill_prices(self, decision, rows, tier):
+        """Return ``(prices, None)`` repriced at t' with the arm's rule, or ``(None, reason)``."""
+        liquidity, tier_terms, factor = self._arm_terms(decision["arm_id"], tier)
+        session = self._fill_session(rows, decision["quote_date"])
+        by_contract = {row["contract"]: row for row in rows}
+        prices = []
+        for leg in decision["legs"]:
+            bar = by_contract[leg["contract"]]["fill"]
+            if bar is None or bar["date"] != session:
+                return None, "missing_fill_bar"
+            terms = liquid_leg_haircut(bar["vwap"], bar["trade_count"], bar["volume"],
+                                       liquidity, tier_terms, factor)
+            if terms is None:
+                return None, "fill_liquidity"
+            haircut, short_ok = terms
+            if leg["side"] == "sell" and not short_ok:
+                return None, "negative_net_short_price"
+            prices.append(bar["vwap"] + (-haircut if leg["side"] == "sell" else haircut))
+        return prices, None
+
+    def _fill(self, decision, rows, tier):
+        """Fill one trade decision all-or-none at t' or mark it ``unfilled``; return the reason or ``None``."""
+        multiplier = decision["multiplier"]
+        decision["decision_credit_usd"] = self._credit(decision["legs"], "price_usd_per_share",
+                                                      multiplier)
+        prices, reason = self._fill_prices(decision, rows, tier)
+        if reason is not None:
+            decision.update(status="unfilled", unfilled_reason=reason)
+            return reason
+        session = self._fill_session(rows, decision["quote_date"])
+        for leg, price in zip(decision["legs"], prices):
+            leg["decision_price_usd_per_share"], leg["price_usd_per_share"] = (
+                leg["price_usd_per_share"], price)
+        decision["fill_date"] = session
+        decision["remaining_dte"] = (date.fromisoformat(decision["expiry"])
+                                     - date.fromisoformat(session)).days
+        decision["fill_credit_usd"] = self._credit(decision["legs"], "price_usd_per_share",
+                                                   multiplier)
+        decision["slippage_usd"] = decision["decision_credit_usd"] - decision["fill_credit_usd"]
+        return None
 
     def run(self, ctx, inputs):
         """Return decisions, settlement-compatible selections, and explicit skips.
@@ -3807,6 +3990,11 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                 raise ValueError("holding exclusions require canonical context identity")
             excluded.add(key)
         chain = {}
+        present = {"fill" in row for row in inputs["chain"]}
+        if len(present) > 1:
+            raise ValueError("chain fill must be present on every chain row or on none")
+        filling = present == {True}
+        fill_counts = Counter()
         for row in inputs["chain"]:
             if not isinstance(row, dict):
                 raise ValueError("chain rows must be records")
@@ -3816,6 +4004,8 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                     or day >= row["expiry"] or row["expiry"] >= self.params["protected_end_before"]
                     or key in chain and any(r.get("contract") == row.get("contract") for r in chain[key])):
                 raise ValueError("chain has duplicate or unprotected context identity")
+            if filling:
+                self._fill_bar(row, day)
             chain.setdefault(key, []).append(row)
         decisions, selections, solves, skips = [], [], [], list(inputs["skips"])
         for mass in masses.values():
@@ -3857,11 +4047,16 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                 solves.extend({**identity, "arm_id": arm, **solve}
                               for solve in result["evidence"]["solves"])
                 if decision["status"] == "trade":
+                    if filling:
+                        fill_counts[self._fill(decision, chain[key], tiers[mass["symbol"]])] += 1
                     selections.append(decision)
                 elif decision["status"] == "skipped":
                     skips.append(decision)
         evidence = {"tiers": tiers, "decisions": decisions, "solves": solves, "skips": skips,
                     "tier_tie_policy": self.params["tier_tie_policy"]}
+        if filling:
+            evidence["fill"] = {"filled": fill_counts.pop(None, 0),
+                                "unfilled": dict(sorted(fill_counts.items()))}
         return {"selections": selections, "decisions": decisions, "solves": solves,
                 "skips": skips, "evidence": evidence}
 
@@ -3876,7 +4071,16 @@ class ExactDteBarChain(Node):
     ----------
     params : dict
         Explicit fields mapping, positive dte and standard multiplier,
-        exclusive end_before date and disjoint named inclusive windows.
+        exclusive end_before date and disjoint named inclusive windows. Optional
+        ``fill_session`` (``"same"``, the default and the legacy identity, or
+        ``"next"``): with ``"next"`` the node also takes a ``fills`` input of bar rows
+        under the SAME field mapping, in any date range, and attaches to each
+        eligible row ``fill``, the bar of the same contract on the first date
+        strictly after the row's date and strictly before its expiry
+        (``{date, vwap, trade_count, volume}``), or ``None`` when there is none.
+        A fill row at or after ``end_before``, a malformed or duplicated one, or one
+        that disagrees with the chain row on symbol, expiry, right or strike refuses.
+        ``"next"`` without the ``fills`` input, or ``"same"`` with it, refuses.
 
     Examples
     --------
@@ -3892,7 +4096,10 @@ class ExactDteBarChain(Node):
 
     role = "transform"
     outputs = ("records", "skips", "evidence")
-    _PARAMS = ("fields", "dte", "multiplier", "end_before", "windows")
+    _PARAMS = ("fields", "dte", "multiplier", "end_before", "windows", "fill_session")
+    #: The fill clocks; the first is the default, the legacy same-bar clock.
+    FILL_SESSIONS = ("same", "next")
+    DEFAULT_FILL_SESSION = FILL_SESSIONS[0]
     FIELDS = ("contract", "symbol", "expiry", "right", "strike", "date",
               "vwap", "trade_count", "volume", "multiplier")
 
@@ -3921,6 +4128,8 @@ class ExactDteBarChain(Node):
             check_int_param(problems, key, params.get(key), ge=1)
         if not _iso_day(params.get("end_before")):
             problems.append("end_before requires canonical date")
+        if "fill_session" in params and params["fill_session"] not in cls.FILL_SESSIONS:
+            problems.append(f"fill_session must be one of {list(cls.FILL_SESSIONS)}")
         windows = params.get("windows")
         if not isinstance(windows, list) or not windows:
             return problems + ["windows must be a nonempty list"]
@@ -3991,11 +4200,17 @@ class ExactDteBarChain(Node):
         Raises
         ------
         ValueError
-            Input shape or duplicate contract-date identities are ambiguous.
+            Input shape or duplicate contract-date identities are ambiguous, or the
+            ``fills`` input contradicts ``fill_session`` or is malformed.
         """
         rows = inputs["records"]
         if not isinstance(rows, (list, tuple)) or any(not isinstance(r, dict) for r in rows):
             raise ValueError("records must be a finite sequence of mappings")
+        nxt = self.params.get("fill_session", self.DEFAULT_FILL_SESSION) == "next"
+        if nxt != ("fills" in inputs):
+            raise ValueError("the fills input is required by fill_session next and "
+                             "refused by fill_session same")
+        fills = self._fill_index(inputs["fills"]) if nxt else None
         fields, seen = self.params["fields"], set()
         for row in rows:
             identity = (row.get(fields["contract"]), row.get(fields["date"]))
@@ -4011,7 +4226,64 @@ class ExactDteBarChain(Node):
                 skips.append({key: row.get(fields[key])
                               for key in ("contract", "symbol", "date", "expiry")}
                              | {"reason": str(exc)})
-        return {"records": records, "skips": skips,
-                "evidence": JsonArtifact({"input_rows": len(rows),
-                                         "eligible_rows": len(records),
-                                         "skips": skips})}
+        evidence = {"input_rows": len(rows), "eligible_rows": len(records), "skips": skips}
+        if nxt:
+            records = [{**record, "fill": self._fill_for(fills, record)} for record in records]
+            attached = sum(record["fill"] is not None for record in records)
+            evidence.update(fill_session="next", fill_rows=sum(map(len, fills.values())),
+                            fills_attached=attached, fills_missing=len(records) - attached)
+        return {"records": records, "skips": skips, "evidence": JsonArtifact(evidence)}
+
+    def _fill_row(self, row):
+        """Return one validated fill bar (canonical keys) or raise its precise refusal."""
+        if not isinstance(row, dict):
+            raise ValueError("fills must be a finite sequence of mappings")
+        try:
+            values = {key: row[field] for key, field in self.params["fields"].items()}
+        except KeyError as exc:
+            raise ValueError(f"fill row lacks field {exc}") from None
+        for key in ("contract", "symbol"):
+            if not isinstance(values[key], str) or not values[key]:
+                raise ValueError(f"fill row missing {key}")
+        if not _iso_day(values["date"]) or not _iso_day(values["expiry"]):
+            raise ValueError("fill row has an invalid date or expiry")
+        if max(values["date"], values["expiry"]) >= self.params["end_before"]:
+            raise ValueError("fill row reaches the protected end_before boundary")
+        if values["right"] not in ("put", "call"):
+            raise ValueError("fill row has an unsupported right")
+        if not price_ok(values["strike"]) or not price_ok(values["vwap"]):
+            raise ValueError("fill row has an invalid strike or vwap")
+        for key in ("trade_count", "volume"):
+            if type(values[key]) is not int or values[key] < 0:
+                raise ValueError(f"fill row has an invalid {key}")
+        if type(values["multiplier"]) is not int or values["multiplier"] != self.params["multiplier"]:
+            raise ValueError("fill row has an unsupported contract multiplier")
+        return values
+
+    def _fill_index(self, rows):
+        """Return ``{contract: [bar, ...]}`` sorted by date, refusing a repeated contract/date."""
+        if not isinstance(rows, (list, tuple)):
+            raise ValueError("fills must be a finite sequence of mappings")
+        index, seen = {}, set()
+        for row in rows:
+            bar = self._fill_row(row)
+            if (bar["contract"], bar["date"]) in seen:
+                raise ValueError("duplicate fill contract date")
+            seen.add((bar["contract"], bar["date"]))
+            index.setdefault(bar["contract"], []).append(bar)
+        for bars in index.values():
+            bars.sort(key=lambda bar: bar["date"])
+        return index
+
+    @staticmethod
+    def _fill_for(index, record):
+        """Return the contract's first bar strictly after the record's date and before its expiry."""
+        bars = index.get(record["contract"], [])
+        at = bisect_right([bar["date"] for bar in bars], record["quote_date"])
+        if at == len(bars) or bars[at]["date"] >= record["expiry"]:
+            return None
+        bar = bars[at]
+        if (bar["symbol"], bar["expiry"], bar["right"], float(bar["strike"])) != (
+                record["symbol"], record["expiry"], record["right"], float(record["strike"])):
+            raise ValueError("fill row disagrees with its contract's symbol, expiry, right or strike")
+        return {key: bar[key] for key in ("date", "vwap", "trade_count", "volume")}

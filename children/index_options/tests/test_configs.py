@@ -58,6 +58,15 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-production-liquidity-20261007.json",
         # ADR-0255 (PROPOSED): the robust equity iron-condor research replay.
         "configs/run-equity-condor-robust-backtest.json",
+        # ADR-0256 (PROPOSED): the executable-decision-clock variant and its contract memo; plus
+        # the robust-replay memo and four report artifacts the previous wrap added unlisted.
+        "configs/run-equity-condor-executable-clock.json",
+        "docs/memos/2026-10-09-condor-executable-clock-contract.md",
+        "docs/memos/2026-10-09-robust-condor-replay.md",
+        "docs/reports/robust-condor-replay-20261009/calibration.json",
+        "docs/reports/robust-condor-replay-20261009/receipt.json",
+        "docs/reports/robust-condor-replay-20261009/summary.json",
+        "docs/reports/robust-condor-replay-20261009/ticker-aggregates.json",
         "docs/memos/2026-10-08-robust-condor-dual.md",
         "docs/memos/2026-10-08-forecast-mio-evaluation-scheme.md",
         # Previously published ADR-0254 artifacts omitted by the old manifest.
@@ -314,7 +323,10 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus ADR-0238 config, research and two interim report artifacts = 440; four final reports, evidence and memo = 446; production proposal = 447; Stage-0 evidence = 449
     # Plus eleven protected-source/panel/feature experiment JSON declarations = 460.
     # Plus ADR-0255's robust-condor run config and requested dual memo = 462.
-    assert len(actual) == 478
+    # Plus the six docs the previous wrap left out of the manifest (robust replay memo and four
+    # report artifacts, the executable-clock contract memo) = 484, plus ADR-0256's executable-clock
+    # run config = 485.
+    assert len(actual) == 485
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -3767,3 +3779,69 @@ def test_the_perticker_workflow_leaves_the_worker_width_to_the_machine(child_roo
                             ("step7", "development", "evaluate/development"),
                             ("step7", "scored", "evaluate/later"), ("step7", "report", "report")):
         assert os.path.normpath(flow.path(step, out)) == os.path.join(output, tail)
+
+
+# -- ADR-0256: the executable-decision-clock replay document ---------------------------------------
+def _clock_docs(child_root):
+    configs = child_root / "configs"
+    return tuple(json.loads((configs / name).read_text(encoding="utf-8")) for name in (
+        "run-equity-condor-robust-backtest.json", "run-equity-condor-executable-clock.json"))
+
+
+def _without_notes(value):
+    if isinstance(value, dict):
+        return {k: _without_notes(v) for k, v in value.items() if k != "notes"}
+    if isinstance(value, list):
+        return [_without_notes(v) for v in value]
+    return value
+
+
+def test_executable_clock_config_differs_from_the_robust_backtest_only_where_declared(child_root):
+    base, clock = _clock_docs(child_root)
+    pipeline = copy.deepcopy(clock["pipeline"])
+    fills = pipeline.pop("fills")
+    assert fills["uses"] == base["pipeline"]["option_rows"]["uses"]
+    assert fills["params"] == {**base["pipeline"]["option_rows"]["params"],
+                               "source": "condor-replay-inputs-20261009-v6", "stream": "fills"}
+    assert list(pipeline) == list(base["pipeline"])
+    chain = pipeline["option_chain"]
+    assert chain["params"].pop("fill_session") == "next"
+    assert chain["inputs"].pop("fills") == "$fills.records"
+    assert pipeline["rho_calibration"]["params"].pop("block_geometry") == "edge_padded"
+    assert pipeline["select"]["params"].pop("max_relative_gap") is None
+    pipeline["select"]["params"]["max_relative_gap"] = base["pipeline"]["select"]["params"][
+        "max_relative_gap"]
+    settle = pipeline["settle"]["params"]
+    assert settle.pop("exercise_threshold_usd") == 0.01
+    assert settle["labels"] != base["pipeline"]["settle"]["params"]["labels"]
+    settle["labels"] = base["pipeline"]["settle"]["params"]["labels"]
+    assert _without_notes(pipeline) == _without_notes(base["pipeline"])
+    # every changed key is explained: each touched node's notes name ADR-0256
+    for name in ("option_chain", "rho_calibration", "select", "settle", "fills"):
+        assert "ADR-0256" in clock["pipeline"][name]["notes"], name
+    assert clock["name"] != base["name"]
+    assert clock["outputs"]["run_root"] != base["outputs"]["run_root"]
+
+
+def test_executable_clock_config_reads_the_fills_stream_through_the_same_store(child_root):
+    base, clock = _clock_docs(child_root)
+    fills = clock["pipeline"]["fills"]["params"]
+    assert fills["root"] == base["pipeline"]["option_rows"]["params"]["root"]
+    assert (fills["source"], fills["stream"]) == ("condor-replay-inputs-20261009-v6", "fills")
+    assert "$fills.records" in clock["pipeline"]["option_chain"]["inputs"].values()
+
+
+def test_executable_clock_config_node_params_validate_but_for_the_sibling_slices_keys(child_root):
+    from index_options.cdf_study import HeldOutRhoCalibration
+    from index_options.nodes import CondorExpirySettle, ExactDteBarChain, RobustCondorBatchSelect
+    pipeline = _clock_docs(child_root)[1]["pipeline"]
+    assert ExactDteBarChain.validate_params(pipeline["option_chain"]["params"]) == []
+    assert CondorExpirySettle.validate_params(pipeline["settle"]["params"]) == []
+    # block_geometry and a null max_relative_gap are owned by the sampler and gap slices: without
+    # them (the gap at the robust-backtest's 0.0) every other knob must validate
+    params = copy.deepcopy(pipeline["rho_calibration"]["params"])
+    assert params.pop("block_geometry") == "edge_padded"
+    assert HeldOutRhoCalibration.validate_params(params) == []
+    params = copy.deepcopy(pipeline["select"]["params"])
+    assert params.pop("max_relative_gap") is None
+    assert RobustCondorBatchSelect.validate_params({**params, "max_relative_gap": 0.0}) == []
