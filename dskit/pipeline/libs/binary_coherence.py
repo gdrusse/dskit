@@ -83,7 +83,7 @@ from collections import Counter
 from fractions import Fraction
 from types import MappingProxyType
 
-from dskit.pipeline.binary_curve import row_key
+from dskit.pipeline.binary_curve import name_ok, output_collision_problems, row_key
 from dskit.pipeline.binary_pricing import STATUS_SUFFIX
 from dskit.pipeline.libs.pyomo import PyomoSolve
 from dskit.pipeline.records import number_ok
@@ -423,10 +423,10 @@ class BinaryCoherence(PyomoSolve):
             problems.append("solver is required: a pyomo solver that accepts a quadratic objective "
                             "(for example 'highs'); the base default 'appsi_highs' does not")
         for name in cls._FIELDS:
-            if not _name_ok(params.get(name)):
+            if not name_ok(params.get(name)):
                 problems.append(f"{name} is required: a non-empty column name, got {params.get(name)!r}")
         for name in cls._SIZE_FIELDS:
-            if name in params and not _name_ok(params[name]):
+            if name in params and not name_ok(params[name]):
                 problems.append(f"{name} must be a non-empty column name, got {params[name]!r}")
         if sum(name in params for name in cls._SIZE_FIELDS) == 1:
             problems.append("bid_size_field and ask_size_field are declared together: name both sizes or neither")
@@ -446,13 +446,10 @@ class BinaryCoherence(PyomoSolve):
     def _collision_problems(cls, params):
         """Problems with an output column that would overwrite an input column."""
         name = params.get("fair_field")
-        if not _name_ok(name):
+        if not name_ok(name):
             return []
-        outputs = {name, name + STATUS_SUFFIX}
-        named = {params.get(k) for k in (*cls._FIELDS[:3], *cls._SIZE_FIELDS) if _name_ok(params.get(k))}
-        clash = sorted(outputs & named)
-        return [f"fair_field {name!r} writes {sorted(outputs)}, which would overwrite the input column(s) {clash}"
-                ] if clash else []
+        named = [params.get(k) for k in (*cls._FIELDS[:3], *cls._SIZE_FIELDS)]
+        return output_collision_problems("fair_field", name, (name, name + STATUS_SUFFIX), named)
 
     def validate_inputs(self, inputs):
         """Refuse a ``records`` port that is not a list, and an id listed twice.
@@ -820,11 +817,6 @@ def _require_optimal(results, what):
     if condition != "optimal":
         raise RuntimeError(f"{what} finished with termination condition {condition!r}, not 'optimal' "
                            "(if a solver limit stopped it, raise that limit under solver_options)")
-
-
-def _name_ok(value):
-    """Say whether ``value`` is a non-empty string."""
-    return isinstance(value, str) and bool(value)
 
 
 def _relation_keys(declared):

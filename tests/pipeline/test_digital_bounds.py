@@ -5,6 +5,7 @@ Every expected number is worked by hand in the comments or is a Black-76 closed 
 """
 
 import enum
+import inspect
 import math
 import random
 from fractions import Fraction
@@ -14,7 +15,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from dskit.pipeline import digital_bounds
+from dskit.pipeline import binary_curve, digital_bounds
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.digital_bounds import STATUS_OK, STATUSES, DigitalBounds, quote_problems
 from dskit.pipeline.option_pricing import black76
@@ -636,6 +637,21 @@ def test_a_composite_spec_key_needs_every_column_to_agree():
 def test_a_bound_field_that_would_overwrite_a_chain_column_is_refused():
     params = {**PARAMS, "chain_fields": ["dig_status"], "quote_chain_fields": ["chain"]}
     assert any("overwrite" in p for p in DigitalBounds.validate_params(params))
+
+
+def test_the_overwrite_message_is_the_one_binary_curve_owns():
+    got = DigitalBounds.validate_params({**PARAMS, "chain_fields": ["dig_status"], "quote_chain_fields": ["chain"]})
+    assert ["bound_field 'dig' writes ['dig_lower', 'dig_status', 'dig_upper'], which would overwrite the input "
+            "column(s) ['dig_status']"] == [p for p in got if "overwrite" in p]
+
+
+def test_the_bounds_node_uses_the_binary_curve_owners_of_the_name_payoff_and_collision_rules():
+    source = inspect.getsource(digital_bounds)
+    assert digital_bounds.name_ok is binary_curve.name_ok
+    assert digital_bounds.named_payoff is binary_curve.named_payoff
+    assert digital_bounds.output_collision_problems is binary_curve.output_collision_problems
+    assert "def _name_ok" not in source and "_name_ok(" not in source and "PAYOFFS.get" not in source
+    assert "which would overwrite" not in source and "clash" not in source
 
 
 @pytest.mark.parametrize("df", [0.0, -0.0])

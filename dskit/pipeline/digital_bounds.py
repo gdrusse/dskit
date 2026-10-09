@@ -108,7 +108,15 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from decimal import Decimal
 
-from dskit.pipeline.binary_curve import KEY_MISSING, fields_key, key_fields_problems, row_key
+from dskit.pipeline.binary_curve import (
+    KEY_MISSING,
+    fields_key,
+    key_fields_problems,
+    name_ok,
+    named_payoff,
+    output_collision_problems,
+    row_key,
+)
 from dskit.pipeline.binary_pricing import PAYOFFS, STATUS_SUFFIX
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
@@ -412,13 +420,13 @@ class DigitalBounds(Node):
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         for name in cls._REQUIRED:
-            if not _name_ok(params.get(name)):
+            if not name_ok(params.get(name)):
                 problems.append(f"{name} is required: a non-empty string, got {params.get(name)!r}")
         problems += key_fields_problems(params, *cls._KEY_PARAMS)
         for name in ("discount_field", *cls._SIZE_FIELDS):
-            if name in params and not _name_ok(params[name]):
+            if name in params and not name_ok(params[name]):
                 problems.append(f"{name} must be a non-empty column name, got {params[name]!r}")
-        if _name_ok(params.get("call_value")) and params.get("call_value") == params.get("put_value"):
+        if name_ok(params.get("call_value")) and params.get("call_value") == params.get("put_value"):
             problems.append(f"call_value and put_value must differ, both are {params['call_value']!r}")
         sizes = [name in params for name in cls._SIZE_FIELDS]
         if any(sizes) and not all(sizes):
@@ -433,17 +441,13 @@ class DigitalBounds(Node):
 
     @classmethod
     def _collision_problems(cls, params):
-        """Problems with an output column that would overwrite a contract input column."""
-        name = params.get("bound_field")
-        if not _name_ok(name):
+        """Problems with an output column that would overwrite a contract or chain input column."""
+        name, chains = params.get("bound_field"), params.get("chain_fields")
+        if not name_ok(name):
             return []
-        outputs = {name + LOWER_SUFFIX, name + UPPER_SUFFIX, name + STATUS_SUFFIX}
-        named = {params.get(k) for k in cls._CONTRACT_FIELDS if _name_ok(params.get(k))}
-        chains = params.get("chain_fields")
-        named |= {f for f in chains if _name_ok(f)} if isinstance(chains, list) else set()
-        clash = sorted(outputs & named)
-        return [f"bound_field {name!r} writes {sorted(outputs)}, which would overwrite the input column(s) {clash}"
-                ] if clash else []
+        outputs = (name + LOWER_SUFFIX, name + UPPER_SUFFIX, name + STATUS_SUFFIX)
+        named = [*(params.get(k) for k in cls._CONTRACT_FIELDS), *(chains if isinstance(chains, list) else ())]
+        return output_collision_problems("bound_field", name, outputs, named)
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
@@ -572,7 +576,7 @@ class DigitalBounds(Node):
     def _refusal(self, row, chains):
         """Return the status that says why ``row`` cannot be bounded at all, or None."""
         p = self.params
-        geometry = PAYOFFS.get(row.get(p["payoff_field"])) if isinstance(row.get(p["payoff_field"]), str) else None
+        geometry = named_payoff(row.get(p["payoff_field"]))
         if geometry is None:
             return "unknown_payoff"
         lower, upper = row.get(p["lower_field"]), row.get(p["upper_field"])
@@ -626,11 +630,6 @@ class DigitalBounds(Node):
         self.log.info("bounded %d of %d contract(s); %d of %d quote(s) refused on some side",
                       census["bounded"], census["rows"], refused, len(inputs["quotes"]))
         return {"records": records, "refusals": refusals, "census": census}
-
-
-def _name_ok(value):
-    """Say whether ``value`` is a non-empty string."""
-    return isinstance(value, str) and bool(value)
 
 
 def _below_floor(value):

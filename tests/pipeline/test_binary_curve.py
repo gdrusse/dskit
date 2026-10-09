@@ -16,8 +16,16 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from dskit.pipeline import binary_curve
-from dskit.pipeline.binary_curve import STATUS_OK, STATUSES, CurveBinaryFairValue, CurveSurvival
-from dskit.pipeline.binary_pricing import BinaryFairValue
+from dskit.pipeline.binary_curve import (
+    STATUS_OK,
+    STATUSES,
+    CurveBinaryFairValue,
+    CurveSurvival,
+    name_ok,
+    named_payoff,
+    output_collision_problems,
+)
+from dskit.pipeline.binary_pricing import PAYOFFS, BinaryFairValue
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 
 PARAMS = {
@@ -408,6 +416,109 @@ def test_the_module_declares_its_public_api():
     assert CurveBinaryFairValue.role == "transform"
     assert CurveBinaryFairValue.outputs == ("records", "census")
     assert not [n for n in binary_curve.__all__ if n.startswith("_")]
+
+
+class _SameHashAsAbove:
+    """Not a str, yet it hashes and compares equal to the payoff name ``"above"``."""
+
+    def __hash__(self):
+        return hash("above")
+
+    def __eq__(self, other):
+        return other == "above"
+
+
+class _ShoutingName(enum.StrEnum):
+    ABOVE = "above"
+
+
+@pytest.mark.parametrize("value", ["fair", "x", np.str_("fair"), _Liar("fair"), _ShoutingName.ABOVE])
+def test_name_ok_accepts_a_non_empty_string_of_any_str_type(value):
+    assert name_ok(value) is True
+
+
+@pytest.mark.parametrize("value", ["", None, 0, 3, True, 1.5, b"fair", ["fair"], ("fair",), {"fair"}, {}, object()])
+def test_name_ok_refuses_everything_else(value):
+    assert name_ok(value) is False
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("above", "above"), ("below", "below"), ("between", "between"),
+    (np.str_("above"), "above"), (_Liar("below"), "below"), (_ShoutingName.ABOVE, "above")])
+def test_named_payoff_finds_the_geometry_a_str_cell_names(value, expected):
+    assert named_payoff(value) is PAYOFFS[expected]
+
+
+@pytest.mark.parametrize("value", ["sideways", "", "ABOVE", None, 3, 1.5, True, ["above"], {"above"}, {}, b"above",
+                                   np.array("above"), _SameHashAsAbove()])
+def test_named_payoff_finds_none_for_anything_that_is_not_a_known_str(value):
+    assert named_payoff(value) is None
+
+
+def test_named_payoff_refuses_an_unhashable_str_instead_of_raising():
+    class Unhashable(str):
+        __hash__ = None
+
+    assert named_payoff(Unhashable("above")) is None
+    out = run([{"payoff": Unhashable("above"), "lo": 100.0, "curve": "k"}])
+    assert out["records"][0]["fair_status"] == "unknown_payoff"
+
+
+def test_named_payoff_defers_to_the_pricing_owner_for_the_lookup():
+    from dskit.pipeline.binary_pricing import payoff
+
+    assert all(named_payoff(name) is payoff(name) for name in PAYOFFS)
+    with pytest.raises(ValueError, match="unknown payoff"):
+        payoff("sideways")
+
+
+_ABOUT_NAMES = ["payoff", "lo", "hi", "curve", "fair_status", None, 3, ["curve"]]
+
+
+def test_output_collision_problems_names_the_clashing_columns_in_the_one_message():
+    got = output_collision_problems("fair_field", "lo", ("lo", "lo_status"), ["payoff", "lo", "hi"])
+    assert got == ["fair_field 'lo' writes ['lo', 'lo_status'], which would overwrite the input column(s) ['lo']"]
+    both = output_collision_problems("bound_field", "x", {"x_status", "x", "x_lower"}, ["x_lower", "x", "y"])
+    assert both == ["bound_field 'x' writes ['x', 'x_lower', 'x_status'], which would overwrite the input "
+                    "column(s) ['x', 'x_lower']"]
+
+
+def test_output_collision_problems_is_empty_when_no_input_is_overwritten():
+    assert output_collision_problems("fair_field", "fair", ("fair", "fair_status"), ["payoff", "lo", "hi"]) == []
+    assert output_collision_problems("fair_field", "fair", ("fair", "fair_status"), []) == []
+
+
+def test_output_collision_problems_ignores_a_value_that_is_not_a_column_name():
+    # an unusable knob is its own problem; here it must neither collide nor raise (a list is unhashable)
+    got = output_collision_problems("fair_field", "fair", ("fair", "fair_status"), _ABOUT_NAMES)
+    assert got == ["fair_field 'fair' writes ['fair', 'fair_status'], which would overwrite the input column(s) "
+                   "['fair_status']"]
+    assert output_collision_problems("fair_field", "fair", ("fair",), [None, 3, ["fair"], ("fair",), b"fair"]) == []
+
+
+def test_each_node_reports_its_collision_through_the_one_message():
+    got = CurveBinaryFairValue.validate_params({**PARAMS, "curve_key_fields": ["fair_status"],
+                                                "curve_id_fields": ["id"]})
+    assert ["fair_field 'fair' writes ['fair', 'fair_status'], which would overwrite the input column(s) "
+            "['fair_status']"] == [p for p in got if "overwrite" in p]
+    got = CurveBinaryFairValue.validate_params({**PARAMS, "fair_field": "lo"})
+    assert ["fair_field 'lo' writes ['lo', 'lo_status'], which would overwrite the input column(s) ['lo']"
+            ] == [p for p in got if "overwrite" in p]
+
+
+def _all_order(name):
+    """Sort key of ruff's ``__all__`` order: CONSTANTS, then Classes, then functions."""
+    return (0 if name.isupper() else 1 if name[0].isupper() else 2, name)
+
+
+def test_the_curve_node_uses_the_owners_of_the_name_payoff_and_collision_rules():
+    source = inspect.getsource(binary_curve)
+    assert "_name_ok" not in source and "PAYOFFS.get" not in source
+    assert source.count("def name_ok") == 1 and source.count("def named_payoff") == 1
+    assert source.count("def output_collision_problems") == 1
+    assert source.count("overwrite the input column(s) {clash}") == 1 and source.count("clash =") == 1
+    assert {"name_ok", "named_payoff", "output_collision_problems"} <= set(binary_curve.__all__)
+    assert list(binary_curve.__all__) == sorted(binary_curve.__all__, key=_all_order)
 
 
 def _probes(tmp_path):

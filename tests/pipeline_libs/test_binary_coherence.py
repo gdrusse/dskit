@@ -1038,7 +1038,17 @@ def test_the_coherence_pack_has_no_private_id_rule_of_its_own():
 
     source = inspect.getsource(binary_coherence)
     assert "def _id_ok" not in source and "ids.count(" not in source
-    assert "from dskit.pipeline.binary_curve import row_key" in source
+    assert binary_coherence.row_key is binary_curve.row_key
+
+
+def test_the_coherence_pack_uses_the_binary_curve_owners_of_the_name_and_collision_rules():
+    import inspect
+
+    source = inspect.getsource(binary_coherence)
+    assert binary_coherence.name_ok is binary_curve.name_ok
+    assert binary_coherence.output_collision_problems is binary_curve.output_collision_problems
+    assert "def _name_ok" not in source and "_name_ok(" not in source
+    assert "which would overwrite" not in source and "clash" not in source and "PAYOFFS.get" not in source
 
 
 def _probes(tmp_path):

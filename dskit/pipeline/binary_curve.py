@@ -33,7 +33,7 @@ import operator
 from bisect import bisect_left
 from collections import Counter
 
-from dskit.pipeline.binary_pricing import PAYOFFS, STATUS_SUFFIX
+from dskit.pipeline.binary_pricing import PAYOFFS, STATUS_SUFFIX, payoff
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
@@ -49,6 +49,9 @@ __all__ = [
     "CurveSurvival",
     "fields_key",
     "key_fields_problems",
+    "name_ok",
+    "named_payoff",
+    "output_collision_problems",
     "row_key",
 ]
 
@@ -261,34 +264,29 @@ class CurveBinaryFairValue(Node):
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         for name in (*cls._CONTRACT_FIELDS, *cls._CURVE_FIELDS, "fair_field"):
-            if not _name_ok(params.get(name)):
+            if not name_ok(params.get(name)):
                 problems.append(f"{name} is required: a non-empty column name, got {params.get(name)!r}")
         problems += key_fields_problems(params, *cls._KEY_PARAMS)
         axis = params.get("axis")
         if axis not in AXES:
             problems.append(f"axis is required: one of {AXES}, got {axis!r}")
-        elif axis == AXIS_LOG_RETURN and not _name_ok(params.get("reference_field")):
+        elif axis == AXIS_LOG_RETURN and not name_ok(params.get("reference_field")):
             problems.append(f"reference_field is required for a log_return axis: a non-empty column name, "
                             f"got {params.get('reference_field')!r}")
         elif axis == AXIS_LEVEL and "reference_field" in params:
             problems.append("reference_field is refused for a level axis: its knots are levels already")
-        if "eligible_field" in params and not _name_ok(params["eligible_field"]):
+        if "eligible_field" in params and not name_ok(params["eligible_field"]):
             problems.append(f"eligible_field must be a non-empty column name, got {params['eligible_field']!r}")
         return problems + cls._collision_problems(params)
 
     @classmethod
     def _collision_problems(cls, params):
-        """Problems with an output column that would overwrite a contract input column."""
-        name = params.get("fair_field")
-        if not _name_ok(name):
+        """Problems with an output column that would overwrite a contract or curve-key input column."""
+        name, keys = params.get("fair_field"), params.get("curve_key_fields")
+        if not name_ok(name):
             return []
-        outputs = {name, name + STATUS_SUFFIX}
-        named = {params.get(k) for k in cls._CONTRACT_FIELDS if _name_ok(params.get(k))}
-        keys = params.get("curve_key_fields")
-        named |= {f for f in keys if _name_ok(f)} if isinstance(keys, list) else set()
-        clash = sorted(outputs & named)
-        return [f"fair_field {name!r} writes {sorted(outputs)}, which would overwrite the input column(s) {clash}"
-                ] if clash else []
+        named = [*(params.get(k) for k in cls._CONTRACT_FIELDS), *(keys if isinstance(keys, list) else ())]
+        return output_collision_problems("fair_field", name, (name, name + STATUS_SUFFIX), named)
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
@@ -352,8 +350,7 @@ class CurveBinaryFairValue(Node):
     def _refusal(self, row, survival):
         """Return why a row with a usable curve cannot be priced, or None."""
         p = self.params
-        name = row.get(p["payoff_field"])
-        geometry = PAYOFFS.get(name) if isinstance(name, str) else None
+        geometry = named_payoff(row.get(p["payoff_field"]))
         if geometry is None:
             return "unknown_payoff"
         given = {"lower": row.get(p["lower_field"]), "upper": row.get(p["upper_field"])}
@@ -405,9 +402,107 @@ class CurveBinaryFairValue(Node):
         return {"records": records, "census": census}
 
 
-def _name_ok(value):
-    """Say whether ``value`` is a non-empty string."""
+def name_ok(value):
+    """Say whether ``value`` is a non-empty string, the shape of a column name.
+
+    The one owner of that test for the binary-pricing nodes (:class:`CurveBinaryFairValue`,
+    ``digital_bounds.DigitalBounds``, ``libs.binary_coherence.BinaryCoherence``), which read every
+    column-name knob through it. A ``str`` subclass counts; ``None``, ``b"x"`` and ``""`` do not.
+
+    Parameters
+    ----------
+    value : object
+        Any knob value.
+
+    Returns
+    -------
+    bool
+        True for a ``str`` of at least one character.
+
+    Examples
+    --------
+    A column name is a string with something in it::
+
+        name_ok("fair")     # True
+        name_ok("")         # False
+        name_ok(None)       # False
+    """
     return isinstance(value, str) and bool(value)
+
+
+def named_payoff(value):
+    """Return the payoff geometry a cell names, or None when it names none.
+
+    The one owner of "which geometry does this contract row's payoff cell name" for the nodes that
+    price or bound a binary contract (:class:`CurveBinaryFairValue`, ``digital_bounds.DigitalBounds``):
+    each refuses a row whose answer is None as ``unknown_payoff``. The lookup itself is
+    :func:`~dskit.pipeline.binary_pricing.payoff`. Only a ``str`` can name a geometry, so ``None``, a
+    number, a list, or an object that merely hashes and compares like a name all name none.
+
+    Parameters
+    ----------
+    value : object
+        Any cell.
+
+    Returns
+    -------
+    BinaryPayoff or None
+        The geometry of :data:`~dskit.pipeline.binary_pricing.PAYOFFS` called ``value``, else None.
+
+    Examples
+    --------
+    A known name finds its geometry; anything else finds none::
+
+        named_payoff("below").bounds   # ("upper",)
+        named_payoff("sideways")
+        # -> None
+        named_payoff(["below"])
+        # -> None
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return payoff(value)
+    except ValueError:
+        return None
+
+
+def output_collision_problems(param, name, outputs, named):
+    """List the problem when an output column would overwrite an input column, empty when none.
+
+    The one owner of that comparison and its message for the binary-pricing nodes
+    (:class:`CurveBinaryFairValue`, ``digital_bounds.DigitalBounds``,
+    ``libs.binary_coherence.BinaryCoherence``). Each node says which columns it writes and which
+    knobs name its inputs; this only compares the two.
+
+    Parameters
+    ----------
+    param : str
+        The knob that names the output, quoted in the message (for example ``"fair_field"``).
+    name : str
+        That knob's value.
+    outputs : iterable of str
+        Every column the node writes under ``name``.
+    named : iterable
+        The values of the node's input-column knobs. One that is not a non-empty ``str`` is its own
+        knob's problem and is ignored here.
+
+    Returns
+    -------
+    list of str
+        One message naming the clashing column(s), or ``[]``.
+
+    Examples
+    --------
+    A fair-value column that lands on a contract column::
+
+        output_collision_problems("fair_field", "lo", ("lo", "lo_status"), ["payoff", "lo", None])
+        # -> ["fair_field 'lo' writes ['lo', 'lo_status'], which would overwrite the input column(s) ['lo']"]
+    """
+    written = set(outputs)
+    clash = sorted(written & {column for column in named if name_ok(column)})
+    return [f"{param} {name!r} writes {sorted(written)}, which would overwrite the input column(s) {clash}"
+            ] if clash else []
 
 
 def row_key(value):
@@ -533,7 +628,7 @@ def key_fields_problems(params, left, right):
     problems = []
     for name in (left, right):
         value = params.get(name)
-        if not (isinstance(value, list) and value and all(_name_ok(f) for f in value)):
+        if not (isinstance(value, list) and value and all(name_ok(f) for f in value)):
             problems.append(f"{name} is required: a non-empty list of non-empty column names, got {value!r}")
         elif len(set(value)) != len(value):
             problems.append(f"{name} lists a column more than once: {value!r}")
