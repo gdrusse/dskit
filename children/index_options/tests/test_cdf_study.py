@@ -2458,3 +2458,57 @@ def test_held_out_rho_publication_from_settlement_and_label_date_agreement():
         cdf_study.HeldOutRhoCalibration._bar_close(
             mass,[r for r in bars if r["date"]!="2025-01-31"],
             4,1,"2026-01-01","as_traded_close")
+
+
+def _weekly_rho_inputs(weeks):
+    """Weekly calibration contexts plus one later entry context, settled and published."""
+    from datetime import date, timedelta
+    start = date(2024, 1, 2)
+    contexts = [(start + timedelta(days=7 * k), "calibration") for k in range(weeks)]
+    contexts.append((date(2024, 6, 4), "entry"))
+    masses, chain, bars = [], [], []
+    for day, phase in contexts:
+        expiry = day + timedelta(days=30)
+        masses.append(dict(symbol="X", quote_date=day.isoformat(), expiry=expiry.isoformat(),
+                           phase=phase, settlement_date=expiry.isoformat(), spot=100., reference=.1,
+                           curve={"kind": "mixture", "weights": [[1.]], "means": [[0.]],
+                                  "scales": [[1.]]},
+                           grid=[80., 90., 100., 110., 120.], masses=[.1, .2, .4, .2, .1],
+                           fit_identity="fit", checkpoint_identity="checkpoint",
+                           source_identity="source", input_identity=day.isoformat()))
+        for right, strike in [("put", 80.), ("put", 90.), ("put", 100.),
+                              ("call", 100.), ("call", 110.), ("call", 120.)]:
+            chain.append(dict(symbol="X", quote_date=day.isoformat(), expiry=expiry.isoformat(),
+                              right=right, strike=strike, trade_count=2, volume=2))
+        bars.extend(dict(symbol="X", date=(expiry + timedelta(days=k)).isoformat(),
+                         as_traded_close=100.) for k in range(3))
+    return dict(masses=masses, chain=chain, bars=bars)
+
+
+def test_held_out_rho_run_threads_edge_padded_to_primary_and_sensitivity_support():
+    """ADR-0256 (5): the node, not only the owner, samples both horizons on padded blocks."""
+    params = dict(rho_grid=[0., .01], min_dates=2, block_days={"primary": 7, "sensitivity": 14},
+                  replicates=20, alpha=.1, seed=7, short_q=.1, wing_strikes=1,
+                  min_trade_count=1, min_volume=1, publication_lag_sessions=1,
+                  max_settlement_gap_days=4, end_before="2026-01-01",
+                  settlement_field="as_traded_close")
+    inputs = _weekly_rho_inputs(6)
+    legacy = cdf_study.HeldOutRhoCalibration("rho", params).run(None, inputs)
+    padded = cdf_study.HeldOutRhoCalibration(
+        "rho", {**params, "block_geometry": "edge_padded"}).run(None, inputs)
+    month = next(row for row in legacy["audit"].value["monthly"] if row["month"] == "2024-06")
+    assert month["primary"]["support"]["supported"] is False
+    assert month["primary"]["support"]["zero_inclusion_dates"]
+    assert month["sensitivity"]["support"]["supported"] is False
+    assert "truncated_blocks" not in month["primary"]["support"]
+    month = next(row for row in padded["audit"].value["monthly"] if row["month"] == "2024-06")
+    for horizon, block_days in (("primary", 7), ("sensitivity", 14)):
+        support = month[horizon]["support"]
+        assert support["supported"] is True
+        assert support["block_days"] == block_days
+        assert support["zero_inclusion_dates"] == []
+        assert support["truncated_blocks"] > 0
+        assert support["date_count"] == 6
+        assert all(month[horizon]["upper_bounds"][str(r)] is not None
+                   for r in params["rho_grid"]) or all(
+            v is not None for v in month[horizon]["upper_bounds"].values())

@@ -2068,3 +2068,50 @@ def test_robust_parity_fails_closed_on_nan_and_counts_a_primal_failure(monkeypat
     out = node.run(None, {"context": context})
     assert (out["decision"]["status"], out["decision"]["reason"]) == ("skipped", "primal_failed")
     assert out["evidence"]["solves"][0]["parity"] == {"error": "W1 projection failed", "passed": False}
+
+
+def test_robust_parity_mode_batch_still_raises_a_non_context_value_error(monkeypatch):
+    from dskit.pipeline.libs.pyomo import PyomoSolve
+    from index_options.nodes import RobustCondorBatchSelect
+
+    def unavailable(self, solver, model):
+        raise ValueError("solver unavailable")
+    monkeypatch.setattr(PyomoSolve, "_solve", unavailable)
+    with pytest.raises(ValueError, match="solver unavailable"):
+        RobustCondorBatchSelect("batch", _parity_batch_params()).run(None, _robust_batch_inputs())
+
+
+@pytest.mark.parametrize("change", [
+    {"max_absolute_gap_usd": 1e-5, "tie_tolerance_usd": 1e-5, "objective_parity_usd": 2e-5},
+    {"solver_options": {"mip_rel_gap": 0, "mip_abs_gap": 1e-6}},
+])
+def test_robust_parity_ordering_pin_accepts_equality(change):
+    from index_options.nodes import RobustCondorSelect
+    assert RobustCondorSelect.validate_params(_parity_params(**change)) == []
+
+
+@pytest.mark.parametrize("shift,reason", [(5e-6, None), (2e-5, "parity_failed")])
+def test_robust_parity_tolerance_is_the_configured_value(monkeypatch, shift, reason):
+    from index_options.nodes import RobustCondorSelect
+    node, context = _parity_node()
+    original = RobustCondorSelect._primal_value
+    monkeypatch.setattr(RobustCondorSelect, "_primal_value",
+                        lambda self, legs: tuple(v + shift for v in original(self, legs)))
+    out = node.run(None, {"context": context})
+    assert out["decision"].get("reason") == reason
+    assert out["evidence"]["solves"][0]["parity"]["passed"] is (reason is None)
+
+
+def test_robust_parity_recompute_goes_through_the_primal_owner(monkeypatch):
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+    from index_options.nodes import RobustCondorSelect
+    original = DiscreteCDFGrid.worst_expected_loss
+    monkeypatch.setattr(DiscreteCDFGrid, "worst_expected_loss",
+                        lambda self, *a, **k: original(self, *a, **k) + .5)
+    node, context = _parity_node()
+    out = node.run(None, {"context": context})
+    assert (out["decision"]["status"], out["decision"]["reason"]) == ("skipped", "parity_failed")
+    node, context = _parity_node()
+    monkeypatch.setattr(RobustCondorSelect, "_primal_value",
+                        lambda self, legs: (float("nan"), float("nan")))
+    assert node.run(None, {"context": context})["decision"]["reason"] == "parity_failed"
