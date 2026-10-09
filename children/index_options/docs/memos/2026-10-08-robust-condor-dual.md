@@ -160,3 +160,19 @@ The math reviewer additionally compared120 independent transport-coupling LP cas
 The owner approved expected-loss calibration and its finite-grid/smallest-passing procedure on2026-10-08. The worked explanation now distinguishes the current fixed audit-template protocol from its older selected-policy text. Each admitted ticker-date/template needs five loss values for the configured radii; zero can use the nominal dot product, leaving four LP solves. Bootstrap reuses residuals with exact matching artifact identities. Later selection uses its assigned rho rather than searching again; solver certification/tie/postchecks still apply. This is an execution contract, not evidence that the unfinished calibration adapter has run. No empirical rho or historical replay result exists.
 
 Owner subsequently approved monthly calibration-plus-entry updates, using only settled/published fixed audit-template outcomes strictly before each reference, regardless of optimizer trade/no-trade. The frozen rule reuses matching losses and recomputes the bound; historical decisions remain unchanged. Exact lag/numerical settings and other launch gates are not approved by this phase choice.
+
+## Current adapter preparation status
+
+The later owner instruction authorizes the bounded research replay after its
+data and numerical gates close. Candidate a103b701 implements the batch-eight-
+arm and calendar/template adapters, with1,413 affected cases passing and two independent round2
+reviews closed at zero Critical/Major (one deferred Minor coverage gap). Earlier statements above about unimplemented
+adapters describe their historical component-review stage.
+
+The draft now references implemented classes and executes the eight arms once.
+Verified saved seed11 curves are onboarded, but historical stock/strike units
+are not yet certified; derived inputs remain PENDING. Two mesh admission
+thresholds also remain unset. Neither empirical rho nor historical MIO
+performance exists yet. See the current preparation status in the
+[evaluation scheme](2026-10-08-forecast-mio-evaluation-scheme.md) for exact
+artifacts, remaining gates and the required performance report.

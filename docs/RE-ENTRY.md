@@ -117495,3 +117495,23 @@ was relative. All five pass with both checkout and child absolute paths, no
 code/test/environment change. Thus all1413 affected cases pass; no full suite.
 Ruff remains11 unchanged findings; diff check passes. Review candidate2
 closes only implemented adapter families, not pending source/mesh launch gates.
+
+Candidate a103b701 is now LOCKED for the five adapter correction families and
+static draft wiring: /root/condor_build_skeptic_math closes0C/0M/0Minor/0Nit
+(18 focused tests plus independent synthetic probes); fresh GPT-6 Luna
+/root/condor_adapter_integration_final closes0C/0M/1Minor/0Nit (16 focused
+tests). Deferred Minor: permanent tests lack positive matching-label settlement;
+math reviewer independently verified that success and197.40USD reconciliation.
+No post-lock code/test edits. Private condor-adapter-candidate2-lock.json binds
+source/test/config/contract/dependency SHA256 values and both transcript IDs.
+The earlier app review stalled awaiting approval; it is not counted as closure.
+Both requested memos now distinguish completed implementation/input recovery
+from unrun MIO performance and specify the eventual full aggregate report.
+
+Launch remains blocked: no approved mixed-year intake exception, no approved
+later-action metadata exception for as-traded basis, two unset mesh admission
+limits, and consequently no verified final four derived input streams. The
+existing SQLite projection can parse excluded JSON internally; it is not a
+proof that protected source values are never read. No2026 market evidence,
+real MIO run or empirical performance result is supplied. No main merge or
+branch purge while this bounded research run remains incomplete.

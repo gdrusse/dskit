@@ -4,7 +4,7 @@
 
 Feature selection and HPO used three 2021–2022 development windows; frozen settings passed a 2023 confirmation gate and were evaluated through November 2025. Those forecasting runs are complete.
 
-The proposed MIO scheme calibrates on February–December 2024 forecasts, waits for settlement and publication, then evaluates entries from February–November 2025. Its calibration choices, implementation and execution remain gated. These already-inspected years support retrospective research, not independent production qualification.
+The proposed MIO scheme calibrates on February–December 2024 forecasts, waits for settlement and publication, then evaluates entries from February–November 2025. The numerical and source-data launch gates remain open; implementation checks are recorded below. These already-inspected years support retrospective research, not independent production qualification.
 
 ## Sources, status and what “warmup” means
 
@@ -67,7 +67,7 @@ All66 unique fitted packages are retained:15 feature +15 new HPO +9 confirmation
 
 **Historical inference rule:** choose the verified seed11 package whose archived forecast interval contains the decision date, after all training AND monitoring labels plus required availability have matured. Otherwise skip. For example, fold9's training labels end2025-05-30 but its monitoring labels end2025-10-10; it cannot be used for June2025 decisions. Its archived forecast interval starts2025-10-13.
 
-The inventory contains full fit/checkpoint/file identities and original/backup locations; the short identifiers above are lookup aids only. The MIO schedule placeholder stays until the exact schedule and feature profile are verified and onboarded. Load using TorchCDF.load_checkpoint and the archived recovery recipe; retain saved ordering, medians, head encoding and scaler/mask exactly once. No new fits are proposed in this build.
+The inventory contains full fit/checkpoint/file identities and original/backup locations; the short identifiers above are lookup aids only. The saved nominal seed11 schedule and exact curves have now been verified and onboarded as described in the current preparation status below. Final strike-basis inputs remain pending. Load using TorchCDF.load_checkpoint and the archived recovery recipe; retain saved ordering, medians, head encoding and scaler/mask exactly once. No new fits are proposed in this build.
 
 ## 4. MIO calibration and evaluation calendar — proposed, not executed
 
@@ -115,4 +115,66 @@ This memo was assembled on2026-10-08 from published aggregate metadata/configura
 
 Inventory SHA256: 49e22ce58cc52b0d5379386600551121ab2b526b51b4eccde2fcdb85cbd33492.
 Reviewed design candidate:3f8ea439c96afa14f5776346738fa12746d82c54.
-The forecasting artifact report is authoritative for completed outcomes; ADR-0255 and its draft JSON own the proposed replay. This memo changes neither. Next: finish the pending owner choices one at a time and approve the gated build.
+The forecasting artifact report is authoritative for completed outcomes; ADR-0255 and its draft JSON own the proposed replay. This memo changes neither. The current preparation status below supersedes this document's original design-only pickup.
+
+## Current preparation status and performance-report contract
+
+The owner subsequently authorized completing the implementation, launching the
+bounded research replay, evaluating MIO performance and writing its result memo.
+This authorizes no new model fits, data acquisition or protected2026 market
+data. Main merge remains subject to the task's explicit approval rule.
+
+As of candidate a103b701, the saved seed11 preparation has recovered99,225 exact
+curves:49,623 calibration-window records,45,023 entry-window records and4,579
+outside those windows. These are forecast counts, not admitted option trades.
+The source is condor-archived-forecasts-20261008-v2/forecasts under the existing
+/home/russell/data/index_options/ob root. Its record hash is
+ec9b4e1584740d2bc132790a2772c31d7c5d3720516e92f2eb2143bd2783ff90.
+The source spot remains split-adjusted. It cannot yet be used against historical
+option strikes. The final four input streams deliberately remain unbound.
+
+The private forecast backup recovered every record with original input roots
+denied. Receipt: /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-inputs-v2-recovery-receipt.json.
+Backup: /home/russell/data/backups/index_options/production-universe-rerun-20261008/condor-inputs-v2.
+It is a second copy on the same disk, not off-device disaster recovery.
+The9.2GB original options store was copied and its two snapshots verified;
+the original worktree-hosted copy remains intact. No mixed-year market records
+were decoded by this preparation.
+
+Adapter candidate a103b701 corrects calendar-span/count confusion, arm meaning,
+missing calibration tiers, publication timing and forecast settlement agreement.
+All1,413 affected cases pass, including five CLI checks rerun with an absolute
+checkout PYTHONPATH after an initial wrong-checkout import. The full suite was
+not run. Independent round2 reviews now close with zero Critical/Major. One Minor permanent-test coverage gap is deferred: positive settlement with a matching carried label. The math reviewer independently checked that path and reconciled197.40USD. This scoped lock does not close source or mesh launch gates.
+
+**Not run:** historical projection, empirical radius calibration, real MIO
+selection and settlement, or performance aggregation. No P&L, empirical rho or
+backtest completion is claimed. Date-only mixed-JSON screening and corporate-
+action metadata access remain unanswered protected-data exceptions. Two mesh
+admission thresholds remain unset. These are launch gates, not a reason to
+substitute adjusted prices or discard unknown action histories silently.
+
+After those gates close and the exact resolved config is reviewed, execute the
+single frozen eight-arm pipeline once. Preserve run/config/dependency/source
+identities, solver certificates, every refusal and all raw outcomes privately.
+The evaluation memo must report:
+
+- Coverage by stage, date, ticker and arm, including forecast counts, eligible
+  chains, missing templates, unsupported monthly rho, solver failures, no trade,
+  actual trades and settled outcomes. Keep each denominator explicit.
+- Monthly primary/sensitivity radius evidence, support counts and mean residuals;
+  distinguish fixed-template calibration from selected-trade performance.
+- Per-arm and full per-ticker condor outcome aggregates: trade count, total and
+  mean net USD per one-lot trade, median, loss frequency, empirical lower tail,
+  gross expiry result and fees/haircuts. An empty arm is unavailable, not zero
+  risk or zero-return success. Compare arms on their shared admitted dates and
+  also disclose differing eligibility.
+- Primary/secondary solver status, gap and accounting reconciliation. Count
+  one condor once; four legs and their closing fills are not independent trades.
+- The same-day look-ahead and ignored early-assignment assumptions, price-basis
+  evidence, action exclusions and residual data gaps. No portfolio return,
+  deployability, confidence guarantee or independent qualification claim.
+
+Use the existing stage artifacts and aggregate-only publication. A zero or
+unsupported radius result must be reported, not replaced by a profitable
+post-hoc threshold or a larger unapproved search.
