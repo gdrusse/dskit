@@ -723,6 +723,20 @@ def test_range_is_the_distance_from_the_trailing_extremes_in_scale_units():
         assert row[f"range__hi_{w}"] >= 0.0 and row[f"range__lo_{w}"] >= 0.0
 
 
+def test_range_takes_its_trailing_extremes_from_the_dskit_rolling_pack(monkeypatch):
+    """Range owns no trailing-extreme loop of its own: it calls dskit's causal rolling_max / rolling_min."""
+    from dskit.pipeline.libs import numpy as dskit_numpy
+
+    calls = []
+    for name in ("rolling_max", "rolling_min"):
+        real = getattr(dskit_numpy, name)
+        monkeypatch.setattr(dskit_numpy, name,
+                            lambda values, width, _real=real, _name=name: (calls.append((_name, width)), _real(values, width))[1])
+    run(world())
+    assert {n for n, _ in calls} == {"rolling_max", "rolling_min"}
+    assert {w for _, w in calls} >= {4, 8}
+
+
 def test_range_window_is_trailing_so_a_spike_just_outside_it_is_not_seen():
     klines = world()
     base = by_key(run(klines))

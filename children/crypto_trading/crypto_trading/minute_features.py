@@ -535,27 +535,17 @@ class Range(FeatureFamily):
             and wherever the label scale is not positive.
         """
         import numpy as np
+        from dskit.pipeline.libs.numpy import rolling_max, rolling_min
 
         close, scale = frame.price["close"], frame.scale()
         usable = scale > 0
         out = {}
         for w in self.params["range_windows"]:
-            high = self._trailing(frame.price["high"], w, np.max)
-            low = self._trailing(frame.price["low"], w, np.min)
+            high = rolling_max(frame.price["high"], w)
+            low = rolling_min(frame.price["low"], w)
             with np.errstate(divide="ignore", invalid="ignore"):
                 out[_qualified(self.name, f"hi_{w}")] = frame.blanked(np.where(usable, np.log(high / close) / scale, np.nan), w)
                 out[_qualified(self.name, f"lo_{w}")] = frame.blanked(np.where(usable, np.log(close / low) / scale, np.nan), w)
-        return out
-
-    @staticmethod
-    def _trailing(values, width, reduce):
-        """Reduce the last ``width`` values ending at each position; NaN while the window is not full."""
-        import numpy as np
-        from numpy.lib.stride_tricks import sliding_window_view
-
-        out = np.full(values.size, np.nan)
-        if values.size >= width:
-            out[width - 1:] = reduce(sliding_window_view(values, width), axis=1)
         return out
 
 
