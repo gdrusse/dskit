@@ -3348,6 +3348,12 @@ def liquid_leg_haircut(price, trade_count, volume, liquidity, tier_terms, multip
     return haircut, haircut <= price
 
 
+def _mip_abs_gap(params):
+    """One reader of ``solver_options.mip_abs_gap``; a non-dict block reads as unset."""
+    options = params.get("solver_options")
+    return options.get("mip_abs_gap") if isinstance(options, dict) else None
+
+
 class RobustCondorSelect(PyomoSolve):
     """Select one all-strike robust condor from an already governed context.
 
@@ -3364,7 +3370,8 @@ class RobustCondorSelect(PyomoSolve):
         base solver knobs. Optional ``objective_parity_usd`` (nonnegative):
         when present, each incumbent's robust value is recomputed by the
         independent primal owner and must agree within it, else a counted skip
-        (``parity_failed`` before the tie solve, ``parity_failed_tie`` after),
+        (``parity_failed`` before the tie solve, ``parity_failed_tie`` after;
+        a primal owner that cannot price the structure skips ``primal_failed``),
         and the ordering ``solver_options.mip_abs_gap`` <= ``max_absolute_gap_usd``
         <= ``objective_parity_usd`` with ``tie_tolerance_usd`` >=
         ``max_absolute_gap_usd`` and ``objective_parity_usd`` >
@@ -3430,7 +3437,7 @@ class RobustCondorSelect(PyomoSolve):
         """Name each violated link of mip_abs_gap <= max_absolute_gap <= parity, tie >= max_absolute_gap, parity > tie."""
         problems = []
         gap, parity = params.get("max_absolute_gap_usd"), params["objective_parity_usd"]
-        mip = (params.get("solver_options") or {}).get("mip_abs_gap")
+        mip = _mip_abs_gap(params)
         if number_ok(gap):
             if number_ok(mip) and mip > gap:
                 problems.append("ordering violated: solver_options.mip_abs_gap <= max_absolute_gap_usd")
@@ -3666,15 +3673,22 @@ class RobustCondorSelect(PyomoSolve):
         legs = self._guarded_legs(model)
         if legs is None:
             return False
-        recomputed, _ = self._primal_value(legs)
+        try:
+            recomputed, _ = self._primal_value(legs)
+        except ValueError as exc:
+            certificate["parity"] = {"error": str(exc), "passed": False}
+            self._skip = "primal_failed"
+            return False
         tolerance = self.params["objective_parity_usd"]
         discrepancy = abs(recomputed-model_value)
-        mip = (self.params.get("solver_options") or {}).get("mip_abs_gap")
+        mip = _mip_abs_gap(self.params)
+        # fail closed: a NaN discrepancy is not "within tolerance"
+        passed = discrepancy <= tolerance
         certificate["parity"] = {
             "recomputed_usd": recomputed, "model_usd": model_value,
             "discrepancy_usd": discrepancy, "tolerance_usd": tolerance,
-            "mip_abs_gap": mip if number_ok(mip) else "unset", "passed": discrepancy <= tolerance}
-        if discrepancy > tolerance:
+            "mip_abs_gap": mip if number_ok(mip) else "unset", "passed": passed}
+        if not passed:
             self._skip = reason
             return False
         return True

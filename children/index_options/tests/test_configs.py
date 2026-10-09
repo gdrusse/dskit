@@ -3809,6 +3809,7 @@ def test_executable_clock_config_differs_from_the_robust_backtest_only_where_dec
     assert chain["inputs"].pop("fills") == "$fills.records"
     assert pipeline["rho_calibration"]["params"].pop("block_geometry") == "edge_padded"
     assert pipeline["select"]["params"].pop("max_relative_gap") is None
+    assert pipeline["select"]["params"].pop("objective_parity_usd") == 1e-5
     pipeline["select"]["params"]["max_relative_gap"] = base["pipeline"]["select"]["params"][
         "max_relative_gap"]
     settle = pipeline["settle"]["params"]
@@ -3844,4 +3845,5 @@ def test_executable_clock_config_node_params_validate_but_for_the_sibling_slices
     assert HeldOutRhoCalibration.validate_params(params) == []
     params = copy.deepcopy(pipeline["select"]["params"])
     assert params.pop("max_relative_gap") is None
+    assert params.pop("objective_parity_usd") == 1e-5
     assert RobustCondorBatchSelect.validate_params({**params, "max_relative_gap": 0.0}) == []

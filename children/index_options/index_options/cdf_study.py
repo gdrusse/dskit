@@ -27,7 +27,8 @@ from .observations import IndexCloseRows
 from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
-__all__ = ["CorporateActionRule", "ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS",
+__all__ = ["BLOCK_GEOMETRIES", "CorporateActionRule", "DEFAULT_BLOCK_GEOMETRY",
+           "ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS",
            "OPTION_SOURCE_KEYS", "PANEL_CACHE_DIR", "PANEL_VINTAGE", "PRICE_FIELDS",
            "PriceCalendarCDFPanel", "READERS",
            "panel_class", "panel_convention_problems", "panel_int_problems",

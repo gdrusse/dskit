@@ -2044,3 +2044,27 @@ def test_condor_batch_fill_bar_must_follow_the_decision_date():
     params, inputs = _fill_setup(**{"put-90.0": {"date": "2025-02-04"}})
     with pytest.raises(ValueError, match="fill"):
         RobustCondorBatchSelect("batch", params).run(None, inputs)
+
+
+def test_robust_parity_validation_accumulates_on_a_malformed_solver_options_block():
+    from index_options.nodes import RobustCondorSelect
+    for bad in (["x"], "abc", 5):
+        problems = RobustCondorSelect.validate_params(_parity_params(solver_options=bad))
+        assert problems and all(isinstance(p, str) for p in problems)
+
+
+def test_robust_parity_fails_closed_on_nan_and_counts_a_primal_failure(monkeypatch):
+    import math
+    from index_options.nodes import RobustCondorSelect
+    node, context = _parity_node()
+    monkeypatch.setattr(RobustCondorSelect, "_primal_value", lambda self, legs: (math.nan, math.nan))
+    out = node.run(None, {"context": context})
+    assert (out["decision"]["status"], out["decision"]["reason"]) == ("skipped", "parity_failed")
+    node, context = _parity_node()
+
+    def broken(self, legs):
+        raise ValueError("W1 projection failed")
+    monkeypatch.setattr(RobustCondorSelect, "_primal_value", broken)
+    out = node.run(None, {"context": context})
+    assert (out["decision"]["status"], out["decision"]["reason"]) == ("skipped", "primal_failed")
+    assert out["evidence"]["solves"][0]["parity"] == {"error": "W1 projection failed", "passed": False}
