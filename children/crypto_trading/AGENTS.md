@@ -169,7 +169,8 @@ crypto_trading/           # tier-3 code: connectors.py, nodes.py, and the four
                        #   production seams — execution / accounting /
                        #   approvals / coordination, all fail-closed;
                        #   stage B: fields, clock, kalshi_rows, decisions, anchors,
-                       #   ports, spot_features, minute_features, market_state, fees (the Kalshi
+                       #   ports, spot_features, minute_features, feature_selection (the
+                       #   ablation keep rule), market_state, fees (the Kalshi
                        #   mapping over dskit's fee mechanics; see the section above)
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample, plus stage A:
@@ -181,7 +182,9 @@ configs/               # asset-model / source-sample / suite-sample /
                        #   source-deribit-* with a suite each (suite-kalshi-history-*,
                        #   suite-coinbase-candles, suite-deribit-dvol);
                        #   stage B: run-features-{15m,hourly} /
-                       #   source-features-{15m,hourly}
+                       #   source-features-{15m,hourly}; predictor selection:
+                       #   features-arms / select-template-* / workflow-select-* /
+                       #   select-features (README, "Feature selection")
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated

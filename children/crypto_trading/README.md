@@ -70,6 +70,30 @@ downstream filter on a status must use the new strings.
 Tests: `tests/synthetic.py` builds the offline stores; `test_zero_edge.py` runs a zero-edge world through the real nodes and must show no edge.
 Known issues and what is not modelled: the runbook's last section.
 
+## Feature selection (family and scale ablation)
+
+Owner-approved 2026-10-09; nothing has been run. Per model class (sequence: PatchTST and its kin; tabular: the
+3-component mixture MLP) the predictor is run once per arm of `features-arms.json` (`all`, ten `minus_<family>`,
+six `minus_scale_<n>`) on W1 only (2023-06-20 up to but excluding 2026-05-01): expanding walk-forward folds, a
+1-day embargo, the same folds, rows and seeds in every arm, scored by weighted CRPS (CRPS plus tail CRPS). An
+automated rule (`AblationSelect`) keeps a group for a class when dropping it hurts beyond fold noise: mean of the
+paired per-fold difference above zero and at least `z` = 1 standard errors, at least 8 folds. Groups kept by only
+one class are listed with both (mean, SE) pairs, never reconciled.
+
+| Config (`configs/`) | Job |
+|---|---|
+| `features-arms.json` | the arm vocabulary: kept families (`arms`) and kept scales (`scale_arms`) |
+| `select-template-{sequence,tabular}.json` | one W1 walk-forward template per class; `${arm.*}` fills the feature node's `families` and `scales`; the model, folds, seeds, loss and grid are the same in every arm |
+| `workflow-select-{sequence,tabular}.json` | manifest: one lane per arm (17), `workflow-batch`, resumable; identical but for the template and `work_dir` |
+| `select-features.json` | pipeline document: reads both classes' per-arm summaries, writes `selected-features-{sequence,tabular}.json` and `feature-selection-disagreements.json` under its run's `artifacts/select/` (never committed) |
+
+Not built here (the zoo build supplies them): the W1 bars reader, the raw-channel window builder, the fit and the
+common-grid weighted-CRPS score nodes, and the W1 fold table and seeds. They are unfilled `args.zoo` / `args.grid`
+markers, so `python -m dskit.pipeline workflow configs/workflow-select-sequence.json --plan` lists them and a real run
+is refused until they exist. The fitted single-feature selector (plan step 2) is also not here. The optional check arm
+`selected` (the kept groups, run on the same folds) is read when present; one worse than `all` by more than `z` SE
+sends the class back to `all`, flagged.
+
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
 (pipeline), its own asset model (assets). The domain lives in `configs/`.
@@ -220,6 +244,7 @@ crypto_trading/
 │   ├── spot_features.py   # stage B: point-in-time spot, vol, BVOL, moneyness
 │   ├── market_state.py    # stage B: quote state from ended candles
 │   ├── minute_features.py # stage B: per-minute feature families + 15-horizon labels (no Kalshi data)
+│   ├── feature_selection.py # predictor: AblationSelect, the keep rule over per-arm walk-forward fold scores, group-to-column grammar
 │   ├── fees.py            # stage B: FeeColumns, the Kalshi fee-type mapping over dskit's fee mechanics
 │   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
 │   ├── nodes.py           # pipeline seam: node kinds, default-deny params
@@ -252,7 +277,10 @@ crypto_trading/
 │   ├── source-features-15m.json          # stage B: localtables registration of the written table
 │   ├── run-features-hourly.json          # stage B: the hourly ladders, same nodes (own anchors and sources)
 │   ├── source-features-hourly.json       # stage B: localtables registration of the hourly table
-│   └── features-arms.json                # predictor: family- and scale-ablation arms (kept-family and kept-scale lists), pinned to the node
+│   ├── features-arms.json                # predictor: family- and scale-ablation arms (kept-family and kept-scale lists), pinned to the node
+│   ├── select-template-{sequence,tabular}.json # predictor: W1 walk-forward template per model class (${arm.*} per lane)
+│   ├── workflow-select-{sequence,tabular}.json # predictor: 17 lanes (one per arm) over the template, workflow-batch
+│   └── select-features.json              # predictor: reads both classes' arm summaries, writes the selected-features files (run output)
 ├── models/                # fitted ML/optimization artifacts (gitignored)
 │   ├── README.md          # what belongs here vs the run directory
 │   ├── .gitignore         # artifacts are rebuilt, never committed
@@ -291,6 +319,7 @@ crypto_trading/
     ├── test_runbook.py    # every runbook register / pull line is real; its snippets run
     ├── test_market_state.py # candle state and the no-peeking rule
     ├── test_minute_features.py # minute features: point-in-time (every family, 10080-minute scale), gaps, family and scale arms (synthetic bars)
+    ├── test_feature_selection.py # keep rule on synthetic folds, column grammar vs the real node, node, arm/fold/W1/seed/loss pins
     ├── test_spot_features.py # strict-prior leak tests with a control
     ├── test_zero_edge.py  # a zero-edge world scores zero edge; a stale quote does not
     ├── test_guard_pins.py # edge-of-data and degenerate-input guards, each pinned by one case

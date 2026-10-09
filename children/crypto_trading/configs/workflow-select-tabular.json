@@ -1,0 +1,520 @@
+{
+  "notes": "Feature-selection ablation for the tabular model class (owner-approved 2026-10-09; plan docs/plans/2026-10-09-data-windows.md, 'Feature families and selection'). One lane per arm of features-arms.json (all, ten minus_<family>, six minus_scale_<n>); each lane is one `dskit.pipeline walkforward` over W1 only, on the same expanding folds, seeds, rows, loss and grid, so the arms differ in the feature families or scales alone. Run from children/crypto_trading: `python -m dskit.pipeline workflow-batch configs/workflow-select-tabular.json --root pipeline_runs/select-tabular --parallel N` (resumable; each lane gets its own work dir `<root>/<arm>` and ledger, so its summary lands in `<root>/<arm>/runs/<arm>`, where select-features.json reads it; keep --root equal to args.work_dir). One arm: `--only-lanes minus_flow`. `workflow --plan` lists every unfilled arg: the zoo-supplied kinds below do not exist yet, so a real run is refused until the zoo build fills them. Afterwards `python -m dskit.pipeline run configs/select-features.json --asof 2026-05-01 --adapter crypto_trading` reads both classes' summaries and writes selected-features-<class>.json into its run directory (never committed). The check: overlay a `selected` lane (args.arms plus args.arm.selected, shaped like any arm, from the class's file) with --args, run `--only-lanes selected`, then rerun select-features. The two workflow-select-* manifests are identical but for the template and work_dir; a test pins that.",
+  "args": {
+    "notes": "Every input in one place; the only block a person edits (or overlays with --args). Arms are copied from features-arms.json and pinned to it, and to the feature node's FAMILIES and DEFAULT_SCALES, by tests/test_feature_selection.py: the runner has no way to take lanes from another file's keys.",
+    "work_dir": "./pipeline_runs/select-tabular",
+    "adapter": "crypto_trading",
+    "store": {
+      "notes": "Where the zoo's bars reader finds the W1 bars: the onboarded store (the one absolute path a run config may carry; the same value as the runbook's OB and the stage B document) and the sources and streams of the Binance 1-minute klines and BVOL. Names, never file paths.",
+      "root": "/home/russell/data/crypto_trading/ob",
+      "klines": {
+        "BTC": {
+          "source": "binance-btcusdt-1m",
+          "stream": "files"
+        },
+        "ETH": {
+          "source": "binance-ethusdt-1m",
+          "stream": "files"
+        }
+      },
+      "bvol": {
+        "BTC": {
+          "source": "binance-btcbvol",
+          "stream": "files"
+        },
+        "ETH": {
+          "source": "binance-ethbvol",
+          "stream": "files"
+        }
+      }
+    },
+    "window": {
+      "notes": "W1, the selection window (owner-approved 2026-10-09, UTC, end EXCLUSIVE): 2023-06-20 up to but excluding 2026-05-01. The end is the plan's W1/W2 boundary: nothing at or after it is read, fitted or scored here. start_ms and end_ms are the same instants in epoch ms for the row filter; a test pins the pairs. `assets` names the two assets of the feature node, BTC first.",
+      "assets": [
+        "BTC",
+        "ETH"
+      ],
+      "start": "2023-06-20",
+      "end": "2026-05-01",
+      "start_ms": 1687219200000,
+      "end_ms": 1777593600000
+    },
+    "folds": {
+      "notes": "Expanding walk-forward folds on W1: the train window is everything before the cutoff minus the embargo, and the validation window is val_days from the cutoff. 14 folds of 60 days from 2024-01-01 end 2026-04-21, inside W1, and clear the rule's floor of 8. The 1-day embargo purges the labels' 15-minute reach. Replace with the zoo build's W1 fold table once it is published (reuse it verbatim); the numbers are tested to stay inside W1, never to be these.",
+      "first": "2024-01-01",
+      "step_days": 60,
+      "count": 14,
+      "val_days": 60,
+      "embargo_days": 1
+    },
+    "training": {
+      "notes": "Fixed across every arm and both classes: the same seeds and the one loss, weighted CRPS (CRPS plus tail CRPS, weight 1 each, as in the options child's feature selection). The fold score is the sum of the two on the common grid, averaged over horizons, assets and seeds. Replace seeds with the zoo build's when it is published.",
+      "seeds": [
+        11,
+        12,
+        13
+      ],
+      "losses": [
+        {
+          "kind": "crps",
+          "weight": 1.0
+        },
+        {
+          "kind": "tail_crps",
+          "weight": 1.0
+        }
+      ]
+    },
+    "grid": {
+      "notes": "What the score node evaluates: every horizon the feature node labels (1 to 15), on the zoo's common grid. The grid itself is the zoo build's; it stays unfilled until then.",
+      "horizons": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "common": "<zoo build: the common evaluation grid of the model zoo's score node>"
+    },
+    "zoo": {
+      "notes": "Node kinds the zoo build supplies and this slice does not build: a bars reader (W1 klines and BVOL as rows), a raw-channel window builder (sequence class only), a fit node and a score node (weighted CRPS on the common grid, 15 horizons from one model). They are unfilled markers so that `workflow --plan` shows the gap and a real run refuses. torch_ts's quantile head is pinball-only and is not the scorer.",
+      "bars": "<zoo build: node kind that reads the W1 Binance klines and BVOL of both assets from the store into rows>",
+      "windows": "<zoo build: node kind that appends the raw per-step window channels to each feature row>",
+      "lookback": "<zoo build: raw window length in minutes>",
+      "fit": "<zoo build: node kind that fits a predictive_cdf estimator on the train rows>",
+      "score": "<zoo build: node kind that scores a fitted estimator on the validation rows>"
+    },
+    "arms": [
+      "all",
+      "minus_ret",
+      "minus_trend",
+      "minus_vol",
+      "minus_range",
+      "minus_shock",
+      "minus_flow",
+      "minus_clock",
+      "minus_holiday",
+      "minus_xasset",
+      "minus_bvol",
+      "minus_scale_5",
+      "minus_scale_15",
+      "minus_scale_60",
+      "minus_scale_240",
+      "minus_scale_1440",
+      "minus_scale_10080"
+    ],
+    "arm": {
+      "all": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_ret": {
+        "families": [
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_trend": {
+        "families": [
+          "ret",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_vol": {
+        "families": [
+          "ret",
+          "trend",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_range": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_shock": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_flow": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_clock": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_holiday": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_xasset": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_bvol": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_scale_5": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          15,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_scale_15": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          60,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_scale_60": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          240,
+          1440,
+          10080
+        ]
+      },
+      "minus_scale_240": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          1440,
+          10080
+        ]
+      },
+      "minus_scale_1440": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          10080
+        ]
+      },
+      "minus_scale_10080": {
+        "families": [
+          "ret",
+          "trend",
+          "vol",
+          "range",
+          "shock",
+          "flow",
+          "clock",
+          "holiday",
+          "xasset",
+          "bvol"
+        ],
+        "scales": [
+          5,
+          15,
+          60,
+          240,
+          1440
+        ]
+      }
+    }
+  },
+  "lanes": {
+    "notes": "One chain per arm: `$lane` binds the arm name, and `arm` (keyed by arm) is narrowed to the lane's own entry. The arm lists are pinned to features-arms.json by a test.",
+    "key": "arms",
+    "keyed": [
+      "arm"
+    ]
+  },
+  "layout": {
+    "fit": {
+      "dir": "{W}/fit",
+      "runs": "{W}/runs/{A}"
+    }
+  },
+  "registry": {
+    "fit": {
+      "notes": "One walk-forward per arm. Its summary (walkforward.json, one score per fold) lands under the layout's `runs` directory, which select-features.json reads; the fold run directories sit beside it.",
+      "template": "select-template-tabular.json",
+      "extends": null,
+      "command": "{python} -m dskit.pipeline walkforward {config} --asof {in.asof} --adapter {in.adapter}"
+    }
+  },
+  "steps": {
+    "fit": {
+      "notes": "The as-of date is W1's end, so the run names say what the data stops at. Every value the template uses enters through `in`: the arm differs per lane, everything else is shared.",
+      "registry": "fit",
+      "in": {
+        "A": "$lane",
+        "W": "$args.work_dir",
+        "asof": "$args.window.end",
+        "adapter": "$args.adapter",
+        "arm": "$args.arm.$lane",
+        "store": "$args.store",
+        "window": "$args.window",
+        "folds": "$args.folds",
+        "training": "$args.training",
+        "grid": "$args.grid",
+        "zoo": "$args.zoo"
+      },
+      "out": [
+        "runs"
+      ]
+    }
+  }
+}

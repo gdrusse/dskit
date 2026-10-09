@@ -1,0 +1,35 @@
+{
+  "name": "select-features",
+  "notes": "Reads both classes' per-arm walk-forward summaries (written by workflow-select-sequence.json and workflow-select-tabular.json), applies the keep rule (z standard errors of the paired per-fold difference, at least min_folds folds) and writes selected-features-sequence.json, selected-features-tabular.json and feature-selection-disagreements.json into this run's artifacts/select directory. Nothing is fitted; the files are run outputs and are never committed. Run from children/crypto_trading after both workflows finish: `python -m dskit.pipeline run configs/select-features.json --asof 2026-05-01 --adapter crypto_trading`. The zoo configs read the two files in a later wave.",
+  "pipeline": {
+    "select": {
+      "uses": "crypto_trading.feature_selection:AblationSelect",
+      "params": {
+        "arms_file": "configs/features-arms.json",
+        "classes": {
+          "sequence": {
+            "runs": "./pipeline_runs/select-sequence/{arm}/runs/{arm}",
+            "notes": "The sequence batch's root (its manifest's work_dir), then the lane's own work dir and the layout's runs directory, {arm} standing for the lane; a test pins the three together."
+          },
+          "tabular": {
+            "runs": "./pipeline_runs/select-tabular/{arm}/runs/{arm}",
+            "notes": "The tabular batch's root (its manifest's work_dir), then the lane's own work dir and the layout's runs directory, {arm} standing for the lane; a test pins the three together."
+          }
+        },
+        "minute_features": {
+          "assets": [
+            "BTC",
+            "ETH"
+          ]
+        },
+        "z": 1.0,
+        "min_folds": 8
+      },
+      "notes": "arms_file is the arm vocabulary; the column list is probed from MinuteFeatures with these params (assets only, so the node's defaults: the same columns the lanes produced). z = 1 is the one-standard-error rule, liberal toward keeping because a false drop costs signal and a false keep costs one column; min_folds = 8 refuses a standard error from too few folds. Raise z to be stricter. A `selected` lane under either runs directory is read as the check arm."
+    }
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd. Placement is not identity (hash-excluded)."
+  }
+}

@@ -15,6 +15,7 @@ from .connectors import SampleConnector
 from .anchors import StrikeAnchors
 from .decisions import DecisionRows
 from .fees import FeeColumns
+from .feature_selection import AblationSelect
 from .kalshi_rows import CandleRows, FeeRows, MarketRows
 from .market_state import MarketState
 from .minute_features import MinuteFeatures
@@ -22,6 +23,7 @@ from .nodes import NODE_KINDS, EnrichRecords, SampleRecords
 from .spot_features import SpotFeatures
 
 __all__ = [
+    "AblationSelect",
     "CandleRows",
     "DecisionRows",
     "EnrichRecords",
