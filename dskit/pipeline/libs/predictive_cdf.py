@@ -7677,6 +7677,13 @@ class NominalStrikeMasses(Node):
                 if identity in seen:
                     raise ValueError("duplicate forecast context")
                 seen.add(identity)
+        chain_by_context = {}
+        for row in inputs["chain"]:
+            if not isinstance(row, dict):
+                raise ValueError("chain row must be a mapping")
+            identity = tuple(row.get(k) for k in keys)
+            if all(isinstance(value, str) and value for value in identity):
+                chain_by_context.setdefault(identity, []).append(row)
         rows, skips = [], list(inputs.get("skips", []))
         for forecast in forecasts:
             try:
@@ -7685,8 +7692,8 @@ class NominalStrikeMasses(Node):
                 strikes = sorted(
                     {
                         float(r["strike"])
-                        for r in inputs["chain"]
-                        if all(r.get(k) == forecast[k] for k in keys)
+                        for r in chain_by_context.get(
+                            tuple(forecast[k] for k in keys), ())
                     }
                 )
                 if len(strikes) < 2:

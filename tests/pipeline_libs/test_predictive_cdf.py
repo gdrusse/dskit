@@ -5191,3 +5191,28 @@ def test_nominal_projection_reports_overflowed_spot_as_identified_skip():
     assert out["masses"] == []
     assert len(out["skips"]) == 1
     assert out["skips"][0]["expiry"] == row["expiry"]
+
+
+def test_nominal_projection_context_matching_scales_with_chain_size():
+    class CountedRow(dict):
+        lookups = 0
+        def get(self, key, default=None):
+            CountedRow.lookups += 1
+            return super().get(key, default)
+
+    params = dict(quadrature_tolerance=1e-8, payoff_tolerance=1e-7,
+                  cdf_tolerance=1., w1_tolerance=1., integration_limit=100)
+    forecasts, chain = [], []
+    for i in range(20):
+        row = dict(symbol=str(i), quote_date="2025-01-02", expiry="2025-02-02",
+                   spot=100., reference=.2, curve=dict(
+                       kind="mixture", weights=[[1.]], means=[[0.]], scales=[[1.]]))
+        forecasts.append(row)
+        chain.extend(CountedRow(symbol=row["symbol"], quote_date=row["quote_date"],
+                                expiry=row["expiry"], strike=s) for s in (90., 110.))
+    out = predictive_cdf.NominalStrikeMasses("m", params).run(
+        None, {"forecasts": forecasts, "chain": chain})
+    assert len(out["masses"]) == 20 and not out["skips"]
+    assert {r["symbol"] for r in out["masses"]} == {str(i) for i in range(20)}
+    # Bound matching work independently of the number of other contexts.
+    assert CountedRow.lookups <= 6 * len(chain)
