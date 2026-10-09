@@ -1,5 +1,8 @@
 # Active handoff — 2026-10-09: PatchTST condor replay completed
 
+Final reporting candidate6b82e0c7 closed both independent lenses with0C/M/Minor/Nit.
+Private condor-report-final-lock-v1.json binds actual reviews and focused checks.
+
 The authorized single replay completed all10nodes, exit0, run
 793013c0e7ab77e4802d9e24927a91b41d2545e08ddef3424e22bcc2c928b238.
 Read children/index_options/docs/memos/2026-10-09-robust-condor-replay.md
