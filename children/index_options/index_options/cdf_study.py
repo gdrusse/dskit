@@ -12,8 +12,9 @@ import json
 from pathlib import Path
 
 from dskit.pipeline.document import date_problem
+from dskit.pipeline.base import value_hash
 from dskit.pipeline.kinds_split import label_reaches
-from dskit.pipeline.node import check_int_param
+from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
 from dskit.pipeline.libs.predictive_cdf import (
     ChronologicalCDFStudy, CDFHyperparameterStudy, CDFThresholdAudit,
     DiscreteCDFGrid, GridCurve,
@@ -34,6 +35,7 @@ __all__ = ["CorporateActionRule", "ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIO
            "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
            "DecisionRegionStudy", "DecisionStrikeDiagnosisStudy",
            "CausalStrikeCDFCorrection", "AdaptiveWassersteinRadius",
+           "HeldOutRhoCalibration",
            "RobustCorrectionStudy"]
 
 
@@ -283,6 +285,222 @@ class AdaptiveWassersteinRadius:
         return {"radius": passing[0] if passing else None, "upper_bounds": bounds,
                 "full_means": means, "support": support,
                 "reason": None if passing else "insufficient_or_uncovered_history"}
+
+class HeldOutRhoCalibration(Node):
+    """Calibrate a frozen quantile-wing audit population without future leakage.
+
+    Parameters
+    ----------
+    params : dict
+        Explicit grid, bootstrap, template, liquidity and publication settings;
+        settlement_field and end_before declare the governed bar projection.
+        Inputs must already satisfy ExactDteBarChain standard-contract rules.
+
+    Examples
+    --------
+    Construct from the resolved replay calibration policy::
+
+        node = HeldOutRhoCalibration("rho", resolved_calibration_params)
+    """
+
+    role = "transform"
+    outputs = ("rho", "audit", "skips")
+    _PARAMS = ("rho_grid", "min_dates", "block_days", "replicates", "alpha", "seed",
+               "short_q", "wing_strikes", "min_trade_count", "min_volume",
+               "publication_lag_sessions", "max_settlement_gap_days",
+               "settlement_field", "end_before")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return malformed explicit calibration-policy problems."""
+        from .nodes import _iso_day
+
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if set(params) != set(cls._PARAMS):
+            problems.append("explicit held-out rho settings required")
+            return problems
+        if (not isinstance(params["settlement_field"], str)
+                or not params["settlement_field"]
+                or not _iso_day(params["end_before"])):
+            problems.append("explicit settlement field and canonical end_before required")
+        try:
+            AdaptiveWassersteinRadius(params["rho_grid"], params["min_dates"],
+                                      params["block_days"]["primary"], params["replicates"],
+                                      params["alpha"], params["seed"])
+            if (params["block_days"].keys() != {"primary", "sensitivity"}
+                    or type(params["block_days"]["sensitivity"]) is not int
+                    or params["block_days"]["sensitivity"] <= params["block_days"]["primary"]
+                    or not 0 < params["short_q"] < .5
+                    or type(params["wing_strikes"]) is not int or params["wing_strikes"] < 1
+                    or type(params["min_trade_count"]) is not int or params["min_trade_count"] < 0
+                    or type(params["min_volume"]) is not int or params["min_volume"] < 0
+                    or type(params["publication_lag_sessions"]) is not int
+                    or params["publication_lag_sessions"] < 0
+                    or type(params["max_settlement_gap_days"]) is not int
+                    or params["max_settlement_gap_days"] < 0):
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            problems.append("invalid held-out rho settings")
+        return problems
+
+    def _template(self, mass, chain):
+        """Place complementary curve quantiles on the fixed liquid four-leg template."""
+        import math
+        import numpy as np
+        from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy
+
+        raw = mass["curve"]
+        if raw.get("kind") not in ("mixture", "student_mixture"):
+            raise ValueError("unsupported serialized forecast curve")
+        archive = {key: np.asarray(value) for key, value in raw.items()}
+        curve = CDFHyperparameterStudy.restore_curve(
+            {**archive, "row_index": np.asarray([0])}, [0])
+        spot, reference = float(mass["spot"]), float(mass["reference"])
+        if not math.isfinite(spot) or spot <= 0 or not math.isfinite(reference) or reference <= 0:
+            raise ValueError("invalid spot or reference")
+        wanted = {key: mass[key] for key in ("symbol", "quote_date", "expiry")}
+        eligible = {"put": [], "call": []}
+        for row in chain:
+            if not all(row.get(key) == value for key, value in wanted.items()):
+                continue
+            right = row.get("right")
+            try:
+                strike = float(row["strike"])
+                liquid = row["trade_count"] >= self.params["min_trade_count"] and row["volume"] >= self.params["min_volume"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if right in eligible and liquid and math.isfinite(strike) and strike > 0:
+                eligible[right].append(strike)
+        for right in eligible:
+            eligible[right] = sorted(set(eligible[right]))
+        def nearest(right, q):
+            z = float(curve.quantile([q])[0, 0])
+            target = spot*math.exp(reference*z)
+            candidates = eligible[right]
+            if not candidates:
+                raise ValueError("missing liquid template contracts")
+            return min(candidates, key=lambda strike: (abs(strike-target), strike))
+        sp, sc = nearest("put", self.params["short_q"]), nearest("call", 1-self.params["short_q"])
+        def outward(right, short, direction):
+            ordered = eligible[right]
+            candidates = [value for value in ordered if (value < short if direction < 0 else value > short)]
+            if len(candidates) < self.params["wing_strikes"]:
+                raise ValueError("missing distinct liquid wing")
+            return candidates[-self.params["wing_strikes"]] if direction < 0 else candidates[self.params["wing_strikes"]-1]
+        strikes = [outward("put", sp, -1), sp, sc, outward("call", sc, 1)]
+        if not all(a < b for a, b in zip(strikes, strikes[1:])):
+            raise ValueError("template strikes are not strictly ordered")
+        return strikes
+
+    @staticmethod
+    def _bar_close(mass, bars, max_gap, publication_lag, end_before, settlement_field):
+        from .nodes import _bounded_settlement_index, _iso_day
+        rows = sorted((row for row in bars if row.get("symbol") == mass["symbol"]),
+                      key=lambda row: row.get("date", ""))
+        dates = [row["date"] for row in rows]
+        if len(dates) != len(set(dates)) or any(not _iso_day(day) or day >= end_before for day in dates):
+            raise ValueError("invalid or duplicate protected bar dates")
+        index = _bounded_settlement_index(dates, mass["expiry"], max_gap)
+        if index is None:
+            raise ValueError("missing bounded settlement")
+        publication_index = index + 1 + publication_lag
+        if publication_index >= len(dates):
+            raise ValueError("unpublished settlement")
+        value = float(rows[index][settlement_field])
+        if not __import__("math").isfinite(value) or value <= 0:
+            raise ValueError("invalid settlement close")
+        return value, dates[index], dates[publication_index]
+
+    def _losses(self, mass, strikes):
+        import numpy as np
+        grid = DiscreteCDFGrid.from_masses(mass["grid"], mass["masses"])
+        if mass.get("q_lo") is not None or mass.get("q_hi") is not None:
+            raise ValueError("CDF bands are unsupported for held-out calibration")
+        payoff = CondorCDFDiagnostic.payoff(np.asarray([grid.grid]), np.asarray([strikes]))[0]
+        loss = -payoff
+        identity = value_hash({key: mass.get(key) for key in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity", "curve", "grid", "masses", "spot", "reference")})
+        return grid, loss, identity
+
+    def run(self, ctx, inputs):
+        """Emit monthly prior-only radii, fixed-template records and explicit skips."""
+        import pandas as pd
+        from .nodes import _iso_day
+
+        required = {"masses", "chain", "bars"}
+        if (not isinstance(inputs, dict) or not required <= set(inputs)
+                or set(inputs)-required-{"holding_exclusions", "skips"}):
+            raise ValueError("calibration inputs require masses, chain and bars")
+        if any(not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+               for rows in inputs.values()):
+            raise ValueError("calibration inputs must be finite record lists")
+        excluded = {}
+        for row in inputs.get("holding_exclusions", []):
+            key = tuple(row.get(k) for k in ("symbol", "quote_date", "expiry"))
+            if (any(not isinstance(v, str) or not v for v in key)
+                    or not isinstance(row.get("reason"), str) or not row["reason"]):
+                raise ValueError("holding exclusion requires identity and reason")
+            excluded.setdefault(key, []).append(row["reason"])
+        records, skips, cache = [], list(inputs.get("skips", [])), {}
+        contexts = set()
+        references = {}
+        for mass in inputs["masses"]:
+            identity = tuple(mass.get(key) for key in ("symbol", "quote_date", "expiry"))
+            if (any(not isinstance(v, str) or not v for v in identity)
+                    or not _iso_day(identity[1]) or not _iso_day(identity[2])
+                    or identity[1] >= identity[2]
+                    or identity[2] >= self.params["end_before"]):
+                raise ValueError("invalid or protected mass context")
+            if identity in contexts:
+                raise ValueError("duplicate mass context")
+            contexts.add(identity)
+            if mass.get("phase") == "entry" and isinstance(mass.get("quote_date"), str):
+                month = mass["quote_date"][:7]
+                references[month] = min(references.get(month, mass["quote_date"]), mass["quote_date"])
+        chain_index, bar_index = {}, {}
+        for row in inputs["chain"]:
+            chain_index.setdefault(tuple(row.get(key) for key in ("symbol", "quote_date", "expiry")), []).append(row)
+        for row in inputs["bars"]:
+            bar_index.setdefault(row.get("symbol"), []).append(row)
+        for mass in inputs["masses"]:
+            try:
+                if mass.get("phase") not in ("calibration", "entry"):
+                    continue
+                key = tuple(mass[k] for k in ("symbol", "quote_date", "expiry"))
+                if key in excluded:
+                    raise ValueError("; ".join(sorted(set(excluded[key]))))
+                strikes = self._template(mass, chain_index.get(tuple(mass.get(key) for key in ("symbol", "quote_date", "expiry")), []))
+                mass_settled, settlement_date, publication = self._bar_close(mass, bar_index.get(mass["symbol"], []), self.params["max_settlement_gap_days"], self.params["publication_lag_sessions"], self.params["end_before"], self.params["settlement_field"])
+                grid, loss, identity = self._losses(mass, strikes)
+                values = {}
+                for radius in self.params["rho_grid"]:
+                    key = (identity, float(mass["spot"]), float(mass["reference"]), tuple(strikes), radius, None, None, json.dumps(self.params, sort_keys=True))
+                    if key not in cache:
+                        cache[key] = grid.worst_expected_loss(loss, radius, mass["spot"])
+                    values[radius] = cache[key]
+                realized = float(-CondorCDFDiagnostic.payoff(
+                    __import__("numpy").asarray([[mass_settled]]), __import__("numpy").asarray([strikes]))[0, 0])
+                records.append({**{key: mass.get(key) for key in ("symbol", "quote_date", "expiry", "phase", "fit_identity", "checkpoint_identity", "input_identity", "source_identity")},
+                                "strikes": strikes, "settlement_date": settlement_date, "publication_date": publication,
+                                "losses": values, "realized_loss": realized})
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                skips.append({**{key: mass.get(key) for key in ("symbol", "quote_date", "expiry", "phase", "fit_identity", "checkpoint_identity", "input_identity", "source_identity")}, "reason": str(exc)})
+        monthly, audit_records = {}, []
+        for month, reference in sorted(references.items()):
+            history = [item for item in records if item["publication_date"] < reference and item["quote_date"] < reference]
+            residuals = [{"quote_date": item["quote_date"], "radius": radius,
+                          "residual": item["realized_loss"]-item["losses"][radius]}
+                         for item in history for radius in self.params["rho_grid"]]
+            owner = AdaptiveWassersteinRadius(self.params["rho_grid"], self.params["min_dates"], self.params["block_days"]["primary"], self.params["replicates"], self.params["alpha"], self.params["seed"])
+            result = owner.select(pd.DataFrame(residuals, columns=("quote_date", "radius", "residual")), calendar_days=self.params["block_days"]["primary"]) if residuals else {"radius": None, "reason": "insufficient_or_uncovered_history"}
+            sensitivity = AdaptiveWassersteinRadius(self.params["rho_grid"], self.params["min_dates"], self.params["block_days"]["sensitivity"], self.params["replicates"], self.params["alpha"], self.params["seed"]).select(pd.DataFrame(residuals, columns=("quote_date", "radius", "residual")), calendar_days=self.params["block_days"]["sensitivity"]) if residuals else {"radius": None}
+            monthly[month] = result["radius"]
+            for item in records:
+                if item["quote_date"][:7] == month:
+                    item["history_count"] = len(history)
+            audit_records.append({"month": month, "reference": reference, "primary": result, "sensitivity": sensitivity, "history_count": len(history)})
+        return {"rho": monthly, "audit": JsonArtifact({"records": records, "monthly": audit_records, "loss_cache_count": len(cache), "skips": skips}), "skips": skips}
+
 
 
 class EligibleCondorChain:

@@ -21,6 +21,7 @@ from dskit.pipeline.distribution_scores import (
     row_in_split,
 )
 from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
+from dskit.pipeline.base import value_hash
 from dskit.pipeline.libs.pyomo import BINDING_TOLERANCE, DEFAULT_SOLVER, PyomoSolve, WassersteinDual
 from dskit.pipeline.option_pricing import VolIndexSmileQuotes, black76_delta
 from dskit.pipeline.records import number_ok, price_ok
@@ -66,7 +67,7 @@ __all__ = ["ExactDteBarChain", "CondorExpirySettle", "CondorBacktest", "CondorDi
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
-           "RobustCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
+           "RobustCondorBatchSelect", "RobustCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
            "t_or_zero"]
 
 
@@ -3473,6 +3474,232 @@ class RobustCondorSelect(PyomoSolve):
                             "robust_value_usd":robust, "worst_loss_usd_per_share":worst},
                 "evidence":evidence}
 
+class RobustCondorBatchSelect(RobustCondorSelect):
+    """Prepare governed chain rows for the one-context robust selector.
+
+    The adapter owns no optimization.  It freezes calibration-window ticker
+    liquidity tiers, resolves one named arm, and delegates each prepared context
+    to :class:`RobustCondorSelect`.  Tied ticker medians sort by symbol before
+    assigning rank terciles; this rule makes the frozen entry-price tier stable.
+    """
+
+    outputs = ("selections", "decisions", "solves", "skips", "evidence")
+    _ARTIFACT_KEYS = ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")
+    _ARMS = ("nominal", "rho_base", "haircut_0", "haircut_half",
+             "haircut_double", "liquidity_3", "liquidity_10", "liquidity_20")
+    _BATCH_PARAMS = ("calibration_window", "entry_window", "protected_end_before",
+                     "standard_multiplier", "liquidity", "haircut_tiers", "arms",
+                     "tier_tie_policy")
+    _PARAMS = RobustCondorSelect._PARAMS + _BATCH_PARAMS
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return solver, chronology and declared-arm policy problems."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        problems.extend(RobustCondorSelect.validate_params({
+            key: params[key] for key in RobustCondorSelect._PARAMS if key in params}))
+        for key in cls._BATCH_PARAMS:
+            if key not in params:
+                problems.append(f"{key} is required")
+        for key in ("calibration_window", "entry_window"):
+            window = params.get(key)
+            if (not isinstance(window, dict) or set(window) != {"start", "end"}
+                    or not _iso_day(window.get("start")) or not _iso_day(window.get("end"))
+                    or window["start"] > window["end"]):
+                problems.append(f"{key} must be an ordered ISO start/end mapping")
+        windows = [params.get(key, {}) for key in ("calibration_window", "entry_window")]
+        if all(isinstance(w, dict) and _iso_day(w.get("start"))
+               and _iso_day(w.get("end")) for w in windows):
+            if windows[0]["end"] >= windows[1]["start"]:
+                problems.append("calibration must finish strictly before entry")
+            if (_iso_day(params.get("protected_end_before"))
+                    and windows[1]["end"] >= params["protected_end_before"]):
+                problems.append("entry window reaches protected boundary")
+        if params.get("standard_multiplier") != params.get("multiplier"):
+            problems.append("standard and solver multipliers must agree")
+        if not _iso_day(params.get("protected_end_before")):
+            problems.append("protected_end_before must be an ISO date")
+        for key in ("standard_multiplier",):
+            if type(params.get(key)) is not int or params[key] < 1:
+                problems.append(f"{key} must be a positive integer")
+        liquidity = params.get("liquidity")
+        if (not isinstance(liquidity, dict) or set(liquidity) != {"min_trade_count", "min_volume"}
+                or any(type(liquidity[k]) is not int or liquidity[k] < 0 for k in liquidity)):
+            problems.append("liquidity must contain nonnegative integer min_trade_count/min_volume")
+        tiers = params.get("haircut_tiers")
+        if not isinstance(tiers, dict) or set(tiers) != {"low", "mid", "high"}:
+            problems.append("haircut_tiers must contain low/mid/high")
+        elif any(not isinstance(v, dict) or set(v) != {"pct", "floor_usd"}
+                  or any(not number_ok(v[k]) or v[k] < 0 for k in v) for v in tiers.values()):
+            problems.append("haircut tier values must be finite nonnegative pct/floor_usd")
+        if params.get("tier_tie_policy") != "symbol_ascending_rank":
+            problems.append("tier_tie_policy must be symbol_ascending_rank")
+        arms = params.get("arms")
+        if not isinstance(arms, dict) or tuple(arms) != cls._ARMS:
+            problems.append("arms must declare the eight canonical arms in canonical order")
+        elif any(not isinstance(spec, dict) or set(spec) - {"radius", "haircut_multiplier",
+                                                            "min_trade_count"}
+                  or spec.get("radius") not in {"zero", "calibrated"}
+                  or ("haircut_multiplier" in spec
+                      and (not number_ok(spec["haircut_multiplier"])
+                           or spec["haircut_multiplier"] < 0))
+                  or ("min_trade_count" in spec
+                      and (type(spec["min_trade_count"]) is not int
+                           or spec["min_trade_count"] < 0))
+                  for spec in arms.values()):
+            problems.append("arm definitions contain an invalid one-factor override")
+        return problems
+
+    @staticmethod
+    def _day(row):
+        value = row.get("quote_date", row.get("date"))
+        return value if _iso_day(value) else None
+
+    def _tiers(self, chain):
+        from statistics import median
+
+        values = {}
+        window = self.params["calibration_window"]
+        for row in chain:
+            day = self._day(row)
+            symbol = row.get("symbol") if isinstance(row, dict) else None
+            count = row.get("trade_count") if isinstance(row, dict) else None
+            if (isinstance(symbol, str) and symbol and window["start"] <= (day or "") <= window["end"]
+                    and type(count) is int and count >= 0):
+                values.setdefault(symbol, []).append(count)
+        if not values:
+            raise ValueError("completed calibration window has no ticker trade counts")
+        ranked = sorted((median(counts), symbol)
+                        for symbol, counts in values.items())
+        return {symbol: ("low", "mid", "high")[(3 * rank)//len(ranked)]
+                for rank, (_, symbol) in enumerate(ranked)}
+    def _mass_rows(self, rows):
+        out = {}
+        identity_keys = self._ARTIFACT_KEYS
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("projected masses must be records")
+            key = tuple(row.get(k) for k in ("symbol", "quote_date", "expiry"))
+            if (any(not isinstance(v, str) or not v for v in key)
+                    or any(not isinstance(row.get(k), str) or not row[k] for k in identity_keys)
+                    or not _iso_day(key[1]) or not _iso_day(key[2]) or key[1] >= key[2]
+                    or key in out or not isinstance(row.get("grid"), (list, tuple))
+                    or not isinstance(row.get("masses"), (list, tuple))):
+                raise ValueError("projected masses require canonical context and artifact identities")
+            decision_id = row.get("decision_id") or value_hash({k: row[k] for k in ("symbol", "quote_date", "expiry", "grid", "masses", "spot") + identity_keys})
+            out[key] = {**row, "decision_id": decision_id}
+        return out
+
+    @staticmethod
+    def _rho(rho):
+        if not isinstance(rho, dict):
+            raise ValueError("rho must be a YYYY-MM to finite nonnegative number/null mapping")
+        for month, value in rho.items():
+            if (not isinstance(month, str) or len(month) != 7 or not _iso_day(month+"-01")
+                    or (value is not None and (not number_ok(value) or value < 0))):
+                raise ValueError("rho must be a YYYY-MM to finite nonnegative number/null mapping")
+        return dict(rho)
+
+    def _batch_context(self, mass, rows, tier, arm, rho):
+        spec, liquidity = self.params["arms"][arm], dict(self.params["liquidity"])
+        liquidity["min_trade_count"] = spec.get("min_trade_count", liquidity["min_trade_count"])
+        by_role = {role: [] for role in self._ROLES}
+        grid = list(mass["grid"])
+        index_by_strike = {float(strike): index for index, strike in enumerate(grid)}
+        if len(index_by_strike) != len(grid):
+            raise ValueError("projected grid repeats a strike")
+        for row in rows:
+            right = row.get("right", row.get("type"))
+            if right not in ("put", "call") or not isinstance(row.get("contract"), str) or not row["contract"]:
+                raise ValueError("chain rows require contract and put/call right")
+            strike, price = row.get("strike"), row.get("vwap")
+            if (not number_ok(strike) or float(strike) not in index_by_strike
+                    or not number_ok(price) or price < 0
+                    or row.get("multiplier") != self.params["standard_multiplier"]
+                    or type(row.get("trade_count")) is not int or row["trade_count"] < 0
+                    or type(row.get("volume")) is not int or row["volume"] < 0):
+                raise ValueError("chain row has invalid strike, VWAP or liquidity")
+            if row["trade_count"] < liquidity["min_trade_count"] or row["volume"] < liquidity["min_volume"]:
+                continue
+            arm_multiplier = spec.get("haircut_multiplier", 1.)
+            haircut_cfg = self.params["haircut_tiers"][tier]
+            haircut = arm_multiplier * max(haircut_cfg["floor_usd"], haircut_cfg["pct"] * price)
+            side_roles = ("LP",) if right == "put" else ("LC",)
+            if haircut <= price:
+                side_roles += (("SP",) if right == "put" else ("SC",))
+            for selected in side_roles:
+                by_role[selected].append(dict(index=index_by_strike[float(strike)], price=float(price),
+                                               haircut=float(haircut), contract_id=row["contract"]))
+        return dict(decision_id=mass["decision_id"], arm_id=arm, symbol=mass["symbol"],
+                    quote_date=mass["quote_date"], expiry=mass["expiry"], grid=grid,
+                    masses=list(mass["masses"]), spot=mass["spot"], rho=rho, legs=by_role,
+                    **({k: mass[k] for k in ("q_lo", "q_hi") if k in mass}))
+
+    def run(self, ctx, inputs):
+        """Return decisions, settlement-compatible selections, and explicit skips."""
+        if not isinstance(inputs, dict) or set(inputs) != {
+                "chain", "projected_masses", "rho", "skips", "holding_exclusions"}:
+            raise ValueError("inputs require chain/projected_masses/rho/skips/holding_exclusions")
+        if any(not isinstance(inputs[key], list) for key in ("chain", "projected_masses", "skips", "holding_exclusions")):
+            raise ValueError("batch inputs must be lists")
+        if any(not isinstance(row, dict) for key in ("chain", "skips")
+               for row in inputs[key]):
+            raise ValueError("chain and upstream skips must be records")
+        tiers, masses, rhos = self._tiers(inputs["chain"]), self._mass_rows(inputs["projected_masses"]), self._rho(inputs["rho"])
+        excluded = set()
+        for row in inputs["holding_exclusions"]:
+            if not isinstance(row, dict) or not isinstance(row.get("reason"), str) or not row["reason"]:
+                raise ValueError("holding exclusions require an explicit reason")
+            key = tuple(row.get(k) for k in ("symbol", "quote_date", "expiry"))
+            if any(not isinstance(v, str) or not v for v in key):
+                raise ValueError("holding exclusions require canonical context identity")
+            excluded.add(key)
+        chain = {}
+        for row in inputs["chain"]:
+            if not isinstance(row, dict):
+                raise ValueError("chain rows must be records")
+            day = self._day(row)
+            key = (row.get("symbol"), day, row.get("expiry"))
+            if (any(not isinstance(v, str) or not v for v in key) or not _iso_day(row["expiry"])
+                    or day >= row["expiry"] or row["expiry"] >= self.params["protected_end_before"]
+                    or key in chain and any(r.get("contract") == row.get("contract") for r in chain[key])):
+                raise ValueError("chain has duplicate or unprotected context identity")
+            chain.setdefault(key, []).append(row)
+        decisions, selections, solves, skips = [], [], [], list(inputs["skips"])
+        for mass in masses.values():
+            key = (mass["symbol"], mass["quote_date"], mass["expiry"])
+            if not self.params["entry_window"]["start"] <= mass["quote_date"] <= self.params["entry_window"]["end"]:
+                continue
+            if mass["expiry"] >= self.params["protected_end_before"] or key in excluded:
+                skips.append({**{k: mass[k] for k in ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS},
+                              "reason": "holding_excluded" if key in excluded else "protected_date"})
+                continue
+            if key not in chain:
+                skips.append({**{k: mass[k] for k in ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS},
+                              "reason": "missing_chain"})
+                continue
+            for arm in self._ARMS:
+                rho = 0. if self.params["arms"][arm]["radius"] == "zero" else rhos.get(mass["quote_date"][:7])
+                identity = {k: mass[k] for k in ("decision_id", "symbol", "quote_date", "expiry") + self._ARTIFACT_KEYS}
+                if rho is None:
+                    skips.append({**identity, "arm_id": arm, "reason": "missing_calibrated_rho"})
+                    continue
+                result = RobustCondorSelect.run(self, ctx, {"context": self._batch_context(
+                    mass, chain[key], tiers.get(mass["symbol"], "low"), arm, rho)})
+                decision = result["decision"]
+                decision.update({name: mass[name] for name in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")})
+                decisions.append(decision)
+                solves.extend({**identity, "arm_id": arm, **solve}
+                              for solve in result["evidence"]["solves"])
+                if decision["status"] == "trade":
+                    selections.append(decision)
+                elif decision["status"] == "skipped":
+                    skips.append(decision)
+        evidence = {"tiers": tiers, "decisions": decisions, "solves": solves, "skips": skips,
+                    "tier_tie_policy": self.params["tier_tie_policy"]}
+        return {"selections": selections, "decisions": decisions, "solves": solves,
+                "skips": skips, "evidence": evidence}
 
 class ExactDteBarChain(Node):
     """Apply exact equity-option tenor and phase rules to already bounded rows.

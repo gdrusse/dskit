@@ -1362,6 +1362,77 @@ def test_robust_condor_primary_bounds_must_certify_the_no_trade_tie(
         assert result["decision"]["reason"] == "uncertified_no_trade_tie"
         assert len(result["evidence"]["solves"]) == 1
 
+def _robust_batch_params():
+    arms = {
+        "nominal": {"radius": "zero"}, "rho_base": {"radius": "calibrated"},
+        "haircut_0": {"radius": "calibrated", "haircut_multiplier": 0.},
+        "haircut_half": {"radius": "calibrated", "haircut_multiplier": .5},
+        "haircut_double": {"radius": "calibrated", "haircut_multiplier": 2.},
+        "liquidity_3": {"radius": "calibrated", "min_trade_count": 3},
+        "liquidity_10": {"radius": "calibrated", "min_trade_count": 10},
+        "liquidity_20": {"radius": "calibrated", "min_trade_count": 20},
+    }
+    return dict(multiplier=100, fee_per_contract_usd=.65, tie_tolerance_usd=1e-7,
+                max_absolute_gap_usd=1e-7, max_relative_gap=1e-8,
+                calibration_window={"start": "2024-01-01", "end": "2024-12-31"},
+                entry_window={"start": "2025-02-04", "end": "2025-02-04"},
+                protected_end_before="2026-01-01", standard_multiplier=100,
+                liquidity={"min_trade_count": 5, "min_volume": 1},
+                haircut_tiers={name: {"pct": .01, "floor_usd": .01}
+                               for name in ("low", "mid", "high")},
+                arms=arms, tier_tie_policy="symbol_ascending_rank")
+
+
+def _robust_batch_inputs():
+    entry = []
+    for right, values in (("put", [(80., .1), (90., 3.)]),
+                          ("call", [(110., 3.), (120., .1)])):
+        for strike, vwap in values:
+            entry.append(dict(contract=f"{right}-{strike}", symbol="AAA",
+                              quote_date="2025-02-04", expiry="2025-03-07",
+                              right=right, strike=strike, vwap=vwap,
+                              trade_count=10, volume=1, multiplier=100))
+    calibration = [dict(contract=f"cal-{symbol}", symbol=symbol,
+                        quote_date="2024-06-03", expiry="2024-07-05",
+                        right="put", strike=80., vwap=1., trade_count=7,
+                        volume=1, multiplier=100)
+                   for symbol in ("AAA", "ZZZ")]
+    mass = dict(decision_id="batch-fixture", symbol="AAA", quote_date="2025-02-04",
+                expiry="2025-03-07", grid=[80., 90., 110., 120.],
+                masses=[.05, .45, .45, .05], spot=100., fit_identity="fit", checkpoint_identity="checkpoint", input_identity="input", source_identity="source")
+    return dict(chain=calibration + entry, projected_masses=[mass],
+                rho={"2025-02": 0.}, #
+                # monthly calibration map
+                skips=[], holding_exclusions=[])
+
+
+def test_robust_condor_batch_delegates_to_single_context_solver():
+    from index_options.nodes import RobustCondorBatchSelect, RobustCondorSelect
+    params, inputs = _robust_batch_params(), _robust_batch_inputs()
+    batch = RobustCondorBatchSelect("batch", params)
+    out = batch.run(None, inputs)
+    assert out["evidence"]["tiers"] == {"AAA": "low", "ZZZ": "mid"}
+    nominal = next(row for row in out["decisions"] if row["arm_id"] == "nominal")
+    context = batch._batch_context(inputs["projected_masses"][0], inputs["chain"][2:], "low",
+                             "nominal", 0.)
+    direct = RobustCondorSelect("single", {key: params[key]
+                                           for key in RobustCondorSelect._PARAMS if key in params}).run(
+                                               None, {"context": context})["decision"]
+    direct.update({name: inputs["projected_masses"][0][name] for name in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")})
+    assert nominal == direct
+    assert all(row["arm_id"] in params["arms"] for row in out["decisions"])
+    assert all(len(row["legs"]) == 4 for row in out["selections"])
+
+
+def test_robust_condor_batch_null_calibration_rho_skips_only_calibrated_arms():
+    from index_options.nodes import RobustCondorBatchSelect
+    inputs = _robust_batch_inputs()
+    inputs["rho"] = {}
+    out = RobustCondorBatchSelect("batch", _robust_batch_params()).run(None, inputs)
+    assert [row["arm_id"] for row in out["decisions"]] == ["nominal"]
+    assert {(row["arm_id"], row["reason"]) for row in out["skips"]} == {
+        (arm, "missing_calibrated_rho") for arm in _robust_batch_params()["arms"]
+        if arm != "nominal"}
 
 class TestExactDteBarChain:
     def node(self):
@@ -1409,3 +1480,32 @@ class TestExactDteBarChain:
         row = self.row()
         with pytest.raises(ValueError, match="duplicate"):
             self.node().run(None, {"records": [row, dict(row)]})
+
+def test_robust_batch_derived_identity_sell_only_refusal_and_skip_provenance():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _robust_batch_params(), _robust_batch_inputs()
+    inputs["projected_masses"][0].pop("decision_id")
+    inputs["rho"]={}
+    node=RobustCondorBatchSelect("batch",params)
+    mass=next(iter(node._mass_rows(inputs["projected_masses"]).values()))
+    assert isinstance(mass["decision_id"],str) and len(mass["decision_id"])==64
+    chain=[dict(row) for row in inputs["chain"][2:]]
+    chain[0]["vwap"]=.001
+    context=node._batch_context(mass,chain,"low","nominal",0.)
+    assert any(row["contract_id"]==chain[0]["contract"] for row in context["legs"]["LP"])
+    assert all(row["contract_id"]!=chain[0]["contract"] for row in context["legs"]["SP"])
+    out=node.run(None,inputs)
+    for row in out["skips"]+out["decisions"]:
+        for key in ("fit_identity","checkpoint_identity","input_identity","source_identity"):
+            assert row[key] == mass[key]
+
+
+def test_robust_batch_tiers_use_even_sample_median_and_require_prior_window():
+    from index_options.nodes import RobustCondorBatchSelect
+    params=_robust_batch_params()
+    node=RobustCondorBatchSelect("batch",params)
+    rows=[dict(symbol=symbol,quote_date="2024-06-03",trade_count=count)
+          for symbol,counts in (("A",[0,100]),("B",[60,60])) for count in counts]
+    assert node._tiers(rows)=={"A":"low","B":"mid"}
+    params["calibration_window"]["end"]="2025-02-05"
+    assert RobustCondorBatchSelect.validate_params(params)

@@ -18,6 +18,56 @@ from dskit.onboarding import payload_files
 from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, GridCurve, MixtureCurve
 
 
+
+
+def test_held_out_rho_default_deny_and_duplicate_refusal_before_data_access():
+    assert cdf_study.HeldOutRhoCalibration.validate_params({"unexpected": 1})
+    owner = cdf_study.HeldOutRhoCalibration("rho", {
+        "rho_grid": [0.], "min_dates": 2, "block_days": {"primary": 1, "sensitivity": 2},
+        "replicates": 20, "alpha": .1, "seed": 7, "short_q": .1, "wing_strikes": 1,
+        "min_trade_count": 1, "min_volume": 1, "publication_lag_sessions": 0,
+        "max_settlement_gap_days": 4, "end_before": "2026-01-01",
+        "settlement_field": "as_traded_close"})
+    duplicate = {"symbol": "X", "quote_date": "2024-01-02", "expiry": "2024-01-03"}
+    with pytest.raises(ValueError, match="duplicate mass context"):
+        owner.run(None, {"masses": [duplicate, duplicate], "chain": [], "bars": []})
+
+
+def test_held_out_rho_refuses_nan_or_protected_bar_dates():
+    mass = {"symbol": "X", "expiry": "2024-01-03"}
+    with pytest.raises(ValueError, match="invalid settlement close"):
+        cdf_study.HeldOutRhoCalibration._bar_close(
+            mass, [{"symbol": "X", "date": "2024-01-03", "as_traded_close": float("nan")},
+                   {"symbol": "X", "date": "2024-01-04", "as_traded_close": 1.}], 4, 0, "2026-01-01", "as_traded_close")
+    with pytest.raises(ValueError, match="protected"):
+        cdf_study.HeldOutRhoCalibration._bar_close(
+            mass, [{"symbol": "X", "date": "2026-01-03", "as_traded_close": 1.},
+                   {"symbol": "X", "date": "2026-01-04", "as_traded_close": 1.}], 4, 0, "2026-01-01", "as_traded_close")
+def test_held_out_rho_template_is_fixed_and_monthly_history_has_no_future_leakage():
+    owner = cdf_study.HeldOutRhoCalibration("rho", {
+        "rho_grid": [0., .01], "min_dates": 2, "block_days": {"primary": 1, "sensitivity": 2},
+        "replicates": 20, "alpha": .1, "seed": 7, "short_q": .1, "wing_strikes": 1,
+        "min_trade_count": 1, "min_volume": 1, "publication_lag_sessions": 1,
+        "max_settlement_gap_days": 4, "end_before": "2026-01-01",
+        "settlement_field": "as_traded_close",
+    })
+    masses = [{"symbol": "X", "quote_date": "2024-01-02", "expiry": "2024-01-03", "phase": "calibration", "spot": 100., "reference": .1, "curve": {"kind": "mixture", "weights": [[1.]], "means": [[0.]], "scales": [[1.]]}, "grid": [80., 90., 100., 110., 120.], "masses": [.1, .2, .4, .2, .1], "fit_identity": "fit"}, {"symbol": "X", "quote_date": "2024-02-02", "expiry": "2024-02-03", "phase": "entry", "spot": 100., "reference": .1, "curve": {"kind": "mixture", "weights": [[1.]], "means": [[0.]], "scales": [[1.]]}, "grid": [80., 90., 100., 110., 120.], "masses": [.1, .2, .4, .2, .1], "fit_identity": "fit"}]
+    chain = [{"symbol": "X", "quote_date": date, "expiry": expiry, "right": right, "strike": strike, "trade_count": 2, "volume": 2} for date, expiry in [("2024-01-02", "2024-01-03"), ("2024-02-02", "2024-02-03")] for right, strike in [("put", 80.), ("put", 90.), ("put", 100.), ("call", 100.), ("call", 110.), ("call", 120.)]]
+    bars = [{"symbol": "X", "date": "2024-01-03", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-01-04", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-01-05", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-02-03", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-02-04", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-02-05", "as_traded_close": 100.}]
+    result = owner.run(None, {"masses": masses, "chain": chain, "bars": bars})
+    assert not result["skips"], [item["reason"] for item in result["skips"]]
+    assert result["rho"]["2024-02"] is None
+    assert result["audit"].value["records"][0]["strikes"] == [80., 90., 110., 120.]
+    assert result["audit"].value["records"][1]["history_count"] == 1
+    audit = result["audit"].value
+    assert audit["loss_cache_count"] == 2
+    first, second = audit["records"]
+    assert (first["settlement_date"], first["publication_date"]) == ("2024-01-03", "2024-01-05")
+    assert audit["monthly"][0]["reference"] == "2024-02-02"
+    assert first["publication_date"] < audit["monthly"][0]["reference"]
+    assert first["fit_identity"] == second["fit_identity"] == "fit"
+
+
 def test_entry_chain_enumerates_fixed_quotable_condors_and_refuses_undated_execution():
     strikes = [85., 90., 95., 105., 110., 115.]
     rows = pd.DataFrame({
@@ -2248,3 +2298,56 @@ def test_calendar_radius_does_not_silently_drop_missing_date():
                             "radius": [0., 0., 0.], "residual": [-1., -1., 100.]})
     with pytest.raises(ValueError, match="quote_date"):
         owner.select(history, calendar_days=1)
+
+def test_held_out_rho_all_months_strict_publication_and_no_repeated_lps(monkeypatch):
+    params = dict(rho_grid=[0., .01], min_dates=2,
+                  block_days={"primary": 1, "sensitivity": 2},
+                  replicates=20, alpha=.1, seed=7, short_q=.1, wing_strikes=1,
+                  min_trade_count=1, min_volume=1, publication_lag_sessions=1,
+                  max_settlement_gap_days=4, end_before="2026-01-01",
+                  settlement_field="as_traded_close")
+    contexts = [("2024-01-02", "2024-01-31", "calibration"),
+                ("2024-02-02", "2024-03-04", "entry"),
+                ("2024-03-01", "2024-04-01", "entry")]
+    masses, chain = [], []
+    for day, expiry, phase in contexts:
+        masses.append(dict(symbol="X", quote_date=day, expiry=expiry, phase=phase,
+            spot=100., reference=.1,
+            curve={"kind": "mixture", "weights": [[1.]], "means": [[0.]], "scales": [[1.]]},
+            grid=[80., 90., 100., 110., 120.], masses=[.1, .2, .4, .2, .1],
+            fit_identity="fit", checkpoint_identity="checkpoint",
+            source_identity="source", input_identity=day))
+        for right, strike in [("put",80.),("put",90.),("put",100.),
+                              ("call",100.),("call",110.),("call",120.)]:
+            chain.append(dict(symbol="X", quote_date=day, expiry=expiry,
+                              right=right, strike=strike, trade_count=2, volume=2))
+    bars=[dict(symbol="X", date=day, as_traded_close=100.) for day in
+          ["2024-01-31","2024-02-01","2024-02-02",
+           "2024-03-04","2024-03-05","2024-03-06",
+           "2024-04-01","2024-04-02","2024-04-03"]]
+    calls=[]
+    original=cdf_study.DiscreteCDFGrid.worst_expected_loss
+    def counted(self, *args, **kwargs):
+        calls.append(args[1])
+        return original(self,*args,**kwargs)
+    monkeypatch.setattr(cdf_study.DiscreteCDFGrid,"worst_expected_loss",counted)
+    out=cdf_study.HeldOutRhoCalibration("rho",params).run(
+        None,dict(masses=masses,chain=chain,bars=bars))
+    assert not out["skips"]
+    audit=out["audit"].value
+    assert set(out["rho"]) == {"2024-02","2024-03"}
+    assert [row["history_count"] for row in audit["monthly"]] == [0,1]
+    assert audit["records"][0]["settlement_date"] == "2024-01-31"
+    assert audit["records"][0]["publication_date"] == "2024-02-02"
+    assert len(calls) == len(masses)*len(params["rho_grid"])
+    assert all(row["checkpoint_identity"] == "checkpoint" for row in audit["records"])
+    assert set(out["rho"].values()) == {None}
+
+    blocked=dict(masses=masses,chain=chain,bars=bars,
+                 holding_exclusions=[{**{key:masses[0][key] for key in
+                    ("symbol","quote_date","expiry")},"reason":"holding_split"}])
+    refused=cdf_study.HeldOutRhoCalibration("rho",params).run(None,blocked)
+    assert any(row["reason"] == "holding_split" and
+               row["input_identity"] == masses[0]["input_identity"]
+               for row in refused["skips"])
+    assert refused["audit"].value["monthly"][1]["history_count"] == 0

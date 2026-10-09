@@ -117426,3 +117426,44 @@ No2026 market values or mixed records have been parsed. Complete safe independen
 work while waiting. The fixed calendar-block support rule must remain explicit:
 sparse weekly dates may leave tail dates with zero inclusion and yield null rho.
 Do not hide unsupported calibration, discard its tail, or expand the grid.
+
+
+### Replay inputs recovered; batch/calibration integration candidate
+Archived seed11 preparation recipe v3 (SHA256
+0ba85f411a32b3915d6245b9042dad2365dbab595779a5f4cc722a1d50c836ca)
+closed two independent lenses: Luna app thread
+01a11e50-d663-7891-8cc9-15ff97cd3fe5 and /root/condor_build_skeptic_math,
+both zero Critical/Major; deferred Minor is the missing reversed-phase guard
+(actual frozen windows are correct). Its 99,225 exact saved curves were
+onboarded as condor-archived-forecasts-20261008-v2, stream forecasts, existing
+index_options/ob root. Acquisition 20261009T015247Z-backfill-a624eb4d;
+snapshot 2f9cd39f17329ca6d6da51e0dda3b80dca59ce6e6d329b3da67e9d1115e52bce.
+All rows round-trip exactly, canonical record SHA256
+ec9b4e1584740d2bc132790a2772c31d7c5d3720516e92f2eb2143bd2783ff90.
+No fits or inference calls. Spot remains split-adjusted, not strike-basis certified.
+
+Projection performance correction fddb32e44b35e91226e279a09c759f290a21085c
+closed the same two independent lenses with zero Critical/Major.
+The deferred fixture-discrimination issue was Minor in the second lens
+(Nit in the first); independent four-distinct-grid base/candidate outputs
+matched exactly. Numerical projection is unchanged. No further nit edits.
+
+Copied and verified the original 9.2GB option-universe-100 store to
+/home/russell/data/stock_options/option-universe-100: two snapshots checked,
+zero problems. Original worktree-hosted store preserved. Mixed-year records
+remain unopened pending date-only screening permission. A separate owner
+question requests corporate-action metadata only, including later split
+adjustments, to establish historical stock/strike units; no approval inferred.
+
+Root integrates Terra batch9f954d30 and calibration4b93bd4d in existing child
+source/test files only. Root RED exposed lost monthly references, missing
+skip provenance, upper-middle rather than actual even-sample median, and
+an accidental settlement-input regression. Seven targeted failures became
+passing after family corrections; a holding-exclusion calibration regression
+also failed then passed. All774 tests in the three affected child test modules
+pass. Ruff remains at11 pre-existing findings; no full suite. New adapter
+candidate needs two independent final lenses before use.
+The batch adapter resolves the eight arms once, so final wiring must not
+wrap it in the old eight-arm foreach. Calibration uses explicit flat settings,
+prior-only publication cutoffs, existing curve/grid/bootstrap owners and
+holding exclusions. Existing draft JSON is not yet runnable.
