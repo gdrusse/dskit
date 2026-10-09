@@ -3221,6 +3221,22 @@ class CondorExpirySettle(Node):
         return {"outcomes": outcomes, "skips": skips, "evidence": evidence}
 
 
+class _ContextDataError(ValueError):
+    """A context's own data failed validation in ``build_model`` (not a solver fault)."""
+
+
+class _IntegrityError(ValueError):
+    """A solved incumbent broke a structural guard; ``reason`` names the skip it earns."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
+class _BatchContextError(ValueError):
+    """A batch row set could not be prepared into one context."""
+
+
 class RobustCondorSelect(PyomoSolve):
     """Select one all-strike robust condor from an already governed context.
 
@@ -3232,7 +3248,17 @@ class RobustCondorSelect(PyomoSolve):
     ----------
     params : dict
         Required multiplier, fee_per_contract_usd, tie_tolerance_usd,
-        max_absolute_gap_usd and max_relative_gap; optional base solver knobs.
+        max_absolute_gap_usd and max_relative_gap (a number, or null = the
+        relative gap is recorded in the certificate but never tested); optional
+        base solver knobs. Optional ``objective_parity_usd`` (nonnegative):
+        when present, each incumbent's robust value is recomputed by the
+        independent primal owner and must agree within it, else a counted skip
+        (``parity_failed`` before the tie solve, ``parity_failed_tie`` after),
+        and the ordering ``solver_options.mip_abs_gap`` <= ``max_absolute_gap_usd``
+        <= ``objective_parity_usd`` with ``tie_tolerance_usd`` >=
+        ``max_absolute_gap_usd`` is enforced (an unset ``mip_abs_gap`` is not
+        pinned). Structural guards then skip with their own reasons instead of
+        raising. Absent, behaviour and config identity are the legacy ones.
         Input context contains grid/masses/spot/rho, optional q_lo/q_hi, identity
         fields, and legs mapping LP/SP/SC/LC to eligible contract dictionaries:
         index, price, haircut, contract_id. Prices and haircuts are USD/share.
@@ -3251,10 +3277,9 @@ class RobustCondorSelect(PyomoSolve):
     outputs = ("decision", "evidence")
     _ROLES = ("LP", "SP", "SC", "LC")
     _IDENTITY = ("decision_id", "arm_id", "symbol", "quote_date", "expiry")
-    _PARAMS = PyomoSolve._PARAMS + (
-        "multiplier", "fee_per_contract_usd", "tie_tolerance_usd",
-        "max_absolute_gap_usd", "max_relative_gap",
-    )
+    _REQUIRED_NUMBERS = ("multiplier", "fee_per_contract_usd", "tie_tolerance_usd",
+                         "max_absolute_gap_usd", "max_relative_gap")
+    _PARAMS = PyomoSolve._PARAMS + _REQUIRED_NUMBERS + ("objective_parity_usd",)
 
     @classmethod
     def validate_params(cls, params):
@@ -3271,13 +3296,37 @@ class RobustCondorSelect(PyomoSolve):
             All parameter defects; an empty list means valid.
         """
         problems = super().validate_params(params)
-        for key in cls._PARAMS[len(PyomoSolve._PARAMS):]:
+        for key in cls._REQUIRED_NUMBERS:
             value = params.get(key)
+            if key == "max_relative_gap" and key in params and value is None:
+                continue
             if not number_ok(value) or value < 0 or (key == "multiplier" and value == 0):
                 problems.append(f"{key} must be an explicit finite "
                                 + ("positive" if key == "multiplier" else "nonnegative") + " number")
         if isinstance(params.get("multiplier"), bool) or not isinstance(params.get("multiplier"), int):
             problems.append("multiplier must be a positive integer")
+        if "objective_parity_usd" in params:
+            value = params["objective_parity_usd"]
+            if not number_ok(value) or value < 0:
+                problems.append("objective_parity_usd must be a finite nonnegative number")
+            else:
+                problems.extend(cls._ordering_problems(params))
+        return problems
+
+    @staticmethod
+    def _ordering_problems(params):
+        """Name each violated link of mip_abs_gap <= max_absolute_gap <= parity, tie >= max_absolute_gap."""
+        problems = []
+        gap, parity = params.get("max_absolute_gap_usd"), params["objective_parity_usd"]
+        mip = (params.get("solver_options") or {}).get("mip_abs_gap")
+        if number_ok(gap):
+            if number_ok(mip) and mip > gap:
+                problems.append("ordering violated: solver_options.mip_abs_gap <= max_absolute_gap_usd")
+            if gap > parity:
+                problems.append("ordering violated: max_absolute_gap_usd <= objective_parity_usd")
+            tie = params.get("tie_tolerance_usd")
+            if number_ok(tie) and tie < gap:
+                problems.append("ordering violated: tie_tolerance_usd >= max_absolute_gap_usd")
         return problems
 
     def build_model(self, inputs, params):
@@ -3296,8 +3345,16 @@ class RobustCondorSelect(PyomoSolve):
         Raises
         ------
         ValueError
-            Invalid probabilities, bands, eligibility, costs or identities.
+            Invalid probabilities, bands, eligibility, costs or identities
+            (raised as the private ``_ContextDataError`` subclass).
         """
+        try:
+            return self._build_checked(inputs, params)
+        except ValueError as exc:
+            raise _ContextDataError(str(exc)) from exc
+
+    def _build_checked(self, inputs, params):
+        """Validate one context and build its program (errors are context data defects)."""
         from pyomo.environ import Binary, ConcreteModel, Constraint, Expression, Objective, Var, maximize
 
         context = inputs.get("context")
@@ -3366,11 +3423,12 @@ class RobustCondorSelect(PyomoSolve):
         return model
 
     def _certified(self, record):
-        """Require an optimal termination and explicit finite gap limits."""
+        """Require optimal termination and the absolute gap limit; the relative one unless null."""
         return (record.termination == "optimal" and record.objective is not None
                 and record.bound is not None and record.gap is not None
                 and abs(record.objective-record.bound) <= self.params["max_absolute_gap_usd"]
-                and record.gap <= self.params["max_relative_gap"])
+                and (self.params["max_relative_gap"] is None
+                     or record.gap <= self.params["max_relative_gap"]))
 
     @staticmethod
     def _secondary_certified(record):
@@ -3406,6 +3464,9 @@ class RobustCondorSelect(PyomoSolve):
         if primary.objective <= self.params["tie_tolerance_usd"] < primary.bound:
             self._skip = "uncertified_no_trade_tie"
             return results
+        if self._parity_on() and not self._parity_gate(model, primary.objective,
+                                                      self._certificates[-1], "parity_failed"):
+            return results
         model.objective.deactivate()
         model.tie_floor = Constraint(expr=model.robust_value >= primary.bound-self.params["tie_tolerance_usd"])
         model.tie_objective = Objective(expr=model.z, sense=minimize)
@@ -3437,23 +3498,81 @@ class RobustCondorSelect(PyomoSolve):
             self._certificates.append(self.solve_record.to_obj())
             if not self._secondary_certified(self.solve_record):
                 self._skip = "uncertified_tie"
+        if self._skip is None and self._parity_on():
+            self._parity_gate(model, value(model.robust_value), self._certificates[-1],
+                              "parity_failed_tie")
         identity = {key:self._context[key] for key in self._IDENTITY}
         evidence = {"solves":self._certificates, "rho":self._dual.radius,
                     "multiplier":self.params["multiplier"], "decision_eligible":False,
                     "eligible_contracts":[dict(role=role, **row)
                                           for (role, _), row in self._contracts.items()]}
+        if self._skip is None:
+            legs = self._guarded_legs(model)
+            if legs is not None:
+                robust, worst = self._primal_value(legs)
+                self._skip = self._floor_skip(robust)
         if self._skip:
             return {"decision":{**identity, "status":"skipped", "reason":self._skip},
                     "evidence":evidence}
+        return {"decision":{**identity, "status":"trade" if legs else "no_trade",
+                            "legs":legs, "multiplier":self.params["multiplier"],
+                            "robust_value_usd":robust, "worst_loss_usd_per_share":worst},
+                "evidence":evidence}
+
+    def _parity_on(self):
+        """Report whether ``objective_parity_usd`` is configured."""
+        return "objective_parity_usd" in self.params
+
+    def _guarded_legs(self, model):
+        """Return the selected legs; a structural defect raises (legacy) or sets its own skip (parity mode)."""
+        try:
+            return self._selected_legs(model)
+        except _IntegrityError as exc:
+            if not self._parity_on():
+                raise
+            self._skip = exc.reason
+            return None
+
+    def _floor_skip(self, robust):
+        """Refuse a traded structure below the certified tie floor: raise (legacy) or a skip reason."""
+        floor = self._certificates[0]["bound"]-self.params["tie_tolerance_usd"]
+        if robust >= floor-BINDING_TOLERANCE:
+            return None
+        if not self._parity_on():
+            raise ValueError("selected primal value fails certified tie floor")
+        return "tie_floor_failed"
+
+    def _parity_gate(self, model, model_value, certificate, reason):
+        """Recompute the incumbent through the primal owner; record it on ``certificate``; skip on a miss."""
+        legs = self._guarded_legs(model)
+        if legs is None:
+            return False
+        recomputed, _ = self._primal_value(legs)
+        tolerance = self.params["objective_parity_usd"]
+        discrepancy = abs(recomputed-model_value)
+        mip = (self.params.get("solver_options") or {}).get("mip_abs_gap")
+        certificate["parity"] = {
+            "recomputed_usd": recomputed, "model_usd": model_value,
+            "discrepancy_usd": discrepancy, "tolerance_usd": tolerance,
+            "mip_abs_gap": mip if number_ok(mip) else "unset", "passed": discrepancy <= tolerance}
+        if discrepancy > tolerance:
+            self._skip = reason
+            return False
+        return True
+
+    def _selected_legs(self, model):
+        """Read the incumbent's legs off the solved model, refusing structural defects."""
+        from pyomo.environ import value
+
         z = value(model.z)
         if abs(z-round(z)) > BINDING_TOLERANCE:
-            raise ValueError("nonintegral trade solution")
+            raise _IntegrityError("nonintegral_solution", "nonintegral trade solution")
         legs, indices = [], []
         for role in self._ROLES:
             selected = [i for i in range(len(self._dual.distribution.grid))
                         if value(model.y[role, i]) > .5]
             if len(selected) != round(z):
-                raise ValueError("invalid leg count")
+                raise _IntegrityError("invalid_leg_count", "invalid leg count")
             for i in selected:
                 row = self._contracts[role, i]
                 short = role in ("SP", "SC")
@@ -3465,7 +3584,11 @@ class RobustCondorSelect(PyomoSolve):
                                  price_usd_per_share=row["price"] + (-1 if short else 1)*row["haircut"],
                                  fee_usd=self.params["fee_per_contract_usd"]))
         if indices and not all(a < b for a,b in zip(indices,indices[1:])):
-            raise ValueError("strikes are not strictly ordered")
+            raise _IntegrityError("unordered_strikes", "strikes are not strictly ordered")
+        return legs
+
+    def _primal_value(self, legs):
+        """Robust USD value and worst loss of ``legs`` through the independent primal owner."""
         credit = sum((1 if leg["side"] == "sell" else -1)*leg["price_usd_per_share"] for leg in legs)
         grid = self._dual.distribution.grid
         losses = [sum((1 if leg["side"] == "sell" else -1)
@@ -3475,14 +3598,7 @@ class RobustCondorSelect(PyomoSolve):
         worst = self._dual.distribution.worst_expected_loss(
             losses, self._dual.radius, self._dual.scale,
             q_lo=None if bands is None else bands[0], q_hi=None if bands is None else bands[1])
-        robust = self.params["multiplier"]*(credit-worst)-sum(leg["fee_usd"] for leg in legs)
-        floor = self._certificates[0]["bound"]-self.params["tie_tolerance_usd"]
-        if robust < floor-BINDING_TOLERANCE:
-            raise ValueError("selected primal value fails certified tie floor")
-        return {"decision":{**identity, "status":"trade" if legs else "no_trade",
-                            "legs":legs, "multiplier":self.params["multiplier"],
-                            "robust_value_usd":robust, "worst_loss_usd_per_share":worst},
-                "evidence":evidence}
+        return self.params["multiplier"]*(credit-worst)-sum(leg["fee_usd"] for leg in legs), worst
 
 class RobustCondorBatchSelect(RobustCondorSelect):
     """Prepare governed chain rows for the one-context robust selector.
@@ -3657,8 +3773,22 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                     masses=list(mass["masses"]), spot=mass["spot"], rho=rho, legs=by_role,
                     **({k: mass[k] for k in ("q_lo", "q_hi") if k in mass}))
 
+    def _select_one(self, ctx, mass, rows, tier, arm, rho):
+        """Prepare and solve one arm's context; data defects surface as ``_BatchContextError``."""
+        try:
+            context = self._batch_context(mass, rows, tier, arm, rho)
+        except ValueError as exc:
+            raise _BatchContextError(str(exc)) from exc
+        return RobustCondorSelect.run(self, ctx, {"context": context})
+
     def run(self, ctx, inputs):
-        """Return decisions, settlement-compatible selections, and explicit skips."""
+        """Return decisions, settlement-compatible selections, and explicit skips.
+
+        With ``objective_parity_usd`` configured, a data defect in one context's
+        rows or model becomes a counted ``context_error`` skip (reason text kept
+        in ``detail``) and the batch completes; without it the defect aborts, as
+        before. Solver-integrity guards never become ``context_error``.
+        """
         if not isinstance(inputs, dict) or set(inputs) != {
                 "chain", "projected_masses", "rho", "skips", "holding_exclusions"}:
             raise ValueError("inputs require chain/projected_masses/rho/skips/holding_exclusions")
@@ -3712,8 +3842,14 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                 if rho is None:
                     skips.append({**identity, "arm_id": arm, "reason": "missing_calibrated_rho"})
                     continue
-                result = RobustCondorSelect.run(self, ctx, {"context": self._batch_context(
-                    mass, chain[key], tiers[mass["symbol"]], arm, rho)})
+                try:
+                    result = self._select_one(ctx, mass, chain[key], tiers[mass["symbol"]], arm, rho)
+                except (_ContextDataError, _BatchContextError) as exc:
+                    if not self._parity_on():
+                        raise
+                    skips.append({**identity, "arm_id": arm, "reason": "context_error",
+                                  "detail": str(exc)})
+                    continue
                 decision = result["decision"]
                 decision["forecast_settlement_date"] = mass["settlement_date"]
                 decision.update({name: mass[name] for name in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")})
