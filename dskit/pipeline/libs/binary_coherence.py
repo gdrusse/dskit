@@ -182,8 +182,10 @@ MIN_SPREAD_FLOOR = 0.01
 MIN_SPREAD_CEILING = 1.0
 
 #: The largest error bound a projection may carry before it is refused: one cent, in every coordinate, from the true
-#: projection (the module docstring, Supported domain and certificate, has the bound and the measurements). Correct
-#: solves at the floor sat about 10x under it; the known wrong answers at 1e-4 sat 3x to 13x above.
+#: projection (the module docstring, Supported domain and certificate, has the bound and the measurements). Most
+#: correct solves sat 10x or more under it, but multiplier dust on rows holding one-sided contracts can lift a correct
+#: solve's bound past it (3 refusals in ~16,000 overlapping-partition worlds): a refusal means "not certified", not
+#: "wrong". The known wrong answers at 1e-4 sat 3x to 13x above.
 PROJECTION_BOUND_LIMIT = 1e-2
 
 #: The most an "optimal" projection may break a relation row by before it is refused: the solver's
