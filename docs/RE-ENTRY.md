@@ -1,3 +1,24 @@
+# Active handoff — 2026-10-09: ADR-0256 minimal executable-clock correction in build
+
+ADR-0256 revision 4 (tail of docs/architecture/decision-log.md) is the owner-approved,
+trimmed contract answering the seven production-realism findings on run 793013c0:
+next-session fill clock, edge-padded calibration sampler, null relative gap plus
+parity gate, lifecycle as disclosure flags, account as a read-only study,
+restored307 still refused. Deferred items are named there and are NOT authorized.
+Read children/index_options/docs/memos/2026-10-09-condor-executable-clock-contract.md.
+Three Phase-0 lens reports are retained privately as adr0256-phase0-*-review-v1.txt
+under the universe-rerun-20261008 audit root. Owner-approved knob values are in the memo.
+
+Three parallel Sonnet build slices (sampler + block_geometry; null gap + parity;
+fill_session + account study + executable-clock config) run in isolated worktrees
+from 24cba7be; merge them here, then two fresh Sonnet lenses, then the data-only gates
+(dates-only support table, parity dry run on saved masses, t' census >= 0.50 after the
+v6 fills projection). The revised replay is a SEPARATELY authorized step: do not launch
+it from this handoff. Run 793013c0, its backups, the model inventory and all prior
+locks are unchanged. No 2026 access, fits, acquisition, spending or deployment.
+
+---
+
 # Active handoff — 2026-10-09: PatchTST condor replay completed
 
 Production-realism/integration candidate0c6f5226 closed two scoped reviews0all.
