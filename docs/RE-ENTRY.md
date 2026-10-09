@@ -1,5 +1,9 @@
 # Active handoff — 2026-10-09: PatchTST condor replay completed
 
+Production-realism/integration candidate0c6f5226 closed two scoped reviews0all.
+Read condor-realism-final-lock-v1.json and condor-realism-wrap-receipt-v1.json
+in the private audit for reviewed wrap and remote/branch verification.
+
 Final reporting candidate6b82e0c7 closed both independent lenses with0C/M/Minor/Nit.
 Private condor-report-final-lock-v1.json binds actual reviews and focused checks.
 
