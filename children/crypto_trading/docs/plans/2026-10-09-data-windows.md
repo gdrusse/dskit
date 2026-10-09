@@ -52,3 +52,30 @@ Kalshi settled market, by owner decision, before W2 is read.
   scored on W1 only.
 - Not yet decided: the feature set and its selection (next), and the HPO
   space for the winner.
+
+## Feature families and selection (default chosen 2026-10-09; owner may change)
+
+One row per asset and minute t, built only from bars that closed by t.
+Binance klines carry OHLCV, trade count and taker-buy volume.
+
+| Family | Features |
+|---|---|
+| `ret` | log return over the last 1, 2, 3, 5, 10, 15, 30, 60 minutes |
+| `vol` | rolling RMS of 1-minute returns (15, 30, 60, 240 min); EWMA (half-lives 15, 60 min); high-low range (15, 60 min); all via dskit's `vol_estimators` |
+| `flow` | log volume and trade count against the trailing 60-minute mean; taker-buy share (15, 60 min) |
+| `clock` | minute of day and day of week, as sin/cos |
+| `xasset` | the other asset's `ret` and `vol` features |
+| `bvol` | Binance BVOL implied-vol level and its change (an ablation family: it has 26 missing days) |
+
+Target scale: the 60-minute RMS (`vol`), known at t.
+
+Selection, in order, on W1 only:
+1. Family ablation: all families, then drop one family at a time, same folds
+   and seeds, scored on the zoo's common grid. Keep a family only if dropping
+   it hurts beyond the fold noise.
+2. Within the surviving families, a fitted selector on single features
+   (dskit `SklearnSelect` or `TorchImportance`).
+
+Gaps to build (child code, tests on synthetic bars first): a minute-feature
+node and the 15-horizon target rows. No fit is run on real data until the
+owner approves the run.
