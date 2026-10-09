@@ -1,3 +1,20 @@
+# Active handoff — 2026-10-09 (final): replay v2 complete under the accepted same-day fill
+
+Owner accepted the same-day average fill as the assumption (the owned archive has no
+next-session bar). Replay v2 a1c35e4b (config run-equity-condor-robust-backtest-v2.json,
+identity 0135e9ff, candidate 383a6af3) ran clean: rho supported 10/10, passing 2025-10/11
+at 0.01; nominal 1,259 trades net -$8,395 (131 original trades reproduce +$5,354.85 exactly;
+the 1,128 previously refused solves -$13,750); all seven robust arms net negative in their
+two trading months; 115 parity_failed refusals above the frozen 1e-5 stand; account study
+refuses on 42 non-positive decision reservations. Read
+children/index_options/docs/memos/2026-10-09-condor-executable-clock-result.md.
+Backup condor-replay-v2-complete-v1 (22 files, sha256sums). Nothing is production-realistic
+or qualified. Next: owner decides whether the strategy continues at all; if so, a
+qualification needs quote-level fills and an account layer inside selection. No 2026 access,
+fits, acquisition, spending or deployment.
+
+---
+
 # Active handoff — 2026-10-09 (late): ADR-0256 built and reviewed; replay blocked by data
 
 Candidate 497842b0+ holds the three ADR-0256 slices (next-session fill clock, edge-padded

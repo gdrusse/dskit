@@ -11,4 +11,4 @@ with its approved scaffold proposal in the incubating repository.
 
 - [Completed PatchTST condor replay and production-realism audit](2026-10-09-robust-condor-replay.md): all-arm results, full ticker aggregates, inference/recovery links and material production differences.
 - [Condor executable-clock contract and plan](2026-10-09-condor-executable-clock-contract.md): gap-by-gap disposition of the production-realism audit, data-support matrix, and the finite plan awaiting ADR-0256 approval.
-- [Condor executable-clock result](2026-10-09-condor-executable-clock-result.md): code built and reviewed; the census gate failed by data structure (no DTE-30 bars in the owned archive), so no revised replay ran.
+- [ADR-0256 correction and replay v2 result](2026-10-09-condor-executable-clock-result.md): sampler and gap fixes applied, same-day fill accepted; every arm net negative over 2,380 settled condors; account study refused on non-positive reservations.
