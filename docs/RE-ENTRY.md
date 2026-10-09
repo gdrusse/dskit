@@ -8,9 +8,13 @@ the 1,128 previously refused solves -$13,750); all seven robust arms net negativ
 two trading months; 115 parity_failed refusals above the frozen 1e-5 stand; account study
 refuses on 42 non-positive decision reservations. Read
 children/index_options/docs/memos/2026-10-09-condor-executable-clock-result.md.
-Backup condor-replay-v2-complete-v1 (22 files, sha256sums). Nothing is production-realistic
-or qualified. Next: owner decides whether the strategy continues at all; if so, a
-qualification needs quote-level fills and an account layer inside selection. No 2026 access,
+Backup condor-replay-v2-complete-v1 (22 files, sha256sums). Diagnostics: no code bug, MILP
+exact (primal/dual harness), oracle control +$1.87M; research note
+docs/research/distribution-modeling/2026-10-09-condor-selection-intuition.md: the $396k
+claimed edge is 59% forecast drift above the market forward, dispersion and favourable
+prints; the short put is leveraged long stock. Open small defect: DiscreteCDFGrid.
+worst_expected_loss HiGHS tolerance (~6.7e-7/share at rho>0). Next: owner decides the
+selector/forecast direction (shrink toward market, OTM + wing cap) before any replay. No 2026 access,
 fits, acquisition, spending or deployment.
 
 ---
