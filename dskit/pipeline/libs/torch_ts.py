@@ -37,6 +37,7 @@ from dskit.pipeline.node import (
 
 __all__ = [
     "ARCHS",
+    "ArchSequenceEncoder",
     "SequenceEncoderAdapter",
     "CategoricalEmbeddingMLPRegressor",
     "CategoricalRecurrentFusionRegressor",
@@ -48,6 +49,7 @@ __all__ = [
     "QUANTILE_LOSS",
     "TimeSeriesPredict",
     "TimeSeriesTrain",
+    "arch_module",
     "quantile_pinball_loss",
     "register",
     "register_arch",
@@ -95,7 +97,7 @@ DEFAULT_ORDER = "recent_first"
 _MIN_SEQ = 2
 
 
-def register_arch(name, build, *, problems, defaults, doc=""):
+def register_arch(name, build, *, problems, defaults, doc="", receptive=None):
     """Register one architecture. ``problems`` and ``defaults`` are required.
 
     Parameters
@@ -111,6 +113,10 @@ def register_arch(name, build, *, problems, defaults, doc=""):
         Merged UNDER a document's ``arch_params[name]``.
     doc : str
         One-line description.
+    receptive : callable, optional
+        ``(merged arch_params) -> int``: how many trailing steps one
+        output sees. Only a fixed-window arch supplies one; absent, the
+        arch is taken to see the whole window.
 
     Returns
     -------
@@ -128,7 +134,7 @@ def register_arch(name, build, *, problems, defaults, doc=""):
         )
     _ARCHS[name] = {
         "build": build, "problems": problems, "defaults": dict(defaults),
-        "doc": doc,
+        "doc": doc, "receptive": receptive,
     }
 
 
@@ -214,6 +220,43 @@ def _int_ge(name, value, lo):
 def _arch_merged(name, block):
     """``defaults`` under the declared block — the ONE merge."""
     return {**_ARCHS[name]["defaults"], **(block or {})}
+
+
+def arch_module(name, block, seq_len, channels, n_ahead):
+    """Build one registered arch: defaults under ``block``, then the builder.
+
+    The ONE place a registry entry becomes a module; :class:`_TsModel`
+    and :class:`ArchSequenceEncoder` both build through it.
+
+    Parameters
+    ----------
+    name : str
+        A registered arch name.
+    block : dict or None
+        That arch's declared knobs (default-deny is the caller's check).
+    seq_len : int
+        Window length.
+    channels : int
+        Channels per step.
+    n_ahead : int
+        Width of the final ``Linear``.
+
+    Returns
+    -------
+    torch.nn.Module
+        Maps ``(B, seq_len, channels)`` to ``(B, n_ahead)``.
+
+    Examples
+    --------
+    A 12-step, 2-channel GRU emitting 3 values::
+
+        module = arch_module("gru", {"hidden_size": 8}, 12, 2, 3)
+        out = module(torch.zeros(4, 12, 2))
+        # -> shape (4, 3)
+    """
+    return _ARCHS[name]["build"](
+        _arch_merged(name, block), seq_len, channels, n_ahead
+    )
 
 
 def _arch_block_problems(name, block):
@@ -355,22 +398,28 @@ def _build_tcn(params, seq_len, channels, n_ahead):
     import torch
 
     hidden = int(params["hidden_size"])
+    kernel = int(params["kernel_size"])
+    dilations = [int(d) for d in params["dilations"]]
 
     class TCN(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            # Two causal dilated layers (k=2, d=1 then d=2). Receptive
-            # field is 4, so every step of a seq_len-4 window can fire.
-            self.c1 = torch.nn.Conv1d(channels, hidden, 2, dilation=1)
-            self.c2 = torch.nn.Conv1d(hidden, hidden, 2, dilation=2)
+            # Causal dilated layers c1..cN, each left-padded (k-1)*d so
+            # step t never sees t+1. The shipped defaults (k=2, d=1,2;
+            # receptive field 4) are the original two-layer module.
+            self.pads = [(kernel - 1) * d for d in dilations]
+            for i, d in enumerate(dilations):
+                setattr(self, f"c{i + 1}", torch.nn.Conv1d(
+                    channels if i == 0 else hidden, hidden, kernel,
+                    dilation=d,
+                ))
             self.head = torch.nn.Linear(hidden, n_ahead)
 
         def forward(self, x):
             y = x.transpose(1, 2)
-            y = torch.nn.functional.pad(y, (1, 0))
-            y = torch.relu(self.c1(y))
-            y = torch.nn.functional.pad(y, (2, 0))
-            y = torch.relu(self.c2(y))
+            for i, pad in enumerate(self.pads):
+                y = torch.nn.functional.pad(y, (pad, 0))
+                y = torch.relu(getattr(self, f"c{i + 1}")(y))
             return self.head(y[:, :, -1])
 
     return TCN()
@@ -485,6 +534,27 @@ def _dlinear_problems(params):
     return _int_ge("kernel_size", params["kernel_size"], 1)
 
 
+def _tcn_problems(params):
+    problems = _int_ge("hidden_size", params["hidden_size"], 1)
+    problems += _int_ge("kernel_size", params["kernel_size"], 1)
+    dilations = params["dilations"]
+    if not isinstance(dilations, (list, tuple)) or not dilations:
+        return problems + [
+            f"dilations must be a non-empty list of ints >= 1, got "
+            f"{dilations!r}"
+        ]
+    for d in dilations:
+        problems += _int_ge("dilations entry", d, 1)
+    return problems
+
+
+def _tcn_receptive(params):
+    """Trailing steps one tcn output sees: ``1 + (k - 1) * sum(d)``."""
+    return 1 + (int(params["kernel_size"]) - 1) * sum(
+        int(d) for d in params["dilations"]
+    )
+
+
 def _patch_problems(params):
     return _int_ge("hidden_size", params["hidden_size"], 1) + _int_ge(
         "patch_len", params["patch_len"], 1
@@ -556,10 +626,9 @@ register_arch(
     doc="GRU plus attention over time",
 )
 register_arch(
-    "tcn", _build_tcn, problems=lambda p: _int_ge(
-        "hidden_size", p["hidden_size"], 1
-    ),
-    defaults={"hidden_size": 16}, doc="dilated causal convolution",
+    "tcn", _build_tcn, problems=_tcn_problems,
+    defaults={"hidden_size": 16, "kernel_size": 2, "dilations": [1, 2]},
+    doc="dilated causal convolution", receptive=_tcn_receptive,
 )
 register_arch(
     "cnn1d", _build_cnn1d, problems=lambda p: _int_ge(
@@ -1701,15 +1770,12 @@ class _TsModel:
         channels = params["channels"]
         order = params.get("order") or DEFAULT_ORDER
         name = params["arch"]
-        entry = _ARCHS[name]
-        knobs = _arch_merged(
-            name, (params.get("arch_params") or {}).get(name) or {},
-        )
+        block = (params.get("arch_params") or {}).get(name) or {}
         n_ahead = params.get("n_ahead", 1)
         n_ahead = 1 if n_ahead is None else int(n_ahead)
         n_quantiles = len(params.get("quantiles") or ())
-        inner = entry["build"](
-            knobs, seq_len, channels, n_ahead * max(n_quantiles, 1)
+        inner = arch_module(
+            name, block, seq_len, channels, n_ahead * max(n_quantiles, 1)
         )
 
         class _Window(torch.nn.Module):
@@ -1981,3 +2047,73 @@ class SequenceEncoderAdapter(ABC):
     def build_module(self, sequence_length, channels):
         """Build a torch sequence encoder without a training loop."""
         raise NotImplementedError
+
+
+class ArchSequenceEncoder(SequenceEncoderAdapter):
+    """Any registered zoo arch as a row-independent ``(B, T, C) -> (B, width)`` encoder.
+
+    The arch's final ``Linear`` IS the projection to ``width``: the
+    arch's ``hidden_size`` and this ``width`` are two knobs, as for the
+    HF/NF adapters' projection. A GRU is ``arch: "gru"``; a 1D causal
+    CNN is ``arch: "tcn"`` with ``kernel_size`` / ``dilations`` chosen so
+    the receptive field covers the window (refused at build otherwise).
+
+    Parameters
+    ----------
+    arch : str
+        A registered arch name (``ARCHS``).
+    arch_params : dict, optional
+        That arch's knob block, default-deny.
+    width : int
+        Encoded width, ``>= 1``.
+
+    Examples
+    --------
+    A causal CNN over 240 steps, encoded to 16 values::
+
+        enc = ArchSequenceEncoder(
+            arch="tcn", width=16,
+            arch_params={"kernel_size": 3,
+                         "dilations": [1, 2, 4, 8, 16, 32, 64, 128]},
+        )
+        module = enc.build_module(240, 5)
+        out = module(torch.zeros(4, 240, 5))
+        # -> shape (4, 16)
+    """
+
+    def __init__(self, arch, width, arch_params=None):
+        if not isinstance(arch, str) or arch not in _ARCHS:
+            raise ValueError(
+                f"arch must be one of {sorted(_ARCHS)}, got {arch!r}"
+            )
+        problems = _arch_block_problems(arch, arch_params or {})
+        problems += _int_ge("width", width, 1)
+        if problems:
+            raise ValueError("; ".join(problems))
+        self.arch, self.width = arch, width
+        self.arch_params = dict(arch_params or {})
+
+    def output_width(self, channels):
+        """Return ``width``, whatever the channel count."""
+        return self.width
+
+    def build_module(self, sequence_length, channels):
+        """Build the arch with its final ``Linear`` projecting to ``width``.
+
+        Raises
+        ------
+        ValueError
+            When the arch declares a receptive field below the window.
+        """
+        reach = _ARCHS[self.arch]["receptive"]
+        if reach is not None:
+            seen = reach(_arch_merged(self.arch, self.arch_params))
+            if seen < sequence_length:
+                raise ValueError(
+                    f"{self.arch} receptive field {seen} is below the "
+                    f"window {sequence_length}: widen kernel_size/dilations"
+                )
+        return arch_module(
+            self.arch, self.arch_params, sequence_length, channels,
+            self.width,
+        )
