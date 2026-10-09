@@ -4960,3 +4960,234 @@ def test_projection_w1_admission_accounts_for_quadrature_and_projection_uncertai
     with pytest.raises(ValueError, match="mesh"):
         predictive_cdf.MeanPreservingCDFGrid(
             [0., 1., 2., 3.], lambda x: (x/3.)**exponent, **kwargs)
+
+
+def test_nominal_strike_masses_projects_context_and_retains_curve():
+    node = predictive_cdf.NominalStrikeMasses(
+        "m",
+        dict(
+            quadrature_tolerance=1e-8,
+            payoff_tolerance=1e-7,
+            cdf_tolerance=1.0,
+            w1_tolerance=1.0,
+            integration_limit=100,
+        ),
+    )
+    curve = {"kind": "mixture", "weights": [[1.0]], "means": [[0.0]], "scales": [[0.1]]}
+    forecast = {
+        "symbol": "A",
+        "quote_date": "2025-01-02",
+        "expiry": "2025-02-02",
+        "spot": 100.0,
+        "reference": 0.2,
+        "curve": curve,
+    }
+    out = node.run(
+        None,
+        {
+            "forecasts": [forecast],
+            "chain": [
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-02",
+                    "expiry": "2025-02-02",
+                    "strike": 90,
+                },
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-02",
+                    "expiry": "2025-02-02",
+                    "strike": 100,
+                },
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-02",
+                    "expiry": "2025-02-02",
+                    "strike": 110,
+                },
+                {
+                    "symbol": "A",
+                    "quote_date": "wrong",
+                    "expiry": "2025-02-02",
+                    "strike": 1,
+                },
+            ],
+            "skips": [],
+        },
+    )
+    row = out["masses"][0]
+    assert row["curve"] == curve and sum(row["masses"]) == pytest.approx(1.0)
+    assert row["grid"] == [90.0, 100.0, 110.0] and not out["skips"]
+    assert row["projection_evidence"]["clipped_w1_over_spot"] >= 0
+    assert node.run(None, {"forecasts": [forecast], "chain": [], "skips": []})["skips"]
+
+
+@pytest.mark.parametrize("kind", ["mixture", "student_mixture"])
+def test_nominal_strike_masses_refuses_multrow_curves_and_keeps_skip_identity(kind):
+    node = predictive_cdf.NominalStrikeMasses(
+        "m",
+        dict(
+            quadrature_tolerance=1e-8,
+            payoff_tolerance=1e-7,
+            cdf_tolerance=1.0,
+            w1_tolerance=1.0,
+            integration_limit=10,
+        ),
+    )
+    curve = {
+        "kind": kind,
+        "weights": [[1.0], [1.0]],
+        "means": [[0.0], [0.0]],
+        "scales": [[0.2], [0.2]],
+    }
+    if kind == "student_mixture":
+        curve["degrees"] = 5
+    f = {
+        "symbol": "A",
+        "quote_date": "2025-01-01",
+        "expiry": "2025-02-01",
+        "phase": "entry",
+        "spot": 100.0,
+        "reference": 0.2,
+        "curve": curve,
+        "fit_identity": "f",
+    }
+    out = node.run(
+        None,
+        {
+            "forecasts": [f],
+            "chain": [
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-01",
+                    "expiry": "2025-02-01",
+                    "strike": 90,
+                },
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-01",
+                    "expiry": "2025-02-01",
+                    "strike": 110,
+                },
+            ],
+        },
+    )
+    assert not out["masses"] and out["skips"][0]["fit_identity"] == "f"
+
+
+@pytest.mark.parametrize(
+    "name,bad",
+    [
+        ("cdf_tolerance", "bad"),
+        ("cdf_tolerance", 2.0),
+        ("w1_tolerance", float("nan")),
+        ("payoff_tolerance", True),
+        ("quadrature_tolerance", 0.0),
+        ("integration_limit", 1.5),
+    ],
+)
+def test_nominal_strike_projection_invalid_policy_refuses_at_construction(name, bad):
+    params = dict(
+        quadrature_tolerance=1e-8,
+        payoff_tolerance=1e-7,
+        cdf_tolerance=1.0,
+        w1_tolerance=1.0,
+        integration_limit=100,
+    )
+    params[name] = bad
+    with pytest.raises(ValueError):
+        predictive_cdf.NominalStrikeMasses("m", params)
+
+
+def test_nominal_strike_projection_preserves_analytic_lognormal_capped_mean():
+    import math
+    from statistics import NormalDist
+
+    params = dict(
+        quadrature_tolerance=1e-8,
+        payoff_tolerance=1e-7,
+        cdf_tolerance=1.0,
+        w1_tolerance=1.0,
+        integration_limit=100,
+    )
+    forecast = {
+        "symbol": "A",
+        "quote_date": "2025-01-02",
+        "expiry": "2025-02-02",
+        "spot": 100.0,
+        "reference": 0.2,
+        "curve": {
+            "kind": "mixture",
+            "weights": [[1.0]],
+            "means": [[0.3]],
+            "scales": [[0.8]],
+        },
+    }
+    chain = [
+        {
+            **{k: forecast[k] for k in ("symbol", "quote_date", "expiry")},
+            "strike": strike,
+        }
+        for strike in (80.0, 90.0, 100.0, 120.0)
+    ]
+    row = predictive_cdf.NominalStrikeMasses("m", params).run(
+        None, {"forecasts": [forecast], "chain": chain}
+    )["masses"][0]
+    # Independent closed-form E[clip(S exp(a Z), L, U)] for normal Z.
+    mu, sigma = math.log(100.0) + 0.2 * 0.3, 0.2 * 0.8
+    normal = NormalDist()
+
+    def prob(x):
+        return normal.cdf((math.log(x) - mu) / sigma)
+
+    truncated_moment = math.exp(mu + sigma * sigma / 2) * (
+        normal.cdf((math.log(120.0) - mu - sigma * sigma) / sigma)
+        - normal.cdf((math.log(80.0) - mu - sigma * sigma) / sigma)
+    )
+    expected = 80.0 * prob(80.0) + truncated_moment + 120.0 * (1.0 - prob(120.0))
+    assert sum(p * x for p, x in zip(row["masses"], row["grid"])) == pytest.approx(
+        expected, abs=1e-7
+    )
+    from scipy.integrate import quad
+
+    cumulative = 0.0
+    raw_distance = 0.0
+    for i, (left, right) in enumerate(zip(row["grid"], row["grid"][1:])):
+        cumulative += row["masses"][i]
+        crossing = math.exp(mu + sigma * normal.inv_cdf(cumulative))
+        points = [crossing] if left < crossing < right else []
+        raw_distance += quad(
+            lambda x: abs(prob(x) - cumulative),
+            left,
+            right,
+            points=points,
+            epsabs=1e-10,
+        )[0]
+    assert row["projection_evidence"]["clipped_w1_over_spot"] == pytest.approx(
+        raw_distance / 100.0, abs=1e-8
+    )
+
+
+def test_nominal_projection_refuses_duplicate_context_before_integration(monkeypatch):
+    params = dict(quadrature_tolerance=1e-8, payoff_tolerance=1e-7,
+                  cdf_tolerance=1., w1_tolerance=1., integration_limit=100)
+    forecast = {"symbol": "A", "quote_date": "2025-01-02", "expiry": "2025-02-02"}
+    def forbidden(*args, **kwargs):
+        pytest.fail("projection started before duplicate-context validation")
+    monkeypatch.setattr(predictive_cdf, "MeanPreservingCDFGrid", forbidden)
+    with pytest.raises(ValueError, match="duplicate"):
+        predictive_cdf.NominalStrikeMasses("m", params).run(
+            None, {"forecasts": [forecast, dict(forecast)], "chain": []})
+
+
+def test_nominal_projection_reports_overflowed_spot_as_identified_skip():
+    params = dict(quadrature_tolerance=1e-8, payoff_tolerance=1e-7,
+                  cdf_tolerance=1., w1_tolerance=1., integration_limit=100)
+    row = {"symbol": "A", "quote_date": "2025-01-02", "expiry": "2025-02-02",
+           "spot": 10**1000, "reference": .2}
+    chain = [{**row, "strike": x} for x in (90., 100.)]
+    out = predictive_cdf.NominalStrikeMasses("m", params).run(
+        None, {"forecasts": [row], "chain": chain})
+    assert out["masses"] == []
+    assert len(out["skips"]) == 1
+    assert out["skips"][0]["expiry"] == row["expiry"]

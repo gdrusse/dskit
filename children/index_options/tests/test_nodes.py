@@ -1361,3 +1361,51 @@ def test_robust_condor_primary_bounds_must_certify_the_no_trade_tie(
     if status == "skipped":
         assert result["decision"]["reason"] == "uncertified_no_trade_tie"
         assert len(result["evidence"]["solves"]) == 1
+
+
+class TestExactDteBarChain:
+    def node(self):
+        from index_options import nodes
+        cls = getattr(nodes, "ExactDteBarChain", None)
+        assert cls is not None, "exact-DTE adapter is missing"
+        return cls("chain", {
+            "fields": {key: key for key in ("contract", "symbol", "expiry", "right",
+                       "strike", "date", "vwap", "trade_count", "volume", "multiplier")},
+            "dte": 31, "multiplier": 100, "end_before": "2026-01-01",
+            "windows": [{"name": "calibration", "start": "2024-02-06",
+                         "end": "2024-12-31"},
+                        {"name": "entry", "start": "2025-02-04", "end": "2025-11-28"}]})
+
+    def row(self, **overrides):
+        return dict({"contract": "A-contract", "symbol": "A", "date": "2025-02-04",
+                     "expiry": "2025-03-07", "right": "put", "strike": 100.,
+                     "vwap": 2., "trade_count": 10, "volume": 20, "multiplier": 100,
+                     "source_identity": "saved-source"}, **overrides)
+
+    def test_valid_record_retains_provenance_and_named_phase(self):
+        out = self.node().run(None, {"records": [self.row()]})
+        assert len(out["records"]) == 1 and not out["skips"]
+        row = out["records"][0]
+        assert (row["quote_date"], row["phase"], row["type"]) == (
+            "2025-02-04", "entry", "put")
+        assert row["source_identity"] == "saved-source"
+
+    @pytest.mark.parametrize("changes,reason", [
+        ({"expiry": "2025-03-08"}, "dte"),
+        ({"date": "2025-12-02", "expiry": "2026-01-02"}, "boundary"),
+        ({"date": "2025-01-07", "expiry": "2025-02-07"}, "window"),
+        ({"vwap": float("nan")}, "vwap"),
+        ({"trade_count": True}, "trade_count"),
+        ({"multiplier": 10}, "multiplier"),
+        ({"right": "future"}, "right"),
+    ])
+    def test_ineligible_rows_have_explicit_reasons(self, changes, reason):
+        out = self.node().run(None, {"records": [self.row(**changes)]})
+        assert not out["records"]
+        assert reason in out["skips"][0]["reason"]
+        assert out["skips"][0]["contract"] == "A-contract"
+
+    def test_duplicate_contract_date_refuses_whole_input(self):
+        row = self.row()
+        with pytest.raises(ValueError, match="duplicate"):
+            self.node().run(None, {"records": [row, dict(row)]})

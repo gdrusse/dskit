@@ -117378,3 +117378,26 @@ probe passed. Legacy circular bootstrap unchanged. Neither lock is replay
 or empirical calibration approval. Full reports retained in named transcripts.
 
 Calendar-radius candidate: existing AdaptiveWassersteinRadius.select gains optional calendar_days; default circular recipe untouched. New mode uses paired daily counts, shared complete-calendar draws, observed-mean AND upper-bound gate, support diagnostics and no-LP resampling. Five focused radius tests pass; missing-date regression first failed DID NOT RAISE, then passes. Both child Ruff baselines unchanged (11 total). Await independent scoped review; not actual calibration.
+
+
+### Projection and calendar-radius locks; exact-DTE candidate
+Projection27178ad1: fresh Luna /root/luna_projection_r2_math and
+/root/luna_projection_r2_tests both0C/0Major. Minor backlog: huge integer
+policy input can raise OverflowError instead of accumulated config problems;
+positive Student projection fixture missing. Both fail closed or lack coverage,
+not silently valid real inputs. Gaussian/Student-only contract is explicit.
+31 author focused tests passed; reviewer supersets also passed. Existing grid
+owner unchanged; root imports exact reviewed source/test blobs. Rejected
+CheckpointCDFInference stub was removed, not delivered as working inference.
+
+Calendar-radius209d3e52: /root/luna_calendar_radius_math and
+/root/luna_calendar_radius_tests both0C/0Major/0Minor/0Nit. Five focused
+radius tests passed, default legacy algorithm retained, no actual calibration.
+
+ExactDteBarChain is a pure child transform of already bounded records:
+explicit mapped fields, disjoint named phases, exact DTE, standard declared
+multiplier, finite values, duplicate-contract/date refusal, identified skips.
+It is not a mixed-JSON reader or a split/deliverable verifier. Upstream source
+and adjustment gates remain. Nine new tests and Ruff pass; review pending.
+Owner's date-only screening question remains pending; do not parse mixed2026
+options records without the specific boundary decision.

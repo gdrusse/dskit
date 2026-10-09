@@ -32,7 +32,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
            "DiscreteCDFGrid", "MeanPreservingCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
-           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
+           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel", "NominalStrikeMasses"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
 # CRPS terms (training) and the numpy curve rule (evaluation), so a loss and the
@@ -7552,3 +7552,195 @@ class OptionCDFPanel(Node):
                 "options": JsonArtifact({"contracts": inputs["contracts"],
                                          "observations": observations}),
                 "cdfs": JsonArtifact(curves), "summary": summary}
+
+
+class NominalStrikeMasses(Node):
+    """Project one standardized-return CDF per dated context onto its strikes.
+
+    Parameters
+    ----------
+    params : dict
+        Explicit quadrature, payoff, CDF and normalized W1 tolerances and
+        integration_limit, forwarded to MeanPreservingCDFGrid. Supported
+        serialized families are Gaussian mixture and Student mixture. Forecast rows
+        retain spot and a separate positive reference (return scale).
+
+    Examples
+    --------
+    Construct a projection node with declared numerical admission limits::
+
+        node = NominalStrikeMasses("masses", {
+            "quadrature_tolerance": 1e-8, "payoff_tolerance": 1e-7,
+            "cdf_tolerance": .5, "w1_tolerance": .1,
+            "integration_limit": 100})
+    """
+
+    role = "transform"
+    outputs = ("masses", "skips", "evidence")
+    _PARAMS = (
+        "quadrature_tolerance",
+        "payoff_tolerance",
+        "cdf_tolerance",
+        "w1_tolerance",
+        "integration_limit",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return all malformed numerical policy declarations.
+
+        Parameters
+        ----------
+        params : dict
+            Explicit projection limits.
+
+        Returns
+        -------
+        list of str
+            Configuration problems; no numerical integration occurs.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if set(params) != set(cls._PARAMS):
+            problems.append("explicit projection tolerances required")
+        else:
+            import math
+
+            for name in cls._PARAMS[:-1]:
+                value = params[name]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or value <= 0
+                ):
+                    problems.append(name + " must be finite and positive")
+            if (
+                type(params["integration_limit"]) is not int
+                or params["integration_limit"] < 1
+            ):
+                problems.append("integration_limit must be a positive int")
+            if (
+                isinstance(params["cdf_tolerance"], (int, float))
+                and params["cdf_tolerance"] > 1
+            ):
+                problems.append("cdf_tolerance must not exceed one")
+        return problems
+
+    @staticmethod
+    def _curve(raw):
+        """Restore the declared single-row distribution family."""
+        if not isinstance(raw, dict):
+            raise ValueError("serialized curve must be a mapping")
+        kind = raw.get("kind")
+        if kind == "mixture":
+            return MixtureCurve(raw["weights"], raw["means"], raw["scales"])
+        if kind == "student_mixture":
+            return StudentMixtureCurve(
+                raw["weights"], raw["means"], raw["scales"], raw["degrees"]
+            )
+        raise ValueError("unsupported serialized forecast curve")
+
+    def run(self, ctx, inputs):
+        """Project context-matched forecasts and retain identified refusals.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Pipeline context (unused).
+        inputs : dict
+            Forecasts, pre-liquidity chain rows and optional prior skips.
+            Inputs must already satisfy the protected intake boundary.
+
+        Returns
+        -------
+        dict
+            Masses with original curves and identities, skips and evidence.
+
+        Raises
+        ------
+        KeyError
+            Required input ports are missing.
+        """
+        import numpy as np
+
+        forecasts = inputs["forecasts"]
+        if not isinstance(forecasts, (list, tuple)):
+            raise ValueError("forecasts must be a finite sequence")
+        keys = ("symbol", "quote_date", "expiry")
+        seen = set()
+        for forecast in forecasts:
+            if not isinstance(forecast, dict):
+                raise ValueError("forecast must be a mapping")
+            identity = tuple(forecast.get(k) for k in keys)
+            if all(isinstance(value, str) and value for value in identity):
+                if identity in seen:
+                    raise ValueError("duplicate forecast context")
+                seen.add(identity)
+        rows, skips = [], list(inputs.get("skips", []))
+        for forecast in forecasts:
+            try:
+                if any(not isinstance(forecast.get(k), str) or not forecast[k] for k in keys):
+                    raise ValueError("missing forecast context")
+                strikes = sorted(
+                    {
+                        float(r["strike"])
+                        for r in inputs["chain"]
+                        if all(r.get(k) == forecast[k] for k in keys)
+                    }
+                )
+                if len(strikes) < 2:
+                    raise ValueError("fewer than two context strikes")
+                reference = float(forecast["reference"])
+                spot = float(forecast["spot"])
+                if (
+                    not np.isfinite(reference)
+                    or reference <= 0
+                    or not np.isfinite(spot)
+                    or spot <= 0
+                ):
+                    raise ValueError("invalid per-row reference or spot")
+                curve = self._curve(forecast["curve"])
+                if len(curve.weights) != 1:
+                    raise ValueError("forecast curve must have exactly one row")
+                grid = MeanPreservingCDFGrid(
+                    strikes,
+                    lambda price: float(
+                        curve.cdf([np.log(price / spot) / reference])[0, 0]
+                    ),
+                    spot=spot,
+                    **self.params,
+                )
+                rows.append(
+                    {
+                        **forecast,
+                        "grid": grid.grid.tolist(),
+                        "masses": grid.masses.tolist(),
+                        "projection_evidence": grid.evidence,
+                    }
+                )
+            except (KeyError, TypeError, ValueError, FloatingPointError, OverflowError) as exc:
+                skips.append(
+                    {
+                        **{
+                            k: forecast.get(k)
+                            for k in (
+                                "symbol",
+                                "quote_date",
+                                "expiry",
+                                "phase",
+                                "schedule_id",
+                                "fit_identity",
+                                "checkpoint_identity",
+                                "input_identity",
+                                "source_identity",
+                            )
+                        },
+                        "reason": str(exc),
+                    }
+                )
+        return {
+            "masses": rows,
+            "skips": skips,
+            "evidence": JsonArtifact({"rows": len(rows), "skips": skips}),
+        }

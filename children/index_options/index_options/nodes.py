@@ -62,7 +62,7 @@ from .contracts import (
 from .datafiles import entry_problems
 from .distribution import CondorGeometry, condor_payoff
 
-__all__ = ["CondorExpirySettle", "CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
+__all__ = ["ExactDteBarChain", "CondorExpirySettle", "CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
@@ -3472,3 +3472,155 @@ class RobustCondorSelect(PyomoSolve):
                             "legs":legs, "multiplier":self.params["multiplier"],
                             "robust_value_usd":robust, "worst_loss_usd_per_share":worst},
                 "evidence":evidence}
+
+
+class ExactDteBarChain(Node):
+    """Apply exact equity-option tenor and phase rules to already bounded rows.
+
+    This is a pure child adapter. It never opens sources, deduplicates conflicting
+    vintages, infers missing contract multipliers or certifies adjustment basis.
+    Upstream intake must establish those source and corporate-action facts.
+
+    Parameters
+    ----------
+    params : dict
+        Explicit fields mapping, positive dte and standard multiplier,
+        exclusive end_before date and disjoint named inclusive windows.
+
+    Examples
+    --------
+    Use the same external field names as the canonical contract::
+
+        fields = {key: key for key in ExactDteBarChain.FIELDS}
+        node = ExactDteBarChain("chain", {
+            "fields": fields, "dte": 31, "multiplier": 100,
+            "end_before": "2026-01-01",
+            "windows": [{"name": "entry", "start": "2025-02-04",
+                         "end": "2025-11-28"}]})
+    """
+
+    role = "transform"
+    outputs = ("records", "skips", "evidence")
+    _PARAMS = ("fields", "dte", "multiplier", "end_before", "windows")
+    FIELDS = ("contract", "symbol", "expiry", "right", "strike", "date",
+              "vwap", "trade_count", "volume", "multiplier")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Accumulate field, tenor and phase-policy problems.
+
+        Parameters
+        ----------
+        params : dict
+            Explicit adapter policy.
+
+        Returns
+        -------
+        list of str
+            All malformed declaration problems.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        fields = params.get("fields")
+        if (not isinstance(fields, dict) or set(fields) != set(cls.FIELDS)
+                or any(not isinstance(v, str) or not v for v in fields.values())
+                or len(set(fields.values())) != len(fields)):
+            problems.append("fields must map every canonical field uniquely")
+        for key in ("dte", "multiplier"):
+            check_int_param(problems, key, params.get(key), ge=1)
+        if not _iso_day(params.get("end_before")):
+            problems.append("end_before requires canonical date")
+        windows = params.get("windows")
+        if not isinstance(windows, list) or not windows:
+            return problems + ["windows must be a nonempty list"]
+        valid = []
+        for window in windows:
+            if (not isinstance(window, dict) or set(window) != {"name", "start", "end"}
+                    or not isinstance(window.get("name"), str) or not window["name"]
+                    or not _iso_day(window.get("start")) or not _iso_day(window.get("end"))
+                    or window["start"] > window["end"]):
+                problems.append("invalid named window")
+            else:
+                valid.append(window)
+                if _iso_day(params.get("end_before")) and window["end"] >= params["end_before"]:
+                    problems.append("window reaches protected boundary")
+        if len({w["name"] for w in valid}) != len(valid):
+            problems.append("window names must be unique")
+        ordered = sorted(valid, key=lambda w: w["start"])
+        if any(a["end"] >= b["start"] for a, b in zip(ordered, ordered[1:])):
+            problems.append("windows must not overlap")
+        return problems
+
+    def _project(self, row):
+        """Return one canonical eligible record or raise its precise refusal."""
+        fields = self.params["fields"]
+        values = {key: row[field] for key, field in fields.items()}
+        for key in ("contract", "symbol"):
+            if not isinstance(values[key], str) or not values[key]:
+                raise ValueError(f"missing {key}")
+        day, expiry = values["date"], values["expiry"]
+        if not _iso_day(day) or not _iso_day(expiry):
+            raise ValueError("invalid quote_date or expiry")
+        if max(day, expiry) >= self.params["end_before"]:
+            raise ValueError("protected date boundary")
+        if (date.fromisoformat(expiry)-date.fromisoformat(day)).days != self.params["dte"]:
+            raise ValueError("ineligible exact dte")
+        phase = next((w["name"] for w in self.params["windows"]
+                      if w["start"] <= day <= w["end"]), None)
+        if phase is None:
+            raise ValueError("outside declared phase window")
+        if values["right"] not in ("put", "call"):
+            raise ValueError("unsupported right")
+        for key in ("strike", "vwap"):
+            if not price_ok(values[key]):
+                raise ValueError(f"invalid {key}")
+        for key in ("trade_count", "volume"):
+            if type(values[key]) is not int or values[key] < 0:
+                raise ValueError(f"invalid {key}")
+        if type(values["multiplier"]) is not int or values["multiplier"] != self.params["multiplier"]:
+            raise ValueError("unsupported contract multiplier")
+        return {**row, **values, "quote_date": day, "type": values["right"],
+                "phase": phase, "calendar_dte": self.params["dte"]}
+
+    def run(self, ctx, inputs):
+        """Apply the declared domain filter and retain each rejected identity.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Pipeline context (unused).
+        inputs : dict
+            Finite records already selected by protected intake.
+
+        Returns
+        -------
+        dict
+            Eligible canonical records, explicit skips and aggregate counts.
+
+        Raises
+        ------
+        ValueError
+            Input shape or duplicate contract-date identities are ambiguous.
+        """
+        rows = inputs["records"]
+        if not isinstance(rows, (list, tuple)) or any(not isinstance(r, dict) for r in rows):
+            raise ValueError("records must be a finite sequence of mappings")
+        fields, seen = self.params["fields"], set()
+        for row in rows:
+            identity = (row.get(fields["contract"]), row.get(fields["date"]))
+            if all(isinstance(v, str) and v for v in identity):
+                if identity in seen:
+                    raise ValueError("duplicate contract quote_date")
+                seen.add(identity)
+        records, skips = [], []
+        for row in rows:
+            try:
+                records.append(self._project(row))
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                skips.append({key: row.get(fields[key])
+                              for key in ("contract", "symbol", "date", "expiry")}
+                             | {"reason": str(exc)})
+        return {"records": records, "skips": skips,
+                "evidence": JsonArtifact({"input_rows": len(rows),
+                                         "eligible_rows": len(records),
+                                         "skips": skips})}
