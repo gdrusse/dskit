@@ -1,7 +1,7 @@
 {
   "notes": "Feature-selection ablation for the sequence model class (owner-approved 2026-10-09; plan docs/plans/2026-10-09-data-windows.md, 'Feature families and selection'). One lane per arm of features-arms.json (all, ten minus_<family>, six minus_scale_<n>); each lane is one `dskit.pipeline walkforward` over W1 only, on the same expanding folds, seeds, rows, loss and grid, so the arms differ in the feature families or scales alone. Run from children/crypto_trading: `python -m dskit.pipeline workflow-batch configs/workflow-select-sequence.json --root pipeline_runs/select-sequence --parallel N` (resumable; each lane gets its own work dir `<root>/<arm>` and ledger, so its summary lands in `<root>/<arm>/runs/<arm>`, where select-features.json reads it; keep --root equal to args.work_dir). One arm: `--only-lanes minus_flow`. `workflow --plan` lists every unfilled arg: the zoo-supplied kinds below do not exist yet, so a real run is refused until the zoo build fills them. Afterwards `python -m dskit.pipeline run configs/select-features.json --asof 2026-05-01 --adapter crypto_trading` reads both classes' summaries and writes selected-features-<class>.json into its run directory (never committed). The check: overlay a `selected` lane (args.arms plus args.arm.selected, shaped like any arm, from the class's file) with --args, run `--only-lanes selected`, then rerun select-features. The two workflow-select-* manifests are identical but for the template and work_dir; a test pins that.",
   "args": {
-    "notes": "Every input in one place; the only block a person edits (or overlays with --args). Arms are copied from features-arms.json and pinned to it, and to the feature node's FAMILIES and DEFAULT_SCALES, by tests/test_feature_selection.py: the runner has no way to take lanes from another file's keys.",
+    "notes": "Every input in one place; the only block a person edits (or overlays with --args). Arms are copied from features-arms.json and pinned to it, and to the feature node's FAMILIES, DEFAULT_SCALES and default windows, by tests/test_feature_selection.py: the runner has no way to take lanes from another file's keys. A scale arm sets `scales` and also removes that scale's EWMA half-life, range window and taker window; every arm carries `taker_check_windows` (the full taker list) so the row set is the same in all 17.",
     "work_dir": "./pipeline_runs/select-sequence",
     "adapter": "crypto_trading",
     "store": {
@@ -134,6 +134,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_ret": {
@@ -155,6 +172,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_trend": {
@@ -176,6 +210,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_vol": {
@@ -197,6 +248,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_range": {
@@ -218,6 +286,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_shock": {
@@ -239,6 +324,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_flow": {
@@ -260,6 +362,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_clock": {
@@ -281,6 +400,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_holiday": {
@@ -302,6 +438,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_xasset": {
@@ -323,6 +476,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_bvol": {
@@ -344,6 +514,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_scale_5": {
@@ -365,6 +552,23 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_scale_15": {
@@ -386,6 +590,21 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_scale_60": {
@@ -407,6 +626,20 @@
           240,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15
+        ],
+        "range_windows": [
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_scale_240": {
@@ -428,6 +661,22 @@
           60,
           1440,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_scale_1440": {
@@ -449,6 +698,22 @@
           60,
           240,
           10080
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       },
       "minus_scale_10080": {
@@ -470,6 +735,23 @@
           60,
           240,
           1440
+        ],
+        "ewma_half_lives": [
+          15,
+          60
+        ],
+        "range_windows": [
+          60,
+          240,
+          1440
+        ],
+        "taker_windows": [
+          15,
+          60
+        ],
+        "taker_check_windows": [
+          15,
+          60
         ]
       }
     }

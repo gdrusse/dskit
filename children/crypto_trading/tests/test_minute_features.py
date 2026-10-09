@@ -435,7 +435,7 @@ def test_bvol_change_is_the_level_now_minus_the_level_before():
 GOOD_KNOBS = {
     "assets": [A, B], "families": ["ret"], "scales": [2, 5], "ewma_half_lives": [3],
     "ewma_lookback_multiple": 3, "range_windows": [5], "flow_window": 6, "taker_windows": [3],
-    "scale_window": 10, "shock_k": 3.0, "shock_window": 5, "shock_max_minutes": 8, "history_minutes": 13,
+    "taker_check_windows": [3, 6], "scale_window": 10, "shock_k": 3.0, "shock_window": 5, "shock_max_minutes": 8, "history_minutes": 13,
     "month_end_days": 2, "us_open_tz": "America/New_York", "us_open_start_minute": 570,
     "us_open_minutes": 30, "funding_hours_utc": [0, 12], "holiday_exchange": "XNYS",
     "max_horizon": 4, "bvol_max_age_ms": 1000, "bvol_change_minutes": 5,
@@ -454,6 +454,7 @@ def test_the_good_knobs_cover_every_param():
     ("scales", []), ("scales", [1]), ("scales", [5, 5]), ("scales", [True]), ("scales", 5),
     ("ewma_half_lives", [-1]), ("ewma_lookback_multiple", 0),
     ("range_windows", [1.5]), ("flow_window", 0), ("taker_windows", []), ("scale_window", 0),
+    ("taker_check_windows", [0]), ("taker_check_windows", "3"), ("taker_check_windows", [3, 3]),
     ("max_horizon", 0), ("bvol_max_age_ms", 0), ("bvol_change_minutes", 0),
     ("shock_k", 0), ("shock_k", -1.0), ("shock_k", float("nan")), ("shock_k", True), ("shock_window", 0),
     ("shock_max_minutes", 0), ("history_minutes", 0), ("month_end_days", 0), ("month_end_days", 32),
@@ -579,6 +580,24 @@ def test_an_impossible_taker_buy_volume_is_refused_by_name(bad):
     assert (A, t_of(20)) not in by_key(out)
     for row in out["records"]:  # and the bad bar poisons no later taker share through its window
         assert 0.0 <= row["flow__taker_3"] <= 1.0 and 0.0 <= row["flow__taker_6"] <= 1.0
+
+
+def test_extra_taker_check_windows_keep_the_row_set_when_a_taker_window_is_dropped():
+    # a scale ablation drops the taker window of that scale; the bad-taker refusal must not follow it, or the
+    # arms would be scored on different rows (a bar 4 or 5 bars back stays refused through the 6-bar window)
+    klines = _with_taker(-4.0)
+    full = by_key(run(klines))
+    narrowed = by_key(run(klines, taker_windows=[3]))
+    kept = by_key(run(klines, taker_windows=[3], taker_check_windows=[3, 6]))
+    assert set(kept) == set(full) and set(narrowed) > set(full)
+    assert "flow__taker_6" not in next(iter(kept.values())) and "flow__taker_3" in next(iter(kept.values()))
+    assert (A, t_of(24)) not in kept and (A, t_of(24)) in narrowed
+
+
+def test_the_taker_check_windows_widen_the_history_a_row_needs():
+    resolved = MinuteFeatures.resolve({**SMALL, "taker_check_windows": [40]})
+    assert MinuteFeatures.need_bars(resolved) == 40
+    assert MinuteFeatures.DEFAULTS["taker_check_windows"] == ()  # off by default: the old eligibility is unchanged
 
 
 def test_a_taker_buy_volume_equal_to_the_volume_is_valid():

@@ -80,10 +80,12 @@ automated rule (`AblationSelect`) keeps a group for a class when dropping it hur
 paired per-fold difference above zero and at least `z` = 1 standard errors, at least 8 folds. Groups kept by only
 one class are listed with both (mean, SE) pairs, never reconciled.
 
+A scale arm drops every column of that many minutes: the `scales` columns and the same-minute EWMA half-life, range window and taker window (`minus_scale_60` removes `vol__ewma_60`, `range__hi_60`, `flow__taker_60` and the rest); `taker_check_windows` keeps the row set equal. `KeepRule` and `FoldScores` are generic and graduate to dskit under ADR-0258 (PROPOSED).
+
 | Config (`configs/`) | Job |
 |---|---|
 | `features-arms.json` | the arm vocabulary: kept families (`arms`) and kept scales (`scale_arms`) |
-| `select-template-{sequence,tabular}.json` | one W1 walk-forward template per class; `${arm.*}` fills the feature node's `families` and `scales`; the model, folds, seeds, loss and grid are the same in every arm |
+| `select-template-{sequence,tabular}.json` | one W1 walk-forward template per class; `${arm.*}` fills the feature node's `families`, `scales`, `ewma_half_lives`, `range_windows`, `taker_windows` and `taker_check_windows`; the model, folds, seeds, loss and grid are the same in every arm |
 | `workflow-select-{sequence,tabular}.json` | manifest: one lane per arm (17), `workflow-batch`, resumable; identical but for the template and `work_dir` |
 | `select-features.json` | pipeline document: reads both classes' per-arm summaries, writes `selected-features-{sequence,tabular}.json` and `feature-selection-disagreements.json` under its run's `artifacts/select/` (never committed) |
 

@@ -12,8 +12,9 @@ summary per arm. This module reads those summaries and decides, by an automated 
   ``mean(d) > 0`` and ``mean(d) >= z * SE``: the one-standard-error rule, liberal toward keeping, because a
   false drop costs signal and a false keep costs one column. No spread in ``d`` is the same rule with
   ``SE = 0``. Fewer than ``min_folds`` folds refuse. There is no multiplicity correction.
-- **Two axes, never stacked.** The family arms drop one family; the scale arms drop one scale from the
-  ``ret``/``trend``/``vol``/``xasset`` columns that carry one. Both are compared with the SAME ``all`` run.
+- **Two axes, never stacked.** The family arms drop one family; the scale arms drop one scale, which is every
+  column that carries that many minutes: the ``scales`` grid's ``ret``/``trend``/``vol``/``xasset`` columns AND
+  the EWMA half-life, range window and taker window of the same minutes. Both are compared with the SAME ``all`` run.
 - **Per class.** Each class gets its own kept set and file; a group kept by exactly one class is listed with
   both (mean, SE) pairs and is never reconciled.
 - **The check.** An optional ``selected`` arm (the kept families and scales, run on the same folds) must not be
@@ -21,9 +22,16 @@ summary per arm. This module reads those summaries and decides, by an automated 
   with no kept family (or scale) keeps the whole axis, flagged: an empty feature set is not a model.
 
 The group-to-column grammar is the feature node's own: a column is ``<family>__<name>``, and a scale-bearing
-name is one of ``r<n>``, ``ma_<n>``, ``rms_<n>``, ``hl_<n>``, ``jump_<n>``, ``pair_chg_<n>``. The column list is
-PROBED from :class:`~crypto_trading.minute_features.MinuteFeatures` on deterministic synthetic bars, never
-restated here, and a column whose scale is outside the arms' grid refuses.
+name is one of ``r<n>``, ``ma_<n>``, ``rms_<n>``, ``hl_<n>``, ``jump_<n>``, ``pair_chg_<n>`` (the ``scales``
+grid) or ``ewma_<n>``, ``hi_<n>``, ``lo_<n>``, ``taker_<n>`` (a window knob, scale-bearing when ``n`` is a
+minute of the grid). The column list is PROBED from :class:`~crypto_trading.minute_features.MinuteFeatures` on
+deterministic synthetic bars, never restated here, and a grid column whose scale is outside the arms' grid
+refuses. A scale arm sets ``scales`` and the three window knobs, and ``taker_check_windows`` (the full taker
+list) so the node's row set is the same in every arm; :meth:`FeatureGroups.arm_params` is the one place that
+derives them, and a test pins the shipped manifests to it.
+
+Interim home: ``KeepRule`` and ``FoldScores`` are generic and graduate to dskit under ADR-0258 (PROPOSED, not
+yet approved); this module keeps them, unchanged, until that ADR is approved and built.
 
 Import cost: stdlib + dskit; numpy only inside the feature node's ``run``.
 """
@@ -69,10 +77,16 @@ LOWER_IS_BETTER = "min"
 _RAN = "ran"
 _SEP = "__"
 #: The families whose columns can carry a scale, and the name shapes that do (the scale is the trailing integer).
-_SCALE_FAMILIES = ("ret", "trend", "vol", "xasset")
-_SCALE_NAME = re.compile(r"^(?:r|ma_|rms_|hl_|jump_|pair_chg_)(\d+)$")
+_SCALE_FAMILIES = ("ret", "trend", "vol", "xasset", "range", "flow")
+#: Names the ``scales`` knob produces: always scale-bearing.
+_GRID_NAME = re.compile(r"^(?:r|ma_|rms_|hl_|jump_|pair_chg_)(\d+)$")
+#: Names a window knob produces: scale-bearing only when the window is a minute of the grid.
+_WINDOW_NAME = re.compile(r"^(?:ewma_|hi_|lo_|taker_)(\d+)$")
+#: The node knobs whose windows are minutes of the scale grid, and the extra knob that keeps the rows when one goes.
+_WINDOW_KNOBS = ("ewma_half_lives", "range_windows", "taker_windows")
+_CHECK_KNOB = "taker_check_windows"
 _CLASS_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-_FORBIDDEN_FEATURE_KNOBS = ("families", "scales")
+_FORBIDDEN_FEATURE_KNOBS = ("families", "scales", _CHECK_KNOB)
 #: The probe's synthetic bars: a Monday midnight UTC start, so calendar families see ordinary weekdays.
 _PROBE_START_MS = 1_767_571_200_000
 _PROBE_EXTRA_BARS = 5
@@ -337,19 +351,24 @@ class FeatureGroups:
         Every feature column, in the node's order.
     dropped : dict
         Arm name -> ``("family", name)`` or ``("scale", n)``.
+    windows : dict
+        The full window lists of the ``all`` arm, by node knob (``ewma_half_lives``, ``range_windows``,
+        ``taker_windows``).
 
     Examples
     --------
     The groups of an arms document, with the columns probed from the feature node::
 
         groups = FeatureGroups.from_probe(arms_document, {"assets": ["BTC", "ETH"]})
-        groups.columns_of_scale(60)   # -> ("ret__r60", "trend__ma_60", "vol__rms_60", ...)
+        groups.columns_of_scale(60)   # -> ("ret__r60", "trend__ma_60", "vol__rms_60", "vol__ewma_60", ...)
         groups.dropped_by("minus_scale_60")   # -> ("scale", 60)
+        groups.arm_params("minus_scale_60")["taker_windows"]   # -> [15]
     """
 
-    def __init__(self, families, scales, columns, dropped):
+    def __init__(self, families, scales, columns, dropped, windows):
         self.families, self.scales, self.columns = tuple(families), tuple(scales), tuple(columns)
         self._dropped = dict(dropped)
+        self._windows = {knob: tuple(windows[knob]) for knob in _WINDOW_KNOBS}
         self._check_columns()
 
     def _check_columns(self):
@@ -398,7 +417,17 @@ class FeatureGroups:
         problems = MinuteFeatures.validate_params(resolved)
         if problems:
             raise ValueError(f"minute_features: {problems}")
-        return cls(families, scales, _probe_columns(json.dumps(resolved, sort_keys=True)), dropped)
+        windows = {knob: resolved[knob] for knob in _WINDOW_KNOBS}
+        groups = cls(families, scales, _probe_columns(json.dumps(resolved, sort_keys=True)), dropped, windows)
+        groups._check_arms(feature_params)
+        return groups
+
+    def _check_arms(self, feature_params):
+        """Refuse an arm whose parameters the feature node would not accept, naming the arm."""
+        for arm in (ALL_ARM, *self.ablation_arms()):
+            problems = MinuteFeatures.validate_params({**feature_params, **self.arm_params(arm)})
+            if problems:
+                raise ValueError(f"arm {arm!r}: minute_features: {problems}")
 
     @staticmethod
     def _one_dropped(arm, universe, kept):
@@ -410,8 +439,7 @@ class FeatureGroups:
                              f"drops {left} and adds {extra}")
         return left[0]
 
-    @staticmethod
-    def scale_of(column):
+    def scale_of(self, column):
         """Return the scale a column carries, or None.
 
         Parameters
@@ -422,12 +450,17 @@ class FeatureGroups:
         Returns
         -------
         int or None
-            The trailing scale of a ``ret``/``trend``/``vol``/``xasset`` column named ``r<n>``, ``ma_<n>``,
-            ``rms_<n>``, ``hl_<n>``, ``jump_<n>`` or ``pair_chg_<n>``; None for every other column.
+            The minutes of a column named ``r<n>``, ``ma_<n>``, ``rms_<n>``, ``hl_<n>``, ``jump_<n>`` or
+            ``pair_chg_<n>``, or of a window column (``ewma_<n>``, ``hi_<n>``, ``lo_<n>``, ``taker_<n>``)
+            whose ``n`` is a minute of the grid; None for every other column.
         """
         family, _, name = column.partition(_SEP)
-        match = _SCALE_NAME.match(name) if family in _SCALE_FAMILIES else None
-        return int(match.group(1)) if match else None
+        if family not in _SCALE_FAMILIES:
+            return None
+        grid, window = _GRID_NAME.match(name), _WINDOW_NAME.match(name)
+        if grid:
+            return int(grid.group(1))
+        return int(window.group(1)) if window and int(window.group(1)) in self.scales else None
 
     def family_of(self, column):
         """Return the family of a column (its prefix)."""
@@ -459,6 +492,56 @@ class FeatureGroups:
         families, scales = set(families), set(scales)
         return tuple(c for c in self.columns
                      if self.family_of(c) in families and self.scale_of(c) in (scales | {None}))
+
+    def params_for(self, families, scales):
+        """Return the feature node's scale-and-window params for kept families and scales.
+
+        Parameters
+        ----------
+        families : iterable of str
+            The kept families.
+        scales : iterable of int
+            The kept scales.
+
+        Returns
+        -------
+        dict
+            ``families``, ``scales``, the three window knobs with the windows of a dropped scale removed (a
+            window that is not a minute of the grid stays), and ``taker_check_windows`` (every taker window).
+        """
+        families, scales = list(families), list(scales)
+        params = {"families": families, "scales": scales}
+        for knob, full in self._windows.items():
+            params[knob] = [w for w in full if w not in self.scales or w in scales]
+        params[_CHECK_KNOB] = list(self._windows["taker_windows"])
+        return params
+
+    def arm_params(self, arm):
+        """Return the feature node's params for one arm (``all`` included).
+
+        Parameters
+        ----------
+        arm : str
+            ``all`` or an arm of the arms document.
+
+        Returns
+        -------
+        dict
+            As :meth:`params_for`, for the families and scales the arm keeps.
+
+        Raises
+        ------
+        ValueError
+            An arm the arms document does not define.
+        """
+        families, scales = list(self.families), list(self.scales)
+        if arm != ALL_ARM:
+            if arm not in self._dropped:
+                raise ValueError(f"unknown arm {arm!r}: the arms document defines {[ALL_ARM, *self._dropped]}")
+            kind, name = self._dropped[arm]
+            families = [f for f in families if not (kind == _KIND_FAMILY and f == name)]
+            scales = [s for s in scales if not (kind == _KIND_SCALE and s == name)]
+        return self.params_for(families, scales)
 
     def dropped_by(self, arm):
         """Return the group an arm drops: ``("family", name)`` or ``("scale", n)``."""
@@ -531,7 +614,7 @@ class _ClassSelection:
             "families": {"kept": families, "dropped": [f for f in groups.families if f not in families]},
             "scales": {"kept": scales, "dropped": [s for s in groups.scales if s not in scales]},
             "columns": list(groups.select_columns(families, scales)),
-            "selected_arm": {"families": families, "scales": scales},
+            "selected_arm": groups.params_for(families, scales),
             "check": check, "fell_back_to_all": before is not None, "flags": flags,
             "evidence": self.verdicts, "sources": self._sources(),
         }
@@ -569,8 +652,8 @@ class AblationSelect(Node):
     params : dict
         ``arms_file`` (str, path to ``features-arms.json``), ``classes`` (object: class name -> ``{"runs":
         pattern}``, the arm's run root with ``{arm}`` where the arm's name goes; ``notes`` allowed),
-        ``minute_features`` (the :class:`MinuteFeatures` params other than ``families`` and ``scales``;
-        ``assets`` required), ``z`` (float >= 0, default :data:`DEFAULT_Z`), ``min_folds`` (int >= 2, default
+        ``minute_features`` (the :class:`MinuteFeatures` params other than ``families``, ``scales`` and
+        ``taker_check_windows``, which the arms supply; ``assets`` required), ``z`` (float >= 0, default :data:`DEFAULT_Z`), ``min_folds`` (int >= 2, default
         :data:`DEFAULT_MIN_FOLDS`).
 
     Examples

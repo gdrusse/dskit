@@ -120,6 +120,9 @@ DEFAULT_FUNDING_HOURS_UTC = (0, 8, 16)
 DEFAULT_HOLIDAY_EXCHANGE = "XNYS"
 DEFAULT_FLOW_WINDOW = 60
 DEFAULT_TAKER_WINDOWS = (15, 60)
+#: Windows an impossible taker-buy volume is checked over besides ``taker_windows``: none, so by default only the
+#: windows that have a column are checked. A scale ablation that drops a taker window sets this to the full list.
+DEFAULT_TAKER_CHECK_WINDOWS = ()
 DEFAULT_SCALE_WINDOW = 60
 DEFAULT_MAX_HORIZON = 15
 DEFAULT_BVOL_MAX_AGE_MS = 2 * BAR_MS
@@ -1028,6 +1031,8 @@ class MinuteFeatures(ListPortsNode):
         set), ``ewma_half_lives`` (lists of distinct ints >= 1), ``ewma_lookback_multiple`` (int >= 1, the
         EWMA window in half-lives), ``range_windows`` (trailing high / low windows), ``shock_k`` (number > 0),
         ``shock_window`` and ``shock_max_minutes`` (ints >= 1), ``flow_window``, ``taker_windows``,
+        ``taker_check_windows`` (distinct ints >= 1, may be empty: windows an impossible taker-buy volume is also
+        refused over, so an arm that drops a taker window keeps the row set),
         ``scale_window`` (the label's RMS scale, also the divisor of ``range``), ``month_end_days``,
         ``us_open_tz`` / ``us_open_start_minute`` / ``us_open_minutes`` (the wall-clock window),
         ``funding_hours_utc`` (UTC hours 0..23), ``holiday_exchange`` (a calendar code of the
@@ -1053,7 +1058,8 @@ class MinuteFeatures(ListPortsNode):
         "ewma_half_lives": DEFAULT_EWMA_HALF_LIVES, "ewma_lookback_multiple": DEFAULT_EWMA_LOOKBACK_MULTIPLE,
         "range_windows": DEFAULT_RANGE_WINDOWS, "shock_k": DEFAULT_SHOCK_K, "shock_window": DEFAULT_SHOCK_WINDOW,
         "shock_max_minutes": DEFAULT_SHOCK_MAX_MINUTES, "flow_window": DEFAULT_FLOW_WINDOW,
-        "taker_windows": DEFAULT_TAKER_WINDOWS, "scale_window": DEFAULT_SCALE_WINDOW,
+        "taker_windows": DEFAULT_TAKER_WINDOWS, "taker_check_windows": DEFAULT_TAKER_CHECK_WINDOWS,
+        "scale_window": DEFAULT_SCALE_WINDOW,
         "month_end_days": DEFAULT_MONTH_END_DAYS, "us_open_tz": DEFAULT_US_OPEN_TZ,
         "us_open_start_minute": DEFAULT_US_OPEN_START_MINUTE, "us_open_minutes": DEFAULT_US_OPEN_MINUTES,
         "funding_hours_utc": DEFAULT_FUNDING_HOURS_UTC, "holiday_exchange": DEFAULT_HOLIDAY_EXCHANGE,
@@ -1161,6 +1167,8 @@ class MinuteFeatures(ListPortsNode):
         problems += cls._families_problems(full["families"])
         for name, smallest in _LIST_KNOBS.items():
             problems += cls._list_problems(name, full[name], ge=smallest)
+        if full["taker_check_windows"] not in ((), []):  # an empty extra list is the default, not a mistake
+            problems += cls._list_problems("taker_check_windows", full["taker_check_windows"])
         for name in _INT_KNOBS:
             check_int_param(problems, name, full[name], ge=1)
         problems += cls._shock_k_problems(full["shock_k"])
@@ -1255,24 +1263,41 @@ class MinuteFeatures(ListPortsNode):
         int
             The widest window any family or the label scale reads, in returns: each estimator's own
             ``lookback_bars() - 1`` (a bar count includes the first bar's predecessor), the plain windows
-            of ``scales``, ``range_windows``, ``taker_windows`` and ``flow_window``, the shock cap plus its
+            of ``scales``, ``range_windows``, the taker windows (with ``taker_check_windows``) and ``flow_window``,
+            the shock cap plus its
             trailing window, and ``history_minutes`` (the floor that keeps the row set scale-independent).
         """
         estimators = vol_estimators(resolved) + [scale_estimator(resolved)]
         windows = [e.lookback_bars() - 1 for e in estimators] + list(resolved["scales"])  # ret, trend, jump, pair change
         windows += [w - 1 for w in resolved["range_windows"]]
         windows += [resolved["shock_max_minutes"] + resolved["shock_window"], resolved["history_minutes"]]
-        return max(windows + list(resolved["taker_windows"]) + [resolved["flow_window"]])
+        return max(windows + list(MinuteFeatures.taker_checked_windows(resolved)) + [resolved["flow_window"]])
+
+    @staticmethod
+    def taker_checked_windows(resolved):
+        """Return the windows an impossible taker-buy volume is refused over: ``taker_windows`` and the extras.
+
+        Parameters
+        ----------
+        resolved : dict
+            The params with defaults filled in.
+
+        Returns
+        -------
+        tuple of int
+            Distinct windows, ``taker_windows`` first.
+        """
+        return tuple(dict.fromkeys([*resolved["taker_windows"], *resolved["taker_check_windows"]]))
 
     def _bad_taker(self, frame, resolved):
-        """Flag each bar whose trailing taker windows hold a taker-buy volume outside ``[0, volume]``."""
+        """Flag each bar whose trailing checked taker windows hold a taker-buy volume outside ``[0, volume]``."""
         import numpy as np
         from dskit.pipeline.libs.numpy import rolling_sum
 
         taker, volume = frame.flow["taker_buy_volume"], frame.flow["volume"]
         bad = ((taker < 0) | (taker > volume)).astype(np.float64)
         flagged = bad > 0
-        for window in resolved["taker_windows"]:
+        for window in self.taker_checked_windows(resolved):
             flagged |= np.nan_to_num(rolling_sum(bad, window)) > 0
         return flagged
 

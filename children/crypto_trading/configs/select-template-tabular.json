@@ -23,9 +23,13 @@
       "params": {
         "assets": "${window.assets}",
         "families": "${arm.families}",
-        "scales": "${arm.scales}"
+        "scales": "${arm.scales}",
+        "ewma_half_lives": "${arm.ewma_half_lives}",
+        "range_windows": "${arm.range_windows}",
+        "taker_windows": "${arm.taker_windows}",
+        "taker_check_windows": "${arm.taker_check_windows}"
       },
-      "notes": "The ONLY arm-dependent node: the kept families and kept scales of this lane. history_minutes is left unset on purpose, so the row set (and therefore every fold's rows and labels) is the same in every arm, and meta__scale, the label divisor, is in no family. Every other knob is the node's default, so the columns are exactly those the arm names."
+      "notes": "The ONLY arm-dependent node: the kept families, the kept scales and the windows of those scales (EWMA half-life, range and taker windows of the same minutes) of this lane; `taker_check_windows` is the full taker list so an arm that drops a taker window still refuses the same bars. history_minutes is left unset on purpose, so the row set (and therefore every fold's rows and labels) is the same in every arm, and meta__scale, the label divisor, is in no family. Every other knob is the node's default, so the columns are exactly those the arm names."
     },
     "w1": {
       "uses": "filter",

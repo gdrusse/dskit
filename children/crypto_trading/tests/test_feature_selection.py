@@ -151,10 +151,20 @@ def make_arms(families=SMALL_FAMILIES, scales=SMALL_SCALES):
             "scale_arms": {f"minus_scale_{s}": [x for x in scales if x != s] for s in scales}}
 
 
-def real_columns(families, scales):
+def real_columns(families, scales, **windows):
     out = tmf.run(tmf.world(80), bvol_rows=tmf.bvol("AAA", 80, 1) + tmf.bvol("BBB", 80, 2), families=list(families),
-                  scales=list(scales), history_minutes=13)
+                  scales=list(scales), **{"history_minutes": 31, **windows})
     return {c for c in out["records"][0] if c.split("__", 1)[0] in FAMILIES}
+
+
+# windows that ARE minutes of the scale grid (as the shipped defaults all are), restated here on purpose
+GRID_WINDOWS = {"ewma_half_lives": [5, 10], "range_windows": [5, 10], "taker_windows": [2, 5]}
+WINDOW_KNOBS = tuple(GRID_WINDOWS)
+WINDOW_MF = {**SMALL_MF, **GRID_WINDOWS}
+
+
+# SMALL's own windows (none is a minute of the grid [2, 5, 10]); the check windows are all the taker windows
+SMALL_WINDOWS = {"ewma_half_lives": [3], "range_windows": [4, 8], "taker_windows": [3, 6], "taker_check_windows": [3, 6]}
 
 
 @pytest.fixture(scope="module")
@@ -179,6 +189,73 @@ def test_a_window_that_is_not_a_scale_belongs_to_no_scale(groups):
     for scale in SMALL_SCALES:
         assert not {"vol__ewma_3", "range__hi_4", "range__lo_4", "range__hi_8", "range__lo_8", "flow__taker_3",
                     "flow__taker_6", "xasset__pair_log", "xasset__ewma_3"} & set(groups.columns_of_scale(scale))
+
+
+@pytest.fixture(scope="module")
+def wgroups():
+    return FeatureGroups.from_probe(make_arms(), WINDOW_MF)
+
+
+def test_a_scale_owns_the_window_columns_named_for_its_minutes(wgroups):
+    # the review finding: minus_scale_N must remove every N-minute column, not only the `scales` knob's
+    assert {"vol__ewma_5", "xasset__ewma_5", "range__hi_5", "range__lo_5", "flow__taker_5"} <= set(wgroups.columns_of_scale(5))
+    assert {"vol__ewma_10", "xasset__ewma_10", "range__hi_10", "range__lo_10"} <= set(wgroups.columns_of_scale(10))
+    assert "flow__taker_2" in wgroups.columns_of_scale(2) and "vol__ewma_5" not in wgroups.columns_of_scale(2)
+    assert not {"flow__log_volume", "flow__log_trades", "xasset__pair_log"} & set(wgroups.columns_of_scale(5))
+
+
+def test_selecting_without_a_scale_drops_its_window_columns_too(wgroups):
+    chosen = set(wgroups.select_columns(SMALL_FAMILIES, [2, 10]))
+    assert not chosen & {"vol__ewma_5", "xasset__ewma_5", "range__hi_5", "range__lo_5", "flow__taker_5", "ret__r5"}
+    assert {"vol__ewma_10", "range__hi_10", "flow__taker_2", "ret__r2"} <= chosen
+
+
+def test_an_arm_sets_the_scales_and_the_windows_it_keeps(wgroups):
+    full = {"families": SMALL_FAMILIES, "scales": SMALL_SCALES, **GRID_WINDOWS, "taker_check_windows": [2, 5]}
+    assert wgroups.arm_params("all") == full
+    assert wgroups.arm_params("minus_flow") == {**full, "families": [f for f in SMALL_FAMILIES if f != "flow"]}
+    assert wgroups.arm_params("minus_scale_5") == {
+        "families": SMALL_FAMILIES, "scales": [2, 10], "ewma_half_lives": [10], "range_windows": [10],
+        "taker_windows": [2], "taker_check_windows": [2, 5]}
+    assert wgroups.arm_params("minus_scale_2")["taker_windows"] == [5]
+    assert wgroups.arm_params("minus_scale_2")["ewma_half_lives"] == [5, 10]
+
+
+def test_a_window_that_is_not_in_the_grid_stays_in_every_arm(groups):
+    # SMALL's ewma 3, range 4 and 8, taker 3 and 6 are not minutes of the grid [2, 5, 10]
+    params_ = groups.arm_params("minus_scale_5")
+    assert params_["ewma_half_lives"] == [3] and params_["range_windows"] == [4, 8] and params_["taker_windows"] == [3, 6]
+
+
+@pytest.mark.parametrize("arm_scale", SMALL_SCALES)
+def test_a_scale_arm_removes_exactly_its_columns_in_the_real_node_windows_included(wgroups, arm_scale):
+    arm = f"minus_scale_{arm_scale}"
+    params_ = wgroups.arm_params(arm)
+    removed = real_columns(SMALL_FAMILIES, SMALL_SCALES, **GRID_WINDOWS) - real_columns(**params_)
+    assert removed == set(wgroups.columns_of_scale(arm_scale))
+    assert set(real_columns(**params_)) == set(wgroups.select_columns(SMALL_FAMILIES, params_["scales"]))
+
+
+def test_every_arm_keeps_the_same_rows_in_the_real_node_even_with_a_bad_taker_bar(wgroups):
+    klines = tmf.world(80)
+    next(r for r in klines if r["asset"] == "AAA" and r["open_time_ms"] == tmf.START + 40 * tmf.BAR)["taker_buy_volume"] = -4.0
+    rows = {}
+    for arm in ("all", "minus_scale_2", "minus_scale_5", "minus_scale_10", "minus_flow"):
+        out = tmf.run(klines, bvol_rows=tmf.bvol("AAA", 80, 1) + tmf.bvol("BBB", 80, 2), history_minutes=31,
+                      **wgroups.arm_params(arm))
+        rows[arm] = {(r["asset"], r["t_ms"]) for r in out["records"]}
+    assert all(rows[arm] == rows["all"] for arm in rows), {arm: len(r) for arm, r in rows.items()}
+
+
+def test_a_scale_arm_that_would_empty_a_window_list_refuses_naming_the_arm():
+    with pytest.raises(ValueError, match="minus_scale_5"):
+        FeatureGroups.from_probe(make_arms(), {**SMALL_MF, "taker_windows": [5], "ewma_half_lives": [10],
+                                               "range_windows": [10]})
+
+
+def test_the_probe_refuses_the_taker_check_in_the_feature_params():
+    with pytest.raises(ValueError, match="taker_check_windows"):
+        FeatureGroups.from_probe(make_arms(), {**SMALL_MF, "taker_check_windows": [5]})
 
 
 @pytest.mark.parametrize("scale", SMALL_SCALES)
@@ -236,6 +313,20 @@ def test_the_shipped_arms_and_default_grid_pin_to_the_real_node():
         "ret__r10080", "trend__ma_10080", "vol__rms_10080", "vol__hl_10080", "vol__jump_10080",
         "xasset__r10080", "xasset__rms_10080", "xasset__hl_10080", "xasset__jump_10080", "xasset__pair_chg_10080"}
     assert shipped.scales == GRID and shipped.families == FAMILIES
+
+
+@pytest.mark.skipif(find_spec("exchange_calendars") is None, reason="the shipped arms name the holiday family, which needs exchange_calendars")
+def test_the_shipped_minus_scale_60_drops_every_sixty_minute_column():
+    # the review finding, on the real grid: the ewma half-life, the range window and the taker window of 60 minutes
+    shipped = FeatureGroups.from_probe(_config("features-arms.json"), {"assets": ["BTC", "ETH"]})
+    sixty = {"vol__ewma_60", "xasset__ewma_60", "range__hi_60", "range__lo_60", "flow__taker_60"}
+    assert sixty <= set(shipped.columns_of_scale(60))
+    chosen = set(shipped.select_columns(FAMILIES, [s for s in GRID if s != 60]))
+    assert not chosen & sixty and not chosen & set(shipped.columns_of_scale(60))
+    assert chosen >= {"vol__ewma_15", "range__hi_240", "flow__taker_15", "ret__r15"}
+    assert shipped.arm_params("minus_scale_60") == {
+        "families": list(FAMILIES), "scales": [5, 15, 240, 1440, 10080], "ewma_half_lives": [15],
+        "range_windows": [240, 1440], "taker_windows": [15], "taker_check_windows": [15, 60]}
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +462,7 @@ def test_each_class_keeps_what_dropping_hurts_beyond_noise(world_two_classes):
     assert sequence["families"] == {"kept": ["ret"], "dropped": [f for f in SMALL_FAMILIES if f != "ret"]}
     assert sequence["scales"] == {"kept": [5], "dropped": [2, 10]}
     assert tabular["families"]["kept"] == ["ret", "flow"]
-    assert sequence["selected_arm"] == {"families": ["ret"], "scales": [5]}
+    assert sequence["selected_arm"] == {"families": ["ret"], "scales": [5], **SMALL_WINDOWS}
 
 
 def test_a_class_with_no_kept_scale_keeps_the_whole_scale_axis_and_says_so(world_two_classes):
@@ -458,7 +549,7 @@ def test_a_selected_arm_worse_than_all_falls_back_to_all_and_is_flagged(world_tw
     assert sequence["fell_back_to_all"] is True and "selected_arm_worse_than_all" in sequence["flags"]
     assert sequence["check"]["status"] == "fell_back" and sequence["check"]["mean"] > 0
     assert sequence["families"]["kept"] == SMALL_FAMILIES and sequence["scales"]["kept"] == SMALL_SCALES
-    assert sequence["selected_arm"] == {"families": SMALL_FAMILIES, "scales": SMALL_SCALES}
+    assert sequence["selected_arm"] == {"families": SMALL_FAMILIES, "scales": SMALL_SCALES, **SMALL_WINDOWS}
     assert len(sequence["columns"]) == len(FeatureGroups.from_probe(make_arms(), SMALL_MF).columns)
     assert sequence["selection_before_fallback"]["families"] == ["ret"]
     assert tabular["fell_back_to_all"] is False and tabular["check"]["status"] == "passed"
@@ -509,6 +600,7 @@ def test_the_arms_file_must_name_the_reference_arm(tmp_path):
     {"classes": {"a": {"runs": "x"}}}, {"classes": {"a": {"runs": "x/{arm}/{other}"}}}, {"classes": {"a": {"runs": "x/{"}}},
     {"classes": {"a": {"runs": "x/{arm}", "extra": 1}}}, {"classes": {"Bad Name": {"runs": "x/{arm}"}}},
     {"arms_file": ""}, {"minute_features": {"families": ["ret"]}},
+    {"minute_features": {"assets": ["A", "B"], "taker_check_windows": [5]}},
 ])
 def test_params_are_default_deny(tmp_path, bad):
     good = {"arms_file": "a.json", "classes": {"sequence": {"runs": "r/{arm}"}}, "minute_features": {"assets": ["A", "B"]}}
@@ -532,6 +624,8 @@ def test_the_rule_defaults_are_the_approved_ones():
 # config pins: arms, folds, seeds, loss, W1, the select document
 # ---------------------------------------------------------------------------
 
+# the node's default windows, restated on purpose (each is a minute of the scale grid)
+SHIPPED_WINDOWS = {"ewma_half_lives": [15, 60], "range_windows": [60, 240, 1440], "taker_windows": [15, 60]}
 MANIFESTS = {"sequence": "workflow-select-sequence.json", "tabular": "workflow-select-tabular.json"}
 TEMPLATES = {"sequence": "select-template-sequence.json", "tabular": "select-template-tabular.json"}
 
@@ -550,10 +644,16 @@ def test_the_lanes_are_the_seventeen_arms_of_features_arms_json():
         assert args["arms"] == expected, cls
         assert set(args["arm"]) == set(expected), cls
         for arm in features["arms"]:
-            assert args["arm"][arm] == {"families": features["arms"][arm], "scales": list(GRID)}, (cls, arm)
-        for arm in features["scale_arms"]:
-            assert args["arm"][arm] == {"families": features["arms"]["all"], "scales": features["scale_arms"][arm]}, \
-                (cls, arm)
+            assert args["arm"][arm] == {"families": features["arms"][arm], "scales": list(GRID), **SHIPPED_WINDOWS,
+                                        "taker_check_windows": SHIPPED_WINDOWS["taker_windows"]}, (cls, arm)
+        for arm, kept in features["scale_arms"].items():
+            (dropped,) = set(GRID) - set(kept)
+            assert args["arm"][arm] == {
+                "families": features["arms"]["all"], "scales": kept,
+                "ewma_half_lives": [w for w in SHIPPED_WINDOWS["ewma_half_lives"] if w != dropped],
+                "range_windows": [w for w in SHIPPED_WINDOWS["range_windows"] if w != dropped],
+                "taker_windows": [w for w in SHIPPED_WINDOWS["taker_windows"] if w != dropped],
+                "taker_check_windows": SHIPPED_WINDOWS["taker_windows"]}, (cls, arm)
 
 
 def test_the_arm_lists_cannot_drift_from_the_nodes_declared_families_and_scales():
@@ -643,6 +743,8 @@ def test_the_templates_take_the_arm_and_the_w1_bounds_from_placeholders():
         features = doc["pipeline"]["features"]
         assert features["uses"] == "crypto_trading.minute_features:MinuteFeatures"
         assert features["params"]["families"] == "${arm.families}" and features["params"]["scales"] == "${arm.scales}"
+        for knob in (*SHIPPED_WINDOWS, "taker_check_windows"):
+            assert features["params"][knob] == "${arm." + knob + "}", (cls, knob)
         assert "history_minutes" not in features["params"], "left unset so every arm keeps the same rows"
         assert doc["pipeline"]["w1"]["params"]["where"] == [
             {"field": "t_ms", "op": ">=", "value": "${window.start_ms}"},
@@ -713,6 +815,8 @@ def test_each_lane_expands_its_arm_into_the_feature_node():
             arm = flow.lane
             assert params_["families"] == (features["arms"].get(arm) or features["arms"]["all"]), (cls, arm)
             assert params_["scales"] == (features["scale_arms"].get(arm) or list(GRID)), (cls, arm)
+            assert {k: params_[k] for k in (*SHIPPED_WINDOWS, "taker_check_windows")} == {
+                k: v for k, v in manifest["args"]["arm"][arm].items() if k not in ("families", "scales")}, (cls, arm)
             assert doc["walkforward"]["count"] == manifest["args"]["folds"]["count"]
             assert doc["walkforward"]["embargo_days"] == 1
             lanes_runs = {flow.path("fit", "runs") for flow in flows}
