@@ -1,0 +1,188 @@
+{
+  "name": "kalshi-history-index-markets",
+  "notes": "Structural gates over one markets pull of source kalshi-history-index (settled S&P 500 / Nasdaq-100 ladders from both archives). The rule set is crypto_trading's suite-kalshi-history-markets.json with the series swapped: the same pack, the same fields, so the same gates. It restates the series list on purpose (a suite must not read its expectations from the source it validates); tests/test_index_configs.py pins the two equal. Run: python -m dskit.onboarding validate --suite configs/suite-kalshi-history-index-markets.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "markets-rows-arrived",
+      "target": "markets",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "An empty pull is a broken pull (wrong series, API change, a cutoff that moved the archive), never a quiet day."
+    },
+    {
+      "id": "markets-ticker-unique",
+      "target": "markets",
+      "rule": "unique",
+      "kwargs": {
+        "field": "ticker"
+      },
+      "severity": "error",
+      "notes": "One row per market per pull. The live copy of a market the archive also listed is dropped by the pack WHATEVER its settlement time (the real archive lists markets settled about a day after market_settled_ts, probed 2026-10-07); a duplicate here means that routing failed."
+    },
+    {
+      "id": "markets-every-series-present",
+      "target": "markets",
+      "rule": "distinct_count",
+      "kwargs": {
+        "field": "series_ticker",
+        "min": 4,
+        "max": 4
+      },
+      "severity": "error",
+      "notes": "Each of the four series returned at least one settled market. Four restates the series list; the pin test keeps them equal."
+    },
+    {
+      "id": "markets-series-universe",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "series_ticker",
+        "values": [
+          "KXINX",
+          "KXINXU",
+          "KXNASDAQ100",
+          "KXNASDAQ100U"
+        ]
+      },
+      "severity": "error",
+      "notes": "The four series the sources pull, RESTATED here on purpose. tests/test_index_configs.py pins this list equal to every source config's series."
+    },
+    {
+      "id": "markets-status-settled",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "status",
+        "values": [
+          "finalized",
+          "settled"
+        ]
+      },
+      "severity": "warn",
+      "notes": "The source asks for settled markets, so every row should be final: the live API spells it 'finalized' and the archive may spell it 'settled'. Another status is a market whose result and value are not yet known: read it before modelling."
+    },
+    {
+      "id": "markets-result-vocabulary",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "result",
+        "values": [
+          "yes",
+          "no"
+        ]
+      },
+      "severity": "error",
+      "notes": "A settled market reads yes or no. '' means unsettled and anything else (void, scalar) is a settlement the calibration must handle by name: fail here so it is decided, then amend the suite (a new, auditable hash)."
+    },
+    {
+      "id": "markets-strike-type",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "strike_type",
+        "values": [
+          "less",
+          "less_or_equal",
+          "between",
+          "greater",
+          "greater_or_equal",
+          ""
+        ]
+      },
+      "severity": "error",
+      "notes": "A value that is neither a known geometry nor empty is a new market type: block until a payoff rule exists. Empty is allowed here and WARNED by markets-strike-type-set."
+    },
+    {
+      "id": "markets-strike-type-set",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "strike_type",
+        "values": [
+          "less",
+          "less_or_equal",
+          "between",
+          "greater",
+          "greater_or_equal"
+        ]
+      },
+      "severity": "warn",
+      "notes": "An EMPTY strike_type is a market never given a strike. Index ladders set strikes at listing, so an empty one is unexpected: warn by name rather than block, as the crypto suite does."
+    },
+    {
+      "id": "markets-floor-strike-sane",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "floor_strike",
+        "min": 100
+      },
+      "severity": "warn",
+      "notes": "Strikes are S&P 500 or Nasdaq-100 index points, far above 100; a negative, non-numeric or sub-100 one is a unit slip."
+    },
+    {
+      "id": "markets-cap-strike-sane",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "cap_strike",
+        "min": 100
+      },
+      "severity": "warn",
+      "notes": "As floor_strike, for the upper edge of a range or a 'less' market."
+    },
+    {
+      "id": "markets-expiration-value-present",
+      "target": "markets",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "expiration_value"
+      },
+      "severity": "warn",
+      "notes": "The realised settlement value: the index level the market settled on (KXINX-26OCT06H1600: 7818.93). It is gate G0.1's input against the official close. Null on a settled row means the venue omitted it."
+    },
+    {
+      "id": "markets-expiration-value-nonnegative",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "expiration_value",
+        "min": 0
+      },
+      "severity": "error",
+      "notes": "An index level cannot be negative; a negative or non-numeric value is a broken row."
+    },
+    {
+      "id": "markets-volume-present",
+      "target": "markets",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "volume"
+      },
+      "severity": "warn",
+      "notes": "The market's whole-life contracts (volume_fp). Null means the venue omitted it. It is known only after the end of the market: never a feature at a decision."
+    },
+    {
+      "id": "markets-volume-nonnegative",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "volume",
+        "min": 0
+      },
+      "severity": "error",
+      "notes": "A contract count cannot be negative."
+    },
+    {
+      "id": "markets-bitemporal",
+      "target": "markets",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "A market dated at its close cannot be dated after it was acquired; the pack dates an unfinished one at the capture minute."
+    }
+  ]
+}

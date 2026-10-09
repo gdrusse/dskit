@@ -30673,3 +30673,247 @@ Configuration and SQL are trusted program inputs. Source documents are untrusted
 **Compatibility.** Additive: no existing dskit file, kind, field, default or identity changes. `crypto_trading` migrates by its own later step and keeps its interim copy, marked in the module docstring, until then.
 
 **Tests.** The child's `FoldScores`/`KeepRule` tests move with the code; a neutral fixture proves no feature or crypto name is in the module; the child suite passes unchanged until its migration.
+## ADR-0255 — Equity iron-condor robust-selection research replay (PROPOSED)
+
+**Implementation authorization (2026-10-08):** owner explicitly requested targeted parallel build sessions and skeptic review after the cross-branch capability audit. This authorizes the reviewed reusable mathematical mechanisms and integration code with synthetic tests now. Unanswered G3 numerical/statistical choices remain required explicit configuration; no default may represent owner approval, and G1/G2 plus selected G3 settings still gate a real replay. Existing-file edits only in this build; no new package or market data access.
+
+**Status:** owner-frozen scope, otherwise PROPOSED. Fresh reviews of66ad1c1e found the families recorded in RE-ENTRY; corrections below await re-review. No code/data relocation/run until G1-G4 close; no main merge without owner approval. No2026 records, acquisition, fits or spend. ADR0254 and the restored-universe inventory are published on main; the old85 result is not this model. Already-inspected2024-2025 remains research evidence.
+
+**Scope:** one-lot equity condor per ticker-date, exact DTE31, single-trade expiry payoff; early assignment ignored and labeled. Own-date close-based forecast with own-date VWAP is explicitly look-ahead, not executable. All strictly ordered eligible strike combinations, no width/OTM/count cap. Grid is all chain strikes before liquidity; mean-preserving bounding-strike placement. Config owns values. Node names refer to shared pipeline or foreach.pipeline; fan-out is only declared comparison arms, not tickers.
+
+**Formulation:** research/distribution-modeling/simple-formulation-with-robustification.md (3)-(4), explained by I1-I5 in explanations/robust-condor-selection.md. Declared deviations: strike-only grid, collapsed tails, unrestricted ordered candidates, nominal/rho-only arms until bands are admitted. One common ambiguity set per context. Dualized MILP:
+
+Notation: $J=\lbrace 1..m-1\rbrace$, $w_j=(s_{j+1}-s_j)/S_t$, $M$ the multiplier. Each leg $\ell\in\lbrace LP,SP,SC,LC\rbrace$ has its own eligible set (contracts of that type passing the liquidity rule with a vwap that day), $y_i^{\ell}=0$ off it. Each contract has its own price $v_i^{\ell}$ and haircut $h_i^{\ell}=\max(\text{floor},\text{pct}\cdot v_i^{\ell})$ (a put and a call at one strike differ). $f(y)=4z\cdot\text{fee}/M$. $hi_j,lo_j$ are band constants (`bands`); $J^{\text{band}}\subseteq J$ is the band-constrained set, $\mu_j=\nu_j=0$ off it. $y,z\in\lbrace 0,1\rbrace$, $\lambda$ free, $\alpha,\beta,\gamma,\mu,\nu\ge0$.
+
+```math
+\begin{aligned}
+c(y)&=\textstyle\sum_{\ell\in\{SP,SC\}}\sum_i(v_i^{\ell}-h_i^{\ell})\,y_i^{\ell}-\sum_{\ell\in\{LP,LC\}}\sum_i(v_i^{\ell}+h_i^{\ell})\,y_i^{\ell},\\
+\max\ & M\Big[c(y)-f(y)-\lambda-\textstyle\sum_{j\in J}(\alpha_j-\beta_j)\widehat Q_j-\gamma\rho-\sum_{j\in J^{\text{band}}}(\mu_j\,hi_j-\nu_j\,lo_j)\Big]\\
+\text{s.t. }&\textstyle\sum_iy_i^{LP}=\sum_iy_i^{SP}=\sum_iy_i^{SC}=\sum_iy_i^{LC}=z,\quad \sum_{i\ge k}y_i^{LP}\le\sum_{i>k}y_i^{SP}\ (\text{likewise }SP\to SC\to LC),\\
+&\ell_k=\textstyle\sum_i\big[(y_i^{SP}-y_i^{LP})(s_i-s_k)^++(y_i^{SC}-y_i^{LC})(s_k-s_i)^+\big],\\
+&\lambda+\textstyle\sum_{j\ge k}(\alpha_j-\beta_j+\mu_j-\nu_j)\ge\ell_k\ \ (k=1..m),\qquad \alpha_j+\beta_j\le\gamma w_j\ \ (j\in J).
+\end{aligned}
+```
+
+**Solver:** primary maximize dollars, secondary minimize z within the configured tolerance of the certified optimum. Solver gap must satisfy select's absolute/relative limits or skip. Bands must be finite, ordered, nominal-containing and jointly nonempty. Extend the existing DiscreteCDFGrid primal owner with optional bands for parity, preserving its no-band API; no duplicate primal owner.
+
+**Projection:** interval mass p=F(b)-F(a), first moment bF(b)-aF(a)-integral_a^b F(s)ds. Its mean determines fractions on a/b; empty intervals add zero. Explicitly collapse tails. This preserves capped piecewise-linear nominal payoffs, not the full CDF or tail mean. Report clipped-support W1, CDF deviations and numerical payoff-integral diagnostics separately; full-distribution Delta remains unavailable unless separately verified. Mesh breaches refuse. An unrestricted-support triangle bound does NOT imply literal containment of continuous distributions in a strike-supported ball. No such claim; any payoff-equivalent projection claim requires proof/fixtures. Owner selected direct strike-grid calibration: rho is calibrated against losses using the actual placed masses, without adding a forecast-to-grid offset. Diagnostics do not become an extra radius or a continuous-distribution coverage guarantee.
+
+**Inference:** G2 pins the nine nominal evaluation entries from the published model inventory, with fit/checkpoint/source hashes, ordered features, scale, supported heads and archived forecast-valid intervals. Information cutoff includes training AND monitoring/early-stopping labels and applicable availability; training-only cutoff is forbidden. Frozen registered model_inputs supplies the42-feature contract, not closes reconstructed/imputed into42 columns. Follow the archived recovery recipe exactly; missing columns/profile/head or incompatible identities refuse. Pin parity to saved forecasts; no fitting or later-checkpoint substitution.
+
+**Protected data/basis:** G1 proves pre2026 intake before record parsing/dedup; post-ObservationStreamRows filtering is forbidden. Mixed JSON without a trusted date index is blocked. Use metadata for whole-store maximums and bounded safe members for admissible census; unknown remains unknown. Opaque copy/hash verification does not inspect records. Parquet uses DateBoundedParquet. Preserve dedup/fingerprint semantics.
+The source adjustment vintage and allowed split inventory must explain the historical strike basis without2026. Unknown basis/irregular adjustment refuses. Known holding-window splits, recaps or unsupported deliverables refuse absent an exact supported mapping; bind existing exclusions. Preserve the restored universe's UNKNOWN action histories as assumptions, not verified no-split. No larger corporate-action engine.
+
+**Calibration:** owner selected A, expected-loss calibration, on 2026-10-08. This chooses the realized-minus-robust expected-loss criterion below; pooled CDF distance is not the primary radius criterion. Owner then approved the explained finite-grid procedure: evaluate the configured five radii and use the smallest passing value. No passing value means unsupported, with no automatic expansion. Owner approved monthly updates using settled, published audit-template outcomes from calibration and entry phases. This approval does not establish individual-forecast ball coverage or protection for every MILP-selected trade. Expected-loss candidate residual is realized MINUS robust loss, upper mean bound<=0, matching AdaptiveWassersteinRadius. The fixed complementary-quantile template and explicit base liquidity, pinned to select base, apply only to that template population, not all selected trades; sensitivity arms reuse its rho. Audit the actual MILP policy separately on later dates. Payoff-only calibration does not use completed-window pricing tiers. Compute each fixed-template/radius loss once for exact matching input/model/grid/payoff/band/numerical identities; rho0 may use the nominal dot product. Bootstrap resampling reuses these residuals, not new LP solves. Later trade selection uses its assigned radius; no per-trade radius search. Missing/failed results remain refusals.
+rho_calibration.notes defines observed-date starts, complete calendar intervals and exact resampling; zero-inclusion target dates or degenerate block support refuse. Passing also requires nonpositive full observed-date mean. Primary selects, longer sensitivity reports; approximate stress evidence only. Preserve the legacy circular observed-count algorithm through separate shared bootstrap strategies. Refuse insufficient dates/no complete blocks; disclose effective/degenerate support. Publication strictly precedes update reference; monthly history includes only eligible prior calibration/entry audit-template outcomes. Entry pricing tiers freeze after calibration; no later-profit choice.
+
+**Accounting:** settle folds raw entry/opposite expiry fills through the existing public WindowBook, including zero intrinsic. Quantity=contracts*multiplier, prices USD/share, fees total USD charged once at entry; no expiry fee. Decision-scoped positions retain actual contracts and cannot cross-net. Assert zero signed quantities and realised P&L equals the independent closed-form condor outcome. One condor is the statistical unit. No new accounting engine or dskit-eval-v1 events: that schema rejects zero prices, and its report publishes leg/portfolio statistics.
+
+**Evidence:** eight one-factor arms, no Cartesian expansion. Existing RunReport with stages enabled consumes masses.evidence, rho_calibration.audit, select.evidence and settle.evidence. Node-scoped JSON retains exhaustive raw decisions/orders/fills/solves/outcomes/refusals, calibration/mesh diagnostics and per-ticker/arm reconciliation; Markdown is row-capped with the full-JSON pointer. Do not infer calibration from profits or publish portfolio/leg statistics.
+
+**Tier proposal (G3):** reuse existing ParquetRows for the frozen panel and inventory any multi-file-reader gap. Protected intake/multiple roots belong to onboarding/observations (ADR0234 amendment); DTE/phase constraints are the thin adapter. Inference, mass projection and reusable bootstrap belong to dskit packs; equity template/rho adapter remains child-side over them. Generic dual helper in libs/pyomo; RobustCondorSelect subclasses PyomoSolve and overrides role. CondorExpirySettle shares the existing settlement-date rule with CondorQuoteBacktest through one owner. Existing WindowBook/RunReport owners are reused. Exact node tiers/names await G3/sweep.
+
+**Tests before code:** independent enumeration/primal equals MILP with/without bands; rho0, no-trade tie, empty bands, per-leg prices/eligibility/fees, unequal wings, mean/payoff preservation, empty intervals, tails and mesh. Preserve pins:
+(a) pre2026 intake/windows/settlements; (a3) publication before entry/update;
+(b) phase agreement; (c) multiplier owner; (d) shared settlement gap;
+(e) horizon-length primary/longer complete calendar blocks;
+(f) owner-selected settings bind config, legacy unchanged;
+(g) entry/expiry labels on fills; (h) tier order;
+(i) all-label cutoff AND forecast-valid interval;
+(j) sweep keys/base; (k) settlement field; (l) solver certificate/tie;
+(m) seed; (n) source/contract multiplier; (o) irregular tolerance;
+(p) horizon; (q) base haircut arm; (r) estimator.
+Add regressions for never-opened protected members, missing features/parity,
+late monitoring labels, incompatible vintage/holding splits, residual sign,
+irregular-date/tail inclusion and degenerate block refusal; baseline-liquidity binding; zero-expiry fills, fee/multiplier units and per-arm end-flat accounting/overlap/evidence.
+
+**Gates:** G4 design review is closed as recorded in RE-ENTRY. Owner approved expected-loss criterion and finite-grid/smallest-passing procedure; continue remaining G3 choices ONE AT A TIME with recommendations: mesh/score weights, tie/publication/liquidity/tiering/three roots; obtain ADR/data-copy OK. After that G1 relocates option-universe-100, verifies and establishes safe census/schema/basis/action coverage. G2 derives/onboards the verified schedule/input profile; placeholders remain until complete. Changed contracts get scoped review before code. No main merge permission inferred.
+
+**Manifest:** this ADR, existing draft JSON/RE-ENTRY/config tests; demonstrated changes only in named onboarding/pipeline owners with focused tests/docs, child nodes/cdf_study/tests. Reuse reports, no new worksets. Exact new-file manifest settles with G3 before file creation.
+
+ADR0255 intake correction: ParquetStreamRows requires explicit per-source snapshot manifest pins, resolves them through verified_payload_dir and binds declared source, member digests and manifest identity. No implicit latest acquisition or cross-vintage winner. Mixed JSON intake remains a separate gate.
+
+ADR0255 G2 minimal reuse clarification (candidate for scoped review): existing
+onboarded nominal seed11 evaluation score shards already hold the recovered
+Gaussian-mixture curves. Reuse those exact saved forecasts when their verified
+fit/checkpoint identities, all-label cutoff and archived validity interval match.
+Join the frozen panel by symbol/quote_date/expiry with settlement/DTE agreement
+for spot and per-row return scale. Preserve every missing/duplicate refusal and
+source hash. A private preparation recipe uses existing bounded Parquet and
+AtomicFitStore owners; onboard derived replay inputs before consumption.
+This avoids redundant inference infrastructure and does not assert strike-price
+basis compatibility, historical publication proof, or independent qualification.
+Fresh inference remains the archived checkpoint recipe for contexts it supports;
+no later-checkpoint substitution or new fits.
+
+ADR0255 adapter consistency clarification: calendar-day spans are independent
+of the minimum observed-date count; the legacy observed-count bootstrap remains
+unchanged. Publication availability is the later of settlement plus the
+configured session lag and the required confirming bar, without adding a second
+lag. Calibration must resolve the exact saved forecast settlement date, or
+refuse that context. Batch decisions preserve that date; settlement optionally
+checks it before accounting, retaining compatibility for older callers without
+a forecast label. Named eight-arm definitions bind their single-factor meanings;
+missing ticker calibration history produces an explicit pricing-tier refusal,
+never an invented tier. These are corrections to the existing stated protocol,
+not new historical evidence or permission to cross the protected data boundary.
+
+
+Owner decision2026-10-09 supersedes the earlier B refusal: A is approved.
+Limited exception: process owned mixed-year files solely to extract pre2026
+option records, and inspect split dates/ratios including2026 actions to restore
+historical stock/strike units. SQLite may internally parse excluded values.
+No2026 market prices, forecasts or outcomes may be returned, retained, scored
+or used in the replay. Preserve explicit projection SQL, schema checks,
+snapshots, source hashes, original envelopes and deduplication evidence.
+No acquisition, fits or spending. This closes the permission gate only;
+historical basis, actual source conversion and numerical limits still require
+evidence before launch. Existing synthetic adapter review remains scoped to
+candidate a103b701; actual conversion recipes require their own review.
+
+
+Owner decision2026-10-09: neither proposed distribution-distortion cutoff is
+approved. Do not adopt either 5-percentage-point/0.1%-of-spot or
+10-percentage-point/0.25%-of-spot limits, or substitute arbitrary replacements.
+Withdraw that multiple-choice question. This rejection does not relax numerical
+payoff preservation, probability coherence, solver certificates or LP/MILP parity.
+The current draft still requires numerical cdf_tolerance/w1_tolerance values;
+reconcile that interface with this decision before replay rather than silently
+inserting permissive numbers. Existing code reviews remain scoped to the
+unchanged implementation. No real replay has launched.
+
+
+ADR0255 owner-directed launch correction (2026-10-09): rejection of both
+proposed distribution cutoffs plus instruction to continue authorizes explicit
+diagnostics-only CDF/W1 projection settings. Represent disabled admission limits
+as JSON null, not arbitrary large numeric values. Existing positive finite
+numeric limits retain their prior behavior. Probability coherence, finite data,
+quadrature/payoff budgets and solver/parity checks remain enforced. Retain both
+distortion diagnostics in run evidence; do not imply continuous-ball equivalence.
+Acceptance: null/null and each independently disabled limit, legacy numeric
+refusals, malformed values, mandatory numerical refusals and node/config parity.
+Modify only existing projection owner, its node, existing tests and draft JSON;
+scoped independent review before real use.
+
+
+ADR0255 bounded input execution clarification: the owned archived split inventory
+supports reconstruction conditional on its completeness, not certification of
+completeness. Pin action/raw/parquet/snapshot identities and label the assumption.
+The84 explicit current inventories and separately attested older-source evidence
+are evaluated individually; 307 missing-inventory histories remain UNKNOWN.
+Preserve every intended forecast context with an explicit price-basis refusal
+rather than silently changing the model universe or inventing as-traded prices.
+Numerical conversion, original-spot agreement, settlement identities and
+holding-window exclusions remain mandatory. This is retrospective research;
+coverage is reported separately from the392-name model training universe.
+Independent adjudication /root/finish_batch_selector and Luna thread
+01a11ff5-ee1b-7483-bfbc-e7c12402d602 close the clarified design with0Critical/Major;
+actual recipe review remains required. No new provider acquisition or fitting.
+
+## ADR-0256 — Venue-neutral binary-market rows, decision instants and quote state graduate from `crypto_trading`
+
+**Status:** **ACCEPTED 2026-10-07 by the owner (approved ADR-0256 and ADR-0257 together: 'A').** Was PROPOSED 2026-10-07. Renumbered from ADR-0248 at the 2026-10-09 main merge (main took 0248..0254; an open branch holds 0255). Found planning `correlation_arb`, the second child that needs these readers: a child may not import a sibling, and a copy is the duplication CLAUDE.md forbids.
+**Compatibility.** Additive only: new dskit modules; no existing dskit file, kind, field, default or identity changes. `crypto_trading` migrates by its own later step, as under ADR-0245/0246/0247.
+**Sweep** (`MarketRows CandleRows FeeRows DecisionRows MarketState FeeColumns decision_ms strike_known_ms two_sided quote_state`, origin/main, all branches and worktrees): the only implementations are `children/crypto_trading/crypto_trading/{kalshi_rows,decisions,market_state,fees}.py` (about 1,030 lines with `fields.py`). dskit has the read seam (`libs/observations.ObservationRows`), the as-of rule (`libs/parquet_series.prior_index`, ADR-0243), the payoffs (`binary_pricing.PAYOFFS`, ADR-0246) and the fee mechanics (`fee_mechanics`, ADR-0245); nothing turns a binary market's stream into labelled decision rows.
+
+**Context.** The readers are already venue-blind in mechanism: strike-type → payoff, result labels, settled statuses and fee-type → mechanic arrive as params. What is venue-specific is only (i) the stream's field names, which today are literals in `kalshi_rows.py`, and (ii) the vocabularies, which ADR-0245's owner ruling keeps in children ("venue facts are child facts").
+
+**Decision.** Two NEW modules, every column name a param (as `BinaryFairValue` already does), no venue name or vocabulary in code, docstrings or tests:
+1. Tier 1 `dskit/pipeline/binary_decisions.py`: `DecisionRows` (one row per market × declared lead; `I = close − lead`, `E = I + exec_lag`, no row before the strike is known) and `QuoteState` (the quote as of `I` from bars that ENDED by `I`, age-capped, never carried forward; `two_sided` gate). Moved, with tests, from `decisions.py` and `market_state.py`.
+2. Tier 2 `dskit/pipeline/libs/binary_market_rows.py` (subclasses `ObservationRows`): `BinaryMarketRows`, `QuoteBarRows`, `FeeScheduleRows`, `FeeColumns`. The field map (`ticker_field`, `strike_type_field`, `floor_field`, `cap_field`, `result_field`, `settle_value_field`, `settled_at_field`, …) and the vocabularies are params; the Kalshi map lives in each child's run config.
+
+**Alternatives rejected.** Leaving them in `crypto_trading` (the second child copies 1,000 lines); graduating `kalshi_rows.py` as-is with the venue's field names (contradicts ADR-0245's ruling); one module for both tiers (the row readers lean on the observations pack).
+
+**Tests.** The child's existing tests move with the code, re-expressed with the field map passed in; a venue-neutral fixture with renamed fields proves no literal survives; `crypto_trading`'s suite passes unchanged until its migration step.
+
+**Built 2026-10-07** (`cf66f52b`). `dskit/pipeline/binary_decisions.py`: `DecisionRows` (`leads_minutes`, `exec_lag_s`), `QuoteState` (`max_candle_age_ms`, `quote_floor`, `quote_ceiling`), `ListPortsNode` and the output column names. `dskit/pipeline/libs/binary_market_rows.py`: `BinaryMarketRows`, `QuoteBarRows`, `FeeScheduleRows` (every input column a required `*_field` param with no default; vocabularies and `strike_known_lag_s` required params), `FeeColumns` (over `fee_mechanics`), `instant_ms`. Tests: `tests/pipeline/test_binary_decisions.py`, `tests/pipeline_libs/test_binary_market_rows.py`; each reader runs under the child's field names and under renamed ones; a subprocess differential test matches `crypto_trading`'s interim classes row for row, census included. A word-bounded venue grep of the four files is empty. Known minors: `ListPortsNode` is a third copy of the list-port check (the two existing dskit copies could not be edited); `instant_ms` restates `production.base.parse_utc_ms`, pinned by a test. `crypto_trading` unchanged; its migration is its own later step.
+
+## ADR-0257 — Executable digital bounds, pricing a binary from any CDF curve, and a coherence check across linked binaries
+
+**Status:** **ACCEPTED 2026-10-07 by the owner (approved ADR-0256 and ADR-0257 together: 'A').** Was PROPOSED 2026-10-07. Renumbered from ADR-0249 at the 2026-10-09 main merge (main took 0248..0254; an open branch holds 0255). From `correlation_arb` Stage 1 and Stage 3 (`children/correlation_arb/docs/plans/2026-10-07-implementation-plan.md`).
+**Compatibility.** Additive only: new modules; `OptionPriceCDF`, `BinaryFairValue`, `PyomoSolve` and `index_options` are not edited.
+**Sweep** (`vertical spread digital bound super-replicat sub-replicat survival curve GridCurve coherence dutch book arbitrage-free projection isotonic ladder`, origin/main, all branches and worktrees): `OptionPriceCDF` (libs/predictive_cdf.py:6861) prices on mid only; `BinaryPayoff` takes a `survival` callable but only `AveragedLognormal` supplies one; pmquant's crossed-book check is per contract, never across rungs. None of the three exists.
+
+**Decision.**
+1. Tier 1 `dskit/pipeline/digital_bounds.py`: `DigitalBounds` node. From call and put bid/ask at listed strikes, the executable sub- and super-replicating vertical spreads bound `P(S ≥ K)`, `P(S < K)` and `P(L ≤ S < U)`; the tighter of the call and put band is kept; a strike with no bracketing quotes is marked, never interpolated. Quote filtering imports `index_options.contracts.quote_problems`' rule after it graduates here as `quote_problems` (same ADR; `index_options` migrates by its own step).
+2. Tier 1 `dskit/pipeline/binary_curve.py`: `CurveSurvival` (survival from CDF knots, monotone linear interpolation, refusing outside support) and `CurveBinaryFairValue`, a sibling of `BinaryFairValue` that hands `CurveSurvival` to the existing `BinaryPayoff` geometries. Any `GridCurve`/`OptionPriceCDF` output prices a binary; no new payoff vocabulary.
+3. Tier 2 `dskit/pipeline/libs/binary_coherence.py`: `BinaryCoherence`, a `PyomoSolve` subclass with a non-capital role. Declared relations (partition sums to one; thresholds monotone; `between(L, U) = above(L) − above(U)`) over fee-adjusted bid/ask intervals: LP feasibility (infeasible = a riskless set, reported with its executable size) and a weighted projection of mids (weights `1/spread²`) as a de-noised fair value.
+
+**Alternatives rejected.** Child-side implementations (breaks graduation); editing `OptionPriceCDF` to emit bands (additive-only ruling); a copula/dependence pack now (Stage 5, a later ADR only if Stages 1–3 pass).
+
+**Tests.** Hand-worked bounds on a toy chain (bound contains the true digital of a known lognormal; crossed and zero-bid quotes refused by name); `CurveBinaryFairValue` equals `BinaryFairValue` when the curve IS the averaged lognormal; coherence finds a planted bucket-vs-threshold violation, passes a coherent ladder, and its projection is the identity on coherent mids.
+
+**Built 2026-10-07** (`898503f2`). `dskit/pipeline/digital_bounds.py`: `quote_problems` (graduated unchanged; `index_options` migrates later) and `DigitalBounds` (ports `records` + `quotes` → `records`, `refusals`, `census`; statuses ok, unknown_payoff, bad_bounds, no_chain, no_bracket, no_lower_bracket, no_upper_bracket, crossed_band; the inequality directions are proved in the module docstring; the between band is interval arithmetic on the existing payoff objects). `dskit/pipeline/binary_curve.py`: `CurveSurvival` (`level` or `log_return` axis, linear between knots, refuses outside support) and `CurveBinaryFairValue` (statuses ok, no_curve, ineligible_curve, bad_curve, unknown_payoff, bad_bounds, outside_support). `dskit/pipeline/libs/binary_coherence.py`: `BinaryCoherence(PyomoSolve)`, role `transform` (so the capital-role `stat_test` rule does not apply), relations as subclasses of an abstract `Relation`; outputs `records`, `arbitrage`, `summary`. `solver` has no default: pyomo's `appsi_highs` refuses the QP projection, `highs` solves it, so no isotonic fallback was built. Tests: `tests/pipeline/test_{digital_bounds,binary_curve}.py`, `tests/pipeline_libs/test_binary_coherence.py` (band contains the Black-76 digital; narrows as spacing shrinks; curve pricer equals `BinaryFairValue` to 1e-6; planted violation found with credit 0.03 and size 7; projection is the identity on coherent mids). Known limit: contradictory relations make the LP infeasible and raise rather than return a status. **Wiring limit** (review m5): `CurveBinaryFairValue` takes curve ROWS keyed by one id column with plain-list knots; `OptionCDFPanel`'s `cdfs` port is a `JsonArtifact` keyed by four columns with the spot on its records, so a document needs a small adapter step between them (a later, separate decision; the node refuses the panel's output loudly rather than mispricing). `DigitalBounds` treats quotes as forward prices unless `discount_field` is named (documented; error of order r·T).
+
+**Review 2026-10-07** (candidate `ce351528`; two fresh independent lenses, Claude Opus 5.5 subagents). Lens 1 correctness/authority (agent a35ae5bbb303408bd): Critical 0, Major 0, Minor 3 (forward-price default without `discount_field`; float dust marked `crossed_band`; a list-valued chain key crashed), Nit 1 (an ask above 1 skips its relations). Lens 2 tests/integration (agent aadff577958d8c3f4; 59 mutants, 52 killed): Major 1 (a partition was tested only with bids over one; the `<= 1` mutant survived), Minor 5 (tighter upper edge and the [0,1] clip untested; NO-side fee indistinguishable under a symmetric mechanic; duplicate-quote refusal untested; `tolerance` untested; the `OptionCDFPanel` wiring limit above), Nit 1 (an atom at the first knot untested). Corrections (candidate 2): chain keys use one spelling (`_hashable`) and `BAND_TOLERANCE` absorbs float dust, each with a RED-then-GREEN regression; new tests for the under-one partition, the upper edge, both edge clips before a between band, duplicate quotes and `tolerance`; every surviving mutant re-run and killed. Deferred backlog: the NO-side fee test (needs an asymmetric mechanic to be meaningful), the ask-above-1 skip, the first-knot atom, the panel adapter.
+
+**Review continued 2026-10-07/08.** Candidates 2-4 each drew a fresh Major in one family, row-KEY identity (repr keys; type-name tags splitting `numpy.str_`/`StrEnum` from `str`; canonical-JSON keys keying `None`), plus a float-TOLERANCE family (an absolute, then a chain-wide relative allowance that two float-noise strikes could inflate). Three failed correction cycles triggered two independent convergence checkpoints (agents aaef7bc8998c9606d and a550e2cc8eb748c59). Approved changed approach: (1) a per-edge PROVEN float error bound, `EDGE_MAX_ERROR` = 1e-9 with fallback to farther pairs, a crossing only beyond the two edges' summed bounds, checked against exact `Fraction` arithmetic (candidate 4, `a0bdcf1e`); (2) SCALAR-ONLY keys through one public `binary_curve.row_key` (str by `str.__str__`, non-bool int; `None`, absent and `""` are missing; all else refused by name), composite keys only from config column lists (`chain_fields`/`quote_chain_fields`, `curve_key_fields`/`curve_id_fields`), every `BinaryCoherence` id through `row_key`, `PRICE_FLOOR` 1e-12 on quotes, strikes and discounts (candidate 5, `549aa974`). Candidate 5 lenses: correctness (agent ae7f7b5efa1709319) Critical 0 / Major 0 / Minor 3 / Nit 1; tests-integration (agent a83536314b7267c16) Major 1, test-only (an empty key-column list was tested only beside a length mismatch that masked it) and Minor 3 (lying int subclass, whitespace keys, the refusal row's chain field untested). Candidate 6 (`6f4372b5` plus this note) adds those tests; every named mutant now fails a test except `operator.index` on an int subclass, which is equivalent in CPython. **Accepted limits / deferred Minors:** a discounted forward can underflow for absurd discount factors (~1e297); a 10**400 integer strike crashes in the shared `records.number_ok` (outside this ADR); `run()` called WITHOUT `validate_inputs` keeps the last of duplicate curve/coherence ids (the driver always validates); a contrived `Integral` whose `__index__` raises `ValueError` escapes `row_key`; the bracket fallback is O(n^2) in strikes; pyomo's infeasible-relations error is not renamed. Earlier names in this entry (`_hashable`, `BAND_TOLERANCE`, `canonical_key`) are superseded.
+
+**Candidate 6 review (2026-10-08, `6f4372b5`; NOT closed).** Correctness lens (agent a759be8b7ae906c0a): Major — `BinaryCoherence`'s QP projection can hang (HiGHS 1.15.1 via pyomo 6.10.1 `highs`, reproduced standalone) when a mid sits exactly at 0 beside a wide-spread contract, on coherent and incoherent input alike; Minor — an ask of 0 is accepted as an executable offer (a phantom 'buy at 0.0'), unlike `quote_problems`. Tests lens (agent a613752e40b5c56df): Major (test-only, a REPEATED family: relation encodings tested at one position) — chain monotonicity checked only on first/end pairs; Minors — numpy float32/int cells refused by the shared `records.number_ok`; dead rungs, fractional timing params, exclusion ordering, `between(K, K)` and `tolerance=0` untested; one stale README line. Third independent checkpoint (agent ac5b55eb2ea2ff1bc) approved with required changes: an EXACT-only identity shortcut; a default HiGHS time limit plus min-weight (or no) objective scaling; both hang repros under a subprocess timeout; property tests drawn from a strike world with the worst-outcome bound, an independent feasibility oracle and per-position enumeration; recorded mutant kills; a side-specific quote predicate with one owner, encoded as non-binding bounds (a negative fee-adjusted bid means no sale; an ask of 0 or above 1 means no purchase). Owner ruling on contracts quoted on one side only: (B), below.
+
+**Owner rulings 2026-10-09.** (1) One-sided quotes: option (B). A contract quoted on one side only stays in every relation (an LP row only for the side it has; a free variable in the projection) and gets fair value None, status `bad_quote`. ONE quote reader, `_sides`: bid <= 0, ask = 0 and ask >= 1 bind nothing; bid > 1, ask < 0, a non-number or a crossed quote is refused and its relations are skipped by name. (2) Projection domain and certificate: option A, limit 1e-2. `min_spread` must lie in [0.01, 1] (`MIN_SPREAD_FLOOR`, `MIN_SPREAD_CEILING`; refused at plan). Every projection QP is checked by a duality-gap bound built from its sign-corrected duals, `max(s) * (sqrt(Lx - D) + sqrt(P - D))`. A bound above `PROJECTION_BOUND_LIMIT` (1e-2), or a NaN dual, is refused by name, and `summary["projection_bound"]` reports the bound. The bound is loose (about 1e-4 against actual errors near 1e-7) and holds up to HiGHS' feasibility tolerance.
+
+**Candidates 7-10 (2026-10-09; Sonnet 5.5 builders and lenses).**
+- C7 `78c8d844`. Whitened QP (`u = p / s`; max-weight scaling had hung HiGHS and returned wrong optima). Exact-only identity shortcut. `qp_iteration_limit` 100,000 and `time_limit` 60 s injected under `solver_options` (the document wins). Solver exceptions, non-optimal stops and relation-breaking optima are refused by name. Ruling B.
+- C8 `a1a6f265`. After the main merge, the ADR renumbering and the helper dedupe (`name_ok`, `named_payoff`, `output_collision_problems` in `binary_curve`). Correctness lens (agent a4ebaea23a7bcf65e): Major 1, suboptimal "optimal" projections at `min_spread` <= ~8e-6. Tests lens (agent a67ca8c023024fd8b): Major 4, all test-only: the difference projection had no oracle; DigitalBounds put-side clipping and quote-size validity were untested; the property tests avoided the failure region.
+- Checkpoint 4 (agent a245fb69c49770811) approved a floor plus exact oracles and no certificate.
+- C9 `d477fff0`. Floor 1e-4; payout-simplex and active-set oracles; 12/12 mutants killed. Correctness lens (agent a0083e6a7c1752cd4): Major 2. A 173-contract chain at 1e-4 was off by 0.033 and reported ok; `min_spread` had no ceiling. Owner ruling (2) replaced the floor.
+- C10 `93f81a31` (+ comment-only `aba047bc`). 20/20 mutants killed. Correctness lens (agent ae921c678ad6b48df): Critical 0, Major 0, Minor 2, Nit 3. About 14,700 projections, with no error above its bound. Legs and verdicts matched an independent outcome LP on 8,300 worlds.
+- Tests lens: Tests lens (agent a6df6e8480c103b22): Critical 0, Major 0, Minor 6, Nit 6. 253 mutants, 224 killed, 16 real survivors, all coverage gaps: a relation's index after a skipped one, `summary.by_status`, the CDF lower-bound guard, the guard threshold, leg-order determinism, and oracle headroom at abs 1e-6 on other HiGHS builds. Candidate closed.
+- The dskit suites' FAILED set equals origin/main's (environment: missing optional libraries).
+
+**Deferred Minors / Nits (recorded, not fixed).**
+- Rare named refusals inside the domain. The certificate refused 3 correct solves in about 16,000 overlapping-partition worlds with one-sided members, and HiGHS sometimes raises on tie-heavy sets.
+- A refused projection loses the LP verdict.
+- The LP resolves violations only down to HiGHS' 1e-7 feasibility tolerance.
+- `CurveSurvival` on the log axis crashes (`math.log` of an underflowed ratio) at absurd levels instead of returning `outside_support`.
+- `STATUS_OK` is declared in four modules.
+- `crypto_trading` is named in two dskit docstrings.
+- FeeColumns: it uses the newest RETRIEVED fee schedule, it treats a missing strike lag as 0, and it raises on out-of-range quotes. Both defaults are look-ahead-optimistic and documented. Changing them moves `crypto_trading` parity and hashes.
+- Inclusive end stamps are read up to one stamp unit ahead, and no offset knob exists.
+- Unhashable cells raise TypeError in BinaryMarketRows and FeeColumns.
+- Earlier nits stand.
+
+
+## ADR-0258 — Executable decision clock for the condor replay: minimal correction (PROPOSED)
+
+**Status:** PROPOSED 2026-10-09, revision 4 (renumbered from a colliding 0256 at merge; private receipts keep the `adr0256-*` prefix), trimmed at the owner's direction after three Phase-0 lenses (retained privately as `adr0256-phase0-*-review-v1.txt`); owner approved the contract and the convention knob values on 2026-10-09. Addresses the seven findings of the 2026-10-09 task list with the SMALLEST change that makes a revised replay honest; everything else is listed under *Deferred* and is not authorized here. ADR-0255 is unchanged where this ADR is silent. Run 793013c0 stays development evidence, never re-run, relabeled or edited. No fits, provider acquisition, 2026 access, spending or deployment. **The revised replay itself is a separately authorized step**, not implied by this ADR.
+
+**Claim ceiling.** The DECISION clock becomes executable; the fill PRICE stays a bar proxy (owned option data are daily trade bars: bid/ask/size null, `session_label` timing). The product is a *bar-proxy replay on an executable decision clock*: never production-realistic, deployable or a qualification; 2024-2025 is already inspected, so any result is development evidence. In 793013c0 only the nominal arm ever solved (all 4,292 certificates are radius 0); if no radius is supported again, the result is "the nominal comparator on an executable decision clock" and no headline says "robust".
+
+**(1) Clock and (2) fill — one code change.** Decide after the close of t from F_t only; one order for the first session t' > t; fill all four legs at the t' VWAP with the ARM's haircut and liquidity rule (one module-level owner extracted from `RobustCondorBatchSelect._batch_context`, pinned by a saved-decision identity regression and a `liquidity_20`/`haircut_double` case), all-or-none; unfilled when a leg lacks a t' bar, fails the arm rule at t', or its net short price is negative; unfilled orders are counted by reason and never replaced. Expiry stays the forecast's own, so the 31-day horizon contract holds and the hold shortens (remaining DTE recorded); fills are dated t' (pinned). `ExactDteBarChain` gains an optional `fill_session` knob (`"same"` = legacy and the 793013c0 identity, `"next"` = t' bars from a new `fills` stream); `CondorExpirySettle` reads the fill date from the selection. Data: one bounded SQL projection, extract-v3 boundary and checks, of the candidate contracts' t' bars, onboarded as `condor-replay-inputs-20261009-v6`; a pre-registered census (share of t-liquid rows with a t' bar passing the fill rule) is published first and launch requires >= 0.50.
+
+**(3) Expiry lifecycle — disclosure only.** Settlement stays intrinsic at the as-traded expiry close. The settle node adds per-leg flags: ITM by >= `exercise_threshold_usd` (0.01), pin zone (|S_e - K| < threshold) and `would_deliver_shares` (exactly one leg of a wing past the threshold), and the memo counts them. No share delivery, stock liquidation, assignment bracket or dividend handling is simulated: the owned stock bars are split-adjusted and only `close` has an as-traded conversion, so that work is deferred and named as unsupported.
+
+**(4) Account — read-only study, no simulation.** A child read-only CLI over the saved selections and outcomes (the `ledger_studies` pattern) applies decision-time admission with the frozen caps (`max_concurrent` 10, `max_per_symbol` 1, `max_per_date` 3, `max_reserved_fraction` 1.0), reservation = decision `structure_max_loss` with fees once, priority = ex-ante robust value / reservation then symbol ascending, released at settlement; capital = fractions 1, 1/2, 1/4 of the nominal arm's unconstrained peak reservation. It reports admitted/rejected counts and cash-basis P&L of the admitted set beside the single-trade table; it is not a margin, mark-to-market or delivery model and the memo says so.
+
+**(5) Calibration support.** The ADR-0255 sampler cannot cover a trailing date unless an observed start sits exactly B-1 days earlier; all 20 zero-inclusion sets in 793013c0 are trailing (the final date alone in 18; four in the April primary, five in the May sensitivity), so refusal was a property of the date set. New `stats.EdgePaddedCalendarBlockBootstrap` (subclass; one block-construction hook in the base): starts every calendar day from first-(B-1) to last, blocks intersected with the observed dates, empties dropped, `truncated_blocks` reported. Inclusion is positive by construction but NOT equal weight (first date +3.1% at B=31, +8.1% at B=62 on the real 48 dates; spread equals the legacy circular algorithm's). `supported` additionally requires floor(span/B) >= 2 and `min_dates`. `AdaptiveWassersteinRadius` takes the sampler class as a strategy (default legacy); `HeldOutRhoCalibration` gains an optional `block_geometry` knob (absent = legacy; pinned: `from_obj(legacy config).hash == 8580a179…` and legacy `validate_params == []`). Grid, alpha, replicates, seed, residual sign, full-mean check, smallest-passing rule, publication lag and the calibration population are untouched. Disclosure: the author had read the first-month residual means before proposing this; the choice rests on the date sets. An unsupported update still abstains.
+
+**(6) Numerical acceptance.** Keep optimal termination, finite values, `max_absolute_gap_usd` 1e-6, the tie rules (all 1,128 refused primaries had |objective-bound| <= 1.68e-7 and never settled). `max_relative_gap` accepts `null` = diagnostic. Optional `objective_parity_usd` (absent = legacy): after `_certified` and the tie checks, the primary incumbent's robust value is recomputed by the primal owner (`DiscreteCDFGrid` worst case; trivial at radius 0) and must agree, else counted skip `parity_failed`; the traded structure after the tie solve is checked the same way (`parity_failed_tie`); `build_model`/`extract` errors in the batch become counted `context_error`. Ordering pin: `mip_abs_gap` <= `max_absolute_gap_usd` <= `objective_parity_usd`, `tie_tolerance_usd` >= `max_absolute_gap_usd`, and `objective_parity_usd` > `tie_tolerance_usd` (the tie solve leaves the dual variables at the tie floor, so the traded structure's dual value sits up to one tie tolerance below its primal recompute). The value is frozen before any run by a no-outcome dry run at every grid radius on a seeded sample: max(`max_absolute_gap_usd`, 10 x largest discrepancy). **Frozen 2026-10-09:** 60 contexts x 5 radii, 300 solves, 0 non-optimal, largest discrepancy 1.0000106e-6 (the tie slack), so `objective_parity_usd` = 1e-5 (`adr0256-parity-dryrun-v1.json`); the saved masses are not persisted in the run, so the dry run regenerated them with the run's own node and matched all 60 decision ids and radius-0 objectives exactly. Support table: padded sampler supported in 20/20 updates, legacy 0/20 (`adr0256-support-table-v1.json`). Extract-stage structural guards keep their own skip reasons (`nonintegral_solution`, `invalid_leg_count`, `unordered_strikes`, `tie_floor_failed`); a primal owner that cannot price a structure skips `primal_failed`; only data defects in row preparation or `build_model` are `context_error`.
+
+**(7) Population.** restored307 stays refused; results state original85-only support.
+
+**Manifest (sweep clean 2026-10-09).** `dskit/pipeline/stats.py` (+ `tests/pipeline/test_metrics_stats.py`); child `cdf_study.py`, `nodes.py` (`ExactDteBarChain`, `RobustCondorSelect`, `RobustCondorBatchSelect`, `CondorExpirySettle`), `ledger_studies.py` (the account study), existing child tests; one new config `configs/run-equity-condor-executable-clock.json` (exact-manifest count updated); the private v6 recipe under the existing audit root; README/AGENTS/CLAUDE lines. No new dskit module.
+
+**Review record (2026-10-09).** Implementation candidates b68ceaf0 (S1+S2), d6d56437 (S3) and the delta 47da73d7 each passed two independent Sonnet lenses; every Critical/Major was closed in-tree before the lock (private `adr0256-s12-*`, `adr0256-s3-*`, `adr0256-delta-review-v1.txt`). Disclosed backlog: docstring sections on two edited `run` methods, the legacy `cdf_study` liquidity predicate restating thresholds, the account table's unsettled-order column, name-collision nits. The t' calendar is the set of dates present in the fills stream, so the fills census must prove that set equals the raw-calendar t' set before launch.
+
+**Plan.** A: three parallel Sonnet TDD slices (sampler; gap/parity; fill clock + account study), focused tests only. B: two fresh Sonnet lenses. C: dates-only support table, parity dry run, t' census. D (separately authorized): one replay, memo.
+
+**Gate outcome (2026-10-09):** the fills census found 0 of 286,120 liquid decision-day rows with a t' bar: the owned archive carries only DTE 31–45 per session, so the decision contract (DTE 30 on t') is never present. The replay was NOT launched. Closing the timing gap needs a full-expiry chain archive or a forward collection, neither authorized. Code, config (`41273680…`) and gates are retained; the memo `2026-10-09-condor-executable-clock-result.md` is the record.
+
+**Owner decision (2026-10-09, after the gate):** the same-day average (VWAP) fill is ACCEPTED as the assumption, being the best the owned data allow; finding (1) is therefore closed by disclosure, not by a clock change. The config becomes `run-equity-condor-robust-backtest-v2.json` (`fill_session: "same"`, no fills stream, identity `0135e9ff…`), keeping the padded rho support, the null relative gap with the parity gate and the exercise flags; ONE replay of it was launched the same day (candidate 383a6af3; receipt `condor-replay-v2-launch.json`). The `fill_session: "next"` path stays in the code for a future full-expiry archive.
+
+**Replay v2 outcome (2026-10-09):** run `a1c35e4b…` ran clean; rho supported 10/10 and passing in 2025-10/11 at 0.01; nominal 1,259 trades net −$8,395 (the 131 original trades reproduce exactly; the 1,128 previously refused solves −$13,750); every robust arm net negative; 115 `parity_failed` refusals above the frozen 1e-5 stand; the account study refuses on 42 non-positive decision reservations. Memo `2026-10-09-condor-executable-clock-result.md`. Development evidence under the accepted same-day-fill assumption; no qualification.
+
+**Diagnostics (2026-10-09):** bug hunt (no code bug; every nominal trade reproduced), primal/dual harness (MILP exact on hand cases and saved contexts; `DiscreteCDFGrid.worst_expected_loss` has a HiGHS-tolerance error of ~6.7e-7/share at rho > 0 — the 115 parity skips were the primal's, fix pending) and an oracle control (+$1.87M with the true settlement) locate the loss in the forecast distribution and the unbounded objective, not the code. Receipts `adr0256-{bug-hunt-v2-nominal,primal-dual-checks,oracle-control}-v1*` in the audit root.
+
+**Deferred, not authorized:** `open_print`/`limit_touch`/`adverse_extreme` scenarios; share delivery and assignment simulation with as-traded open/dividend conversion; a tier-1 capital-admission module (graduate the study only if a second project asks); brute-force optimality audit; the publication/available-at clock.
+
+## ADR-0259 — The panel zoo packs (RECORD, not a gate)
+
+**Status:** **RECORDED 2026-10-09.** The owner approved the slice and waived the ADR gate on 2026-10-09; this entry only records what shipped.
+**What.** Four tier-2 packs, all by import path with an empty `NODE_KINDS`: `array_panel` (memory-mapped panel, `PanelBands`, gather-by-index windows), `horizon_cdf` (per-horizon distributions, `CommonGrid`, two baselines), `panel_score` (`PanelScore`, `EmpiricalBaseline`, `EwmaStudentBaseline`), `panel_torch` (`PanelTrain`, mixture and quantile heads). Tier 2 follows the precedent of `predictive_cdf`, `cdf_experiment`, `bar_features`, `vol_estimators` and `parquet_series`: multi-module packs that name numpy / torch only inside methods.
+**Sweep (2026-10-09).** No collisions for the new public names (`ArrayPanel`, `PanelBands`, `HorizonForecaster`, `CommonGrid`, `PanelScore`, `PanelTrain`, `EwmaStudentBaseline`, `mixture_family`, `mlp_stack`, `mixture_parts`, `MixtureLossSpec`, `arch_module`, `ArchSequenceEncoder`); `memmap` appears only in `intraday_equities` feature_cache and `test_kronos`.
+**New public seams and their owner.** In `libs/predictive_cdf.py`: `mixture_family`, `mlp_stack`, `mixture_parts`, `_scopes_ok` / `MixtureLossSpec` (which delegates to `_objective_loss`, the one weighting rule). In `libs/torch_ts.py`: `arch_module`, `ArchSequenceEncoder`, and `tcn` gains `kernel_size` / `dilations` with unchanged defaults.
+**Test.** `tests/pipeline_libs/test_panel_zoo_e2e.py`: a 3-fold expanding `walkforward` (`embargo_days: 1`) over one synthetic two-asset, 15-horizon panel with a mixture lane, a quantile lane and both baselines; asserts one shared `rows_sha256`, finite per-horizon CRPS per fold, and no fit label reaching calibration or validation.
+**Not decided here.** A walk-score table (`FoldScores`) is not built; `runs` and `workflow_rollup` tabulate the flat per-fold metrics; zoo CRPS is comparable only within the zoo (the common grid differs from the options child's midpoint-quantile `scores()`).

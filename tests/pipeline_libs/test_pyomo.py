@@ -3168,3 +3168,56 @@ class TestTangentWindowPersistentPath:
         for a, b in zip(w_out, f_out):
             assert a["metrics"]["objective"] == pytest.approx(b["metrics"]["objective"], abs=1e-6)
             assert a["target"] == b["target"]
+
+
+def test_wasserstein_dual_embeds_the_existing_primal():
+    import dskit.pipeline.libs.pyomo as pack
+    assert hasattr(pack, "WassersteinDual"), "missing reusable W1 dual embedding"
+    from pyomo.environ import ConcreteModel, Objective, SolverFactory, value
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+    grid, masses, loss = [80., 95., 110., 130.], [.15, .35, .4, .1], [7., 2., 0., 9.]
+    primal = DiscreteCDFGrid(grid, [.15, .5, .9, 1.])
+    for radius in (0., .001, .03, 1.):
+        model = ConcreteModel()
+        dual = pack.WassersteinDual(grid, masses, radius, 100.)
+        block = dual.attach(model, loss)
+        model.objective = Objective(expr=block.cost)
+        SolverFactory("appsi_highs").solve(model)
+        assert value(block.cost) == pytest.approx(
+            primal.worst_expected_loss(loss, radius, 100.), abs=1e-8)
+
+
+@pytest.mark.parametrize("radius,scale", [(True,100), (-.1,100), (float("inf"),100),
+                                         (0,0), (0,True), (0,float("nan"))])
+def test_wasserstein_dual_invalid_budget_or_scale(radius, scale):
+    from dskit.pipeline.libs.pyomo import WassersteinDual
+    with pytest.raises(ValueError):
+        WassersteinDual([1.,2.], [.5,.5], radius, scale)
+
+
+def test_wasserstein_dual_bands_and_invalid_loss():
+    from dskit.pipeline.libs.pyomo import WassersteinDual
+    from pyomo.environ import ConcreteModel, Objective, SolverFactory, value
+    dual = WassersteinDual([1.,2.,4.], [.2,.5,.3], .3, 2.,
+                           q_lo=[.2,.7,1.],q_hi=[.2,.7,1.])
+    model = ConcreteModel()
+    block = dual.attach(model,[8.,2.,9.])
+    model.objective = Objective(expr=block.cost)
+    SolverFactory("appsi_highs").solve(model)
+    assert value(block.cost) == pytest.approx(5.3, abs=1e-8)
+    with pytest.raises(ValueError, match="losses"):
+        dual.attach(ConcreteModel(), [float("nan"),0.,0.])
+    with pytest.raises(ValueError, match="name"):
+        dual.attach(model, [0.,0.,0.])
+
+
+def test_wasserstein_dual_refuses_nonfinite_or_foreign_expressions():
+    from dskit.pipeline.libs.pyomo import WassersteinDual
+    from pyomo.environ import ConcreteModel, Var
+    dual = WassersteinDual([1.,2.],[.5,.5],.1,1.)
+    model, foreign = ConcreteModel(), ConcreteModel()
+    model.x, foreign.x = Var(), Var()
+    for loss in (float("inf")*model.x, float("nan")*model.x, foreign.x, model.x**2):
+        with pytest.raises(ValueError):
+            dual.attach(model, [loss,0.])
+    assert not hasattr(model, "wasserstein")

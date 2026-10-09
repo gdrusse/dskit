@@ -729,6 +729,37 @@ they register only into private registries, never the default one.
 - `kinds_run_write.py` (ADR-0247): `records-write-run` needs exactly one `{run}` in the file stem of `path`. The
   document-name half of the run-name rule cannot be checked at plan time; apply `run_name_problems(document.name)`
   in a config test.
+- `binary_decisions.py` and `libs/binary_market_rows.py` (ADR-0256): read a binary-market venue's markets, quote
+  bars and fee schedules (`BinaryMarketRows`, `QuoteBarRows`, `FeeScheduleRows`; every input field name is a
+  required `*_field` param, every vocabulary a param), expand markets into one row per lead (`DecisionRows`), add
+  the quote known at the decision (`QuoteState`) and the taker fee (`FeeColumns`, over `fee_mechanics`).
+- `digital_bounds.py`, `binary_curve.py`, `libs/binary_coherence.py` (ADR-0257): executable vertical-spread
+  bounds on a digital from option bid/ask (`DigitalBounds`; a strike without bracketing quotes is marked, never
+  interpolated), a binary priced from any CDF curve through the existing payoffs (`CurveBinaryFairValue`), and an
+  LP coherence check plus a weighted projection across linked binaries (`BinaryCoherence`; the projection is a QP, so
+  `solver` must name one that solves QPs, e.g. pyomo's `highs`, not `appsi_highs`; `min_spread` in [0.01, 1], and
+  every projection is certified by a duality-gap error bound, refused by name above 1e-2).
+  `CurveBinaryFairValue` reads curve rows keyed by one id column; `OptionCDFPanel`'s `cdfs` artifact needs an adapter
+  step first. `DigitalBounds` reads quotes as forward prices unless `discount_field` is named.
+  Ids, chain keys and rights match by `binary_curve.row_key`: a non-empty str or a non-bool int (`1` is not
+  `"1"`); None, an absent column or `""` is missing (`no_chain` / `no_curve`), and anything else (bool, float,
+  Decimal, list, tuple, dict, date, ...) is refused by name (`bad_chain_key` / `bad_curve_key`). A composite key
+  is a list of columns per side: `chain_fields` + `quote_chain_fields`, `curve_key_fields` + `curve_id_fields`,
+  matched in order. A nonzero price, strike or discount below `PRICE_FLOOR` is refused. Each `DigitalBounds` edge carries a
+  proven float-error bound; an edge whose bound exceeds `EDGE_MAX_ERROR` is unusable and the next farther pair is
+  tried, and `crossed_band` means a crossing beyond both edges' errors. `BinaryCoherence`'s `tolerance` gates only
+  the feasible verdict (legs use `LEG_DUST`); an infeasible verdict with no profitable position raises.
+
+**ADR-0259 panel zoo (tier-2, all by import path):**
+
+- `libs/array_panel.py`: `ArrayPanelWrite` writes one memory-mapped panel (features, `[N, H]` labels, time, group, `run`);
+  `ColumnSelector` (an ablation arm is a selector), `PanelBands` (the one place fit / calibration / validation rows are cut),
+  `DevicePanel` (windows gathered by row index, never stored). Labels arrive already divided by their scale.
+- `libs/horizon_cdf.py`: `HorizonForecaster`, `CommonGrid` (one scoring grid; refuses a model whose levels, wings or bounds differ).
+- `libs/panel_torch.py`: `PanelTrain` (encoder + trunk + `mixture` or `quantile` head, no `rows` port) returns a forecaster.
+- `libs/panel_score.py`: `PanelScore` (flat `crps_h*`, `weighted_crps`, `rows_sha256`) plus `EmpiricalBaseline` and `EwmaStudentBaseline`.
+- A lane is `PanelTrain -> PanelScore` in one `walkforward` document; `runs` tabulates every lane's flat metrics per fold.
+  Run it with `tests/pipeline_libs/test_panel_zoo_e2e.py` as the worked example (3 folds, `embargo_days: 1`).
 
 ## Writing your own node
 
@@ -888,8 +919,15 @@ dskit/pipeline/
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
+│                      CalendarBlockBootstrap + EdgePaddedCalendarBlockBootstrap:
+│                      calendar-day block resampling, one `_blocks_for` hook (ADR-0258)
 ├── binary_pricing.py  fair value of a binary contract that settles on an average: AveragedLognormal law,
 │                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)
+├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0257)
+├── binary_decisions.py DecisionRows (one row per market x lead; I, E = I + lag, tau) + QuoteState (the
+│                      quote bar that ended by I, age-capped, never carried forward) + the shared binary-market
+│                      column names (by import path, ADR-0256)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market Brier / log-loss, take-rule profit, a
 │                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
@@ -950,7 +988,11 @@ dskit/pipeline/
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
-│                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244)
+│                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
+│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0259)
+│                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows over the observations seam, every
+│                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0256),
+│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
 ```
@@ -959,7 +1001,10 @@ Tests: `python -m pytest tests/pipeline -q` (tier-1 + purity gate),
 `tests/pipeline_libs -q` (tier-2 packs, importorskip per library).
 ADR-0243..0247 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binary_contract_e2e,binary_contract_pins,fee_mechanics,fee_mechanics_pins,kinds_run_write}.py`,
 `tests/pipeline_libs/test_{parquet_series,parquet_series_guards,vol_estimators,vol_estimators_golden}.py`
+ADR-0259: `tests/pipeline_libs/test_{array_panel,horizon_cdf,panel_score,panel_torch,panel_zoo_e2e}.py`.
 (the `*_golden` file holds the former child's output, frozen in `golden/`).
+ADR-0256: `tests/pipeline/test_binary_decisions.py`, `tests/pipeline_libs/test_binary_market_rows.py`.
+ADR-0257: `tests/pipeline/test_{digital_bounds,binary_curve}.py`, `tests/pipeline_libs/test_binary_coherence.py`.
 
 ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
 ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and

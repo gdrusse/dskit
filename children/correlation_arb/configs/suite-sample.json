@@ -1,0 +1,30 @@
+{
+  "name": "samples-basic",
+  "notes": "The child's validation suite over the `samples` stream (ADR-0015): structure-level rules producing failing COUNTS; error rules can block a publish, warn NEVER blocks. Runs against any acquired snapshot: python -m dskit.onboarding validate --suite configs/suite-sample.json --snapshot <vid>. The sample stream is in-code JSON, so `value` arrives as a real number and in_range works directly — a CSV-backed source would need a cast first (stdlib csv does not guess types).",
+  "rules": [
+    {
+      "id": "rows-arrived",
+      "target": "samples",
+      "rule": "row_count",
+      "kwargs": { "min": 1 },
+      "severity": "error",
+      "notes": "An empty pull is a broken connector, not a quiet day. Raise min to your expected floor."
+    },
+    {
+      "id": "value-present",
+      "target": "samples",
+      "rule": "not_null",
+      "kwargs": { "field": "value" },
+      "severity": "error",
+      "notes": "Nulls in the field downstream work depends on. Loosen with error_if '> 10' to tolerate a known-dirty tail."
+    },
+    {
+      "id": "value-in-range",
+      "target": "samples",
+      "rule": "in_range",
+      "kwargs": { "field": "value", "min": 0, "max": 100 },
+      "severity": "warn",
+      "notes": "An out-of-band value is worth a look, not a blocked publish — warn never blocks (the dbt threshold model)."
+    }
+  ]
+}

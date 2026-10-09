@@ -72,7 +72,9 @@ from dskit.pipeline.records import number_ok
 
 __all__ = [
     "CORRECTIONS",
+    "CalendarBlockBootstrap",
     "EULER_MASCHERONI",
+    "EdgePaddedCalendarBlockBootstrap",
     "METHODS",
     "NO_VARIANCE_RTOL",
     "across_fold_t",
@@ -1954,3 +1956,177 @@ register_correction(
     needs_weights=True,
     doc="Genovese-Roeder weighted BH on p/w with raw weights.",
 )
+
+
+class CalendarBlockBootstrap:
+    """Resample complete observed-date blocks spanning calendar days.
+
+    The caller supplies one value or group per distinct date. Returned indices
+    select entire date groups; they never split tickers within one date.
+    Eligible starts are observed dates with a complete half-open calendar
+    interval inside the observed range. No block wraps to the beginning.
+
+    Parameters
+    ----------
+    dates : sequence of datetime.date
+        Strictly increasing distinct dates, excluding datetime timestamps.
+    block_days : int
+        Positive calendar length for each complete block.
+
+    Examples
+    --------
+    Build a two-day block sampler with an observable support report::
+
+        from datetime import date
+        sampler = CalendarBlockBootstrap(
+            [date(2024, 1, d) for d in (1, 2, 3, 4)], 2)
+        draws = sampler.sample_indices(20, seed=7)
+    """
+
+    def __init__(self, dates, block_days):
+        from datetime import date
+
+        if (not isinstance(dates, (list, tuple)) or not dates
+                or any(type(day) is not date for day in dates)
+                or any(a >= b for a, b in zip(dates, dates[1:]))):
+            raise ValueError("dates must be nonempty, strictly increasing calendar dates")
+        if type(block_days) is not int or block_days < 1:
+            raise ValueError("block_days must be a positive integer")
+        self._dates = tuple(dates)
+        # Ordinals avoid overflow for valid date.max and arbitrarily long spans.
+        ordinals = [day.toordinal() for day in dates]
+        self._block_days = block_days
+        pairs = self._blocks_for(ordinals, block_days)
+        self._starts = tuple(start for start, _ in pairs)
+        self._blocks = tuple(block for _, block in pairs)
+        self._inclusion = tuple(
+            sum(index in block for block in self._blocks)
+            for index in range(len(dates)))
+
+    def _blocks_for(self, ordinals, block_days):
+        """Return the (start ordinal, index tuple) pairs of complete blocks."""
+        return tuple(
+            (ordinal,
+             tuple(range(start, bisect.bisect_left(ordinals, ordinal + block_days))))
+            for start, ordinal in enumerate(ordinals)
+            if ordinal + block_days <= ordinals[-1] + 1)
+
+    @property
+    def supported(self):
+        """Whether all dates have positive inclusion and two distinct blocks."""
+        return len(set(self._blocks)) >= 2 and all(self._inclusion)
+
+    @property
+    def evidence(self):
+        """Return support diagnostics without generating a bootstrap draw."""
+        from datetime import date
+
+        return {
+            "block_days": self._block_days,
+            "date_count": len(self._dates),
+            "eligible_starts": [date.fromordinal(start).isoformat()
+                                for start in self._starts],
+            "distinct_blocks": len(set(self._blocks)),
+            "inclusion_counts": list(self._inclusion),
+            "zero_inclusion_dates": [day.isoformat()
+                                     for day, count in zip(self._dates, self._inclusion)
+                                     if count == 0],
+            "supported": self.supported,
+        }
+
+    def sample_indices(self, replicates, seed):
+        """Draw equal-length date-index samples with replacement.
+
+        Parameters
+        ----------
+        replicates : int
+            Positive number of samples.
+        seed : int
+            Explicit deterministic seed.
+
+        Returns
+        -------
+        list of list of int
+            Each sample has exactly the original number of dates. Complete
+            blocks concatenate in drawn order; only the last is truncated.
+
+        Raises
+        ------
+        ValueError
+            If sampling parameters are invalid or support is insufficient.
+        """
+        if type(replicates) is not int or replicates < 1 or type(seed) is not int:
+            raise ValueError("replicates must be positive and seed must be an integer")
+        if not self.supported:
+            raise ValueError("insufficient complete calendar block support")
+        rng = random.Random(seed)
+        n = len(self._dates)
+        samples = []
+        for _ in range(replicates):
+            indices = []
+            while len(indices) < n:
+                indices.extend(rng.choice(self._blocks))
+            samples.append(indices[:n])
+        return samples
+
+
+class EdgePaddedCalendarBlockBootstrap(CalendarBlockBootstrap):
+    """Resample calendar blocks whose starts may precede the first date.
+
+    Every calendar day from ``first - (block_days - 1)`` to ``last`` starts a
+    half-open interval ``[start, start + block_days)``; the block is that
+    interval intersected with the observed dates, and empty blocks are
+    dropped. Each observed date therefore lies in exactly ``block_days``
+    blocks, so no date, including the trailing one, is left uncovered. Edge
+    blocks are shorter than ``block_days`` and are reported as truncated.
+    Inclusion counts are equal but expected draw weights are not.
+
+    Parameters
+    ----------
+    dates : sequence of datetime.date
+        Strictly increasing distinct dates, excluding datetime timestamps.
+    block_days : int
+        Positive calendar length of each block interval. The earliest padded
+        start must be a representable date, else ``ValueError``.
+
+    Examples
+    --------
+    Cover a trailing date the complete-block sampler leaves out::
+
+        from datetime import date
+        sampler = EdgePaddedCalendarBlockBootstrap(
+            [date(2024, 1, d) for d in (1, 2, 4, 5, 8)], 3)
+        sampler.evidence["zero_inclusion_dates"]
+        # -> []
+    """
+
+    def _blocks_for(self, ordinals, block_days):
+        """Return one (start ordinal, index tuple) pair per non-empty padded start."""
+        first = ordinals[0] - (block_days - 1)
+        if first < 1:
+            raise ValueError("block_days pads before the earliest representable date")
+        pairs = []
+        for start in range(first, ordinals[-1] + 1):
+            lo = bisect.bisect_left(ordinals, start)
+            hi = bisect.bisect_left(ordinals, start + block_days)
+            if lo < hi:
+                pairs.append((start, tuple(range(lo, hi))))
+        return tuple(pairs)
+
+    @property
+    def supported(self):
+        """Complete-sampler support plus a span floor of two block lengths.
+
+        The floor is ``floor(span_days / block_days) >= 2`` and ignores how
+        the observed dates cluster inside the span.
+        """
+        first, last = self._dates[0].toordinal(), self._dates[-1].toordinal()
+        return (last - first + 1) // self._block_days >= 2 and super().supported
+
+    @property
+    def evidence(self):
+        """Return base diagnostics plus ``truncated_blocks`` (edge-overhanging blocks)."""
+        first, last = self._dates[0].toordinal(), self._dates[-1].toordinal()
+        truncated = sum(1 for start in self._starts
+                        if start < first or start + self._block_days > last + 1)
+        return {**super().evidence, "truncated_blocks": truncated}

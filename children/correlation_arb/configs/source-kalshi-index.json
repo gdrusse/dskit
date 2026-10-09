@@ -1,0 +1,18 @@
+{
+  "notes": "Registration input, not a run input: Kalshi's public trade API v2 (no credential; dskit's existing kalshi pack, ADR-0075) for the four S&P 500 / Nasdaq-100 series of the Stage-0 gates: KXINX (S&P 25-point range ladder, daily 16:00 ET), KXINXU (S&P 5-point above/below ladder, hourly and 16:00 events), KXNASDAQ100 (NDX range ladder) and KXNASDAQ100U (NDX above/below). Streams used from THIS source: fee_schedules only (fee_type and multiplier per series, read from the venue, never typed; GET /series/KXINX returned quadratic, multiplier 1 on 2026-10-07). Settled markets come from source-kalshi-history-index.json (both archives plus expiration_value), books from source-kalshi-index-books.json. Register: python -m dskit.onboarding register-source kalshi-index --catalog-source kalshi-index --connector kalshi --config @configs/source-kalshi-index.json --activate --root <store root>; acquire --source kalshi-index --stream fee_schedules --mode backfill.",
+  "series": [
+    "KXINX",
+    "KXINXU",
+    "KXNASDAQ100",
+    "KXNASDAQ100U"
+  ],
+  "statuses": [
+    "settled"
+  ],
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

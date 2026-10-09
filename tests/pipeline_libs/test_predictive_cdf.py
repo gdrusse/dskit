@@ -4783,3 +4783,641 @@ def test_a_dead_group_worker_fails_the_run_naming_the_unfinished_groups(tmp_path
     note = next(n for n in raised.value.__notes__ if 'a group worker died' in n)
     assert "'A'" in note and "'B'" in note and "'C'" in note   # 2W - 1 = 3 were unfinished
     assert not (tmp_path/'dead'/'scores.parquet').exists()
+
+
+@pytest.mark.parametrize("cdf_limit,w1_limit", [(.5, .5), (None, .5), (.5, None), (None, None)])
+def test_mean_preserving_projection_has_payoff_and_tail_evidence(cdf_limit, w1_limit):
+    assert hasattr(predictive_cdf, "MeanPreservingCDFGrid"), (
+        "missing mean-preserving projection; right-endpoint CDF masses bias payoffs")
+    project = predictive_cdf.MeanPreservingCDFGrid(
+        [1., 2., 3.], lambda x: np.clip(x / 4., 0., 1.), spot=2.,
+        quadrature_tolerance=1e-9, payoff_tolerance=1e-9,
+        cdf_tolerance=cdf_limit, w1_tolerance=w1_limit, integration_limit=100)
+    np.testing.assert_allclose(project.masses, [.375, .25, .375], atol=1e-10)
+    assert project.masses @ project.grid == pytest.approx(2.)
+    assert project.evidence["lower_tail_mass"] == pytest.approx(.25)
+    assert project.evidence["upper_tail_mass"] == pytest.approx(.25)
+    assert project.evidence["clipped_w1_over_spot"] == pytest.approx(.0625)
+    assert project.evidence["full_w1_over_spot"] is None
+    assert project.evidence["max_payoff_error"] < 1e-9
+
+    assert project.evidence["cdf_tolerance"] == cdf_limit
+    assert project.evidence["w1_tolerance"] == w1_limit
+
+
+def test_discrete_grid_bands_restrict_worst_loss_and_refuse_invalid_sets():
+    assert hasattr(predictive_cdf.DiscreteCDFGrid, "from_masses"), (
+        "missing validated direct mass and band doorway")
+    grid = predictive_cdf.DiscreteCDFGrid.from_masses([0., 1., 2.], [0., 1., 0.])
+    assert grid.worst_expected_loss([1., 0., 1.], 1., 1.,
+                                   q_lo=[0., 1., 1.],
+                                   q_hi=[0., 1., 1.]) == pytest.approx(0.)
+    assert grid.worst_expected_loss([1., 0., 1.], 1., 1.,
+                                   q_lo=[0., .8, 1.],
+                                   q_hi=[.2, 1., 1.]) == pytest.approx(.4)
+    for lo, hi in (([0., 0., 1.], None),
+                   ([.1, .9, 1.], [.2, 1., 1.]),
+                   ([0., .9, 1.], [0., .8, 1.]),
+                   ([0., 0., 0.], [1., 1., 1.]),
+                   ([0., 0., 1.], [1., .8, 1.])):
+        with pytest.raises(ValueError, match="band"):
+            grid.worst_expected_loss([1., 0., 1.], 0., 1., q_lo=lo, q_hi=hi)
+    with pytest.raises(ValueError, match="band"):
+        grid.choose([], 1., 1., q_lo=[0., 0., 1.])
+
+
+def test_mean_preserving_projection_atoms_empty_cells_and_all_linear_payoffs():
+    from itertools import combinations
+
+    # Atoms include tails, an exact grid knot and two within-cell outcomes.
+    outcomes = np.array([-3., 1., 1.3, 2.7, 8.])
+    probabilities = np.array([.1, .2, .25, .3, .15])
+    cdf = lambda x: float(probabilities[outcomes <= x].sum())
+    grid = np.array([0., 1., 2., 3., 4., 5.])
+    projected = predictive_cdf.MeanPreservingCDFGrid(
+        grid, cdf, spot=2., quadrature_tolerance=1e-8, payoff_tolerance=1e-8,
+        cdf_tolerance=1., w1_tolerance=1., integration_limit=100,
+        breakpoints=[1., 1.3, 2.7])
+    np.testing.assert_allclose(projected.masses, [.1, .375, .165, .21, 0., .15],
+                               atol=1e-10)
+    for lp, sp, sc, lc in combinations(grid, 4):
+        def loss(x):
+            return (np.maximum(sp-x, 0.) - np.maximum(lp-x, 0.)
+                    + np.maximum(x-sc, 0.) - np.maximum(x-lc, 0.))
+        actual = projected.masses @ loss(grid)
+        expected = probabilities @ loss(outcomes)
+        assert actual == pytest.approx(expected, abs=1e-9)
+    assert projected.evidence["full_w1_over_spot"] is None
+
+
+@pytest.mark.parametrize("override,match", [
+    ({"quadrature_tolerance": None}, "tolerances"),
+    ({"payoff_tolerance": -1.}, "tolerances"),
+    ({"spot": True}, "tolerances"),
+    ({"integration_limit": 1.5}, "tolerances"),
+    ({"cdf_tolerance": .01}, "mesh"),
+    ({"w1_tolerance": .001}, "mesh"),
+    ({"cdf_tolerance": None, "w1_tolerance": .001}, "mesh"),
+    ({"w1_tolerance": None, "cdf_tolerance": .01}, "mesh"),
+    ({"cdf_tolerance": True, "w1_tolerance": None}, "tolerances"),
+    ({"cdf_tolerance": None, "w1_tolerance": float("inf")}, "tolerances"),
+    ({"cdf_tolerance": None, "w1_tolerance": None, "payoff_tolerance": None}, "tolerances"),
+    ({"breakpoints": [4.]}, "breakpoints"),
+    ({"breakpoints": [2., 1.5]}, "breakpoints"),
+])
+def test_mean_preserving_projection_requires_explicit_numerical_limits(override, match):
+    kwargs = dict(spot=2., quadrature_tolerance=1e-9, payoff_tolerance=1e-9,
+                  cdf_tolerance=.5, w1_tolerance=.5, integration_limit=100)
+    kwargs.update(override)
+    with pytest.raises(ValueError, match=match):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [1., 2., 3.], lambda x: np.clip(x/4., 0., 1.), **kwargs)
+
+
+@pytest.mark.parametrize("cdf", [
+    lambda x: float("nan"),
+    lambda x: 1.1,
+    lambda x: [0.5],
+    lambda x: 1.-x/4.,
+])
+@pytest.mark.parametrize("limit", [1., None])
+def test_mean_preserving_projection_refuses_invalid_cdf(cdf, limit):
+    with pytest.raises(ValueError, match="CDF"):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [1., 2., 3.], cdf, spot=1., quadrature_tolerance=1e-8,
+            payoff_tolerance=1e-8, cdf_tolerance=limit, w1_tolerance=limit,
+            integration_limit=100)
+
+
+def test_mean_preserving_projection_refuses_unresolved_quadrature():
+    # Discontinuous off-mesh CDF needs subdivision: an insufficient limit refuses.
+    with pytest.raises(ValueError, match="quadrature"):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [0., 1., 2.], lambda x: float(x >= .31415), spot=1.,
+            quadrature_tolerance=1e-12, payoff_tolerance=1e-10,
+            cdf_tolerance=1., w1_tolerance=1., integration_limit=1)
+
+
+def test_discrete_grid_direct_masses_are_copied_and_validated():
+    points = np.array([0., 1., 2.])
+    masses = np.array([.2, .5, .3])
+    grid = predictive_cdf.DiscreteCDFGrid.from_masses(points, masses)
+    points[:] = 9.
+    masses[:] = 0.
+    np.testing.assert_allclose(grid.grid, [0., 1., 2.])
+    np.testing.assert_allclose(grid.masses, [.2, .5, .3])
+    for invalid in ([.1, .2, .3], [-.1, .8, .3], [0., 0.], [0., np.nan, 1.]):
+        with pytest.raises(ValueError):
+            predictive_cdf.DiscreteCDFGrid.from_masses([0., 1., 2.], invalid)
+
+
+def test_discrete_grid_banded_choose_preserves_no_trade_and_nominal():
+    grid = predictive_cdf.DiscreteCDFGrid.from_masses([0., 1., 2.], [.2, .5, .3])
+    fixed = np.cumsum(grid.masses)
+    candidates = [{"id": "one", "net_credit": .4, "loss": [1., 0., 1.]}]
+    assert grid.choose(candidates, 1., 1., q_lo=fixed, q_hi=fixed)["id"] is None
+    assert grid.worst_expected_loss([1., 0., 1.], 0., 1.,
+                                   q_lo=fixed, q_hi=fixed) == pytest.approx(.5)
+    assert grid.worst_expected_loss([1., 0., 1.], 1., 1.,
+                                   q_lo=[0., 0., 1.],
+                                   q_hi=[1., 1., 1.]) == pytest.approx(1.)
+
+
+def test_projection_admission_includes_actual_payoff_quadrature_uncertainty():
+    # Analytic E[(3-X)+] = integral_0^3 (x/3)^1000 dx = 3/1001.
+    kwargs = dict(spot=1., quadrature_tolerance=1., payoff_tolerance=1.,
+                  cdf_tolerance=1., w1_tolerance=10., integration_limit=100)
+    loose = predictive_cdf.MeanPreservingCDFGrid(
+        [0., 1., 2., 3.], lambda x: (x/3.)**1000, **kwargs)
+    analytic = 3./1001
+    actual = loose.masses @ np.maximum(3.-loose.grid, 0.)
+    assert abs(actual-analytic) > 1e-6  # Fixture exposes nontrivial integration error.
+    assert loose.evidence["payoff_reconstruction_residual"] < 1e-12
+    assert loose.evidence["max_payoff_error"] >= abs(actual-analytic)
+    assert loose.evidence["moment_quadrature_error_estimate"] > 1e-6
+    kwargs["payoff_tolerance"] = 1e-12
+    with pytest.raises(ValueError, match="payoff"):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [0., 1., 2., 3.], lambda x: (x/3.)**1000, **kwargs)
+
+
+def test_projection_w1_admission_accounts_for_quadrature_and_projection_uncertainty():
+    # For F(x)=(x/3)^n and each emitted CDF height q, integrate |F-q|
+    # analytically by splitting at the exact crossing 3*q**(1/n).
+    exponent = 200
+    kwargs = dict(spot=1., quadrature_tolerance=1., payoff_tolerance=1.,
+                  cdf_tolerance=1., w1_tolerance=10., integration_limit=100)
+    loose = predictive_cdf.MeanPreservingCDFGrid(
+        [0., 1., 2., 3.], lambda x: (x/3.)**exponent, **kwargs)
+    actual_distance = 0.
+    for a, b, q in zip(loose.grid[:-1], loose.grid[1:],
+                       np.cumsum(loose.masses)[:-1]):
+        crossing = np.clip(3.*q**(1./exponent), a, b)
+        def area(x):
+            return 3.*(x/3.)**(exponent+1)/(exponent+1)
+        actual_distance += (
+            q*(crossing-a)-(area(crossing)-area(a))
+            + area(b)-area(crossing)-q*(b-crossing))
+    sampled = loose.evidence["clipped_w1_over_spot"]
+    assert actual_distance-sampled > 1e-6
+    evidence = loose.evidence
+    assert evidence["clipped_w1_admission_upper_estimate_over_spot"] >= actual_distance
+    assert evidence["clipped_w1_error_estimate_over_spot"] == pytest.approx(
+        evidence["distance_quadrature_error_estimate"]
+        + evidence["moment_quadrature_error_estimate"]
+        + evidence["projection_transport_reconstruction_residual"])
+    kwargs["w1_tolerance"] = (sampled+actual_distance)/2.
+    with pytest.raises(ValueError, match="mesh"):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [0., 1., 2., 3.], lambda x: (x/3.)**exponent, **kwargs)
+
+
+@pytest.mark.parametrize("cdf_limit,w1_limit", [(1., 1.), (None, 1.), (1., None), (None, None)])
+def test_nominal_strike_masses_projects_context_and_retains_curve(cdf_limit, w1_limit):
+    node = predictive_cdf.NominalStrikeMasses(
+        "m",
+        dict(
+            quadrature_tolerance=1e-8,
+            payoff_tolerance=1e-7,
+            cdf_tolerance=cdf_limit,
+            w1_tolerance=w1_limit,
+            integration_limit=100,
+        ),
+    )
+    curve = {"kind": "mixture", "weights": [[1.0]], "means": [[0.0]], "scales": [[0.1]]}
+    forecast = {
+        "symbol": "A",
+        "quote_date": "2025-01-02",
+        "expiry": "2025-02-02",
+        "spot": 100.0,
+        "reference": 0.2,
+        "curve": curve,
+    }
+    out = node.run(
+        None,
+        {
+            "forecasts": [forecast],
+            "chain": [
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-02",
+                    "expiry": "2025-02-02",
+                    "strike": 90,
+                },
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-02",
+                    "expiry": "2025-02-02",
+                    "strike": 100,
+                },
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-02",
+                    "expiry": "2025-02-02",
+                    "strike": 110,
+                },
+                {
+                    "symbol": "A",
+                    "quote_date": "wrong",
+                    "expiry": "2025-02-02",
+                    "strike": 1,
+                },
+            ],
+            "skips": [],
+        },
+    )
+    row = out["masses"][0]
+    assert row["curve"] == curve and sum(row["masses"]) == pytest.approx(1.0)
+    assert row["grid"] == [90.0, 100.0, 110.0] and not out["skips"]
+    assert row["projection_evidence"]["clipped_w1_over_spot"] >= 0
+    assert node.run(None, {"forecasts": [forecast], "chain": [], "skips": []})["skips"]
+
+
+@pytest.mark.parametrize("kind", ["mixture", "student_mixture"])
+def test_nominal_strike_masses_refuses_multrow_curves_and_keeps_skip_identity(kind):
+    node = predictive_cdf.NominalStrikeMasses(
+        "m",
+        dict(
+            quadrature_tolerance=1e-8,
+            payoff_tolerance=1e-7,
+            cdf_tolerance=1.0,
+            w1_tolerance=1.0,
+            integration_limit=10,
+        ),
+    )
+    curve = {
+        "kind": kind,
+        "weights": [[1.0], [1.0]],
+        "means": [[0.0], [0.0]],
+        "scales": [[0.2], [0.2]],
+    }
+    if kind == "student_mixture":
+        curve["degrees"] = 5
+    f = {
+        "symbol": "A",
+        "quote_date": "2025-01-01",
+        "expiry": "2025-02-01",
+        "phase": "entry",
+        "spot": 100.0,
+        "reference": 0.2,
+        "curve": curve,
+        "fit_identity": "f",
+    }
+    out = node.run(
+        None,
+        {
+            "forecasts": [f],
+            "chain": [
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-01",
+                    "expiry": "2025-02-01",
+                    "strike": 90,
+                },
+                {
+                    "symbol": "A",
+                    "quote_date": "2025-01-01",
+                    "expiry": "2025-02-01",
+                    "strike": 110,
+                },
+            ],
+        },
+    )
+    assert not out["masses"] and out["skips"][0]["fit_identity"] == "f"
+
+
+@pytest.mark.parametrize(
+    "name,bad",
+    [
+        ("cdf_tolerance", "bad"),
+        ("cdf_tolerance", 2.0),
+        ("w1_tolerance", float("nan")),
+        ("payoff_tolerance", True),
+        ("quadrature_tolerance", 0.0),
+        ("integration_limit", 1.5),
+    ],
+)
+def test_nominal_strike_projection_invalid_policy_refuses_at_construction(name, bad):
+    params = dict(
+        quadrature_tolerance=1e-8,
+        payoff_tolerance=1e-7,
+        cdf_tolerance=1.0,
+        w1_tolerance=1.0,
+        integration_limit=100,
+    )
+    params[name] = bad
+    with pytest.raises(ValueError):
+        predictive_cdf.NominalStrikeMasses("m", params)
+
+
+def test_nominal_strike_projection_preserves_analytic_lognormal_capped_mean():
+    import math
+    from statistics import NormalDist
+
+    params = dict(
+        quadrature_tolerance=1e-8,
+        payoff_tolerance=1e-7,
+        cdf_tolerance=1.0,
+        w1_tolerance=1.0,
+        integration_limit=100,
+    )
+    forecast = {
+        "symbol": "A",
+        "quote_date": "2025-01-02",
+        "expiry": "2025-02-02",
+        "spot": 100.0,
+        "reference": 0.2,
+        "curve": {
+            "kind": "mixture",
+            "weights": [[1.0]],
+            "means": [[0.3]],
+            "scales": [[0.8]],
+        },
+    }
+    chain = [
+        {
+            **{k: forecast[k] for k in ("symbol", "quote_date", "expiry")},
+            "strike": strike,
+        }
+        for strike in (80.0, 90.0, 100.0, 120.0)
+    ]
+    row = predictive_cdf.NominalStrikeMasses("m", params).run(
+        None, {"forecasts": [forecast], "chain": chain}
+    )["masses"][0]
+    # Independent closed-form E[clip(S exp(a Z), L, U)] for normal Z.
+    mu, sigma = math.log(100.0) + 0.2 * 0.3, 0.2 * 0.8
+    normal = NormalDist()
+
+    def prob(x):
+        return normal.cdf((math.log(x) - mu) / sigma)
+
+    truncated_moment = math.exp(mu + sigma * sigma / 2) * (
+        normal.cdf((math.log(120.0) - mu - sigma * sigma) / sigma)
+        - normal.cdf((math.log(80.0) - mu - sigma * sigma) / sigma)
+    )
+    expected = 80.0 * prob(80.0) + truncated_moment + 120.0 * (1.0 - prob(120.0))
+    assert sum(p * x for p, x in zip(row["masses"], row["grid"])) == pytest.approx(
+        expected, abs=1e-7
+    )
+    from scipy.integrate import quad
+
+    cumulative = 0.0
+    raw_distance = 0.0
+    for i, (left, right) in enumerate(zip(row["grid"], row["grid"][1:])):
+        cumulative += row["masses"][i]
+        crossing = math.exp(mu + sigma * normal.inv_cdf(cumulative))
+        points = [crossing] if left < crossing < right else []
+        raw_distance += quad(
+            lambda x: abs(prob(x) - cumulative),
+            left,
+            right,
+            points=points,
+            epsabs=1e-10,
+        )[0]
+    assert row["projection_evidence"]["clipped_w1_over_spot"] == pytest.approx(
+        raw_distance / 100.0, abs=1e-8
+    )
+
+
+def test_nominal_projection_refuses_duplicate_context_before_integration(monkeypatch):
+    params = dict(quadrature_tolerance=1e-8, payoff_tolerance=1e-7,
+                  cdf_tolerance=1., w1_tolerance=1., integration_limit=100)
+    forecast = {"symbol": "A", "quote_date": "2025-01-02", "expiry": "2025-02-02"}
+    def forbidden(*args, **kwargs):
+        pytest.fail("projection started before duplicate-context validation")
+    monkeypatch.setattr(predictive_cdf, "MeanPreservingCDFGrid", forbidden)
+    with pytest.raises(ValueError, match="duplicate"):
+        predictive_cdf.NominalStrikeMasses("m", params).run(
+            None, {"forecasts": [forecast, dict(forecast)], "chain": []})
+
+
+def test_nominal_projection_reports_overflowed_spot_as_identified_skip():
+    params = dict(quadrature_tolerance=1e-8, payoff_tolerance=1e-7,
+                  cdf_tolerance=1., w1_tolerance=1., integration_limit=100)
+    row = {"symbol": "A", "quote_date": "2025-01-02", "expiry": "2025-02-02",
+           "spot": 10**1000, "reference": .2}
+    chain = [{**row, "strike": x} for x in (90., 100.)]
+    out = predictive_cdf.NominalStrikeMasses("m", params).run(
+        None, {"forecasts": [row], "chain": chain})
+    assert out["masses"] == []
+    assert len(out["skips"]) == 1
+    assert out["skips"][0]["expiry"] == row["expiry"]
+
+
+def test_nominal_projection_context_matching_scales_with_chain_size():
+    class CountedRow(dict):
+        lookups = 0
+        def get(self, key, default=None):
+            CountedRow.lookups += 1
+            return super().get(key, default)
+
+    params = dict(quadrature_tolerance=1e-8, payoff_tolerance=1e-7,
+                  cdf_tolerance=1., w1_tolerance=1., integration_limit=100)
+    forecasts, chain = [], []
+    for i in range(20):
+        row = dict(symbol=str(i), quote_date="2025-01-02", expiry="2025-02-02",
+                   spot=100., reference=.2, curve=dict(
+                       kind="mixture", weights=[[1.]], means=[[0.]], scales=[[1.]]))
+        forecasts.append(row)
+        chain.extend(CountedRow(symbol=row["symbol"], quote_date=row["quote_date"],
+                                expiry=row["expiry"], strike=s) for s in (90., 110.))
+    out = predictive_cdf.NominalStrikeMasses("m", params).run(
+        None, {"forecasts": forecasts, "chain": chain})
+    assert len(out["masses"]) == 20 and not out["skips"]
+    assert {r["symbol"] for r in out["masses"]} == {str(i) for i in range(20)}
+    # Bound matching work independently of the number of other contexts.
+    assert CountedRow.lookups <= 6 * len(chain)
+
+
+# ---- cdf-public-seams: the public factories and the global-only loss spec ---
+
+def _state_digest(module):
+    """Digest of a module's state_dict names, shapes and float64 values."""
+    h = hashlib.sha256()
+    for name, value in module.state_dict().items():
+        h.update(f"{name}:{tuple(value.shape)}".encode())
+        h.update(value.double().numpy().tobytes())
+    return h.hexdigest()
+
+
+_STACK_GOLDEN = {
+    "relu_drop": "a1d8025db7f54a47ac865f513f0926369aa81c10e03fb849f4643933dbec3271",
+    "tanh_plain": "cc7322a00fd0e0d9604d0323dfdf9fdc42989db19acc956369ce148293434200",
+}
+
+
+@pytest.mark.parametrize(("label", "activation", "dropout"), [
+    ("relu_drop", "relu", .2), ("tanh_plain", "tanh", 0.)])
+def test_mlp_stack_and_build_module_keep_the_state_dict_byte_identical(
+        label, activation, dropout):
+    torch = pytest.importorskip("torch")
+    model = MixtureMLPCDF(components=2, hidden=[6, 4], activation=activation,
+                          dropout=dropout, device="cpu")
+    torch.manual_seed(3)
+    built = model._build_module(5)
+    torch.manual_seed(3)
+    stacked = predictive_cdf.mlp_stack(5, [6, 4], activation, dropout, 6)
+    assert _state_digest(built) == _state_digest(stacked) == _STACK_GOLDEN[label]
+    assert [type(m) for m in built] == [type(m) for m in stacked]
+
+
+def test_mlp_activations_has_one_owner_and_stack_refuses_unknown():
+    pytest.importorskip("torch")
+    assert set(predictive_cdf.MLP_ACTIVATIONS) == {"tanh", "relu", "silu"}
+    with pytest.raises(ValueError):
+        predictive_cdf.mlp_stack(3, [4], "gelu", 0., 2)
+    with pytest.raises(ValueError):
+        MixtureMLPCDF(activation="gelu", device="cpu")
+
+
+def test_mixture_parts_is_the_estimators_parts_transform():
+    torch = pytest.importorskip("torch")
+    model = MixtureMLPCDF(components=3, device="cpu", min_scale=.2)
+    raw = torch.randn(5, 9, dtype=torch.float64)
+    for got, want in zip(predictive_cdf.mixture_parts(raw, .2), model._parts(raw)):
+        torch.testing.assert_close(got, want, rtol=0, atol=0)
+    logw, mu, sigma = predictive_cdf.mixture_parts(raw, .2)
+    np.testing.assert_allclose(logw.exp().sum(1).numpy(), 1., atol=1e-12)
+    assert (sigma > .2).all()
+
+
+def test_mixture_family_is_the_registered_family_and_refuses_unknown():
+    assert set(predictive_cdf.MIXTURE_FAMILY_KINDS) == {"gaussian", "student"}
+    assert isinstance(predictive_cdf.mixture_family(dict(_GAUSSIAN)),
+                      predictive_cdf._GaussianFamily)
+    student = predictive_cdf.mixture_family(dict(_STUDENT))
+    assert isinstance(student, predictive_cdf._StudentFamily) and student.degrees == 5
+    for bad in ({"kind": "laplace"}, {}, None, {"kind": "student"},
+                {"kind": "student", "degrees": 2}):
+        with pytest.raises(ValueError):
+            predictive_cdf.mixture_family(bad)
+
+
+def test_torch_cdf_still_refuses_a_global_only_loss_list():
+    for losses in ([{"kind": "crps", "weight": 1.}], [{"kind": "nll", "weight": 1.}],
+                   [{"kind": "tail_crps", "weight": 1.}]):
+        with pytest.raises(ValueError, match="composite loss"):
+            predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses, device="cpu")
+
+
+_SPEC_WINGS = [[-6., -2.], [2., 6.]]
+
+
+def _spec(losses, **kw):
+    return predictive_cdf.MixtureLossSpec(losses=losses, **kw)
+
+
+@pytest.mark.parametrize("losses", [
+    [{"kind": "crps", "weight": 1.}], [{"kind": "nll", "weight": 2}],
+    [{"kind": "nll", "weight": 1.}, {"kind": "crps", "weight": .5}]])
+def test_mixture_loss_spec_accepts_global_only_terms(losses):
+    assert _spec(losses).loss_config == losses
+
+
+def test_mixture_loss_spec_accepts_crps_plus_tail_crps_with_intervals():
+    spec = _spec([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+                 tail_intervals=_SPEC_WINGS, family={"kind": "student", "degrees": 5})
+    assert isinstance(spec.family, predictive_cdf._StudentFamily)
+
+
+@pytest.mark.parametrize(("losses", "kw"), [
+    ([], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "crps", "weight": 1.}], {}),
+    ([{"kind": "decision_brier", "weight": 1.}], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "decision_log", "weight": 1.}], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}],
+     {"tail_intervals": _SPEC_WINGS}),
+    ([{"kind": "crps", "weight": 0.}], {}),
+    ([{"kind": "crps", "weight": 1., "extra": 1}], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}], {}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+     {"tail_intervals": []}),
+    ([{"kind": "crps", "weight": 1.}], {"tail_intervals": _SPEC_WINGS}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+     {"tail_intervals": [[-6., -2.], [-3., 1.]]}),
+    ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+     {"tail_intervals": [[2., -2.]]}),
+    ([{"kind": "crps", "weight": 1.}], {"family": {"kind": "laplace"}}),
+])
+def test_mixture_loss_spec_refuses_invalid_specs(losses, kw):
+    with pytest.raises(ValueError):
+        _spec(losses, **kw)
+
+
+def test_mixture_loss_spec_allows_touching_intervals():
+    _spec([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+          tail_intervals=[[-6., -2.], [-2., 0.]])
+
+
+def test_mixture_loss_spec_refuses_unknown_arguments():
+    with pytest.raises(TypeError):
+        _spec([{"kind": "crps", "weight": 1.}], tail_weight=1.)
+
+
+def _flat_batch(rows=6):
+    import torch
+    w, m, s, y = _draw_mixture(rows=rows, seed=9)
+    return [torch.tensor(a, dtype=torch.float64) for a in (y, np.log(w), m, s)]
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_mixture_loss_spec_crps_tail_equals_torch_cdf_objective(name):
+    torch = pytest.importorskip("torch")
+    config = dict(_GAUSSIAN if name == "gaussian" else _STUDENT)
+    losses = [{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]
+    y, logw, mu, sigma = _flat_batch()
+    spec = _spec(losses, family=config, tail_intervals=WINGS)
+    got = spec.loss(y, logw, mu, sigma)
+    model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses,
+                                    family=config, device="cpu")
+    context = _zoo_context(len(y))
+    model.fit_decision_context(context, context)
+    training = model._training_context(np.zeros((len(y), 1)))
+    want = model._objective_loss(y[:, None], logw, mu, sigma, torch.arange(len(y)), training)
+    assert got.dim() == 0
+    assert got.item() == pytest.approx(want.item(), rel=0, abs=1e-9)
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_mixture_loss_spec_global_terms_are_the_family_means(name):
+    torch = pytest.importorskip("torch")
+    config = dict(_GAUSSIAN if name == "gaussian" else _STUDENT)
+    y, logw, mu, sigma = _flat_batch()
+    family = _family(name)
+    crps, nll = family.crps(y[:, None], logw, mu, sigma), -torch.logsumexp(
+        logw + family.log_density(y[:, None], mu, sigma), dim=1)
+    got = _spec([{"kind": "crps", "weight": .4}, {"kind": "nll", "weight": 1.5}],
+                family=config).loss(y, logw, mu, sigma)
+    assert got.item() == pytest.approx((.4*crps.mean() + 1.5*nll.mean()).item(), abs=1e-12)
+    # A (rows, 1) target is the same objective as the flat one.
+    again = _spec([{"kind": "crps", "weight": .4}, {"kind": "nll", "weight": 1.5}],
+                  family=config).loss(y[:, None], logw, mu, sigma)
+    assert again.item() == got.item()
+
+
+def test_mixture_loss_spec_is_differentiable_and_float32_matches_float64():
+    torch = pytest.importorskip("torch")
+    losses = [{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]
+    spec = _spec(losses, tail_intervals=WINGS)
+    y, logw, mu, sigma = _flat_batch()
+    want = spec.loss(y, logw, mu, sigma).item()
+    f32 = [t.float().clone() for t in (y, logw, mu, sigma)]
+    for t in f32[1:]:
+        t.requires_grad_(True)
+    got = spec.loss(*f32)
+    assert got.dtype == torch.float32
+    got.backward()
+    assert all(torch.isfinite(t.grad).all() and t.grad.abs().sum() > 0 for t in f32[1:])
+    assert got.item() == pytest.approx(want, rel=1e-5)
+
+
+def test_mixture_loss_spec_refuses_malformed_tensors():
+    pytest.importorskip("torch")
+    spec = _spec([{"kind": "crps", "weight": 1.}])
+    y, logw, mu, sigma = _flat_batch()
+    with pytest.raises(ValueError):
+        spec.loss(y[:-1], logw, mu, sigma)
+    with pytest.raises(ValueError):
+        spec.loss(y, logw, mu[:, :2], sigma)
+    with pytest.raises(ValueError):
+        spec.loss(y.reshape(2, 3), logw, mu, sigma)

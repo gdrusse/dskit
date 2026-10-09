@@ -1,0 +1,17 @@
+{
+  "notes": "Registration input, not a run input: a NARROW Cboe chain recorder (dskit's cboe pack, ADR-0182; no credential) for the hedge leg of the Kalshi index study: SPX and NDX, PM-settled roots only (SPXW, NDXP), expiries within one day. It exists beside index_options' cboe-chain-wide source, which already records these chains at 10:30, 15:50 and 16:20 ET but at about 190 MB a snapshot, too heavy for the 5-minute 15:00-16:20 ET cadence the kill test needs near the close. Quotes are Cboe's 15-minute-delayed chain, stamped with their own quote_time: a decision at instant I may read only a chain whose quote_time is at or before I. A bid of 0 means no market. Register: python -m dskit.onboarding register-source cboe-0dte --catalog-source cboe-0dte --connector cboe --config @configs/source-cboe-0dte.json --activate --root <store root>; acquire --stream option_chain --mode live, repeated by watch every 300 s from 15:00 to 16:20 ET.",
+  "symbols": [
+    "SPX",
+    "NDX"
+  ],
+  "roots": [
+    "SPXW",
+    "NDXP"
+  ],
+  "max_dte": 1,
+  "pace_s": 1.0,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

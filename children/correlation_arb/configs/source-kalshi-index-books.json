@@ -1,0 +1,14 @@
+{
+  "notes": "Registration input, not a run input: the live order-book recorder for the four index series (gate G0.4), from dskit's kalshi pack. Kalshi serves no historical books, so every day not recorded is lost to the Stage-3 coherence scan and the Stage-4 maker simulation. Pull ONLY orderbooks from this source: acquire --source kalshi-index-books --stream orderbooks --mode live, repeated by `watch` between about 14:30 and 16:00 ET on trading days (watch exits on the first error, so supervise it). The stream lists OPEN markets whatever statuses says, so none is set. A pass is one request per open market (several hundred across the four ladders), so the cadence is pass time plus --every-seconds; captured_at is a LOWER bound on when a book was read. Bids are stored as served, never mirrored. Register: python -m dskit.onboarding register-source kalshi-index-books --catalog-source kalshi-index-books --connector kalshi --config @configs/source-kalshi-index-books.json --activate --root <store root>.",
+  "series": [
+    "KXINX",
+    "KXINXU",
+    "KXNASDAQ100",
+    "KXNASDAQ100U"
+  ],
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

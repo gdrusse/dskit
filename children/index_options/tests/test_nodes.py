@@ -1140,3 +1140,1089 @@ def test_a_cohort_column_the_read_lacks_refuses_by_name(stub_panel):
     node = ExactExpiryPanelRead("panel", _panel_read_params(cohort_columns=["nope"]))
     with pytest.raises(ValueError, match="nope"):
         node.run(None, {})
+
+
+@pytest.mark.parametrize("seed", range(15))
+@pytest.mark.parametrize("banded", [False, True])
+def test_robust_condor_all_strikes_matches_enumeration(seed, banded):
+    import index_options.nodes as nodes
+    assert hasattr(nodes, "RobustCondorSelect"), "missing exact robust condor selector"
+    from itertools import combinations
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+    grid = [70., 82., 91., 103., 116., 135.]
+    masses = [.05, .15, .3, .25, .15, .1]
+    context = dict(decision_id="fixture", arm_id="base", symbol="SYNTH",
+                   quote_date="2025-02-04", expiry="2025-03-07",
+                   grid=grid, masses=masses, spot=100., rho=.003, legs={})
+    for role, prices in {"LP":[20,14,8,5,3,1], "SP":[21,15,9,6,4,2],
+                         "SC":[1,3,5,8,14,20], "LC":[2,4,6,9,15,21]}.items():
+        context["legs"][role] = [
+            dict(index=i, price=float(price), haircut=.03, contract_id=f"{role}-{i}")
+            for i, price in enumerate(prices)]
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    context["rho"] = [0., .003, .03][seed % 3]
+    for role in context["legs"]:
+        for row in context["legs"][role]:
+            row["price"] += float(rng.uniform(0, 4))
+        if seed % 2:
+            context["legs"][role] = [r for r in context["legs"][role] if r["index"] != 2]
+    if banded:
+        cumulative = np.cumsum(masses)
+        context["q_lo"] = np.maximum(0., cumulative-.02).tolist()
+        context["q_hi"] = np.minimum(1., cumulative+.02).tolist()
+        context["q_lo"][-1] = context["q_hi"][-1] = 1.
+    params = dict(multiplier=100, fee_per_contract_usd=.65, tie_tolerance_usd=1e-7,
+                  max_absolute_gap_usd=1e-7, max_relative_gap=1e-8)
+    node = nodes.RobustCondorSelect("select", params)
+    out = node.run(None, {"context":context})
+    primal = DiscreteCDFGrid.from_masses(grid, masses)
+    scores = []
+    for indices in combinations(range(len(grid)), 4):
+        by_role = {role:{r["index"]:r for r in context["legs"][role]}
+                   for role in ("LP","SP","SC","LC")}
+        if any(i not in by_role[role] for role,i in zip(("LP","SP","SC","LC"),indices)):
+            continue
+        lp, sp, sc, lc = [grid[i] for i in indices]
+        losses = [max(sp-s,0)-max(lp-s,0)+max(s-sc,0)-max(s-lc,0) for s in grid]
+        credit = sum((1 if role in ("SP","SC") else -1) *
+                     by_role[role][i]["price"]-.03
+                     for role,i in zip(("LP","SP","SC","LC"),indices))
+        scores.append(100*(credit-primal.worst_expected_loss(losses,context["rho"],100,
+                      q_lo=context.get("q_lo"),q_hi=context.get("q_hi"))) - 2.60)
+    assert out["decision"]["robust_value_usd"] == pytest.approx(max(0.,max(scores)), abs=1e-6)
+    assert len(out["evidence"]["solves"]) == 2
+
+
+def _robust_tie_fixture(credit=1., fee=0.):
+    from index_options.nodes import RobustCondorSelect
+    params = dict(multiplier=100, fee_per_contract_usd=fee, tie_tolerance_usd=1e-6,
+                  max_absolute_gap_usd=1e-7, max_relative_gap=1e-8)
+    context = dict(decision_id="fixture", arm_id="base", symbol="SYNTH",
+                   quote_date="2025-02-04", expiry="2025-03-07",
+                   grid=[80.,90.,110.,120.], masses=[.05,.45,.45,.05],
+                   spot=100., rho=0., legs={})
+    for i,role in enumerate(("LP","SP","SC","LC")):
+        context["legs"][role] = [dict(index=i,price=1.+(credit/2 if role in ("SP","SC") else 0.),
+                                     haircut=0.,contract_id=role)]
+    return RobustCondorSelect("select",params), context
+
+
+@pytest.mark.parametrize("credit,fee,status", [(1.,0.,"no_trade"), (1.02,.65,"no_trade"),
+                                              (1.03,.65,"trade")])
+def test_robust_condor_tie_and_fee_units(credit, fee, status):
+    node, context = _robust_tie_fixture(credit, fee)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == status
+    assert len(result["evidence"]["solves"]) == 2
+    if status == "trade":
+        assert result["decision"]["robust_value_usd"] == pytest.approx(.4,abs=1e-7)
+        assert sum(x["fee_usd"] for x in result["decision"]["legs"]) == 2.6
+
+
+def test_robust_condor_empty_eligibility_retains_no_trade():
+    node, context = _robust_tie_fixture(20.)
+    context["legs"]["LP"] = []
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "no_trade"
+    assert result["decision"]["legs"] == []
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda c: c.update(rho=float("nan")),
+    lambda c: c.update(spot=0.),
+    lambda c: c.update(masses=[.1,.1,.1,.1]),
+    lambda c: c.update(q_lo=[.1,.1,.1,1.], q_hi=[.2,.2,.2,1.]),
+    lambda c: c["legs"]["LP"].append(dict(c["legs"]["LP"][0])),
+    lambda c: c["legs"]["LP"][0].update(price=float("inf")),
+    lambda c: c["legs"]["LP"][0].update(index=True),
+    lambda c: c["legs"]["SP"][0].update(haircut=100.),
+])
+def test_robust_condor_invalid_context_refuses_before_solver(mutate, monkeypatch):
+    node, context = _robust_tie_fixture()
+    mutate(context)
+    monkeypatch.setattr(node, "_resolve_solver",
+                        lambda: pytest.fail("invalid input woke the solver"))
+    with pytest.raises(ValueError):
+        node.run(None, {"context":context})
+
+
+def test_robust_condor_missing_explicit_tie_policy_refuses():
+    node, _ = _robust_tie_fixture()
+    params = dict(node.params)
+    del params["tie_tolerance_usd"]
+    with pytest.raises(ConfigError, match="tie_tolerance_usd"):
+        type(node)("select", params)
+
+
+def test_robust_condor_uncertified_primary_skips(monkeypatch):
+    node, context = _robust_tie_fixture()
+    monkeypatch.setattr(node, "_certified", lambda record: False)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "skipped"
+    assert result["decision"]["reason"] == "uncertified_primary"
+    assert len(result["evidence"]["solves"]) == 1
+
+
+def test_robust_condor_uncertified_secondary_skips(monkeypatch):
+    node, context = _robust_tie_fixture()
+    monkeypatch.setattr(node, "_secondary_certified", lambda record: False)
+    result = node.run(None, {"context":context})
+    assert result["decision"]["status"] == "skipped"
+    assert result["decision"]["reason"] == "uncertified_tie"
+    assert "legs" not in result["decision"]
+    assert len(result["evidence"]["solves"]) == 2
+
+
+def test_robust_condor_solver_failure_escapes_without_a_decision(monkeypatch):
+    node, context = _robust_tie_fixture()
+    before = copy.deepcopy(context)
+
+    class FailedSolver:
+        def solve(self, model):
+            raise RuntimeError("controlled backend failure")
+
+    monkeypatch.setattr(node, "_resolve_solver", lambda: FailedSolver())
+    with pytest.raises(RuntimeError, match="controlled backend failure"):
+        node.run(None, {"context":context})
+    assert node.solve_record is None
+    assert node._certificates == []
+    assert context == before
+
+
+def test_robust_condor_binary_certificate_has_dimensionless_bounds():
+    from types import SimpleNamespace
+    node, _ = _robust_tie_fixture()
+    assert node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=1., bound=.5))
+    assert not node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=1., bound=0.))
+    assert node._secondary_certified(SimpleNamespace(
+        termination="optimal", objective=0., bound=0.))
+
+
+@pytest.mark.parametrize("multiplier", [100., True, 0, -1])
+def test_robust_condor_contract_multiplier_is_a_positive_integer(multiplier):
+    node, _ = _robust_tie_fixture()
+    with pytest.raises(ConfigError, match="multiplier"):
+        type(node)("select", {**node.params, "multiplier":multiplier})
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda c: c.update(quote_date="not-a-date"),
+    lambda c: c.update(quote_date="2025-2-4"),
+    lambda c: c.update(expiry="2025-02-04"),
+    lambda c: c.update(expiry="2024-01-01"),
+    lambda c: c.update(expiry="2025-02-31"),
+    lambda c: c["legs"]["SP"][0].update(contract_id="LP"),
+    lambda c: c["legs"]["SC"][0].update(contract_id="LP"),
+])
+def test_robust_condor_inconsistent_identity_refuses_before_solver(mutate, monkeypatch):
+    node, context = _robust_tie_fixture(5.)
+    mutate(context)
+    monkeypatch.setattr(node, "_resolve_solver",
+                        lambda: pytest.fail("invalid identity woke the solver"))
+    with pytest.raises(ValueError):
+        node.run(None, {"context": context})
+
+
+def test_robust_condor_same_contract_may_be_eligible_on_both_sides():
+    node, context = _robust_tie_fixture(5.)
+    context["legs"]["SP"].append(dict(context["legs"]["LP"][0]))
+    decision = node.run(None, {"context": context})["decision"]
+    assert decision["status"] == "trade"
+    assert len({leg["contract"] for leg in decision["legs"]}) == 4
+
+
+@pytest.mark.parametrize("upper,tolerance,status", [
+    (200., 150., "skipped"), (120., 150., "no_trade"),
+    (120., 50., "trade"), (100., 100., "no_trade"), (100., 99., "trade"),
+])
+def test_robust_condor_primary_bounds_must_certify_the_no_trade_tie(
+        upper, tolerance, status, monkeypatch):
+    from dataclasses import replace
+    node, context = _robust_tie_fixture(2.)
+    node = type(node)("select", {**node.params, "tie_tolerance_usd": tolerance,
+                               "max_absolute_gap_usd": 101., "max_relative_gap": 1.1})
+    build_record = node._build_solve_record
+    calls = []
+
+    def valid_uncertain_primary(*args):
+        record = build_record(*args)
+        calls.append(record)
+        if len(calls) == 1:
+            assert record.objective == pytest.approx(100.)
+            return replace(record, bound=upper, gap=abs(upper-record.objective)/record.objective)
+        return record
+
+    monkeypatch.setattr(node, "_build_solve_record", valid_uncertain_primary)
+    result = node.run(None, {"context": context})
+    assert result["decision"]["status"] == status
+    if status == "skipped":
+        assert result["decision"]["reason"] == "uncertified_no_trade_tie"
+        assert len(result["evidence"]["solves"]) == 1
+
+def _robust_batch_params():
+    arms = {
+        "nominal": {"radius": "zero"}, "rho_base": {"radius": "calibrated"},
+        "haircut_0": {"radius": "calibrated", "haircut_multiplier": 0.},
+        "haircut_half": {"radius": "calibrated", "haircut_multiplier": .5},
+        "haircut_double": {"radius": "calibrated", "haircut_multiplier": 2.},
+        "liquidity_3": {"radius": "calibrated", "min_trade_count": 3},
+        "liquidity_10": {"radius": "calibrated", "min_trade_count": 10},
+        "liquidity_20": {"radius": "calibrated", "min_trade_count": 20},
+    }
+    return dict(multiplier=100, fee_per_contract_usd=.65, tie_tolerance_usd=1e-7,
+                max_absolute_gap_usd=1e-7, max_relative_gap=1e-8,
+                calibration_window={"start": "2024-01-01", "end": "2024-12-31"},
+                entry_window={"start": "2025-02-04", "end": "2025-02-04"},
+                protected_end_before="2026-01-01", standard_multiplier=100,
+                liquidity={"min_trade_count": 5, "min_volume": 1},
+                haircut_tiers={name: {"pct": .01, "floor_usd": .01}
+                               for name in ("low", "mid", "high")},
+                arms=arms, tier_tie_policy="symbol_ascending_rank")
+
+
+def _robust_batch_inputs():
+    entry = []
+    for right, values in (("put", [(80., .1), (90., 3.)]),
+                          ("call", [(110., 3.), (120., .1)])):
+        for strike, vwap in values:
+            entry.append(dict(contract=f"{right}-{strike}", symbol="AAA",
+                              quote_date="2025-02-04", expiry="2025-03-07",
+                              right=right, strike=strike, vwap=vwap,
+                              trade_count=10, volume=1, multiplier=100))
+    calibration = [dict(contract=f"cal-{symbol}", symbol=symbol,
+                        quote_date="2024-06-03", expiry="2024-07-05",
+                        right="put", strike=80., vwap=1., trade_count=7,
+                        volume=1, multiplier=100)
+                   for symbol in ("AAA", "ZZZ")]
+    mass = dict(decision_id="batch-fixture", symbol="AAA", quote_date="2025-02-04",
+                expiry="2025-03-07", settlement_date="2025-03-07", grid=[80., 90., 110., 120.],
+                masses=[.05, .45, .45, .05], spot=100., fit_identity="fit", checkpoint_identity="checkpoint", input_identity="input", source_identity="source")
+    return dict(chain=calibration + entry, projected_masses=[mass],
+                rho={"2025-02": 0.}, #
+                # monthly calibration map
+                skips=[], holding_exclusions=[])
+
+
+def test_robust_condor_batch_delegates_to_single_context_solver():
+    from index_options.nodes import RobustCondorBatchSelect, RobustCondorSelect
+    params, inputs = _robust_batch_params(), _robust_batch_inputs()
+    batch = RobustCondorBatchSelect("batch", params)
+    out = batch.run(None, inputs)
+    assert out["evidence"]["tiers"] == {"AAA": "low", "ZZZ": "mid"}
+    nominal = next(row for row in out["decisions"] if row["arm_id"] == "nominal")
+    context = batch._batch_context(inputs["projected_masses"][0], inputs["chain"][2:], "low",
+                             "nominal", 0.)
+    direct = RobustCondorSelect("single", {key: params[key]
+                                           for key in RobustCondorSelect._PARAMS if key in params}).run(
+                                               None, {"context": context})["decision"]
+    direct.update({name: inputs["projected_masses"][0][name] for name in ("fit_identity", "checkpoint_identity", "input_identity", "source_identity")})
+    direct["forecast_settlement_date"] = inputs["projected_masses"][0]["settlement_date"]
+    assert nominal == direct
+    assert all(row["arm_id"] in params["arms"] for row in out["decisions"])
+    assert all(len(row["legs"]) == 4 for row in out["selections"])
+
+
+def test_robust_condor_batch_null_calibration_rho_skips_only_calibrated_arms():
+    from index_options.nodes import RobustCondorBatchSelect
+    inputs = _robust_batch_inputs()
+    inputs["rho"] = {}
+    out = RobustCondorBatchSelect("batch", _robust_batch_params()).run(None, inputs)
+    assert [row["arm_id"] for row in out["decisions"]] == ["nominal"]
+    assert {(row["arm_id"], row["reason"]) for row in out["skips"]} == {
+        (arm, "missing_calibrated_rho") for arm in _robust_batch_params()["arms"]
+        if arm != "nominal"}
+
+class TestExactDteBarChain:
+    def node(self):
+        from index_options import nodes
+        cls = getattr(nodes, "ExactDteBarChain", None)
+        assert cls is not None, "exact-DTE adapter is missing"
+        return cls("chain", {
+            "fields": {key: key for key in ("contract", "symbol", "expiry", "right",
+                       "strike", "date", "vwap", "trade_count", "volume", "multiplier")},
+            "dte": 31, "multiplier": 100, "end_before": "2026-01-01",
+            "windows": [{"name": "calibration", "start": "2024-02-06",
+                         "end": "2024-12-31"},
+                        {"name": "entry", "start": "2025-02-04", "end": "2025-11-28"}]})
+
+    def row(self, **overrides):
+        return dict({"contract": "A-contract", "symbol": "A", "date": "2025-02-04",
+                     "expiry": "2025-03-07", "right": "put", "strike": 100.,
+                     "vwap": 2., "trade_count": 10, "volume": 20, "multiplier": 100,
+                     "source_identity": "saved-source"}, **overrides)
+
+    def test_valid_record_retains_provenance_and_named_phase(self):
+        out = self.node().run(None, {"records": [self.row()]})
+        assert len(out["records"]) == 1 and not out["skips"]
+        row = out["records"][0]
+        assert (row["quote_date"], row["phase"], row["type"]) == (
+            "2025-02-04", "entry", "put")
+        assert row["source_identity"] == "saved-source"
+
+    @pytest.mark.parametrize("changes,reason", [
+        ({"expiry": "2025-03-08"}, "dte"),
+        ({"date": "2025-12-02", "expiry": "2026-01-02"}, "boundary"),
+        ({"date": "2025-01-07", "expiry": "2025-02-07"}, "window"),
+        ({"vwap": float("nan")}, "vwap"),
+        ({"trade_count": True}, "trade_count"),
+        ({"multiplier": 10}, "multiplier"),
+        ({"right": "future"}, "right"),
+    ])
+    def test_ineligible_rows_have_explicit_reasons(self, changes, reason):
+        out = self.node().run(None, {"records": [self.row(**changes)]})
+        assert not out["records"]
+        assert reason in out["skips"][0]["reason"]
+        assert out["skips"][0]["contract"] == "A-contract"
+
+    def test_duplicate_contract_date_refuses_whole_input(self):
+        row = self.row()
+        with pytest.raises(ValueError, match="duplicate"):
+            self.node().run(None, {"records": [row, dict(row)]})
+
+    # ADR-0258: fill_session. "same" is the legacy identity; "next" joins the t' bar.
+    def next_node(self, **over):
+        base = self.node().params
+        return type(self.node())("chain", {**base, "fill_session": "next", **over})
+
+    def test_fill_session_same_is_the_legacy_identity(self):
+        legacy = self.node().run(None, {"records": [self.row()]})
+        same = type(self.node())("chain", {**self.node().params, "fill_session": "same"})
+        out = same.run(None, {"records": [self.row()]})
+        assert out["records"] == legacy["records"] and "fill" not in out["records"][0]
+        assert out["evidence"].value == legacy["evidence"].value
+        with pytest.raises(ValueError, match="fills"):
+            same.run(None, {"records": [self.row()], "fills": []})
+
+    @pytest.mark.parametrize("value", ["prev", "", None, 1, "NEXT"])
+    def test_fill_session_has_two_values(self, value):
+        cls = type(self.node())
+        assert cls.validate_params({**self.node().params, "fill_session": value})
+        assert cls.validate_params({**self.node().params, "fill_session": "next"}) == []
+
+    def test_fill_session_next_needs_the_fills_port(self):
+        with pytest.raises(ValueError, match="fills"):
+            self.next_node().run(None, {"records": [self.row()]})
+
+    def test_next_attaches_the_bar_on_the_streams_first_later_session(self):
+        fills = [self.row(date="2025-02-04", vwap=9.), self.row(date="2025-02-06", vwap=3.,
+                                                                trade_count=7, volume=8),
+                 self.row(date="2025-02-05", vwap=2.5, trade_count=4, volume=6),
+                 self.row(contract="other", date="2025-02-05", vwap=1.)]
+        out = self.next_node().run(None, {"records": [self.row()], "fills": fills})
+        assert out["records"][0]["fill_session"] == "2025-02-05"
+        assert out["records"][0]["fill"] == {"date": "2025-02-05", "vwap": 2.5,
+                                             "trade_count": 4, "volume": 6}
+        assert out["records"][0]["quote_date"] < out["records"][0]["fill"]["date"] \
+            < out["records"][0]["expiry"]
+        assert out["evidence"].value["fill_sessions"] == 3
+
+    def test_next_leaves_a_contract_without_a_bar_on_t_prime_unfilled_not_filled_later(self):
+        # ADR-0258 S3 lens M1: t' is the stream's calendar; a later bar of this contract
+        # never substitutes for the missing t' bar
+        fills = [self.row(contract="other", date="2025-02-05", vwap=1.),
+                 self.row(date="2025-02-06", vwap=3.)]
+        out = self.next_node().run(None, {"records": [self.row()], "fills": fills})
+        assert out["records"][0]["fill_session"] == "2025-02-05"
+        assert out["records"][0]["fill"] is None
+        # with no bar anywhere on 02-05 the calendar's next session is 02-06
+        out = self.next_node().run(None, {"records": [self.row()], "fills": fills[1:]})
+        assert out["records"][0]["fill_session"] == "2025-02-06"
+        assert out["records"][0]["fill"]["vwap"] == 3.
+
+    def test_next_attaches_none_when_no_later_session_precedes_expiry(self):
+        fills = [self.row(date="2025-02-04"), self.row(date="2025-03-07", vwap=1.),
+                 self.row(date="2025-03-10", vwap=1.)]
+        out = self.next_node().run(None, {"records": [self.row()], "fills": fills})
+        assert out["records"][0]["fill"] is None and out["records"][0]["fill_session"] is None
+        empty = self.next_node().run(None, {"records": [self.row()], "fills": []})["records"][0]
+        assert empty["fill"] is None and empty["fill_session"] is None
+
+    def test_next_joins_each_decision_date_to_its_own_later_session(self):
+        rows = [self.row(), self.row(contract="B", date="2025-02-05", expiry="2025-03-08")]
+        fills = [self.row(date="2025-02-05", vwap=2.5), self.row(contract="B", date="2025-02-06", expiry="2025-03-08", vwap=2.6)]
+        out = self.next_node().run(None, {"records": rows, "fills": fills})
+        assert [r["fill"]["date"] for r in out["records"]] == ["2025-02-05", "2025-02-06"]
+        assert [r["fill_session"] for r in out["records"]] == ["2025-02-05", "2025-02-06"]
+
+    def test_next_refuses_fill_rows_at_or_past_the_protected_boundary(self):
+        for day in ("2026-01-01", "2026-01-02"):
+            with pytest.raises(ValueError, match="end_before|boundary"):
+                self.next_node().run(None, {"records": [self.row()],
+                                            "fills": [self.row(date=day, expiry="2026-02-01")]})
+
+    @pytest.mark.parametrize("changes", [{"vwap": float("nan")}, {"trade_count": True},
+                                         {"multiplier": 10}, {"date": "x"}, {"contract": ""}])
+    def test_next_refuses_malformed_fill_rows(self, changes):
+        with pytest.raises(ValueError):
+            self.next_node().run(None, {"records": [self.row()],
+                                        "fills": [self.row(**{"date": "2025-02-05", **changes})]})
+
+    def test_next_refuses_duplicate_fill_bars_and_a_contract_that_disagrees(self):
+        fill = self.row(date="2025-02-05")
+        with pytest.raises(ValueError, match="duplicate"):
+            self.next_node().run(None, {"records": [self.row()], "fills": [fill, dict(fill)]})
+        with pytest.raises(ValueError, match="disagree"):
+            self.next_node().run(None, {"records": [self.row()],
+                                        "fills": [self.row(date="2025-02-05", strike=105.)]})
+
+    def test_next_counts_attached_and_missing_fills_in_evidence(self):
+        rows = [self.row(), self.row(contract="B")]
+        out = self.next_node().run(None, {"records": rows, "fills": [self.row(date="2025-02-05")]})
+        assert out["evidence"].value["fills_attached"] == 1
+        assert out["evidence"].value["fills_missing"] == 1
+
+def test_robust_batch_derived_identity_sell_only_refusal_and_skip_provenance():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _robust_batch_params(), _robust_batch_inputs()
+    inputs["projected_masses"][0].pop("decision_id")
+    inputs["rho"]={}
+    node=RobustCondorBatchSelect("batch",params)
+    mass=next(iter(node._mass_rows(inputs["projected_masses"]).values()))
+    assert isinstance(mass["decision_id"],str) and len(mass["decision_id"])==64
+    chain=[dict(row) for row in inputs["chain"][2:]]
+    chain[0]["vwap"]=.001
+    context=node._batch_context(mass,chain,"low","nominal",0.)
+    assert any(row["contract_id"]==chain[0]["contract"] for row in context["legs"]["LP"])
+    assert all(row["contract_id"]!=chain[0]["contract"] for row in context["legs"]["SP"])
+    out=node.run(None,inputs)
+    for row in out["skips"]+out["decisions"]:
+        for key in ("fit_identity","checkpoint_identity","input_identity","source_identity"):
+            assert row[key] == mass[key]
+
+
+def test_robust_batch_tiers_use_even_sample_median_and_require_prior_window():
+    from index_options.nodes import RobustCondorBatchSelect
+    params=_robust_batch_params()
+    node=RobustCondorBatchSelect("batch",params)
+    rows=[dict(symbol=symbol,quote_date="2024-06-03",trade_count=count)
+          for symbol,counts in (("A",[0,100]),("B",[60,60])) for count in counts]
+    assert node._tiers(rows)=={"A":"low","B":"mid"}
+    params["calibration_window"]["end"]="2025-02-05"
+    assert RobustCondorBatchSelect.validate_params(params)
+
+@pytest.mark.parametrize("arm,spec", [
+    ("rho_base", {"radius":"zero"}),
+    ("nominal", {"radius":"calibrated"}),
+    ("liquidity_3", {"radius":"calibrated"}),
+    ("liquidity_3", {"radius":"calibrated","min_trade_count":3,"haircut_multiplier":2}),
+    ("liquidity_3", {"radius":"calibrated","min_trade_count":5}),
+    ("haircut_half", {"radius":"calibrated","haircut_multiplier":2})])
+def test_robust_batch_canonical_arms_cannot_bypass_or_relabel_policy(arm,spec):
+    from index_options.nodes import RobustCondorBatchSelect
+    params=_robust_batch_params()
+    params["arms"][arm]=spec
+    assert RobustCondorBatchSelect.validate_params(params)
+
+
+def test_robust_batch_missing_ticker_calibration_has_no_implicit_tier():
+    from index_options.nodes import RobustCondorBatchSelect
+    params,inputs=_robust_batch_params(),_robust_batch_inputs()
+    inputs["chain"]=[r for r in inputs["chain"]
+                     if r["symbol"]!="AAA" or r["quote_date"]>"2024-12-31"]
+    out=RobustCondorBatchSelect("batch",params).run(None,inputs)
+    assert not out["decisions"] and not out["selections"]
+    assert {r["reason"] for r in out["skips"]}=={"missing_calibration_tier"}
+    assert {r["arm_id"] for r in out["skips"]}==set(params["arms"])
+
+
+# -- ADR-0258 (6): relative-gap diagnostic, primal parity, ordering pin, context_error ----
+
+ROBUST_LEGACY_CONFIG = "configs/run-equity-condor-robust-backtest.json"
+ROBUST_LEGACY_HASH = "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55"
+
+
+def _parity_params(**overrides):
+    return {"solver_options": {"mip_rel_gap": 0, "mip_abs_gap": 1e-7},
+            "multiplier": 100, "fee_per_contract_usd": .65, "tie_tolerance_usd": 1e-6,
+            "max_absolute_gap_usd": 1e-6, "max_relative_gap": 1e-8,
+            "objective_parity_usd": 1e-5, **overrides}
+
+
+def _without_parity(node):
+    return type(node)("select", {k: v for k, v in node.params.items()
+                                 if k != "objective_parity_usd"})
+
+
+def _parity_node(rho=0., **overrides):
+    from index_options.nodes import RobustCondorSelect
+    _, context = _robust_tie_fixture(2.)
+    context["rho"] = rho
+    return RobustCondorSelect("select", _parity_params(**overrides)), context
+
+
+def test_robust_legacy_config_still_validates_with_its_identity(child_root):
+    import json
+    from dskit.pipeline.document import PipelineDocument
+    from index_options.nodes import RobustCondorBatchSelect
+    document = json.loads((child_root / ROBUST_LEGACY_CONFIG).read_text())
+    assert RobustCondorBatchSelect.validate_params(document["pipeline"]["select"]["params"]) == []
+    assert PipelineDocument.from_obj(document).hash == ROBUST_LEGACY_HASH
+
+
+def _shift_primary(node, monkeypatch, bound_offset=0., objective_offset=0.):
+    from dataclasses import replace
+    build = node._build_solve_record
+    calls = []
+
+    def shifted(*args):
+        record = build(*args)
+        calls.append(record)
+        if len(calls) > 1:
+            return record
+        objective, bound = record.objective+objective_offset, record.bound+objective_offset+bound_offset
+        return replace(record, objective=objective, bound=bound,
+                       gap=abs(objective-bound)/max(abs(objective), 1e-10))
+    monkeypatch.setattr(node, "_build_solve_record", shifted)
+
+
+def test_robust_null_relative_gap_validates_and_accepts_tiny_gap(monkeypatch):
+    from index_options.nodes import RobustCondorSelect
+    assert RobustCondorSelect.validate_params(_parity_params(max_relative_gap=None)) == []
+    assert RobustCondorSelect.validate_params({k: v for k, v in _parity_params().items()
+                                               if k != "max_relative_gap"})
+    assert RobustCondorSelect.validate_params(_parity_params(max_relative_gap=-1.))
+    outcomes = {}
+    for relative in (0., None):
+        node, context = _parity_node(max_relative_gap=relative)
+        _shift_primary(node, monkeypatch, bound_offset=5e-8)
+        out = node.run(None, {"context": context})
+        outcomes[relative] = out["decision"]
+        assert out["evidence"]["solves"][0]["gap"] > 0
+    assert outcomes[0.]["reason"] == "uncertified_primary"
+    assert outcomes[None]["status"] == "trade"
+
+
+@pytest.mark.parametrize("rho", [0., .03])
+def test_robust_parity_passes_on_a_correct_solve(rho):
+    grid = [70., 82., 91., 103., 116., 135.]
+    from index_options.nodes import RobustCondorSelect
+    context = dict(decision_id="fixture", arm_id="base", symbol="SYNTH",
+                   quote_date="2025-02-04", expiry="2025-03-07", grid=grid,
+                   masses=[.05, .15, .3, .25, .15, .1], spot=100., rho=rho, legs={})
+    for role, prices in {"LP": [20, 14, 8, 5, 3, 1], "SP": [21, 15, 9, 6, 4, 2],
+                         "SC": [1, 3, 5, 8, 14, 20], "LC": [2, 4, 6, 9, 15, 21]}.items():
+        context["legs"][role] = [dict(index=i, price=float(p) + (12. if role in ("SP", "SC") else 0.), haircut=.03,
+                                      contract_id=f"{role}-{i}") for i, p in enumerate(prices)]
+    out = RobustCondorSelect("select", _parity_params()).run(None, {"context": context})
+    assert out["decision"]["status"] == "trade"
+    for certificate in out["evidence"]["solves"]:
+        parity = certificate["parity"]
+        assert parity["passed"] and parity["discrepancy_usd"] <= 1e-5
+        assert parity["recomputed_usd"] == pytest.approx(parity["model_usd"], abs=1e-5)
+    assert out["decision"]["robust_value_usd"] == pytest.approx(
+        out["evidence"]["solves"][1]["parity"]["recomputed_usd"], abs=1e-9)
+
+
+def test_robust_parity_absent_leaves_certificates_legacy():
+    node, context = _robust_tie_fixture(2.)
+    out = node.run(None, {"context": context})
+    assert all("parity" not in row for row in out["evidence"]["solves"])
+
+
+def test_robust_corrupted_primary_objective_fails_parity_before_the_tie_solve(monkeypatch):
+    node, context = _parity_node()
+    _shift_primary(node, monkeypatch, objective_offset=.5)
+    out = node.run(None, {"context": context})
+    assert out["decision"] == {**{k: context[k] for k in node._IDENTITY},
+                               "status": "skipped", "reason": "parity_failed"}
+    assert len(out["evidence"]["solves"]) == 1
+    parity = out["evidence"]["solves"][0]["parity"]
+    assert not parity["passed"] and parity["discrepancy_usd"] == pytest.approx(.5)
+
+
+def test_robust_corrupted_tie_structure_fails_tie_parity_before_the_floor(monkeypatch):
+    node, context = _parity_node()
+    primal, calls = node._primal_value, []
+
+    def drifting(legs):
+        calls.append(1)
+        robust, worst = primal(legs)
+        return (robust-.5, worst) if len(calls) == 2 else (robust, worst)
+
+    monkeypatch.setattr(node, "_primal_value", drifting)
+    out = node.run(None, {"context": context})
+    assert out["decision"]["reason"] == "parity_failed_tie"
+    assert len(out["evidence"]["solves"]) == 2
+    assert not out["evidence"]["solves"][1]["parity"]["passed"]
+
+
+@pytest.mark.parametrize("parity", [True, False])
+def test_robust_floor_failure_has_its_own_reason_in_parity_mode_and_raises_in_legacy(
+        parity, monkeypatch):
+    node, context = _parity_node()
+    if not parity:
+        node = _without_parity(node)
+    certified = node._secondary_certified
+
+    def lowered_floor(record):
+        node._certificates[0]["bound"] += 1.
+        return certified(record)
+
+    monkeypatch.setattr(node, "_secondary_certified", lowered_floor)
+    if parity:
+        assert node.run(None, {"context": context})["decision"]["reason"] == "tie_floor_failed"
+    else:
+        with pytest.raises(ValueError, match="tie floor"):
+            node.run(None, {"context": context})
+
+
+@pytest.mark.parametrize("parity", [True, False])
+def test_robust_nonintegral_solution_skips_only_in_parity_mode(parity, monkeypatch):
+    import pyomo.environ as pe
+    node, context = _parity_node()
+    if not parity:
+        node = _without_parity(node)
+    real = pe.value
+
+    def fractional(expr, *args, **kwargs):
+        return .4 if getattr(expr, "name", None) == "z" else real(expr, *args, **kwargs)
+
+    monkeypatch.setattr(pe, "value", fractional)
+    if parity:
+        decision = node.run(None, {"context": context})["decision"]
+        assert (decision["status"], decision["reason"]) == ("skipped", "nonintegral_solution")
+    else:
+        with pytest.raises(ValueError, match="nonintegral"):
+            node.run(None, {"context": context})
+
+
+@pytest.mark.parametrize("change,fragment", [
+    ({"solver_options": {"mip_abs_gap": 1e-5}}, "mip_abs_gap <= max_absolute_gap_usd"),
+    ({"max_absolute_gap_usd": 1e-4, "tie_tolerance_usd": 1e-4},
+     "max_absolute_gap_usd <= objective_parity_usd"),
+    ({"tie_tolerance_usd": 1e-8}, "tie_tolerance_usd >= max_absolute_gap_usd"),
+    ({"objective_parity_usd": 1e-6}, "objective_parity_usd > tie_tolerance_usd"),
+    ({"objective_parity_usd": -1.}, "objective_parity_usd must be"),
+    ({"objective_parity_usd": None}, "objective_parity_usd must be"),
+])
+def test_robust_parity_ordering_pin_names_the_violated_inequality(change, fragment):
+    from index_options.nodes import RobustCondorSelect
+    problems = RobustCondorSelect.validate_params(_parity_params(**change))
+    assert any(fragment in problem for problem in problems), problems
+    with pytest.raises(ConfigError):
+        RobustCondorSelect("select", _parity_params(**change))
+
+
+def test_robust_ordering_pin_is_off_without_parity_and_unset_mip_gap_is_unpinned():
+    from index_options.nodes import RobustCondorSelect
+    legacy = {k: v for k, v in _parity_params().items() if k != "objective_parity_usd"}
+    legacy.update(tie_tolerance_usd=50., max_absolute_gap_usd=101., max_relative_gap=1.1)
+    assert RobustCondorSelect.validate_params(legacy) == []
+    unset = _parity_params(solver_options={"mip_rel_gap": 0})
+    assert RobustCondorSelect.validate_params(unset) == []
+    node = RobustCondorSelect("select", unset)
+    _, context = _parity_node()
+    parity = node.run(None, {"context": context})["evidence"]["solves"][0]["parity"]
+    assert parity["mip_abs_gap"] == "unset"
+
+
+def _parity_batch_params(**overrides):
+    return {**_robust_batch_params(), **_parity_params(), **overrides}
+
+
+def test_robust_batch_context_error_is_counted_and_the_batch_completes():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _parity_batch_params(), _robust_batch_inputs()
+    good = dict(inputs["projected_masses"][0])
+    bad = dict(good, decision_id="bad-masses", expiry="2025-03-14",
+               settlement_date="2025-03-14", masses=[.1, .1, .1, .1])
+    inputs["projected_masses"] = [good, bad]
+    inputs["chain"] = inputs["chain"] + [dict(row, expiry="2025-03-14")
+                                         for row in inputs["chain"] if row["quote_date"] == "2025-02-04"]
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    errors = [row for row in out["skips"] if row.get("reason") == "context_error"]
+    assert {row["decision_id"] for row in errors} == {"bad-masses"}
+    assert len(errors) == len(params["arms"]) and all(row["detail"] for row in errors)
+    assert {row["decision_id"] for row in out["decisions"]} == {"batch-fixture"}
+    assert len(out["decisions"]) == len(params["arms"])
+
+
+def test_robust_batch_bad_chain_row_is_context_error_only_with_parity():
+    from index_options.nodes import RobustCondorBatchSelect
+    inputs = _robust_batch_inputs()
+    inputs["chain"][2]["vwap"] = float("nan")
+    out = RobustCondorBatchSelect("batch", _parity_batch_params()).run(None, inputs)
+    assert {r["reason"] for r in out["skips"]} == {"context_error"}
+    with pytest.raises(ValueError, match="invalid strike, VWAP"):
+        RobustCondorBatchSelect("batch", _robust_batch_params()).run(None, inputs)
+
+
+def test_robust_batch_integrity_skips_are_never_context_error(monkeypatch):
+    import pyomo.environ as pe
+    from index_options.nodes import RobustCondorBatchSelect
+    real = pe.value
+
+    def fractional(expr, *args, **kwargs):
+        return .4 if getattr(expr, "name", None) == "z" else real(expr, *args, **kwargs)
+
+    monkeypatch.setattr(pe, "value", fractional)
+    out = RobustCondorBatchSelect("batch", _parity_batch_params()).run(None, _robust_batch_inputs())
+    assert {r["reason"] for r in out["skips"]} == {"nonintegral_solution"}
+
+
+# -- ADR-0258 S3: the decision liquidity/haircut owner, the executable fill clock ----------------
+
+_PIN_COUNTS = {"put-80.0": 6, "put-90.0": 12, "call-110.0": 25, "call-120.0": 4}
+_PIN_VWAPS = {"put-80.0": .1, "put-90.0": 3., "call-110.0": 3., "call-120.0": .1}
+_PIN_HAIRCUTS = {"low": {"pct": .6, "floor_usd": .05}, "mid": {"pct": .02, "floor_usd": .01},
+                 "high": {"pct": .01, "floor_usd": .01}}
+# Saved from the inline rule BEFORE the owner was extracted (base 24cba7be): (index, price, haircut, contract)
+# per role, for every arm, on the pin inputs at tier "low".
+_PIN_LEGACY_LEGS = {
+    "nominal": {"LP": [[0, .1, .06, "put-80.0"], [1, 3., 1.7999999999999998, "put-90.0"]],
+                "SP": [[0, .1, .06, "put-80.0"], [1, 3., 1.7999999999999998, "put-90.0"]],
+                "SC": [[2, 3., 1.7999999999999998, "call-110.0"]],
+                "LC": [[2, 3., 1.7999999999999998, "call-110.0"]]},
+    "haircut_0": {"LP": [[0, .1, 0., "put-80.0"], [1, 3., 0., "put-90.0"]],
+                  "SP": [[0, .1, 0., "put-80.0"], [1, 3., 0., "put-90.0"]],
+                  "SC": [[2, 3., 0., "call-110.0"]], "LC": [[2, 3., 0., "call-110.0"]]},
+    "haircut_half": {"LP": [[0, .1, .03, "put-80.0"], [1, 3., .8999999999999999, "put-90.0"]],
+                     "SP": [[0, .1, .03, "put-80.0"], [1, 3., .8999999999999999, "put-90.0"]],
+                     "SC": [[2, 3., .8999999999999999, "call-110.0"]],
+                     "LC": [[2, 3., .8999999999999999, "call-110.0"]]},
+    "haircut_double": {"LP": [[0, .1, .12, "put-80.0"], [1, 3., 3.5999999999999996, "put-90.0"]],
+                       "SP": [], "SC": [],
+                       "LC": [[2, 3., 3.5999999999999996, "call-110.0"]]},
+    "liquidity_3": {"LP": [[0, .1, .06, "put-80.0"], [1, 3., 1.7999999999999998, "put-90.0"]],
+                    "SP": [[0, .1, .06, "put-80.0"], [1, 3., 1.7999999999999998, "put-90.0"]],
+                    "SC": [[2, 3., 1.7999999999999998, "call-110.0"], [3, .1, .06, "call-120.0"]],
+                    "LC": [[2, 3., 1.7999999999999998, "call-110.0"], [3, .1, .06, "call-120.0"]]},
+    "liquidity_10": {"LP": [[1, 3., 1.7999999999999998, "put-90.0"]],
+                     "SP": [[1, 3., 1.7999999999999998, "put-90.0"]],
+                     "SC": [[2, 3., 1.7999999999999998, "call-110.0"]],
+                     "LC": [[2, 3., 1.7999999999999998, "call-110.0"]]},
+    "liquidity_20": {"LP": [], "SP": [], "SC": [[2, 3., 1.7999999999999998, "call-110.0"]],
+                     "LC": [[2, 3., 1.7999999999999998, "call-110.0"]]},
+}
+_PIN_LEGACY_DIGEST = "67bd357c47e1c8354577730b87ad3ba195c37cf585b0cb577924771da8e1b86b"
+
+
+def _pin_setup():
+    params, inputs = _robust_batch_params(), _robust_batch_inputs()
+    params["haircut_tiers"] = {k: dict(v) for k, v in _PIN_HAIRCUTS.items()}
+    for row in inputs["chain"]:
+        if row["contract"] in _PIN_COUNTS:
+            row["trade_count"], row["vwap"] = _PIN_COUNTS[row["contract"]], _PIN_VWAPS[row["contract"]]
+    return params, inputs
+
+
+def test_condor_batch_context_decisions_are_identical_after_the_owner_extraction():
+    import hashlib
+    import json
+
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _pin_setup()
+    node = RobustCondorBatchSelect("batch", params)
+    mass = inputs["projected_masses"][0]
+    for arm, want in _PIN_LEGACY_LEGS.items():
+        legs = node._batch_context(mass, inputs["chain"][2:], "low", arm, 0.)["legs"]
+        got = {role: [[r["index"], r["price"], r["haircut"], r["contract_id"]] for r in rows]
+               for role, rows in legs.items()}
+        assert got == want, arm
+    # rho_base shares the nominal rule's legs
+    assert node._batch_context(mass, inputs["chain"][2:], "low", "rho_base", 0.)["legs"] == \
+        node._batch_context(mass, inputs["chain"][2:], "low", "nominal", 0.)["legs"]
+    out = node.run(None, inputs)
+    blob = json.dumps({k: out[k] for k in ("selections", "decisions", "skips")},
+                      sort_keys=True, default=str)
+    assert hashlib.sha256(blob.encode()).hexdigest() == _PIN_LEGACY_DIGEST
+    assert "fill" not in out["evidence"]
+    assert all("fill_date" not in row and "unfilled_reason" not in row
+               for row in out["selections"] + out["decisions"])
+
+
+def test_condor_liquidity_haircut_owner_is_one_module_level_rule():
+    from index_options import nodes
+    rule = nodes.liquid_leg_haircut
+    terms, liquidity = {"pct": .01, "floor_usd": .01}, {"min_trade_count": 5, "min_volume": 1}
+    assert "liquid_leg_haircut" in nodes.__all__
+    # below either threshold: not eligible at all
+    assert rule(2., 4, 1, liquidity, terms, 1.) is None
+    assert rule(2., 5, 0, liquidity, terms, 1.) is None
+    # thresholds are inclusive; haircut = multiplier * max(floor, pct * price)
+    assert rule(2., 5, 1, liquidity, terms, 1.) == (.02, True)
+    assert rule(2., 5, 1, liquidity, terms, 2.) == (.04, True)
+    # the haircut <= price boundary decides whether a short is allowed
+    assert rule(.01, 5, 1, liquidity, terms, 1.) == (.01, True)
+    assert rule(.01, 5, 1, liquidity, terms, 2.) == (.02, False)
+    assert rule(.0, 5, 1, liquidity, terms, 0.) == (0., True)
+
+
+_FILL_CONTRACTS = ("put-80.0", "put-90.0", "call-110.0", "call-120.0")
+
+
+def _fill_setup(**fill_over):
+    """Pin inputs where every arm trades and every entry row carries a t' fill bar."""
+    params, inputs = _robust_batch_params(), _robust_batch_inputs()
+    for row in inputs["chain"]:
+        row["fill_session"], row["fill"] = None, None
+        if row["quote_date"] == "2025-02-04":
+            row["trade_count"] = 25
+            row["fill_session"] = "2025-02-05"
+            row["fill"] = {"date": "2025-02-05", "vwap": row["vwap"], "trade_count": 25,
+                           "volume": 5, **fill_over.get(row["contract"], {})}
+    return params, inputs
+
+
+def _by_arm(out):
+    return {row["arm_id"]: row for row in out["selections"]}
+
+
+def test_condor_batch_reprices_a_filled_selection_leg_by_leg_with_the_arms_haircut():
+    from index_options.nodes import RobustCondorBatchSelect
+    moved = {"put-80.0": {"vwap": .2}, "put-90.0": {"vwap": 2.5},
+             "call-110.0": {"vwap": 2.5}, "call-120.0": {"vwap": .2}}
+    params, inputs = _fill_setup(**moved)
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    row = _by_arm(out)["nominal"]
+    assert row["status"] == "trade" and row["fill_date"] == "2025-02-05"
+    assert row["remaining_dte"] == 30 and row["quote_date"] == "2025-02-04"
+    assert [leg["role"] for leg in row["legs"]] == ["LP", "SP", "SC", "LC"]
+    assert [leg["price_usd_per_share"] for leg in row["legs"]] == pytest.approx(
+        [.21, 2.475, 2.475, .21])
+    assert [leg["decision_price_usd_per_share"] for leg in row["legs"]] == pytest.approx(
+        [.11, 2.97, 2.97, .11])
+    assert row["decision_credit_usd"] == pytest.approx(572.)
+    assert row["fill_credit_usd"] == pytest.approx(453.)
+    assert row["slippage_usd"] == pytest.approx(119.)
+    # the decision list holds the very same record; the ex-ante value is untouched
+    assert any(d is row for d in out["decisions"])
+    assert out["evidence"]["fill"] == {"filled": len(out["selections"]), "unfilled": {},
+                                       "fill_credit_nonpositive": 0, "fill_credit_ge_width": 0}
+
+
+def test_condor_batch_without_a_t_prime_bar_is_unfilled_never_replaced():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    for row in inputs["chain"]:
+        if row["contract"] == "put-90.0":
+            row["fill"] = None
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    arms = _by_arm(out)
+    assert {r["status"] for r in arms.values()} == {"unfilled"}
+    nominal = arms["nominal"]
+    assert nominal["unfilled_reason"] == "missing_fill_bar"
+    assert "fill_date" not in nominal and "fill_credit_usd" not in nominal
+    assert [leg["price_usd_per_share"] for leg in nominal["legs"]] == pytest.approx(
+        [.11, 2.97, 2.97, .11])
+    assert out["evidence"]["fill"] == {"filled": 0, "unfilled": {
+        "missing_fill_bar": len(out["selections"])},
+        "fill_credit_nonpositive": 0, "fill_credit_ge_width": 0}
+    # one selection per arm and decision: nothing took the place of an unfilled one
+    assert len(out["selections"]) == len({(r["arm_id"], r["decision_id"])
+                                          for r in out["selections"]})
+
+
+def test_condor_batch_refuses_a_fill_bar_off_the_rows_fill_session():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup(**{"call-120.0": {"date": "2025-02-06"}})
+    with pytest.raises(ValueError, match="fill_session"):
+        RobustCondorBatchSelect("batch", params).run(None, inputs)
+
+
+def test_condor_batch_a_context_with_no_session_after_t_is_unfilled():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    for row in inputs["chain"]:
+        if row["quote_date"] == "2025-02-04":
+            row["fill_session"], row["fill"] = None, None
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    assert {r["unfilled_reason"] for r in out["selections"]} == {"missing_fill_bar"}
+
+
+def test_condor_batch_one_context_carries_one_fill_session():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    inputs["chain"][3]["fill_session"] = "2025-02-06"
+    inputs["chain"][3]["fill"]["date"] = "2025-02-06"
+    with pytest.raises(ValueError, match="one fill_session"):
+        RobustCondorBatchSelect("batch", params).run(None, inputs)
+
+
+def test_condor_batch_counts_nonpositive_and_width_reaching_fill_credits_without_refusing():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup(**{"put-80.0": {"vwap": 3.}, "put-90.0": {"vwap": .5},
+                                    "call-110.0": {"vwap": .5}, "call-120.0": {"vwap": 3.}})
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    nominal = _by_arm(out)["nominal"]
+    assert nominal["status"] == "trade" and nominal["fill_credit_usd"] < 0
+    assert out["evidence"]["fill"]["fill_credit_nonpositive"] == len(out["selections"])
+    assert out["evidence"]["fill"]["fill_credit_ge_width"] == 0
+    params, inputs = _fill_setup(**{"put-80.0": {"vwap": .02}, "put-90.0": {"vwap": 12.},
+                                    "call-110.0": {"vwap": 12.}, "call-120.0": {"vwap": .02}})
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    assert _by_arm(out)["nominal"]["fill_credit_usd"] >= 1000.
+    assert out["evidence"]["fill"]["fill_credit_ge_width"] == len(out["selections"])
+
+
+def test_condor_batch_arm_thresholds_and_multiplier_apply_at_t_prime():
+    from index_options.nodes import RobustCondorBatchSelect
+
+    def arms(**over):
+        params, inputs = _fill_setup(**over)
+        return _by_arm(RobustCondorBatchSelect("batch", params).run(None, inputs))
+
+    # trade_count 15 at t': the base rule (5) passes, liquidity_20 does not
+    got = arms(**{c: {"trade_count": 15} for c in _FILL_CONTRACTS})
+    assert got["nominal"]["status"] == "trade"
+    assert got["liquidity_10"]["status"] == "trade"
+    assert got["liquidity_20"]["status"] == "unfilled"
+    assert got["liquidity_20"]["unfilled_reason"] == "fill_liquidity"
+    # exactly at the arm's threshold it fills
+    got = arms(**{c: {"trade_count": 20} for c in _FILL_CONTRACTS})
+    assert got["liquidity_20"]["status"] == "trade"
+    # the volume threshold is the base one
+    assert arms(**{"put-80.0": {"volume": 0}})["nominal"]["unfilled_reason"] == "fill_liquidity"
+    # short vwap .015: haircut x1 = .01 <= .015 (fills); haircut_double .02 > .015 (negative net short)
+    got = arms(**{"put-90.0": {"vwap": .015}, "call-110.0": {"vwap": .015}})
+    assert got["nominal"]["status"] == got["haircut_half"]["status"] == "trade"
+    assert got["haircut_0"]["status"] == "trade"
+    assert got["haircut_double"]["status"] == "unfilled"
+    assert got["haircut_double"]["unfilled_reason"] == "negative_net_short_price"
+
+
+def test_condor_batch_fill_must_be_on_every_chain_row_or_none():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    del inputs["chain"][3]["fill"]
+    with pytest.raises(ValueError, match="fill"):
+        RobustCondorBatchSelect("batch", params).run(None, inputs)
+
+
+def test_condor_batch_fill_bar_must_follow_the_decision_date():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup(**{"put-90.0": {"date": "2025-02-04"}})
+    with pytest.raises(ValueError, match="fill"):
+        RobustCondorBatchSelect("batch", params).run(None, inputs)
+
+
+def test_robust_parity_validation_accumulates_on_a_malformed_solver_options_block():
+    from index_options.nodes import RobustCondorSelect
+    for bad in (["x"], "abc", 5):
+        problems = RobustCondorSelect.validate_params(_parity_params(solver_options=bad))
+        assert problems and all(isinstance(p, str) for p in problems)
+
+
+def test_robust_parity_fails_closed_on_nan_and_counts_a_primal_failure(monkeypatch):
+    import math
+    from index_options.nodes import RobustCondorSelect
+    node, context = _parity_node()
+    monkeypatch.setattr(RobustCondorSelect, "_primal_value", lambda self, legs: (math.nan, math.nan))
+    out = node.run(None, {"context": context})
+    assert (out["decision"]["status"], out["decision"]["reason"]) == ("skipped", "parity_failed")
+    node, context = _parity_node()
+
+    def broken(self, legs):
+        raise ValueError("W1 projection failed")
+    monkeypatch.setattr(RobustCondorSelect, "_primal_value", broken)
+    out = node.run(None, {"context": context})
+    assert (out["decision"]["status"], out["decision"]["reason"]) == ("skipped", "primal_failed")
+    assert out["evidence"]["solves"][0]["parity"] == {"error": "W1 projection failed", "passed": False}
+
+
+def test_robust_parity_mode_batch_still_raises_a_non_context_value_error(monkeypatch):
+    from dskit.pipeline.libs.pyomo import PyomoSolve
+    from index_options.nodes import RobustCondorBatchSelect
+
+    def unavailable(self, solver, model):
+        raise ValueError("solver unavailable")
+    monkeypatch.setattr(PyomoSolve, "_solve", unavailable)
+    with pytest.raises(ValueError, match="solver unavailable"):
+        RobustCondorBatchSelect("batch", _parity_batch_params()).run(None, _robust_batch_inputs())
+
+
+@pytest.mark.parametrize("change", [
+    {"max_absolute_gap_usd": 1e-5, "tie_tolerance_usd": 1e-5, "objective_parity_usd": 2e-5},
+    {"solver_options": {"mip_rel_gap": 0, "mip_abs_gap": 1e-6}},
+])
+def test_robust_parity_ordering_pin_accepts_equality(change):
+    from index_options.nodes import RobustCondorSelect
+    assert RobustCondorSelect.validate_params(_parity_params(**change)) == []
+
+
+@pytest.mark.parametrize("shift,reason", [(5e-6, None), (2e-5, "parity_failed")])
+def test_robust_parity_tolerance_is_the_configured_value(monkeypatch, shift, reason):
+    from index_options.nodes import RobustCondorSelect
+    node, context = _parity_node()
+    original = RobustCondorSelect._primal_value
+    monkeypatch.setattr(RobustCondorSelect, "_primal_value",
+                        lambda self, legs: tuple(v + shift for v in original(self, legs)))
+    out = node.run(None, {"context": context})
+    assert out["decision"].get("reason") == reason
+    assert out["evidence"]["solves"][0]["parity"]["passed"] is (reason is None)
+
+
+def test_robust_parity_recompute_goes_through_the_primal_owner(monkeypatch):
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+    from index_options.nodes import RobustCondorSelect
+    original = DiscreteCDFGrid.worst_expected_loss
+    monkeypatch.setattr(DiscreteCDFGrid, "worst_expected_loss",
+                        lambda self, *a, **k: original(self, *a, **k) + .5)
+    node, context = _parity_node()
+    out = node.run(None, {"context": context})
+    assert (out["decision"]["status"], out["decision"]["reason"]) == ("skipped", "parity_failed")
+    node, context = _parity_node()
+    monkeypatch.setattr(RobustCondorSelect, "_primal_value",
+                        lambda self, legs: (float("nan"), float("nan")))
+    assert node.run(None, {"context": context})["decision"]["reason"] == "parity_failed"
+
+
+def test_condor_batch_fill_uses_the_tickers_own_haircut_tier():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    params["haircut_tiers"] = {"low": {"pct": .5, "floor_usd": .01},
+                               "mid": {"pct": .01, "floor_usd": .01},
+                               "high": {"pct": .01, "floor_usd": .01}}
+    # AAA's calibration median (7) is the lowest of two symbols: tier low, pct .5
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    nominal = _by_arm(out)["nominal"]
+    assert nominal["status"] == "trade"
+    for leg in nominal["legs"]:
+        decision, fill = leg["decision_price_usd_per_share"], leg["price_usd_per_share"]
+        bar = next(r for r in inputs["chain"] if r["contract"] == leg["contract"]
+                   and r["quote_date"] == "2025-02-04")["fill"]
+        expected = bar["vwap"] * (.5 if leg["side"] == "sell" else 1.5)
+        assert fill == pytest.approx(expected), (leg["role"], decision, fill)
+
+
+def test_fill_bar_keys_have_one_owner():
+    import inspect
+    from index_options import nodes
+    assert nodes.FILL_BAR_KEYS == ("date", "vwap", "trade_count", "volume")
+    source = inspect.getsource(nodes)
+    assert source.count('("date", "vwap", "trade_count", "volume")') == 1
+
+
+def test_condor_batch_fill_credit_flags_use_the_wider_wing_gross_of_fees_at_the_boundary():
+    from index_options.nodes import RobustCondorBatchSelect
+    node = RobustCondorBatchSelect("batch", _robust_batch_params())
+    legs = [dict(role="LP", strike=80., side="buy"), dict(role="SP", strike=90., side="sell"),
+            dict(role="SC", strike=110., side="sell"), dict(role="LC", strike=125., side="buy")]
+    # wider wing is the call side (15): the flag fires at exactly 1500, not at the put wing's 1000
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=1500.)) == [
+        "fill_credit_ge_width"]
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=1499.99)) == []
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=1000.)) == []
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=0.)) == [
+        "fill_credit_nonpositive"]
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=.01)) == []
+
+
+@pytest.mark.parametrize("edit,fragment", [
+    (lambda r: r.update(fill_session=None), "fill_session"),
+    (lambda r: r.pop("fill_session"), "fill_session"),
+    (lambda r: r.update(fill_session=r["expiry"], fill={**r["fill"], "date": r["expiry"]}),
+     "before expiry"),
+    (lambda r: r.update(fill_session="2025-02-04", fill={**r["fill"], "date": "2025-02-04"}),
+     "after the decision date"),
+])
+def test_condor_batch_refuses_a_fill_without_or_off_its_session(edit, fragment):
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    row = next(r for r in inputs["chain"] if r["quote_date"] == "2025-02-04")
+    edit(row)
+    with pytest.raises(ValueError, match=fragment):
+        RobustCondorBatchSelect("batch", params).run(None, inputs)

@@ -141,7 +141,8 @@ here. Nothing inside changes — that was the point.
 Incubating today: `index_options` (offline cash-index and ETF-option research),
 `stock_options` (stock/market forecasts with listed-stock option action sets; no
 trading), `intraday_equities` (US-equity intraday bars), `intraday_poc`,
-`crypto_trading` (crypto trading research; stage A data pulls and stage B features and kill test configured, focus awaiting ratification), and
+`crypto_trading` (crypto trading research; stage A data pulls and stage B features and kill test configured, focus awaiting ratification),
+`correlation_arb` (correlation arbitrage and relative value; stage 0 configured, nothing pulled), and
 `pmquant` (prediction-market ladders — Kalshi and Polymarket; its
 `configs/run-e2e.json` runs the stat test, the transformer and the Kelly MIO
 in one document). Worked sketches of the

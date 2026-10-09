@@ -1,0 +1,18 @@
+{
+  "notes": "Registration input, not a run input: settled markets of the four index series from dskit's kalshi_history pack (ADR-0239, by import path; no credential), read from BOTH the live listing and /historical/markets, routed by the venue's cutoff. Gate G0.1 reads expiration_value (the index level the market settled on: KXINX-26OCT06H1600 settled at 7818.93) against the official SPX/NDX close to measure settlement basis: Kalshi's series lists only 'For example, Google Finance' as its source and its rules say the Source Agency for index markets was modified, so the print is NOT assumed to equal the SPXW/NDXP settlement. Gate G0.2 counts events, strikes and history start from the same pull. THE LABEL IS KNOWN ONLY AT SETTLEMENT: gate any join on settlement_ts, never on the row date; volume is whole-life and never a feature. Register: python -m dskit.onboarding register-source kalshi-history-index --catalog-source kalshi-history-index --connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector --config @configs/source-kalshi-history-index.json --activate --root <store root>; acquire --stream markets --mode backfill; validate with configs/suite-kalshi-history-index-markets.json.",
+  "series": [
+    "KXINX",
+    "KXINXU",
+    "KXNASDAQ100",
+    "KXNASDAQ100U"
+  ],
+  "statuses": [
+    "settled"
+  ],
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

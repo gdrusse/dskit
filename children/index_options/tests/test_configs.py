@@ -56,6 +56,37 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/panel-production-development-20261007.json",
         "configs/production-feature-selection-20261007.json",
         "configs/run-production-liquidity-20261007.json",
+        # ADR-0255 (PROPOSED): the robust equity iron-condor research replay.
+        "configs/run-equity-condor-robust-backtest.json",
+        # ADR-0258 (PROPOSED): the executable-decision-clock variant and its contract memo; plus
+        # the robust-replay memo and four report artifacts the previous wrap added unlisted.
+        "configs/run-equity-condor-robust-backtest-v2.json",
+        "docs/memos/2026-10-09-condor-executable-clock-contract.md",
+        "docs/memos/2026-10-09-condor-executable-clock-result.md",
+        "docs/research/distribution-modeling/2026-10-09-condor-selection-intuition.md",
+        "docs/memos/2026-10-09-robust-condor-replay.md",
+        "docs/reports/robust-condor-replay-20261009/calibration.json",
+        "docs/reports/robust-condor-replay-20261009/receipt.json",
+        "docs/reports/robust-condor-replay-20261009/summary.json",
+        "docs/reports/robust-condor-replay-20261009/ticker-aggregates.json",
+        "docs/memos/2026-10-08-robust-condor-dual.md",
+        "docs/memos/2026-10-08-forecast-mio-evaluation-scheme.md",
+        # Previously published ADR-0254 artifacts omitted by the old manifest.
+        'configs/panel-universe-rerun-20261008.json',
+        'configs/run-universe-liquidity-20261008.json',
+        'configs/source-store-universe-model-inputs-20261008.json',
+        'configs/source-store-universe-older-bars-20261008.json',
+        'configs/source-universe-liquidity-20261008.json',
+        'configs/universe-feature-selection-20261008.json',
+        'docs/memos/2026-10-08-claude-calibration-backtest-handoff.md',
+        'docs/memos/2026-10-08-restored-universe-patchtst.md',
+        'docs/reports/production-universe-rerun-20261008/confirmation-appendix.json',
+        'docs/reports/production-universe-rerun-20261008/evaluation-appendix.json',
+        'docs/reports/production-universe-rerun-20261008/evaluation-summary.json',
+        'docs/reports/production-universe-rerun-20261008/features-appendix.json',
+        'docs/reports/production-universe-rerun-20261008/hpo-appendix.json',
+        'docs/reports/production-universe-rerun-20261008/model-inventory.json',
+        'docs/reports/production-universe-rerun-20261008/old-new-original85-comparison.json',
         "configs/source-production-liquidity-20261007.json",
         "configs/source-production-vix-20261007.json",
         "configs/source-store-production-history-audit-20261007.json",
@@ -293,7 +324,11 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the per-ticker study, its workflow manifest and report spec = 436,
     # plus ADR-0238 config, research and two interim report artifacts = 440; four final reports, evidence and memo = 446; production proposal = 447; Stage-0 evidence = 449
     # Plus eleven protected-source/panel/feature experiment JSON declarations = 460.
-    assert len(actual) == 460
+    # Plus ADR-0255's robust-condor run config and requested dual memo = 462.
+    # Plus the six docs the previous wrap left out of the manifest (robust replay memo and four
+    # report artifacts, the executable-clock contract memo) = 484, plus ADR-0258's executable-clock
+    # run config = 485; the executable-clock result memo = 486; the selection-intuition research note = 487.
+    assert len(actual) == 487
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -3746,3 +3781,85 @@ def test_the_perticker_workflow_leaves_the_worker_width_to_the_machine(child_roo
                             ("step7", "development", "evaluate/development"),
                             ("step7", "scored", "evaluate/later"), ("step7", "report", "report")):
         assert os.path.normpath(flow.path(step, out)) == os.path.join(output, tail)
+
+
+# -- ADR-0258: the executable-decision-clock replay document ---------------------------------------
+def _clock_docs(child_root):
+    configs = child_root / "configs"
+    return tuple(json.loads((configs / name).read_text(encoding="utf-8")) for name in (
+        "run-equity-condor-robust-backtest.json", "run-equity-condor-robust-backtest-v2.json"))
+
+
+def _without_notes(value):
+    if isinstance(value, dict):
+        return {k: _without_notes(v) for k, v in value.items() if k != "notes"}
+    if isinstance(value, list):
+        return [_without_notes(v) for v in value]
+    return value
+
+
+def test_executable_clock_config_differs_from_the_robust_backtest_only_where_declared(child_root):
+    base, clock = _clock_docs(child_root)
+    pipeline = copy.deepcopy(clock["pipeline"])
+    assert list(pipeline) == list(base["pipeline"])
+    chain = pipeline["option_chain"]
+    # owner decision 2026-10-09: the same-day average fill is the accepted assumption
+    assert chain["params"].pop("fill_session") == "same"
+    assert pipeline["rho_calibration"]["params"].pop("block_geometry") == "edge_padded"
+    assert pipeline["select"]["params"].pop("max_relative_gap") is None
+    assert pipeline["select"]["params"].pop("objective_parity_usd") == 1e-5
+    pipeline["select"]["params"]["max_relative_gap"] = base["pipeline"]["select"]["params"][
+        "max_relative_gap"]
+    settle = pipeline["settle"]["params"]
+    assert settle.pop("exercise_threshold_usd") == 0.01
+    assert settle["labels"] == {
+        "fill": "assumed same-day average fill (owner-accepted assumption; no next-session "
+                "bar in the owned archive)",
+        "exercise": "intrinsic settlement at the as-traded expiry close; early exercise, "
+                    "assignment and share delivery not simulated"}
+    settle["labels"] = base["pipeline"]["settle"]["params"]["labels"]
+    assert _without_notes(pipeline) == _without_notes(base["pipeline"])
+    # every changed key is explained: each touched node's notes name ADR-0258
+    for name in ("option_chain", "rho_calibration", "select", "settle"):
+        assert "ADR-0258" in clock["pipeline"][name]["notes"], name
+    assert clock["name"] != base["name"]
+    assert clock["outputs"]["run_root"] != base["outputs"]["run_root"]
+
+
+def test_v2_config_keeps_the_same_day_fill_and_the_v5_streams(child_root):
+    base, clock = _clock_docs(child_root)
+    assert "fills" not in clock["pipeline"]
+    assert clock["pipeline"]["option_chain"]["params"]["fill_session"] == "same"
+    for key in ("option_rows", "as_traded", "holding_exclusions", "forecasts"):
+        assert clock["pipeline"][key]["params"] == base["pipeline"][key]["params"], key
+
+
+def test_executable_clock_config_every_node_params_validate(child_root):
+    from index_options.cdf_study import HeldOutRhoCalibration
+    from index_options.nodes import CondorExpirySettle, ExactDteBarChain, RobustCondorBatchSelect
+    pipeline = _clock_docs(child_root)[1]["pipeline"]
+    assert ExactDteBarChain.validate_params(pipeline["option_chain"]["params"]) == []
+    assert CondorExpirySettle.validate_params(pipeline["settle"]["params"]) == []
+    assert HeldOutRhoCalibration.validate_params(pipeline["rho_calibration"]["params"]) == []
+    assert RobustCondorBatchSelect.validate_params(pipeline["select"]["params"]) == []
+    assert pipeline["select"]["params"]["objective_parity_usd"] == 1e-5
+    assert not any("until that lands" in (node.get("notes") or "") for node in pipeline.values())
+
+
+def test_account_study_defaults_name_the_config_report_node_and_its_ports(child_root):
+    from index_options import ledger_studies
+    pipeline = _clock_docs(child_root)[1]["pipeline"]
+    report = [key for key, node in pipeline.items() if node["uses"] == "run-report"]
+    assert report == [ledger_studies.EVIDENCE_ARTIFACT.split(os.sep)[1]]
+    ports = pipeline[report[0]]["inputs"]
+    assert ports[ledger_studies.SELECT_STAGE] == "$select.evidence"
+    assert ports[ledger_studies.SETTLE_STAGE] == "$settle.evidence"
+    assert ledger_studies.NOMINAL_ARM in pipeline["select"]["params"]["arms"]
+
+def test_executable_clock_config_identity_is_pinned_and_differs_from_the_legacy_one(child_root):
+    from dskit.pipeline.document import PipelineDocument
+    base, clock = _clock_docs(child_root)
+    assert PipelineDocument.from_obj(base).hash == (
+        "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55")
+    assert PipelineDocument.from_obj(clock).hash == (
+        "0135e9ff8494fd4a03c5297c5f97abc3c3fa88f6de331a1c9a447856179863e9")

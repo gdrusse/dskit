@@ -12,10 +12,12 @@ pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
 
 import dskit.onboarding.acquire as acquire_module  # noqa: E402
-from dskit.onboarding import OnboardingRoot, run_acquisition  # noqa: E402
+from dskit.onboarding import OnboardingRoot, run_acquisition
+from dskit.onboarding.artifacts import payload_files
+from dskit.onboarding.base import AssetError  # noqa: E402
 from dskit.pipeline.base import ConfigError  # noqa: E402
 from dskit.pipeline.libs import parquet as pack  # noqa: E402
-from dskit.pipeline.libs.parquet import ParquetRows  # noqa: E402
+from dskit.pipeline.libs.parquet import ParquetRows, ParquetStreamRows  # noqa: E402
 from dskit.pipeline.node import NodeContext  # noqa: E402
 
 SOURCE, STREAM, REL = "blobs", "files", "grp/prices.parquet"
@@ -453,3 +455,105 @@ def test_bounded_manifest_drift_still_refuses_before_scan(store, tmp_path, monke
     monkeypatch.setattr(ds, "dataset", forbidden)
     with pytest.raises(ValueError, match="sha256"):
         node.run(_ctx(tmp_path), {})
+@pytest.fixture
+def blob_store(tmp_path):
+    class Store:
+        def __init__(self):
+            self.root = OnboardingRoot.create(str(tmp_path / "blob-ob"))
+            self.path, self.registry = self.root.root, self.root.registry()
+        def add(self, name, directory):
+            version = self.registry.register("source_config", {
+                "name": name, "catalog_source": name, "connector": "localblobs",
+                "config": {"path": str(directory), "as_of": "2026-01-01T00:00:00+00:00"},
+            }, origin="test")
+            self.registry.transition(version, "active", origin="test")
+            return run_acquisition(self.root, self.registry, name, "files", "backfill")
+    return Store()
+
+
+
+
+# ADR-0255: a source snapshot can hold several parquet members. Each member
+# stays manifest-verified and bounded before it becomes Python records.
+def test_multi_file_reader_uses_every_manifest_member_and_returns_source_snapshots(blob_store, tmp_path):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    pq.write_table(pa.table({"date": ["2025-12-31", "2026-01-01"], "symbol": ["A", "A"]}),
+                   first / "a.parquet", row_group_size=1)
+    pq.write_table(pa.table({"date": ["2025-12-30"], "symbol": ["B"]}), second / "b.parquet")
+    blob_store.add("one", first)
+    blob_store.add("two", second)
+    node = ParquetStreamRows("bars", {"sources": [
+        {"root": blob_store.path, "source": "one", "stream": "files",
+         "snapshot": payload_files(blob_store.path, "one", "files")["manifest_sha256"],
+         "columns": {"date": "date", "symbol": "symbol"},
+         "read_bounds": {"date": {"end_before": "2026-01-01"}}},
+        {"root": blob_store.path, "source": "two", "stream": "files",
+         "snapshot": payload_files(blob_store.path, "two", "files")["manifest_sha256"],
+         "columns": {"date": "date", "symbol": "symbol"},
+         "read_bounds": {"date": {"end_before": "2026-01-01"}}},
+    ]})
+    assert node.run(_ctx(tmp_path), {})["records"] == [
+        {"date": "2025-12-31", "symbol": "A"}, {"date": "2025-12-30", "symbol": "B"}]
+    fingerprint = node.fingerprint()
+    assert fingerprint["kind"] == "ParquetStreamRows"
+    assert [(item["source"], item["members"]) for item in fingerprint["snapshots"]] == [
+        ("one", ["a.parquet"]), ("two", ["b.parquet"])]
+
+
+def test_multi_file_reader_refuses_a_manifest_member_that_moves_before_scanning(blob_store, tmp_path, monkeypatch):
+    archive = tmp_path / "source"
+    archive.mkdir()
+    pq.write_table(pa.table({"date": ["2025-12-31"], "payload": [1]}), archive / "safe.parquet")
+    blob_store.add("one", archive)
+    node = ParquetStreamRows("bars", {"sources": [{
+        "root": blob_store.path, "source": "one", "stream": "files",
+         "snapshot": payload_files(blob_store.path, "one", "files")["manifest_sha256"],
+        "columns": {"date": "date", "payload": "payload"},
+        "read_bounds": {"date": {"end_before": "2026-01-01"}},
+    }]})
+    path = next(Path(blob_store.path).rglob("safe.parquet"))
+    path.write_bytes(path.read_bytes() + b"changed")
+    import pyarrow.dataset as ds
+    monkeypatch.setattr(ds, "dataset", lambda *a, **kw: pytest.fail("scanner called"))
+
+    with pytest.raises(AssetError, match="verification|sha256"):
+        node.run(_ctx(tmp_path), {})
+
+
+def test_multi_file_requires_explicit_snapshot_pin():
+    problems = ParquetStreamRows.validate_params({"sources": [{
+        "root": "./ob", "source": "x", "stream": "files",
+        "columns": {"date": "date"},
+        "read_bounds": {"date": {"end_before": "2026-01-01"}},
+    }]})
+    assert any("snapshot" in problem for problem in problems)
+
+
+def test_multi_file_pinned_snapshot_survives_newer_partial_inventory(blob_store, tmp_path):
+    archive = tmp_path / "pinned"
+    archive.mkdir()
+    for name, day in (("a", "2025-01-01"), ("b", "2025-01-02")):
+        pq.write_table(pa.table({"date": [day]}), archive / (name + ".parquet"))
+    blob_store.add("pinned", archive)
+    pin = payload_files(blob_store.path, "pinned", "files")["manifest_sha256"]
+    declaration = {"root": blob_store.path, "source": "pinned", "stream": "files",
+                   "snapshot": pin, "columns": {"date": "date"},
+                   "read_bounds": {"date": {"end_before": "2026-01-01"}}}
+    node = ParquetStreamRows("p", {"sources": [declaration]})
+    before = node.fingerprint()
+    (archive / "a.parquet").unlink()
+    pq.write_table(pa.table({"date": ["2025-01-03"]}), archive / "b.parquet")
+    run_acquisition(blob_store.root, blob_store.registry, "pinned", "files", "backfill")
+    assert node.run(_ctx(tmp_path), {})["records"] == [
+        {"date": "2025-01-01"}, {"date": "2025-01-02"}]
+    assert node.fingerprint() == before
+    assert before["snapshots"][0]["manifest_sha256"] == pin
+    bad = {**declaration, "source": "another-source"}
+    with pytest.raises(ValueError, match="source"):
+        ParquetStreamRows("p", {"sources": [bad]}).run(_ctx(tmp_path), {})
+
+
+def test_multi_file_reader_registered_kind():
+    assert ("parquet-stream-rows", ParquetStreamRows) in pack.NODE_KINDS

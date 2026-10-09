@@ -1,0 +1,186 @@
+# Robust condor: primal, dual and mixed-integer formulation
+
+## TL;DR
+
+The dual replaces the inner “worst plausible price distribution” calculation with linear constraints. Embedding them lets one mixed-integer linear program choose four eligible strikes, including the choice not to trade.
+
+This memo publishes the mathematics reviewed in ADR-0255 at candidate 3f8ea439c96afa14f5776346738fa12746d82c54. The reusable projection, one-context solver and expiry-accounting components are now implemented and synthetically tested; two independent integrated skeptic reviews have closed with zero findings. The bounded replay is now complete. Its [performance memo](2026-10-09-robust-condor-replay.md) reports 131 nominal trades and unsupported calibration for every monthly reference; the mathematics here is unchanged.
+
+## Contract and notation
+
+The controlling sources are [the robustification formulation, §§3–4](../research/distribution-modeling/simple-formulation-with-robustification.md), its [worked explanation](../explanations/robust-condor-selection.md), [ADR-0255](../../../../docs/architecture/decision-log.md#adr-0255--equity-iron-condor-robust-selection-research-replay-proposed) and the [draft JSON](../../configs/run-equity-condor-robust-backtest.json).
+
+For one ticker and entry date, omit the time subscript. The frozen replay uses a one-lot equity iron condor, expiry at 31 calendar days, all eligible strictly ordered strike combinations, and a grid consisting of the chain's distinct strikes. Own-date VWAP with an own-date close-based forecast is explicitly a same-day look-ahead assumption. Early assignment is ignored and labeled. No protected 2026 market outcomes are retained or scored. The later bounded extraction permission permits screening mixed-year owned files and using action dates/ratios for historical split reconstruction.
+
+- $s_1<\cdots<s_m$: terminal-price grid in dollars/share; $S>0$: entry spot in the same units.
+- $\widehat p_k$: fixed nominal probability at $s_k$, obtained from the frozen PatchTST CDF by mean-preserving placement on bounding strikes, with collapsed outer tails.
+- $\widehat Q_j=\sum_{k\le j}\widehat p_k$, $J=\lbrace1,\ldots,m-1\rbrace$.
+- $w_j=(s_{j+1}-s_j)/S$: dimensionless transport weight. This is **not** the separately normalized score-weight function used for forecast diagnostics.
+- $q_k$: alternative probabilities; $Q_j=\sum_{k\le j}q_k$; $\rho\ge0$: fixed dimensionless W1 radius, a fraction of spot.
+- $\mathcal B\subseteq J$: optional band locations, with fixed probability bounds $lo_j,hi_j$. The initial proposed run disables bands; their calibration is not supplied here.
+- $L_k$: capped terminal condor loss at $s_k$, in dollars/share. $M$ is the contract multiplier; $e$ is the dollar fee per contract per entry leg.
+
+Require nonnegative nominal masses summing to one, strictly increasing finite strikes and finite inputs. Admitted bands satisfy $0\le lo_j\le\widehat Q_j\le hi_j\le1$ and the reviewed joint-feasibility checks. The ambiguity set is common to all candidates and fixed before selection.
+
+## 1. Inner primal: worst expected loss
+
+For a fixed condor, let $u_j\ge0$ bound each absolute CDF displacement. The inner linear program is
+
+```math
+\begin{aligned}
+R(L)=\max_{q,u}\quad &\sum_{k=1}^{m}L_kq_k\\
+\text{subject to}\quad
+& q_k\ge0,\qquad \sum_{k=1}^{m}q_k=1,\\
+& \sum_{k\le j}q_k-u_j\le\widehat Q_j &&(j\in J),\\
+&-\sum_{k\le j}q_k-u_j\le-\widehat Q_j &&(j\in J),\\
+&\sum_{j\in J}w_ju_j\le\rho,\qquad u_j\ge0,\\
+&\sum_{k\le j}q_k\le hi_j,\qquad
+-\sum_{k\le j}q_k\le-lo_j &&(j\in\mathcal B).
+\end{aligned}
+```
+
+The displacement inequalities imply $u_j\ge|Q_j-\widehat Q_j|$. This is the finite-grid W1 constraint in the formulation. Alternative strike probabilities must form one coherent CDF.
+
+## 2. Exact LP dual
+
+Assign a free multiplier $\lambda$ to $\sum q=1$; nonnegative $\alpha_j,\beta_j$ to the two displacement inequalities; $\gamma\ge0$ to the transport budget; and $\mu_j,\nu_j\ge0$ to upper/lower bands. Set $\mu_j=\nu_j=0$ off $\mathcal B$.
+
+```math
+\begin{aligned}
+R(L)=\min_{\lambda,\alpha,\beta,\gamma,\mu,\nu}\quad
+&\lambda+\sum_{j\in J}(\alpha_j-\beta_j)\widehat Q_j
++\gamma\rho+\sum_{j\in\mathcal B}(\mu_jhi_j-\nu_jlo_j)\\
+\text{subject to}\quad
+&\lambda+\sum_{\substack{j\in J\\j\ge k}}
+(\alpha_j-\beta_j+\mu_j-\nu_j)\ge L_k
+&& (k=1,\ldots,m),\\
+&\alpha_j+\beta_j\le\gamma w_j &&(j\in J),\\
+&\lambda\in\mathbb R,\qquad
+\alpha,\beta,\gamma,\mu,\nu\ge0.
+\end{aligned}
+```
+
+The Lagrangian coefficient of $q_k$ is
+$L_k-\lambda-\sum_{j\ge k}(\alpha_j-\beta_j+\mu_j-\nu_j)$.
+Its coefficient of $u_j$ is $\alpha_j+\beta_j-\gamma w_j$.
+Both must be nonpositive when maximizing over nonnegative $q,u$; the remaining constant is the displayed dual objective. At the final grid point the sum is empty, giving $\lambda\ge L_m$.
+
+With a nonempty ambiguity set and finite losses, the primal is feasible and bounded, so LP strong duality gives equality. Invalid or infeasible inputs must be refused. Dual variables have dollars/share units; dimensionless $\rho$ leaves $\gamma\rho$ in dollars/share.
+
+## 3. Embed the dual in one MILP
+
+Use binary $z$ for trade/no trade and binary $y_i^\ell$ for strike $i$ and leg $\ell\in\lbrace LP,SP,SC,LC\rbrace$: long put, short put, short call and long call. Set variables to zero where that option type is ineligible.
+
+```math
+\begin{aligned}
+&\sum_i y_i^{LP}=\sum_i y_i^{SP}
+=\sum_i y_i^{SC}=\sum_i y_i^{LC}=z,\\
+&\sum_{i\ge k}y_i^a\le\sum_{i>k}y_i^b
+\quad(k=1,\ldots,m;\ (a,b)\in
+\lbrace(LP,SP),(SP,SC),(SC,LC)\rbrace),\\
+&L_k(y)=\sum_i\left[
+(y_i^{SP}-y_i^{LP})(s_i-s_k)^+
++(y_i^{SC}-y_i^{LC})(s_k-s_i)^+\right],\\
+&z,y_i^\ell\in\lbrace0,1\rbrace.
+\end{aligned}
+```
+
+Here $x^+=\max(x,0)$ is evaluated on fixed grid values, so $L_k(y)$ is linear in the binaries. The cumulative inequalities enforce strict ordering while retaining every eligible ordered combination.
+
+Let $v_i^\ell$ be that particular put/call contract's VWAP and $h_i^\ell$ its configured haircut, both dollars/share. Net credit and entry fees per share are
+
+```math
+\begin{aligned}
+c(y)&=\sum_{\ell\in\lbrace SP,SC\rbrace}\sum_i
+(v_i^\ell-h_i^\ell)y_i^\ell
+-\sum_{\ell\in\lbrace LP,LC\rbrace}\sum_i
+(v_i^\ell+h_i^\ell)y_i^\ell,\\
+f(y)&=\frac{4ez}{M}.
+\end{aligned}
+```
+
+Maximize the following dollar objective subject to the binary selection constraints and **all dual constraints above with $L_k=L_k(y)$**:
+
+```math
+\max\quad M\left[
+c(y)-f(y)-\lambda
+-\sum_{j\in J}(\alpha_j-\beta_j)\widehat Q_j
+-\gamma\rho
+-\sum_{j\in\mathcal B}(\mu_jhi_j-\nu_jlo_j)
+\right].
+```
+
+For fixed $y$, maximizing negative dual cost minimizes that cost, which equals the primal worst expected loss. Thus this is exactly the finite-grid robust selection objective. Radius, nominal CDF, bands and transport weights are constants during the solve; jointly optimizing them would change the problem. There are no products of decision variables.
+
+For the draft's provisional $M=100$, $e=\$0.65$, $z=1$: $f=4(0.65)/100=\$0.026$ per share, and the objective subtracts exactly $\$2.60$. These are configured assumptions, not validated execution costs.
+
+## 4. No trade and required checks
+
+At $z=0$, all legs and losses are zero. All-zero dual variables are feasible and give objective zero. Weak duality prevents any other feasible dual from giving a positive objective for no trade.
+
+After mathematically finding optimum $V^*$, minimize $z$ subject to the same constraints and objective at least $V^*-\tau$, where $\tau\ge0$ is the approved dollar tie tolerance. Zero tolerance breaks exact ties toward no trade; positive tolerance intentionally treats sufficiently small gains as ties. Implementation must retain both certificates and account for the primary solver's remaining gap; uncertified results skip.
+
+Required post-approval tests compare the MILP against enumeration with a primal LP per candidate, with and without bands. They cover $\rho=0$ recovering nominal expected loss, empty-band refusal, no trade, unequal wings, leg-specific prices/eligibility, fees and projection payoff preservation. No new solver run was performed for this memo.
+
+Increasing $\rho$ weakly enlarges the fixed-grid set and increases worst expected loss weakly; it cannot improve the best robust objective with everything else fixed. This does not prove any chosen radius is calibrated. Optional bands constrain the same common CDF and need separate evidence.
+
+## Verification, limitations and handoff
+
+The design at 3f8ea439 passed three independent GPT-6 reviews with zero Critical/Major/Minor/Nit, recorded in [RE-ENTRY](../../../../docs/RE-ENTRY.md). This memo makes that design inspectable; it neither approves ADR-0255 nor implements its proposed nodes.
+
+Bounding-strike placement preserves nominal capped piecewise-linear payoffs, not the entire continuous CDF. A finite strike-supported ball does not literally contain continuous distributions. The owner chose direct calibration on the strike-grid probabilities, with no added forecast-to-grid offset; report projection diagnostics separately. The owner approved expected-loss calibration and the finite-grid/smallest-passing procedure and monthly prior-only calibration-plus-entry updates; bands remain disabled. Direct strike-grid rho and monthly prior-only updates are approved; CDF/W1 projection thresholds are diagnostic-only. No confidence guarantee is invented.
+
+Reproduce the contract from the candidate and draft JSON. Use published checkpoints only through a verified chronological schedule including training and monitoring-label availability. No market records, model fits, option-store copying, MIO execution or trading backtest occurred for this publication. At original publication, the next step was to continue the owner's one-at-a-time design decisions, then obtain ADR/data-copy approval before remaining gates and tests-first implementation.
+
+## Targeted implementation evidence
+
+The owner requested parallel implementation after the branch/worktree inventory. Existing-file changes add MeanPreservingCDFGrid and optional bands to the existing DiscreteCDFGrid primal; WassersteinDual embeds the dual in Pyomo, and RobustCondorSelect subclasses PyomoSolve for one already governed context. CondorExpirySettle reuses WindowBook and the existing preceding-close settlement rule. No new solver, accounting framework, package or model fit was introduced.
+
+Three lanes worked from43eabca5. The projection lane's new-worktree writes were rejected by automatic approval review; its two exclusive file edits used the original authorized checkout. Other lanes stayed isolated. Projection48023113, settlementc0cd7749 plus documentation818a25c5, and dualdbe580b2 were integrated without discarding either child class. All source/test changes remain review candidates.
+
+Validation: each lane recorded expected assertion RED before implementation. The combined solver/child-accounting/import-purity command passed971 tests with7 existing skips; projection-focused coverage passed20 tests. Thirty seeded small-chain cases compare the MILP against independent candidate enumeration with a primal LP, including bands. Three cross-component fixtures exercise projection, selection, fees, no trade and expiry reconciliation. These are synthetic checks, not market replay. Projection Ruff findings exactly match the unchanged baseline; no new findings.
+
+The callable CDF projection preserves capped piecewise-linear payoffs on the declared strike support. It reports clipped-support W1 separately and leaves full-distribution W1 unavailable: unbounded tails have not been integrated and can have infinite first moment. Do not pass the clipped number as full Delta or claim continuous-distribution containment. Explicit numerical admission tolerances are required.
+
+The selector accepts one prepared context with governed eligibility and per-leg prices/haircuts; it does not yet implement the draft JSON's batch/raw-input adapter. Primary dollar-gap checks and the secondary binary certificate are separate. Settlement consumes traded selections only; it records the later confirming close date for downstream publication lag and retains raw fills outside RunReport's generic-trade fallback.
+
+Still required before the requested real research replay: protected source intake and basis/action checks; verified checkpoint-schedule and42-feature input wiring with saved-forecast parity; batch/phase/liquidity adapters; remaining numeric policies, with expected-loss/grid selection now approved; and the calendar/template calibration adapter. The draft JSON remains deliberately unresolved. The completed model packages and the published evaluation calendar are unchanged.
+
+The first integrated skeptic round found four Major defects and withheld approval. The corrected candidate adds pre-solver chronology/contract-identity checks, non-trade settlement refusal, an uncertain-primary tie refusal, and quadrature-error propagation into both projection payoff and W1 admission. New analytic and malformed-input regressions demonstrated RED before fixes. Updated checks pass990 affected tests (7 existing skips) plus22 projection-focused tests; fresh two-lens review subsequently closed with zero findings. Quadrature errors remain estimates, not guarantees for arbitrary callable CDFs.
+
+## Component review closure
+
+Candidate623e800e8c3b10a8ad532b7d8699264f8e90d564 passed independent GPT-6 correctness/math and integration/test-quality reviews, each0 Critical/0 Major/0 Minor/0 Nit. Reviewer transcripts are /root/condor_build_skeptic_math_r2 and /root/condor_build_skeptic_integration_r2; the earlier four Major findings and failed candidate remain recorded in RE-ENTRY. All four defect families are closed.
+
+The math reviewer additionally compared120 independent transport-coupling LP cases with the cumulative primal and dual (maximum difference1.28e-13), and100 atomic-distribution projection cases. The integration reviewer added16 independent selector/oracle cases,40 independent accounting cases, malformed-input no-effect probes, backward-compatibility checks and cold imports without site-packages. Exact commands and outputs remain in the reviewer transcripts. This closes only the reusable synthetic component packet. The full draft replay still refuses five unresolved component references, and its real-data/calibration gates remain open. No main merge or historical replay was performed.
+
+
+### Approved calibration search and LP reuse
+
+The owner approved expected-loss calibration and its finite-grid/smallest-passing procedure on2026-10-08. The worked explanation now distinguishes the current fixed audit-template protocol from its older selected-policy text. Each admitted ticker-date/template needs five loss values for the configured radii; zero can use the nominal dot product, leaving four LP solves. Bootstrap reuses residuals with exact matching artifact identities. Later selection uses its assigned rho rather than searching again; solver certification/tie/postchecks still apply. This is an execution contract, not evidence that the unfinished calibration adapter has run. No empirical rho or historical replay result exists.
+
+Owner subsequently approved monthly calibration-plus-entry updates, using only settled/published fixed audit-template outcomes strictly before each reference, regardless of optimizer trade/no-trade. The frozen rule reuses matching losses and recomputes the bound; historical decisions remain unchanged. Exact lag/numerical settings and other launch gates are not approved by this phase choice.
+
+## Historical adapter preparation status — 2026-10-08
+
+The later owner instruction authorizes the bounded research replay after its
+data and numerical gates close. Candidate a103b701 implements the batch-eight-
+arm and calendar/template adapters, with1,413 affected cases passing and two independent round2
+reviews closed at zero Critical/Major (one deferred Minor coverage gap). Earlier statements above about unimplemented
+adapters describe their historical component-review stage.
+
+The draft now references implemented classes and executes the eight arms once.
+Verified saved seed11 curves are onboarded, but historical stock/strike units
+are not yet certified; derived inputs remain PENDING. Two mesh admission
+thresholds also remain unset. Neither empirical rho nor historical MIO
+performance exists yet. See the current preparation status in the
+[evaluation scheme](2026-10-08-forecast-mio-evaluation-scheme.md) for exact
+artifacts, remaining gates and the required performance report.
+
+## Completed replay status — 2026-10-09
+
+The bounded eight-arm research replay launched at 2026-10-09T10:44:26Z (PID3777999) from frozen config commit ada4169b; launch and execution-lock receipts are /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-launch-v1.json and /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/condor-replay-execution-lock-v1.json. It completed all ten stages once with exit 0. The [performance memo](2026-10-09-robust-condor-replay.md) gives full results: nominal 131 condors, net $5,354.85 under disclosed research assumptions; all seven calibrated arms abstained because monthly rho was unsupported.
+
+The recovered basis and onboarding inputs passed their recorded checks. They retain 655,174 raw chain rows, 644,799 kept rows and 10,375 outside-model rows; 404 option-source symbols are present, with 388 of the 392 forecast symbols accepted. All 99,225 forecasts remain represented. Price-basis/chain matching yields 2,796 calibration contexts (72 symbols, 48 dates, 2024-02-06 through 2024-12-31) and 2,772 entry contexts (79 symbols, 43 dates, 2025-02-04 through 2025-11-25) before numerical, template or leg-liquidity gates.
+
+Historical price basis is conditional: 84 explicit split inventories are reconstructed from hash-pinned archived evidence assuming completeness; 307 missing inventories are refused and are not treated as certified no-action histories. The run retains those refusals and the full intended-universe denominators. Same-day VWAP with same-day-close forecasts remains an explicit research look-ahead assumption. CDF/W1 projection thresholds are diagnostic-only; direct grid-rho and monthly prior-only calibration are frozen. Settlement, solver, calibration and performance outputs are preserved and recovered from the completed-run backup. No numerical radius or calibrated bands are claimed.

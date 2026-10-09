@@ -18,6 +18,56 @@ from dskit.onboarding import payload_files
 from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, GridCurve, MixtureCurve
 
 
+
+
+def test_held_out_rho_default_deny_and_duplicate_refusal_before_data_access():
+    assert cdf_study.HeldOutRhoCalibration.validate_params({"unexpected": 1})
+    owner = cdf_study.HeldOutRhoCalibration("rho", {
+        "rho_grid": [0.], "min_dates": 2, "block_days": {"primary": 1, "sensitivity": 2},
+        "replicates": 20, "alpha": .1, "seed": 7, "short_q": .1, "wing_strikes": 1,
+        "min_trade_count": 1, "min_volume": 1, "publication_lag_sessions": 0,
+        "max_settlement_gap_days": 4, "end_before": "2026-01-01",
+        "settlement_field": "as_traded_close"})
+    duplicate = {"symbol": "X", "quote_date": "2024-01-02", "expiry": "2024-01-03"}
+    with pytest.raises(ValueError, match="duplicate mass context"):
+        owner.run(None, {"masses": [duplicate, duplicate], "chain": [], "bars": []})
+
+
+def test_held_out_rho_refuses_nan_or_protected_bar_dates():
+    mass = {"symbol": "X", "expiry": "2024-01-03", "settlement_date": "2024-01-03"}
+    with pytest.raises(ValueError, match="invalid settlement close"):
+        cdf_study.HeldOutRhoCalibration._bar_close(
+            mass, [{"symbol": "X", "date": "2024-01-03", "as_traded_close": float("nan")},
+                   {"symbol": "X", "date": "2024-01-04", "as_traded_close": 1.}], 4, 0, "2026-01-01", "as_traded_close")
+    with pytest.raises(ValueError, match="protected"):
+        cdf_study.HeldOutRhoCalibration._bar_close(
+            mass, [{"symbol": "X", "date": "2026-01-03", "as_traded_close": 1.},
+                   {"symbol": "X", "date": "2026-01-04", "as_traded_close": 1.}], 4, 0, "2026-01-01", "as_traded_close")
+def test_held_out_rho_template_is_fixed_and_monthly_history_has_no_future_leakage():
+    owner = cdf_study.HeldOutRhoCalibration("rho", {
+        "rho_grid": [0., .01], "min_dates": 2, "block_days": {"primary": 1, "sensitivity": 2},
+        "replicates": 20, "alpha": .1, "seed": 7, "short_q": .1, "wing_strikes": 1,
+        "min_trade_count": 1, "min_volume": 1, "publication_lag_sessions": 1,
+        "max_settlement_gap_days": 4, "end_before": "2026-01-01",
+        "settlement_field": "as_traded_close",
+    })
+    masses = [{"symbol": "X", "quote_date": "2024-01-02", "expiry": "2024-01-03", "settlement_date": "2024-01-03", "phase": "calibration", "spot": 100., "reference": .1, "curve": {"kind": "mixture", "weights": [[1.]], "means": [[0.]], "scales": [[1.]]}, "grid": [80., 90., 100., 110., 120.], "masses": [.1, .2, .4, .2, .1], "fit_identity": "fit"}, {"symbol": "X", "quote_date": "2024-02-02", "expiry": "2024-02-03", "settlement_date": "2024-02-03", "phase": "entry", "spot": 100., "reference": .1, "curve": {"kind": "mixture", "weights": [[1.]], "means": [[0.]], "scales": [[1.]]}, "grid": [80., 90., 100., 110., 120.], "masses": [.1, .2, .4, .2, .1], "fit_identity": "fit"}]
+    chain = [{"symbol": "X", "quote_date": date, "expiry": expiry, "right": right, "strike": strike, "trade_count": 2, "volume": 2} for date, expiry in [("2024-01-02", "2024-01-03"), ("2024-02-02", "2024-02-03")] for right, strike in [("put", 80.), ("put", 90.), ("put", 100.), ("call", 100.), ("call", 110.), ("call", 120.)]]
+    bars = [{"symbol": "X", "date": "2024-01-03", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-01-04", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-01-05", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-02-03", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-02-04", "as_traded_close": 100.}, {"symbol": "X", "date": "2024-02-05", "as_traded_close": 100.}]
+    result = owner.run(None, {"masses": masses, "chain": chain, "bars": bars})
+    assert not result["skips"], [item["reason"] for item in result["skips"]]
+    assert result["rho"]["2024-02"] is None
+    assert result["audit"].value["records"][0]["strikes"] == [80., 90., 110., 120.]
+    assert result["audit"].value["records"][1]["history_count"] == 1
+    audit = result["audit"].value
+    assert audit["loss_cache_count"] == 2
+    first, second = audit["records"]
+    assert (first["settlement_date"], first["publication_date"]) == ("2024-01-03", "2024-01-04")
+    assert audit["monthly"][0]["reference"] == "2024-02-02"
+    assert first["publication_date"] < audit["monthly"][0]["reference"]
+    assert first["fit_identity"] == second["fit_identity"] == "fit"
+
+
 def test_entry_chain_enumerates_fixed_quotable_condors_and_refuses_undated_execution():
     strikes = [85., 90., 95., 105., 110., 115.]
     rows = pd.DataFrame({
@@ -2186,3 +2236,278 @@ def test_decision_region_prepare_pins_the_archive_it_read(tmp_path, monkeypatch,
     else:
         assert written['store'] == manifest['store']
         assert [r['source'] for r in written['store']] == ['options-archive']
+
+
+def test_calendar_radius_uses_complete_blocks_and_keeps_legacy_result():
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0., .01], min_dates=4, block_dates=1,
+        replicates=100, alpha=.1, seed=7)
+    rows = [{"quote_date": f"2024-01-{day:02d}", "radius": radius,
+             "residual": residual}
+            for day in range(1, 7)
+            for radius, residual in ((0., .2), (.01, -.2))]
+    history = pd.DataFrame(rows)
+    before = owner.select(history)
+    assert "calendar_days" in __import__("inspect").signature(owner.select).parameters
+    result = owner.select(history, calendar_days=2)
+    assert result["radius"] == .01
+    assert result["full_means"] == {0.: pytest.approx(.2), .01: pytest.approx(-.2)}
+    assert result["support"]["supported"]
+    assert before == owner.select(history)
+
+
+def test_calendar_radius_refuses_uncovered_tail_and_unpaired_radius_dates():
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0., .01], min_dates=2, block_dates=1,
+        replicates=100, alpha=.1, seed=7)
+    assert "calendar_days" in __import__("inspect").signature(owner.select).parameters
+    history = pd.DataFrame([
+        {"quote_date": day, "radius": radius, "residual": -.2}
+        for day in ("2024-01-01", "2024-01-03")
+        for radius in (0., .01)])
+    result = owner.select(history, calendar_days=2)
+    assert result["radius"] is None
+    assert result["support"]["zero_inclusion_dates"] == ["2024-01-03"]
+    with pytest.raises(ValueError, match="paired"):
+        owner.select(history.iloc[:-1], calendar_days=1)
+
+
+def test_calendar_radius_full_observed_mean_must_pass(monkeypatch):
+    from dskit.pipeline.stats import CalendarBlockBootstrap
+
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0.], min_dates=2, block_dates=1,
+        replicates=100, alpha=.1, seed=7)
+    assert "calendar_days" in __import__("inspect").signature(owner.select).parameters
+    history = pd.DataFrame({"quote_date": ["2024-01-01", "2024-01-02"],
+                            "radius": [0., 0.], "residual": [-1., 3.]})
+    # Force a pessimistically unrepresentative draw to isolate the observed-mean gate.
+    monkeypatch.setattr(CalendarBlockBootstrap, "sample_indices",
+                        lambda self, replicates, seed: [[0, 0]] * replicates)
+    result = owner.select(history, calendar_days=1)
+    assert result["upper_bounds"][0.] == -1.
+    assert result["full_means"][0.] == 1.
+    assert result["radius"] is None
+
+
+def test_calendar_radius_does_not_silently_drop_missing_date():
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0.], min_dates=2, block_dates=1,
+        replicates=100, alpha=.1, seed=7)
+    history = pd.DataFrame({"quote_date": ["2024-01-01", "2024-01-02", None],
+                            "radius": [0., 0., 0.], "residual": [-1., -1., 100.]})
+    with pytest.raises(ValueError, match="quote_date"):
+        owner.select(history, calendar_days=1)
+
+def test_held_out_rho_all_months_strict_publication_and_no_repeated_lps(monkeypatch):
+    params = dict(rho_grid=[0., .01], min_dates=2,
+                  block_days={"primary": 1, "sensitivity": 3},
+                  replicates=20, alpha=.1, seed=7, short_q=.1, wing_strikes=1,
+                  min_trade_count=1, min_volume=1, publication_lag_sessions=1,
+                  max_settlement_gap_days=4, end_before="2026-01-01",
+                  settlement_field="as_traded_close")
+    contexts = [("2024-01-02", "2024-01-31", "calibration"),
+                ("2024-02-01", "2024-03-04", "entry"),
+                ("2024-03-01", "2024-04-01", "entry")]
+    masses, chain = [], []
+    for day, expiry, phase in contexts:
+        masses.append(dict(symbol="X", quote_date=day, expiry=expiry, phase=phase, settlement_date=expiry,
+            spot=100., reference=.1,
+            curve={"kind": "mixture", "weights": [[1.]], "means": [[0.]], "scales": [[1.]]},
+            grid=[80., 90., 100., 110., 120.], masses=[.1, .2, .4, .2, .1],
+            fit_identity="fit", checkpoint_identity="checkpoint",
+            source_identity="source", input_identity=day))
+        for right, strike in [("put",80.),("put",90.),("put",100.),
+                              ("call",100.),("call",110.),("call",120.)]:
+            chain.append(dict(symbol="X", quote_date=day, expiry=expiry,
+                              right=right, strike=strike, trade_count=2, volume=2))
+    bars=[dict(symbol="X", date=day, as_traded_close=100.) for day in
+          ["2024-01-31","2024-02-01","2024-02-02",
+           "2024-03-04","2024-03-05","2024-03-06",
+           "2024-04-01","2024-04-02","2024-04-03"]]
+    calls=[]
+    original=cdf_study.DiscreteCDFGrid.worst_expected_loss
+    def counted(self, *args, **kwargs):
+        calls.append(args[1])
+        return original(self,*args,**kwargs)
+    monkeypatch.setattr(cdf_study.DiscreteCDFGrid,"worst_expected_loss",counted)
+    out=cdf_study.HeldOutRhoCalibration("rho",params).run(
+        None,dict(masses=masses,chain=chain,bars=bars))
+    assert not out["skips"]
+    audit=out["audit"].value
+    assert set(out["rho"]) == {"2024-02","2024-03"}
+    assert [row["history_count"] for row in audit["monthly"]] == [0,1]
+    assert audit["records"][0]["settlement_date"] == "2024-01-31"
+    assert audit["records"][0]["publication_date"] == "2024-02-01"
+    assert len(calls) == len(masses)*len(params["rho_grid"])
+    assert all(row["checkpoint_identity"] == "checkpoint" for row in audit["records"])
+    assert set(out["rho"].values()) == {None}
+
+    blocked=dict(masses=masses,chain=chain,bars=bars,
+                 holding_exclusions=[{**{key:masses[0][key] for key in
+                    ("symbol","quote_date","expiry")},"reason":"holding_split"}])
+    refused=cdf_study.HeldOutRhoCalibration("rho",params).run(None,blocked)
+    assert any(row["reason"] == "holding_split" and
+               row["input_identity"] == masses[0]["input_identity"]
+               for row in refused["skips"])
+    assert refused["audit"].value["monthly"][1]["history_count"] == 0
+
+def test_held_out_rho_calendar_days_are_not_minimum_observation_counts():
+    config=json.loads((Path(__file__).parents[1]/"configs"/
+                       "run-equity-condor-robust-backtest.json").read_text())
+    params=config["pipeline"]["rho_calibration"]["params"]
+    assert params["min_dates"] == 8
+    assert params["block_days"] == {"primary":31,"sensitivity":62}
+    assert cdf_study.HeldOutRhoCalibration.validate_params(params) == []
+
+
+LEGACY_ROBUST_CONFIG = (Path(__file__).parents[1]/"configs"/
+                        "run-equity-condor-robust-backtest.json")
+LEGACY_ROBUST_HASH = "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55"
+
+
+def _legacy_rho_params():
+    config = json.loads(LEGACY_ROBUST_CONFIG.read_text())
+    return config["pipeline"]["rho_calibration"]["params"]
+
+
+def test_legacy_rho_config_still_validates_and_keeps_its_identity_hash():
+    from dskit.pipeline.document import PipelineDocument
+
+    config = json.loads(LEGACY_ROBUST_CONFIG.read_text())
+    params = config["pipeline"]["rho_calibration"]["params"]
+    assert "block_geometry" not in params
+    assert cdf_study.HeldOutRhoCalibration.validate_params(params) == []
+    assert PipelineDocument.from_obj(config).hash == LEGACY_ROBUST_HASH
+
+
+def test_held_out_rho_block_geometry_is_optional_known_and_default_deny():
+    node = cdf_study.HeldOutRhoCalibration
+    base = _legacy_rho_params()
+    assert node.validate_params({**base, "block_geometry": "edge_padded"}) == []
+    assert node.validate_params({**base, "block_geometry": "complete"}) == []
+    for bad in ("circular", None, ["edge_padded"]):
+        problems = node.validate_params({**base, "block_geometry": bad})
+        assert any("complete" in p and "edge_padded" in p for p in problems)
+    assert node.validate_params({**base, "unknown_knob": 1})
+    missing = {k: v for k, v in base.items() if k != "seed"}
+    assert node.validate_params(missing)
+
+
+def test_held_out_rho_block_geometry_threads_to_the_radius_sampler():
+    from dskit.pipeline.stats import (CalendarBlockBootstrap,
+                                      EdgePaddedCalendarBlockBootstrap)
+
+    base = _legacy_rho_params()
+    legacy = cdf_study.HeldOutRhoCalibration("rho", base)
+    padded = cdf_study.HeldOutRhoCalibration(
+        "rho", {**base, "block_geometry": "edge_padded"})
+    assert legacy._radius_owner().sampler_class is CalendarBlockBootstrap
+    assert padded._radius_owner().sampler_class is EdgePaddedCalendarBlockBootstrap
+    with pytest.raises(ValueError, match="complete.*edge_padded"):
+        cdf_study.HeldOutRhoCalibration(
+            "rho", {**base, "block_geometry": "nope"})._radius_owner()
+
+
+def test_adaptive_radius_rejects_a_non_sampler_strategy():
+    with pytest.raises(ValueError, match="invalid adaptive radius settings"):
+        cdf_study.AdaptiveWassersteinRadius(
+            radii=[0.], min_dates=2, block_dates=1, replicates=100, alpha=.1,
+            seed=7, sampler_class=dict)
+
+
+def test_edge_padded_sampler_turns_an_uncovered_trailing_date_into_a_radius():
+    from dskit.pipeline.stats import EdgePaddedCalendarBlockBootstrap
+
+    # Weekly dates: the legacy sampler leaves the final date uncovered at
+    # calendar_days=10 because no observed start sits 9 days before it.
+    days = ["2024-01-01", "2024-01-08", "2024-01-15", "2024-01-22",
+            "2024-01-29", "2024-02-05"]
+    history = pd.DataFrame([
+        {"quote_date": day, "radius": radius, "residual": residual}
+        for day in days for radius, residual in ((0., .2), (.01, -.2))])
+    settings = dict(radii=[0., .01], min_dates=4, block_dates=1,
+                    replicates=100, alpha=.1, seed=7)
+    legacy = cdf_study.AdaptiveWassersteinRadius(**settings).select(
+        history, calendar_days=10)
+    assert legacy["radius"] is None
+    assert legacy["support"]["zero_inclusion_dates"] == ["2024-02-05"]
+    padded_owner = cdf_study.AdaptiveWassersteinRadius(
+        **settings, sampler_class=EdgePaddedCalendarBlockBootstrap)
+    padded = padded_owner.select(history, calendar_days=10)
+    assert padded["support"]["supported"]
+    assert padded["support"]["zero_inclusion_dates"] == []
+    assert padded["support"]["truncated_blocks"] > 0
+    assert all(bound is not None for bound in padded["upper_bounds"].values())
+    # The unchanged smallest-passing rule: rho=0 has positive mean, .01 passes.
+    assert padded["radius"] == .01
+    assert padded["reason"] is None
+    # An unsupported padded update still abstains (span floor: 10 > 36/2).
+    short = padded_owner.select(history, calendar_days=30)
+    assert short["radius"] is None and not short["support"]["supported"]
+
+
+def test_held_out_rho_publication_from_settlement_and_label_date_agreement():
+    mass={"symbol":"X","expiry":"2025-01-31","settlement_date":"2025-01-31"}
+    bars=[dict(symbol="X",date=day,as_traded_close=100.)
+          for day in ["2025-01-30","2025-01-31","2025-02-03","2025-02-04"]]
+    close,settled,published=cdf_study.HeldOutRhoCalibration._bar_close(
+        mass,bars,4,1,"2026-01-01","as_traded_close")
+    assert (close,settled,published)==(100.,"2025-01-31","2025-02-03")
+    with pytest.raises(ValueError,match="forecast settlement"):
+        cdf_study.HeldOutRhoCalibration._bar_close(
+            mass,[r for r in bars if r["date"]!="2025-01-31"],
+            4,1,"2026-01-01","as_traded_close")
+
+
+def _weekly_rho_inputs(weeks):
+    """Weekly calibration contexts plus one later entry context, settled and published."""
+    from datetime import date, timedelta
+    start = date(2024, 1, 2)
+    contexts = [(start + timedelta(days=7 * k), "calibration") for k in range(weeks)]
+    contexts.append((date(2024, 6, 4), "entry"))
+    masses, chain, bars = [], [], []
+    for day, phase in contexts:
+        expiry = day + timedelta(days=30)
+        masses.append(dict(symbol="X", quote_date=day.isoformat(), expiry=expiry.isoformat(),
+                           phase=phase, settlement_date=expiry.isoformat(), spot=100., reference=.1,
+                           curve={"kind": "mixture", "weights": [[1.]], "means": [[0.]],
+                                  "scales": [[1.]]},
+                           grid=[80., 90., 100., 110., 120.], masses=[.1, .2, .4, .2, .1],
+                           fit_identity="fit", checkpoint_identity="checkpoint",
+                           source_identity="source", input_identity=day.isoformat()))
+        for right, strike in [("put", 80.), ("put", 90.), ("put", 100.),
+                              ("call", 100.), ("call", 110.), ("call", 120.)]:
+            chain.append(dict(symbol="X", quote_date=day.isoformat(), expiry=expiry.isoformat(),
+                              right=right, strike=strike, trade_count=2, volume=2))
+        bars.extend(dict(symbol="X", date=(expiry + timedelta(days=k)).isoformat(),
+                         as_traded_close=100.) for k in range(3))
+    return dict(masses=masses, chain=chain, bars=bars)
+
+
+def test_held_out_rho_run_threads_edge_padded_to_primary_and_sensitivity_support():
+    """ADR-0258 (5): the node, not only the owner, samples both horizons on padded blocks."""
+    params = dict(rho_grid=[0., .01], min_dates=2, block_days={"primary": 7, "sensitivity": 14},
+                  replicates=20, alpha=.1, seed=7, short_q=.1, wing_strikes=1,
+                  min_trade_count=1, min_volume=1, publication_lag_sessions=1,
+                  max_settlement_gap_days=4, end_before="2026-01-01",
+                  settlement_field="as_traded_close")
+    inputs = _weekly_rho_inputs(6)
+    legacy = cdf_study.HeldOutRhoCalibration("rho", params).run(None, inputs)
+    padded = cdf_study.HeldOutRhoCalibration(
+        "rho", {**params, "block_geometry": "edge_padded"}).run(None, inputs)
+    month = next(row for row in legacy["audit"].value["monthly"] if row["month"] == "2024-06")
+    assert month["primary"]["support"]["supported"] is False
+    assert month["primary"]["support"]["zero_inclusion_dates"]
+    assert month["sensitivity"]["support"]["supported"] is False
+    assert "truncated_blocks" not in month["primary"]["support"]
+    month = next(row for row in padded["audit"].value["monthly"] if row["month"] == "2024-06")
+    for horizon, block_days in (("primary", 7), ("sensitivity", 14)):
+        support = month[horizon]["support"]
+        assert support["supported"] is True
+        assert support["block_days"] == block_days
+        assert support["zero_inclusion_dates"] == []
+        assert support["truncated_blocks"] > 0
+        assert support["date_count"] == 6
+        assert set(month[horizon]["upper_bounds"]) == set(params["rho_grid"])
+        assert all(v is not None for v in month[horizon]["upper_bounds"].values())
