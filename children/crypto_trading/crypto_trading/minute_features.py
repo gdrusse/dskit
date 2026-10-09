@@ -5,23 +5,27 @@ every feature is a function of bars whose ``close_time_ms <= t_ms`` (the informa
 ``t_ms + 1``, the minute boundary). The labels are what the later bars are FOR:
 ``y_h<h> = ln(close(t + h) / close(t)) / scale`` with ``scale`` the rolling RMS of the last
 ``scale_window`` one-minute returns, known at ``t`` (per-minute log-return std, the unit of the
-``vol__*`` columns).
+``vol__*`` columns). The divisor is emitted as ``meta__scale``: the reserved ``meta`` prefix is no
+feature family, so no ablation arm selects it and it is NOT a model input (with the defaults it equals
+``vol__rms_60``, so a model that read it would keep volatility in the ``minus_vol`` arm).
 
 - **Families.** Each column is named ``<family>__<name>`` so a list of kept families drops a family
   by prefix: ``ret``, ``vol``, ``flow``, ``clock``, ``xasset`` (the other asset's ``ret`` and ``vol``
-  columns, renamed ``xasset__<name>``) and ``bvol`` (the BVOL level and its change). ``scale`` and the
+  columns, renamed ``xasset__<name>``) and ``bvol`` (the BVOL level and its change). ``meta__scale`` and the
   labels belong to no family: every ablation arm scores the same target.
 - **The row set never depends on the families.** Eligibility is decided from every window the node
   could use, whichever families are kept, so a family-ablation compares models on identical samples.
 - **No fill.** A bar whose trailing window (the widest of the configured ones) holds a missing minute
   is refused by name (``gap_in_window``), as are the first bars of the data (``insufficient_history``),
-  a non-finite feature or a non-positive volume or trade count (``invalid_value``), a flat window
+  a non-finite feature, a non-positive volume or trade count, or a ``taker_buy_volume`` outside
+  ``[0, volume]`` (``invalid_value``), a flat window
   (``zero_scale``) and a bar whose other asset has no eligible bar at the same instant
   (``xasset_unavailable``). The counts are in ``provenance``: every bar is either a row or a named refusal.
   A label whose ``t + h`` bar is missing is None and counted; the row stays.
 - **BVOL** is optional and never refuses a row: a reading is usable when ``calc_time_ms`` is before the
   information instant (a reading AT it is not yet known) and no older than ``bvol_max_age_ms``;
-  otherwise the columns are None (an ablation family with missing days).
+  otherwise the columns are None (an ablation family with missing days). A reading whose ``index_value``
+  is NaN, infinite or not a number is a missing reading (dropped), never an abort.
 - **Variance** comes from :mod:`dskit.pipeline.libs.vol_estimators` (rolling RMS, EWMA, Parkinson range,
   all gap-aware); this node takes the square root. Clock features are UTC.
 
@@ -39,28 +43,27 @@ from dskit.pipeline.records import number_ok
 from .ports import ListPortsNode
 
 __all__ = [
-    "BAR_MS", "FAMILIES", "MinuteFeatures", "REFUSALS", "FeatureFamily",
+    "BAR_MS", "FAMILIES", "FAMILY_TYPES", "MinuteFeatures", "REFUSALS", "FeatureFamily",
 ]
 
 #: The bar this node is built for: one minute, in epoch ms.
 BAR_MS = 60_000
 #: Binance stamps a bar's ``close_time_ms`` one millisecond before the next bar opens.
 CLOSE_OFFSET_MS = 1
-_MINUTES_PER_DAY = 1440
 _DAYS_PER_WEEK = 7
 _MS_PER_DAY = 86_400_000
+_MINUTES_PER_DAY = _MS_PER_DAY // BAR_MS
 #: 1970-01-01 was a Thursday; with Monday as 0 that is 3.
 _EPOCH_WEEKDAY = 3
 _SEP = "__"
-
-#: The family order, which is also the column order.
-FAMILIES = ("ret", "vol", "flow", "clock", "xasset", "bvol")
+#: The reserved prefix of the columns that are not features; it is no family, so no arm selects one.
+_META = "meta"
 #: The names a refused bar can carry in the provenance.
 REFUSALS = ("insufficient_history", "gap_in_window", "invalid_value", "zero_scale", "xasset_unavailable")
 
 _KLINE_FIELDS = ("open_time_ms", "open", "high", "low", "close", "volume", "close_time_ms", "trades",
                  "taker_buy_volume")
-_BVOL_FIELDS = ("calc_time_ms", "index_value")
+_BVOL_TIME_FIELDS = ("calc_time_ms",)
 _LABEL_PREFIX = "y_h"
 
 DEFAULT_RET_MINUTES = (1, 2, 3, 5, 10, 15, 30, 60)
@@ -92,8 +95,29 @@ def _qualified(family, name):
     return f"{family}{_SEP}{name}"
 
 
+#: The label divisor's column: under the reserved ``meta`` prefix, so it is in no family and no arm.
+_SCALE_COLUMN = _qualified(_META, "scale")
+
+
 class _Frame:
-    """One asset's bars as arrays, with the memoised columns of each family."""
+    """One asset's bars as arrays, with the memoised columns of each family.
+
+    Parameters
+    ----------
+    asset : str
+        The asset's name.
+    rows : list of dict
+        Its validated kline rows (any order).
+    params : dict
+        The node's resolved params.
+
+    Examples
+    --------
+    Build the frame of one asset and read a family's columns from it::
+
+        frame = _Frame("AAA", kline_rows, MinuteFeatures.resolve({"assets": ["AAA", "BBB"]}))
+        columns = frame.columns("ret")   # -> {"ret__r1": array, ...}
+    """
 
     def __init__(self, asset, rows, params):
         import numpy as np
@@ -124,7 +148,18 @@ class _Frame:
         return np.array(run, dtype=np.int64)
 
     def columns(self, family):
-        """Return the family's ``{column: array}``, computed once."""
+        """Return a family's columns, computed once.
+
+        Parameters
+        ----------
+        family : str
+            A key of :data:`FAMILY_TYPES`.
+
+        Returns
+        -------
+        dict
+            ``{column name: float64 array, one value per bar}``.
+        """
         if family not in self._memo:
             self._memo[family] = FAMILY_TYPES[family](self.params).compute(self)
         return self._memo[family]
@@ -172,12 +207,36 @@ class FeatureFamily(ABC):
 
 
 class Ret(FeatureFamily):
-    """Log returns over the last ``ret_minutes`` minutes: ``ret__r<n>``."""
+    """Log returns over the last ``ret_minutes`` minutes: ``ret__r<n>``.
+
+    Parameters
+    ----------
+    params : dict
+        The node's resolved params; ``ret_minutes`` (list of int >= 1) is read.
+
+    Examples
+    --------
+    Two lookbacks::
+
+        family = Ret({"ret_minutes": [1, 5]})
+        columns = family.compute(frame)   # -> {"ret__r1": array, "ret__r5": array}
+    """
 
     name = "ret"
 
     def compute(self, frame):
-        """Take ``ln(close_t / close_(t-n))`` for each configured ``n``."""
+        """Take ``ln(close_t / close_(t-n))`` for each configured ``n``.
+
+        Parameters
+        ----------
+        frame : _Frame
+            The asset's bars.
+
+        Returns
+        -------
+        dict
+            ``{"ret__r<n>": float64 array}``, NaN where the bar ``n`` back does not exist.
+        """
         from dskit.pipeline.libs.numpy import log_return
 
         return {_qualified(self.name, f"r{n}"): log_return(frame.price["close"], n)
@@ -185,12 +244,37 @@ class Ret(FeatureFamily):
 
 
 class Vol(FeatureFamily):
-    """Per-minute return std from dskit's estimators: ``vol__rms_<w>``, ``vol__ewma_<h>``, ``vol__hl_<w>``."""
+    """Per-minute return std from dskit's estimators: ``vol__rms_<w>``, ``vol__ewma_<h>``, ``vol__hl_<w>``.
+
+    Parameters
+    ----------
+    params : dict
+        The node's resolved params; ``rms_windows``, ``ewma_half_lives``, ``ewma_lookback_multiple`` and
+        ``range_windows`` are read (through :func:`vol_estimators`).
+
+    Examples
+    --------
+    One RMS window::
+
+        params = MinuteFeatures.resolve({"assets": ["AAA", "BBB"], "rms_windows": [5]})
+        columns = Vol(params).compute(frame)   # -> {"vol__rms_5": array, "vol__ewma_15": array, ...}
+    """
 
     name = "vol"
 
     def compute(self, frame):
-        """Square-root each estimator's per-bar variance."""
+        """Square-root each estimator's per-bar variance.
+
+        Parameters
+        ----------
+        frame : _Frame
+            The asset's bars.
+
+        Returns
+        -------
+        dict
+            ``{"vol__<estimator label>": float64 array}``, NaN where a window is incomplete or has a gap.
+        """
         import numpy as np
 
         out = {}
@@ -201,12 +285,36 @@ class Vol(FeatureFamily):
 
 
 class Flow(FeatureFamily):
-    """Volume and trade count against their trailing mean, and the taker-buy share of volume."""
+    """Volume and trade count against their trailing mean, and the taker-buy share of volume.
+
+    Parameters
+    ----------
+    params : dict
+        The node's resolved params; ``flow_window`` (int >= 1) and ``taker_windows`` (list of int >= 1).
+
+    Examples
+    --------
+    A 60-minute mean and a 15-minute taker share::
+
+        family = Flow({"flow_window": 60, "taker_windows": [15]})
+        columns = family.compute(frame)   # -> {"flow__log_volume": ..., "flow__taker_15": ...}
+    """
 
     name = "flow"
 
     def compute(self, frame):
-        """Take ``ln(x_t / mean(x))`` over ``flow_window`` and the taker share over each window."""
+        """Take ``ln(x_t / mean(x))`` over ``flow_window`` and the taker share over each window.
+
+        Parameters
+        ----------
+        frame : _Frame
+            The asset's bars.
+
+        Returns
+        -------
+        dict
+            ``flow__log_volume``, ``flow__log_trades`` and ``flow__taker_<w>`` arrays, NaN where unknown.
+        """
         import numpy as np
         from dskit.pipeline.libs.numpy import rolling_sum
 
@@ -226,12 +334,35 @@ class Flow(FeatureFamily):
 
 
 class Clock(FeatureFamily):
-    """UTC minute of day and day of week as sin and cos, read at the information instant."""
+    """UTC minute of day and day of week as sin and cos, read at the information instant.
+
+    Parameters
+    ----------
+    params : dict
+        The node's resolved params (none is read).
+
+    Examples
+    --------
+    Four columns, no knob::
+
+        columns = Clock({}).compute(frame)   # -> {"clock__tod_sin": ..., "clock__dow_cos": ...}
+    """
 
     name = "clock"
 
     def compute(self, frame):
-        """Phase the instant within the day and the week."""
+        """Phase the instant within the day and the week.
+
+        Parameters
+        ----------
+        frame : _Frame
+            The asset's bars.
+
+        Returns
+        -------
+        dict
+            ``clock__tod_sin``, ``clock__tod_cos``, ``clock__dow_sin`` and ``clock__dow_cos`` arrays.
+        """
         import numpy as np
 
         minute = (frame.info_ms // BAR_MS) % _MINUTES_PER_DAY
@@ -242,12 +373,35 @@ class Clock(FeatureFamily):
 
 
 class XAsset(FeatureFamily):
-    """The OTHER asset's ``ret`` and ``vol`` columns at the same instant: ``xasset__<name>``."""
+    """The OTHER asset's ``ret`` and ``vol`` columns at the same instant: ``xasset__<name>``.
+
+    Parameters
+    ----------
+    params : dict
+        The node's resolved params (those of ``ret`` and ``vol``, read through the partner frame).
+
+    Examples
+    --------
+    Needs a frame whose ``partner`` is set by the node::
+
+        columns = XAsset(params).compute(frame)   # -> {"xasset__r1": ..., "xasset__rms_5": ...}
+    """
 
     name = "xasset"
 
     def compute(self, frame):
-        """Align the other asset's columns to this asset's bars by ``close_time_ms`` (NaN where it has none)."""
+        """Align the other asset's columns to this asset's bars by ``close_time_ms`` (NaN where it has none).
+
+        Parameters
+        ----------
+        frame : _Frame
+            The asset's bars, with ``partner`` set to the other asset's frame.
+
+        Returns
+        -------
+        dict
+            ``{"xasset__<name>": float64 array}`` for each ``ret`` and ``vol`` column of the partner.
+        """
         import numpy as np
 
         other = frame.partner
@@ -263,12 +417,36 @@ class XAsset(FeatureFamily):
 
 
 class BVol(FeatureFamily):
-    """The BVOL index level known at the information instant and its change over ``bvol_change_minutes``."""
+    """The BVOL index level known at the information instant and its change over ``bvol_change_minutes``.
+
+    Parameters
+    ----------
+    params : dict
+        The node's resolved params; ``bvol_max_age_ms`` and ``bvol_change_minutes`` are read.
+
+    Examples
+    --------
+    A two-minute age cap and a five-minute change::
+
+        family = BVol({"bvol_max_age_ms": 120000, "bvol_change_minutes": 5})
+        columns = family.compute(frame)   # -> {"bvol__level": array, "bvol__change": array}
+    """
 
     name = "bvol"
 
     def compute(self, frame):
-        """Read the newest legal reading now and ``bvol_change_minutes`` earlier (NaN when missing or stale)."""
+        """Read the newest legal reading now and ``bvol_change_minutes`` earlier (NaN when missing or stale).
+
+        Parameters
+        ----------
+        frame : _Frame
+            The asset's bars, with ``bvol_times`` and ``bvol_values`` set.
+
+        Returns
+        -------
+        dict
+            ``bvol__level`` and ``bvol__change`` float64 arrays.
+        """
         level = self._level(frame, frame.info_ms)
         before = self._level(frame, frame.info_ms - self.params["bvol_change_minutes"] * BAR_MS)
         return {_qualified(self.name, "level"): level, _qualified(self.name, "change"): level - before}
@@ -289,6 +467,8 @@ class BVol(FeatureFamily):
 
 #: family name -> class: the whole vocabulary of a document's ``families``.
 FAMILY_TYPES = {cls.name: cls for cls in (Ret, Vol, Flow, Clock, XAsset, BVol)}
+#: The family order, which is also the column order: derived from :data:`FAMILY_TYPES`, never restated.
+FAMILIES = tuple(FAMILY_TYPES)
 
 
 def vol_estimators(params):
@@ -316,13 +496,31 @@ def vol_estimators(params):
     return build_estimators(specs)
 
 
+def scale_estimator(params):
+    """Build the estimator behind the label scale: the rolling RMS of ``scale_window`` returns.
+
+    Parameters
+    ----------
+    params : dict
+        The node's resolved params.
+
+    Returns
+    -------
+    dskit.pipeline.libs.vol_estimators.VolEstimator
+        A rolling-RMS estimator.
+    """
+    (estimator,) = build_estimators([{"kind": "rms", "window": params["scale_window"]}])
+    return estimator
+
+
 class MinuteFeatures(ListPortsNode):
     """Feature rows and 15-horizon labels per asset and minute (role ``transform``).
 
     Inputs: ``klines`` (a list of 1-minute kline rows, each ``{asset, open_time_ms, open, high, low,
     close, volume, close_time_ms, trades, taker_buy_volume}``, for both assets) and optionally ``bvol``
     (a list of ``{asset, calc_time_ms, index_value}``). Outputs: ``records`` (one row per eligible
-    ``(asset, t)``: ``asset``, ``t_ms``, the family columns, ``scale``, ``y_h1`` ... ``y_h<max_horizon>``)
+    ``(asset, t)``: ``asset``, ``t_ms``, the family columns, ``meta__scale`` (the label divisor, not a
+    feature), ``y_h1`` ... ``y_h<max_horizon>``)
     and ``provenance`` (``families``, ``need_bars`` and per asset ``bars``, ``rows``, ``refused`` by name,
     ``label_missing`` by horizon, ``bvol_missing``).
 
@@ -487,8 +685,9 @@ class MinuteFeatures(ListPortsNode):
             asset = row.get("asset") if isinstance(row, dict) else None
             if asset not in grouped:
                 raise ValueError(f"{self.key}: bvol row of asset {asset!r}, expected one of {resolved['assets']}")
-            self._checked(row, _BVOL_FIELDS, "bvol")
-            grouped[asset].append((row["calc_time_ms"], row["index_value"]))
+            self._checked(row, _BVOL_TIME_FIELDS, "bvol")
+            if number_ok(row.get("index_value")):  # a NaN / non-numeric reading is a missing one
+                grouped[asset].append((row["calc_time_ms"], row["index_value"]))
         out = {}
         for asset, pairs in grouped.items():
             pairs.sort()
@@ -509,27 +708,39 @@ class MinuteFeatures(ListPortsNode):
         Returns
         -------
         int
-            The widest window any family or the label scale reads.
+            The widest window any family or the label scale reads, in returns: each estimator's own
+            ``lookback_bars() - 1`` (a bar count includes the first bar's predecessor), and the plain
+            windows of ``ret_minutes``, ``taker_windows`` and ``flow_window``.
         """
-        ewma = [h * resolved["ewma_lookback_multiple"] for h in resolved["ewma_half_lives"]]
-        return max(list(resolved["ret_minutes"]) + list(resolved["rms_windows"]) + ewma
-                   + list(resolved["range_windows"]) + list(resolved["taker_windows"])
-                   + [resolved["flow_window"], resolved["scale_window"]])
+        estimators = vol_estimators(resolved) + [scale_estimator(resolved)]
+        return max([e.lookback_bars() - 1 for e in estimators] + list(resolved["ret_minutes"])
+                   + list(resolved["taker_windows"]) + [resolved["flow_window"]])
 
     def _scale(self, frame, resolved):
         """Return the label scale: the rolling RMS of the last ``scale_window`` returns (per-minute std)."""
         import numpy as np
 
-        (estimator,) = build_estimators([{"kind": "rms", "window": resolved["scale_window"]}])
         with np.errstate(invalid="ignore"):
-            return np.sqrt(estimator.variance(frame.bars))
+            return np.sqrt(scale_estimator(resolved).variance(frame.bars))
 
-    def _local_reasons(self, frame, scale, need):
+    def _bad_taker(self, frame, resolved):
+        """Flag each bar whose trailing taker windows hold a taker-buy volume outside ``[0, volume]``."""
+        import numpy as np
+        from dskit.pipeline.libs.numpy import rolling_sum
+
+        taker, volume = frame.flow["taker_buy_volume"], frame.flow["volume"]
+        bad = ((taker < 0) | (taker > volume)).astype(np.float64)
+        flagged = bad > 0
+        for window in resolved["taker_windows"]:
+            flagged |= np.nan_to_num(rolling_sum(bad, window)) > 0
+        return flagged
+
+    def _local_reasons(self, frame, scale, need, resolved):
         """Name why each bar is refused on its own account, or '' when it is not."""
         import numpy as np
 
         checked = [v for family in ("ret", "vol", "flow") for v in frame.columns(family).values()] + [scale]
-        finite = np.all([np.isfinite(v) for v in checked], axis=0)
+        finite = np.all([np.isfinite(v) for v in checked], axis=0) & ~self._bad_taker(frame, resolved)
         index = np.arange(frame.size)
         reasons = np.full(frame.size, "", dtype=object)
         reasons[(reasons == "") & (index < need)] = "insufficient_history"
@@ -578,19 +789,21 @@ class MinuteFeatures(ListPortsNode):
                 continue
             row = {"asset": frame.asset, "t_ms": int(frame.close_time[i])}
             row.update({name: _cell(values[i]) for name, values in columns.items()})
-            row["scale"] = _cell(scale[i])
+            row[_SCALE_COLUMN] = _cell(scale[i])
             row.update({name: _cell(values[i]) for name, values in labels.items()})
             rows.append(row)
         return rows, labels
 
     def _asset_provenance(self, frame, resolved, reasons, labels, rows):
         """Count bars, rows, named refusals and missing labels / BVOL readings for one asset."""
+        import numpy as np
+
         refused = {name: int((reasons == name).sum()) for name in REFUSALS if (reasons == name).any()}
         ok = reasons == ""
-        missing = {h[len(_LABEL_PREFIX):]: int((ok & ~_isfinite(v)).sum()) for h, v in labels.items()}
+        missing = {h[len(_LABEL_PREFIX):]: int((ok & ~np.isfinite(v)).sum()) for h, v in labels.items()}
         bvol_level = frame.columns("bvol")[_qualified("bvol", "level")]
         return {"bars": int(frame.size), "rows": len(rows), "refused": refused, "label_missing": missing,
-                "bvol_missing": int((ok & ~_isfinite(bvol_level)).sum())}
+                "bvol_missing": int((ok & ~np.isfinite(bvol_level)).sum())}
 
     def run(self, ctx, inputs):
         """Build the feature and label rows.
@@ -617,7 +830,7 @@ class MinuteFeatures(ListPortsNode):
         frames = self._frames(inputs, resolved)
         need = self.need_bars(resolved)
         scales = {a: self._scale(f, resolved) for a, f in frames.items()}
-        local = {a: self._local_reasons(f, scales[a], need) for a, f in frames.items()}
+        local = {a: self._local_reasons(f, scales[a], need, resolved) for a, f in frames.items()}
         reasons = {a: self._with_partner(frames[a], local[a], local[frames[a].partner.asset], frames[a].partner)
                    for a in frames}
         order = {a: n for n, a in enumerate(resolved["assets"])}
@@ -639,10 +852,3 @@ class MinuteFeatures(ListPortsNode):
         out = own.copy()
         out[(out == "") & ~usable] = "xasset_unavailable"
         return out
-
-
-def _isfinite(values):
-    """Say, per element, whether a numpy array's value is finite."""
-    import numpy as np
-
-    return np.isfinite(values)

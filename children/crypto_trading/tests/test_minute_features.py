@@ -27,7 +27,8 @@ SMALL = {
 }
 SMALL_NEED = 10  # the widest window of SMALL: rms 10, scale 10, ewma 3 * 3 = 9
 FAMILIES = ("ret", "vol", "flow", "clock", "xasset", "bvol")
-LABEL_AND_KEYS = {"asset", "t_ms", "scale"}
+SCALE = "meta__scale"  # restated on purpose: the label divisor lives under a reserved non-feature prefix
+LABEL_AND_KEYS = {"asset", "t_ms", SCALE}
 
 
 def bars(asset, n, seed, start=START, drop=()):
@@ -78,7 +79,7 @@ def by_key(out):
 
 
 def feature_columns(row):
-    return [k for k in row if k not in LABEL_AND_KEYS and not k.startswith("y_h")]
+    return [k for k in row if k not in LABEL_AND_KEYS and not k.startswith("y_h") and not k.startswith("meta__")]
 
 
 def close_at(rows, asset, i):
@@ -106,7 +107,7 @@ def test_columns_are_family_prefixed_and_labels_are_named():
         for column in feature_columns(row):
             assert column.split("__", 1)[0] in FAMILIES, column
         assert [k for k in row if k.startswith("y_h")] == [f"y_h{h}" for h in range(1, 5)]
-        assert {"asset", "t_ms", "scale"} <= set(row)
+        assert {"asset", "t_ms", SCALE} <= set(row) and "scale" not in row
     names = set(feature_columns(rows[0]))
     assert {f"ret__r{n}" for n in (1, 2, 5)} <= names
     assert {"vol__rms_5", "vol__rms_10", "vol__ewma_3", "vol__hl_5"} <= names
@@ -141,7 +142,7 @@ def test_values_match_plain_python():
     assert row["flow__taker_3"] == pytest.approx(
         sum(b["taker_buy_volume"] for b in bar[i - 2:i + 1]) / sum(b["volume"] for b in bar[i - 2:i + 1]))
     scale = math.sqrt(sum(r * r for r in window(10)) / 10)
-    assert row["scale"] == pytest.approx(scale) == pytest.approx(row["vol__rms_10"])
+    assert row[SCALE] == pytest.approx(scale) == pytest.approx(row["vol__rms_10"])
     for h in range(1, 5):
         assert row[f"y_h{h}"] == pytest.approx(math.log(c[i + h] / c[i]) / scale)
     other = closes(klines, B)
@@ -168,13 +169,25 @@ def test_clock_day_of_week_follows_the_utc_calendar():
     assert row["clock__tod_sin"] == pytest.approx(math.sin((6 * 60 + SMALL_NEED + 1) / 1440 * 2 * math.pi))
 
 
-def test_vol_columns_use_dskits_estimators():
-    from dskit.pipeline.libs import vol_estimators
+def _alternating(asset, n, r, start=START):
+    """Bars whose close alternates x e^{+r}, x e^{-r}; high/low are the open/close extremes (no wick)."""
+    rows, price = [], 100.0
+    for i in range(n):
+        open_, price = price, price * math.exp(r if i % 2 == 0 else -r)
+        rows.append({"asset": asset, "open_time_ms": start + i * BAR, "open": open_, "high": max(open_, price),
+                     "low": min(open_, price), "close": price, "volume": 10.0,
+                     "close_time_ms": start + (i + 1) * BAR - 1, "trades": 50, "taker_buy_volume": 4.0})
+    return rows
 
-    source = open(os.path.join(CHILD_ROOT, "crypto_trading", "minute_features.py"), encoding="utf-8").read()
-    assert "dskit.pipeline.libs.vol_estimators" in source
-    assert "def ewma_variance" not in source and "def parkinson_variance" not in source
-    assert vol_estimators.build_estimators  # the import the module relies on exists
+
+def test_vol_columns_take_the_known_per_minute_std_of_the_bars():
+    r = 0.01  # every one-minute log return is +-r, so every squared-return mean is exactly r ** 2
+    row = by_key(run(_alternating(A, 60, r) + _alternating(B, 60, r)))[(A, t_of(30))]
+    for column in ("vol__rms_5", "vol__rms_10", "vol__ewma_3"):
+        assert row[column] == pytest.approx(r), column
+    # Parkinson: ln(high / low) is r on every bar, so the estimate is sqrt(r ** 2 / (4 ln 2))
+    assert row["vol__hl_5"] == pytest.approx(r / math.sqrt(4 * math.log(2)))
+    assert row[SCALE] == pytest.approx(r)
 
 
 def test_importing_the_module_pulls_no_heavy_library():
@@ -205,7 +218,7 @@ def test_default_knobs_are_the_plan_table():
     # the widest default window is the 60-minute EWMA over 5 half-lives = 300 returns
     assert out["provenance"]["need_bars"] == 300
     assert row["t_ms"] == t_of(300)
-    assert row["scale"] == pytest.approx(row["vol__rms_60"])
+    assert row[SCALE] == pytest.approx(row["vol__rms_60"])
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +250,9 @@ def test_changing_a_future_bar_changes_no_feature_at_t(shaken_asset):
             assert {k: v for k, v in before.items() if not k.startswith("y_h")} == \
                    {k: v for k, v in after.items() if not k.startswith("y_h")}, (asset, j)
     # the labels of t are what a future bar is FOR
-    assert base[(A, t_of(i))]["y_h1"] != moved[(A, t_of(i))]["y_h1"] or shaken_asset == B
+    other = B if shaken_asset == A else A
     assert base[(shaken_asset, t_of(i))]["y_h1"] != moved[(shaken_asset, t_of(i))]["y_h1"]
+    assert base[(other, t_of(i))]["y_h1"] == moved[(other, t_of(i))]["y_h1"]  # a label reads only its own asset
 
 
 def test_control_changing_the_last_legal_bar_moves_the_features():
@@ -344,7 +358,7 @@ def test_a_flat_window_has_zero_scale_and_is_refused_by_name():
             r.update(open=100.0, high=100.0, low=100.0, close=100.0)
     out = run(klines)
     assert out["provenance"]["assets"][A]["refused"]["zero_scale"] >= 1
-    assert all(r["scale"] > 0 for r in out["records"])
+    assert all(r[SCALE] > 0 for r in out["records"])
 
 
 def test_a_nonpositive_volume_is_refused_by_name_not_logged():
@@ -370,7 +384,7 @@ def test_dropping_a_family_removes_exactly_its_prefix_and_keeps_the_same_rows(dr
     for key, row in part.items():
         assert not any(c.startswith(dropped + "__") for c in row)
         assert {c for c in full[key] if not c.startswith(dropped + "__")} == set(row)
-        assert all(row[c] == full[key][c] for c in row)  # labels and scale unchanged by the arm
+        assert all(row[c] == full[key][c] for c in row)  # labels and the meta scale unchanged by the arm
 
 
 def test_the_row_set_does_not_depend_on_bvol_or_the_families():
@@ -467,8 +481,8 @@ def test_bad_rows_raise_with_the_defect_named():
         run([{k: v for k, v in good[0].items() if k != "trades"}] + good[1:])
     with pytest.raises(ValueError, match=B):
         run([r for r in good if r["asset"] == A])
-    with pytest.raises(ValueError, match="index_value"):
-        run(good, [{"asset": A, "calc_time_ms": START, "index_value": None}])
+    with pytest.raises(ValueError, match="calc_time_ms"):
+        run(good, [{"asset": A, "calc_time_ms": "x", "index_value": 50.0}])
 
 
 def test_unsorted_input_gives_the_same_rows():
@@ -506,3 +520,86 @@ def test_every_arm_is_accepted_by_the_node_and_drops_by_prefix(arm):
     row = run(world(), bvol(A, 60, 3) + bvol(B, 60, 4), families=kept)["records"][0]
     present = {c.split("__", 1)[0] for c in feature_columns(row)}
     assert present == set(kept)
+
+
+# ---------------------------------------------------------------------------
+# review fixes: meta scale, taker validation, one source for constants, bad BVOL readings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("arm", ["all"] + [f"minus_{f}" for f in FAMILIES])
+def test_no_arm_carries_a_dropped_family_or_the_label_divisor_as_a_feature(arm):
+    kept = _arms()["arms"][arm]
+    dropped = set(FAMILIES) - set(kept)
+    rows = run(world(), bvol(A, 60, 3) + bvol(B, 60, 4), families=kept)["records"]
+    assert rows
+    assert "meta" not in FAMILIES and "meta" not in MinuteFeatures.FAMILIES
+    for row in rows:
+        features = [c for c in row if c.split("__", 1)[0] in FAMILIES]  # what an arm selects
+        assert not any(c.split("__", 1)[0] in dropped for c in row), arm
+        assert not any(c.startswith("meta__") for c in features)
+        assert {c for c in row if c.startswith("meta__")} == {SCALE}
+        assert "scale" not in row
+        assert set(row) == {"asset", "t_ms", SCALE} | set(features) | {c for c in row if c.startswith("y_h")}
+
+
+def _with_taker(value, at=20):
+    klines = world()
+    next(r for r in klines if r["asset"] == A and r["open_time_ms"] == START + at * BAR)["taker_buy_volume"] = value
+    return klines
+
+
+@pytest.mark.parametrize("bad", [-4.0, 1e6])  # negative, and above the bar's volume (5 to 15)
+def test_an_impossible_taker_buy_volume_is_refused_by_name(bad):
+    out = run(_with_taker(bad))
+    assert out["provenance"]["assets"][A]["refused"].get("invalid_value", 0) >= 1
+    assert (A, t_of(20)) not in by_key(out)
+    for row in out["records"]:  # and the bad bar poisons no later taker share through its window
+        assert 0.0 <= row["flow__taker_3"] <= 1.0 and 0.0 <= row["flow__taker_6"] <= 1.0
+
+
+def test_a_taker_buy_volume_equal_to_the_volume_is_valid():
+    klines = world()
+    bar = next(r for r in klines if r["asset"] == A and r["open_time_ms"] == START + 20 * BAR)
+    bar["taker_buy_volume"] = bar["volume"]
+    assert (A, t_of(20)) in by_key(run(klines))
+
+
+def test_the_minutes_per_day_derives_from_the_bar_length():
+    from crypto_trading import minute_features as mf
+
+    assert mf._MINUTES_PER_DAY == 86_400_000 // mf.BAR_MS == 1440  # restated on purpose
+
+
+def test_families_are_the_registered_family_types_in_order():
+    from crypto_trading import minute_features as mf
+
+    assert mf.FAMILIES == tuple(mf.FAMILY_TYPES) == MinuteFeatures.FAMILIES
+    assert tuple(MinuteFeatures.DEFAULTS["families"]) == mf.FAMILIES
+
+
+def test_need_bars_reads_the_estimators_own_lookback(monkeypatch):
+    from dskit.pipeline.libs.vol_estimators import Ewma
+
+    resolved = MinuteFeatures.resolve(SMALL)
+    assert MinuteFeatures.need_bars(resolved) == SMALL_NEED
+    monkeypatch.setattr(Ewma, "lookback_bars", lambda self: 51)  # 50 returns behind each EWMA value
+    assert MinuteFeatures.need_bars(resolved) == 50
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), None, "x"])
+def test_a_bad_bvol_reading_is_a_missing_reading_and_never_aborts(bad):
+    readings = bvol(A, 60, 3) + bvol(B, 60, 4)
+    base = by_key(run(world(), readings))
+    i = 30
+    spoiled = [({**r, "index_value": bad} if r["asset"] == A and r["calc_time_ms"] == START + i * BAR else r)
+               for r in readings]
+    out = run(world(), spoiled)
+    rows = by_key(out)
+    assert set(rows) == set(base)  # BVOL never refuses a row
+    row = rows[(A, t_of(i))]
+    # the newest legal reading is gone: the level is the one before it (within the age cap) or None, never the bad value
+    previous = next(r for r in readings if r["asset"] == A and r["calc_time_ms"] == START + (i - 1) * BAR)
+    assert row["bvol__level"] in (None, previous["index_value"])
+    assert row["bvol__level"] != base[(A, t_of(i))]["bvol__level"]
+    assert rows[(B, t_of(i))] == base[(B, t_of(i))]
