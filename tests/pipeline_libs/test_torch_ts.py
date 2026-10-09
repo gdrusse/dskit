@@ -713,7 +713,11 @@ def quantile_rows(n=32):
 )
 def test_bad_quantiles_are_refused_at_plan(bad):
     problems = TimeSeriesTrain.validate_params({**Q_PARAMS, "quantiles": bad})
-    assert any("quantiles" in p for p in problems), bad
+    expected = (
+        "quantiles must be a list of at least two floats, strictly "
+        f"increasing, each in (0, 1), got {bad!r}"
+    )
+    assert problems == [expected], bad
 
 
 def test_quantiles_are_regression_only_and_own_the_objective():
@@ -725,6 +729,11 @@ def test_quantiles_are_regression_only_and_own_the_objective():
     ):
         problems = TimeSeriesTrain.validate_params({**Q_PARAMS, knob: value})
         assert any("quantiles" in p and knob in p for p in problems), knob
+    # Present-but-falsy still competes: run_train would overwrite it.
+    for knob, value in (("loss", ""), ("loss_params", {})):
+        problems = TimeSeriesTrain.validate_params({**Q_PARAMS, knob: value})
+        assert any("quantiles" in p and knob in p for p in problems), knob
+    assert TimeSeriesTrain.validate_params({**Q_PARAMS, "loss": None}) == []
     assert TimeSeriesTrain.validate_params(Q_PARAMS) == []
     assert TimeSeriesPredict.validate_params(
         {"artifact": "x.pt", "quantiles": QUANTILES}
@@ -756,6 +765,7 @@ def test_pinball_loss_value_on_a_hand_computed_case():
 
 def test_quantile_fit_lowers_the_loss_and_serves_ordered_horizons(tmp_path):
     def fit(epochs):
+        torch.manual_seed(0)
         node = TimeSeriesTrain("q", {**Q_PARAMS, "epochs": epochs})
         ctx = NodeContext(
             name="q", asof="2026-01-01", run_dir=str(tmp_path / f"run{epochs}"),
@@ -778,10 +788,31 @@ def test_quantile_fit_lowers_the_loss_and_serves_ordered_horizons(tmp_path):
     assert restored.predict(record) == pytest.approx(served)
 
 
+#: Recorded from the pre-quantile ``torch_ts.py`` (18904a8f): the mlp
+#: no-quantiles module under ``torch.manual_seed(0)``, n_ahead=2.
+BASELINE_SHAPES = {
+    "inner.net.0.weight": (32, 4),
+    "inner.net.0.bias": (32,),
+    "inner.net.2.weight": (2, 32),
+    "inner.net.2.bias": (2,),
+}
+BASELINE_OUT = [
+    [-0.6327322125434875, -0.12880131602287292],
+    [-0.18870355188846588, -0.023759394884109497],
+    [0.1639236956834793, 0.07405223697423935],
+]
+
+
 def test_without_quantiles_the_head_and_objective_are_unchanged(tmp_path):
     params = {**TRAIN_PARAMS, "arch": "mlp", "n_ahead": 2, "label": ["y0", "y1"]}
+    torch.manual_seed(0)
     module = TimeSeriesTrain("m", params).build_module(params)
-    assert tuple(module(torch.zeros(3, SEQ * CH)).shape) == (3, 2)
+    shapes = {k: tuple(v.shape) for k, v in module.state_dict().items()}
+    assert shapes == BASELINE_SHAPES
+    out = module(torch.linspace(-1, 1, 12).reshape(3, 4))
+    assert out.flatten().tolist() == pytest.approx(
+        [v for row in BASELINE_OUT for v in row], abs=1e-6
+    )
     node = TimeSeriesTrain("m", dict(TRAIN_PARAMS))
     node.run(
         NodeContext(name="m", asof="2026-01-01", run_dir=str(tmp_path / "r")),
@@ -789,3 +820,19 @@ def test_without_quantiles_the_head_and_objective_are_unchanged(tmp_path):
     )
     assert node.params.get("loss") == "torch.nn.functional:mse_loss"
     assert "loss_params" not in node.params
+
+
+def test_quantile_predict_refuses_a_mean_only_artifact(tmp_path):
+    mean_params = {**TRAIN_PARAMS, "arch": "mlp", "epochs": 1}
+    trained = TimeSeriesTrain("m", mean_params).run(
+        NodeContext(name="m", asof="2026-01-01", run_dir=str(tmp_path / "m")),
+        {"rows": ts_rows()},
+    )
+    node = TimeSeriesPredict(
+        "p", {"artifact": trained["artifact_path"], "quantiles": [0.1, 0.9]},
+    )
+    with pytest.raises(Exception, match="trained without quantiles"):
+        node.run(
+            NodeContext(name="p", asof="2026-01-01", run_dir=str(tmp_path / "p")),
+            {},
+        )

@@ -196,7 +196,7 @@ def _quantile_problems(params):
     if params.get("head") == "binary":
         problems.append("quantiles is regression-only, got head='binary'")
     for knob in ("loss", "loss_params"):
-        if params.get(knob):
+        if params.get(knob) is not None:
             problems.append(
                 f"{knob} cannot be declared with quantiles — the objective "
                 f"is the mean pinball loss ({QUANTILE_LOSS})"
@@ -1906,6 +1906,18 @@ class TimeSeriesPredict(_TsModel, TorchPredict):
         problems = list(super().validate_params(params))
         problems.extend(_ts_problems(params, require_shape=False))
         return problems
+
+    def _load_artifact(self, state_path):
+        """Load, then refuse a declared ``quantiles`` the sidecar lacks."""
+        module, sidecar = super()._load_artifact(state_path)
+        trained = sidecar["params"]
+        if "quantiles" in self.params and "quantiles" not in trained:
+            self._refuse(
+                f"artifact sidecar mismatch on 'quantiles': this node "
+                f"declares {self.params['quantiles']!r} but the artifact was "
+                "trained without quantiles — it serves H scalars, not H*K"
+            )
+        return module, sidecar
 
 
 def zoo_regime(params):
