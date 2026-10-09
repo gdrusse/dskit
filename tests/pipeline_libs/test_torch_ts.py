@@ -1008,6 +1008,8 @@ def test_ts_model_and_the_adapter_both_build_through_arch_module(monkeypatch):
     monkeypatch.setattr(mod, "arch_module", spy)
     params = {**TRAIN_PARAMS, "arch": "gru"}
     TimeSeriesTrain("m", params).build_module(params)
+    assert [c[0] for c in calls] == ["gru"], "TimeSeriesTrain bypassed arch_module"
+    del calls[:]
     ArchSequenceEncoder(arch="gru", width=3).build_module(5, 2)
-    assert [c[0] for c in calls] == ["gru", "gru"]
-    assert calls[1][-1] == 3  # the projection IS the width
+    assert [c[0] for c in calls] == ["gru"], "the adapter bypassed arch_module"
+    assert calls[0][-3:] == (5, 2, 3)  # window, channels, projection IS width
