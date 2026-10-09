@@ -586,3 +586,154 @@ def test_acquisition_end_to_end(tmp_path, text_dir):
     # A second pull is caught up: the cursor makes it an empty, honest no-op.
     again = run_acquisition(root, registry, "tables", "bars", "backfill")
     assert again["snapshot"] is None and again["records"] == 0
+
+
+# ADR-0250: only selected values cross the SQL/Python record boundary.
+def test_json_projection_filters_before_python_json(monkeypatch):
+    raw = b'[{"date":"2025-12-31","payload":"admitted"},{"date":"2026-01-01","payload":"FORBIDDEN"}]'
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Python JSON decoder must never see opaque input")
+    monkeypatch.setattr(json, "loads", forbidden)
+    reader = localtables.JsonSQLProjection({
+        "query": "SELECT json_extract(value, '$.payload') AS payload FROM json_each(:document) "
+                 "WHERE json_extract(value, '$.date') < :cutoff",
+        "parameters": {"cutoff": "2026-01-01"},
+        "checks": ["SELECT json_type(:document) = 'array'"]})
+    assert reader.rows(raw) == [{"payload": "admitted"}]
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"a":1,"a":2}', b'{"a":{"b":1,"b":2}}',
+    b'{"a":1,"\\u0061":2}', b'{"a":NaN}', b'{', bytes([255])])
+def test_json_projection_rejects_bad_document(raw):
+    with pytest.raises(AssetError):
+        localtables.JsonSQLProjection({"query": "SELECT 1 AS ok"}).rows(raw)
+
+
+@pytest.mark.parametrize("check", [
+    "SELECT 0", "SELECT NULL", "SELECT 1.0", "SELECT 1, 0",
+    "SELECT 1 UNION ALL SELECT 1", "SELECT 1 WHERE 0"])
+def test_json_projection_check_shape(check):
+    with pytest.raises(AssetError, match="check failed"):
+        localtables.JsonSQLProjection({"query": "SELECT 1 AS ok", "checks": [check]}).rows("{}")
+
+
+@pytest.mark.parametrize("spec", [
+    {}, {"query": ""}, {"query": "SELECT 1", "unknown": 1},
+    {"query": "SELECT 1", "parameters": {"document": "{}"}},
+    {"query": "SELECT 1", "parameters": {"bad-name": 1}},
+    {"query": "SELECT 1", "parameters": {"x": []}},
+    {"query": "SELECT 1", "parameters": {"x": float("inf")}},
+    {"query": "SELECT 1", "checks": "SELECT 1"},
+    {"query": "SELECT 1", "checks": [1]},
+])
+def test_json_projection_spec_refusals(spec):
+    with pytest.raises(AssetError):
+        localtables.JsonSQLProjection(spec)
+
+
+@pytest.mark.parametrize("query", [
+    "CREATE TABLE leaked(x)", "ATTACH DATABASE '/tmp/should-never-create-json-projection.db' AS leaked",
+    "PRAGMA user_version=4", "SELECT load_extension('payload-secret')",
+    "SELECT 1 AS same, 2 AS same", "SELECT 1 AS ''", "SELECT randomblob(1) AS x",
+    "SELECT 1e999 AS x", "SELECT :missing AS x", "SELECT 1; SELECT 2",
+])
+def test_json_projection_query_refusals(query):
+    with pytest.raises(AssetError) as failure:
+        localtables.JsonSQLProjection({"query": query}).rows('{"value":"PAYLOAD_SECRET"}')
+    assert "PAYLOAD_SECRET" not in str(failure.value)
+
+
+def test_json_projection_binding_unicode_empty_and_recursive():
+    reader = localtables.JsonSQLProjection({
+        "query": "SELECT json_extract(:document, '$.v') AS value, :p AS bound",
+        "parameters": {"p": "x'); ATTACH DATABASE 'bad' AS x; --"}})
+    assert reader.rows('{"v":"café"}')[0]["value"] == "café"
+    assert reader.rows('{"v":2}')[0]["bound"] == "x'); ATTACH DATABASE 'bad' AS x; --"
+    assert localtables.JsonSQLProjection({"query": "SELECT 1 AS x WHERE 0"}).rows("{}") == []
+    assert localtables.JsonSQLProjection({
+        "query": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<3) "
+                 "SELECT sum(x) AS total FROM n"}).rows("{}") == [{"total": 6}]
+
+
+def test_json_projection_snapshots_config_and_recovers_after_error():
+    spec = {"query": "SELECT :x AS x", "parameters": {"x": 1}, "checks": ["SELECT 1"]}
+    reader = localtables.JsonSQLProjection(spec)
+    spec["parameters"]["x"] = 2
+    spec["checks"].append("SELECT 0")
+    with pytest.raises(AssetError):
+        reader.rows("{")
+    assert reader.rows("{}") == [{"x": 1}]
+
+
+def test_json_projection_no_sqlite_temp_files(monkeypatch):
+    import os
+    import sqlite3
+
+    if not os.path.isdir("/proc/self/fd"):
+        pytest.skip("Linux descriptor inspection required for the spill regression")
+    opened = set()
+    real_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+
+        def inspect_files():
+            for fd in os.listdir("/proc/self/fd"):
+                try:
+                    target = os.readlink("/proc/self/fd/" + fd)
+                except FileNotFoundError:
+                    continue
+                if "etilqs_" in target:
+                    opened.add(target)
+            return 0
+
+        connection.set_progress_handler(inspect_files, 1000)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    raw = json.dumps([{"id": n, "value": 80000-n} for n in range(80000)])
+    reader = localtables.JsonSQLProjection({
+        "checks": ["SELECT count(*) > 0 FROM (SELECT value FROM json_each(:document) "
+                   "GROUP BY value ORDER BY value DESC)"],
+        "query": "SELECT count(*) AS count FROM (SELECT row_number() OVER "
+                 "(ORDER BY value DESC) AS n FROM json_each(:document))"})
+    assert reader.rows(raw) == [{"count": 80000}]
+    assert not opened, "SQLite spilled temporary storage to disk"
+
+
+@pytest.mark.parametrize("options,readback", [
+    ([], 2), (["TEMP_STORE=0"], 2), (["TEMP_STORE=9"], 2),
+    (["TEMP_STORE=1"], 0), (["TEMP_STORE=1"], 1)])
+def test_json_projection_refuses_unverified_temp_mode(monkeypatch, options, readback):
+    import sqlite3
+
+    class FakeConnection:
+        closed = False
+        seen = []
+        def execute(self, sql, *args):
+            self.seen.append(sql)
+            assert ":document" not in sql
+            if sql == "PRAGMA compile_options":
+                return iter_cursor([(value,) for value in options])
+            if sql == "PRAGMA temp_store":
+                return iter_cursor([(readback,)])
+            if sql == "PRAGMA temp_store=MEMORY":
+                return iter_cursor([])
+            raise AssertionError(sql)
+        def close(self):
+            self.closed = True
+
+    class iter_cursor:
+        def __init__(self, rows):
+            self.values = rows
+        def fetchall(self):
+            return self.values
+        def fetchone(self):
+            return self.values[0] if self.values else None
+
+    connection = FakeConnection()
+    monkeypatch.setattr(sqlite3, "connect", lambda *args: connection)
+    with pytest.raises(AssetError, match="temporary storage"):
+        localtables.JsonSQLProjection({"query": "SELECT 1"}).rows("{}")
+    assert connection.closed

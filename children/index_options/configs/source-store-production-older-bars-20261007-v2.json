@@ -1,0 +1,9 @@
+{
+  "path": "/home/russell/data/index_options/production-development-20261007/inputs/older-bars-v2",
+  "as_of": "2026-10-08T01:19:00+00:00",
+  "stream": "files",
+  "include": [
+    "*/underlying_prices.parquet"
+  ],
+  "notes": "Preserves canonical string dates/created_at from bounded AMZN audit, 7203 pre2026 rows. Earlier automatic Arrow timestamp inference was incompatible with the existing panel; v1 snapshot retained and unused."
+}

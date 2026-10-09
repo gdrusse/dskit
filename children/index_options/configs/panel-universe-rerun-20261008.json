@@ -1,0 +1,2563 @@
+{
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": null,
+    "lifecycle": null,
+    "chain_features": null,
+    "raw_chain": null,
+    "symbols": {
+      "AA": "VIX",
+      "AAL": "VIX",
+      "AAOI": "VIX",
+      "AAPL": "VIX",
+      "ABBV": "VIX",
+      "ABNB": "VIX",
+      "ABT": "VIX",
+      "ABUS": "VIX",
+      "ACHR": "VIX",
+      "ACMR": "VIX",
+      "ACN": "VIX",
+      "ADBE": "VIX",
+      "ADI": "VIX",
+      "AEHR": "VIX",
+      "AEO": "VIX",
+      "AFRM": "VIX",
+      "AG": "VIX",
+      "AGNC": "VIX",
+      "AI": "VIX",
+      "AKAM": "VIX",
+      "ALAB": "VIX",
+      "ALB": "VIX",
+      "ALHC": "VIX",
+      "ALLY": "VIX",
+      "AMAT": "VIX",
+      "AMC": "VIX",
+      "AMD": "VIX",
+      "AMGN": "VIX",
+      "AMKR": "VIX",
+      "AMPX": "VIX",
+      "AMZN": "VIX",
+      "ANET": "VIX",
+      "APA": "VIX",
+      "APH": "VIX",
+      "APLD": "VIX",
+      "APO": "VIX",
+      "APP": "VIX",
+      "ARM": "VIX",
+      "AS": "VIX",
+      "ASST": "VIX",
+      "ASTS": "VIX",
+      "ASX": "VIX",
+      "AUR": "VIX",
+      "AVAV": "VIX",
+      "AVGO": "VIX",
+      "AXP": "VIX",
+      "AXTI": "VIX",
+      "B": "VIX",
+      "BA": "VIX",
+      "BAC": "VIX",
+      "BB": "VIX",
+      "BBAI": "VIX",
+      "BBY": "VIX",
+      "BE": "VIX",
+      "BIDU": "VIX",
+      "BKNG": "VIX",
+      "BLK": "VIX",
+      "BMY": "VIX",
+      "BP": "VIX",
+      "BROS": "VIX",
+      "BSX": "VIX",
+      "BTG": "VIX",
+      "BX": "VIX",
+      "BYND": "VIX",
+      "C": "VIX",
+      "CAG": "VIX",
+      "CAPR": "VIX",
+      "CARR": "VIX",
+      "CAT": "VIX",
+      "CAVA": "VIX",
+      "CCJ": "VIX",
+      "CCL": "VIX",
+      "CDE": "VIX",
+      "CEG": "VIX",
+      "CELH": "VIX",
+      "CHTR": "VIX",
+      "CHWY": "VIX",
+      "CIEN": "VIX",
+      "CIFR": "VIX",
+      "CLF": "VIX",
+      "CLOV": "VIX",
+      "CLS": "VIX",
+      "CLSK": "VIX",
+      "CMCSA": "VIX",
+      "CME": "VIX",
+      "CMG": "VIX",
+      "CNC": "VIX",
+      "COF": "VIX",
+      "COHR": "VIX",
+      "COIN": "VIX",
+      "COP": "VIX",
+      "COST": "VIX",
+      "CPB": "VIX",
+      "CPNG": "VIX",
+      "CRM": "VIX",
+      "CRWD": "VIX",
+      "CSCO": "VIX",
+      "CVE": "VIX",
+      "CVNA": "VIX",
+      "CVS": "VIX",
+      "CVX": "VIX",
+      "CYPH": "VIX",
+      "DAL": "VIX",
+      "DASH": "VIX",
+      "DDOG": "VIX",
+      "DE": "VIX",
+      "DELL": "VIX",
+      "DHR": "VIX",
+      "DHT": "VIX",
+      "DIS": "VIX",
+      "DJT": "VIX",
+      "DKNG": "VIX",
+      "DKS": "VIX",
+      "DOCU": "VIX",
+      "DOW": "VIX",
+      "DUK": "VIX",
+      "DVN": "VIX",
+      "ECHO": "VIX",
+      "EIX": "VIX",
+      "ELV": "VIX",
+      "ENPH": "VIX",
+      "ENVX": "VIX",
+      "EOG": "VIX",
+      "EOSE": "VIX",
+      "EPD": "VIX",
+      "EQT": "VIX",
+      "EXE": "VIX",
+      "EXPE": "VIX",
+      "F": "VIX",
+      "FCEL": "VIX",
+      "FCX": "VIX",
+      "FDX": "VIX",
+      "FISV": "VIX",
+      "FLNC": "VIX",
+      "FRO": "VIX",
+      "FSLR": "VIX",
+      "FSLY": "VIX",
+      "FTNT": "VIX",
+      "GAP": "VIX",
+      "GE": "VIX",
+      "GEO": "VIX",
+      "GEV": "VIX",
+      "GILD": "VIX",
+      "GIS": "VIX",
+      "GLW": "VIX",
+      "GM": "VIX",
+      "GME": "VIX",
+      "GOOG": "VIX",
+      "GOOGL": "VIX",
+      "GPRO": "VIX",
+      "GS": "VIX",
+      "GTLB": "VIX",
+      "HAL": "VIX",
+      "HD": "VIX",
+      "HIMS": "VIX",
+      "HL": "VIX",
+      "HON": "VIX",
+      "HOOD": "VIX",
+      "HPE": "VIX",
+      "HPQ": "VIX",
+      "HTZ": "VIX",
+      "HUM": "VIX",
+      "HUT": "VIX",
+      "IBM": "VIX",
+      "IBRX": "VIX",
+      "INTC": "VIX",
+      "INTU": "VIX",
+      "IONQ": "VIX",
+      "IOT": "VIX",
+      "IOVA": "VIX",
+      "ISRG": "VIX",
+      "JBLU": "VIX",
+      "JNJ": "VIX",
+      "JOBY": "VIX",
+      "JPM": "VIX",
+      "KEEL": "VIX",
+      "KGC": "VIX",
+      "KHC": "VIX",
+      "KKR": "VIX",
+      "KLAC": "VIX",
+      "KMI": "VIX",
+      "KO": "VIX",
+      "KOD": "VIX",
+      "KR": "VIX",
+      "KSS": "VIX",
+      "KTOS": "VIX",
+      "LAC": "VIX",
+      "LCID": "VIX",
+      "LEN": "VIX",
+      "LITE": "VIX",
+      "LLY": "VIX",
+      "LMND": "VIX",
+      "LMT": "VIX",
+      "LNG": "VIX",
+      "LOW": "VIX",
+      "LQDA": "VIX",
+      "LRCX": "VIX",
+      "LULU": "VIX",
+      "LUMN": "VIX",
+      "LUNR": "VIX",
+      "LUV": "VIX",
+      "LVS": "VIX",
+      "LYFT": "VIX",
+      "M": "VIX",
+      "MA": "VIX",
+      "MARA": "VIX",
+      "MAT": "VIX",
+      "MBLY": "VIX",
+      "MCD": "VIX",
+      "MCHP": "VIX",
+      "MDB": "VIX",
+      "MDT": "VIX",
+      "MELI": "VIX",
+      "META": "VIX",
+      "MGM": "VIX",
+      "MO": "VIX",
+      "MOS": "VIX",
+      "MP": "VIX",
+      "MPC": "VIX",
+      "MRK": "VIX",
+      "MRNA": "VIX",
+      "MRVL": "VIX",
+      "MS": "VIX",
+      "MSFT": "VIX",
+      "MSTR": "VIX",
+      "MU": "VIX",
+      "NAT": "VIX",
+      "NEE": "VIX",
+      "NEM": "VIX",
+      "NET": "VIX",
+      "NFLX": "VIX",
+      "NKE": "VIX",
+      "NLY": "VIX",
+      "NN": "VIX",
+      "NNE": "VIX",
+      "NOK": "VIX",
+      "NOW": "VIX",
+      "NRG": "VIX",
+      "NU": "VIX",
+      "NUAI": "VIX",
+      "NVAX": "VIX",
+      "NVDA": "VIX",
+      "NVO": "VIX",
+      "NVTS": "VIX",
+      "O": "VIX",
+      "OKLO": "VIX",
+      "OKTA": "VIX",
+      "ON": "VIX",
+      "ONDS": "VIX",
+      "ONON": "VIX",
+      "OPEN": "VIX",
+      "ORBS": "VIX",
+      "ORCL": "VIX",
+      "OSCR": "VIX",
+      "OUST": "VIX",
+      "OWL": "VIX",
+      "OXY": "VIX",
+      "P": "VIX",
+      "PAAS": "VIX",
+      "PACB": "VIX",
+      "PANW": "VIX",
+      "PATH": "VIX",
+      "PBF": "VIX",
+      "PBR": "VIX",
+      "PCG": "VIX",
+      "PCT": "VIX",
+      "PDSB": "VIX",
+      "PEP": "VIX",
+      "PFE": "VIX",
+      "PG": "VIX",
+      "PINS": "VIX",
+      "PL": "VIX",
+      "PLAY": "VIX",
+      "PLTR": "VIX",
+      "PLUG": "VIX",
+      "PM": "VIX",
+      "PNC": "VIX",
+      "PSKY": "VIX",
+      "PSX": "VIX",
+      "PTON": "VIX",
+      "PYPL": "VIX",
+      "QBTS": "VIX",
+      "QCOM": "VIX",
+      "QS": "VIX",
+      "QUBT": "VIX",
+      "QXO": "VIX",
+      "RARE": "VIX",
+      "RBLX": "VIX",
+      "RBRK": "VIX",
+      "RCAT": "VIX",
+      "RCL": "VIX",
+      "RDDT": "VIX",
+      "RDW": "VIX",
+      "REGN": "VIX",
+      "RGTI": "VIX",
+      "RIG": "VIX",
+      "RIOT": "VIX",
+      "RIVN": "VIX",
+      "RKLB": "VIX",
+      "RKT": "VIX",
+      "RTX": "VIX",
+      "RUM": "VIX",
+      "RUN": "VIX",
+      "RXRX": "VIX",
+      "RXT": "VIX",
+      "S": "VIX",
+      "SBET": "VIX",
+      "SBUX": "VIX",
+      "SCHW": "VIX",
+      "SEDG": "VIX",
+      "SERV": "VIX",
+      "SG": "VIX",
+      "SHOE": "VIX",
+      "SHOP": "VIX",
+      "SIRI": "VIX",
+      "SLB": "VIX",
+      "SLS": "VIX",
+      "SMCI": "VIX",
+      "SMMT": "VIX",
+      "SMR": "VIX",
+      "SNAP": "VIX",
+      "SNOW": "VIX",
+      "SNPS": "VIX",
+      "SO": "VIX",
+      "SOC": "VIX",
+      "SOFI": "VIX",
+      "SOUN": "VIX",
+      "SPCE": "VIX",
+      "SPOT": "VIX",
+      "STLA": "VIX",
+      "STM": "VIX",
+      "T": "VIX",
+      "TE": "VIX",
+      "TEAM": "VIX",
+      "TEM": "VIX",
+      "TER": "VIX",
+      "TEVA": "VIX",
+      "TGT": "VIX",
+      "TJX": "VIX",
+      "TLRY": "VIX",
+      "TMC": "VIX",
+      "TMO": "VIX",
+      "TMUS": "VIX",
+      "TOST": "VIX",
+      "TRIP": "VIX",
+      "TSLA": "VIX",
+      "TSM": "VIX",
+      "TTD": "VIX",
+      "TTWO": "VIX",
+      "TWLO": "VIX",
+      "TXN": "VIX",
+      "U": "VIX",
+      "UAA": "VIX",
+      "UAL": "VIX",
+      "UAMY": "VIX",
+      "UBER": "VIX",
+      "UEC": "VIX",
+      "UMAC": "VIX",
+      "UMC": "VIX",
+      "UNH": "VIX",
+      "UPS": "VIX",
+      "UPST": "VIX",
+      "USAR": "VIX",
+      "USB": "VIX",
+      "UUUU": "VIX",
+      "V": "VIX",
+      "VALE": "VIX",
+      "VFC": "VIX",
+      "VKTX": "VIX",
+      "VLO": "VIX",
+      "VRT": "VIX",
+      "VRTX": "VIX",
+      "VST": "VIX",
+      "VZ": "VIX",
+      "W": "VIX",
+      "WBD": "VIX",
+      "WDC": "VIX",
+      "WEN": "VIX",
+      "WFC": "VIX",
+      "WHR": "VIX",
+      "WMB": "VIX",
+      "WMT": "VIX",
+      "WRBY": "VIX",
+      "WU": "VIX",
+      "WULF": "VIX",
+      "WYNN": "VIX",
+      "XOM": "VIX",
+      "XP": "VIX",
+      "XYZ": "VIX",
+      "ZETA": "VIX",
+      "ZM": "VIX",
+      "ZS": "VIX"
+    },
+    "market_symbols": {},
+    "fred_market_symbols": {},
+    "price_source": {
+      "source": "stock-daily-bars",
+      "stream": "files",
+      "relpath": {
+        "AA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aa/underlying_prices.parquet"
+        },
+        "AAL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aal/underlying_prices.parquet"
+        },
+        "AAOI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aaoi/underlying_prices.parquet"
+        },
+        "AAPL": "aapl/underlying_prices.parquet",
+        "ABBV": "abbv/underlying_prices.parquet",
+        "ABNB": "abnb/underlying_prices.parquet",
+        "ABT": "abt/underlying_prices.parquet",
+        "ABUS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "abus/underlying_prices.parquet"
+        },
+        "ACHR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "achr/underlying_prices.parquet"
+        },
+        "ACMR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "acmr/underlying_prices.parquet"
+        },
+        "ACN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "acn/underlying_prices.parquet"
+        },
+        "ADBE": "adbe/underlying_prices.parquet",
+        "ADI": "adi/underlying_prices.parquet",
+        "AEHR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aehr/underlying_prices.parquet"
+        },
+        "AEO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aeo/underlying_prices.parquet"
+        },
+        "AFRM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "afrm/underlying_prices.parquet"
+        },
+        "AG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ag/underlying_prices.parquet"
+        },
+        "AGNC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "agnc/underlying_prices.parquet"
+        },
+        "AI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ai/underlying_prices.parquet"
+        },
+        "AKAM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "akam/underlying_prices.parquet"
+        },
+        "ALAB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "alab/underlying_prices.parquet"
+        },
+        "ALB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "alb/underlying_prices.parquet"
+        },
+        "ALHC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "alhc/underlying_prices.parquet"
+        },
+        "ALLY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ally/underlying_prices.parquet"
+        },
+        "AMAT": "amat/underlying_prices.parquet",
+        "AMC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "amc/underlying_prices.parquet"
+        },
+        "AMD": "amd/underlying_prices.parquet",
+        "AMGN": "amgn/underlying_prices.parquet",
+        "AMKR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "amkr/underlying_prices.parquet"
+        },
+        "AMPX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ampx/underlying_prices.parquet"
+        },
+        "AMZN": {
+          "source": "production-older-bars-20261007-v2",
+          "stream": "files",
+          "relpath": "amzn/underlying_prices.parquet"
+        },
+        "ANET": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "anet/underlying_prices.parquet"
+        },
+        "APA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "apa/underlying_prices.parquet"
+        },
+        "APH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aph/underlying_prices.parquet"
+        },
+        "APLD": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "apld/underlying_prices.parquet"
+        },
+        "APO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "apo/underlying_prices.parquet"
+        },
+        "APP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "app/underlying_prices.parquet"
+        },
+        "ARM": "arm/underlying_prices.parquet",
+        "AS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "as/underlying_prices.parquet"
+        },
+        "ASST": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "asst/underlying_prices.parquet"
+        },
+        "ASTS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "asts/underlying_prices.parquet"
+        },
+        "ASX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "asx/underlying_prices.parquet"
+        },
+        "AUR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aur/underlying_prices.parquet"
+        },
+        "AVAV": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "avav/underlying_prices.parquet"
+        },
+        "AVGO": "avgo/underlying_prices.parquet",
+        "AXP": "axp/underlying_prices.parquet",
+        "AXTI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "axti/underlying_prices.parquet"
+        },
+        "B": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "b/underlying_prices.parquet"
+        },
+        "BA": "ba/underlying_prices.parquet",
+        "BAC": "bac/underlying_prices.parquet",
+        "BB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bb/underlying_prices.parquet"
+        },
+        "BBAI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bbai/underlying_prices.parquet"
+        },
+        "BBY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bby/underlying_prices.parquet"
+        },
+        "BE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "be/underlying_prices.parquet"
+        },
+        "BIDU": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bidu/underlying_prices.parquet"
+        },
+        "BKNG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bkng/underlying_prices.parquet"
+        },
+        "BLK": "blk/underlying_prices.parquet",
+        "BMY": "bmy/underlying_prices.parquet",
+        "BP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bp/underlying_prices.parquet"
+        },
+        "BROS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bros/underlying_prices.parquet"
+        },
+        "BSX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bsx/underlying_prices.parquet"
+        },
+        "BTG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "btg/underlying_prices.parquet"
+        },
+        "BX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bx/underlying_prices.parquet"
+        },
+        "BYND": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bynd/underlying_prices.parquet"
+        },
+        "C": "c/underlying_prices.parquet",
+        "CAG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cag/underlying_prices.parquet"
+        },
+        "CAPR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "capr/underlying_prices.parquet"
+        },
+        "CARR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "carr/underlying_prices.parquet"
+        },
+        "CAT": "cat/underlying_prices.parquet",
+        "CAVA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cava/underlying_prices.parquet"
+        },
+        "CCJ": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ccj/underlying_prices.parquet"
+        },
+        "CCL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ccl/underlying_prices.parquet"
+        },
+        "CDE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cde/underlying_prices.parquet"
+        },
+        "CEG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ceg/underlying_prices.parquet"
+        },
+        "CELH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "celh/underlying_prices.parquet"
+        },
+        "CHTR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "chtr/underlying_prices.parquet"
+        },
+        "CHWY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "chwy/underlying_prices.parquet"
+        },
+        "CIEN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cien/underlying_prices.parquet"
+        },
+        "CIFR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cifr/underlying_prices.parquet"
+        },
+        "CLF": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "clf/underlying_prices.parquet"
+        },
+        "CLOV": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "clov/underlying_prices.parquet"
+        },
+        "CLS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cls/underlying_prices.parquet"
+        },
+        "CLSK": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "clsk/underlying_prices.parquet"
+        },
+        "CMCSA": "cmcsa/underlying_prices.parquet",
+        "CME": "cme/underlying_prices.parquet",
+        "CMG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cmg/underlying_prices.parquet"
+        },
+        "CNC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cnc/underlying_prices.parquet"
+        },
+        "COF": "cof/underlying_prices.parquet",
+        "COHR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cohr/underlying_prices.parquet"
+        },
+        "COIN": "coin/underlying_prices.parquet",
+        "COP": "cop/underlying_prices.parquet",
+        "COST": "cost/underlying_prices.parquet",
+        "CPB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cpb/underlying_prices.parquet"
+        },
+        "CPNG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cpng/underlying_prices.parquet"
+        },
+        "CRM": "crm/underlying_prices.parquet",
+        "CRWD": "crwd/underlying_prices.parquet",
+        "CSCO": "csco/underlying_prices.parquet",
+        "CVE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cve/underlying_prices.parquet"
+        },
+        "CVNA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cvna/underlying_prices.parquet"
+        },
+        "CVS": "cvs/underlying_prices.parquet",
+        "CVX": "cvx/underlying_prices.parquet",
+        "CYPH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cyph/underlying_prices.parquet"
+        },
+        "DAL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "dal/underlying_prices.parquet"
+        },
+        "DASH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "dash/underlying_prices.parquet"
+        },
+        "DDOG": "ddog/underlying_prices.parquet",
+        "DE": "de/underlying_prices.parquet",
+        "DELL": "dell/underlying_prices.parquet",
+        "DHR": "dhr/underlying_prices.parquet",
+        "DHT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "dht/underlying_prices.parquet"
+        },
+        "DIS": "dis/underlying_prices.parquet",
+        "DJT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "djt/underlying_prices.parquet"
+        },
+        "DKNG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "dkng/underlying_prices.parquet"
+        },
+        "DKS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "dks/underlying_prices.parquet"
+        },
+        "DOCU": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "docu/underlying_prices.parquet"
+        },
+        "DOW": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "dow/underlying_prices.parquet"
+        },
+        "DUK": "duk/underlying_prices.parquet",
+        "DVN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "dvn/underlying_prices.parquet"
+        },
+        "ECHO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "echo/underlying_prices.parquet"
+        },
+        "EIX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "eix/underlying_prices.parquet"
+        },
+        "ELV": "elv/underlying_prices.parquet",
+        "ENPH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "enph/underlying_prices.parquet"
+        },
+        "ENVX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "envx/underlying_prices.parquet"
+        },
+        "EOG": "eog/underlying_prices.parquet",
+        "EOSE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "eose/underlying_prices.parquet"
+        },
+        "EPD": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "epd/underlying_prices.parquet"
+        },
+        "EQT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "eqt/underlying_prices.parquet"
+        },
+        "EXE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "exe/underlying_prices.parquet"
+        },
+        "EXPE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "expe/underlying_prices.parquet"
+        },
+        "F": "f/underlying_prices.parquet",
+        "FCEL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fcel/underlying_prices.parquet"
+        },
+        "FCX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fcx/underlying_prices.parquet"
+        },
+        "FDX": "fdx/underlying_prices.parquet",
+        "FISV": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fisv/underlying_prices.parquet"
+        },
+        "FLNC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "flnc/underlying_prices.parquet"
+        },
+        "FRO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fro/underlying_prices.parquet"
+        },
+        "FSLR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fslr/underlying_prices.parquet"
+        },
+        "FSLY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fsly/underlying_prices.parquet"
+        },
+        "FTNT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ftnt/underlying_prices.parquet"
+        },
+        "GAP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "gap/underlying_prices.parquet"
+        },
+        "GE": "ge/underlying_prices.parquet",
+        "GEO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "geo/underlying_prices.parquet"
+        },
+        "GEV": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "gev/underlying_prices.parquet"
+        },
+        "GILD": "gild/underlying_prices.parquet",
+        "GIS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "gis/underlying_prices.parquet"
+        },
+        "GLW": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "glw/underlying_prices.parquet"
+        },
+        "GM": "gm/underlying_prices.parquet",
+        "GME": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "gme/underlying_prices.parquet"
+        },
+        "GOOG": "goog/underlying_prices.parquet",
+        "GOOGL": "googl/underlying_prices.parquet",
+        "GPRO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "gpro/underlying_prices.parquet"
+        },
+        "GS": "gs/underlying_prices.parquet",
+        "GTLB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "gtlb/underlying_prices.parquet"
+        },
+        "HAL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hal/underlying_prices.parquet"
+        },
+        "HD": "hd/underlying_prices.parquet",
+        "HIMS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hims/underlying_prices.parquet"
+        },
+        "HL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hl/underlying_prices.parquet"
+        },
+        "HON": "hon/underlying_prices.parquet",
+        "HOOD": "hood/underlying_prices.parquet",
+        "HPE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hpe/underlying_prices.parquet"
+        },
+        "HPQ": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hpq/underlying_prices.parquet"
+        },
+        "HTZ": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "htz/underlying_prices.parquet"
+        },
+        "HUM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hum/underlying_prices.parquet"
+        },
+        "HUT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hut/underlying_prices.parquet"
+        },
+        "IBM": "ibm/underlying_prices.parquet",
+        "IBRX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ibrx/underlying_prices.parquet"
+        },
+        "INTC": "intc/underlying_prices.parquet",
+        "INTU": "intu/underlying_prices.parquet",
+        "IONQ": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ionq/underlying_prices.parquet"
+        },
+        "IOT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "iot/underlying_prices.parquet"
+        },
+        "IOVA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "iova/underlying_prices.parquet"
+        },
+        "ISRG": "isrg/underlying_prices.parquet",
+        "JBLU": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "jblu/underlying_prices.parquet"
+        },
+        "JNJ": "jnj/underlying_prices.parquet",
+        "JOBY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "joby/underlying_prices.parquet"
+        },
+        "JPM": "jpm/underlying_prices.parquet",
+        "KEEL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "keel/underlying_prices.parquet"
+        },
+        "KGC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "kgc/underlying_prices.parquet"
+        },
+        "KHC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "khc/underlying_prices.parquet"
+        },
+        "KKR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "kkr/underlying_prices.parquet"
+        },
+        "KLAC": "klac/underlying_prices.parquet",
+        "KMI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "kmi/underlying_prices.parquet"
+        },
+        "KO": "ko/underlying_prices.parquet",
+        "KOD": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "kod/underlying_prices.parquet"
+        },
+        "KR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "kr/underlying_prices.parquet"
+        },
+        "KSS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "kss/underlying_prices.parquet"
+        },
+        "KTOS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ktos/underlying_prices.parquet"
+        },
+        "LAC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lac/underlying_prices.parquet"
+        },
+        "LCID": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lcid/underlying_prices.parquet"
+        },
+        "LEN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "len/underlying_prices.parquet"
+        },
+        "LITE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lite/underlying_prices.parquet"
+        },
+        "LLY": "lly/underlying_prices.parquet",
+        "LMND": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lmnd/underlying_prices.parquet"
+        },
+        "LMT": "lmt/underlying_prices.parquet",
+        "LNG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lng/underlying_prices.parquet"
+        },
+        "LOW": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "low/underlying_prices.parquet"
+        },
+        "LQDA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lqda/underlying_prices.parquet"
+        },
+        "LRCX": "lrcx/underlying_prices.parquet",
+        "LULU": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lulu/underlying_prices.parquet"
+        },
+        "LUMN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lumn/underlying_prices.parquet"
+        },
+        "LUNR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lunr/underlying_prices.parquet"
+        },
+        "LUV": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "luv/underlying_prices.parquet"
+        },
+        "LVS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lvs/underlying_prices.parquet"
+        },
+        "LYFT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lyft/underlying_prices.parquet"
+        },
+        "M": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "m/underlying_prices.parquet"
+        },
+        "MA": "ma/underlying_prices.parquet",
+        "MARA": "mara/underlying_prices.parquet",
+        "MAT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mat/underlying_prices.parquet"
+        },
+        "MBLY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mbly/underlying_prices.parquet"
+        },
+        "MCD": "mcd/underlying_prices.parquet",
+        "MCHP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mchp/underlying_prices.parquet"
+        },
+        "MDB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mdb/underlying_prices.parquet"
+        },
+        "MDT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mdt/underlying_prices.parquet"
+        },
+        "MELI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "meli/underlying_prices.parquet"
+        },
+        "META": "meta/underlying_prices.parquet",
+        "MGM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mgm/underlying_prices.parquet"
+        },
+        "MO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mo/underlying_prices.parquet"
+        },
+        "MOS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mos/underlying_prices.parquet"
+        },
+        "MP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mp/underlying_prices.parquet"
+        },
+        "MPC": "mpc/underlying_prices.parquet",
+        "MRK": "mrk/underlying_prices.parquet",
+        "MRNA": "mrna/underlying_prices.parquet",
+        "MRVL": "mrvl/underlying_prices.parquet",
+        "MS": "ms/underlying_prices.parquet",
+        "MSFT": {
+          "source": "universe-older-bars-20261008",
+          "stream": "files",
+          "relpath": "msft/underlying_prices.parquet"
+        },
+        "MSTR": "mstr/underlying_prices.parquet",
+        "MU": "mu/underlying_prices.parquet",
+        "NAT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nat/underlying_prices.parquet"
+        },
+        "NEE": "nee/underlying_prices.parquet",
+        "NEM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nem/underlying_prices.parquet"
+        },
+        "NET": "net/underlying_prices.parquet",
+        "NFLX": "nflx/underlying_prices.parquet",
+        "NKE": "nke/underlying_prices.parquet",
+        "NLY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nly/underlying_prices.parquet"
+        },
+        "NN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nn/underlying_prices.parquet"
+        },
+        "NNE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nne/underlying_prices.parquet"
+        },
+        "NOK": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nok/underlying_prices.parquet"
+        },
+        "NOW": "now/underlying_prices.parquet",
+        "NRG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nrg/underlying_prices.parquet"
+        },
+        "NU": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nu/underlying_prices.parquet"
+        },
+        "NUAI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nuai/underlying_prices.parquet"
+        },
+        "NVAX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nvax/underlying_prices.parquet"
+        },
+        "NVDA": "nvda/underlying_prices.parquet",
+        "NVO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nvo/underlying_prices.parquet"
+        },
+        "NVTS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nvts/underlying_prices.parquet"
+        },
+        "O": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "o/underlying_prices.parquet"
+        },
+        "OKLO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "oklo/underlying_prices.parquet"
+        },
+        "OKTA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "okta/underlying_prices.parquet"
+        },
+        "ON": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "on/underlying_prices.parquet"
+        },
+        "ONDS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "onds/underlying_prices.parquet"
+        },
+        "ONON": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "onon/underlying_prices.parquet"
+        },
+        "OPEN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "open/underlying_prices.parquet"
+        },
+        "ORBS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "orbs/underlying_prices.parquet"
+        },
+        "ORCL": "orcl/underlying_prices.parquet",
+        "OSCR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "oscr/underlying_prices.parquet"
+        },
+        "OUST": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "oust/underlying_prices.parquet"
+        },
+        "OWL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "owl/underlying_prices.parquet"
+        },
+        "OXY": "oxy/underlying_prices.parquet",
+        "P": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "p/underlying_prices.parquet"
+        },
+        "PAAS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "paas/underlying_prices.parquet"
+        },
+        "PACB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pacb/underlying_prices.parquet"
+        },
+        "PANW": "panw/underlying_prices.parquet",
+        "PATH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "path/underlying_prices.parquet"
+        },
+        "PBF": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pbf/underlying_prices.parquet"
+        },
+        "PBR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pbr/underlying_prices.parquet"
+        },
+        "PCG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pcg/underlying_prices.parquet"
+        },
+        "PCT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pct/underlying_prices.parquet"
+        },
+        "PDSB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pdsb/underlying_prices.parquet"
+        },
+        "PEP": "pep/underlying_prices.parquet",
+        "PFE": "pfe/underlying_prices.parquet",
+        "PG": "pg/underlying_prices.parquet",
+        "PINS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pins/underlying_prices.parquet"
+        },
+        "PL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pl/underlying_prices.parquet"
+        },
+        "PLAY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "play/underlying_prices.parquet"
+        },
+        "PLTR": "pltr/underlying_prices.parquet",
+        "PLUG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "plug/underlying_prices.parquet"
+        },
+        "PM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pm/underlying_prices.parquet"
+        },
+        "PNC": "pnc/underlying_prices.parquet",
+        "PSKY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "psky/underlying_prices.parquet"
+        },
+        "PSX": "psx/underlying_prices.parquet",
+        "PTON": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pton/underlying_prices.parquet"
+        },
+        "PYPL": "pypl/underlying_prices.parquet",
+        "QBTS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "qbts/underlying_prices.parquet"
+        },
+        "QCOM": "qcom/underlying_prices.parquet",
+        "QS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "qs/underlying_prices.parquet"
+        },
+        "QUBT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "qubt/underlying_prices.parquet"
+        },
+        "QXO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "qxo/underlying_prices.parquet"
+        },
+        "RARE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rare/underlying_prices.parquet"
+        },
+        "RBLX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rblx/underlying_prices.parquet"
+        },
+        "RBRK": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rbrk/underlying_prices.parquet"
+        },
+        "RCAT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rcat/underlying_prices.parquet"
+        },
+        "RCL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rcl/underlying_prices.parquet"
+        },
+        "RDDT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rddt/underlying_prices.parquet"
+        },
+        "RDW": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rdw/underlying_prices.parquet"
+        },
+        "REGN": "regn/underlying_prices.parquet",
+        "RGTI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rgti/underlying_prices.parquet"
+        },
+        "RIG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rig/underlying_prices.parquet"
+        },
+        "RIOT": "riot/underlying_prices.parquet",
+        "RIVN": "rivn/underlying_prices.parquet",
+        "RKLB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rklb/underlying_prices.parquet"
+        },
+        "RKT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rkt/underlying_prices.parquet"
+        },
+        "RTX": "rtx/underlying_prices.parquet",
+        "RUM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rum/underlying_prices.parquet"
+        },
+        "RUN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "run/underlying_prices.parquet"
+        },
+        "RXRX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rxrx/underlying_prices.parquet"
+        },
+        "RXT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rxt/underlying_prices.parquet"
+        },
+        "S": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "s/underlying_prices.parquet"
+        },
+        "SBET": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "sbet/underlying_prices.parquet"
+        },
+        "SBUX": "sbux/underlying_prices.parquet",
+        "SCHW": "schw/underlying_prices.parquet",
+        "SEDG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "sedg/underlying_prices.parquet"
+        },
+        "SERV": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "serv/underlying_prices.parquet"
+        },
+        "SG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "sg/underlying_prices.parquet"
+        },
+        "SHOE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "shoe/underlying_prices.parquet"
+        },
+        "SHOP": "shop/underlying_prices.parquet",
+        "SIRI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "siri/underlying_prices.parquet"
+        },
+        "SLB": "slb/underlying_prices.parquet",
+        "SLS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "sls/underlying_prices.parquet"
+        },
+        "SMCI": "smci/underlying_prices.parquet",
+        "SMMT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "smmt/underlying_prices.parquet"
+        },
+        "SMR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "smr/underlying_prices.parquet"
+        },
+        "SNAP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "snap/underlying_prices.parquet"
+        },
+        "SNOW": "snow/underlying_prices.parquet",
+        "SNPS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "snps/underlying_prices.parquet"
+        },
+        "SO": "so/underlying_prices.parquet",
+        "SOC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "soc/underlying_prices.parquet"
+        },
+        "SOFI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "sofi/underlying_prices.parquet"
+        },
+        "SOUN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "soun/underlying_prices.parquet"
+        },
+        "SPCE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "spce/underlying_prices.parquet"
+        },
+        "SPOT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "spot/underlying_prices.parquet"
+        },
+        "STLA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "stla/underlying_prices.parquet"
+        },
+        "STM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "stm/underlying_prices.parquet"
+        },
+        "T": "t/underlying_prices.parquet",
+        "TE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "te/underlying_prices.parquet"
+        },
+        "TEAM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "team/underlying_prices.parquet"
+        },
+        "TEM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tem/underlying_prices.parquet"
+        },
+        "TER": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ter/underlying_prices.parquet"
+        },
+        "TEVA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "teva/underlying_prices.parquet"
+        },
+        "TGT": "tgt/underlying_prices.parquet",
+        "TJX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tjx/underlying_prices.parquet"
+        },
+        "TLRY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tlry/underlying_prices.parquet"
+        },
+        "TMC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tmc/underlying_prices.parquet"
+        },
+        "TMO": "tmo/underlying_prices.parquet",
+        "TMUS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tmus/underlying_prices.parquet"
+        },
+        "TOST": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tost/underlying_prices.parquet"
+        },
+        "TRIP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "trip/underlying_prices.parquet"
+        },
+        "TSLA": "tsla/underlying_prices.parquet",
+        "TSM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tsm/underlying_prices.parquet"
+        },
+        "TTD": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ttd/underlying_prices.parquet"
+        },
+        "TTWO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ttwo/underlying_prices.parquet"
+        },
+        "TWLO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "twlo/underlying_prices.parquet"
+        },
+        "TXN": "txn/underlying_prices.parquet",
+        "U": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "u/underlying_prices.parquet"
+        },
+        "UAA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "uaa/underlying_prices.parquet"
+        },
+        "UAL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ual/underlying_prices.parquet"
+        },
+        "UAMY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "uamy/underlying_prices.parquet"
+        },
+        "UBER": "uber/underlying_prices.parquet",
+        "UEC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "uec/underlying_prices.parquet"
+        },
+        "UMAC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "umac/underlying_prices.parquet"
+        },
+        "UMC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "umc/underlying_prices.parquet"
+        },
+        "UNH": "unh/underlying_prices.parquet",
+        "UPS": "ups/underlying_prices.parquet",
+        "UPST": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "upst/underlying_prices.parquet"
+        },
+        "USAR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "usar/underlying_prices.parquet"
+        },
+        "USB": "usb/underlying_prices.parquet",
+        "UUUU": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "uuuu/underlying_prices.parquet"
+        },
+        "V": "v/underlying_prices.parquet",
+        "VALE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "vale/underlying_prices.parquet"
+        },
+        "VFC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "vfc/underlying_prices.parquet"
+        },
+        "VKTX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "vktx/underlying_prices.parquet"
+        },
+        "VLO": "vlo/underlying_prices.parquet",
+        "VRT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "vrt/underlying_prices.parquet"
+        },
+        "VRTX": "vrtx/underlying_prices.parquet",
+        "VST": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "vst/underlying_prices.parquet"
+        },
+        "VZ": "vz/underlying_prices.parquet",
+        "W": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "w/underlying_prices.parquet"
+        },
+        "WBD": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wbd/underlying_prices.parquet"
+        },
+        "WDC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wdc/underlying_prices.parquet"
+        },
+        "WEN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wen/underlying_prices.parquet"
+        },
+        "WFC": "wfc/underlying_prices.parquet",
+        "WHR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "whr/underlying_prices.parquet"
+        },
+        "WMB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wmb/underlying_prices.parquet"
+        },
+        "WMT": "wmt/underlying_prices.parquet",
+        "WRBY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wrby/underlying_prices.parquet"
+        },
+        "WU": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wu/underlying_prices.parquet"
+        },
+        "WULF": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wulf/underlying_prices.parquet"
+        },
+        "WYNN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wynn/underlying_prices.parquet"
+        },
+        "XOM": "xom/underlying_prices.parquet",
+        "XP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "xp/underlying_prices.parquet"
+        },
+        "XYZ": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "xyz/underlying_prices.parquet"
+        },
+        "ZETA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "zeta/underlying_prices.parquet"
+        },
+        "ZM": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "zm/underlying_prices.parquet"
+        },
+        "ZS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "zs/underlying_prices.parquet"
+        }
+      },
+      "columns": {
+        "close": "close",
+        "date": "date",
+        "dividend_amount": "dividend_amount",
+        "high": "high",
+        "low": "low",
+        "open": "open",
+        "split_coefficient": "split_coefficient",
+        "volume": "volume"
+      },
+      "read_bounds": {
+        "date": {
+          "end_before": "2026-01-01"
+        }
+      }
+    },
+    "iv_source": "production-vix-20261007",
+    "since": "1997-05-15",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02,
+    "surface_features": null,
+    "ohlc_windows": [
+      5,
+      22
+    ],
+    "matched_dte_vrp": null,
+    "reference_window": 22,
+    "change_lags": [
+      1,
+      5,
+      22
+    ],
+    "directional_windows": [
+      5,
+      22
+    ],
+    "periods_per_year": 252,
+    "calendar": "XNYS",
+    "calendar_pad_days": 30,
+    "dividend_field": "dividend_amount",
+    "reader": "price_calendar",
+    "keyed_tables": {
+      "key": [
+        "symbol",
+        "quote_date"
+      ],
+      "tables": {
+        "volume22": {
+          "root": "/home/russell/data/index_options/ob",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "vl_log_volume_ratio": "vl_log_volume_ratio",
+            "vl_log_dollar_volume": "vl_log_dollar_volume",
+            "vl_amihud": "vl_amihud"
+          },
+          "max_age_days": 0,
+          "strict_prior": false,
+          "source": "universe-liquidity-20261008",
+          "stream": "volume22"
+        },
+        "volume66": {
+          "root": "/home/russell/data/index_options/ob",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "vl_log_volume_ratio_66": "vl_log_volume_ratio_66"
+          },
+          "max_age_days": 0,
+          "strict_prior": false,
+          "source": "universe-liquidity-20261008",
+          "stream": "volume66"
+        }
+      },
+      "age_suffix": "_age_days",
+      "missing_suffix": "_missing"
+    },
+    "corporate_actions": {
+      "max_abs_jump": 0.4,
+      "max_dividend_yield": 0.05,
+      "windows": {
+        "AA": [
+          [
+            "2016-11-01",
+            "2016-11-01"
+          ]
+        ],
+        "AAL": [],
+        "AAOI": [],
+        "AAPL": [],
+        "ABBV": [],
+        "ABNB": [],
+        "ABT": [],
+        "ABUS": [],
+        "ACHR": [],
+        "ACMR": [],
+        "ACN": [],
+        "ADBE": [],
+        "ADI": [],
+        "AEHR": [],
+        "AEO": [],
+        "AFRM": [],
+        "AG": [],
+        "AGNC": [],
+        "AI": [],
+        "AKAM": [],
+        "ALAB": [],
+        "ALB": [],
+        "ALHC": [],
+        "ALLY": [],
+        "AMAT": [],
+        "AMC": [],
+        "AMD": [],
+        "AMGN": [],
+        "AMKR": [],
+        "AMPX": [],
+        "AMZN": [],
+        "ANET": [],
+        "APA": [],
+        "APH": [],
+        "APLD": [],
+        "APO": [],
+        "APP": [],
+        "ARM": [],
+        "AS": [],
+        "ASST": [],
+        "ASTS": [],
+        "ASX": [],
+        "AUR": [],
+        "AVAV": [],
+        "AVGO": [],
+        "AXP": [],
+        "AXTI": [],
+        "B": [],
+        "BA": [],
+        "BAC": [],
+        "BB": [],
+        "BBAI": [],
+        "BBY": [],
+        "BE": [],
+        "BIDU": [],
+        "BKNG": [],
+        "BLK": [],
+        "BMY": [],
+        "BP": [],
+        "BROS": [],
+        "BSX": [],
+        "BTG": [],
+        "BX": [],
+        "BYND": [],
+        "C": [],
+        "CAG": [
+          [
+            "2016-11-10",
+            "2016-11-10"
+          ]
+        ],
+        "CAPR": [],
+        "CARR": [],
+        "CAT": [],
+        "CAVA": [],
+        "CCJ": [],
+        "CCL": [],
+        "CDE": [],
+        "CEG": [],
+        "CELH": [],
+        "CHTR": [],
+        "CHWY": [],
+        "CIEN": [],
+        "CIFR": [],
+        "CLF": [],
+        "CLOV": [],
+        "CLS": [],
+        "CLSK": [],
+        "CMCSA": [],
+        "CME": [],
+        "CMG": [],
+        "CNC": [],
+        "COF": [],
+        "COHR": [],
+        "COIN": [],
+        "COP": [],
+        "COST": [],
+        "CPB": [],
+        "CPNG": [],
+        "CRM": [],
+        "CRWD": [],
+        "CSCO": [],
+        "CVE": [],
+        "CVNA": [],
+        "CVS": [],
+        "CVX": [],
+        "CYPH": [],
+        "DAL": [],
+        "DASH": [],
+        "DDOG": [],
+        "DE": [],
+        "DELL": [
+          [
+            "2018-12-28",
+            "2018-12-28"
+          ],
+          [
+            "2021-11-02",
+            "2021-11-02"
+          ]
+        ],
+        "DHR": [
+          [
+            "2016-07-05",
+            "2016-07-05"
+          ],
+          [
+            "2023-10-02",
+            "2023-10-02"
+          ]
+        ],
+        "DHT": [],
+        "DIS": [],
+        "DJT": [],
+        "DKNG": [],
+        "DKS": [],
+        "DOCU": [],
+        "DOW": [],
+        "DUK": [],
+        "DVN": [],
+        "ECHO": [
+          [
+            "2019-09-11",
+            "2019-09-11"
+          ]
+        ],
+        "EIX": [],
+        "ELV": [],
+        "ENPH": [],
+        "ENVX": [],
+        "EOG": [],
+        "EOSE": [],
+        "EPD": [],
+        "EQT": [
+          [
+            "2018-11-13",
+            "2018-11-13"
+          ]
+        ],
+        "EXE": [],
+        "EXPE": [],
+        "F": [],
+        "FCEL": [],
+        "FCX": [],
+        "FDX": [],
+        "FISV": [],
+        "FLNC": [],
+        "FRO": [],
+        "FSLR": [],
+        "FSLY": [],
+        "FTNT": [],
+        "GAP": [],
+        "GE": [
+          [
+            "2019-02-26",
+            "2019-02-26"
+          ],
+          [
+            "2023-01-04",
+            "2023-01-04"
+          ],
+          [
+            "2024-04-02",
+            "2024-04-02"
+          ]
+        ],
+        "GEO": [
+          [
+            "2017-04-25",
+            "2017-04-25"
+          ]
+        ],
+        "GEV": [],
+        "GILD": [],
+        "GIS": [],
+        "GLW": [],
+        "GM": [],
+        "GME": [],
+        "GOOG": [],
+        "GOOGL": [],
+        "GPRO": [],
+        "GS": [],
+        "GTLB": [],
+        "HAL": [],
+        "HD": [],
+        "HIMS": [],
+        "HL": [],
+        "HON": [
+          [
+            "2016-10-03",
+            "2016-10-03"
+          ],
+          [
+            "2018-10-01",
+            "2018-10-01"
+          ],
+          [
+            "2018-10-29",
+            "2018-10-29"
+          ],
+          [
+            "2025-10-30",
+            "2025-10-30"
+          ]
+        ],
+        "HOOD": [],
+        "HPE": [
+          [
+            "2017-04-03",
+            "2017-04-03"
+          ],
+          [
+            "2017-09-01",
+            "2017-09-01"
+          ]
+        ],
+        "HPQ": [],
+        "HTZ": [],
+        "HUM": [],
+        "HUT": [],
+        "IBM": [
+          [
+            "2021-11-04",
+            "2021-11-04"
+          ]
+        ],
+        "IBRX": [],
+        "INTC": [],
+        "INTU": [],
+        "IONQ": [],
+        "IOT": [],
+        "IOVA": [],
+        "ISRG": [],
+        "JBLU": [],
+        "JNJ": [],
+        "JOBY": [],
+        "JPM": [],
+        "KEEL": [],
+        "KGC": [],
+        "KHC": [],
+        "KKR": [],
+        "KLAC": [],
+        "KMI": [],
+        "KO": [],
+        "KOD": [],
+        "KR": [],
+        "KSS": [],
+        "KTOS": [],
+        "LAC": [],
+        "LCID": [],
+        "LEN": [
+          [
+            "2017-11-09",
+            "2017-11-09"
+          ],
+          [
+            "2025-01-21",
+            "2025-01-21"
+          ]
+        ],
+        "LITE": [],
+        "LLY": [],
+        "LMND": [],
+        "LMT": [],
+        "LNG": [],
+        "LOW": [],
+        "LQDA": [],
+        "LRCX": [],
+        "LULU": [],
+        "LUMN": [],
+        "LUNR": [],
+        "LUV": [],
+        "LVS": [],
+        "LYFT": [],
+        "M": [],
+        "MA": [],
+        "MARA": [],
+        "MAT": [],
+        "MBLY": [],
+        "MCD": [],
+        "MCHP": [],
+        "MDB": [],
+        "MDT": [],
+        "MELI": [],
+        "META": [],
+        "MGM": [],
+        "MO": [],
+        "MOS": [],
+        "MP": [],
+        "MPC": [],
+        "MRK": [
+          [
+            "2021-06-03",
+            "2021-06-03"
+          ]
+        ],
+        "MRNA": [],
+        "MRVL": [],
+        "MS": [],
+        "MSFT": [],
+        "MSTR": [],
+        "MU": [],
+        "NAT": [
+          [
+            "2017-08-10",
+            "2017-08-10"
+          ]
+        ],
+        "NEE": [],
+        "NEM": [],
+        "NET": [],
+        "NFLX": [],
+        "NKE": [],
+        "NLY": [],
+        "NN": [],
+        "NNE": [],
+        "NOK": [],
+        "NOW": [],
+        "NRG": [],
+        "NU": [],
+        "NUAI": [],
+        "NVAX": [],
+        "NVDA": [],
+        "NVO": [],
+        "NVTS": [],
+        "O": [
+          [
+            "2021-11-15",
+            "2021-11-15"
+          ]
+        ],
+        "OKLO": [],
+        "OKTA": [],
+        "ON": [],
+        "ONDS": [
+          [
+            "2020-11-16",
+            "2020-11-16"
+          ]
+        ],
+        "ONON": [],
+        "OPEN": [],
+        "ORBS": [],
+        "ORCL": [],
+        "OSCR": [],
+        "OUST": [],
+        "OWL": [],
+        "OXY": [
+          [
+            "2016-02-25",
+            "2016-02-25"
+          ]
+        ],
+        "P": [],
+        "PAAS": [],
+        "PACB": [],
+        "PANW": [],
+        "PATH": [],
+        "PBF": [],
+        "PBR": [],
+        "PCG": [],
+        "PCT": [],
+        "PDSB": [],
+        "PEP": [],
+        "PFE": [
+          [
+            "2020-11-17",
+            "2020-11-17"
+          ]
+        ],
+        "PG": [],
+        "PINS": [],
+        "PL": [],
+        "PLAY": [],
+        "PLTR": [],
+        "PLUG": [],
+        "PM": [],
+        "PNC": [],
+        "PSKY": [],
+        "PSX": [],
+        "PTON": [],
+        "PYPL": [],
+        "QBTS": [],
+        "QCOM": [],
+        "QS": [],
+        "QUBT": [],
+        "QXO": [],
+        "RARE": [],
+        "RBLX": [],
+        "RBRK": [],
+        "RCAT": [],
+        "RCL": [],
+        "RDDT": [],
+        "RDW": [],
+        "REGN": [],
+        "RGTI": [],
+        "RIG": [],
+        "RIOT": [],
+        "RIVN": [],
+        "RKLB": [],
+        "RKT": [],
+        "RTX": [
+          [
+            "2020-04-03",
+            "2020-04-03"
+          ]
+        ],
+        "RUM": [],
+        "RUN": [],
+        "RXRX": [],
+        "RXT": [],
+        "S": [],
+        "SBET": [],
+        "SBUX": [],
+        "SCHW": [],
+        "SEDG": [],
+        "SERV": [],
+        "SG": [],
+        "SHOE": [],
+        "SHOP": [],
+        "SIRI": [],
+        "SLB": [],
+        "SLS": [],
+        "SMCI": [],
+        "SMMT": [],
+        "SMR": [],
+        "SNAP": [],
+        "SNOW": [],
+        "SNPS": [],
+        "SO": [],
+        "SOC": [],
+        "SOFI": [],
+        "SOUN": [],
+        "SPCE": [],
+        "SPOT": [],
+        "STLA": [
+          [
+            "2016-01-04",
+            "2016-01-04"
+          ]
+        ],
+        "STM": [],
+        "T": [
+          [
+            "2022-04-11",
+            "2022-04-11"
+          ]
+        ],
+        "TE": [],
+        "TEAM": [],
+        "TEM": [],
+        "TER": [],
+        "TEVA": [],
+        "TGT": [],
+        "TJX": [],
+        "TLRY": [],
+        "TMC": [],
+        "TMO": [],
+        "TMUS": [],
+        "TOST": [],
+        "TRIP": [],
+        "TSLA": [],
+        "TSM": [],
+        "TTD": [],
+        "TTWO": [],
+        "TWLO": [],
+        "TXN": [],
+        "U": [],
+        "UAA": [],
+        "UAL": [],
+        "UAMY": [],
+        "UBER": [],
+        "UEC": [],
+        "UMAC": [],
+        "UMC": [],
+        "UNH": [],
+        "UPS": [],
+        "UPST": [],
+        "USAR": [],
+        "USB": [],
+        "UUUU": [],
+        "V": [],
+        "VALE": [],
+        "VFC": [
+          [
+            "2019-05-23",
+            "2019-05-23"
+          ]
+        ],
+        "VKTX": [],
+        "VLO": [],
+        "VRT": [],
+        "VRTX": [],
+        "VST": [],
+        "VZ": [],
+        "W": [],
+        "WBD": [],
+        "WDC": [
+          [
+            "2025-02-24",
+            "2025-02-24"
+          ]
+        ],
+        "WEN": [],
+        "WFC": [],
+        "WHR": [],
+        "WMB": [],
+        "WMT": [],
+        "WRBY": [],
+        "WU": [],
+        "WULF": [
+          [
+            "2021-12-14",
+            "2021-12-14"
+          ]
+        ],
+        "WYNN": [],
+        "XOM": [],
+        "XP": [],
+        "XYZ": [],
+        "ZETA": [],
+        "ZM": [],
+        "ZS": []
+      }
+    },
+    "exact_dte": 31,
+    "notes": "ADR0254. Retrospective owner-approved universe392: prior85 plus307restoredunknown-inventory names; CORZ excluded for confirmed recapitalization. No verified empty ledgers.2021\u20132025 public split screen; oldsplit/action spanwindows retained. All eligible earlier AMZN/MSFT history retained. Strict pre2026 quote/settlement; after-close clocks assumed, not historical publication proof.",
+    "as_of_acquisition_ms": 1791468073760
+  },
+  "holdout_start": "2026-01-01",
+  "output": "/home/russell/data/index_options/production-universe-rerun-20261008/panel-cache"
+}

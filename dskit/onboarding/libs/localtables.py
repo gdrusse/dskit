@@ -78,7 +78,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from ..base import AssetError, _check_dict, _raise_if, parse_utc
 from ..connector import PROTOCOL, Connector
 
-__all__ = ["EFFECTIVE_UNITS", "FORMATS", "LAYOUTS", "LocalTablesConnector", "PinnedArchiveConnector"]
+__all__ = ["EFFECTIVE_UNITS", "FORMATS", "LAYOUTS", "LocalTablesConnector", "PinnedArchiveConnector", "JsonSQLProjection"]
 
 _DIRECTORY_LAYOUT = "directory"
 
@@ -812,3 +812,139 @@ class PinnedArchiveConnector(LocalTablesConnector):
         for item in result:
             item["primary_key"] = list(self.STREAM_KEYS[item["stream"]])
         return result
+
+
+class JsonSQLProjection:
+    """Project opaque JSON through trusted read-only SQLite queries.
+
+    Parameters
+    ----------
+    spec : dict
+        query selects output fields; optional parameters binds JSON scalars
+        (document is reserved). Optional checks lists SELECT queries each
+        returning exactly one integer 1. Queries and policy are trusted
+        configuration; source JSON is bound data. No temporal policy is
+        inferred. SQLite may parse excluded values internally.
+
+    Examples
+    --------
+    Select only the explicitly admitted document::
+
+        reader = JsonSQLProjection({
+            "query": "SELECT json_extract(:document, '$.v') AS value "
+                     "WHERE json_extract(:document, '$.date') < :cutoff",
+            "parameters": {"cutoff": "2026-01-01"}})
+        rows = reader.rows(b'{"date":"2025-01-01","v":2}')
+        # -> [{"value": 2}]
+    """
+
+    def __init__(self, spec):
+        import re
+
+        if (not isinstance(spec, dict) or set(spec) - {"query", "parameters", "checks"}
+                or not isinstance(spec.get("query"), str) or not spec["query"].strip()):
+            raise AssetError(["JSON projection requires a query and known specification keys"])
+        parameters = spec.get("parameters", {})
+        checks = spec.get("checks", [])
+        if (not isinstance(parameters, dict)
+                or any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z_]\w*", k)
+                       or k == "document" for k in parameters)
+                or any(v is not None and type(v) not in (str, int, float, bool)
+                       or type(v) is float and not math.isfinite(v)
+                       for v in parameters.values())):
+            raise AssetError(["JSON projection parameters must be named finite scalars; document is reserved"])
+        if (not isinstance(checks, list)
+                or any(not isinstance(q, str) or not q.strip() for q in checks)):
+            raise AssetError(["JSON projection checks must be SELECT query strings"])
+        self.query = spec["query"]
+        self.parameters = dict(parameters)
+        self.checks = tuple(checks)
+
+    @staticmethod
+    def _authorize(action, first, second, database, trigger):
+        """Permit SQL reads and calculations, never writes or extension loading."""
+        import sqlite3
+
+        allowed = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ,
+                   sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE}
+        if action not in allowed or (action == sqlite3.SQLITE_FUNCTION
+                                     and (second or first or "").lower() == "load_extension"):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    @staticmethod
+    def _memory_only(connection):
+        """Refuse runtimes that cannot guarantee memory-only transient storage."""
+        modes = [row[0] for row in connection.execute("PRAGMA compile_options").fetchall()
+                 if row[0].startswith("TEMP_STORE=")]
+        if len(modes) != 1 or modes[0] not in {"TEMP_STORE=1", "TEMP_STORE=2", "TEMP_STORE=3"}:
+            raise AssetError(["JSON projection cannot verify memory-only temporary storage"])
+        connection.execute("PRAGMA temp_store=MEMORY")
+        mode = connection.execute("PRAGMA temp_store").fetchone()
+        if mode is None or len(mode) != 1 or type(mode[0]) is not int or mode[0] != 2:
+            raise AssetError(["JSON projection cannot verify memory-only temporary storage"])
+
+    def rows(self, raw):
+        """Return only the configured projection as Python records.
+
+        Parameters
+        ----------
+        raw : bytes or str
+            Opaque UTF-8 JSON. Never decoded into Python JSON objects.
+
+        Returns
+        -------
+        list of dict
+            Projected SQL scalar values keyed by distinct output names.
+
+        Raises
+        ------
+        AssetError
+            For invalid or duplicate JSON, failed checks, forbidden SQL,
+            bad bindings, invalid output, or unavailable SQLite JSON support.
+            Refusal messages never include source payload values.
+        """
+        import sqlite3
+
+        if not isinstance(raw, (bytes, str)):
+            raise AssetError(["JSON projection input must be UTF-8 bytes or text"])
+        connection = sqlite3.connect(":memory:")
+        try:
+            self._memory_only(connection)
+            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            # Initialize built-in virtual-table schemas before installing the
+            # read-only authorizer; these fixed queries contain no source data.
+            connection.execute("SELECT count(*) FROM json_tree('{}')").fetchone()
+            connection.execute("SELECT count(*) FROM json_each('{}')").fetchone()
+            connection.set_authorizer(self._authorize)
+            bindings = {**self.parameters, "document": text}
+            valid = connection.execute("SELECT json_valid(:document)", bindings).fetchone()
+            if valid != (1,):
+                raise AssetError(["JSON projection input is not strict JSON"])
+            duplicates = connection.execute(
+                "SELECT count(*) FROM (SELECT parent, key FROM json_tree(:document) "
+                "WHERE key IS NOT NULL GROUP BY parent, key HAVING count(*) > 1)",
+                bindings).fetchone()[0]
+            if duplicates:
+                raise AssetError(["JSON projection input has duplicate members"])
+            for check in self.checks:
+                result = connection.execute(check, bindings).fetchall()
+                if (len(result) != 1 or len(result[0]) != 1
+                        or type(result[0][0]) is not int or result[0][0] != 1):
+                    raise AssetError(["JSON projection check failed"])
+            cursor = connection.execute(self.query, bindings)
+            names = [column[0] for column in (cursor.description or ())]
+            if not names or any(not n for n in names) or len(set(names)) != len(names):
+                raise AssetError(["JSON projection output names must be nonempty and distinct"])
+            values = cursor.fetchall()
+            if any(v is not None and type(v) not in (str, int, float)
+                   or type(v) is float and not math.isfinite(v)
+                   for row in values for v in row):
+                raise AssetError(["JSON projection output must contain finite SQL scalars"])
+            return [dict(zip(names, row)) for row in values]
+        except AssetError:
+            raise
+        except (sqlite3.Error, UnicodeError, OverflowError, ValueError):
+            raise AssetError(["JSON projection refused: invalid input, query or binding"]) from None
+        finally:
+            connection.close()

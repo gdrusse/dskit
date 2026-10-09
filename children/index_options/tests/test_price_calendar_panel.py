@@ -401,7 +401,7 @@ def test_a_dividend_spike_drops_the_rows_whose_features_or_label_touch_it(make):
     for d in base.quote_date:
         entry = DATES.index(d)
         end = DATES.index(base.settlement_date[base.quote_date == d].iloc[0])
-        touches = entry-lookback+1 <= position <= end
+        touches = entry-lookback <= position <= end
         assert (d in set(frame.quote_date)) == (not touches), d
     assert panel.refused["AAA"]["corporate_action_path"] == len(base)-len(frame) > 0
 
@@ -728,3 +728,220 @@ def test_a_malformed_vintage_refuses_the_panel_and_its_node(make, value):
     params["as_of_acquisition_ms"] = 0
     assert not any("as_of_acquisition_ms" in p
                    for p in ExactExpiryPanelRead.validate_params(params))
+
+
+def test_price_source_read_bounds_reaches_core_before_rows(make):
+    panel = make()
+    panel.config["price_source"]["read_bounds"] = {"date": {"end_before": "2023-02-01"}}
+    rows, _ = panel._file_rows("AAA")
+    assert rows
+    assert all(r["date"] < "2023-02-01" for r in rows)
+
+
+# -- S1 / ADR-0251: synthetic vintage metamorphisms through real processing -----------------
+
+def _s1_chart(table, events=()):
+    """A synthetic chart envelope with an explicit (possibly empty) split inventory."""
+    import json
+
+    stamp = lambda day: int(pd.Timestamp(day, tz="UTC").timestamp()) + 12*3600
+    splits = {str(stamp(day)): {"date": stamp(day), "numerator": ratio, "denominator": 1}
+              for day, ratio in events}
+    result = {"meta": {"symbol": "AAA", "exchangeTimezoneName": "UTC"},
+              "timestamp": [stamp(day) for day in table.date],
+              "events": {"splits": splits},
+              "indicators": {"quote": [table[["open", "high", "low", "close", "volume"]]
+                                       .to_dict("list")],
+                             "adjclose": [{"adjclose": table.close.tolist()}]}}
+    return json.dumps({"chart": {"result": [result]}}).encode()
+
+
+def _s1_normalize(body):
+    """Use the strict source transform, including its real Parquet serialization."""
+    import io
+    from index_options.stock_bars import StockDailyBars
+
+    normalizer = StockDailyBars({"strict_split_inventory": True, "price_decimals": 12},
+                               "2023-08-01T00:00:00+00:00")
+    return pd.read_parquet(io.BytesIO(normalizer.transform("AAA", body)))
+
+
+def _s1_panel(make, keyed, table):
+    """Real liquidity calculation and panel target/features; only keyed storage is stubbed."""
+    from dskit.pipeline.libs.bar_features import DailyBarFeatures
+
+    bars = table.rename(columns={"date": "quote_date"}).to_dict("records")
+    fields = {"log_volume_ratio": "vl_log_volume_ratio",
+              "log_dollar_volume": "vl_log_dollar_volume", "amihud": "vl_amihud"}
+    parts = []
+    for window, declared in ((22, fields), (66, {"log_volume_ratio": "vl_log_volume_ratio_66"})):
+        node = DailyBarFeatures("s1", {
+            "entity_field": "symbol", "date_field": "quote_date", "close_field": "close",
+            "volume_field": "volume", "volume_liquidity": {"window": window, "fields": declared}})
+        parts.append(node.run(None, {"bars": bars})["records"])
+    assert [r["quote_date"] for r in parts[0]] == [r["quote_date"] for r in parts[1]]
+    keyed.rows = [{**a, **b} for a, b in zip(*parts)]
+    columns = {name: name for name in [*fields.values(), "vl_log_volume_ratio_66"]}
+    panel = make(table, lags=22, windows=[1, 5, 22, 66], reference_window=22,
+                 change_lags=[1, 5, 22], directional_windows=[5, 22], ohlc_windows=[5, 22],
+                 corporate_actions=_actions(),
+                 keyed_tables={"key": ["symbol", "quote_date"],
+                               "tables": {"liquidity": {"source": "s", "stream": "t",
+                                                        "columns": columns}}})
+    return panel.read(), panel
+
+
+@pytest.mark.parametrize("ratios", [(2.,), (.2,), (2., 3.), ()],
+                         ids=["forward", "reverse", "repeated", "no-split"])
+def test_s1_matching_late_vintage_preserves_pre_event_features_and_targets(make, keyed, ratios):
+    # Compare origins settled BEFORE the later actions. A later coherent snapshot
+    # expresses the same economic path in new share units, with its matching ledger.
+    old = _price_table()
+    old["volume"] = [10000 + 100*i for i in range(len(old))]
+    factor = math.prod(ratios)
+    new = old.copy()
+    new[["open", "high", "low", "close"]] /= factor
+    new["volume"] *= factor
+    # A prior correctly adjusted split also lies inside some 66-bar windows.
+    prior = [(DATES[50], 2.)] if ratios else []
+    events = prior + [(DATES[115 + 10*i], ratio) for i, ratio in enumerate(ratios)]
+    original, _ = _s1_panel(make, keyed, _s1_normalize(_s1_chart(old, prior)))
+    rebased, _ = _s1_panel(make, keyed, _s1_normalize(_s1_chart(new, events)))
+    a = original[original.settlement_date < DATES[110]].reset_index(drop=True)
+    b = rebased[rebased.settlement_date < DATES[110]].reset_index(drop=True)
+    assert len(a) >= 20 and a.vl_log_volume_ratio_66.notna().sum() >= 20
+    assert a.vl_log_volume_ratio_66.isna().any()  # startup is retained
+    # Price and volume carry changed units; derived features, labels and identities agree.
+    assert b.spot.tolist() == pytest.approx((a.spot/factor).tolist())
+    if "terminal_price" in a:
+        assert b.terminal_price.tolist() == pytest.approx((a.terminal_price/factor).tolist())
+    assert b.volume.tolist() == pytest.approx((a.volume*factor).tolist())
+    invariant = [c for c in a if c not in ("spot", "terminal_price", "volume")]
+    pd.testing.assert_frame_equal(a[invariant], b[invariant], atol=1e-10, rtol=1e-10)
+
+
+def test_s1_post_origin_outcome_changes_target_but_not_origin_features(make, keyed):
+    table = _price_table()
+    table["volume"] = [10000 + 100*i for i in range(len(table))]
+    baseline, _ = _s1_panel(make, keyed, _s1_normalize(_s1_chart(table)))
+    origin = baseline[baseline.quote_date >= DATES[80]].iloc[0]
+    event_day = DATES[DATES.index(origin.quote_date) + 1]
+    changed = table.copy()
+    # Coherent global 2:1 share units plus a genuine 10% economic move after origin.
+    changed[["open", "high", "low", "close"]] /= 2
+    changed["volume"] *= 2
+    changed.loc[changed.date >= event_day, ["open", "high", "low", "close"]] *= 1.1
+    after, panel = _s1_panel(make, keyed, _s1_normalize(_s1_chart(changed, [(event_day, 2.)])))
+    result = after[after.quote_date == origin.quote_date].iloc[0]
+    assert origin.quote_date < event_day <= origin.settlement_date
+    assert result.terminal_return == pytest.approx(origin.terminal_return + math.log(1.1))
+    assert result.spot == pytest.approx(origin.spot/2)
+    assert result.terminal_price == pytest.approx(origin.terminal_price*1.1/2)
+    assert result.volume == pytest.approx(origin.volume*2)
+    feature_columns = [c for c in baseline if c not in
+                       ("spot", "volume", "terminal_price", "terminal_return")]
+    assert len(feature_columns) >= 70
+    pd.testing.assert_series_equal(origin[feature_columns], result[feature_columns],
+                                   check_names=False, atol=1e-10, rtol=1e-10)
+    assert panel.refused["AAA"]["corporate_action_path"] == 0
+
+
+@pytest.mark.parametrize("bad", ["absent-inventory", "missing-factor", "zero", "negative", "null"])
+def test_s1_strict_source_refuses_unknown_or_invalid_action_factors(bad):
+    import json
+
+    body = json.loads(_s1_chart(_price_table(), [(DATES[100], 2.)]))
+    result = body["chart"]["result"][0]
+    event = next(iter(result["events"]["splits"].values()))
+    if bad == "absent-inventory":
+        del result["events"]["splits"]
+    elif bad == "missing-factor":
+        del event["numerator"]
+    else:
+        event["numerator"] = {"zero": 0, "negative": -2, "null": None}[bad]
+    with pytest.raises(ValueError, match="split inventory"):
+        _s1_normalize(json.dumps(body).encode())
+
+
+def test_s1_inconsistent_volume_basis_is_a_detectable_negative_not_automatic_admission(make, keyed):
+    table = _price_table()
+    table["volume"] = [10000 + 100*i for i in range(len(table))]
+    baseline, _ = _s1_panel(make, keyed, _s1_normalize(_s1_chart(table)))
+    mixed = table.copy()
+    mixed[["open", "high", "low", "close"]] /= 2  # deliberately leave volume on old basis
+    observed, _ = _s1_panel(make, keyed, _s1_normalize(_s1_chart(mixed, [(DATES[120], 2.)])))
+    a = baseline[baseline.settlement_date < DATES[110]].reset_index(drop=True)
+    b = observed[observed.settlement_date < DATES[110]].reset_index(drop=True)
+    assert len(a) >= 20
+    # Syntactically valid factors cannot certify a vendor's economic volume basis.
+    assert b.vl_log_dollar_volume.tolist() == pytest.approx(
+        (a.vl_log_dollar_volume - math.log(2)).tolist())
+    assert b.vl_amihud.tolist() == pytest.approx((a.vl_amihud*2).tolist(), abs=1e-18)
+    assert not (abs(b.vl_log_dollar_volume - a.vl_log_dollar_volume) < 1e-10).any()
+    pd.testing.assert_series_equal(a.terminal_return, b.terminal_return, atol=1e-10, rtol=1e-10)
+
+
+# -- ADR-0252: action exclusion covers every return's price endpoints -----------------------
+
+@pytest.mark.parametrize(
+    "lags,windows,entry,event,drop,sparse,action_kind",
+    [
+        (22, [1, 5, 22, 66], 70, 4, True, False, "window"),
+        (22, [1, 5, 22, 66], 70, 3, False, False, "window"),
+        (11, [1, 5], 30, 19, True, False, "window"),
+        (5, [1, 5, 11], 30, 19, True, False, "detected"),
+        (5, [1, 5, 11], 30, 18, False, False, "detected"),
+        (10, [1, 5], 80, 60, True, True, "window"),
+        (10, [1, 5], 80, 59, False, True, "window"),
+        (10, [1, 5], 3, 0, True, False, "window"),
+        (5, [1, 5], 30, 32, True, False, "window"),
+        (5, [1, 5], 30, 35, False, False, "window"),
+        (5, [1, 5], 30, 25, False, False, "none"),
+        (5, [1, 5], 30, 25, False, False, "empty"),
+    ],
+    ids=["rv66-oldest", "rv66-before-oldest", "lags-dominate", "rv-dominate",
+         "detected-before-oldest", "sparse-oldest", "sparse-before-oldest",
+         "first-record-clamp", "target-crossing", "after-target",
+         "no-action-rule", "empty-action-rule"],
+)
+def test_action_span_endpoint_boundaries(make, lags, windows, entry, event, drop,
+                                        sparse, action_kind):
+    import numpy as np
+
+    event_date = DATES[event]
+    action = (None if action_kind == "none" else
+              {"windows": {"AAA": [[event_date, event_date]]}}
+              if action_kind == "window" else {})
+    panel = make(lags=lags, windows=windows, corporate_actions=action)
+    # Every second session is a price record in the sparse case. Ten returns
+    # then require the price at session60 for an origin at session80.
+    dates = DATES[::2] if sparse else DATES
+    panel._records = {"AAA": [{"date": day} for day in dates]}
+    panel._events = {"AAA": [event_date] if action_kind == "detected" else []}
+    refused = {}
+    keep = panel._path_exclusions("AAA", np.array([entry]), np.array([entry + 4]),
+                                  SESSIONS, refused)
+    assert keep.tolist() == [not drop]
+    assert refused.get("corporate_action_path", 0) == int(drop)
+
+
+@pytest.mark.parametrize("lags,windows,feature", [
+    (11, [1, 5], "ret_lag_10"),
+    (5, [1, 5, 11], "rv_11"),
+], ids=["return-lag-endpoint", "realized-volatility-endpoint"])
+def test_action_span_drops_an_oldest_price_that_changes_a_real_feature(
+        make, lags, windows, feature):
+    # This public-read check ties the exclusion boundary to actual feature
+    # consumption, rather than just asserting the exclusion index arithmetic.
+    settings = dict(lags=lags, windows=windows, reference_window=5,
+                    change_lags=[1, 5], directional_windows=[2, 5])
+    baseline = make(**settings).read()
+    origin = baseline.iloc[30]
+    first = DATES[DATES.index(origin.quote_date) - 11]
+    changed = _price_table(close={first: CLOSE[first] * .9})
+    changed_frame = make(changed, **settings).read()
+    changed_row = changed_frame[changed_frame.quote_date == origin.quote_date].iloc[0]
+    assert changed_row[feature] != pytest.approx(origin[feature])
+    excluded = make(changed, corporate_actions={"windows": {"AAA": [[first, first]]}},
+                    **settings).read()
+    assert origin.quote_date not in set(excluded.quote_date)

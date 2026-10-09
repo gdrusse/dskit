@@ -3466,6 +3466,10 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         if ok:
             from dskit.pipeline.libs.parquet import ParquetRows
 
+            if "read_bounds" in source:
+                from dskit.pipeline.libs.parquet import DateBoundedParquet
+                problems += [f"price_source.{p}" for p in
+                             DateBoundedParquet.problems(source["read_bounds"])]
             window = source.get("window")
             problems += [f"price_source.{p}" for p in ParquetRows.window_problems(
                 window, source["columns"])]
@@ -3558,7 +3562,8 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         reader = ParquetRows("prices", {
             "root": c["root"], "source": name, "stream": stream,
             "relpath_by_key": {symbol: relpath}, "key": symbol, "columns": source["columns"],
-            "window": self._end_window(source.get("window"))})
+            "window": self._end_window(source.get("window")),
+            **({"read_bounds": source["read_bounds"]} if "read_bounds" in source else {})})
         rows = [r for r in reader.run(None, {})["records"] if r["date"] >= c["since"]]
         dates = [r["date"] for r in rows]
         repeated = sorted({d for d in dates if dates.count(d) > 1}) if len(set(dates)) < len(dates) else []
@@ -3595,8 +3600,8 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     def _path_exclusions(self, symbol, entry_index, end_index, sessions, refused):
         """Drop rows whose feature or label span holds a declared corporate-action event.
 
-        The features read the last ``lookback`` price RECORDS up to the entry, so the span starts
-        at the date of the record ``lookback - 1`` records before the entry record, however many
+        W return observations consume W+1 price endpoints, so the span starts at the
+        record W records before entry (clamped to the first available record), however many
         sessions that is.
         """
         import numpy as np
@@ -3607,7 +3612,7 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         lookback = max([c["lags"], *c["windows"], *(c.get("ohlc_windows") or [])])
         dates = np.array(sorted(r["date"] for r in self._records[symbol]))
         entry_date = sessions[entry_index].strftime("%Y-%m-%d").to_numpy()
-        first = np.maximum(np.searchsorted(dates, entry_date)-lookback+1, 0)
+        first = np.maximum(np.searchsorted(dates, entry_date)-lookback, 0)
         start = sessions.searchsorted(dates[first].astype("datetime64[ns]"))
         drop = self.action_rule.excluded(symbol, self._events[symbol], sessions, start, end_index)
         refused["corporate_action_path"] = int(drop.sum())

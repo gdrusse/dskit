@@ -1,0 +1,14 @@
+{
+  "path": "/home/russell/data/index_options/production-universe-rerun-20261008/features",
+  "layout": "file",
+  "effective_field": "quote_date",
+  "effective_unit": "iso",
+  "streams": [
+    "volume22",
+    "volume66"
+  ],
+  "formats": [
+    "jsonl"
+  ],
+  "notes": "Immutable owner-authorized rerun liquidity source, assumed historical availability; no new provider."
+}

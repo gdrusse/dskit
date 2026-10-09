@@ -425,7 +425,7 @@ dskit/onboarding/
 │   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
 │   ├── restwindow.py  declarative time-window REST: window / cursor pagination, positional rows, epoch instants, a dynamic record key; standalone (stdlib urllib, ADR-0240)
-│   ├── yahoo.py       Pinned saved chart arrays; split/completion provenance
+│   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
 │   ├── zipcsv.py      httpblobs transform: a vendor zip of one CSV -> typed parquet under a JSON layout (pyarrow inside transform, ADR-0242)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops
@@ -444,3 +444,39 @@ ADR-0213: AlpacaOptionArchiveConnector and YahooChartArchiveConnector read
 SHA-256-pinned local files through PinnedArchiveConnector. No provider access.
 Contracts, daily trade bars and indicative snapshots remain separate streams.
 See children/stock_options/docs/plans/README.md for the tested JSON workflow.
+
+
+ADR-0249: YahooSplitInventory preserves unknown versus present-empty inventory,
+validates positive finite factors and unique local effective dates, and can
+require one emitted bar per action. YahooChartArchiveConnector uses it before
+yielding observations. A completeness declaration remains a caller assertion;
+neither this validator nor the archive connector protects mixed-year JSON reads.
+
+## Opaque JSON projection (ADR-0250)
+
+JsonSQLProjection in libs/localtables.py runs trusted SQL over bound opaque JSON
+in a fresh in-memory SQLite engine. Its JSON specification carries query, optional
+parameters and optional checks (each must return one integer 1). The document
+binding is reserved. Invalid/duplicate JSON, failed checks, write/attach/extension
+operations and invalid output refuse. No provider or extra dependency is needed.
+
+The recipe must explicitly project permitted fields and constrain dates inside
+SQL before records enter Python. This helper does not infer a cutoff or certify
+a recipe. The engine may parse excluded values internally; legacy readers are
+unchanged. Use existing localblobs/localtables onboarding to publish protected
+derived inputs, retaining source hashes, recipe and acquisition provenance.
+
+~~~python
+from dskit.onboarding.libs.localtables import JsonSQLProjection
+
+reader = JsonSQLProjection({
+    "query": "SELECT json_extract(:document, '$.value') AS value "
+             "WHERE json_extract(:document, '$.date') < :cutoff",
+    "parameters": {"cutoff": "2026-01-01"},
+    "checks": ["SELECT json_type(:document, '$.date') = 'text'"]})
+rows = reader.rows(b'{"date":"2025-12-01","value":2}')
+# -> [{"value": 2}]
+~~~
+
+The example assumes canonical ISO dates; a production recipe must validate its
+source schema/date grammar and all parallel-array identities before use.

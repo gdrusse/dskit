@@ -119,3 +119,52 @@ def test_note_lists_splits_and_flags_irregular_ratios():
     reverse = {"splits": {str(SPLIT_DAY): {"date": SPLIT_DAY, "numerator": 1.0, "denominator": 8.0}}}
     assert "IRREGULAR" not in t.note("ABC", chart(events=reverse))
     assert t.note("ABC", chart(events={})) is None
+
+
+def test_strict_split_inventory_refuses_missing_evidence():
+    bars = StockDailyBars({}, AS_OF)
+    bars.strict_split_inventory = True
+    with pytest.raises(ValueError, match="inventory"):
+        bars.rows("ABC", chart(events={}))
+
+@pytest.mark.parametrize("entry", ["rows", "note", "transform"])
+@pytest.mark.parametrize("failure", ["missing", "null", "zero", "negative", "duplicate_event",
+                                    "null_open", "null_close", "absent_bar", "duplicate_bar"])
+def test_strict_facades_refuse_unknown_invalid_or_lost_split(entry, failure):
+    result = json.loads(chart())["chart"]["result"][0]
+    if failure == "missing":
+        result["events"] = {}
+    elif failure == "null":
+        result["events"]["splits"] = None
+    elif failure in ("zero", "negative"):
+        result["events"]["splits"][str(SPLIT_DAY)]["denominator"] = 0 if failure == "zero" else -1
+    elif failure == "duplicate_event":
+        result["events"]["splits"]["duplicate"] = dict(result["events"]["splits"][str(SPLIT_DAY)])
+    elif failure in ("null_open", "null_close"):
+        result["indicators"]["quote"][0][failure[5:]][2] = None
+    elif failure == "absent_bar":
+        result["events"]["splits"][str(SPLIT_DAY)]["date"] += 86400 * 20
+    else:
+        result["timestamp"][1] = SPLIT_DAY
+    body = json.dumps({"chart": {"result": [result]}}).encode()
+    with pytest.raises(ValueError, match="split inventory"):
+        getattr(StockDailyBars({"strict_split_inventory": True}, AS_OF), entry)("ABC", body)
+
+
+def test_strict_compatible_events_and_non_event_null_bar():
+    result = json.loads(chart())["chart"]["result"][0]
+    result["indicators"]["quote"][0]["open"][0] = None
+    body = json.dumps({"chart": {"result": [result]}}).encode()
+    strict = StockDailyBars({"strict_split_inventory": True}, AS_OF)
+    legacy = StockDailyBars({}, AS_OF)
+    assert strict.rows("ABC", body) == legacy.rows("ABC", body)
+    assert strict.note("ABC", body) == legacy.note("ABC", body)
+    assert strict.transform("ABC", body) == legacy.transform("ABC", body)
+    assert strict.note("ABC", chart(events={"splits": {}})) is None
+    assert set(strict.rows("ABC", chart(events={"splits": {}}))["split_coefficient"]) == {1.0}
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true"])
+def test_strict_switch_requires_boolean(value):
+    with pytest.raises(ValueError, match="strict_split_inventory"):
+        StockDailyBars({"strict_split_inventory": value}, AS_OF)

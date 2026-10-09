@@ -1,0 +1,1236 @@
+{
+  "study": {
+    "features": [
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "calendar_days_per_session",
+      "reference_scale",
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "momentum_5",
+      "momentum_22",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "down_rv_5",
+      "down_rv_22",
+      "up_rv_5",
+      "up_rv_22",
+      "vl_log_volume_ratio_66",
+      "vl_log_volume_ratio",
+      "vl_log_dollar_volume",
+      "vl_amihud"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "output": "/home/russell/data/index_options/production-development-20261007/runs/features/study-unused",
+    "samples": 201,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 101,
+    "calibration_knots": 21,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical"
+    ],
+    "bootstrap": {
+      "blocks": [
+        30,
+        60
+      ],
+      "replicates": 1000,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 0,
+          "reference_index": 5,
+          "knots": 401
+        },
+        "calibrate": false
+      }
+    },
+    "fold_table": {
+      "path": "/home/russell/data/index_options/ob/raw/production-model-inputs-20261007-v2/20261008T022032Z-backfill-a398eada/payload/files/development-folds.jsonl",
+      "sha256": "b28d09b89e03a4e777cdd6e556051644e1a94a5c6834e7d3512d6c706481cfbd",
+      "holdout_start": "2026-01-01",
+      "cal_n": 40,
+      "roles": [
+        "warmup"
+      ],
+      "notes": "Approved2021-2022 development; expandingmaturetraining andpurged40dateearlystop; allmodel-selectionlabels<2023-01-01. Fourthscoredrowisboundaryonly andneverexecuted."
+    },
+    "wing_metrics": false,
+    "notes": "ADR0251/0252/0253 correctedselectionseam. Intended393 retrospective universe;85sourcequalifiedsubset. Equalweights/pairedheads/forecasts acrossarms. Onboardedsnapshot 20261008T022032Z-backfill-a398eada manifest a398eadac067f5722c67575b353572f90db04c373b3b292ad3e6f7ed3683cbcc. After-close researchavailabilityassumption; notobservedknown-at. Everydevelopmentlabel strictlybefore2023confirmation. No2026read/scoring; Stage1features only.",
+    "tail_weight": 1.0,
+    "min_task_fit_rows": 40,
+    "min_task_cal_rows": 1
+  },
+  "panel": "/home/russell/data/index_options/ob/raw/production-model-inputs-20261007-v2/20261008T022032Z-backfill-a398eada/payload/files/panel/frame.parquet",
+  "panel_sha256": "d770fa8a3c34b08ebb738b84411f7e7f7bfc33d62effbc9aa7f66faa60d41bc8",
+  "output": "/home/russell/data/index_options/production-development-20261007/runs/features",
+  "tickers": [
+    "AA",
+    "AAPL",
+    "ACMR",
+    "AMC",
+    "AMZN",
+    "ANET",
+    "APH",
+    "APLD",
+    "ASST",
+    "AVGO",
+    "BKNG",
+    "BYND",
+    "CAG",
+    "CAPR",
+    "CELH",
+    "CLSK",
+    "CMCSA",
+    "CMG",
+    "CNC",
+    "CRWD",
+    "CVNA",
+    "CYPH",
+    "DELL",
+    "DHR",
+    "ECHO",
+    "EQT",
+    "FCEL",
+    "FDX",
+    "FISV",
+    "FRO",
+    "FTNT",
+    "GE",
+    "GEO",
+    "GME",
+    "GOOG",
+    "GOOGL",
+    "HON",
+    "HPE",
+    "HUT",
+    "IBM",
+    "ISRG",
+    "KLAC",
+    "LCID",
+    "LEN",
+    "LRCX",
+    "MARA",
+    "MCHP",
+    "MRK",
+    "MSTR",
+    "NAT",
+    "NEE",
+    "NFLX",
+    "NLY",
+    "NOW",
+    "NVAX",
+    "NVDA",
+    "NVO",
+    "O",
+    "ORBS",
+    "OUST",
+    "OXY",
+    "PANW",
+    "PDSB",
+    "PFE",
+    "QUBT",
+    "QXO",
+    "RCAT",
+    "RTX",
+    "SBET",
+    "SHOE",
+    "SHOP",
+    "SIRI",
+    "SLS",
+    "SMCI",
+    "SPCE",
+    "STLA",
+    "T",
+    "TJX",
+    "TLRY",
+    "TSLA",
+    "TTD",
+    "UAA",
+    "VFC",
+    "WDC",
+    "WMT"
+  ],
+  "arms": {
+    "base": {
+      "features": [
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "calendar_days_per_session",
+        "reference_scale",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "momentum_5",
+        "momentum_22",
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22",
+        "vl_log_volume_ratio_66",
+        "vl_log_volume_ratio",
+        "vl_log_dollar_volume",
+        "vl_amihud"
+      ],
+      "sequence_indices": [
+        [
+          27
+        ],
+        [
+          26
+        ],
+        [
+          25
+        ],
+        [
+          24
+        ],
+        [
+          23
+        ],
+        [
+          22
+        ],
+        [
+          21
+        ],
+        [
+          20
+        ],
+        [
+          19
+        ],
+        [
+          18
+        ],
+        [
+          17
+        ],
+        [
+          16
+        ],
+        [
+          15
+        ],
+        [
+          14
+        ],
+        [
+          13
+        ],
+        [
+          12
+        ],
+        [
+          11
+        ],
+        [
+          10
+        ],
+        [
+          9
+        ],
+        [
+          8
+        ],
+        [
+          7
+        ],
+        [
+          6
+        ]
+      ],
+      "context_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41
+      ],
+      "observed_columns": [],
+      "min_fit": 40,
+      "min_cal": 1,
+      "min_disjoint": 0
+    },
+    "minus_momentum": {
+      "features": [
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "calendar_days_per_session",
+        "reference_scale",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22",
+        "vl_log_volume_ratio_66",
+        "vl_log_volume_ratio",
+        "vl_log_dollar_volume",
+        "vl_amihud"
+      ],
+      "sequence_indices": [
+        [
+          27
+        ],
+        [
+          26
+        ],
+        [
+          25
+        ],
+        [
+          24
+        ],
+        [
+          23
+        ],
+        [
+          22
+        ],
+        [
+          21
+        ],
+        [
+          20
+        ],
+        [
+          19
+        ],
+        [
+          18
+        ],
+        [
+          17
+        ],
+        [
+          16
+        ],
+        [
+          15
+        ],
+        [
+          14
+        ],
+        [
+          13
+        ],
+        [
+          12
+        ],
+        [
+          11
+        ],
+        [
+          10
+        ],
+        [
+          9
+        ],
+        [
+          8
+        ],
+        [
+          7
+        ],
+        [
+          6
+        ]
+      ],
+      "context_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39
+      ],
+      "observed_columns": [],
+      "min_fit": 40,
+      "min_cal": 1,
+      "min_disjoint": 0
+    },
+    "minus_liquidity": {
+      "features": [
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "calendar_days_per_session",
+        "reference_scale",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "momentum_5",
+        "momentum_22",
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22"
+      ],
+      "sequence_indices": [
+        [
+          27
+        ],
+        [
+          26
+        ],
+        [
+          25
+        ],
+        [
+          24
+        ],
+        [
+          23
+        ],
+        [
+          22
+        ],
+        [
+          21
+        ],
+        [
+          20
+        ],
+        [
+          19
+        ],
+        [
+          18
+        ],
+        [
+          17
+        ],
+        [
+          16
+        ],
+        [
+          15
+        ],
+        [
+          14
+        ],
+        [
+          13
+        ],
+        [
+          12
+        ],
+        [
+          11
+        ],
+        [
+          10
+        ],
+        [
+          9
+        ],
+        [
+          8
+        ],
+        [
+          7
+        ],
+        [
+          6
+        ]
+      ],
+      "context_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37
+      ],
+      "observed_columns": [],
+      "min_fit": 40,
+      "min_cal": 1,
+      "min_disjoint": 0
+    },
+    "minus_directional": {
+      "features": [
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "calendar_days_per_session",
+        "reference_scale",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "momentum_5",
+        "momentum_22",
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "vl_log_volume_ratio_66",
+        "vl_log_volume_ratio",
+        "vl_log_dollar_volume",
+        "vl_amihud"
+      ],
+      "sequence_indices": [
+        [
+          27
+        ],
+        [
+          26
+        ],
+        [
+          25
+        ],
+        [
+          24
+        ],
+        [
+          23
+        ],
+        [
+          22
+        ],
+        [
+          21
+        ],
+        [
+          20
+        ],
+        [
+          19
+        ],
+        [
+          18
+        ],
+        [
+          17
+        ],
+        [
+          16
+        ],
+        [
+          15
+        ],
+        [
+          14
+        ],
+        [
+          13
+        ],
+        [
+          12
+        ],
+        [
+          11
+        ],
+        [
+          10
+        ],
+        [
+          9
+        ],
+        [
+          8
+        ],
+        [
+          7
+        ],
+        [
+          6
+        ]
+      ],
+      "context_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37
+      ],
+      "observed_columns": [],
+      "min_fit": 40,
+      "min_cal": 1,
+      "min_disjoint": 0
+    },
+    "minus_long_volatility": {
+      "features": [
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "calendar_days_per_session",
+        "reference_scale",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "momentum_5",
+        "momentum_22",
+        "rv_1",
+        "rv_5",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22",
+        "vl_log_volume_ratio_66",
+        "vl_log_volume_ratio",
+        "vl_log_dollar_volume",
+        "vl_amihud"
+      ],
+      "sequence_indices": [
+        [
+          27
+        ],
+        [
+          26
+        ],
+        [
+          25
+        ],
+        [
+          24
+        ],
+        [
+          23
+        ],
+        [
+          22
+        ],
+        [
+          21
+        ],
+        [
+          20
+        ],
+        [
+          19
+        ],
+        [
+          18
+        ],
+        [
+          17
+        ],
+        [
+          16
+        ],
+        [
+          15
+        ],
+        [
+          14
+        ],
+        [
+          13
+        ],
+        [
+          12
+        ],
+        [
+          11
+        ],
+        [
+          10
+        ],
+        [
+          9
+        ],
+        [
+          8
+        ],
+        [
+          7
+        ],
+        [
+          6
+        ]
+      ],
+      "context_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39
+      ],
+      "observed_columns": [],
+      "min_fit": 40,
+      "min_cal": 1,
+      "min_disjoint": 0
+    }
+  },
+  "candidates": [
+    {
+      "name": "PatchTST32",
+      "adapters": {
+        "pooled": [
+          {
+            "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+            "params": {
+              "model": "PatchTST",
+              "config": {
+                "d_model": 32,
+                "num_hidden_layers": 1,
+                "patch_length": 4,
+                "patch_stride": 3,
+                "scaling": null,
+                "num_attention_heads": 1,
+                "ffn_dim": 64,
+                "norm_type": "layernorm",
+                "attention_dropout": 0.1,
+                "ff_dropout": 0.1
+              }
+            }
+          }
+        ],
+        "unpooled": [
+          {
+            "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+            "params": {
+              "model": "PatchTST",
+              "config": {
+                "d_model": 32,
+                "num_hidden_layers": 1,
+                "patch_length": 4,
+                "patch_stride": 3,
+                "scaling": null,
+                "num_attention_heads": 1,
+                "ffn_dim": 64,
+                "norm_type": "layernorm",
+                "attention_dropout": 0.1,
+                "ff_dropout": 0.1
+              }
+            }
+          }
+        ]
+      },
+      "skip_reason": null
+    }
+  ],
+  "training": {
+    "components": 3,
+    "epochs": 500,
+    "patience": 20,
+    "seeds": [
+      11
+    ],
+    "learning_rate": 0.0003,
+    "weight_decay": 0.01,
+    "dropout": 0.1,
+    "deterministic": true,
+    "losses": [
+      {
+        "kind": "crps",
+        "weight": 1.0
+      },
+      {
+        "kind": "tail_crps",
+        "weight": 1.0
+      }
+    ]
+  },
+  "capacity": {
+    "unpooled": {
+      "absolute": 8192,
+      "per_row": 4,
+      "batch_size": 64,
+      "device": "cpu",
+      "head_widths": [
+        2
+      ]
+    },
+    "pooled": {
+      "absolute": 100000,
+      "per_row": 0.25,
+      "head_per_row": 4,
+      "batch_size": 512,
+      "device": "cuda",
+      "head_widths": [
+        2
+      ]
+    }
+  },
+  "source_hashes": {
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_availability.py": "3ee47ba818573c8e62514f9d6961a2141baca814555c0296263638ac8a0269f9",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/driver.py": "e83ab6a4ba4a519703cb752f7bca8c969c43c61acd5bac40f788f2ac7edb24e8",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/attempts.py": "8acfb0571497269b00c88e97b6f7f9ee3f710d68311765ee55f080f61037f28e",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/trust.py": "7779dd8a484042ec17e5d0d2bbfbdad37913f1cba514554c47251fe469e56f88",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/runner.py": "86dddf0b704f8a71dc2b8976389ff571c595dc1f7cb63e0e4907261594fa16c8",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_report.py": "ac9087430f77155e43576aaec5645184b9341300f48746c8924be6f5c8c9e36b",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/stats.py": "4d862bb155b691d7e75a844ab1cbe4127297d47fbf28f9941ace69e88bfdb12d",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/testing.py": "d848b47c6fa2f17452fe43753fbebd73d32e3fafe7a7c8a92e10a88ef8b2ff0f",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/document.py": "8197ac291123ea5bda8bc1d710e292e40702336d8046b0bb60e9b647b3da36ac",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/distribution_scores.py": "024096d890ec20d942bdc775eaec2ccadf54d4bf58d8c83a929d48bab407fffb",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/uncertainty_set.py": "b30a92c073351d2a89872682cd181b2841f2ffaa205e6148e65d486f6fe9d02b",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/planner.py": "97b695767641514d5b1d95454b5e810c8160870c0e3b7b188f1d5fd4f036c8bc",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/trainlog.py": "0d26f277df924833d0b49e763b6060ded46288710d3fdc40ed3420bb0a8a73c9",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/conformance.py": "5db2c56e2752833ed5978c131fe08488c7955d6741b840565216d94191f07555",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_table.py": "64f837c19afcac655eb402b7b5969a210d52a1c00ca00e3e8cfae8c10a8644e1",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/event_wire.py": "c4c9e2706c63dfd323c63d6db573f0790ef9930afce69b23fb34c65f8bc74d45",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/benchmarks.py": "b9c984fe0dc14e7807464a8f5fe826158be459f277cc88bd78ca36abb9e1401a",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/conquest.py": "13810974f8750710f58a1c3e337c115a473844644311a494c1f5258d778dde47",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/split_policy.py": "5c7e18254d2f1d404ee2a52779b60509bdd13fd87575689c66bf8e3536aa8e18",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/release_rotation.py": "1eb29e2dd866173d30b2318c05142d54b1a1069d4c3d7d7c139dec86e86a75c0",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/workflow.py": "d0e3712533df64ac6886851525eb480be1369a938b8417f5011ca3166e2d1803",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/workflow_rollup.py": "bfe4263a82f3f3f763a85fcf2be737a03f56d8237acf968f8efb2b884d114df1",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/registry.py": "6ba1eccd1e7e0abf043ecb02a4d11f5a8201416f868bb568090aaa3917b05132",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/predictions.py": "8070c893891310718a276ce625df936bbe762d1ff4e1c47ee2cd5a192840abeb",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/features.py": "89ddfd39da65085ea24b5867929b5b04d376760d044b04e823a6796e948ca6bf",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/node.py": "ad16e7d85e8ec9448722ee2f04ebaa3e31835827d974891f31fabb34bdf71ae3",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/workflow_hooks.py": "994c829d0e83f02a15645d7dacb5798b17542dbf9ba52cc81e0402e4fb32a419",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_banking.py": "ec33bd0fabf8941786b5c74488e865fe0f1383aaa9e530727d7d29d68e9017c7",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/records.py": "938b6bfafaa301d5787473cd3d7c81a2aef5d899f6fadcb3047b46a39302c1ca",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/distribution_models.py": "97f34d78047ed74823d0307cfbd458b45933d450465d61635f0631aadef78747",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/mean_interval.py": "0d54bea10c2eebcec49b12cc863c05c29b9f7933289a84ea690d1b46bd791d8f",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/runs.py": "9cbaba01b125a15fe01a6bd65ef4080f399fc08fb068c63e87e1ffb74d1b3347",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/fitted.py": "e5a409b2aacb4b04ab030d281b383b7ee004e93045622ab7b8ad4ae7df501eba",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/policy.py": "ad5f70ea2897e7c01c717bd4088231b80d368d3cdbf5b605a7fbbfa6ba1719f7",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/stages.py": "abdc548266e2353145f3587e8b162cf99da7da1faffa5d3b247b4f86922f7a51",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/ordering.py": "116edba29bf1d0e6609a50738e2d0eaeb9231e97bc6e2f9da7a4130446b9fdb0",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_search.py": "df8282ba509850606c8326166b4f6a63ae8e6e10abaaccba62949c3ad641ee54",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/metrics.py": "ce48150e8c61a5693da29055b5b952d69aa9e8ca4ddd6279084af4f3be8f49f8",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/outcome_interval.py": "cfabfaaf6cd9f70a877f157af90114ddaaa0974c299f4c0e5f16f8e06f537acf",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_stats.py": "9776b6d8bcc5a49f01c7eba747d83117cac4e253c5cb26f627693bd44e0c5a4a",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/option_pricing.py": "2d63f484faa26a5fb00bbd611ccbd9d7ae718f2f6aa58a6e6ec8670958d6ed17",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/workflow_batch.py": "ff493ec73e43a8db49f31816768de92c2106a01025e956806332dd9016550cc6",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/program_calendar.py": "6224e8896a564e57abb9b3493c54609d9989e6152e00aca5beba27a582180517",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/folds.py": "14e701a1719301c9c13fdfbf44d1185849f9de37f5b2ef186a078bd61f5601cf",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/resolve.py": "6cc06edbe421cc0f2c3fb8a7d0983d84d11c819a9997a20c22ad5707c82c00cd",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_rank.py": "8d10995073e9356591cede5c52c1ab357981885c68134eea933fa52e171e3c1a",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/false_signal.py": "e70e33581519b03343e10fe1c444a408b8757dc689de6e837a8ebf6e8d563b69",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_flow.py": "870d7bec3bb8462fa83ee17941697c63b65fe6cb7e47666a907999efe91e4550",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/base.py": "e27ed9bc9bb86cfceb787513c9bbf3728e5d686157fb8cbe1a9fd262b2b932cc",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/__main__.py": "9a4f4e5a45de008ecb61e46ad26023900f0d5bcc75a002e7edaae00ddc5ddbed",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/synthetic_nodes.py": "f7441f12672e2082b79f729fdb2e4a8109b448b038f89c61dde2fa7adb30ff54",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/synthetic_paths.py": "c4b1b534638968c402511ee6eb2fb0d45ba341311148750fffdbf9c6bc36b9c1",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/uncertainty_intake.py": "8711a21f9dded6a8bfc0da07cfe4106d8f0967ac744a684e22de773ce9e39456",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/protocols.py": "b8a8b93578bd7ae72b132b3254247e065332595146aac70f6d884d1fbb5a9559",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/kinds_split.py": "3bb2b9b0b9438aa75c2f47574dd7e168d1ba98454660d9f351588485402ea35b",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/workflow_report.py": "3ae2b8da92750dcee9f4cf5634a1944be95b0a496356d425a42bef03a18077f0",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/io.py": "79a3a33bb7e108b89e2fc6c4a20dd21914adc8e19b1a126b255f62ee16ce6722",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/env.py": "f8f99dfee8092e12d3ff67141becf7b593376ac1c39d9e1a19b128887406f3a6",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/libs/predictive_cdf.py": "74a4b7507b4693eaa60fa2414ff92511dc260471aec6773c4ed01d0cd6643347",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/libs/torch_ts.py": "71aa4a4a991f7b44f95aa55159d0cdfd4f6f150304896ff9f7e1f34d9b4e3cc0",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/libs/neuralforecast.py": "23b1b077284bac4cf8ec50fd58ed43456a637eb7c5330a928f7394d133783ab0",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/libs/cdf_experiment.py": "6498e5239b27e2e8d7e8baf57bb8b796a86cdbdc015eb2391f2e23013b6676f6",
+    "/home/russell/dskit-production-development-20261007/pyproject.toml": "6f1fa44f065bca46698b406a4a2f8f254359154e4e5a1dbf999d6ba51896916a",
+    "/home/russell/dskit-production-development-20261007/dskit/pipeline/libs/parquet.py": "651f2156b5a79c2751207c3237995fc81118cd2104716539fcff27ed0da48ae6"
+  },
+  "dependencies": {
+    "Farama-Notifications": "0.0.6",
+    "Flask": "3.1.3",
+    "GitPython": "3.1.61",
+    "Jinja2": "3.1.6",
+    "Mako": "1.4.1",
+    "Markdown": "3.11",
+    "MarkupSafe": "3.0.3",
+    "PyYAML": "6.0.3",
+    "Pygments": "2.21.0",
+    "SQLAlchemy": "2.0.52",
+    "Werkzeug": "3.1.8",
+    "absl-py": "2.5.0",
+    "aiohappyeyeballs": "2.7.1",
+    "aiohttp": "3.14.3",
+    "aiosignal": "1.4.0",
+    "alembic": "1.19.1",
+    "alpaca-py": "0.44.0",
+    "annotated-doc": "0.0.5",
+    "annotated-types": "0.8.0",
+    "anyio": "4.14.2",
+    "attrs": "26.1.0",
+    "autograd": "1.9.1",
+    "autograd-gamma": "0.5.0",
+    "blinker": "1.9.0",
+    "cachetools": "7.1.7",
+    "catboost": "1.2.10",
+    "certifi": "2026.7.22",
+    "cffi": "2.1.1",
+    "charset-normalizer": "3.5.1",
+    "click": "8.5.0",
+    "cloudpickle": "3.1.2",
+    "colorlog": "6.12.0",
+    "contourpy": "1.3.3",
+    "coreforecast": "0.0.18",
+    "coverage": "7.15.4",
+    "cryptography": "49.0.0",
+    "cuda-bindings": "12.9.7",
+    "cuda-pathfinder": "1.6.0",
+    "cuda-toolkit": "12.8.1",
+    "cycler": "0.12.1",
+    "databricks-sdk": "0.133.0",
+    "docker": "7.2.0",
+    "dskit": "0.0.1",
+    "einops": "0.8.2",
+    "exchange_calendars": "4.13.2",
+    "fastapi": "0.141.1",
+    "filelock": "3.32.3",
+    "flask-cors": "6.0.5",
+    "fonttools": "4.63.0",
+    "formulaic": "1.2.2",
+    "frozenlist": "1.8.0",
+    "fsspec": "2026.7.0",
+    "gitdb": "4.0.12",
+    "google-auth": "2.57.0",
+    "graphene": "3.4.3",
+    "graphql-core": "3.2.12",
+    "graphql-relay": "3.2.0",
+    "graphviz": "0.21",
+    "greenlet": "3.5.5",
+    "grpcio": "1.84.0",
+    "gunicorn": "26.2.0",
+    "gymnasium": "1.3.0",
+    "h11": "0.16.0",
+    "hf-xet": "1.6.0",
+    "highspy": "1.15.1",
+    "httpcore": "1.0.9",
+    "httpx": "0.28.1",
+    "huey": "3.3.4",
+    "huggingface_hub": "1.29.0",
+    "hypothesis": "6.165.10",
+    "idna": "3.19",
+    "importlib_metadata": "9.0.0",
+    "index-options": "0.0.1",
+    "iniconfig": "2.3.0",
+    "interface_meta": "2.0.1",
+    "intraday_equities": "0.0.1",
+    "intraday_poc": "0.0.1",
+    "itsdangerous": "2.2.0",
+    "joblib": "1.5.3",
+    "jsonschema": "4.26.0",
+    "jsonschema-specifications": "2025.9.1",
+    "kiwisolver": "1.5.0",
+    "korean_lunar_calendar": "0.4.0",
+    "lifelines": "0.30.3",
+    "lightgbm": "4.7.0",
+    "lightning-utilities": "0.15.3",
+    "markdown-it-py": "4.2.0",
+    "matplotlib": "3.11.1",
+    "mdurl": "0.1.2",
+    "mlflow": "3.15.2",
+    "mlflow-skinny": "3.15.2",
+    "mlflow-tracing": "3.15.2",
+    "mpmath": "1.3.0",
+    "msgpack": "1.2.1",
+    "multidict": "6.7.1",
+    "narwhals": "2.25.0",
+    "networkx": "3.6.1",
+    "neuralforecast": "3.1.9",
+    "nflows": "0.14",
+    "ngboost": "0.5.11",
+    "numpy": "2.5.2",
+    "nvidia-cublas-cu12": "12.8.4.1",
+    "nvidia-cuda-cupti-cu12": "12.8.90",
+    "nvidia-cuda-nvrtc-cu12": "12.8.93",
+    "nvidia-cuda-runtime-cu12": "12.8.90",
+    "nvidia-cudnn-cu12": "9.19.0.56",
+    "nvidia-cufft-cu12": "11.3.3.83",
+    "nvidia-cufile-cu12": "1.13.1.3",
+    "nvidia-curand-cu12": "10.3.9.90",
+    "nvidia-cusolver-cu12": "11.7.3.90",
+    "nvidia-cusparse-cu12": "12.5.8.93",
+    "nvidia-cusparselt-cu12": "0.7.1",
+    "nvidia-nccl-cu12": "2.28.9",
+    "nvidia-nvjitlink-cu12": "12.8.93",
+    "nvidia-nvshmem-cu12": "3.4.5",
+    "nvidia-nvtx-cu12": "12.8.90",
+    "opentelemetry-api": "1.44.0",
+    "opentelemetry-proto": "1.44.0",
+    "opentelemetry-sdk": "1.44.0",
+    "opentelemetry-semantic-conventions": "0.65b0",
+    "optuna": "4.9.0",
+    "packaging": "26.3",
+    "pandas": "2.3.3",
+    "pillow": "12.3.0",
+    "pip": "26.2.1",
+    "plotly": "7.1.0",
+    "pluggy": "1.6.0",
+    "prettytable": "3.18.0",
+    "propcache": "0.5.2",
+    "protobuf": "6.33.6",
+    "pyarrow": "25.0.1",
+    "pyasn1": "0.6.4",
+    "pyasn1_modules": "0.4.2",
+    "pycparser": "3.0",
+    "pydantic": "2.13.4",
+    "pydantic_core": "2.46.4",
+    "pyluach": "2.3.0",
+    "pyomo": "6.10.1",
+    "pyparsing": "3.3.2",
+    "pytest": "9.1.1",
+    "pytest-cov": "7.1.0",
+    "python-dateutil": "2.9.0.post0",
+    "python-dotenv": "1.2.3",
+    "pytorch-lightning": "2.5.6",
+    "pytz": "2026.3.post1",
+    "quantile-forest": "1.4.2",
+    "ray": "2.59.0",
+    "referencing": "0.37.0",
+    "regex": "2026.7.19",
+    "requests": "2.34.2",
+    "rich": "15.0.0",
+    "rpds-py": "2026.9.1",
+    "ruff": "0.16.5",
+    "safetensors": "0.8.0",
+    "scikit-learn": "1.9.0",
+    "scipy": "1.18.1",
+    "setuptools": "78.1.0",
+    "shellingham": "1.5.4",
+    "six": "1.17.0",
+    "skops": "0.14.0",
+    "smmap": "5.0.3",
+    "sortedcontainers": "2.4.0",
+    "sqlparse": "0.6.0",
+    "sseclient-py": "1.9.0",
+    "stable_baselines3": "2.9.0",
+    "starlette": "1.6.0",
+    "sympy": "1.14.0",
+    "tensorboard": "2.21.0",
+    "tensorboard-data-server": "0.7.2",
+    "tensorboardX": "2.6.5",
+    "threadpoolctl": "3.6.0",
+    "tokenizers": "0.23.1",
+    "toolz": "1.1.0",
+    "torch": "2.11.0+cu128",
+    "torchmetrics": "1.9.0",
+    "tqdm": "4.70.0",
+    "transformers": "5.16.1",
+    "triton": "3.6.0",
+    "typer": "0.27.1",
+    "typing-inspection": "0.4.4",
+    "typing_extensions": "4.16.0",
+    "tzdata": "2026.3",
+    "urllib3": "2.7.0",
+    "utilsforecast": "0.2.17",
+    "uvicorn": "0.52.4",
+    "wcwidth": "0.8.2",
+    "websockets": "17.1",
+    "wrapt": "2.5.0",
+    "yarl": "1.24.5",
+    "zipp": "4.1.0"
+  },
+  "date_upper_exclusive": "2026-01-01",
+  "end_upper_exclusive": "2026-01-01"
+}

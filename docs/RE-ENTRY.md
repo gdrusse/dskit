@@ -1,3 +1,228 @@
+# Active handoff — 2026-10-08: rho explanation and calibration direction
+
+Owner agreed to start with average expected-loss underestimation protection,
+then later chronological validation and prespecified stress checks. Read
+children/index_options/docs/explanations/robust-condor-selection.md,
+section "How we will calibrate rho", and its linked Claude handoff.
+The explanation reuses I4/I5 and inventories AdaptiveWassersteinRadius; it
+does not change runtime/configuration or calculate a radius. Candidate/payoff
+coverage, settings/support and bounded execution remain to be frozen before
+calibration; MIO/backtest prohibitions and the2026 closure remain unchanged.
+Forecasting completion and all model/recovery identities below stay valid.
+
+Documentation candidate 7cdefc68 passed independent correctness/authority and
+integration/evidence reviews with zero Critical/Major/Minor/Nit. Relative links,
+math/arithmetic and unchanged runtime/config/test scope checked; no full suite.
+Retained scope, checks and actual reviews: /home/russell/data/index_options/
+production-development-audit-20261007/rho-explanation-20261008/.
+
+---
+
+# Active handoff — 2026-10-08: restored-universe forecasting closed; calibration walkthrough next
+
+All66 new fits completed without failures:15feature +15newHPO +9confirmation
++27evaluation; three HPO references reuse this rerun's Stage1 identities.
+Prior67 charges plus66 gives133/216. No further fit/retry/search is authorized.
+Core/tests remain unchanged from d4df4ab0; execution candidate025f4bd5.
+All66 pinned source files and model original/backup hashes verified.
+
+The frozen base PatchTST32 default (42features, lr0.0003, fusiondropout0.1)
+won development+0.878415%. Confirmation passed all three seed aggregates.
+Evaluation seed11/29/47 weighted skills: +0.278858%, +0.240921%, +0.254481%,
+each99,225 paired forecasts. Nominal seed11 remains fixed;6/9 windows and
+185/392 tickers positive. Original85/restored nominal skills +0.106270%/
++0.326588%; seed47 original85 is -0.112423%. Nominal95% coverage91.616%.
+Research candidate only: no production-qualified champion/learned reserve,
+calibrated rho/CDF bands, MIO execution, strategy backtest or2026 access.
+
+Read children/index_options/docs/memos/2026-10-08-restored-universe-patchtst.md
+and reports/production-universe-rerun-20261008/ under the same child docs.
+Complete training/HPO/fold/seed/ticker/cohort reports are published as aggregates.
+model-inventory.json contains66 unique recovered packages,3 reuse references,
+and exact immutable paths/hashes. Fixed latest nominal is seed11/fold9,
+fit7336c15cbb9ec3989d852ea9a7e0fc15317a3be2988fbe7c79badb6d4b4d6894,
+checkpoint1ec5ee6e18d056744215e5a482813f94b7c167cbdb4e9317f548c155dbff29b0.
+Never use a later checkpoint for earlier replay decisions.
+
+WSL2 checkout /home/russell/dskit-production-universe-rerun-20261008.
+Private audit /home/russell/data/index_options/production-development-audit-20261007/universe-rerun-20261008/.
+Data /home/russell/data/index_options/production-universe-rerun-20261008/.
+Backup /home/russell/data/backups/index_options/production-universe-rerun-20261008/.
+Evaluation recovery verified27fits/10383score shards and seven nominal
+seed11/fold9 forecasts with original roots denied. All66 unique fitted packages
+are retained; inference supported, interrupted-optimizer continuation is not.
+Preserve old85 artifacts and both pinned checkouts. Same-disk backups are not
+off-device disaster recovery. Keep raw records/forecasts/weights private.
+
+Both final independent lenses closed report candidate d9ec2b8d with zero
+Critical/Major/Minor/Nit. See private final-review-lock.json and actual
+publication/cleanup receipt final-wrap-receipt.json. Preserve the pinned
+checkout/data; only safely merged task branches may be purged. Next use the
+children/index_options/docs/memos/2026-10-08-claude-calibration-backtest-handoff.md
+to walk through bounded calibration and the path to MIO/backtesting.
+That future-stage plan does not authorize execution in this cycle.
+Keep2026 entirely closed. The392-name universe includes307 explicitly unknown
+action-inventory histories; never relabel them verified no-split.
+
+---
+
+# Active handoff — 2026-10-08: bounded production development complete; no promotion
+
+All66actual fits completed:15feature +15newHPO +9confirmation +27evaluation.
+One pre-fit CUDA refusal is retained, so the conservative charge is67/216.
+Three HPO cells reused verified original Stage1 identities, not new fits.
+No active fit job and no further search/retry is authorized by this closed cycle.
+
+The frozen PatchTST32 configuration (without momentum, lr0.001, fusiondropout0.1)
+passed the2023 continuation gate but lost to the empirical reference on all
+three2024-2025 evaluation seeds: -0.077101%, -0.189704%, -0.199768%.
+Eachseed has21,587paired forecasts. Seed11 remainsnominal; no bestseed switch.
+No production champion, learnedreserve, calibratedradius or livefallback.
+The empiricalmodel remains a researchcontrol. No2026access/scoring orMIO ran.
+
+Read the closing section of
+children/index_options/docs/memos/2026-10-07-production-development-stage0.md
+and its linked aggregateJSON. Historical running/blocked notes below are stale.
+Private audit: /home/russell/data/index_options/production-development-audit-20261007/.
+Runs: /home/russell/data/index_options/production-development-20261007/runs/.
+Backups: /home/russell/data/backups/index_options/production-development-20261007/.
+Allretraining checkpoints retained;27evaluationfits and2,271forecastshards
+passed second-copy integrity/recovery, including finalnominal inference.
+Preserve originals and this isolatedcheckout because runtime sourcepaths arepinned.
+
+Use WSL2 /home/russell/dskit-production-development-20261007 and the unchanged
+sharedvenv plus retainedruntime. No fullsuite, upgrades,providers,cloudspending,
+2026reads/scoring, MIO,backtests,deployment orlive. Packages supportinference,
+not fullinterruptedoptimizer continuation. Secondcopies share thephysicaldisk.
+
+Next work requires a separately disclosed/authorized development or qualification
+stage. The memo contains a concrete prospective protocol; it is not permission
+to open2026, refit on testlabels, choose a newseed or calibrate an inventedradius.
+Final scoped closing reviews and remote-delivery receipt are recorded with the
+final memo/report and privateaudit. Earlier handoffs follow unchanged.
+
+# Active handoff — 2026-10-07 night: evaluation running
+
+Confirmation passed the frozen all-three-seeds-positive gate: weighted skills
++0.134777%, +0.086256%, +0.022997% for seeds11/29/47. All9fits and744shards
+independently verified; recovery reproduced seed11/fold3 forecasts and scores.
+Read confirmation-actual-gate-v1.json and production-champion-freeze-v1.json.
+
+Twenty-seven evaluation fits are now running serially in evaluation-batch-v1;
+PID3023925/start30478418. Verify current launch receipt/process and queue/logs
+before acting. No duplicate jobs. Conservative reserved charge67/216;39 actual
+fits completed before evaluation. Frozen trial5 (lr0.001,fusion dropout0.1),
+PatchTST32 withoutmomentum, nominalseed11. No second feasible learned family.
+Nine existing2024-2025 windows perseed, freshweights/expanding settledhistory.
+These already-seen periods give stress evidence, not independent qualification.
+
+Use WSL2 isolated /home/russell/dskit-production-development-20261007.
+Private audit /home/russell/data/index_options/production-development-audit-20261007/.
+On completion onboard immutable outputs, independently verify analysis and
+recover final checkpoints, write closing memo/uncertainty handoff and wrap/push.
+No2026access/scoring, MIO, backtests, providers, upgrades, fullsuite or cleanup
+of original artifacts. Older status sections below are historical.
+
+# Active handoff — 2026-10-07 night: confirmation running
+
+HPO completed: trial5, learning rate 0.001 and fusion dropout 0.1; weighted
+development skill -0.149518% against the paired empirical reference.
+The selected PatchTST32 uses minus_momentum (40 inputs). All 18 HPO cell
+references were independently verified; 15 new fits and 3 original reused fits.
+HPO backup recovery passed. No candidate is production qualified.
+
+Nine confirmation fits are running serially through confirmation-batch-v1.
+Read /home/russell/data/index_options/production-development-audit-20261007/
+confirmation-batch-v1-launch.json, the append-only attempt ledger, batch log
+and queue state before any dispatch. Never duplicate a fit. Conservative
+reserved charge is 40/216; 30 actual fits completed before confirmation.
+Use WSL2 isolated /home/russell/dskit-production-development-20261007.
+
+The frozen all-three-seeds-positive gate in confirmation-gate-lock.json
+controls Stage4. Analyze onboarded complete outputs with the reviewed recipe,
+independently verify the actual gate and recover saved checkpoints.
+A failed gate ends this cycle before evaluation; do not force Stage4.
+A pass allows the frozen nine 2024–2025 expanding-history refits per seed.
+No 2026 reads or scoring, MIO, backtest, new data, upgrades or full suite.
+Complete the evaluation memo, uncertainty limitations, recovery and reviewed
+merge/push after the actual result. Older handoffs below are historical.
+
+# Active handoff — 2026-10-07 night: Stage1 complete, HPO running
+
+Use WSL2 and /home/russell/dskit-production-development-20261007 only.
+Read private audit production-fit-attempt-ledger.jsonl and hpo-batch-v1-launch.json
+before dispatching any job; PID3005310 runs the five remaining HPO JSONs serially.
+Inspect process start identity, batch/per-trial logs and queue states. Never
+duplicate an active or completed fit. CUBLAS_WORKSPACE_CONFIG=:4096:8 is required.
+Current shared venv plus retained historical-advanced/runtime remain unchanged.
+
+All15 feature fits completed and21,297 paired forecasts/arm verified. Selected
+minus_momentum(40features), skill-0.386357% versus empirical reference; every
+featurearmtrails baseline. Selection independently verified, not qualification.
+Stage1 backup/recovery verified all15fits and1,215score shards. HPO has15newfits
+reserved; its default(.0003,.1) reuses3exactlyverified originalStage1 fits.
+Current conservative budget charge31/216 includes one pre-fit environment refusal.
+
+Read production-execution-plan-v3.json and confirmation-gate-lock.json:
+freeze HPO winner, thenthree2023 folds for eachseed11/29/47; allthree seeds must
+have strictlypositive aggregatepairedweightedskill tocontinueStage4. Neverselect
+bestseed; seed11nominal. Candidate87e34105 has two clean scoped gate reviews.
+No confirmation evidence has been inspected. Later nine2024-2025 refits use
+freshweights andexpanding settled history; saveallcheckpoints. No2026read/scoring.
+
+On HPO completion: onboard immutable outputs, verify alloriginalartifact
+identities/pairing andfull3fold objectives, selectonlycompletefinite trial;
+create/preflight constrained confirmationJSONs andrecordactualattempts. Continue
+the authorized cycle, uncertainty findings, finalmemo, recovery and reviewed
+merge/push. NoMIO,provider,backtest,upgrade,fullsuite,live orbudgetexpansion.
+Older handoffs below are historical; current private receipts take precedence.
+
+# Active handoff — 2026-10-07 evening: production pilot complete, recovery pending
+
+Continue the owner-authorized bounded forecasting cycle in isolated
+/home/russell/dskit-production-development-20261007; preserve other sessions.
+Candidate4f9e1084 closed both execution lenses zeroCritical/Major. Panel111011
+rows/85qualified symbols, source reconciliation residualzero;308 symbols
+quarantined for missing split inventory. Actual incremental backup/recovery passed.
+
+Current private audit: /home/russell/data/index_options/production-development-audit-20261007/.
+Read production-execution-lock.json, production-execution-plan-v2.json,
+production-fit-attempt-ledger.jsonl and features-pilot-v2-launch.json before
+starting any job. Pilot first launch refused deterministic CUDA setup before
+fitting; replacement JSON production-feature-selection-v2.json uses a distinct
+output root and CUBLAS_WORKSPACE_CONFIG=:4096:8. Never duplicate an active job.
+Pilot-v2 completed; check immutable output/status, then recover/check pilot
+before continuing the existing feature queue.
+
+Current protocol supersedes oldCOVID tuning:2021-2022 development,HPO;2023
+confirmation;nine2024-2025 fresh expanding-history refits. No2026access/scoring,
+MIO,providers,backtests,shared upgrades,full suite or budget expansion.
+Save every checkpoint; finish evaluation memo, recovery, reviewed wrap/push.
+See current Stage-0 memo and aggregate report; older handoffs follow unchanged.
+
+# Active handoff — 2026-10-07: production prerequisites continue, 0/216 fits
+
+The owner-authorized production development cycle remains active. Read the
+[Stage-0 memo](../children/index_options/docs/memos/2026-10-07-production-development-stage0.md)
+and aggregate report. All 833,637 configured-source dates and 455,149 cached
+forecast identities reconcile: 2,425 action-path plus 4,747 reference exclusions
+explain the previously unresolved 7,172 dates, zero residual. Owned-history
+inventory and economic correctness remain separate open requirements.
+
+ADR-0250 JsonSQLProjection candidate d76dcf1c closed two independent final lenses
+with zero Critical/Major; 77 focused author tests, 110 independent integration.
+Reviewed identities and actual report hashes are in the aggregate report.
+Source-specific recipes require separate review; private Yahoo v1 failed
+action-type/multiplicity checks before real use. V2 is synthetic-tested,
+awaiting source review. Legacy readers remain unchanged.
+
+Continue bounded older AMZN/MSFT history and auxiliary-source inspection,
+split/vintage/volume validation, explicit retrospective-cohort and research-clock
+assumptions, then freeze purged COVID/development folds and candidate dependency
+recovery. Same-disk second-copy backup and seven-row historical restore passed;
+preserve all originals. Training remains gated; all 216 attempts remain.
+No champion, calibrated radius, protected 2026 access, MIO or production qualification.
+
 # Active handoff — 2026-10-07: crypto_trading child + additive dskit packs, merged to main
 
 **Landed on main.** New child `children/crypto_trading` and nine additive dskit modules (ADR-0239..0247; ADR-0241
@@ -32,14 +257,19 @@ The per-ADR backlog is in `TODO.md`.
 - Optional ADRs: a date bound for `kalshi_history` pulls, an open-to-close duration filter for the hourly
   document, and a memory budget refusal for hourly runs. The runbook's B6 gives about 9.7 KB a decision row.
 
-**Next (on WSL).** `git pull` main. Follow `children/crypto_trading/docs/plans/2026-10-06-wsl-data-pull-runbook.md`
-in order:
-1. Stage A acquisitions.
-2. The 15-minute features run (B1-B5).
-3. Read the development kill-test report.
-4. Only then decide on held-out.
-
-Pull the 15-minute trades (about 6-8 days, 52 GB) and the hourly history last.
+**Update 2026-10-08 (WSL run done).** Owner confirmed leads [2,5,10], cut 2026-09-15, margin 0.02, exec lag 5 s,
+strike lag 30 s, `$OB=/home/russell/data/crypto_trading/ob`. Stage A (fees, markets, Binance klines + BVOL,
+Kalshi 15M candles) pulled and gated with no blocks (expected warnings only); `run-features-15m.json` exit 0,
+38,724 rows published as source `features-15m`; `verify` clean (9 snapshots). Development kill test: fair_rms,
+fair_ewma, fair_bvol Brier diffs vs the mid +0.0034/+0.0030/+0.0149 (block SE 0.0007/0.0007/0.0024); take P&L per
+trade -0.0006/-0.0005/-0.0120 (SE 0.0043/0.0048/0.0046); lead-2 P&L positive for all three (exploratory).
+Held-out NOT enabled. Memo: `children/crypto_trading/docs/memos/2026-10-08-15m-kill-test-development-run.md`
+(skeptic-reviewed, 0 Critical/Major). Limits: development-only, ~45 days, three formulas, one comparator; fills
+are an upper bound. Open: held-out coverage hole (1,178 held-out rows lack forecasts; Binance/BVOL end
+2026-10-05; re-pull stage A before any B5); child test
+`test_the_sizing_copy_runs_as_pasted_and_is_repeatable_after_a_failed_attempt` fails in a fresh venv
+(`No module named 'dskit'`, uninvestigated). Unrun: 15M trades (7e), hourly history (7a-7d), B6, live books,
+Coinbase/Deribit. Held-out and any follow-up are owner decisions.
 
 # Continuation — 2026-10-07: explicit MIO handoff and Stage-0 census
 

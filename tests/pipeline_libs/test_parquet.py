@@ -332,3 +332,124 @@ def _write_module(folder, name):
     path = folder / name
     path.write_text("LIMIT = 1\n")
     return path
+
+
+# ADR-0248: source predicates precede Python payload materialization.
+def test_declared_bounds_exclude_payload_before_record_projection(wide_store, tmp_path, monkeypatch):
+    node = ParquetRows("p", _params(wide_store))
+    # Attach the declaration after construction to expose the old read ordering,
+    # independently of the newly introduced parameter validator.
+    node.params["read_bounds"] = {"d": {"end_before": "2024-01-04"}}
+    out = node.run(_ctx(tmp_path), {})["records"]
+    assert out == [{"when": "2024-01-02", "px": 10.0},
+                   {"when": "2024-01-03", "px": 11.5}]
+
+@pytest.mark.parametrize("kind", ["text", "date32", "date64"])
+def test_bounded_read_intersects_clocks_and_projects_before_materialization(tmp_path, monkeypatch, kind):
+    import datetime as dt
+    import pyarrow.dataset as ds
+
+    dates = ["2025-12-29", "2025-12-30", "2026-01-01"]
+    ends = ["2025-12-31", "2026-01-01", "2026-02-01"]
+    if kind != "text":
+        dtype = pa.date32() if kind == "date32" else pa.date64()
+        dates = pa.array([dt.date.fromisoformat(d) for d in dates], type=dtype)
+        ends = pa.array([dt.date.fromisoformat(d) for d in ends], type=dtype)
+    path = tmp_path / "mixed.parquet"
+    pq.write_table(pa.table({"quote": dates, "end": ends, "payload": [7, 999, 9999],
+                            "unused": [1, 2, 3]}), path, row_group_size=1)
+    original, calls = ds.dataset, []
+    class Scan:
+        def __init__(self, *args, **kwargs):
+            self.inner = original(*args, **kwargs)
+        def to_table(self, **kwargs):
+            assert kwargs["columns"] == ["payload"]
+            assert kwargs["filter"] is not None
+            result = self.inner.to_table(**kwargs)
+            assert result.to_pydict() == {"payload": [7]}
+            calls.append(kwargs)
+            return result
+    monkeypatch.setattr(ds, "dataset", Scan)
+    result = pack.DateBoundedParquet(path, ["payload"], {
+        "quote": {"start": "2025-12-29", "end_before": "2026-01-01"},
+        "end": {"end_before": "2026-01-01"}}).read()
+    assert result.to_pylist() == [{"payload": 7}]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("bounds", [
+    None, {}, [], {"d": {}}, {"d": None}, {"d": {"until": "2025-01-01"}},
+    {"": {"start": "2025-01-01"}}, {"d": {"start": None}},
+    {"d": {"start": "20250101"}}, {"d": {"start": "2025-1-1"}},
+    {"d": {"start": "2025-02-30"}}, {"d": {"start": "2025-01-01", "end_before": "2025-01-01"}},
+    {"d": {"start": "2025-01-02", "end_before": "2025-01-01"}},
+])
+def test_bounded_declaration_refuses_before_io(store, tmp_path, bounds):
+    with pytest.raises(ConfigError, match="read_bounds"):
+        ParquetRows("p", _params(store, read_bounds=bounds))
+    with pytest.raises(ValueError, match="read_bounds"):
+        pack.DateBoundedParquet(tmp_path / "absent", ["c"], bounds)
+
+
+def test_resolved_bounded_declaration_revalidates_before_read(store, tmp_path, monkeypatch):
+    node = ParquetRows("p", _params(store, read_bounds="$other.bounds"))
+    node.params["read_bounds"] = {"d": {"end_before": "bad"}}
+    with pytest.raises(ValueError, match="read_bounds"):
+        node.run(_ctx(tmp_path), {})
+
+
+@pytest.mark.parametrize("failure", ["null", "no_stats", "timestamp", "integer",
+                                    "nested", "duplicate", "missing"])
+def test_bounded_schema_refuses_before_scanning(tmp_path, monkeypatch, failure):
+    import datetime as dt
+    import pyarrow.dataset as ds
+    table = pa.table({"d": ["2025-01-01"], "value": [7]})
+    if failure == "null":
+        table = pa.table({"d": pa.array([None], type=pa.string()), "value": [7]})
+    elif failure == "timestamp":
+        table = pa.table({"d": [dt.datetime(2025, 1, 1)], "value": [7]})
+    elif failure == "integer":
+        table = pa.table({"d": [20250101], "value": [7]})
+    elif failure == "nested":
+        table = pa.table({"d": ["2025-01-01"], "value": [{"a": 7}]})
+    elif failure == "duplicate":
+        table = pa.Table.from_arrays([pa.array(["2025-01-01"])] * 2, names=["d", "d"])
+    path = tmp_path / "source.parquet"
+    pq.write_table(table, path, write_statistics=failure != "no_stats")
+    def forbidden(*a, **kw):
+        raise AssertionError("scanner called before metadata refusal")
+    monkeypatch.setattr(ds, "dataset", forbidden)
+    with pytest.raises(ValueError, match="temporal predicate"):
+        pack.DateBoundedParquet(path, ["value"],
+            {"missing" if failure == "missing" else "d": {"end_before": "2026-01-01"}}).read()
+
+
+@pytest.mark.parametrize("bad", ["2025-02-30", "20250101", "2025-1-1",
+                                 "2025-01-01T00:00:00", "2026", " 2025-01-01"])
+def test_bounded_invalid_string_date_refuses(tmp_path, bad):
+    path = tmp_path / "source.parquet"
+    pq.write_table(pa.table({"d": ["2025-01-01", bad], "value": [1, 2]}), path)
+    with pytest.raises(ValueError):
+        pack.DateBoundedParquet(path, ["value"], {"d": {"end_before": "2026-01-01"}}).read()
+
+
+def test_boundaries_and_legacy_window_compose_without_widening(wide_store, tmp_path):
+    node = ParquetRows("p", _params(wide_store,
+        read_bounds={"d": {"end_before": "2024-01-05"}},
+        window={"field": "when", "start": "2024-01-03"}))
+    assert node.run(_ctx(tmp_path), {})["records"] == [
+        {"when": "2024-01-03", "px": 11.5}, {"when": "2024-01-04", "px": 12.0}]
+    node.params["read_bounds"] = {"d": {"start": "2024-01-06"}}
+    assert node.run(_ctx(tmp_path), {})["records"] == []
+
+
+def test_bounded_manifest_drift_still_refuses_before_scan(store, tmp_path, monkeypatch):
+    import pyarrow.dataset as ds
+    node = ParquetRows("p", _params(store, read_bounds={"d": {"end_before": "2026-01-01"}}))
+    victim = next(Path(store.root).rglob("prices.parquet"))
+    victim.write_bytes(victim.read_bytes() + b"changed")
+    def forbidden(*a, **kw):
+        raise AssertionError("scanner called on changed manifest bytes")
+    monkeypatch.setattr(ds, "dataset", forbidden)
+    with pytest.raises(ValueError, match="sha256"):
+        node.run(_ctx(tmp_path), {})

@@ -1,0 +1,13 @@
+{
+  "path": "/home/russell/data/index_options/production-development-audit-20261007",
+  "as_of": "2026-10-08T01:19:00+00:00",
+  "stream": "files",
+  "include": [
+    "amzn-owned-history-pre2026-v2.jsonl",
+    "amzn-owned-history-pre2026-v2-completion-receipt.json",
+    "owned-yahoo-projection-recipes-v2.json",
+    "owned-yahoo-projection-review-v2.txt",
+    "configured-action-normalization-audit-v1.json"
+  ],
+  "notes": "Owned pre2026 history diagnostic provenance; data/source eligibility is explicitly separate from local acquisition."
+}

@@ -1,0 +1,14 @@
+{
+  "path": "/home/russell/data/index_options/production-development-20261007/features",
+  "layout": "file",
+  "effective_field": "quote_date",
+  "effective_unit": "iso",
+  "streams": [
+    "volume22",
+    "volume66"
+  ],
+  "formats": [
+    "jsonl"
+  ],
+  "notes": "Immutable two-stream source from run-production-liquidity-20261007. New acquisition clocks; historical availability is the separately frozen after-close research assumption."
+}
