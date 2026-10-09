@@ -117358,3 +117358,21 @@ Independent Phase0 reviewer /root/condor_build_skeptic_math identified nonexiste
 
 ### Autonomous replay completion resumed
 Owner requests autonomous completion through launch and an MIO evaluation memo. Root replaced stalled app reviewers with live Luna collaboration reviewers and took over bounded intake/sampler work. Existing numeric draft settings remain explicit research assumptions; no2026 intake exception is inferred. CalendarBlockBootstrap implements the already-reviewed ADR0255 complete-calendar-block contract in existing shared stats, leaving the legacy circular sampler unchanged. No new files or fits.
+
+
+### Intake and sampler bounded locks
+Parquet candidate fb6c70612a7ef3bf2d6552b036255612c202482b:
+Luna /root/luna_pinned_intake_correctness 0C/0Major/0Minor/0Nit;
+independent /root/luna_pinned_intake_tests 0C/0Major/1Minor/0Nit.
+Minor backlog: no isolated corruption-between-two-verifications test;
+both verification guards exist; hostile concurrent mutation is not claimed.
+71 focused tests, Ruff and diff check passed. Root copies exact reviewed
+parquet source/test blobs only, preserving other lane/current history.
+
+Calendar candidate70fdae216cbce382d3c47c1b50c7fdbf6e0a18f0:
+Luna /root/luna_calendar_correctness 0C/0Major/0Minor/0Nit;
+independent /root/luna_calendar_integration 0C/0Major/1Minor/0Nit.
+Minor backlog: draw-parameter/default-deny negative test coverage; implementation
+rejects correctly. 295 focused stats tests, Ruff, diff and reviewer cold-import
+probe passed. Legacy circular bootstrap unchanged. Neither lock is replay
+or empirical calibration approval. Full reports retained in named transcripts.
