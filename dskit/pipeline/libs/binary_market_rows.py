@@ -470,8 +470,9 @@ class QuoteBarRows(_StreamRows):
 
     A bar's END is EXCLUSIVE: it covers ``[start, end)``, every quote in it precedes ``end``, so the
     bar is known at ``end`` (:class:`~dskit.pipeline.binary_decisions.QuoteState` reads it from a
-    decision at ``end`` on). A source whose end stamp is inclusive must be mapped by the child to
-    end + 1 unit (or its last-covered instant + 1); this reader only converts seconds to ms.
+    decision at ``end`` on). A source whose end stamp is INCLUSIVE (the last instant it covers) is read up
+    to one stamp unit late-in-content: a look-ahead of at most one stamp unit (crypto_trading's interim class
+    does the same). This reader only converts seconds to ms and has no offset knob; that is a recorded limit.
 
     Parameters
     ----------

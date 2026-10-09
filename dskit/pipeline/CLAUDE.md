@@ -721,8 +721,12 @@ on it without breaking its rulings.
   declared relations contradict each other raises, it is not a coherence verdict. `tolerance` gates only the
   verdict; leg and relation dust is `LEG_DUST` relative to the largest dual, and an infeasible verdict whose legs
   are empty or cannot profit raises by name. The projection is WHITENED (`u = p / s`); never go back to
-  scaling by the largest weight (it hung HiGHS and returned wrong optima). `min_spread` >= `MIN_SPREAD_FLOOR`
-  (1e-4): below it HiGHS returned suboptimal points as optimal (measured, not certified). HiGHS gets
+  scaling by the largest weight (it hung HiGHS and returned wrong optima). `min_spread` is in
+  [`MIN_SPREAD_FLOOR`, `MIN_SPREAD_CEILING`] = [0.01, 1] (below the floor HiGHS returned suboptimal points as
+  optimal; above the ceiling every weight is equal), and EVERY projection is certified: `_certify` bounds its
+  error by the duality gap of the QP's relation multipliers and refuses a bound above `PROJECTION_BOUND_LIMIT`
+  (1e-2) by name; `summary["projection_bound"]` reports it (0.0 on the exact shortcut, None if nothing was
+  projected). A multiplier of the wrong sign counts as zero (it can only loosen the bound). HiGHS gets
   `qp_iteration_limit`/`time_limit` defaults under `solver_options`; a stop is refused, never reported.
   One quote reader, `_sides`: a one-sided row stays in its relations, fair None, `bad_quote` (owner ruling B).
 - **Binary keys are SCALARS** (`binary_curve.row_key`, ADR-0257): a non-empty str (read by

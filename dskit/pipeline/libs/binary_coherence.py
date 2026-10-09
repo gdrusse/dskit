@@ -43,10 +43,27 @@ a QP-less solver is therefore not built. Both solves go through the base's
 ``_resolve_solver``/``_solve``; the LP through the base lifecycle (its ``SolveRecord`` is kept),
 the QP as a second solve of the same instance.
 
-Supported domain. ``min_spread`` must be at least :data:`MIN_SPREAD_FLOOR`: below it HiGHS' QP
-solver returned suboptimal points as "optimal" (see the constant for the measurements), and no
-optimality certificate is checked here. The floor bounds the weight ratio at 1e8 for spreads up
-to one.
+Supported domain and certificate. ``min_spread`` must lie in [:data:`MIN_SPREAD_FLOOR`,
+:data:`MIN_SPREAD_CEILING`] = [0.01, 1] (the constants carry the evidence): below the floor HiGHS' QP
+solver returned suboptimal points as "optimal", above the ceiling every contract weighs the same. The
+solver's word is not the evidence inside the domain either, so EVERY projection is checked. The QP carries
+a ``dual`` suffix; after an optimal solve and the relation guard, :meth:`BinaryCoherence._certify` reads the
+relation rows' multipliers (a one-way row keeps only a multiplier of its own sign) and bounds how far any
+returned probability can be from the true projection. A bound above :data:`PROJECTION_BOUND_LIMIT` (1e-2) is
+refused by name (node, projection, bound and limit). ``summary["projection_bound"]`` reports it: ``0.0`` for
+the exact-identity shortcut (nothing was solved), ``None`` when nothing was projected.
+
+Why it is a bound. For sign-correct multipliers the Lagrangian ``L`` of the whitened objective ``f(u) =
+sum((u - mid / s)^2)`` lies below ``f`` on the feasible set, so its minimum ``D`` over the box is a lower
+bound on the optimum ``f*`` (weak duality). ``L`` is 2-strongly convex in the two-sided units and its box
+minimiser is ``ubar``, so ``|x - ubar|^2 <= L(x) - D`` for the solver's point ``x``, and ``|u* - ubar|^2 <=
+f* - D <= f(x) - D`` (``x`` is feasible up to the solver's tolerance). A probability is ``s u``, so it is off
+by at most ``max(s) * (|x - ubar| + |u* - ubar|)``. Any sign-correct multipliers give a valid bound and only
+good ones a small one: zeroed or sign-flipped duals leave the bound large and the projection refused. The
+bound is the square root of a duality gap, so it runs orders of magnitude above the actual error: a refusal
+says "not certified", not "wrong". Evidence (the candidate-9 lens): at 0.01, across ~1,000 runs, actual errors
+were <= 6e-8 while the bound's median was ~2e-4 on strike worlds and its maximum ~1e-3 on 80-contract worlds;
+the known wrong answers at 1e-4 had bounds of 0.03 to 0.13.
 
 The projection is solved WHITENED: a two-sided contract's variable is ``u = p / s`` with ``s =
 max(ask - bid, min_spread)``, bounded to ``[0, 1 / s]``, and the objective is ``sum((u - mid /
@@ -63,11 +80,11 @@ and :data:`DEFAULT_TIME_LIMIT_S` UNDER the document's ``solver_options`` (the do
 key), so a solver that stalls ends as a non-optimal termination instead of hanging the run. Any
 other solver is handed only the document's options: its option names differ, so it must declare
 its own limit. A non-optimal termination is refused by name; so is a solver that raises (naming
-the node and the program), and an "optimal" projection that breaks a relation row by more than
-:data:`PROJECTION_TOLERANCE`.
+the node and the program), an "optimal" projection that breaks a relation row by more than
+:data:`PROJECTION_TOLERANCE`, and one whose error bound exceeds :data:`PROJECTION_BOUND_LIMIT`.
 
 Recorded limits. When the projection refuses (a non-optimal stop, a raising solver, a broken
-relation), the run raises and the LP verdict computed before it is lost. The LP resolves a
+relation, an uncertified bound), the run raises and the LP verdict computed before it is lost. The LP resolves a
 violation only down to HiGHS' primal feasibility tolerance (1e-7 by default, so ``tolerance`` below
 that cannot see a smaller one); lower ``primal_feasibility_tolerance`` under ``solver_options`` to
 resolve a smaller one.
@@ -89,6 +106,7 @@ Wiring is by import path: :data:`NODE_KINDS` is empty and nothing registers. A d
 Import cost: stdlib + toolkit only. pyomo is imported strictly inside run-path methods.
 """
 
+import math
 from abc import ABC, abstractmethod
 from collections import Counter
 from fractions import Fraction
@@ -105,8 +123,10 @@ __all__ = [
     "DEFAULT_TOLERANCE",
     "HIGHS_SOLVERS",
     "LEG_DUST",
+    "MIN_SPREAD_CEILING",
     "MIN_SPREAD_FLOOR",
     "NODE_KINDS",
+    "PROJECTION_BOUND_LIMIT",
     "PROJECTION_TOLERANCE",
     "RELATIONS",
     "RELATION_KINDS",
@@ -146,12 +166,25 @@ HIGHS_SOLVERS = ("highs", "appsi_highs")
 #: ``appsi_highs`` raises on it. Only a solver outside this tuple is hinted that a QP needs a QP solver.
 _QP_SOLVERS = ("highs",)
 
-#: The smallest ``min_spread`` accepted. Below it HiGHS' QP solver returned SUBOPTIMAL points as "optimal"
-#: (the weights ``1 / s^2`` then span too wide a range). Measured on random systems, 12,000 per setting: 1 wrong at
-#: 1e-5, 64 at 1e-6, 411 at 1e-7; none in 72,000 at 1e-4 (worst error 1.1e-7). At the floor and spreads up to one
-#: the weight ratio is at most 1e8, and the first failures appeared near 1e10. That is EVIDENCE, not proof: the
-#: solver is unobserved to fail here, not certified, and no optimality certificate is checked.
-MIN_SPREAD_FLOOR = 1e-4
+#: The smallest ``min_spread`` accepted: below it HiGHS' QP solver returned SUBOPTIMAL points as "optimal" (the
+#: weights ``1 / s^2`` then span too wide a range) and said nothing. Measured on random systems, 12,000 per setting:
+#: 1 wrong at 1e-5, 64 at 1e-6, 411 at 1e-7. The floor once stood at 1e-4, where 72,000 random systems showed none
+#: (worst error 1.1e-7), until the candidate-9 correctness lens found status "ok" with an error up to 0.033 on a
+#: 173-contract chain at 1e-4 (127 members of spread 0.9, 46 of spread 1e-4): random draws had not reached that shape.
+#: At 0.01 the weight ratio is at most (0.9 / 0.01)^2 = 8,100 for spreads up to 0.9. The floor narrows what is asked of
+#: the solver; the certificate (:data:`PROJECTION_BOUND_LIMIT`) checks every projection regardless.
+MIN_SPREAD_FLOOR = 0.01
+
+#: The largest ``min_spread`` accepted. A two-sided spread is below one (``0 < bid <= ask < 1``), so any
+#: ``min_spread`` of one or more floors EVERY contract to the same step: equal weights, whatever the quotes say. Above
+#: one it only rescales the whitened problem until its objective falls under the solver's tolerance: the candidate-9
+#: lens ran ``min_spread`` 1e4 and every contract came back 1.0 with status "ok".
+MIN_SPREAD_CEILING = 1.0
+
+#: The largest error bound a projection may carry before it is refused: one cent, in every coordinate, from the true
+#: projection (the module docstring, Supported domain and certificate, has the bound and the measurements). Correct
+#: solves at the floor sat about 10x under it; the known wrong answers at 1e-4 sat 3x to 13x above.
+PROJECTION_BOUND_LIMIT = 1e-2
 
 #: The most an "optimal" projection may break a relation row by before it is refused: the solver's
 #: word is checked against the relations, never trusted. Equal to HiGHS' default primal
@@ -392,15 +425,17 @@ class BinaryCoherence(PyomoSolve):
     ``<fair_field>_status`` (one of :data:`STATUSES`); ``arbitrage``, ``{"feasible",
     "violation", "legs", "relations", "credit_per_unit", "executable_units"}`` (``violation``
     is the riskless profit per unit, ``credit_per_unit`` the net premium taken at the quotes);
-    and ``summary``, with the relations skipped (and why), counts and the LP's solve record.
+    and ``summary``, with the relations skipped (and why), counts, the projection's error bound
+    (``projection_bound``: a float, ``0.0`` when the mids were exactly coherent and nothing was solved, ``None``
+    when nothing was projected) and the LP's solve record.
 
     Parameters
     ----------
     params : dict
         REQUIRED: ``id_field``, ``bid_field``, ``ask_field`` (column names), ``fair_field``
-        (output column), ``min_spread`` (a number >= :data:`MIN_SPREAD_FLOOR`: the spread floor in
-        the projection weights) and ``solver`` (a pyomo solver that takes a quadratic objective,
-        e.g. ``"highs"``).
+        (output column), ``min_spread`` (a number from :data:`MIN_SPREAD_FLOOR` to
+        :data:`MIN_SPREAD_CEILING`: the spread floor in the projection weights) and ``solver`` (a pyomo
+        solver that takes a quadratic objective, e.g. ``"highs"``).
         At least one of ``partitions``, ``chains`` and ``differences``: each a list of id
         lists (:data:`RELATIONS`). OPTIONAL: ``bid_size_field`` and ``ask_size_field`` (both
         or neither), ``tolerance`` (>= 0, default :data:`DEFAULT_TOLERANCE`; it gates only the
@@ -456,10 +491,15 @@ class BinaryCoherence(PyomoSolve):
             problems.append("bid_size_field and ask_size_field are declared together: name both sizes or neither")
         spread = params.get("min_spread")
         if not (number_ok(spread) and spread > 0):
-            problems.append(f"min_spread is required: a positive number, got {spread!r}")
+            problems.append(f"min_spread is required: a number from {MIN_SPREAD_FLOOR:g} to {MIN_SPREAD_CEILING:g}, "
+                            f"got {spread!r}")
         elif spread < MIN_SPREAD_FLOOR:
             problems.append(f"min_spread {spread!r} is below MIN_SPREAD_FLOOR {MIN_SPREAD_FLOOR:g}: under it HiGHS' "
                             "QP solver returns suboptimal points as optimal")
+        elif spread > MIN_SPREAD_CEILING:
+            problems.append(f"min_spread {spread!r} is above MIN_SPREAD_CEILING {MIN_SPREAD_CEILING:g}: every spread "
+                            "is below one, so a floor that high only weighs all contracts equally and shrinks the "
+                            "objective under the solver's tolerance")
         tolerance = params.get("tolerance", DEFAULT_TOLERANCE)
         if not (number_ok(tolerance) and tolerance >= 0):
             problems.append(f"tolerance must be a number >= 0, got {tolerance!r}")
@@ -695,26 +735,34 @@ class BinaryCoherence(PyomoSolve):
     # -- the QP: the coherent projection ------------------------------------------------------------------
 
     def _project(self, prepared):
-        """Return ``{id: coherent probability}`` for every linked two-sided contract (module docstring, question 2).
+        """Return ``({id: coherent probability}, bound)`` for every linked two-sided contract (module docstring, Q2).
+
+        Returns
+        -------
+        tuple
+            The projected values, and their error bound: ``0.0`` for the exact-identity shortcut, ``None`` when no
+            projection ran (nothing two-sided to project), else the float :meth:`_certify` accepted.
 
         Raises
         ------
         RuntimeError
-            The projection did not finish optimal, the solver raised, or its "optimal" breaks a relation.
+            The projection did not finish optimal, the solver raised, its "optimal" breaks a relation, or its error
+            bound is above :data:`PROJECTION_BOUND_LIMIT`.
         """
         from pyomo.environ import value
 
         priced = prepared["priced"]
         mids = {cid: (priced[cid][0] + priced[cid][1]) / 2.0 for cid in prepared["linked"] if cid in priced}
         if not mids:
-            return {}
+            return {}, None
         if len(mids) == len(prepared["linked"]) and self._holds_exactly(prepared["active"], mids):
-            return mids
+            return mids, 0.0
         model = self._projection_model(prepared, mids)
         results = self._solve(self._resolve_solver(), model)
         _require_optimal(results, _QP)
         self._require_relations_hold(model, prepared["active"])
-        return {cid: min(1.0, max(0.0, float(value(model._probability[cid])))) for cid in mids}
+        bound = self._certify(model, prepared["active"])
+        return {cid: min(1.0, max(0.0, float(value(model._probability[cid])))) for cid in mids}, bound
 
     @staticmethod
     def _holds_exactly(active, mids):
@@ -724,13 +772,14 @@ class BinaryCoherence(PyomoSolve):
 
     def _projection_model(self, prepared, mids):
         """Return the whitened projection QP: ``p = s u`` per two-sided contract, minimise ``sum((u - mid / s)^2)``."""
-        from pyomo.environ import ConcreteModel, Objective, Var
+        from pyomo.environ import ConcreteModel, Objective, Suffix, Var
 
         floor, priced = float(self.params["min_spread"]), prepared["priced"]
         steps = {cid: max(priced[cid][1] - priced[cid][0], floor) for cid in mids}
         floating = [cid for cid in prepared["linked"] if cid not in mids]
         model = ConcreteModel(name="binary-coherence-projection")
         model._program = _QP
+        model.dual = Suffix(direction=Suffix.IMPORT)    # the certificate reads the relation rows' multipliers
         centres = {cid: mids[cid] / steps[cid] for cid in mids}
         model.units = Var(list(mids), initialize=lambda m, cid: centres[cid],
                           bounds=lambda m, cid: (0.0, 1.0 / steps[cid]))
@@ -741,7 +790,7 @@ class BinaryCoherence(PyomoSolve):
         # (u - centre)^2 without its constant centre^2, which grows like 1 / s^2 and only costs the solver precision
         model.distance = Objective(
             expr=sum(model.units[cid] ** 2 - 2.0 * centres[cid] * model.units[cid] for cid in mids))
-        model._probability = p
+        model._probability, model._steps, model._centres = p, steps, centres
         return model
 
     def _require_relations_hold(self, model, active):
@@ -753,6 +802,103 @@ class BinaryCoherence(PyomoSolve):
                     raise RuntimeError(f"{self.key}: {_QP} finished optimal but breaks "
                                        f"{relation.kind}[{relation.index}] row {k} by {broken:.3g} "
                                        f"(more than {PROJECTION_TOLERANCE:g}): refused")
+
+    def _certify(self, model, active):
+        """Return the solved projection's error bound, refusing one above :data:`PROJECTION_BOUND_LIMIT`.
+
+        Parameters
+        ----------
+        model : pyomo.environ.ConcreteModel
+            The solved projection QP, with its imported ``dual`` suffix.
+        active : list
+            The :class:`Relation` objects whose rows the model holds.
+
+        Returns
+        -------
+        float
+            The bound of :meth:`_projection_bound`.
+
+        Raises
+        ------
+        RuntimeError
+            The bound exceeds :data:`PROJECTION_BOUND_LIMIT`: the solver's "optimal" is not certified.
+        """
+        bound = self._projection_bound(model, active)
+        if bound > PROJECTION_BOUND_LIMIT:
+            raise RuntimeError(f"{self.key}: {_QP} finished optimal but its error bound {bound:.3g} is above "
+                               f"PROJECTION_BOUND_LIMIT {PROJECTION_BOUND_LIMIT:g}: the point is not certified "
+                               "to be that close to the true projection, refused")
+        return bound
+
+    def _projection_bound(self, model, active):
+        """Return the duality-gap bound on how far the solved projection can be from the true one.
+
+        With ``f(u) = sum((u - centre)^2)`` over the two-sided units, sign-correct multipliers ``lam`` (see
+        :meth:`_relation_pull`) and the Lagrangian ``L(u) = f(u) + lb - g.u`` (``g`` the multipliers' pull on each
+        variable): ``D`` is the minimum of ``L`` over the box (weak duality: ``D <= f*``), ``Lx`` is ``L`` at the
+        solver's point ``x`` clipped to the box and ``P = f(x)``. ``L`` is 2-strongly convex in the two-sided units,
+        so ``|x - ubar|^2 <= Lx - D`` and ``|u* - ubar|^2 <= f* - D <= P - D`` (``x`` is feasible to the solver's
+        tolerance), and a probability is ``s u``: the bound is ``max(s) * (sqrt(Lx - D) + sqrt(P - D))``.
+
+        Returns
+        -------
+        float
+            The bound, in probability units; it is large when the multipliers do not certify the point.
+        """
+        from pyomo.environ import value
+
+        pull, offset = self._relation_pull(model, active)
+        dual_value = at_point = offset
+        distance = 0.0
+        for cid, step in model._steps.items():
+            var, centre, top = model.units[cid], model._centres[cid], 1.0 / step
+            g = pull.get(id(var), 0.0)
+            best, x = min(top, max(0.0, centre + g / 2.0)), min(top, max(0.0, value(var)))
+            dual_value += (best - centre) ** 2 - g * best
+            at_point += (x - centre) ** 2 - g * x
+            distance += (x - centre) ** 2
+        for var in model.floating.values():
+            g, x = pull.get(id(var), 0.0), min(1.0, max(0.0, value(var)))
+            dual_value -= g if g > 0 else 0.0
+            at_point -= g * x
+        return max(model._steps.values()) * (self._gap_root(at_point - dual_value)
+                                             + self._gap_root(distance - dual_value))
+
+    @staticmethod
+    def _gap_root(gap):
+        """Return the square root of a duality gap: a negative one is round-off (0), a NaN is no evidence (inf)."""
+        return math.inf if math.isnan(gap) else math.sqrt(max(0.0, gap))
+
+    def _relation_pull(self, model, active):
+        """Return ``({id(var): sum(lam * a)}, sum(lam * b))`` over the relation rows: ``a`` coefficients, ``b`` bounds.
+
+        A row holding only a lower bound keeps ``max(lam, 0)``, one holding only an upper bound ``min(lam, 0)``, an
+        equality its multiplier as given; the bound read is the side the multiplier presses on, less the row's
+        constant term. A multiplier the solver returns with the wrong sign (solver noise, or a lie) therefore counts
+        as zero, which can only loosen the bound, never tighten it.
+        """
+        from pyomo.repn import generate_standard_repn
+
+        pull, offset = {}, 0.0
+        for relation in active:
+            for row in _rows_of(model, relation):
+                lam = self._sign_correct(model.dual.get(row, 0.0), row.lb, row.ub)
+                if lam == 0.0:
+                    continue
+                repn = generate_standard_repn(row.body, compute_values=True)
+                offset += lam * ((row.lb if lam > 0 else row.ub) - repn.constant)
+                for var, coefficient in zip(repn.linear_vars, repn.linear_coefs):
+                    pull[id(var)] = pull.get(id(var), 0.0) + lam * coefficient
+        return pull, offset
+
+    @staticmethod
+    def _sign_correct(multiplier, lower, upper):
+        """Return the multiplier a weak-duality bound may use: a one-way row keeps only its own sign."""
+        if upper is None:
+            return max(multiplier, 0.0)
+        if lower is None:
+            return min(multiplier, 0.0)
+        return multiplier
 
     # -- the lifecycle -----------------------------------------------------------------------------------
 
@@ -774,17 +920,18 @@ class BinaryCoherence(PyomoSolve):
         prepared = self._prepare(inputs)
         if prepared["active"]:
             arbitrage = super().run(ctx, inputs)["arbitrage"]
-            projected = self._project(prepared)
+            projected, bound = self._project(prepared)
         else:
             self.solve_record = None
             arbitrage = {"feasible": True, "violation": 0.0, "legs": [], "relations": [],
                          "credit_per_unit": 0.0, "executable_units": None}
-            projected = {}
+            projected, bound = {}, None
         records = [self._annotated(dict(row), prepared, projected) for row in inputs["records"]]
         statuses = [row[self.params["fair_field"] + STATUS_SUFFIX] for row in records]
         summary = {"rows": len(records), "projected": statuses.count(STATUS_OK),
                    "by_status": {status: statuses.count(status) for status in STATUSES},
                    "relations": len(prepared["active"]), "skipped_relations": prepared["skipped"],
+                   "projection_bound": bound,
                    "solve": self.solve_record.to_obj() if self.solve_record is not None else None}
         self.log.info("coherence over %d relation(s): %s", summary["relations"],
                       "coherent" if arbitrage["feasible"] else f"riskless set worth {arbitrage['violation']:.6g}")

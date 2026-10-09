@@ -302,8 +302,10 @@ class QuoteState(ListPortsNode):
 
     Point in time. A bar's END is EXCLUSIVE: it covers ``[start, end)``, every quote in it precedes
     ``end``, so the bar is known at ``end``: a decision at ``end`` reads it, one at ``end - 1`` ms
-    does not. A source whose end stamp is inclusive must be mapped by the child to end + 1 unit
-    (or its last-covered instant + 1), or its bar is read one interval early.
+    does not. A source whose end stamp is INCLUSIVE (the last instant it covers) is read up to one stamp
+    unit late-in-content: a decision at ``end`` sees a bar whose content runs to ``end`` itself, a look-ahead
+    of at most one stamp unit (crypto_trading's interim class does the same). No offset knob exists to shift
+    such a stamp; that is a recorded limit.
 
     Parameters
     ----------

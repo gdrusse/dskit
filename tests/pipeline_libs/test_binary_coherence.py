@@ -8,6 +8,7 @@ import itertools
 import json
 import math
 import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,10 +20,13 @@ pytest.importorskip("pyomo")
 pytest.importorskip("highspy")
 
 from dskit.pipeline import binary_curve
+from dskit.pipeline.base import ConfigError
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
+from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.libs import binary_coherence
 from dskit.pipeline.libs.binary_coherence import RELATION_KINDS, RELATIONS, STATUS_OK, BinaryCoherence, Relation
 from dskit.pipeline.libs.pyomo import PyomoSolve
+from dskit.pipeline.planner import plan
 from tests.pipeline.test_binary_curve import ABSENT, SPEC, SPEC_IDS, spec_cell, Three
 
 BASE = {"id_field": "id", "bid_field": "bid", "ask_field": "ask", "fair_field": "coherent",
@@ -168,14 +172,15 @@ def test_leg_dust_is_one_named_constant_relative_to_the_largest_dual():
 
 def test_leg_dust_scales_with_the_largest_dual_never_an_absolute_floor(monkeypatch):
     # an LP whose duals all come back scaled by 1e-12 (a solver that scales its objective) still
-    # names the same legs: dust is relative to the largest |dual|, never a fixed absolute number
+    # names the same legs: dust is relative to the largest |dual|, never a fixed absolute number. Only the LP's duals
+    # are scaled: the projection QP's multipliers are the certificate's evidence, and scaled ones are refused.
     from pyomo.environ import Suffix
 
     real_solve = BinaryCoherence._solve
 
     def scaled(self, solver, model):
         results = real_solve(self, solver, model)
-        if isinstance(getattr(model, "dual", None), Suffix):
+        if "projection" not in model.name and isinstance(getattr(model, "dual", None), Suffix):
             for row in list(model.dual):
                 model.dual[row] *= 1e-12
         return results
@@ -311,7 +316,7 @@ def test_a_quote_no_binary_can_honour_crossed_or_not_a_number_is_refused(bid, as
 REPO = Path(__file__).resolve().parents[2]
 GRID = (0.0, 0.25, 0.5, 0.75, 1.0)
 EXTREMES = (0.0, 1e-9, 1e-6, 1e-3, 0.999, 0.999999, 1.0)
-MIN_SPREADS = (0.01, 0.001, 1e-4)
+MIN_SPREADS = (0.01, 0.1, 1.0)   # the floor, an interior point, the ceiling of the supported domain
 
 
 def two_sided(bid, ask):
@@ -403,18 +408,19 @@ print(json.dumps({r["id"]: r["f"] for r in out["records"]}))
 """
 
 # kind, quotes by id, min_spread. HiGHS' QP solver hung on each of these (exact-zero quotes) and on the
-# strictly-positive twins below, which are TWO-SIDED under the side rule, so they still reach the QP.
+# strictly-positive twins below, which are TWO-SIDED under the side rule, so they still reach the QP. They hung at
+# min_spread 1e-4 / 1e-3, now outside the supported domain; the quotes are kept and run at the floor.
 VERBATIM_HANGS = {
     "coherent chain": ("chains", {"a": [0.0, 1.0], "b": [0.0, 0.0]}, 0.01),
-    "partition of three": ("partitions", {"a": [0.5, 0.53], "b": [0.0, 0.0], "c": [0.0, 0.5]}, 1e-4),
-    "partition of four": ("partitions", {"a": [0.0, 0.5], "b": [0.0, 0.0], "c": [0.0, 0.3], "d": [0.0, 0.5]}, 1e-3),
+    "partition of three": ("partitions", {"a": [0.5, 0.53], "b": [0.0, 0.0], "c": [0.0, 0.5]}, 0.01),
+    "partition of four": ("partitions", {"a": [0.0, 0.5], "b": [0.0, 0.0], "c": [0.0, 0.3], "d": [0.0, 0.5]}, 0.01),
 }
 TWO_SIDED_HANGS = {
     "coherent chain": ("chains", {"a": [1e-9, 0.999999], "b": [1e-9, 1e-9]}, 0.01),
-    "partition of three": ("partitions", {"a": [0.5, 0.53], "b": [1e-9, 1e-9], "c": [1e-9, 0.5]}, 1e-4),
+    "partition of three": ("partitions", {"a": [0.5, 0.53], "b": [1e-9, 1e-9], "c": [1e-9, 0.5]}, 0.01),
     "partition of four": ("partitions",
-                          {"a": [1e-9, 0.5], "b": [1e-9, 1e-9], "c": [1e-9, 0.3], "d": [1e-9, 0.5]}, 1e-3),
-    "wide first bucket": ("partitions", {"a": [0.001, 0.99], "b": [0.3, 0.99], "c": [1e-9, 1e-6]}, 1e-3),
+                          {"a": [1e-9, 0.5], "b": [1e-9, 1e-9], "c": [1e-9, 0.3], "d": [1e-9, 0.5]}, 0.01),
+    "wide first bucket": ("partitions", {"a": [0.001, 0.99], "b": [0.3, 0.99], "c": [1e-9, 1e-6]}, 0.01),
 }
 
 
@@ -457,16 +463,17 @@ def test_an_already_coherent_set_that_hung_the_solver_returns_exactly_its_mids()
 
 
 def test_the_projection_is_the_true_weighted_least_squares_point_not_a_scaled_approximation():
-    # a is pinned near 0 with a weight 1e8 times the floor's neighbours'; scaling the objective by that largest
-    # weight made HiGHS return "optimal" b = 0.5501, c = 0.2673, d = 0.1826. Water-filling by hand
-    # (p_i = clip(mid_i + lam / w_i), sum p = 1, w_i = 1 / spread_i^2) gives b 0.61257, c 0.25704, d 0.13040.
+    # a is pinned near 0 with the largest weight (spread floored to 0.01: w = 1e4, against b's 6.25); scaling the
+    # objective by that largest weight made HiGHS return "optimal" wrong points at the retired floor 1e-4, where a's
+    # weight was 1e8 (b = 0.5501, c = 0.2673, d = 0.1826). Water-filling by hand (p_i = mid_i + lam / w_i,
+    # sum p = 1, w_i = 1 / spread_i^2, nothing clipped) gives lam = 0.70320 and b 0.61251, c 0.25703, d 0.13039.
     quotes = [(1e-9, 1e-9), (0.3, 0.7), (0.2, 0.3), (0.01, 0.2)]
     rows = [contract(cid, bid, ask) for cid, (bid, ask) in zip("abcd", quotes)]
-    fair = fair_of(run(rows, partitions=[list("abcd")], min_spread=1e-4))
-    assert fair["b"] == pytest.approx(0.61257, abs=2e-5)
-    assert fair["c"] == pytest.approx(0.25704, abs=2e-5)
-    assert fair["d"] == pytest.approx(0.13040, abs=2e-5)
-    want = expected_fair("partitions", quotes, 1e-4)
+    fair = fair_of(run(rows, partitions=[list("abcd")], min_spread=0.01))
+    assert fair["b"] == pytest.approx(0.61251, abs=2e-5)
+    assert fair["c"] == pytest.approx(0.25703, abs=2e-5)
+    assert fair["d"] == pytest.approx(0.13039, abs=2e-5)
+    want = expected_fair("partitions", quotes, 0.01)
     assert [fair[cid] for cid in "abcd"] == [pytest.approx(w, abs=1e-6) for w in want]
     assert sum(fair.values()) == pytest.approx(1.0, abs=1e-7)
 
@@ -490,11 +497,11 @@ def test_the_projection_matches_an_independent_oracle_on_random_ladders(kind):
 # -- one exact oracle per structure, written here and never reading the node ---------------------------------
 #
 # The PAVA and water-filling oracles above cover one relation kind at a time. These cover the kinds COMBINED,
-# with one-sided contracts and weights spanning 1e8 (the supported domain, MIN_SPREAD_FLOOR). Where a contract
+# with one-sided contracts and weights spanning 8e3 (the supported domain, MIN_SPREAD_FLOOR). Where a contract
 # has no objective term (one-sided) the oracles give it weight ZERO, not a small one: a weight of 1e-6 moved the
 # two-sided values by up to 8e-7 over 400 strike worlds, most of the 1e-6 tolerance the tests assert.
 
-SPREAD_DRAWS = (0.0, 1e-6, 1e-4, 1e-2, 0.3, 0.9)   # at the floor 1e-4 the weights span (0.9 / 1e-4)^2 = 8e7
+SPREAD_DRAWS = (0.0, 1e-6, 1e-4, 1e-2, 0.3, 0.9)   # at the floor 0.01 the weights span (0.9 / 0.01)^2 = 8100
 
 
 def draw_two_sided(rng):
@@ -643,7 +650,7 @@ def mixed_system(rng):
             return ids, relations
 
 
-SPREAD_FLOORS = (FLOOR, 1e-3, 1e-2)
+SPREAD_FLOORS = (FLOOR, 0.1, 1.0)   # the floor, an interior point, the ceiling
 
 
 def assert_projected(out, quotes, want, linked, where):
@@ -809,7 +816,16 @@ def test_the_lp_position_cases_of_each_relation_kind_name_the_legs_the_violation
     assert [r["kind"] for r in arb["relations"]] == [kind], label
 
 
-# -- the supported domain: the floor on min_spread, and ladders of 30 at exactly the floor --------------------
+# -- the supported domain: min_spread in [floor, ceiling], and ladders of 30 at exactly the floor ------------------
+
+
+def test_the_supported_domain_and_the_certificate_limit_are_three_pinned_public_constants():
+    # restated here on purpose: a pin read from the module under test would assert nothing
+    assert binary_coherence.MIN_SPREAD_FLOOR == 0.01
+    assert binary_coherence.MIN_SPREAD_CEILING == 1.0
+    assert binary_coherence.PROJECTION_BOUND_LIMIT == 1e-2
+    for name in ("MIN_SPREAD_FLOOR", "MIN_SPREAD_CEILING", "PROJECTION_BOUND_LIMIT"):
+        assert name in binary_coherence.__all__
 
 
 def wide_ladder(rng, kind, count=30):
@@ -836,35 +852,147 @@ def test_thirty_contract_ladders_at_exactly_the_floor_match_pava_and_water_filli
     rng = random.Random(f"wide ladders {kind}")
     for case in range(25):
         quotes = wide_ladder(rng, kind)
-        assert weight_ratio(quotes, FLOOR) > 7e7, "the weights must span the full 1e8 the floor allows"
+        assert weight_ratio(quotes, FLOOR) >= 0.99 * (0.9 / FLOOR) ** 2, "the weights must span the full ratio"
         ids = [f"c{i}" for i in range(len(quotes))]
         out = run(rows_of(ids, quotes), min_spread=FLOOR, **{kind: [ids]})
         for row, want in zip(out["records"], expected_fair(kind, quotes, FLOOR)):
             assert row["coherent"] == pytest.approx(want, abs=1e-6), f"{kind} ladder {case}: {row['id']}"
 
 
-def test_min_spread_is_accepted_at_exactly_the_floor_and_the_floor_is_the_measured_one():
-    assert FLOOR == 1e-4 and "MIN_SPREAD_FLOOR" in binary_coherence.__all__
-    assert BinaryCoherence.validate_params({**BASE, "min_spread": FLOOR, "chains": [["a", "b"]]}) == []
-    BinaryCoherence("coh", {**BASE, "min_spread": FLOOR, "chains": [["a", "b"]]})
+@pytest.mark.parametrize("edge", [0.01, 1.0])
+def test_min_spread_is_accepted_at_exactly_each_edge_of_the_supported_domain(edge):
+    params = {**BASE, "min_spread": edge, "chains": [["a", "b"]]}
+    assert BinaryCoherence.validate_params(params) == []
+    BinaryCoherence("coh", params)
 
 
-def test_min_spread_just_below_the_floor_is_refused_naming_the_floor_and_why():
-    below = math.nextafter(FLOOR, 0)
-    assert below < FLOOR
-    problems = BinaryCoherence.validate_params({**BASE, "min_spread": below, "chains": [["a", "b"]]})
-    assert len(problems) == 1 and "min_spread" in problems[0]
-    assert "MIN_SPREAD_FLOOR" in problems[0] and f"{FLOOR:g}" in problems[0] and "suboptimal" in problems[0]
-    with pytest.raises(Exception, match="MIN_SPREAD_FLOOR"):
-        BinaryCoherence("coh", {**BASE, "min_spread": below, "chains": [["a", "b"]]})
+# (min_spread, the constant it broke, that constant as the message prints it, why the message gives)
+OUTSIDE_THE_DOMAIN = [
+    pytest.param(math.nextafter(0.01, 0), "MIN_SPREAD_FLOOR", "0.01", "suboptimal", id="just below the floor"),
+    pytest.param(1e-4, "MIN_SPREAD_FLOOR", "0.01", "suboptimal", id="the retired floor 1e-4"),
+    pytest.param(1e-9, "MIN_SPREAD_FLOOR", "0.01", "suboptimal", id="1e-9"),
+    pytest.param(math.nextafter(1.0, 2), "MIN_SPREAD_CEILING", "1", "equally", id="just above the ceiling"),
+    pytest.param(1.5, "MIN_SPREAD_CEILING", "1", "equally", id="1.5"),
+    pytest.param(1e4, "MIN_SPREAD_CEILING", "1", "equally", id="1e4"),
+]
 
 
-@pytest.mark.parametrize("spread", [5e-5, 1e-5, 1e-6, 1e-7, 1e-9, 1e-12])
+@pytest.mark.parametrize("spread, name, shown, why", OUTSIDE_THE_DOMAIN)
+def test_min_spread_outside_the_supported_domain_is_refused_naming_the_edge_it_broke_and_why(spread, name, shown, why):
+    params = {**BASE, "min_spread": spread, "chains": [["a", "b"]]}
+    problems = BinaryCoherence.validate_params(params)
+    assert len(problems) == 1 and "min_spread" in problems[0] and repr(spread) in problems[0]
+    assert f"{name} {shown}:" in problems[0] and why in problems[0]
+    with pytest.raises(Exception, match=name):
+        BinaryCoherence("coh", params)
+
+
+@pytest.mark.parametrize("spread", [5e-3, 1e-3, 1e-4, 5e-5, 1e-5, 1e-6, 1e-7, 1e-9, 1e-12])
 def test_the_min_spreads_that_measured_silent_wrong_answers_are_refused(spread):
-    # HiGHS returned suboptimal points as optimal: 1 in 12,000 draws at 1e-5, 64 at 1e-6, 411 at 1e-7
+    # HiGHS returned suboptimal points as optimal: 1 in 12,000 draws at 1e-5, 64 at 1e-6, 411 at 1e-7, and (the
+    # candidate-9 lens) error up to 0.033 on a 173-contract chain at 1e-4
     problems = BinaryCoherence.validate_params({**BASE, "min_spread": spread, "chains": [["a", "b"]]})
     assert any("min_spread" in p and "MIN_SPREAD_FLOOR" in p for p in problems)
 
+
+def plan_with_min_spread(spread):
+    """Plan a bar reader feeding the node, as a document wires it; ``ConfigError`` lists the node's params problems."""
+    reader = {"root": "./store", "source": "venue", "stream": "bars", "ticker_field": "id", "end_field": "end_s",
+              "bid_field": "bid", "ask_field": "ask", "price_field": "last", "volume_field": "qty",
+              "open_interest_field": "oi"}
+    node = {**BASE, "min_spread": spread, "chains": [["a", "b"]]}
+    return plan(PipelineDocument.from_obj({"name": "coherence-plan", "pipeline": {
+        "bars": {"uses": "dskit.pipeline.libs.binary_market_rows:QuoteBarRows", "params": reader},
+        "rows": {"uses": f"{binary_coherence.__name__}:BinaryCoherence", "inputs": {"records": "$bars.records"},
+                 "params": node}}}))
+
+
+@pytest.mark.parametrize("spread, name", [(1e-4, "MIN_SPREAD_FLOOR"), (1e4, "MIN_SPREAD_CEILING")])
+def test_the_candidate_9_lens_repros_are_refused_when_the_document_is_planned(spread, name):
+    # the lens ran a 173-contract chain at min_spread 1e-4 (HiGHS: status ok, error up to 0.033) and min_spread 1e4
+    # (every contract 1.0, status ok): neither document may reach a run
+    with pytest.raises(ConfigError, match=rf"pipeline\.rows: min_spread {spread!r} is .*{name}"):
+        plan_with_min_spread(spread)
+    for edge in (0.01, 1.0):
+        assert plan_with_min_spread(edge) is not None
+
+
+# -- the certificate's soundness: the reported bound covers the error against an independent exact oracle ----------
+
+BOUND_SLACK = 1e-7   # HiGHS' feasibility tolerance: the bound certifies a point that is feasible only up to it
+
+
+def assert_certified(out, want, where):
+    """The run was not refused, its bound is a float inside the limit, and every oracle value lies within the bound."""
+    bound = out["summary"]["projection_bound"]
+    assert isinstance(bound, float) and 0.0 <= bound <= binary_coherence.PROJECTION_BOUND_LIMIT, f"{where}: {bound}"
+    for row in out["records"]:
+        if row["id"] in want:
+            gap = abs(row["coherent"] - want[row["id"]])
+            assert gap <= bound + BOUND_SLACK, f"{where}: {row['id']} is {gap:.3g} off, the bound is {bound:.3g}"
+    return bound
+
+
+@pytest.mark.parametrize("min_spread", SPREAD_FLOORS)
+def test_the_bound_covers_the_error_and_stays_inside_the_limit_on_strike_worlds(min_spread):
+    rng = random.Random(f"certified strike worlds {min_spread}")
+    for case in range(60):
+        payout, chain, differences, partition = strike_world(rng.randint(2, 7))
+        quotes = {cid: draw_world_quote(rng) for cid in payout}
+        out = run([contract(cid, *q) for cid, q in quotes.items()], chains=[chain], differences=differences,
+                  partitions=[partition], min_spread=min_spread)
+        want = payout_simplex_optimum(payout, quotes, min_spread)
+        assert_certified(out, want, f"strike world {case}: {quotes}")
+
+
+def big_ladder(rng, kind):
+    """50-120 two-sided quotes: 30% zero-spread, the rest with the spread of a ``draw_two_sided`` draw."""
+    count = rng.randint(50, 120)
+    spreads = [0.0 if rng.random() < 0.3 else ask - bid for bid, ask in (draw_two_sided(rng) for _ in range(count))]
+    if kind == "chains":
+        mids = sorted((rng.uniform(0.03, 0.97) for _ in range(count)), reverse=True)
+        mids = [min(0.97, max(0.03, m + rng.uniform(-0.06, 0.06))) for m in mids]    # noise breaks the order
+    else:
+        raw = [rng.random() ** 3 + 0.002 for _ in range(count)]                       # a few heavy buckets
+        total = rng.uniform(0.8, 1.2)
+        mids = [r / sum(raw) * total for r in raw]
+    fitted = [min(spread, 1.96 * min(mid, 1 - mid)) for mid, spread in zip(mids, spreads)]
+    return [(mid - spread / 2, mid + spread / 2) for mid, spread in zip(mids, fitted)]
+
+
+@pytest.mark.parametrize("kind", ["chains", "partitions"])
+@pytest.mark.parametrize("min_spread", SPREAD_FLOORS)
+def test_the_bound_covers_the_error_and_stays_inside_the_limit_on_ladders_of_50_to_120(kind, min_spread):
+    rng = random.Random(f"certified {kind} {min_spread}")
+    for case in range(10):
+        quotes = big_ladder(rng, kind)
+        ids = [f"c{i}" for i in range(len(quotes))]
+        out = run(rows_of(ids, quotes), min_spread=min_spread, **{kind: [ids]})
+        want = dict(zip(ids, expected_fair(kind, quotes, min_spread)))
+        assert_certified(out, want, f"{kind} ladder {case} of {len(quotes)} contracts")
+
+
+def lens_chain(rng, count=173, tight=46):
+    """The candidate-9 lens shape: ``count`` chain members, ``tight`` zero-spread, the rest spread 0.9, mids near .5."""
+    zero = set(rng.sample(range(count), tight))
+    mids = [rng.uniform(0.46, 0.54) for _ in range(count)]
+    return [(mid - spread / 2, mid + spread / 2)
+            for mid, spread in ((m, 0.0 if i in zero else 0.9) for i, m in enumerate(mids))]
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_a_173_contract_chain_shaped_like_the_lens_repro_equals_pava_within_its_bound(seed):
+    # at min_spread 1e-4 HiGHS returned "optimal" points up to 0.033 off on a chain like this; at the floor it must
+    # agree with PAVA to 1e-6, and the bound must cover the (far smaller) error it actually has
+    quotes = lens_chain(random.Random(f"lens {seed}"))
+    ids = [f"c{i}" for i in range(len(quotes))]
+    assert (len(quotes), sum(ask - bid == 0 for bid, ask in quotes)) == (173, 46)
+    assert weight_ratio(quotes, FLOOR) == pytest.approx((0.9 / FLOOR) ** 2)
+    out = run(rows_of(ids, quotes), min_spread=FLOOR, chains=[ids])
+    want = expected_fair("chains", quotes, FLOOR)
+    assert_certified(out, dict(zip(ids, want)), f"lens chain {seed}")
+    for row, expected in zip(out["records"], want):
+        assert row["coherent"] == pytest.approx(expected, abs=1e-6), row["id"]
 
 
 # -- an exactly coherent set is returned untouched, without a solve ----------------------------------------
@@ -1044,14 +1172,210 @@ def test_the_relation_guard_fires_on_a_later_relation_and_a_later_row(monkeypatc
         run(rows_of(ids, GUARD_QUOTES), chains=GUARD_CHAINS)
 
 
-def test_a_solved_value_a_hair_outside_the_unit_interval_is_clipped_into_it(monkeypatch):
-    def nudge_outside(model):
-        model.units["hi"].set_value((1 + 1e-9) / 0.02)
-        model.units["lo"].set_value(-1e-9 / 0.02)
+# (quotes of A, B, X with X = A - B, the contract whose optimum sits ON a bound, its quoted spread, the bound):
+# the optimum is the bound itself, so a value a hair beyond it is within the certificate's tolerance
+ON_A_BOUND = [
+    pytest.param(((0.985, 0.995), (0.29, 0.31), (0.985, 0.995)), "A", 0.01, 1.0, id="A is 1 (the unit bound active)"),
+    pytest.param(((0.01, 0.03), (0.97, 0.99), (0.20, 0.80)), "X", 0.6, 0.0, id="X is 0"),
+]
 
+
+@pytest.mark.parametrize("quotes, name, spread, bound", ON_A_BOUND)
+def test_a_solved_value_a_hair_outside_the_unit_interval_is_clipped_into_it(monkeypatch, quotes, name, spread, bound):
+    def nudge_outside(model):
+        model.units[name].set_value((bound + (1e-9 if bound else -1e-9)) / spread)
+
+    rows = [contract(cid, *q) for cid, q in zip("ABX", quotes)]
+    assert fair_of(run(rows, differences=[["X", "A", "B"]]))[name] == pytest.approx(bound, abs=1e-6)
     tamper_projection(monkeypatch, nudge_outside)
-    out = run([contract("hi", 0.49, 0.51), contract("lo", 0.59, 0.61)], chains=[["hi", "lo"]])   # inverted: QP runs
-    assert fair_of(out) == {"hi": 1.0, "lo": 0.0}, "the chain still holds, so only the clip can bring them back"
+    assert fair_of(run(rows, differences=[["X", "A", "B"]]))[name] == bound, "only the clip can bring it back"
+
+
+# -- the certificate: a projection is accepted on its duality-gap bound, never on the solver's word -----------------
+
+# Four wide buckets quoted 0.10 / 0.50 (spread 0.4, so s = 0.4 and weight 6.25). The mids sum to 1.2; the projection
+# takes 0.05 off each, p = 0.25. In whitened units that is u = 0.625 against a centre of 0.75: P = 4 * 0.125^2 = 0.0625.
+WIDE_BUCKETS = ["w0", "w1", "w2", "w3"]
+WIDE_ROWS = [contract(cid, 0.10, 0.50) for cid in WIDE_BUCKETS]
+WIDE_SPREAD = 0.4
+
+
+def refused_bound(message):
+    """The error bound a refusal message names."""
+    return float(re.search(r"error bound ([0-9.e+-]+)", message).group(1))
+
+
+def move_feasibly(model):
+    """Move 0.03 of probability from w1 to w0: the sum, the bounds and the relation row still hold."""
+    model.units["w0"].set_value(model.units["w0"].value + 0.03 / WIDE_SPREAD)
+    model.units["w1"].set_value(model.units["w1"].value - 0.03 / WIDE_SPREAD)
+
+
+def zero_duals(model):
+    """A correct point with useless multipliers."""
+    for row in list(model.dual):
+        model.dual[row] = 0.0
+
+
+def flip_duals(model):
+    """The right magnitudes with the wrong signs."""
+    for row in list(model.dual):
+        model.dual[row] = -model.dual[row]
+
+
+def test_a_point_that_is_the_optimum_carries_a_bound_far_inside_the_limit():
+    bound = run(WIDE_ROWS, partitions=[WIDE_BUCKETS])["summary"]["projection_bound"]
+    assert 0.0 <= bound < 1e-5, "the solver's own gap is ~1e-12, so the bound is its square root times s"
+
+
+def test_a_point_moved_feasibly_off_the_optimum_is_refused_naming_the_node_the_projection_the_bound_and_the_limit(
+        monkeypatch):
+    tamper_projection(monkeypatch, move_feasibly)
+    with pytest.raises(RuntimeError) as caught:
+        run(WIDE_ROWS, partitions=[WIDE_BUCKETS])
+    message = str(caught.value)
+    assert message.startswith("coh: the projection QP") and "PROJECTION_BOUND_LIMIT 0.01" in message
+    assert refused_bound(message) >= 0.03, "the bound must cover the 0.03 the point was moved by"
+
+
+def test_the_bound_of_a_moved_point_covers_the_distance_it_was_moved(monkeypatch):
+    # lift the limit so the run reports instead of refusing: the bound is the certificate, the limit only the verdict
+    monkeypatch.setattr(binary_coherence, "PROJECTION_BOUND_LIMIT", 10.0)
+    tamper_projection(monkeypatch, move_feasibly)
+    out = run(WIDE_ROWS, partitions=[WIDE_BUCKETS])
+    fair = fair_of(out)
+    assert [abs(fair[cid] - 0.25) for cid in ("w0", "w1")] == [pytest.approx(0.03, abs=1e-6)] * 2
+    assert out["summary"]["projection_bound"] >= 0.03
+
+
+def test_a_correct_point_with_zeroed_multipliers_is_refused_and_its_bound_is_the_closed_form(monkeypatch):
+    # lambda = 0: the dual value is 0 and the Lagrangian at x is P, so the bound is s * (sqrt(P) + sqrt(P)) with
+    # P = 4 * (0.125)^2: 0.4 * 2 * 0.25 = 0.2
+    tamper_projection(monkeypatch, zero_duals)
+    with pytest.raises(RuntimeError, match="coh: the projection QP.*error bound 0.2 .*PROJECTION_BOUND_LIMIT 0.01"):
+        run(WIDE_ROWS, partitions=[WIDE_BUCKETS])
+    monkeypatch.setattr(binary_coherence, "PROJECTION_BOUND_LIMIT", 10.0)
+    assert run(WIDE_ROWS, partitions=[WIDE_BUCKETS])["summary"]["projection_bound"] == pytest.approx(0.2, rel=1e-6)
+
+
+def test_a_floating_contract_takes_the_end_of_its_box_the_multipliers_favour(monkeypatch):
+    # f quotes a bid only, so it floats in [0, 1]; the partition forces f = 0.4 and the buckets stay at their mids.
+    # With a multiplier of 2 injected on the row the Lagrangian pulls g = 0.8 on each bucket's unit (centre 0.75,
+    # ubar 1.15) and 2 on f, which sits at 1: D = 2 + 2 * (0.16 - 0.92) - 2 = -1.52. At the solver's point
+    # Lx = 2 + 2 * (0 - 0.6) - 0.8 = 0 and P = 0, so the bound is 0.4 * 2 * sqrt(1.52).
+    def inject(model):
+        for row in list(model.dual):
+            model.dual[row] = 2.0
+
+    monkeypatch.setattr(binary_coherence, "PROJECTION_BOUND_LIMIT", 10.0)
+    tamper_projection(monkeypatch, inject)
+    rows = [contract("w0", 0.10, 0.50), contract("w1", 0.10, 0.50), contract("f", 0.5, 1.0)]
+    bound = run(rows, partitions=[["w0", "w1", "f"]])["summary"]["projection_bound"]
+    assert bound == pytest.approx(0.4 * 2 * math.sqrt(1.52), rel=1e-6)
+
+
+def test_a_floating_contracts_raw_value_outside_its_box_is_read_clipped(monkeypatch):
+    # a + f = 1 with f floating; the point is moved to a = -0.2, f = 1.2 (the row still holds) and a multiplier of 2
+    # is injected. Clipped into the box that is a = 0, f = 1: D = 2 + (0.16 - 0.92) - 2 = -0.76, Lx = 2 + 0.5625 - 2
+    # and P = 0.5625, so the bound is 0.4 * 2 * sqrt(1.3225) = 0.92 (the raw f would give 0.844).
+    def leave_the_box(model):
+        model.units["a"].set_value(-0.2 / 0.4)
+        model.floating["f"].set_value(1.2)
+        for row in list(model.dual):
+            model.dual[row] = 2.0
+
+    monkeypatch.setattr(binary_coherence, "PROJECTION_BOUND_LIMIT", 10.0)
+    tamper_projection(monkeypatch, leave_the_box)
+    bound = run([contract("a", 0.10, 0.50), contract("f", 0.5, 1.0)], partitions=[["a", "f"]])[
+        "summary"]["projection_bound"]
+    assert bound == pytest.approx(0.92, rel=1e-6)
+
+
+def test_the_bound_is_taken_at_the_clipped_point_that_is_returned_not_at_the_raw_one(monkeypatch):
+    # mids 0.50 and 0.54 (s = 0.4) sum to 1.04; the point is moved to p = (1.05, -0.05), which still sums to 1 and
+    # keeps the row, but is outside [0, 1]. It is RETURNED as (1, 0), so the zeroed-multiplier bound is read there:
+    # P = ((1 - 0.5) / 0.4)^2 + ((0 - 0.54) / 0.4)^2 = 3.385 and the bound is 0.4 * 2 * sqrt(3.385) = 1.472
+    # (the raw point would give 1.613).
+    def leave_the_box(model):
+        model.units["a"].set_value(1.05 / 0.4)
+        model.units["b"].set_value(-0.05 / 0.4)
+        zero_duals(model)
+
+    monkeypatch.setattr(binary_coherence, "PROJECTION_BOUND_LIMIT", 10.0)
+    tamper_projection(monkeypatch, leave_the_box)
+    out = run([contract("a", 0.30, 0.70), contract("b", 0.34, 0.74)], partitions=[["a", "b"]])
+    assert fair_of(out) == {"a": 1.0, "b": 0.0}
+    assert out["summary"]["projection_bound"] == pytest.approx(0.4 * 2 * math.sqrt(1.5625 + 1.8225), rel=1e-6)
+
+
+def test_a_nan_multiplier_is_no_evidence_and_the_projection_is_refused(monkeypatch):
+    def poison(model):
+        for row in list(model.dual):
+            model.dual[row] = math.nan
+
+    tamper_projection(monkeypatch, poison)
+    with pytest.raises(RuntimeError, match="coh: the projection QP.*error bound inf .*PROJECTION_BOUND_LIMIT 0.01"):
+        run(WIDE_ROWS, partitions=[WIDE_BUCKETS])
+
+
+def test_a_multiplier_of_the_wrong_sign_on_an_inequality_row_counts_as_zero(monkeypatch):
+    # a one-way row (a chain) only accepts a multiplier of its own sign: a flipped one is clamped to 0, so flipping
+    # every dual of a chain-only system gives the zeroed bound. k1 0.40 +/- 0.01 under k2 0.50 +/- 0.02 pool to 0.42
+    # each: u = (21, 10.5) against centres (20, 12.5), P = 1 + 4 = 5 and the bound is 0.04 * 2 * sqrt(5)
+    rows, chains = [contract("k1", 0.39, 0.41), contract("k2", 0.48, 0.52)], [["k1", "k2"]]
+    monkeypatch.setattr(binary_coherence, "PROJECTION_BOUND_LIMIT", 10.0)
+    bounds = {}
+    for label, edit in (("zeroed", zero_duals), ("flipped", flip_duals)):
+        with monkeypatch.context() as patch:
+            tamper_projection(patch, edit)
+            bounds[label] = run(rows, chains=chains)["summary"]["projection_bound"]
+    assert bounds["zeroed"] == pytest.approx(0.04 * 2 * math.sqrt(5), rel=1e-6)
+    assert bounds["flipped"] == pytest.approx(bounds["zeroed"], rel=1e-9)
+
+
+def test_a_rows_constant_term_moves_to_the_bound_of_the_lagrangian():
+    # the Lagrangian uses only variable terms: a multiplier of 2 on x + 0.25 >= 0.5 pulls 2 on x and has the bound
+    # 0.5 - 0.25 (no relation today carries a constant, so only this hand-built row exercises the subtraction)
+    import types
+
+    from pyomo.environ import Constraint, ConcreteModel, Suffix, Var
+
+    model = ConcreteModel()
+    model.dual = Suffix(direction=Suffix.IMPORT)
+    model.x = Var(bounds=(0.0, 1.0))
+    model.rows_0 = Constraint(expr=model.x + 0.25 >= 0.5)
+    model.dual[model.rows_0] = 2.0
+    node = BinaryCoherence("coh", {**BASE, "chains": [["a", "b"]]})
+    pull, offset = node._relation_pull(model, [types.SimpleNamespace(kind="rows", index=0)])
+    assert pull == {id(model.x): pytest.approx(2.0)} and offset == pytest.approx(0.5)
+
+
+# -- what projection_bound says: 0.0 without a solve, None without a projection, a float otherwise ---------------
+
+
+def test_the_projection_bound_is_zero_on_the_exact_shortcut_where_nothing_was_solved(monkeypatch):
+    seen = spy_on_solves(monkeypatch)
+    rows = [contract("a", 0.59, 0.61), contract("b", 0.39, 0.41), contract("c", 0.19, 0.21)]
+    bound = run(rows, chains=[["a", "b", "c"]])["summary"]["projection_bound"]
+    assert bound == 0.0 and isinstance(bound, float) and len(seen) == 1, "only the LP was solved"
+
+
+@pytest.mark.parametrize("rows, relations", [
+    pytest.param([contract("k1", 0.5, 0.52)], {"chains": [["k1", "ghost"]]}, id="no relation is active"),
+    pytest.param([contract("a", None, 0.5), contract("b", 0.6, None)], {"chains": [["a", "b"]]},
+                 id="nothing two-sided to project"),
+])
+def test_the_projection_bound_is_none_when_no_projection_ran(rows, relations):
+    assert run(rows, **relations)["summary"]["projection_bound"] is None
+
+
+def test_the_projection_bound_is_a_float_inside_the_limit_when_a_projection_was_solved(monkeypatch):
+    seen = spy_on_solves(monkeypatch)
+    bound = run([contract("k1", 0.39, 0.41), contract("k2", 0.48, 0.52)], chains=[["k1", "k2"]])[
+        "summary"]["projection_bound"]
+    assert len(seen) == 2 and isinstance(bound, float) and 0.0 <= bound <= binary_coherence.PROJECTION_BOUND_LIMIT
+    mixed = run([contract("a", 0.59, 0.61), contract("b", 0.39, None)], chains=[["a", "b"]])
+    assert isinstance(mixed["summary"]["projection_bound"], float), "a floating member does not skip the QP"
 
 
 # -- tolerance 0, and the output-column collisions ------------------------------------------------------------
