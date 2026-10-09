@@ -79,6 +79,7 @@ from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
 from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss
 from .nodes import (
+    _iso_day,
     CondorQuoteBacktest,
     LongCallSpreadQuoteBacktest,
     LongPutSpreadQuoteBacktest,
@@ -90,8 +91,9 @@ from .nodes import (
 )
 
 __all__ = ["ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
+           "EVIDENCE_ARTIFACT", "NOMINAL_ARM", "SELECT_STAGE", "SETTLE_STAGE", "UNCAPPED",
            "REJECTION_REASONS", "STUDIES", "AccountRow", "AccountStudy", "AdmissionCaps",
-           "AllocationStudy", "EnteredCell", "HedgeStudy", "LedgerStudy", "Order", "ReplayRun",
+           "AllocationStudy", "EnteredCell", "HedgeStudy", "LedgerStudy", "AccountOrder", "SavedReplay",
            "WalkLedger", "main"]
 
 #: The key the shipped grid documents give their backtest node.
@@ -748,7 +750,7 @@ class AdmissionCaps(NamedTuple):
     max_reserved_fraction: float
 
 
-class Order(NamedTuple):
+class AccountOrder(NamedTuple):
     """One order the selector placed, with only what admission may know.
 
     Parameters
@@ -773,7 +775,7 @@ class Order(NamedTuple):
     --------
     An order reserving 300 USD::
 
-        Order("nominal", "d1", "AAA", "2025-02-04", "2025-03-07", 300.0, 0.1, "trade", 12.0)
+        AccountOrder("nominal", "d1", "AAA", "2025-02-04", "2025-03-07", 300.0, 0.1, "trade", 12.0)
     """
 
     arm_id: str
@@ -822,15 +824,7 @@ class AccountRow(NamedTuple):
     peak_reserved_usd: float
 
 
-def _iso(value):
-    """Say whether ``value`` is a canonical ISO calendar date string."""
-    try:
-        return isinstance(value, str) and date.fromisoformat(value).isoformat() == value
-    except ValueError:
-        return False
-
-
-class ReplayRun:
+class SavedReplay:
     """The orders and outcomes of one completed robust replay run directory, read back and checked.
 
     The selector's selections and the settlement node's outcomes are lists, which the driver
@@ -858,7 +852,7 @@ class ReplayRun:
     --------
     Read a finished replay and list its orders::
 
-        run = ReplayRun("pipeline_runs/condor-replay/2026-01-01-ab12cd")
+        run = SavedReplay("pipeline_runs/condor-replay/2026-01-01-ab12cd")
         run.arms, len(run.orders)
         # -> (("nominal", "rho_base"), 8584)
     """
@@ -882,8 +876,8 @@ class ReplayRun:
                 state = json.load(handle).get("state")
         except (OSError, ValueError, AttributeError):
             raise ValueError(f"{self.run_dir}: {RESULT_FILE} is missing or unreadable") from None
-        if state != "ran":
-            raise ValueError(f"{self.run_dir}: the run's state is {state!r}, not 'ran'")
+        if state != _RAN:
+            raise ValueError(f"{self.run_dir}: the run's state is {state!r}, not {_RAN!r}")
 
     def _stages(self, path, name):
         """Return the run-report evidence's ``stages`` mapping."""
@@ -964,12 +958,12 @@ class ReplayRun:
                              "priority can be formed (or its robust value is not a number)")
         release = (outcome.get("settlement_date") if outcome is not None
                    else row.get("forecast_settlement_date", row.get("expiry")))
-        if not _iso(row.get("quote_date")) or not _iso(release) or release <= row["quote_date"]:
+        if not _iso_day(row.get("quote_date")) or not _iso_day(release) or release <= row["quote_date"]:
             raise ValueError(f"{where}: needs a decision date before its settlement date")
         pnl = None if outcome is None else outcome.get("pnl_usd")
         if outcome is not None and not number_ok(pnl):
             raise ValueError(f"{where}: its outcome has no finite pnl_usd")
-        return Order(row["arm_id"], row["decision_id"], row["symbol"], row["quote_date"], release,
+        return AccountOrder(row["arm_id"], row["decision_id"], row["symbol"], row["quote_date"], release,
                      reservation, row["robust_value_usd"] / reservation, row["status"], pnl)
 
 
@@ -1013,7 +1007,7 @@ class _Account:
 
         Parameters
         ----------
-        orders : list of Order
+        orders : list of AccountOrder
             One arm's orders.
 
         Returns
@@ -1135,7 +1129,7 @@ class AccountStudy(LedgerStudy):
 
         Parameters
         ----------
-        run : ReplayRun
+        run : SavedReplay
             The completed run.
         caps : AdmissionCaps
             The admission caps.
@@ -1198,9 +1192,9 @@ class AccountStudy(LedgerStudy):
         Raises
         ------
         ValueError
-            When the run is refused (see :class:`ReplayRun`) or the nominal arm has no orders.
+            When the run is refused (see :class:`SavedReplay`) or the nominal arm has no orders.
         """
-        run = ReplayRun(args.run_dir, args.evidence, args.select_stage, args.settle_stage)
+        run = SavedReplay(args.run_dir, args.evidence, args.select_stage, args.settle_stage)
         caps = AdmissionCaps(args.max_concurrent, args.max_per_symbol, args.max_per_date,
                              args.max_reserved_fraction)
         rows = self.rows(run, caps, args.nominal_arm)

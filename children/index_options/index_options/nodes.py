@@ -2981,8 +2981,10 @@ class CondorExpirySettle(Node):
     threshold, each outcome adds ``exercise_flags`` (per leg: ``itm`` when
     ITM by at least the threshold, ``pin_zone`` when |settlement - strike| is
     below it) and ``would_deliver_shares`` (signed shares moved when exactly one
-    leg of a wing is past the threshold, else 0); P&L stays intrinsic and no
-    exercise, assignment or delivery is simulated.
+    leg of a wing is past the threshold, else 0: positive = shares received on a
+    short-put assignment, negative = shares delivered on a short-call
+    assignment); P&L stays intrinsic and no exercise, assignment or delivery is
+    simulated.
 
     Raises
     ------
@@ -3923,22 +3925,29 @@ class RobustCondorBatchSelect(RobustCondorSelect):
     _FILL_KEYS = ("date", "vwap", "trade_count", "volume")
 
     def _fill_bar(self, row, day):
-        """Return a chain row's ``fill`` bar after refusing a malformed or non-later one."""
-        fill = row["fill"]
+        """Return a chain row's ``fill`` bar after refusing a malformed one or one off t'."""
+        if "fill_session" not in row:
+            raise ValueError("chain rows carrying fill must also carry fill_session")
+        session, fill = row["fill_session"], row["fill"]
+        if session is not None and (not _iso_day(session) or not day < session < row["expiry"]):
+            raise ValueError("fill_session must be null or strictly after the decision date "
+                             "and before expiry")
         if fill is None:
             return None
         if (not isinstance(fill, dict) or set(fill) != set(self._FILL_KEYS)
                 or not _iso_day(fill["date"]) or not number_ok(fill["vwap"]) or fill["vwap"] < 0
                 or any(type(fill[k]) is not int or fill[k] < 0 for k in ("trade_count", "volume"))):
             raise ValueError("chain fill must be null or a date/vwap/trade_count/volume bar")
-        if not day < fill["date"] < row["expiry"]:
-            raise ValueError("chain fill must fall strictly after the decision date and before expiry")
+        if fill["date"] != session:
+            raise ValueError("chain fill must sit on the row's fill_session")
         return fill
 
     def _fill_session(self, rows, day):
-        """Return t', the first session with any bar after the decision date, in one context."""
-        dates = [bar["date"] for bar in (self._fill_bar(r, day) for r in rows) if bar is not None]
-        return min(dates) if dates else None
+        """Return t' carried on the context's rows (one value, from the stream calendar) or ``None``."""
+        sessions = {row["fill_session"] for row in rows}
+        if len(sessions) != 1:
+            raise ValueError("one context must carry one fill_session")
+        return sessions.pop()
 
     @staticmethod
     def _credit(legs, key, multiplier):
@@ -3953,7 +3962,7 @@ class RobustCondorBatchSelect(RobustCondorSelect):
         prices = []
         for leg in decision["legs"]:
             bar = by_contract[leg["contract"]]["fill"]
-            if bar is None or bar["date"] != session:
+            if session is None or bar is None:
                 return None, "missing_fill_bar"
             terms = liquid_leg_haircut(bar["vwap"], bar["trade_count"], bar["volume"],
                                        liquidity, tier_terms, factor)
@@ -3986,6 +3995,15 @@ class RobustCondorBatchSelect(RobustCondorSelect):
         decision["slippage_usd"] = decision["decision_credit_usd"] - decision["fill_credit_usd"]
         return None
 
+    @staticmethod
+    def _fill_credit_flags(decision):
+        """Name the disclosure flags a filled credit earns (ADR-0256 rev 4 refuses neither)."""
+        strikes = {leg["role"]: leg["strike"] for leg in decision["legs"]}
+        width = decision["multiplier"] * max(strikes["SP"] - strikes["LP"], strikes["LC"] - strikes["SC"])
+        credit = decision["fill_credit_usd"]
+        return [name for name, hit in (("fill_credit_nonpositive", credit <= 0),
+                                       ("fill_credit_ge_width", credit >= width)) if hit]
+
     def run(self, ctx, inputs):
         """Return decisions, settlement-compatible selections, and explicit skips.
 
@@ -4016,7 +4034,7 @@ class RobustCondorBatchSelect(RobustCondorSelect):
         if len(present) > 1:
             raise ValueError("chain fill must be present on every chain row or on none")
         filling = present == {True}
-        fill_counts = Counter()
+        fill_counts, credit_flags = Counter(), Counter()
         for row in inputs["chain"]:
             if not isinstance(row, dict):
                 raise ValueError("chain rows must be records")
@@ -4070,7 +4088,11 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                               for solve in result["evidence"]["solves"])
                 if decision["status"] == "trade":
                     if filling:
-                        fill_counts[self._fill(decision, chain[key], tiers[mass["symbol"]])] += 1
+                        reason = self._fill(decision, chain[key], tiers[mass["symbol"]])
+                        fill_counts[reason] += 1
+                        if reason is None:
+                            for flag in self._fill_credit_flags(decision):
+                                credit_flags[flag] += 1
                     selections.append(decision)
                 elif decision["status"] == "skipped":
                     skips.append(decision)
@@ -4078,7 +4100,9 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                     "tier_tie_policy": self.params["tier_tie_policy"]}
         if filling:
             evidence["fill"] = {"filled": fill_counts.pop(None, 0),
-                                "unfilled": dict(sorted(fill_counts.items()))}
+                                "unfilled": dict(sorted(fill_counts.items())),
+                                "fill_credit_nonpositive": credit_flags["fill_credit_nonpositive"],
+                                "fill_credit_ge_width": credit_flags["fill_credit_ge_width"]}
         return {"selections": selections, "decisions": decisions, "solves": solves,
                 "skips": skips, "evidence": evidence}
 
@@ -4250,9 +4274,14 @@ class ExactDteBarChain(Node):
                              | {"reason": str(exc)})
         evidence = {"input_rows": len(rows), "eligible_rows": len(records), "skips": skips}
         if nxt:
-            records = [{**record, "fill": self._fill_for(fills, record)} for record in records]
+            # t' comes from the fills stream's own session calendar, never from the
+            # bars a context happens to have (ADR-0256 S3 lens M1): a context with no
+            # bar on the true next session is unfilled, not filled later.
+            sessions = sorted({bar["date"] for bars in fills.values() for bar in bars})
+            records = [{**record, **self._fill_for(fills, sessions, record)} for record in records]
             attached = sum(record["fill"] is not None for record in records)
             evidence.update(fill_session="next", fill_rows=sum(map(len, fills.values())),
+                            fill_sessions=len(sessions),
                             fills_attached=attached, fills_missing=len(records) - attached)
         return {"records": records, "skips": skips, "evidence": JsonArtifact(evidence)}
 
@@ -4298,14 +4327,20 @@ class ExactDteBarChain(Node):
         return index
 
     @staticmethod
-    def _fill_for(index, record):
-        """Return the contract's first bar strictly after the record's date and before its expiry."""
+    def _fill_for(index, sessions, record):
+        """Return ``fill_session`` (t', the first stream session after the record's date and
+        before its expiry, else ``None``) and ``fill`` (the contract's bar on exactly t', else
+        ``None``)."""
+        at = bisect_right(sessions, record["quote_date"])
+        if at == len(sessions) or sessions[at] >= record["expiry"]:
+            return {"fill_session": None, "fill": None}
+        session = sessions[at]
         bars = index.get(record["contract"], [])
-        at = bisect_right([bar["date"] for bar in bars], record["quote_date"])
-        if at == len(bars) or bars[at]["date"] >= record["expiry"]:
-            return None
-        bar = bars[at]
+        bar = next((bar for bar in bars if bar["date"] == session), None)
+        if bar is None:
+            return {"fill_session": session, "fill": None}
         if (bar["symbol"], bar["expiry"], bar["right"], float(bar["strike"])) != (
                 record["symbol"], record["expiry"], record["right"], float(record["strike"])):
             raise ValueError("fill row disagrees with its contract's symbol, expiry, right or strike")
-        return {key: bar[key] for key in ("date", "vwap", "trade_count", "volume")}
+        return {"fill_session": session,
+                "fill": {key: bar[key] for key in ("date", "vwap", "trade_count", "volume")}}

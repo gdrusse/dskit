@@ -1228,7 +1228,7 @@ def _row(rows, arm="nominal", level="1"):
 
 
 def _account(tmp_path, selections, outcomes, **caps):
-    run = ledger_studies.ReplayRun(_replay(tmp_path, selections, outcomes))
+    run = ledger_studies.SavedReplay(_replay(tmp_path, selections, outcomes))
     return ledger_studies.AccountStudy.rows(run, _caps(**caps))
 
 
@@ -1245,7 +1245,7 @@ def test_account_priority_is_ex_ante_value_per_reservation_then_symbol(tmp_path)
 
 def test_account_reservation_is_the_decision_max_loss_with_fees_counted_once(tmp_path):
     selections = [_sel("a", fee=.65, value=30.)]
-    run = ledger_studies.ReplayRun(_replay(tmp_path, selections, [_out("a")]))
+    run = ledger_studies.SavedReplay(_replay(tmp_path, selections, [_out("a")]))
     # credit 100*(2+2-1-1) - 4*.65 = 197.4; most the condor can lose: 500 - 197.4
     assert run.orders[0].reservation == pytest.approx(302.6)
     assert run.orders[0].score == pytest.approx(30. / 302.6)
@@ -1253,7 +1253,7 @@ def test_account_reservation_is_the_decision_max_loss_with_fees_counted_once(tmp
 
 def test_account_admission_uses_decision_prices_not_the_fill_prices(tmp_path):
     filled = _sel("a", fill=(1.5, 1.5, 1.5, 1.5))      # fill credit 0: a fill-based reservation is 500
-    run = ledger_studies.ReplayRun(_replay(tmp_path, [filled], [_out("a")]))
+    run = ledger_studies.SavedReplay(_replay(tmp_path, [filled], [_out("a")]))
     assert run.orders[0].reservation == pytest.approx(300.)
 
 
@@ -1348,7 +1348,7 @@ def test_account_every_arm_is_accounted_on_the_nominal_arms_capital(tmp_path):
 
 
 def test_account_the_nominal_arm_is_required_and_named_by_the_caller(tmp_path):
-    run = ledger_studies.ReplayRun(_replay(tmp_path, [_sel("a", arm="rho_base")],
+    run = ledger_studies.SavedReplay(_replay(tmp_path, [_sel("a", arm="rho_base")],
                                            [_out("a", "rho_base")]))
     with pytest.raises(ValueError, match="nominal"):
         ledger_studies.AccountStudy.rows(run, _caps())
@@ -1358,7 +1358,7 @@ def test_account_the_nominal_arm_is_required_and_named_by_the_caller(tmp_path):
 def test_account_refuses_a_run_that_did_not_finish_ran(tmp_path):
     for state in ("halted", "error"):
         with pytest.raises(ValueError, match="state"):
-            ledger_studies.ReplayRun(_replay(tmp_path, [_sel("a")], [_out("a")], state=state,
+            ledger_studies.SavedReplay(_replay(tmp_path, [_sel("a")], [_out("a")], state=state,
                                              name=state))
 
 
@@ -1383,7 +1383,7 @@ def test_account_refuses_what_it_cannot_account(tmp_path, damage):
     elif damage == "bad_json":
         evidence.write_text("{")
     with pytest.raises(ValueError):
-        ledger_studies.AccountStudy.rows(ledger_studies.ReplayRun(str(path)), _caps())
+        ledger_studies.AccountStudy.rows(ledger_studies.SavedReplay(str(path)), _caps())
 
 
 def test_account_cli_prints_the_table_and_the_not_a_margin_model_line(tmp_path, capsys):

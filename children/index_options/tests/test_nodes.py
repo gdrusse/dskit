@@ -1506,30 +1506,46 @@ class TestExactDteBarChain:
         with pytest.raises(ValueError, match="fills"):
             self.next_node().run(None, {"records": [self.row()]})
 
-    def test_next_attaches_the_first_strictly_later_bar_of_the_same_contract(self):
+    def test_next_attaches_the_bar_on_the_streams_first_later_session(self):
         fills = [self.row(date="2025-02-04", vwap=9.), self.row(date="2025-02-06", vwap=3.,
                                                                 trade_count=7, volume=8),
                  self.row(date="2025-02-05", vwap=2.5, trade_count=4, volume=6),
                  self.row(contract="other", date="2025-02-05", vwap=1.)]
         out = self.next_node().run(None, {"records": [self.row()], "fills": fills})
+        assert out["records"][0]["fill_session"] == "2025-02-05"
         assert out["records"][0]["fill"] == {"date": "2025-02-05", "vwap": 2.5,
                                              "trade_count": 4, "volume": 6}
         assert out["records"][0]["quote_date"] < out["records"][0]["fill"]["date"] \
             < out["records"][0]["expiry"]
+        assert out["evidence"].value["fill_sessions"] == 3
 
-    def test_next_attaches_none_when_no_later_bar_precedes_expiry(self):
+    def test_next_leaves_a_contract_without_a_bar_on_t_prime_unfilled_not_filled_later(self):
+        # ADR-0256 S3 lens M1: t' is the stream's calendar; a later bar of this contract
+        # never substitutes for the missing t' bar
+        fills = [self.row(contract="other", date="2025-02-05", vwap=1.),
+                 self.row(date="2025-02-06", vwap=3.)]
+        out = self.next_node().run(None, {"records": [self.row()], "fills": fills})
+        assert out["records"][0]["fill_session"] == "2025-02-05"
+        assert out["records"][0]["fill"] is None
+        # with no bar anywhere on 02-05 the calendar's next session is 02-06
+        out = self.next_node().run(None, {"records": [self.row()], "fills": fills[1:]})
+        assert out["records"][0]["fill_session"] == "2025-02-06"
+        assert out["records"][0]["fill"]["vwap"] == 3.
+
+    def test_next_attaches_none_when_no_later_session_precedes_expiry(self):
         fills = [self.row(date="2025-02-04"), self.row(date="2025-03-07", vwap=1.),
                  self.row(date="2025-03-10", vwap=1.)]
         out = self.next_node().run(None, {"records": [self.row()], "fills": fills})
-        assert out["records"][0]["fill"] is None
-        assert self.next_node().run(None, {"records": [self.row()], "fills": []})[
-            "records"][0]["fill"] is None
+        assert out["records"][0]["fill"] is None and out["records"][0]["fill_session"] is None
+        empty = self.next_node().run(None, {"records": [self.row()], "fills": []})["records"][0]
+        assert empty["fill"] is None and empty["fill_session"] is None
 
-    def test_next_joins_each_decision_date_to_its_own_later_bar(self):
+    def test_next_joins_each_decision_date_to_its_own_later_session(self):
         rows = [self.row(), self.row(contract="B", date="2025-02-05", expiry="2025-03-08")]
         fills = [self.row(date="2025-02-05", vwap=2.5), self.row(contract="B", date="2025-02-06", expiry="2025-03-08", vwap=2.6)]
         out = self.next_node().run(None, {"records": rows, "fills": fills})
         assert [r["fill"]["date"] for r in out["records"]] == ["2025-02-05", "2025-02-06"]
+        assert [r["fill_session"] for r in out["records"]] == ["2025-02-05", "2025-02-06"]
 
     def test_next_refuses_fill_rows_at_or_past_the_protected_boundary(self):
         for day in ("2026-01-01", "2026-01-02"):
@@ -1942,9 +1958,10 @@ def _fill_setup(**fill_over):
     """Pin inputs where every arm trades and every entry row carries a t' fill bar."""
     params, inputs = _robust_batch_params(), _robust_batch_inputs()
     for row in inputs["chain"]:
-        row["fill"] = None
+        row["fill_session"], row["fill"] = None, None
         if row["quote_date"] == "2025-02-04":
             row["trade_count"] = 25
+            row["fill_session"] = "2025-02-05"
             row["fill"] = {"date": "2025-02-05", "vwap": row["vwap"], "trade_count": 25,
                            "volume": 5, **fill_over.get(row["contract"], {})}
     return params, inputs
@@ -1973,7 +1990,8 @@ def test_condor_batch_reprices_a_filled_selection_leg_by_leg_with_the_arms_hairc
     assert row["slippage_usd"] == pytest.approx(119.)
     # the decision list holds the very same record; the ex-ante value is untouched
     assert any(d is row for d in out["decisions"])
-    assert out["evidence"]["fill"] == {"filled": len(out["selections"]), "unfilled": {}}
+    assert out["evidence"]["fill"] == {"filled": len(out["selections"]), "unfilled": {},
+                                       "fill_credit_nonpositive": 0, "fill_credit_ge_width": 0}
 
 
 def test_condor_batch_without_a_t_prime_bar_is_unfilled_never_replaced():
@@ -1991,18 +2009,53 @@ def test_condor_batch_without_a_t_prime_bar_is_unfilled_never_replaced():
     assert [leg["price_usd_per_share"] for leg in nominal["legs"]] == pytest.approx(
         [.11, 2.97, 2.97, .11])
     assert out["evidence"]["fill"] == {"filled": 0, "unfilled": {
-        "missing_fill_bar": len(out["selections"])}}
+        "missing_fill_bar": len(out["selections"])},
+        "fill_credit_nonpositive": 0, "fill_credit_ge_width": 0}
     # one selection per arm and decision: nothing took the place of an unfilled one
     assert len(out["selections"]) == len({(r["arm_id"], r["decision_id"])
                                           for r in out["selections"]})
 
 
-def test_condor_batch_every_leg_must_fill_on_the_first_session_t_prime():
+def test_condor_batch_refuses_a_fill_bar_off_the_rows_fill_session():
     from index_options.nodes import RobustCondorBatchSelect
     params, inputs = _fill_setup(**{"call-120.0": {"date": "2025-02-06"}})
+    with pytest.raises(ValueError, match="fill_session"):
+        RobustCondorBatchSelect("batch", params).run(None, inputs)
+
+
+def test_condor_batch_a_context_with_no_session_after_t_is_unfilled():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    for row in inputs["chain"]:
+        if row["quote_date"] == "2025-02-04":
+            row["fill_session"], row["fill"] = None, None
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    assert {r["unfilled_reason"] for r in out["selections"]} == {"missing_fill_bar"}
+
+
+def test_condor_batch_one_context_carries_one_fill_session():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    inputs["chain"][3]["fill_session"] = "2025-02-06"
+    inputs["chain"][3]["fill"]["date"] = "2025-02-06"
+    with pytest.raises(ValueError, match="one fill_session"):
+        RobustCondorBatchSelect("batch", params).run(None, inputs)
+
+
+def test_condor_batch_counts_nonpositive_and_width_reaching_fill_credits_without_refusing():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup(**{"put-80.0": {"vwap": 3.}, "put-90.0": {"vwap": .5},
+                                    "call-110.0": {"vwap": .5}, "call-120.0": {"vwap": 3.}})
     out = RobustCondorBatchSelect("batch", params).run(None, inputs)
     nominal = _by_arm(out)["nominal"]
-    assert nominal["status"] == "unfilled" and nominal["unfilled_reason"] == "missing_fill_bar"
+    assert nominal["status"] == "trade" and nominal["fill_credit_usd"] < 0
+    assert out["evidence"]["fill"]["fill_credit_nonpositive"] == len(out["selections"])
+    assert out["evidence"]["fill"]["fill_credit_ge_width"] == 0
+    params, inputs = _fill_setup(**{"put-80.0": {"vwap": .02}, "put-90.0": {"vwap": 12.},
+                                    "call-110.0": {"vwap": 12.}, "call-120.0": {"vwap": .02}})
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    assert _by_arm(out)["nominal"]["fill_credit_usd"] >= 1000.
+    assert out["evidence"]["fill"]["fill_credit_ge_width"] == len(out["selections"])
 
 
 def test_condor_batch_arm_thresholds_and_multiplier_apply_at_t_prime():

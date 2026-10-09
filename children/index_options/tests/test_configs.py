@@ -3832,18 +3832,24 @@ def test_executable_clock_config_reads_the_fills_stream_through_the_same_store(c
     assert "$fills.records" in clock["pipeline"]["option_chain"]["inputs"].values()
 
 
-def test_executable_clock_config_node_params_validate_but_for_the_sibling_slices_keys(child_root):
+def test_executable_clock_config_every_node_params_validate(child_root):
     from index_options.cdf_study import HeldOutRhoCalibration
     from index_options.nodes import CondorExpirySettle, ExactDteBarChain, RobustCondorBatchSelect
     pipeline = _clock_docs(child_root)[1]["pipeline"]
     assert ExactDteBarChain.validate_params(pipeline["option_chain"]["params"]) == []
     assert CondorExpirySettle.validate_params(pipeline["settle"]["params"]) == []
-    # block_geometry and a null max_relative_gap are owned by the sampler and gap slices: without
-    # them (the gap at the robust-backtest's 0.0) every other knob must validate
-    params = copy.deepcopy(pipeline["rho_calibration"]["params"])
-    assert params.pop("block_geometry") == "edge_padded"
-    assert HeldOutRhoCalibration.validate_params(params) == []
-    params = copy.deepcopy(pipeline["select"]["params"])
-    assert params.pop("max_relative_gap") is None
-    assert params.pop("objective_parity_usd") == 1e-5
-    assert RobustCondorBatchSelect.validate_params({**params, "max_relative_gap": 0.0}) == []
+    assert HeldOutRhoCalibration.validate_params(pipeline["rho_calibration"]["params"]) == []
+    assert RobustCondorBatchSelect.validate_params(pipeline["select"]["params"]) == []
+    assert pipeline["select"]["params"]["objective_parity_usd"] == 1e-5
+    assert not any("until that lands" in (node.get("notes") or "") for node in pipeline.values())
+
+
+def test_account_study_defaults_name_the_config_report_node_and_its_ports(child_root):
+    from index_options import ledger_studies
+    pipeline = _clock_docs(child_root)[1]["pipeline"]
+    report = [key for key, node in pipeline.items() if node["uses"] == "run-report"]
+    assert report == [ledger_studies.EVIDENCE_ARTIFACT.split(os.sep)[1]]
+    ports = pipeline[report[0]]["inputs"]
+    assert ports[ledger_studies.SELECT_STAGE] == "$select.evidence"
+    assert ports[ledger_studies.SETTLE_STAGE] == "$settle.evidence"
+    assert ledger_studies.NOMINAL_ARM in pipeline["select"]["params"]["arms"]
