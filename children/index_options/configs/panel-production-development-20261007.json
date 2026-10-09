@@ -1,0 +1,736 @@
+{
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": null,
+    "lifecycle": null,
+    "chain_features": null,
+    "raw_chain": null,
+    "symbols": {
+      "AA": "VIX",
+      "AAPL": "VIX",
+      "ACMR": "VIX",
+      "AMC": "VIX",
+      "AMZN": "VIX",
+      "ANET": "VIX",
+      "APH": "VIX",
+      "APLD": "VIX",
+      "ASST": "VIX",
+      "AVGO": "VIX",
+      "BKNG": "VIX",
+      "BYND": "VIX",
+      "CAG": "VIX",
+      "CAPR": "VIX",
+      "CELH": "VIX",
+      "CLSK": "VIX",
+      "CMCSA": "VIX",
+      "CMG": "VIX",
+      "CNC": "VIX",
+      "CRWD": "VIX",
+      "CVNA": "VIX",
+      "CYPH": "VIX",
+      "DELL": "VIX",
+      "DHR": "VIX",
+      "ECHO": "VIX",
+      "EQT": "VIX",
+      "FCEL": "VIX",
+      "FDX": "VIX",
+      "FISV": "VIX",
+      "FRO": "VIX",
+      "FTNT": "VIX",
+      "GE": "VIX",
+      "GEO": "VIX",
+      "GME": "VIX",
+      "GOOG": "VIX",
+      "GOOGL": "VIX",
+      "HON": "VIX",
+      "HPE": "VIX",
+      "HUT": "VIX",
+      "IBM": "VIX",
+      "ISRG": "VIX",
+      "KLAC": "VIX",
+      "LCID": "VIX",
+      "LEN": "VIX",
+      "LRCX": "VIX",
+      "MARA": "VIX",
+      "MCHP": "VIX",
+      "MRK": "VIX",
+      "MSTR": "VIX",
+      "NAT": "VIX",
+      "NEE": "VIX",
+      "NFLX": "VIX",
+      "NLY": "VIX",
+      "NOW": "VIX",
+      "NVAX": "VIX",
+      "NVDA": "VIX",
+      "NVO": "VIX",
+      "O": "VIX",
+      "ORBS": "VIX",
+      "OUST": "VIX",
+      "OXY": "VIX",
+      "PANW": "VIX",
+      "PDSB": "VIX",
+      "PFE": "VIX",
+      "QUBT": "VIX",
+      "QXO": "VIX",
+      "RCAT": "VIX",
+      "RTX": "VIX",
+      "SBET": "VIX",
+      "SHOE": "VIX",
+      "SHOP": "VIX",
+      "SIRI": "VIX",
+      "SLS": "VIX",
+      "SMCI": "VIX",
+      "SPCE": "VIX",
+      "STLA": "VIX",
+      "T": "VIX",
+      "TJX": "VIX",
+      "TLRY": "VIX",
+      "TSLA": "VIX",
+      "TTD": "VIX",
+      "UAA": "VIX",
+      "VFC": "VIX",
+      "WDC": "VIX",
+      "WMT": "VIX"
+    },
+    "market_symbols": {},
+    "fred_market_symbols": {},
+    "price_source": {
+      "source": "stock-daily-bars",
+      "stream": "files",
+      "relpath": {
+        "AA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aa/underlying_prices.parquet"
+        },
+        "AAPL": "aapl/underlying_prices.parquet",
+        "ACMR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "acmr/underlying_prices.parquet"
+        },
+        "AMC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "amc/underlying_prices.parquet"
+        },
+        "AMZN": {
+          "source": "production-older-bars-20261007-v2",
+          "stream": "files",
+          "relpath": "amzn/underlying_prices.parquet"
+        },
+        "ANET": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "anet/underlying_prices.parquet"
+        },
+        "APH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "aph/underlying_prices.parquet"
+        },
+        "APLD": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "apld/underlying_prices.parquet"
+        },
+        "ASST": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "asst/underlying_prices.parquet"
+        },
+        "AVGO": "avgo/underlying_prices.parquet",
+        "BKNG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bkng/underlying_prices.parquet"
+        },
+        "BYND": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "bynd/underlying_prices.parquet"
+        },
+        "CAG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cag/underlying_prices.parquet"
+        },
+        "CAPR": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "capr/underlying_prices.parquet"
+        },
+        "CELH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "celh/underlying_prices.parquet"
+        },
+        "CLSK": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "clsk/underlying_prices.parquet"
+        },
+        "CMCSA": "cmcsa/underlying_prices.parquet",
+        "CMG": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cmg/underlying_prices.parquet"
+        },
+        "CNC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cnc/underlying_prices.parquet"
+        },
+        "CRWD": "crwd/underlying_prices.parquet",
+        "CVNA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cvna/underlying_prices.parquet"
+        },
+        "CYPH": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "cyph/underlying_prices.parquet"
+        },
+        "DELL": "dell/underlying_prices.parquet",
+        "DHR": "dhr/underlying_prices.parquet",
+        "ECHO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "echo/underlying_prices.parquet"
+        },
+        "EQT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "eqt/underlying_prices.parquet"
+        },
+        "FCEL": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fcel/underlying_prices.parquet"
+        },
+        "FDX": "fdx/underlying_prices.parquet",
+        "FISV": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fisv/underlying_prices.parquet"
+        },
+        "FRO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "fro/underlying_prices.parquet"
+        },
+        "FTNT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ftnt/underlying_prices.parquet"
+        },
+        "GE": "ge/underlying_prices.parquet",
+        "GEO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "geo/underlying_prices.parquet"
+        },
+        "GME": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "gme/underlying_prices.parquet"
+        },
+        "GOOG": "goog/underlying_prices.parquet",
+        "GOOGL": "googl/underlying_prices.parquet",
+        "HON": "hon/underlying_prices.parquet",
+        "HPE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hpe/underlying_prices.parquet"
+        },
+        "HUT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "hut/underlying_prices.parquet"
+        },
+        "IBM": "ibm/underlying_prices.parquet",
+        "ISRG": "isrg/underlying_prices.parquet",
+        "KLAC": "klac/underlying_prices.parquet",
+        "LCID": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "lcid/underlying_prices.parquet"
+        },
+        "LEN": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "len/underlying_prices.parquet"
+        },
+        "LRCX": "lrcx/underlying_prices.parquet",
+        "MARA": "mara/underlying_prices.parquet",
+        "MCHP": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "mchp/underlying_prices.parquet"
+        },
+        "MRK": "mrk/underlying_prices.parquet",
+        "MSTR": "mstr/underlying_prices.parquet",
+        "NAT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nat/underlying_prices.parquet"
+        },
+        "NEE": "nee/underlying_prices.parquet",
+        "NFLX": "nflx/underlying_prices.parquet",
+        "NLY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nly/underlying_prices.parquet"
+        },
+        "NOW": "now/underlying_prices.parquet",
+        "NVAX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nvax/underlying_prices.parquet"
+        },
+        "NVDA": "nvda/underlying_prices.parquet",
+        "NVO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "nvo/underlying_prices.parquet"
+        },
+        "O": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "o/underlying_prices.parquet"
+        },
+        "ORBS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "orbs/underlying_prices.parquet"
+        },
+        "OUST": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "oust/underlying_prices.parquet"
+        },
+        "OXY": "oxy/underlying_prices.parquet",
+        "PANW": "panw/underlying_prices.parquet",
+        "PDSB": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "pdsb/underlying_prices.parquet"
+        },
+        "PFE": "pfe/underlying_prices.parquet",
+        "QUBT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "qubt/underlying_prices.parquet"
+        },
+        "QXO": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "qxo/underlying_prices.parquet"
+        },
+        "RCAT": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "rcat/underlying_prices.parquet"
+        },
+        "RTX": "rtx/underlying_prices.parquet",
+        "SBET": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "sbet/underlying_prices.parquet"
+        },
+        "SHOE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "shoe/underlying_prices.parquet"
+        },
+        "SHOP": "shop/underlying_prices.parquet",
+        "SIRI": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "siri/underlying_prices.parquet"
+        },
+        "SLS": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "sls/underlying_prices.parquet"
+        },
+        "SMCI": "smci/underlying_prices.parquet",
+        "SPCE": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "spce/underlying_prices.parquet"
+        },
+        "STLA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "stla/underlying_prices.parquet"
+        },
+        "T": "t/underlying_prices.parquet",
+        "TJX": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tjx/underlying_prices.parquet"
+        },
+        "TLRY": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "tlry/underlying_prices.parquet"
+        },
+        "TSLA": "tsla/underlying_prices.parquet",
+        "TTD": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "ttd/underlying_prices.parquet"
+        },
+        "UAA": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "uaa/underlying_prices.parquet"
+        },
+        "VFC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "vfc/underlying_prices.parquet"
+        },
+        "WDC": {
+          "source": "stock-daily-bars-300",
+          "stream": "files",
+          "relpath": "wdc/underlying_prices.parquet"
+        },
+        "WMT": "wmt/underlying_prices.parquet"
+      },
+      "columns": {
+        "close": "close",
+        "date": "date",
+        "dividend_amount": "dividend_amount",
+        "high": "high",
+        "low": "low",
+        "open": "open",
+        "split_coefficient": "split_coefficient",
+        "volume": "volume"
+      },
+      "read_bounds": {
+        "date": {
+          "end_before": "2026-01-01"
+        }
+      }
+    },
+    "iv_source": "production-vix-20261007",
+    "since": "1997-05-15",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02,
+    "surface_features": null,
+    "ohlc_windows": [
+      5,
+      22
+    ],
+    "matched_dte_vrp": null,
+    "reference_window": 22,
+    "change_lags": [
+      1,
+      5,
+      22
+    ],
+    "directional_windows": [
+      5,
+      22
+    ],
+    "periods_per_year": 252,
+    "calendar": "XNYS",
+    "calendar_pad_days": 30,
+    "dividend_field": "dividend_amount",
+    "reader": "price_calendar",
+    "keyed_tables": {
+      "key": [
+        "symbol",
+        "quote_date"
+      ],
+      "tables": {
+        "volume22": {
+          "root": "/home/russell/data/index_options/ob",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "vl_log_volume_ratio": "vl_log_volume_ratio",
+            "vl_log_dollar_volume": "vl_log_dollar_volume",
+            "vl_amihud": "vl_amihud"
+          },
+          "max_age_days": 0,
+          "strict_prior": false,
+          "source": "production-liquidity-20261007",
+          "stream": "volume22"
+        },
+        "volume66": {
+          "root": "/home/russell/data/index_options/ob",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "vl_log_volume_ratio_66": "vl_log_volume_ratio_66"
+          },
+          "max_age_days": 0,
+          "strict_prior": false,
+          "source": "production-liquidity-20261007",
+          "stream": "volume66"
+        }
+      },
+      "age_suffix": "_age_days",
+      "missing_suffix": "_missing"
+    },
+    "corporate_actions": {
+      "max_abs_jump": 0.4,
+      "max_dividend_yield": 0.05,
+      "windows": {
+        "AA": [
+          [
+            "2016-11-01",
+            "2016-11-01"
+          ]
+        ],
+        "AAPL": [],
+        "ACMR": [],
+        "AMC": [],
+        "AMZN": [],
+        "ANET": [],
+        "APH": [],
+        "APLD": [],
+        "ASST": [],
+        "AVGO": [],
+        "BKNG": [],
+        "BYND": [],
+        "CAG": [
+          [
+            "2016-11-10",
+            "2016-11-10"
+          ]
+        ],
+        "CAPR": [],
+        "CELH": [],
+        "CLSK": [],
+        "CMCSA": [],
+        "CMG": [],
+        "CNC": [],
+        "CRWD": [],
+        "CVNA": [],
+        "CYPH": [],
+        "DELL": [
+          [
+            "2018-12-28",
+            "2018-12-28"
+          ],
+          [
+            "2021-11-02",
+            "2021-11-02"
+          ]
+        ],
+        "DHR": [
+          [
+            "2016-07-05",
+            "2016-07-05"
+          ],
+          [
+            "2023-10-02",
+            "2023-10-02"
+          ]
+        ],
+        "ECHO": [
+          [
+            "2019-09-11",
+            "2019-09-11"
+          ]
+        ],
+        "EQT": [
+          [
+            "2018-11-13",
+            "2018-11-13"
+          ]
+        ],
+        "FCEL": [],
+        "FDX": [],
+        "FISV": [],
+        "FRO": [],
+        "FTNT": [],
+        "GE": [
+          [
+            "2019-02-26",
+            "2019-02-26"
+          ],
+          [
+            "2023-01-04",
+            "2023-01-04"
+          ],
+          [
+            "2024-04-02",
+            "2024-04-02"
+          ]
+        ],
+        "GEO": [
+          [
+            "2017-04-25",
+            "2017-04-25"
+          ]
+        ],
+        "GME": [],
+        "GOOG": [],
+        "GOOGL": [],
+        "HON": [
+          [
+            "2016-10-03",
+            "2016-10-03"
+          ],
+          [
+            "2018-10-01",
+            "2018-10-01"
+          ],
+          [
+            "2018-10-29",
+            "2018-10-29"
+          ],
+          [
+            "2025-10-30",
+            "2025-10-30"
+          ]
+        ],
+        "HPE": [
+          [
+            "2017-04-03",
+            "2017-04-03"
+          ],
+          [
+            "2017-09-01",
+            "2017-09-01"
+          ]
+        ],
+        "HUT": [],
+        "IBM": [
+          [
+            "2021-11-04",
+            "2021-11-04"
+          ]
+        ],
+        "ISRG": [],
+        "KLAC": [],
+        "LCID": [],
+        "LEN": [
+          [
+            "2017-11-09",
+            "2017-11-09"
+          ],
+          [
+            "2025-01-21",
+            "2025-01-21"
+          ]
+        ],
+        "LRCX": [],
+        "MARA": [],
+        "MCHP": [],
+        "MRK": [
+          [
+            "2021-06-03",
+            "2021-06-03"
+          ]
+        ],
+        "MSTR": [],
+        "NAT": [
+          [
+            "2017-08-10",
+            "2017-08-10"
+          ]
+        ],
+        "NEE": [],
+        "NFLX": [],
+        "NLY": [],
+        "NOW": [],
+        "NVAX": [],
+        "NVDA": [],
+        "NVO": [],
+        "O": [
+          [
+            "2021-11-15",
+            "2021-11-15"
+          ]
+        ],
+        "ORBS": [],
+        "OUST": [],
+        "OXY": [
+          [
+            "2016-02-25",
+            "2016-02-25"
+          ]
+        ],
+        "PANW": [],
+        "PDSB": [],
+        "PFE": [
+          [
+            "2020-11-17",
+            "2020-11-17"
+          ]
+        ],
+        "QUBT": [],
+        "QXO": [],
+        "RCAT": [],
+        "RTX": [
+          [
+            "2020-04-03",
+            "2020-04-03"
+          ]
+        ],
+        "SBET": [],
+        "SHOE": [],
+        "SHOP": [],
+        "SIRI": [],
+        "SLS": [],
+        "SMCI": [],
+        "SPCE": [],
+        "STLA": [
+          [
+            "2016-01-04",
+            "2016-01-04"
+          ]
+        ],
+        "T": [
+          [
+            "2022-04-11",
+            "2022-04-11"
+          ]
+        ],
+        "TJX": [],
+        "TLRY": [],
+        "TSLA": [],
+        "TTD": [],
+        "UAA": [],
+        "VFC": [
+          [
+            "2019-05-23",
+            "2019-05-23"
+          ]
+        ],
+        "WDC": [
+          [
+            "2025-02-24",
+            "2025-02-24"
+          ]
+        ],
+        "WMT": []
+      }
+    },
+    "exact_dte": 31,
+    "notes": "Feasibility-only 85-source-qualified subset of fixed retrospective 393-symbol research universe; 308 quarantined in source audit. All prices date<2026; AMZN eligible older history retained. Same-date liquidity joins require assumed after-close publication; acquisition cutoff is snapshot identity, not observed historical known-at. Ambiguous nonstandard-action feature/target spans excluded. No options inputs, training or qualification is implied.",
+    "as_of_acquisition_ms": 1791423644647
+  },
+  "holdout_start": "2026-01-01",
+  "output": "/home/russell/data/index_options/production-development-20261007/panel-cache-v1"
+}

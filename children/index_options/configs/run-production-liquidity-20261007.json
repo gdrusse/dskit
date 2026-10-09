@@ -1,0 +1,2117 @@
+{
+  "name": "production-liquidity-20261007",
+  "notes": "Feasibility/data preparation only. Intended retrospective cohort393; these85 have supplied validated split inventories. All308missing-inventory tickers remain explicit quarantines. Existing nodes only. No model fit, options, macro or benchmark read. 66-bar ratio replaces absolute volume; preserve startup rows.",
+  "pipeline": {
+    "prices_aa": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "AA": "aa/underlying_prices.parquet"
+        },
+        "key": "AA",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_aapl": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "AAPL": "aapl/underlying_prices.parquet"
+        },
+        "key": "AAPL",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_acmr": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "ACMR": "acmr/underlying_prices.parquet"
+        },
+        "key": "ACMR",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_amc": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "AMC": "amc/underlying_prices.parquet"
+        },
+        "key": "AMC",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_amzn": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "production-older-bars-20261007-v2",
+        "stream": "files",
+        "relpath_by_key": {
+          "AMZN": "amzn/underlying_prices.parquet"
+        },
+        "key": "AMZN",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_anet": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "ANET": "anet/underlying_prices.parquet"
+        },
+        "key": "ANET",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_aph": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "APH": "aph/underlying_prices.parquet"
+        },
+        "key": "APH",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_apld": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "APLD": "apld/underlying_prices.parquet"
+        },
+        "key": "APLD",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_asst": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "ASST": "asst/underlying_prices.parquet"
+        },
+        "key": "ASST",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_avgo": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "AVGO": "avgo/underlying_prices.parquet"
+        },
+        "key": "AVGO",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_bkng": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "BKNG": "bkng/underlying_prices.parquet"
+        },
+        "key": "BKNG",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_bynd": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "BYND": "bynd/underlying_prices.parquet"
+        },
+        "key": "BYND",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_cag": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "CAG": "cag/underlying_prices.parquet"
+        },
+        "key": "CAG",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_capr": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "CAPR": "capr/underlying_prices.parquet"
+        },
+        "key": "CAPR",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_celh": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "CELH": "celh/underlying_prices.parquet"
+        },
+        "key": "CELH",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_clsk": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "CLSK": "clsk/underlying_prices.parquet"
+        },
+        "key": "CLSK",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_cmcsa": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "CMCSA": "cmcsa/underlying_prices.parquet"
+        },
+        "key": "CMCSA",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_cmg": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "CMG": "cmg/underlying_prices.parquet"
+        },
+        "key": "CMG",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_cnc": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "CNC": "cnc/underlying_prices.parquet"
+        },
+        "key": "CNC",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_crwd": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "CRWD": "crwd/underlying_prices.parquet"
+        },
+        "key": "CRWD",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_cvna": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "CVNA": "cvna/underlying_prices.parquet"
+        },
+        "key": "CVNA",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_cyph": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "CYPH": "cyph/underlying_prices.parquet"
+        },
+        "key": "CYPH",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_dell": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "DELL": "dell/underlying_prices.parquet"
+        },
+        "key": "DELL",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_dhr": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "DHR": "dhr/underlying_prices.parquet"
+        },
+        "key": "DHR",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_echo": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "ECHO": "echo/underlying_prices.parquet"
+        },
+        "key": "ECHO",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_eqt": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "EQT": "eqt/underlying_prices.parquet"
+        },
+        "key": "EQT",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_fcel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "FCEL": "fcel/underlying_prices.parquet"
+        },
+        "key": "FCEL",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_fdx": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "FDX": "fdx/underlying_prices.parquet"
+        },
+        "key": "FDX",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_fisv": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "FISV": "fisv/underlying_prices.parquet"
+        },
+        "key": "FISV",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_fro": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "FRO": "fro/underlying_prices.parquet"
+        },
+        "key": "FRO",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_ftnt": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "FTNT": "ftnt/underlying_prices.parquet"
+        },
+        "key": "FTNT",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_ge": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "GE": "ge/underlying_prices.parquet"
+        },
+        "key": "GE",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_geo": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "GEO": "geo/underlying_prices.parquet"
+        },
+        "key": "GEO",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_gme": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "GME": "gme/underlying_prices.parquet"
+        },
+        "key": "GME",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_goog": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "GOOG": "goog/underlying_prices.parquet"
+        },
+        "key": "GOOG",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_googl": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "GOOGL": "googl/underlying_prices.parquet"
+        },
+        "key": "GOOGL",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_hon": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "HON": "hon/underlying_prices.parquet"
+        },
+        "key": "HON",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_hpe": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "HPE": "hpe/underlying_prices.parquet"
+        },
+        "key": "HPE",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_hut": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "HUT": "hut/underlying_prices.parquet"
+        },
+        "key": "HUT",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_ibm": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "IBM": "ibm/underlying_prices.parquet"
+        },
+        "key": "IBM",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_isrg": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "ISRG": "isrg/underlying_prices.parquet"
+        },
+        "key": "ISRG",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_klac": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "KLAC": "klac/underlying_prices.parquet"
+        },
+        "key": "KLAC",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_lcid": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "LCID": "lcid/underlying_prices.parquet"
+        },
+        "key": "LCID",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_len": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "LEN": "len/underlying_prices.parquet"
+        },
+        "key": "LEN",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_lrcx": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "LRCX": "lrcx/underlying_prices.parquet"
+        },
+        "key": "LRCX",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_mara": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "MARA": "mara/underlying_prices.parquet"
+        },
+        "key": "MARA",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_mchp": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "MCHP": "mchp/underlying_prices.parquet"
+        },
+        "key": "MCHP",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_mrk": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "MRK": "mrk/underlying_prices.parquet"
+        },
+        "key": "MRK",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_mstr": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "MSTR": "mstr/underlying_prices.parquet"
+        },
+        "key": "MSTR",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_nat": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "NAT": "nat/underlying_prices.parquet"
+        },
+        "key": "NAT",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_nee": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "NEE": "nee/underlying_prices.parquet"
+        },
+        "key": "NEE",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_nflx": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "NFLX": "nflx/underlying_prices.parquet"
+        },
+        "key": "NFLX",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_nly": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "NLY": "nly/underlying_prices.parquet"
+        },
+        "key": "NLY",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_now": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "NOW": "now/underlying_prices.parquet"
+        },
+        "key": "NOW",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_nvax": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "NVAX": "nvax/underlying_prices.parquet"
+        },
+        "key": "NVAX",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_nvda": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "NVDA": "nvda/underlying_prices.parquet"
+        },
+        "key": "NVDA",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_nvo": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "NVO": "nvo/underlying_prices.parquet"
+        },
+        "key": "NVO",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_o": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "O": "o/underlying_prices.parquet"
+        },
+        "key": "O",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_orbs": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "ORBS": "orbs/underlying_prices.parquet"
+        },
+        "key": "ORBS",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_oust": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "OUST": "oust/underlying_prices.parquet"
+        },
+        "key": "OUST",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_oxy": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "OXY": "oxy/underlying_prices.parquet"
+        },
+        "key": "OXY",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_panw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "PANW": "panw/underlying_prices.parquet"
+        },
+        "key": "PANW",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_pdsb": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "PDSB": "pdsb/underlying_prices.parquet"
+        },
+        "key": "PDSB",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_pfe": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "PFE": "pfe/underlying_prices.parquet"
+        },
+        "key": "PFE",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_qubt": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "QUBT": "qubt/underlying_prices.parquet"
+        },
+        "key": "QUBT",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_qxo": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "QXO": "qxo/underlying_prices.parquet"
+        },
+        "key": "QXO",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_rcat": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "RCAT": "rcat/underlying_prices.parquet"
+        },
+        "key": "RCAT",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_rtx": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "RTX": "rtx/underlying_prices.parquet"
+        },
+        "key": "RTX",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_sbet": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "SBET": "sbet/underlying_prices.parquet"
+        },
+        "key": "SBET",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_shoe": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "SHOE": "shoe/underlying_prices.parquet"
+        },
+        "key": "SHOE",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_shop": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "SHOP": "shop/underlying_prices.parquet"
+        },
+        "key": "SHOP",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_siri": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "SIRI": "siri/underlying_prices.parquet"
+        },
+        "key": "SIRI",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_sls": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "SLS": "sls/underlying_prices.parquet"
+        },
+        "key": "SLS",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_smci": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "SMCI": "smci/underlying_prices.parquet"
+        },
+        "key": "SMCI",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_spce": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "SPCE": "spce/underlying_prices.parquet"
+        },
+        "key": "SPCE",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_stla": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "STLA": "stla/underlying_prices.parquet"
+        },
+        "key": "STLA",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_t": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "T": "t/underlying_prices.parquet"
+        },
+        "key": "T",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_tjx": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "TJX": "tjx/underlying_prices.parquet"
+        },
+        "key": "TJX",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_tlry": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "TLRY": "tlry/underlying_prices.parquet"
+        },
+        "key": "TLRY",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_tsla": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "TSLA": "tsla/underlying_prices.parquet"
+        },
+        "key": "TSLA",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_ttd": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "TTD": "ttd/underlying_prices.parquet"
+        },
+        "key": "TTD",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_uaa": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "UAA": "uaa/underlying_prices.parquet"
+        },
+        "key": "UAA",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_vfc": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "VFC": "vfc/underlying_prices.parquet"
+        },
+        "key": "VFC",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_wdc": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars-300",
+        "stream": "files",
+        "relpath_by_key": {
+          "WDC": "wdc/underlying_prices.parquet"
+        },
+        "key": "WDC",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "prices_wmt": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "WMT": "wmt/underlying_prices.parquet"
+        },
+        "key": "WMT",
+        "columns": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "close": "close",
+          "volume": "volume"
+        },
+        "read_bounds": {
+          "date": {
+            "end_before": "2026-01-01"
+          }
+        }
+      }
+    },
+    "bars": {
+      "uses": "concat",
+      "inputs": {
+        "aa": "$prices_aa.records",
+        "aapl": "$prices_aapl.records",
+        "acmr": "$prices_acmr.records",
+        "amc": "$prices_amc.records",
+        "amzn": "$prices_amzn.records",
+        "anet": "$prices_anet.records",
+        "aph": "$prices_aph.records",
+        "apld": "$prices_apld.records",
+        "asst": "$prices_asst.records",
+        "avgo": "$prices_avgo.records",
+        "bkng": "$prices_bkng.records",
+        "bynd": "$prices_bynd.records",
+        "cag": "$prices_cag.records",
+        "capr": "$prices_capr.records",
+        "celh": "$prices_celh.records",
+        "clsk": "$prices_clsk.records",
+        "cmcsa": "$prices_cmcsa.records",
+        "cmg": "$prices_cmg.records",
+        "cnc": "$prices_cnc.records",
+        "crwd": "$prices_crwd.records",
+        "cvna": "$prices_cvna.records",
+        "cyph": "$prices_cyph.records",
+        "dell": "$prices_dell.records",
+        "dhr": "$prices_dhr.records",
+        "echo": "$prices_echo.records",
+        "eqt": "$prices_eqt.records",
+        "fcel": "$prices_fcel.records",
+        "fdx": "$prices_fdx.records",
+        "fisv": "$prices_fisv.records",
+        "fro": "$prices_fro.records",
+        "ftnt": "$prices_ftnt.records",
+        "ge": "$prices_ge.records",
+        "geo": "$prices_geo.records",
+        "gme": "$prices_gme.records",
+        "goog": "$prices_goog.records",
+        "googl": "$prices_googl.records",
+        "hon": "$prices_hon.records",
+        "hpe": "$prices_hpe.records",
+        "hut": "$prices_hut.records",
+        "ibm": "$prices_ibm.records",
+        "isrg": "$prices_isrg.records",
+        "klac": "$prices_klac.records",
+        "lcid": "$prices_lcid.records",
+        "len": "$prices_len.records",
+        "lrcx": "$prices_lrcx.records",
+        "mara": "$prices_mara.records",
+        "mchp": "$prices_mchp.records",
+        "mrk": "$prices_mrk.records",
+        "mstr": "$prices_mstr.records",
+        "nat": "$prices_nat.records",
+        "nee": "$prices_nee.records",
+        "nflx": "$prices_nflx.records",
+        "nly": "$prices_nly.records",
+        "now": "$prices_now.records",
+        "nvax": "$prices_nvax.records",
+        "nvda": "$prices_nvda.records",
+        "nvo": "$prices_nvo.records",
+        "o": "$prices_o.records",
+        "orbs": "$prices_orbs.records",
+        "oust": "$prices_oust.records",
+        "oxy": "$prices_oxy.records",
+        "panw": "$prices_panw.records",
+        "pdsb": "$prices_pdsb.records",
+        "pfe": "$prices_pfe.records",
+        "qubt": "$prices_qubt.records",
+        "qxo": "$prices_qxo.records",
+        "rcat": "$prices_rcat.records",
+        "rtx": "$prices_rtx.records",
+        "sbet": "$prices_sbet.records",
+        "shoe": "$prices_shoe.records",
+        "shop": "$prices_shop.records",
+        "siri": "$prices_siri.records",
+        "sls": "$prices_sls.records",
+        "smci": "$prices_smci.records",
+        "spce": "$prices_spce.records",
+        "stla": "$prices_stla.records",
+        "t": "$prices_t.records",
+        "tjx": "$prices_tjx.records",
+        "tlry": "$prices_tlry.records",
+        "tsla": "$prices_tsla.records",
+        "ttd": "$prices_ttd.records",
+        "uaa": "$prices_uaa.records",
+        "vfc": "$prices_vfc.records",
+        "wdc": "$prices_wdc.records",
+        "wmt": "$prices_wmt.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "Each disjoint symbol is verified in its source file and pinned by its own source manifest; no source is silently overlapped."
+      }
+    },
+    "volume22": {
+      "uses": "dskit.pipeline.libs.bar_features:DailyBarFeatures",
+      "inputs": {
+        "bars": "$bars.merged"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "date_field": "quote_date",
+        "close_field": "close",
+        "volume_field": "volume",
+        "volume_liquidity": {
+          "window": 22,
+          "fields": {
+            "log_volume_ratio": "vl_log_volume_ratio",
+            "log_dollar_volume": "vl_log_dollar_volume",
+            "amihud": "vl_amihud"
+          }
+        }
+      }
+    },
+    "volume22_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$volume22.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/production-development-20261007/features/volume22.jsonl",
+        "source": "ADR-0251 configuration-only liquidity features; split-adjusted bars, pre2026 source projection, startup nulls retained; not historical publication proof."
+      }
+    },
+    "volume66": {
+      "uses": "dskit.pipeline.libs.bar_features:DailyBarFeatures",
+      "inputs": {
+        "bars": "$bars.merged"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "date_field": "quote_date",
+        "close_field": "close",
+        "volume_field": "volume",
+        "volume_liquidity": {
+          "window": 66,
+          "fields": {
+            "log_volume_ratio": "vl_log_volume_ratio_66"
+          }
+        }
+      }
+    },
+    "volume66_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$volume66.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/production-development-20261007/features/volume66.jsonl",
+        "source": "ADR-0251 configuration-only liquidity features; split-adjusted bars, pre2026 source projection, startup nulls retained; not historical publication proof."
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/production-development-20261007/feature-runs"
+  }
+}

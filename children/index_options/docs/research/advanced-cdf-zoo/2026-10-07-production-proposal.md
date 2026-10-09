@@ -1,5 +1,7 @@
 # Production CDF candidate: synthesis and proposed validation plan
 
+> **Current owner-approved schedule (2026-10-07):** The later owner instruction supersedes the COVID-tuning dates below. Development/HPO uses three consecutive eight-month blocks spanning 2021-2022; 2023 is confirmation; the nine existing 2024-2025 windows evaluate frozen settings with expanding-history refits from scratch. Preserve all eligible prior history, including COVID in subsequent training, and save every refit for inference. Both quote and settlement dates must be before 2026-01-01; no2026 reads or scoring. Original216attempt ceiling, review gates and restrictions remain. See ADR0253 for exact dates and pre-fit capacity dispositions. Older prose/reviews below remain historical; no prior result is retroactively changed.
+
 ## Question
 
 What should power the next production-candidate run, which features should it use, and how should validation and hyperparameter optimization (HPO) proceed after the completed advanced architecture study?
