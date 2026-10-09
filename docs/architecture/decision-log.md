@@ -30779,3 +30779,18 @@ Acceptance: null/null and each independently disabled limit, legacy numeric
 refusals, malformed values, mandatory numerical refusals and node/config parity.
 Modify only existing projection owner, its node, existing tests and draft JSON;
 scoped independent review before real use.
+
+
+ADR0255 bounded input execution clarification: the owned archived split inventory
+supports reconstruction conditional on its completeness, not certification of
+completeness. Pin action/raw/parquet/snapshot identities and label the assumption.
+The84 explicit current inventories and separately attested older-source evidence
+are evaluated individually; 307 missing-inventory histories remain UNKNOWN.
+Preserve every intended forecast context with an explicit price-basis refusal
+rather than silently changing the model universe or inventing as-traded prices.
+Numerical conversion, original-spot agreement, settlement identities and
+holding-window exclusions remain mandatory. This is retrospective research;
+coverage is reported separately from the392-name model training universe.
+Independent adjudication /root/finish_batch_selector and Luna thread
+01a11ff5-ee1b-7483-bfbc-e7c12402d602 close the clarified design with0Critical/Major;
+actual recipe review remains required. No new provider acquisition or fitting.
