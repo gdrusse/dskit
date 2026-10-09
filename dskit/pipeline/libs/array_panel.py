@@ -32,8 +32,10 @@ manifest carries each file's sha256 so the directory registers as a ``localblobs
 
 **Gap safety.** A window is only valid if every bar in it is exactly ``step_ms`` after the last,
 that is ``run >= (window - 1) * stride + 1`` at the target row. ``min_run`` is one panel-level
-setting passed to :class:`PanelBands` (which drops every row below it) and to
-:class:`DevicePanel` (which refuses a window longer than it), so every model sees the same rows.
+setting of :class:`PanelBands` (which drops every row below it, and every row whose label bar
+is past a forward gap). :class:`DevicePanel` takes the bands, not a number, and refuses a window
+longer than ``bands.min_run``; ``gather`` accepts only rows inside the caller's spans and checks
+``run`` at each target row, so no window reaches back across a gap or into unloaded history.
 
 Wiring is by import path: :data:`NODE_KINDS` is empty. numpy and torch are imported only inside
 methods.
@@ -115,12 +117,6 @@ def _read_columns(panel, columns, sel):
     if not columns:
         return np.zeros((n, 0), dtype=np.float32)
     return np.stack([np.asarray(panel.features[sel, c], dtype=np.float32) for c in columns], axis=1)
-
-
-def _chunks(rows, chunk_rows):
-    """Yield consecutive pieces of an index array, ``chunk_rows`` at most each."""
-    for start in range(0, len(rows), chunk_rows):
-        yield rows[start:start + chunk_rows]
 
 
 def _str_list_problem(name, value):
@@ -555,13 +551,15 @@ class ColumnSelector:
     """Choose feature columns by name and prefix; an ablation arm is one of these.
 
     Start from ``names`` plus every column matching ``prefixes`` (or from all columns when neither
-    is given), then remove ``except_names`` and the columns matching ``except_prefixes``.
+    is given), then remove ``except_names`` and the columns matching ``except_prefixes``. A key
+    that is present must hold at least one entry: an empty list is refused, never read as "no
+    selector", so a computed-empty ablation arm cannot silently become the full model.
 
     Parameters
     ----------
     spec : dict
-        Any of ``names``, ``prefixes``, ``except_names``, ``except_prefixes`` (each a list of
-        non-empty strings). Other keys are refused.
+        Any of ``names``, ``prefixes``, ``except_names``, ``except_prefixes`` (each a non-empty
+        list of non-empty strings; omit a key rather than give it ``[]``). Other keys are refused.
 
     Examples
     --------
@@ -576,6 +574,8 @@ class ColumnSelector:
         reject_unknown_params(problems, spec, _SELECTOR_KEYS)
         for knob in _SELECTOR_KEYS:
             problem = _str_list_problem(knob, spec[knob]) if knob in spec else None
+            if problem is None and knob in spec and not spec[knob]:
+                problem = f"{knob} is empty: omit the key instead (an empty list would select everything)"
             if problem:
                 problems.append(problem)
         if problems:
@@ -625,7 +625,9 @@ class PanelBands:
     * DAY_MS + 1, train_end]``. A fit row is purged when its label reaches the calibration start
     (``label_reaches(t + span, cal_start)``), and the embargo between ``train_end`` and
     ``val_start`` must exceed the label span, so no band's label reaches the next band. A row is
-    eligible only if all its labels are finite and ``run >= min_run``.
+    eligible only if all its labels are finite, ``run >= min_run``, and the bar ``max(horizons)``
+    rows ahead is in its group and ``max(horizons)`` consecutive bars on (a forward gap would move
+    a row-shifted label's real settle time past ``t + span``, past the purge).
 
     Parameters
     ----------
@@ -678,10 +680,20 @@ class PanelBands:
         self.cal_start_ms = train_end_ms - cal_days * DAY_MS + 1
         self._cut(np, span)
 
+    @staticmethod
+    def _label_bar_ahead(np, panel):
+        """Return the mask of rows whose ``max(horizons)``-ahead bar is consecutive with them."""
+        n, h = len(panel.time), max(panel.horizons)
+        ahead = np.zeros(n, dtype=bool)
+        if n > h:
+            ahead[:n - h] = np.asarray(panel.run)[h:] >= h + 1
+        return ahead
+
     def _eligible(self, np):
-        """Return the mask of rows in the assets with all labels finite and ``run >= min_run``."""
+        """Return the mask of rows in the assets with finite labels, ``run >= min_run`` and a label bar ahead."""
         panel = self.panel
         mask = np.isin(panel.group, self.assets) & (np.asarray(panel.run) >= self.min_run)
+        mask &= self._label_bar_ahead(np, panel)
         for start in range(0, len(mask), DEFAULT_CHUNK_ROWS):
             sl = slice(start, start + DEFAULT_CHUNK_ROWS)
             mask[sl] &= np.isfinite(panel.labels[sl]).all(axis=1)
@@ -813,7 +825,9 @@ class PanelScaler:
             raise ValueError(f"missing must be one of {MISSING_STRATEGIES}, got {missing!r}")
         width = len(columns)
         count, mean, m2 = np.zeros(width), np.zeros(width), np.zeros(width)
-        for piece in _chunks(np.asarray(rows), chunk_rows):
+        rows = np.asarray(rows)
+        for start in range(0, len(rows), chunk_rows):
+            piece = rows[start:start + chunk_rows]
             block = _read_columns(panel, columns, piece).astype(np.float64)
             valid = ~np.isnan(block)
             if missing == "refuse" and not valid.all():
@@ -873,32 +887,38 @@ class DevicePanel:
     Only the selected feature and channel columns are uploaded, in chunks straight from the memmap
     (no whole-matrix host copy), over each span extended back by ``(window - 1) * stride`` so the
     first window of a span is complete. A window is never stored as columns: ``gather`` builds
-    ``(B, L, C)`` per batch. Build with :meth:`load`.
+    ``(B, L, C)`` per batch. Only rows inside the caller's spans can be gathered (the back-extension
+    is history, not a target), and only rows whose ``run`` covers the whole window. Build with
+    :meth:`load`.
 
     Examples
     --------
     Load the fit band and gather a batch of 64-bar windows::
 
-        dev = DevicePanel.load(panel, [0, 1], [4, 5], bands.spans("fit"), scaler, "cuda",
-                               window=64, stride=1, min_run=bands.min_run)
+        dev = DevicePanel.load(panel, bands, [0, 1], [4, 5], bands.spans("fit"), scaler, "cuda",
+                               window=64, stride=1)
         batch = dev.gather(torch.as_tensor(bands.fit_idx[:512]))
         batch.seq.shape   # -> (512, 64, 2)
     """
 
     def __init__(self):
         self.x_data = self.seq_data = self.y_data = self.ref_data = self.group_data = None
-        self._los = self._his = self._offs = None
+        self.run_data = None
+        self._los = self._his = self._offs = self._tlos = self._this = None
         self.window = self.stride = 1
         self.device = "cpu"
 
     @classmethod
-    def load(cls, panel, features, channels, spans, scaler, device, window, stride, min_run):
+    def load(cls, panel, bands, features, channels, spans, scaler, device, window, stride):
         """Upload the selected columns over ``spans`` and return the resident panel.
 
         Parameters
         ----------
         panel : ArrayPanel
             The opened panel.
+        bands : PanelBands
+            The bands cut from ``panel``; its ``min_run`` is the one the window is held to, so a
+            caller cannot state a different one.
         features : list of int
             Column indices of the flat per-row features ``x``.
         channels : list of int
@@ -911,8 +931,6 @@ class DevicePanel:
             A torch device name.
         window, stride : int
             Window length ``L`` and bar stride, both ``>= 1``.
-        min_run : int
-            The bands' ``min_run``; the window span ``(window - 1) * stride + 1`` may not exceed it.
 
         Returns
         -------
@@ -921,31 +939,39 @@ class DevicePanel:
         Raises
         ------
         ValueError
-            A window longer than ``min_run``, bad spans, or nothing selected.
+            Bands cut from another panel, a window longer than ``bands.min_run``
+            (``(window - 1) * stride + 1`` bars), bad spans, or nothing selected.
         """
         import numpy as np
         import torch
 
-        need = (window - 1) * stride + 1
+        if bands.panel.directory != panel.directory:
+            raise ValueError("bands were cut from another panel than the one being loaded")
         if window < 1 or stride < 1:
             raise ValueError("window and stride must be >= 1")
-        if need > min_run:
-            raise ValueError(f"window needs {need} consecutive bars but min_run is {min_run}: rows would bridge a gap")
+        need = (window - 1) * stride + 1
+        if need > bands.min_run:
+            raise ValueError(
+                f"window needs {need} consecutive bars but bands.min_run is {bands.min_run}: rows would bridge a gap")
         if not features and not channels:
             raise ValueError("nothing selected: features and channels are both empty")
         merged = cls._merge(spans, (window - 1) * stride if channels else 0, len(panel.time))
+        targets = cls._merge(spans, 0, len(panel.time))
         self = cls()
         self.window, self.stride, self.device = window, stride, device
         sizes = [hi - lo for lo, hi in merged]
         total = sum(sizes)
         self._los = torch.as_tensor([lo for lo, _ in merged], dtype=torch.long, device=device)
         self._his = torch.as_tensor([hi for _, hi in merged], dtype=torch.long, device=device)
+        self._tlos = torch.as_tensor([lo for lo, _ in targets], dtype=torch.long, device=device)
+        self._this = torch.as_tensor([hi for _, hi in targets], dtype=torch.long, device=device)
         self._offs = torch.as_tensor(np.concatenate([[0], np.cumsum(sizes)[:-1]]), dtype=torch.long, device=device)
         self.x_data = torch.empty((total, len(features)), dtype=torch.float32, device=device)
         self.seq_data = torch.empty((total, len(channels)), dtype=torch.float32, device=device) if channels else None
         self.y_data = torch.empty((total, len(panel.horizons)), dtype=torch.float32, device=device)
         self.ref_data = torch.empty(total, dtype=torch.float32, device=device)
         self.group_data = torch.empty(total, dtype=torch.long, device=device)
+        self.run_data = torch.empty(total, dtype=torch.int32, device=device)
         offset = 0
         for lo, hi in merged:
             for start in range(lo, hi, DEFAULT_CHUNK_ROWS):
@@ -986,17 +1012,34 @@ class DevicePanel:
         put(self.y_data, panel.labels[sl].astype("float32"))
         put(self.ref_data, panel.reference[sl].astype("float32"))
         put(self.group_data, panel.group[sl].astype("int64"))
+        put(self.run_data, panel.run[sl].astype("int32"))
 
-    def _local(self, idx):
-        """Map global row indices to local device offsets, refusing a row that was not loaded."""
+    @staticmethod
+    def _inside(los, his, idx):
+        """Return ``(k, ok)``: the last range starting at or before each row, and whether it holds the row."""
         import torch
 
+        k = (torch.searchsorted(los, idx, right=True) - 1).clamp(min=0)
+        return k, (idx >= los[k]) & (idx < his[k])
+
+    def _local(self, idx):
+        """Map global row indices to local device offsets; a row outside the caller's spans refuses."""
         if self._los is None:
             raise ValueError("DevicePanel has been released")
-        k = (torch.searchsorted(self._los, idx, right=True) - 1).clamp(min=0)
-        if ((idx < self._los[k]) | (idx >= self._his[k])).any().item():
-            raise ValueError("gather row not loaded: it is outside every uploaded span")
+        _, wanted = self._inside(self._tlos, self._this, idx)
+        if not wanted.all().item():
+            raise ValueError("gather row not loaded: it is outside every span the caller asked for "
+                             "(the back-extension is history, not a target)")
+        k, _ = self._inside(self._los, self._his, idx)
         return self._offs[k] + idx - self._los[k]
+
+    def _refuse_gap_windows(self, local):
+        """Refuse a target row whose ``run`` is shorter than the window's span."""
+        need = (self.window - 1) * self.stride + 1
+        short = self.run_data[local] < need
+        if short.any().item():
+            raise ValueError(f"gather row's window needs {need} consecutive bars but its run is shorter: "
+                             "the window would bridge a gap")
 
     def gather(self, global_idx):
         """Gather one batch from global row indices.
@@ -1004,7 +1047,7 @@ class DevicePanel:
         Parameters
         ----------
         global_idx : torch.Tensor or array-like
-            Global row indices, all inside a loaded span.
+            Global row indices, all inside a span passed to :meth:`load`.
 
         Returns
         -------
@@ -1015,7 +1058,8 @@ class DevicePanel:
         Raises
         ------
         ValueError
-            A row that was not loaded, or a released panel.
+            A row outside the caller's spans, a row whose window would bridge a gap (its ``run`` is
+            shorter than ``(window - 1) * stride + 1``), or a released panel.
         """
         import torch
 
@@ -1023,6 +1067,7 @@ class DevicePanel:
         local = self._local(idx)
         seq = None
         if self.seq_data is not None:
+            self._refuse_gap_windows(local)
             back = torch.arange(self.window - 1, -1, -1, device=self.device) * self.stride
             seq = self.seq_data[local[:, None] - back]
         return PanelBatch(self.x_data[local], seq, self.y_data[local],
@@ -1031,7 +1076,8 @@ class DevicePanel:
     def release(self):
         """Free the device tensors; the panel cannot gather afterwards."""
         self.x_data = self.seq_data = self.y_data = self.ref_data = self.group_data = None
-        self._los = self._his = self._offs = None
+        self.run_data = None
+        self._los = self._his = self._offs = self._tlos = self._this = None
         if str(self.device).startswith("cuda"):
             import torch
 

@@ -6,6 +6,7 @@ Expected values are restated in plain Python/numpy, independently of the pack.
 
 import itertools
 import math
+from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -322,6 +323,11 @@ def test_selector_all_names_prefixes_and_exclusions(panel):
     {"except_prefixes": ["zzz"]},
     {"names": "f0"},
     {"except_prefixes": ["f", "seq__"]},       # empty result
+    {"names": []},                             # an empty knob is not "no selector"
+    {"prefixes": []},
+    {"except_names": []},
+    {"except_prefixes": []},
+    {"names": [], "prefixes": ["seq__"]},
 ])
 def test_selector_refuses(panel, spec):
     with pytest.raises(ValueError):
@@ -405,6 +411,26 @@ def test_bands_drop_rows_without_labels_or_run(tmp_path):
     assert (panel.group[sorted(rows)] == 10).all()
 
 
+def test_bands_drop_rows_whose_label_bar_is_past_a_forward_gap(tmp_path):
+    hour, n, gap = 3_600_000, 200, 140
+    t = T0 + np.arange(n, dtype=np.int64) * hour
+    t[gap:] += 5 * hour                                  # a gap: rows gap-2, gap-1 label across it
+    cols = {"t": t, "g": np.full(n, 10, dtype=np.int64), "ref": np.ones(n),
+            "y_1": np.ones(n), "y_2": np.ones(n), "f0": np.arange(n, dtype=float)}
+    ArrayPanelWrite("w", {"time": "t", "group": "g", "reference": "ref", "label_prefix": "y_",
+                          "horizons": [1, 2], "step_ms": hour, "path": str(tmp_path / "fg")}
+                    ).run(ctx(tmp_path), {"columns": cols})
+    panel = ArrayPanel.open(str(tmp_path / "fg"))
+    b = PanelBands(panel, [10], int(t[150]), int(t[150]) + panel.label_span_ms + 1,
+                   int(t[-1]) - 2 * hour, cal_days=1, min_run=1)
+    rows = set(np.concatenate([b.fit_idx, b.cal_idx, b.val_idx]).tolist())
+    assert {gap - 2, gap - 1}.isdisjoint(rows)           # label bar sits after the gap
+    assert {gap - 3, gap, gap + 1} <= rows               # labels fully inside a run
+    # every kept row's last label bar really is span ms ahead
+    kept = np.array(sorted(rows))
+    assert (panel.time[kept + 2] - panel.time[kept] == panel.label_span_ms).all()
+
+
 def test_bands_only_include_the_named_assets(tmp_path):
     panel, _, _ = long_panel(tmp_path)
     t = int(panel.time.min())
@@ -465,11 +491,14 @@ L, STRIDE = 4, 2
 NEED = (L - 1) * STRIDE + 1
 
 
+BandsStub = namedtuple("BandsStub", "panel min_run")   # the two attributes DevicePanel.load reads
+
+
 def device_panel(panel, spans, min_run=NEED, features=(0, 1), channels=(4, 5), window=L, stride=STRIDE):
     cols = sorted(set(features) | set(channels))
     scaler = PanelScaler.fit(panel, cols, np.arange(len(panel.time)))
-    return DevicePanel.load(panel, list(features), list(channels), spans, scaler, "cpu",
-                            window=window, stride=stride, min_run=min_run), scaler
+    return DevicePanel.load(panel, BandsStub(panel, min_run), list(features), list(channels), spans,
+                            scaler, "cpu", window=window, stride=stride), scaler
 
 
 def test_gather_equals_an_explicit_slice(panel):
@@ -499,8 +528,10 @@ def test_window_never_reads_rows_after_t(tmp_path):
     pa_, pb = ArrayPanel.open(str(a)), ArrayPanel.open(str(b))
     scaler_cols = [4, 5]
     scaler = PanelScaler.fit(pa_, [0] + scaler_cols, np.arange(60))        # fit rows precede the change
-    ga = DevicePanel.load(pa_, [0], scaler_cols, [(60, 110)], scaler, "cpu", window=L, stride=STRIDE, min_run=NEED)
-    gb = DevicePanel.load(pb, [0], scaler_cols, [(60, 110)], scaler, "cpu", window=L, stride=STRIDE, min_run=NEED)
+    ga = DevicePanel.load(pa_, BandsStub(pa_, NEED), [0], scaler_cols, [(60, 110)], scaler, "cpu",
+                          window=L, stride=STRIDE)
+    gb = DevicePanel.load(pb, BandsStub(pb, NEED), [0], scaler_cols, [(60, 110)], scaler, "cpu",
+                          window=L, stride=STRIDE)
     idx = torch.as_tensor([80])
     np.testing.assert_array_equal(ga.gather(idx).seq.numpy(), gb.gather(idx).seq.numpy())
     assert not np.array_equal(ga.gather(torch.as_tensor([90])).seq.numpy(),
@@ -510,6 +541,42 @@ def test_window_never_reads_rows_after_t(tmp_path):
 def test_window_longer_than_min_run_refuses(panel):
     with pytest.raises(ValueError, match="min_run"):
         device_panel(panel, [(60, 110)], min_run=NEED - 1)
+
+
+def test_gather_refuses_a_row_whose_window_bridges_a_gap(panel):
+    dev, _ = device_panel(panel, [(0, 120)])          # group 10 only; the gap is before row 50
+    dev.gather(torch.as_tensor([50 + NEED - 1]))      # run == NEED: exactly enough
+    for row in (50, 52, 50 + NEED - 2):               # run < NEED: the window would cross the gap
+        with pytest.raises(ValueError, match="gap"):
+            dev.gather(torch.as_tensor([row]))
+
+
+def test_gather_refuses_rows_in_the_back_extension_not_in_the_callers_spans(panel):
+    dev, _ = device_panel(panel, [(60, 110)])         # history is uploaded back to row 60 - 6 = 54
+    for row in (54, 59, 110, 119):
+        with pytest.raises(ValueError, match="not loaded"):
+            dev.gather(torch.as_tensor([row]))
+    dev.gather(torch.as_tensor([60, 109]))
+
+
+def test_gather_extension_refusal_with_a_neighbouring_span(panel):
+    dev, _ = device_panel(panel, [(60, 70), (80, 90)])  # 74..79 are history of the second span only
+    with pytest.raises(ValueError, match="not loaded"):
+        dev.gather(torch.as_tensor([75]))
+    dev.gather(torch.as_tensor([69, 80]))
+
+
+def test_load_takes_min_run_from_the_bands_and_refuses_a_foreign_panel(tmp_path, panel):
+    long, t0, step = long_panel(tmp_path)
+    scaler = PanelScaler.fit(long, [0], np.arange(len(long.time)))
+    narrow = bands_for(long, t0, step, min_run=1)
+    with pytest.raises(ValueError, match="min_run"):
+        DevicePanel.load(long, narrow, [0], [0], narrow.spans("fit"), scaler, "cpu", window=4, stride=2)
+    ok = bands_for(long, t0, step, min_run=3)
+    dev = DevicePanel.load(long, ok, [0], [0], ok.spans("fit"), scaler, "cpu", window=2, stride=1)
+    assert dev.gather(torch.as_tensor(ok.fit_idx[:2])).seq.shape == (2, 2, 1)
+    with pytest.raises(ValueError, match="panel"):
+        DevicePanel.load(panel, ok, [0], [0], [(60, 110)], scaler, "cpu", window=2, stride=1)
 
 
 def test_span_extended_load_equals_the_training_time_gather(panel):
