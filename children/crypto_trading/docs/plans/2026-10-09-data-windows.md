@@ -27,3 +27,16 @@ Open: Aug 1 is where the live Kalshi API's history ends, not a verified
 launch date. The archive pull (`kalshi_history`, runbook 7) may reveal earlier
 15-minute markets. If it does, W2/W3's end and W4's start move to the first
 Kalshi settled market, by owner decision, before W2 is read.
+
+## Predictor target and zoo axes (owner direction 2026-10-09)
+
+- Samples: every minute t, per asset. Target: vol-standardized log return of
+  price from t to t+h, h = 1..15, one model, 15 outputs. At use time only the
+  horizon to the live contract's close is read.
+- The output head is a zoo axis beside the architecture: quantiles (pinball
+  loss), parametric (Student-t) and mixture heads, scored on one common grid
+  (CRPS, pinball, PIT calibration) per horizon on W1 walk-forward folds.
+- Baselines in every comparison: vol-standardized empirical distribution and
+  an EWMA-volatility Student-t. Beating the baseline is the bar.
+- The settlement average and the index-Binance basis are not modelled here;
+  they enter at W4.
