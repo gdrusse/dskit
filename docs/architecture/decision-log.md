@@ -30717,3 +30717,16 @@ irregular-date/tail inclusion and degenerate block refusal; baseline-liquidity b
 **Manifest:** this ADR, existing draft JSON/RE-ENTRY/config tests; demonstrated changes only in named onboarding/pipeline owners with focused tests/docs, child nodes/cdf_study/tests. Reuse reports, no new worksets. Exact new-file manifest settles with G3 before file creation.
 
 ADR0255 intake correction: ParquetStreamRows requires explicit per-source snapshot manifest pins, resolves them through verified_payload_dir and binds declared source, member digests and manifest identity. No implicit latest acquisition or cross-vintage winner. Mixed JSON intake remains a separate gate.
+
+ADR0255 G2 minimal reuse clarification (candidate for scoped review): existing
+onboarded nominal seed11 evaluation score shards already hold the recovered
+Gaussian-mixture curves. Reuse those exact saved forecasts when their verified
+fit/checkpoint identities, all-label cutoff and archived validity interval match.
+Join the frozen panel by symbol/quote_date/expiry with settlement/DTE agreement
+for spot and per-row return scale. Preserve every missing/duplicate refusal and
+source hash. A private preparation recipe uses existing bounded Parquet and
+AtomicFitStore owners; onboard derived replay inputs before consumption.
+This avoids redundant inference infrastructure and does not assert strike-price
+basis compatibility, historical publication proof, or independent qualification.
+Fresh inference remains the archived checkpoint recipe for contexts it supports;
+no later-checkpoint substitution or new fits.

@@ -117401,3 +117401,28 @@ It is not a mixed-JSON reader or a split/deliverable verifier. Upstream source
 and adjustment gates remain. Nine new tests and Ruff pass; review pending.
 Owner's date-only screening question remains pending; do not parse mixed2026
 options records without the specific boundary decision.
+
+### Exact-DTE lock and replay completion lanes
+ExactDteBarChain candidate1e031b3340e05914b059aa5ccde9e04db813e48b:
+Luna /root/luna_dte_correctness:0Critical/0Major/2Minor/0Nit;
+Luna /root/luna_dte_integration:0Critical/0Major/0Minor/0Nit.
+Nine focused cases and Ruff pass (327 affected child tests passed earlier).
+Minor backlog: whitespace-only identities admitted; missing records raises
+KeyError instead of documented ValueError. Neither changes date/source gates.
+No post-lock code edits. Full actual reports are retained in reviewer transcripts.
+
+Owner now explicitly requests autonomous completion through actual replay and
+MIO performance memo. Terra finish_rho_adapter owns cdf_study/tests in isolated
+condor-rho-final-20261008; Terra finish_batch_selector owns child nodes/tests in
+condor-terra-intake-20261008. Preserve the dirty earlier calibration checkout.
+Root handles immutable saved-forecast preparation and final wiring; no new fits.
+Saved seed11 evaluation curves already exist in the onboarded restored-universe
+source. Private preparation recipes preserve failed v1 (wrong byte hash used
+instead of canonical snapshot identity) and corrected v2; no output produced by
+the failed attempt. This is input preparation, not a launched MIO backtest.
+
+The mixed-year option source date-only screening question remains pending.
+No2026 market values or mixed records have been parsed. Complete safe independent
+work while waiting. The fixed calendar-block support rule must remain explicit:
+sparse weekly dates may leave tail dates with zero inclusion and yield null rho.
+Do not hide unsupported calibration, discard its tail, or expand the grid.
