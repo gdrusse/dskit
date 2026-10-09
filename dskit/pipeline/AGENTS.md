@@ -628,6 +628,7 @@ dskit/pipeline/
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
+│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0259)
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0256),
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          user-facing docs
@@ -635,6 +636,11 @@ dskit/pipeline/
 ```
 
 Keep both trees (here and in README.md) current when files change.
+
+**ADR-0259 panel zoo gotchas.** One `min_run` serves every lane (>= the widest `(window-1)*stride+1`); `PanelScore`
+refuses a model that declares another. Labels are stored as given, already divided by their scale; nothing divides
+twice. Head wings / bounds equal the `CommonGrid` values (the grid refuses a mismatch). A lane is `PanelTrain ->
+PanelScore` in a `walkforward` document; the unpooled regime is one lane per asset (a template cannot fan in).
 
 ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
 ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and
