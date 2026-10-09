@@ -4,6 +4,12 @@ Every expected arbitrage is worked by hand in the comments: the legs, the credit
 the position pays nothing net in every outcome the declared relations allow.
 """
 
+import json
+import random
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -272,7 +278,7 @@ def test_a_spread_below_the_floor_is_weighted_at_the_floor():
 
 
 def test_an_unusable_quote_is_marked_and_its_relations_are_skipped_by_name():
-    rows = [contract("k1", 0.50, 0.40), contract("k2", 0.30, 0.32), contract("k3", None, 0.2),
+    rows = [contract("k1", 0.50, 0.40), contract("k2", 0.30, 0.32), contract("k3", "0.3", 0.2),
             contract("k4", 0.10, 0.12)]
     out = run(rows, chains=[["k1", "k2"], ["k2", "k4"]], partitions=[["k3", "k4"]])
     status = {r["id"]: r["coherent_status"] for r in out["records"]}
@@ -288,11 +294,606 @@ def test_a_relation_naming_an_unknown_id_is_skipped_by_name():
     assert out["records"][0]["coherent_status"] == "unrelated"
 
 
-@pytest.mark.parametrize("bid, ask", [(0.5, 1.2), (-0.1, 0.2), (0.5, 0.4), ("0.1", 0.2), (True, 0.2)])
-def test_a_quote_outside_the_unit_interval_crossed_or_not_a_number_is_refused(bid, ask):
+@pytest.mark.parametrize("bid, ask", [
+    (1.2, 1.3), (0.1, -0.2), (0.5, 0.4), ("0.1", 0.2), (True, 0.2), (float("nan"), 0.5), (0.1, float("inf")),
+    (0.1, "0.2"), (0.1, False)])
+def test_a_quote_no_binary_can_honour_crossed_or_not_a_number_is_refused(bid, ask):
     out = run([contract("k1", bid, ask), contract("k2", 0.1, 0.2)], chains=[["k1", "k2"]])
     assert out["records"][0]["coherent_status"] == "bad_quote"
     assert out["summary"]["skipped_relations"][0]["bad_quote"] == ["k1"]
+
+
+# -- independent oracles: written here, never reading the node -------------------------------------------
+
+REPO = Path(__file__).resolve().parents[2]
+GRID = (0.0, 0.25, 0.5, 0.75, 1.0)
+EXTREMES = (0.0, 1e-9, 1e-6, 1e-3, 0.999, 0.999999, 1.0)
+MIN_SPREADS = (0.01, 0.001, 1e-4)
+
+
+def two_sided(bid, ask):
+    """The side rule restated: a sale needs bid > 0, a purchase needs 0 < ask < 1 (and bid <= ask)."""
+    return bid > 0 and 0 < ask < 1
+
+
+def pava_nonincreasing(values, weights):
+    """Weighted pool-adjacent-violators for a NON-INCREASING fit (mids lie in [0, 1]: no clipping needed)."""
+    blocks = []
+    for value, weight in zip(values, weights):
+        blocks.append([value, weight, 1])
+        while len(blocks) > 1 and blocks[-2][0] < blocks[-1][0]:
+            m2, w2, c2 = blocks.pop()
+            m1, w1, c1 = blocks.pop()
+            blocks.append([(m1 * w1 + m2 * w2) / (w1 + w2), w1 + w2, c1 + c2])
+    return [mean for mean, _, count in blocks for _ in range(count)]
+
+
+def water_fill(mids, spreads, at_most):
+    """argmin sum(((p - m) / s)^2) s.t. sum p = 1 (<= 1 when ``at_most``), 0 <= p <= 1: p_i = clip(m_i + lam s_i^2)."""
+    if not mids or (at_most and sum(mids) <= 1.0):
+        return list(mids)
+    scale = [s * s for s in spreads]
+    hi = 1.0 / min(scale) + 1.0
+    lo = -hi
+    for _ in range(400):
+        lam = (lo + hi) / 2
+        if sum(min(1.0, max(0.0, m + lam * c)) for m, c in zip(mids, scale)) < 1.0:
+            lo = lam
+        else:
+            hi = lam
+    return [min(1.0, max(0.0, m + (lo + hi) / 2 * c)) for m, c in zip(mids, scale)]
+
+
+def expected_fair(kind, quotes, min_spread):
+    """The oracle projection of ``quotes`` ((bid, ask) per contract, in relation order); None unless two-sided.
+
+    A contract with a missing side is a free variable: in a chain it drops out (its neighbours only have to
+    be ordered), in a partition it absorbs any shortfall, so the others only need to sum to at most one.
+    """
+    at = [i for i, (bid, ask) in enumerate(quotes) if two_sided(bid, ask)]
+    mids = [(quotes[i][0] + quotes[i][1]) / 2 for i in at]
+    spreads = [max(quotes[i][1] - quotes[i][0], min_spread) for i in at]
+    if kind == "chains":
+        fitted = pava_nonincreasing(mids, [1 / s ** 2 for s in spreads])
+    else:
+        fitted = water_fill(mids, spreads, at_most=len(at) < len(quotes))
+    out = [None] * len(quotes)
+    for i, value in zip(at, fitted):
+        out[i] = value
+    return out
+
+
+def draw_quote(rng):
+    """One (bid, ask) with bid <= ask: uniform, grid (0 and 1 included), zero-spread and extreme-edge draws."""
+    roll = rng.random()
+    if roll < 0.5:
+        bid, ask = sorted((rng.uniform(0.001, 0.999), rng.uniform(0.001, 0.999)))
+        return (bid, bid) if rng.random() < 0.15 else (bid, ask)
+    pool = GRID if roll < 0.8 else EXTREMES
+    return tuple(sorted((rng.choice(pool), rng.choice(pool))))
+
+
+def ladder_cases(kind, count, seed):
+    rng = random.Random(seed)
+    for _ in range(count):
+        quotes = [draw_quote(rng) for _ in range(rng.randint(2, 8))]
+        if kind == "chains" and rng.random() < 0.25:
+            quotes.sort(key=lambda q: -(q[0] + q[1]))   # mids non-increasing: the projection is the identity
+        yield quotes, rng.choice(MIN_SPREADS)
+
+
+def fair_of(out):
+    return {r["id"]: r["coherent"] for r in out["records"]}
+
+
+# -- the solver hang, in a subprocess so a regression fails instead of hanging the suite -------------------
+
+HANG_SCRIPT = """
+import json, sys
+from dskit.pipeline.libs.binary_coherence import BinaryCoherence
+case = json.loads(sys.argv[1])
+params = {"id_field": "id", "bid_field": "bid", "ask_field": "ask", "fair_field": "f", "solver": "highs",
+          "min_spread": case["min_spread"], case["kind"]: [list(case["quotes"])]}
+rows = [{"id": cid, "bid": bid, "ask": ask} for cid, (bid, ask) in case["quotes"].items()]
+out = BinaryCoherence("hang", params).run(None, {"records": rows})
+print(json.dumps({r["id"]: r["f"] for r in out["records"]}))
+"""
+
+# kind, quotes by id, min_spread. HiGHS' QP solver hung on each of these (exact-zero quotes) and on the
+# strictly-positive twins below, which are TWO-SIDED under the side rule, so they still reach the QP.
+VERBATIM_HANGS = {
+    "coherent chain": ("chains", {"a": [0.0, 1.0], "b": [0.0, 0.0]}, 0.01),
+    "partition of three": ("partitions", {"a": [0.5, 0.53], "b": [0.0, 0.0], "c": [0.0, 0.5]}, 1e-4),
+    "partition of four": ("partitions", {"a": [0.0, 0.5], "b": [0.0, 0.0], "c": [0.0, 0.3], "d": [0.0, 0.5]}, 1e-3),
+}
+TWO_SIDED_HANGS = {
+    "coherent chain": ("chains", {"a": [1e-9, 0.999999], "b": [1e-9, 1e-9]}, 0.01),
+    "partition of three": ("partitions", {"a": [0.5, 0.53], "b": [1e-9, 1e-9], "c": [1e-9, 0.5]}, 1e-4),
+    "partition of four": ("partitions",
+                          {"a": [1e-9, 0.5], "b": [1e-9, 1e-9], "c": [1e-9, 0.3], "d": [1e-9, 0.5]}, 1e-3),
+    "wide first bucket": ("partitions", {"a": [0.001, 0.99], "b": [0.3, 0.99], "c": [1e-9, 1e-6]}, 1e-3),
+}
+
+
+def run_in_subprocess(kind, quotes, min_spread):
+    case = {"kind": kind, "quotes": quotes, "min_spread": min_spread}
+    try:
+        done = subprocess.run([sys.executable, "-c", HANG_SCRIPT, json.dumps(case)], cwd=REPO, timeout=60,
+                              capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"the projection did not finish within 60 s (a solver hang): {case}")
+    assert done.returncode == 0, done.stderr[-2000:]
+    return json.loads(done.stdout.splitlines()[-1])
+
+
+@pytest.mark.parametrize("name", sorted(VERBATIM_HANGS))
+def test_quotes_that_hung_the_solver_finish_and_agree_with_the_oracle(name):
+    # exact-zero quotes are one-sided under the side rule: those contracts float, the others are projected
+    kind, quotes, min_spread = VERBATIM_HANGS[name]
+    got = run_in_subprocess(kind, quotes, min_spread)
+    want = expected_fair(kind, [tuple(q) for q in quotes.values()], min_spread)
+    assert [got[cid] for cid in quotes] == [pytest.approx(w, abs=1e-6) if w is not None else None for w in want]
+
+
+@pytest.mark.parametrize("name", sorted(TWO_SIDED_HANGS))
+def test_two_sided_quotes_that_hung_the_solver_finish_with_the_oracles_answer(name):
+    kind, quotes, min_spread = TWO_SIDED_HANGS[name]
+    got = run_in_subprocess(kind, quotes, min_spread)
+    want = expected_fair(kind, [tuple(q) for q in quotes.values()], min_spread)
+    assert all(w is not None for w in want), "every contract here is two-sided"
+    assert [got[cid] for cid in quotes] == [pytest.approx(w, abs=1e-6) for w in want]
+
+
+def test_an_already_coherent_set_that_hung_the_solver_returns_exactly_its_mids():
+    kind, quotes, min_spread = TWO_SIDED_HANGS["coherent chain"]
+    got = run_in_subprocess(kind, quotes, min_spread)
+    assert got == {cid: (bid + ask) / 2 for cid, (bid, ask) in quotes.items()}
+
+
+# -- the projection is the true weighted least-squares point ---------------------------------------------
+
+
+def test_the_projection_is_the_true_weighted_least_squares_point_not_a_scaled_approximation():
+    # a is pinned near 0 with a weight 1e8 times the floor's neighbours'; scaling the objective by that largest
+    # weight made HiGHS return "optimal" b = 0.5501, c = 0.2673, d = 0.1826. Water-filling by hand
+    # (p_i = clip(mid_i + lam / w_i), sum p = 1, w_i = 1 / spread_i^2) gives b 0.61257, c 0.25704, d 0.13040.
+    quotes = [(1e-9, 1e-9), (0.3, 0.7), (0.2, 0.3), (0.01, 0.2)]
+    rows = [contract(cid, bid, ask) for cid, (bid, ask) in zip("abcd", quotes)]
+    fair = fair_of(run(rows, partitions=[list("abcd")], min_spread=1e-4))
+    assert fair["b"] == pytest.approx(0.61257, abs=2e-5)
+    assert fair["c"] == pytest.approx(0.25704, abs=2e-5)
+    assert fair["d"] == pytest.approx(0.13040, abs=2e-5)
+    want = expected_fair("partitions", quotes, 1e-4)
+    assert [fair[cid] for cid in "abcd"] == [pytest.approx(w, abs=1e-6) for w in want]
+    assert sum(fair.values()) == pytest.approx(1.0, abs=1e-7)
+
+
+@pytest.mark.parametrize("kind", ["chains", "partitions"])
+def test_the_projection_matches_an_independent_oracle_on_random_ladders(kind):
+    # chains: weighted pool-adjacent-violators; partitions: water-filling. 150 seeded ladders of 2-8 contracts
+    for n, (quotes, min_spread) in enumerate(ladder_cases(kind, 150, seed=2026)):
+        ids = [f"c{i}" for i in range(len(quotes))]
+        out = run([contract(cid, bid, ask) for cid, (bid, ask) in zip(ids, quotes)], min_spread=min_spread,
+                  **{kind: [ids]})
+        where = f"{kind} case {n}: {quotes} min_spread {min_spread}"
+        for row, want in zip(out["records"], expected_fair(kind, quotes, min_spread)):
+            if want is None:
+                assert row["coherent"] is None and row["coherent_status"] == "bad_quote", where
+            else:
+                assert row["coherent_status"] == "ok", where
+                assert row["coherent"] == pytest.approx(want, abs=1e-6), where
+
+
+# -- an exactly coherent set is returned untouched, without a solve ----------------------------------------
+
+
+def spy_on_solves(monkeypatch):
+    seen = []
+    real = BinaryCoherence._solve
+
+    def spy(self, solver, model):
+        seen.append(model.name)
+        return real(self, solver, model)
+
+    monkeypatch.setattr(BinaryCoherence, "_solve", spy)
+    return seen
+
+
+def test_exactly_coherent_mids_are_returned_unchanged_and_the_projection_is_never_solved(monkeypatch):
+    # mids 0.6 > 0.4 > 0.2 hold exactly (compared on exact fractions of the float mids), so only the LP runs
+    seen = spy_on_solves(monkeypatch)
+    rows = [contract("a", 0.59, 0.61), contract("b", 0.39, 0.41), contract("c", 0.19, 0.21)]
+    out = run(rows, chains=[["a", "b", "c"]])
+    assert len(seen) == 1, f"only the LP is solved, got {seen}"
+    for row in out["records"]:
+        assert row["coherent"] == (row["bid"] + row["ask"]) / 2 and row["coherent_status"] == "ok"
+
+
+def test_mids_coherent_only_to_float_noise_still_run_the_projection_and_come_back_as_the_identity(monkeypatch):
+    # 0.1 + 0.2 + 0.7 is 1 in floats but not in exact arithmetic: no tolerance-based shortcut may skip the QP
+    seen = spy_on_solves(monkeypatch)
+    rows = [contract("a", 0.1, 0.1), contract("b", 0.2, 0.2), contract("c", 0.7, 0.7)]
+    out = run(rows, partitions=[["a", "b", "c"]])
+    assert len(seen) == 2, f"the LP and the projection QP, got {seen}"
+    assert fair_of(out) == {"a": pytest.approx(0.1, abs=1e-6), "b": pytest.approx(0.2, abs=1e-6),
+                            "c": pytest.approx(0.7, abs=1e-6)}
+
+
+def test_one_floating_contract_in_a_relation_still_projects_the_others(monkeypatch):
+    # not every linked contract is two-sided, so the exact-identity shortcut does not apply
+    seen = spy_on_solves(monkeypatch)
+    out = run([contract("a", 0.59, 0.61), contract("b", 0.39, None)], chains=[["a", "b"]])
+    assert len(seen) == 2 and fair_of(out) == {"a": pytest.approx(0.6, abs=1e-6), "b": None}
+
+
+# -- solver limits and refusals ---------------------------------------------------------------------------
+
+
+def test_highs_gets_both_limits_under_the_documents_own_options():
+    assert binary_coherence.HIGHS_SOLVERS == ("highs", "appsi_highs")
+    assert binary_coherence.DEFAULT_QP_ITERATION_LIMIT == 100_000 and binary_coherence.DEFAULT_TIME_LIMIT_S == 60.0
+    for name in ("DEFAULT_QP_ITERATION_LIMIT", "DEFAULT_TIME_LIMIT_S", "HIGHS_SOLVERS", "PROJECTION_TOLERANCE"):
+        assert name in binary_coherence.__all__
+    for solver in binary_coherence.HIGHS_SOLVERS:
+        node = BinaryCoherence("coh", {**BASE, "solver": solver, "chains": [["a", "b"]]})
+        assert node._solver_options() == {"qp_iteration_limit": 100_000, "time_limit": 60.0}
+        own = BinaryCoherence("coh", {**BASE, "solver": solver, "chains": [["a", "b"]],
+                                      "solver_options": {"time_limit": 5.0, "threads": 1}})
+        assert own._solver_options() == {"qp_iteration_limit": 100_000, "time_limit": 5.0, "threads": 1}
+
+
+def test_another_solver_gets_only_the_documents_options_because_its_option_names_differ():
+    node = BinaryCoherence("coh", {**BASE, "solver": "ipopt", "chains": [["a", "b"]]})
+    assert node._solver_options() == {}
+    own = BinaryCoherence("coh", {**BASE, "solver": "ipopt", "chains": [["a", "b"]], "solver_options": {"max_iter": 3}})
+    assert own._solver_options() == {"max_iter": 3}
+
+
+def test_the_limits_reach_the_solver(monkeypatch):
+    seen = {}
+    real = BinaryCoherence._resolve_solver
+
+    def watch(self):
+        solver = real(self)
+        seen.update(dict(solver.options))
+        return solver
+
+    monkeypatch.setattr(BinaryCoherence, "_resolve_solver", watch)
+    run(LADDER, solver_options={"time_limit": 30.0}, **LADDER_RELATIONS)
+    assert seen["qp_iteration_limit"] == 100_000 and seen["time_limit"] == 30.0
+
+
+def test_a_projection_stopped_by_its_iteration_limit_is_refused_by_name():
+    rows = [contract(f"k{i}", 0.05 + 0.1 * (i % 2) * 3 - 0.01, 0.05 + 0.1 * (i % 2) * 3 + 0.01 + 0.005 * i)
+            for i in range(8)]
+    ids = [r["id"] for r in rows]
+    with pytest.raises(RuntimeError, match=r"projection QP.*maxIterations.*solver_options"):
+        run(rows, chains=[ids], solver_options={"qp_iteration_limit": 1})
+
+
+def test_a_limit_stop_names_solver_options_as_the_place_to_raise_it(monkeypatch):
+    class Stopped:
+        class solver:
+            termination_condition = "maxTimeLimit"
+
+    monkeypatch.setattr(BinaryCoherence, "_solve", lambda self, solver, model: Stopped())
+    with pytest.raises(RuntimeError, match="solver_options"):
+        run(LADDER, **LADDER_RELATIONS)
+
+
+def failing_solver(monkeypatch, program):
+    """Make the solver RAISE on the named program ("widening" LP or "projection" QP) and solve the other for real."""
+    real = BinaryCoherence._resolve_solver
+
+    class Wrapper:
+        def __init__(self, solver):
+            self.solver = solver
+
+        def solve(self, model, *args, **kwargs):
+            if program in model.name or (program == "widening" and "projection" not in model.name):
+                raise ValueError("boom: the backend fell over")
+            return self.solver.solve(model, *args, **kwargs)
+
+    monkeypatch.setattr(BinaryCoherence, "_resolve_solver", lambda self: Wrapper(real(self)))
+
+
+@pytest.mark.parametrize("program, label", [("widening", "widening LP"), ("projection", "projection QP")])
+def test_a_solver_exception_is_reraised_naming_the_node_and_the_program(monkeypatch, program, label):
+    failing_solver(monkeypatch, program)
+    with pytest.raises(RuntimeError) as caught:
+        run(LADDER, **LADDER_RELATIONS)
+    message = str(caught.value)
+    assert "coh" in message and label in message and "boom: the backend fell over" in message
+    assert isinstance(caught.value.__cause__, ValueError)
+
+
+def test_an_optimal_projection_that_breaks_a_relation_is_refused_by_name(monkeypatch):
+    class Optimal:
+        class solver:
+            termination_condition = "optimal"
+
+    real = BinaryCoherence._solve
+
+    def lying(self, solver, model):
+        # the projection "solves" without moving: every variable stays at its start, the mids, which break the chain
+        return Optimal() if "projection" in model.name else real(self, solver, model)
+
+    monkeypatch.setattr(BinaryCoherence, "_solve", lying)
+    assert binary_coherence.PROJECTION_TOLERANCE == 1e-7
+    with pytest.raises(RuntimeError, match=r"projection QP.*chains\[0\]|chains\[0\].*projection QP"):
+        run([contract("k100", 0.38, 0.40), contract("k110", 0.45, 0.47)], chains=[["k100", "k110"]])
+
+
+# -- the side rule: one reading of a quote (ruling B) ------------------------------------------------------
+
+# (bid, ask, which side is usable): a chain puts the contract where only its usable side can matter
+ONE_SIDED = [
+    pytest.param(0.4, None, "sale", id="bid only"),
+    pytest.param(1.0, None, "sale", id="bid of one is a sale at one"),
+    pytest.param(0.4, 0.0, "sale", id="an ask of zero is no offer"),
+    pytest.param(0.4, 1.0, "sale", id="an ask of one is non-binding"),
+    pytest.param(0.4, 1.2, "sale", id="an ask above one is non-binding"),
+    pytest.param(None, 0.6, "purchase", id="ask only"),
+    pytest.param(0.0, 0.6, "purchase", id="a bid of zero is no sale"),
+    pytest.param(-0.1, 0.6, "purchase", id="a negative bid is no sale"),
+]
+
+
+@pytest.mark.parametrize("bid, ask, usable", ONE_SIDED)
+def test_a_one_sided_contract_stays_in_its_relation_floats_and_never_trades_its_missing_side(bid, ask, usable):
+    if usable == "sale":
+        # x <= y <= 0.15 yet x bids `bid`: sell x at its bid, buy y at 0.15
+        rows, chains = [contract("y", 0.10, 0.15), contract("x", bid, ask)], [["y", "x"]]
+        want = {"x": ("sell", bid), "y": ("buy", 0.15)}
+    else:
+        # x >= y >= 0.70 yet x asks `ask`: buy x at its ask, sell y at 0.70
+        rows, chains = [contract("x", bid, ask), contract("y", 0.70, 0.72)], [["x", "y"]]
+        want = {"x": ("buy", ask), "y": ("sell", 0.70)}
+    out = run(rows, chains=chains)
+    arb = out["arbitrage"]
+    assert arb["feasible"] is False
+    assert {leg["id"]: (leg["side"], leg["price"]) for leg in arb["legs"]} == want
+    assert arb["credit_per_unit"] == pytest.approx(abs(want["x"][1] - want["y"][1]))
+    assert out["summary"]["skipped_relations"] == [] and out["summary"]["relations"] == 1
+    status = {r["id"]: r["coherent_status"] for r in out["records"]}
+    assert status == {"x": "bad_quote", "y": "ok"}
+    assert fair_of(out)["x"] is None and fair_of(out)["y"] is not None
+
+
+def test_two_one_sided_contracts_trade_only_the_sides_they_have():
+    # a only asks 0.50, b only bids 0.60, a >= b: buy a at 0.50, sell b at 0.60, credit 0.10; neither is projected
+    out = run([contract("a", None, 0.50), contract("b", 0.60, None)], chains=[["a", "b"]])
+    arb = out["arbitrage"]
+    assert arb["feasible"] is False and arb["credit_per_unit"] == pytest.approx(0.10)
+    assert {leg["id"]: (leg["side"], leg["price"]) for leg in arb["legs"]} == {"a": ("buy", 0.50), "b": ("sell", 0.60)}
+    assert [r["coherent_status"] for r in out["records"]] == ["bad_quote", "bad_quote"]
+    assert [r["coherent"] for r in out["records"]] == [None, None]
+    assert out["summary"]["projected"] == 0
+
+
+def test_a_zero_ask_is_no_offer_never_a_free_contract():
+    # a (0, 0) used to report "buy a at 0.0" to complete the partition; it floats, so the set is feasible
+    out = run([contract("a", 0.0, 0.0), contract("b", 0.5, 0.6)], partitions=[["a", "b"]])
+    arb = out["arbitrage"]
+    assert arb["feasible"] is True and arb["legs"] == [] and arb["relations"] == []
+    status = {r["id"]: r["coherent_status"] for r in out["records"]}
+    assert status == {"a": "bad_quote", "b": "ok"}
+    assert fair_of(out)["a"] is None and fair_of(out)["b"] == pytest.approx(0.55, abs=1e-6)
+
+
+def test_contracts_with_no_usable_side_at_all_leave_the_relation_feasible_and_unsolved(monkeypatch):
+    seen = spy_on_solves(monkeypatch)
+    out = run([contract("a", None, None), contract("b", 0.0, 0.0), contract("c", -1.0, 1.0)],
+              partitions=[["a", "b", "c"]])
+    assert out["arbitrage"]["feasible"] is True and out["summary"]["relations"] == 1
+    assert [r["coherent_status"] for r in out["records"]] == ["bad_quote"] * 3
+    assert len(seen) == 1, f"nothing to project, so no projection QP: {seen}"
+
+
+def test_a_one_sided_contract_outside_every_relation_is_still_reported_bad_quote():
+    out = run([contract("a", 0.4, None), contract("k1", 0.5, 0.52), contract("k2", 0.4, 0.42)], chains=[["k1", "k2"]])
+    assert [r["coherent_status"] for r in out["records"]] == ["bad_quote", "ok", "ok"]
+    assert out["records"][0]["coherent"] is None
+
+
+@pytest.mark.parametrize("bid, ask", [(1.0000001, None), (None, -0.1), (0.2, 0.1)])
+def test_a_problem_on_one_side_alone_is_refused_and_skips_its_relation_by_name(bid, ask):
+    out = run([contract("k1", bid, ask), contract("k2", 0.1, 0.2)], chains=[["k1", "k2"]])
+    assert out["records"][0]["coherent_status"] == "bad_quote"
+    assert out["summary"]["skipped_relations"][0]["bad_quote"] == ["k1"] and out["summary"]["relations"] == 0
+
+
+# -- every relation encoding at every position (the family D4 names) --------------------------------------
+
+
+def chain_quotes(n):
+    """A coherent n-chain: mids 0.9, 0.75, ... each quoted +/-0.01."""
+    mids = [round(0.9 - 0.15 * j, 2) for j in range(n)]
+    return [[round(m - 0.01, 2), round(m + 0.01, 2)] for m in mids]
+
+
+def rows_of(ids, quotes):
+    return [contract(cid, bid, ask) for cid, (bid, ask) in zip(ids, quotes)]
+
+
+CHAIN_POSITIONS = [(n, k) for n in range(2, 6) for k in range(n - 1)]
+
+
+@pytest.mark.parametrize("n, k", CHAIN_POSITIONS)
+def test_a_chain_inversion_is_found_at_each_adjacent_position(n, k):
+    # the bid of contract k+1 sits 0.05 above the ask of contract k: sell k+1 at its bid, buy k at its ask
+    ids, quotes = [f"c{j}" for j in range(n)], chain_quotes(n)
+    quotes[k + 1] = [quotes[k][1] + 0.05, quotes[k][1] + 0.07]
+    arb = run(rows_of(ids, quotes), chains=[ids])["arbitrage"]
+    assert arb["feasible"] is False and arb["violation"] == pytest.approx(0.05, abs=1e-9)
+    assert {leg["id"]: (leg["side"], leg["units"], leg["price"]) for leg in arb["legs"]} == {
+        ids[k + 1]: ("sell", pytest.approx(1.0), quotes[k + 1][0]), ids[k]: ("buy", pytest.approx(1.0), quotes[k][1])}
+    assert arb["credit_per_unit"] == pytest.approx(quotes[k + 1][0] - quotes[k][1])
+    assert arb["relations"] == [{"kind": "chains", "index": 0, "ids": ids}]
+
+
+@pytest.mark.parametrize("n, k", CHAIN_POSITIONS)
+def test_a_chain_whose_neighbours_just_touch_is_feasible_at_each_adjacent_position(n, k):
+    ids, quotes = [f"c{j}" for j in range(n)], chain_quotes(n)
+    quotes[k + 1] = [quotes[k][1], quotes[k][1] + 0.02]     # bid of k+1 == ask of k, exactly
+    arb = run(rows_of(ids, quotes), chains=[ids])["arbitrage"]
+    assert arb["feasible"] is True and arb["legs"] == [] and arb["relations"] == []
+
+
+PARTITION_POSITIONS = [(n, k, way) for n in range(2, 6) for k in range(n) for way in ("sell", "buy")]
+
+
+@pytest.mark.parametrize("n, k, way", PARTITION_POSITIONS)
+def test_a_partition_arbitrage_is_found_whichever_bucket_carries_the_excess(n, k, way):
+    ids, mid = [f"b{j}" for j in range(n)], 1.0 / n
+    quotes = [[mid - 0.01, mid + 0.01] for _ in ids]        # bids sum to 1 - 0.01 n, asks to 1 + 0.01 n
+    if way == "sell":                                        # bids sum to 1.03
+        quotes[k] = [mid + 0.01 * n + 0.02, mid + 0.01 * n + 0.04]
+    else:                                                    # asks sum to 0.97
+        quotes[k] = [mid - 0.01 * n - 0.04, mid - 0.01 * n - 0.02]
+    arb = run(rows_of(ids, quotes), partitions=[ids])["arbitrage"]
+    assert arb["feasible"] is False and arb["violation"] == pytest.approx(0.03, abs=1e-9)
+    side, price = ("sell", 0) if way == "sell" else ("buy", 1)
+    assert {leg["id"]: (leg["side"], leg["units"], leg["price"]) for leg in arb["legs"]} == {
+        cid: (side, pytest.approx(1.0), q[price]) for cid, q in zip(ids, quotes)}
+    assert arb["relations"] == [{"kind": "partitions", "index": 0, "ids": ids}]
+
+
+def test_a_difference_is_found_in_each_of_its_two_directions():
+    # X = A - B. Direction 1: X bids 0.35 over A - B <= ask A - bid B = 0.32: sell X, buy A, sell B.
+    over = run([contract("A", 0.50, 0.52), contract("B", 0.20, 0.22), contract("X", 0.35, 0.37)],
+               differences=[["X", "A", "B"]])["arbitrage"]
+    assert {leg["id"]: (leg["side"], leg["price"]) for leg in over["legs"]} == {
+        "X": ("sell", 0.35), "A": ("buy", 0.52), "B": ("sell", 0.20)}
+    assert over["credit_per_unit"] == pytest.approx(0.03)
+    # Direction 2: X asks 0.25 under A - B >= bid A - ask B = 0.28: buy X, sell A, buy B.
+    under = run([contract("A", 0.50, 0.52), contract("B", 0.20, 0.22), contract("X", 0.23, 0.25)],
+                differences=[["X", "A", "B"]])["arbitrage"]
+    assert {leg["id"]: (leg["side"], leg["price"]) for leg in under["legs"]} == {
+        "X": ("buy", 0.25), "A": ("sell", 0.50), "B": ("buy", 0.22)}
+    assert under["credit_per_unit"] == pytest.approx(0.03)
+    assert [r["index"] for r in over["relations"] + under["relations"]] == [0, 0]
+
+
+RELATION_IDS = [("chains", ["c0", "c1", "c2"]), ("partitions", ["b0", "b1", "b2"]), ("differences", ["X", "A", "B"])]
+RELATION_POSITIONS = [(kind, ids, i) for kind, ids in RELATION_IDS for i in range(3)]
+GOOD_QUOTES = {"c0": (0.8, 0.82), "c1": (0.5, 0.52), "c2": (0.2, 0.22), "b0": (0.3, 0.32), "b1": (0.3, 0.32),
+               "b2": (0.3, 0.32), "X": (0.3, 0.32), "A": (0.8, 0.82), "B": (0.5, 0.52)}
+
+
+@pytest.mark.parametrize("kind, ids, i", RELATION_POSITIONS)
+def test_a_relation_is_skipped_naming_whichever_of_its_ids_has_no_row(kind, ids, i):
+    rows = [contract(cid, *GOOD_QUOTES[cid]) for j, cid in enumerate(ids) if j != i]
+    out = run(rows, **{kind: [ids]})
+    assert out["summary"]["skipped_relations"] == [
+        {"kind": kind, "index": 0, "ids": ids, "missing": [ids[i]], "bad_quote": []}]
+    assert out["summary"]["relations"] == 0 and out["arbitrage"]["feasible"] is True
+    assert {r["coherent_status"] for r in out["records"]} == {"unrelated"}
+
+
+@pytest.mark.parametrize("kind, ids, i", RELATION_POSITIONS)
+def test_a_relation_is_skipped_naming_whichever_of_its_ids_has_an_unusable_quote(kind, ids, i):
+    rows = [contract(cid, *GOOD_QUOTES[cid]) for cid in ids]
+    rows[i] = contract(ids[i], 0.6, 0.4)                    # crossed
+    out = run(rows, **{kind: [ids]})
+    assert out["summary"]["skipped_relations"] == [
+        {"kind": kind, "index": 0, "ids": ids, "missing": [], "bad_quote": [ids[i]]}]
+    assert out["records"][i]["coherent_status"] == "bad_quote"
+    assert out["summary"]["relations"] == 0 and out["arbitrage"]["feasible"] is True
+
+
+# -- a reported position pays in the worst outcome, on random strike worlds -----------------------------
+
+
+def strike_world(m):
+    """Contracts on strikes K1 < ... < Km; the m + 1 regions are S < K1, K_j <= S < K_{j+1}, S >= Km.
+
+    Returns ``(payout, chain, differences, partition)``: each contract's payout per region and the
+    relations that are TRUE in this world (above_j pays in regions j.., between_j in region j, below in 0).
+    """
+    regions = range(m + 1)
+    payout = {f"above{j}": [int(r >= j) for r in regions] for j in range(1, m + 1)}
+    payout.update({f"between{j}": [int(r == j) for r in regions] for j in range(1, m)})
+    payout["below"] = [int(r == 0) for r in regions]
+    chain = [f"above{j}" for j in range(1, m + 1)]
+    differences = [[f"between{j}", f"above{j}", f"above{j + 1}"] for j in range(1, m)]
+    partition = ["below", *[f"between{j}" for j in range(1, m)], f"above{m}"]
+    return payout, chain, differences, partition
+
+
+def coherent_quotes(rng, count, ordered):
+    """Quotes that bracket one coherent point: sorted descending (a chain) or summing to one (a partition)."""
+    raw = [rng.random() + 0.05 for _ in range(count)]
+    points = sorted(raw, reverse=True) if ordered else [x / sum(raw) for x in raw]
+    if ordered:
+        points = [p / max(raw) * 0.95 for p in points]
+    half = rng.choice((0.0, 0.005, 0.02))
+    return [(p - half, p + half) for p in points]
+
+
+def world_quotes(rng, ids, family):
+    if rng.random() < 0.35:
+        return coherent_quotes(rng, len(ids), ordered=family == "chains")
+    return [draw_quote(rng) for _ in ids]
+
+
+def worst_region_profit(arb, payout):
+    """The position's profit in the worst region, recomputed from its legs alone."""
+    credit = sum(leg["units"] * leg["price"] * (1 if leg["side"] == "sell" else -1) for leg in arb["legs"])
+    assert credit == pytest.approx(arb["credit_per_unit"], abs=1e-9)
+    regions = len(next(iter(payout.values())))
+    return min(credit + sum(leg["units"] * payout[leg["id"]][r] * (1 if leg["side"] == "buy" else -1)
+                            for leg in arb["legs"]) for r in range(regions))
+
+
+def bounds_of(bid, ask):
+    """The probability interval a quote allows under the side rule: bid binds above 0, ask binds below 1."""
+    return (bid if 0 < bid <= 1 else 0.0), (ask if 0 < ask < 1 else 1.0)
+
+
+VERDICT_SLACK = 1e-7   # the default tolerance restated: a violation at or below it is read as coherent
+
+
+def chain_feasible(quotes):
+    """Greedy: keep each p as large as the asks and the chain allow; feasible iff it still meets every bid."""
+    p = 1.0
+    for bid, ask in quotes:
+        lo, hi = bounds_of(bid, ask)
+        p = min(p, hi)
+        if p < lo - VERDICT_SLACK:
+            return False
+    return True
+
+
+def partition_feasible(quotes):
+    limits = [bounds_of(bid, ask) for bid, ask in quotes]
+    return sum(lo for lo, _ in limits) <= 1 + VERDICT_SLACK and sum(hi for _, hi in limits) >= 1 - VERDICT_SLACK
+
+
+@pytest.mark.parametrize("family", ["chains", "partitions", "all"])
+def test_every_reported_riskless_position_pays_in_the_worst_outcome(family):
+    rng = random.Random(f"strike worlds {family}")
+    verdicts = {True: 0, False: 0}
+    for case in range(120):
+        payout, chain, differences, partition = strike_world(rng.randint(2, 4))
+        if family == "chains":
+            ids, relations = chain, {"chains": [chain]}
+        elif family == "partitions":
+            ids, relations = partition, {"partitions": [partition]}
+        else:
+            ids, relations = list(payout), {"chains": [chain], "differences": differences, "partitions": [partition]}
+        quotes = world_quotes(rng, ids, family)
+        where = f"{family} case {case}: {dict(zip(ids, quotes))}"
+        arb = run(rows_of(ids, quotes), **relations)["arbitrage"]
+        verdicts[arb["feasible"]] += 1
+        if family == "chains":
+            assert arb["feasible"] is chain_feasible(quotes), where
+        if family == "partitions":
+            assert arb["feasible"] is partition_feasible(quotes), where
+        if not arb["feasible"]:
+            worst = worst_region_profit(arb, payout)
+            assert worst > 0 and worst >= arb["violation"] - 1e-7, where
+    assert verdicts[True] > 5 and verdicts[False] > 5, f"the draws must reach both verdicts, got {verdicts}"
 
 
 # -- params and contract -------------------------------------------------------------------------------
@@ -326,7 +927,7 @@ def test_every_required_knob_is_named_when_missing(name):
 
 def test_a_solver_that_cannot_take_the_quadratic_projection_is_refused_by_name():
     # pyomo's appsi HiGHS interface refuses a degree-2 objective; the refusal must name the projection
-    with pytest.raises(RuntimeError, match="quadratic projection"):
+    with pytest.raises(RuntimeError, match="coh.*projection QP.*quadratic objective"):
         run(LADDER, solver="appsi_highs", **LADDER_RELATIONS)
 
 
