@@ -169,7 +169,7 @@ crypto_trading/           # tier-3 code: connectors.py, nodes.py, and the four
                        #   production seams — execution / accounting /
                        #   approvals / coordination, all fail-closed;
                        #   stage B: fields, clock, kalshi_rows, decisions, anchors,
-                       #   ports, spot_features, market_state, fees (the Kalshi
+                       #   ports, spot_features, minute_features, market_state, fees (the Kalshi
                        #   mapping over dskit's fee mechanics; see the section above)
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample, plus stage A:

@@ -51,6 +51,7 @@ held-out cut are the 15-minute document's, pinned equal by tests. Its rows also 
 | `anchors:StrikeAnchors` | the up/down strikes as observations of the settlement index (the strike IS the index's 60-second average at the open) |
 | `dskit.pipeline.libs.parquet_series:StreamManifests` | puts the Binance streams into the run identity (ADR-0243) |
 | `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol (dskit's variance estimators, ADR-0244, square-rooted here) and BVOL, all strictly before the decision; an anchor outside `basis_range` and a strike beyond `max_abs_log_moneyness` of `spot_brti` (the archive holds strikes off by 10,000) are refused, counted in the provenance, and leave the row unpriced |
+| `minute_features:MinuteFeatures` | the predictor's rows (plan 2026-10-09-data-windows.md): per asset and minute t, `ret` / `vol` (dskit's estimators) / `flow` / `clock` (UTC) / `xasset` / `bvol` columns named `<family>__<name>` (a kept-families list drops a family by prefix), plus `scale` (the 60-minute RMS known at t) and labels `y_h1..y_h15 = ln(close(t+h)/close(t))/scale`; only bars closed by t; a minute with a gap in any window is refused by name and counted in the provenance (no fill), a label with a missing t+h bar is None; the row set does not depend on the families. Arms: `configs/features-arms.json` |
 | `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from the candle that ended by I (the spot bar's minute) |
 | `dskit.pipeline.binary_pricing:BinaryFairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance, priced from the fill (ADR-0246) |
 | `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream: the Kalshi fee-type mapping (`fee_types`: base rate and mechanic) over dskit's `fee_mechanics` (ADR-0245), rounded per order |
@@ -218,6 +219,7 @@ crypto_trading/
 │   ├── anchors.py         # stage B: StrikeAnchors, strikes as index observations
 │   ├── spot_features.py   # stage B: point-in-time spot, vol, BVOL, moneyness
 │   ├── market_state.py    # stage B: quote state from ended candles
+│   ├── minute_features.py # stage B: per-minute feature families + 15-horizon labels (no Kalshi data)
 │   ├── fees.py            # stage B: FeeColumns, the Kalshi fee-type mapping over dskit's fee mechanics
 │   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
 │   ├── nodes.py           # pipeline seam: node kinds, default-deny params
@@ -249,7 +251,8 @@ crypto_trading/
 │   ├── run-features-15m.json             # stage B: the feature table and kill-test document
 │   ├── source-features-15m.json          # stage B: localtables registration of the written table
 │   ├── run-features-hourly.json          # stage B: the hourly ladders, same nodes (own anchors and sources)
-│   └── source-features-hourly.json       # stage B: localtables registration of the hourly table
+│   ├── source-features-hourly.json       # stage B: localtables registration of the hourly table
+│   └── features-arms.json                # predictor: family-ablation arms (kept-family lists), pinned to the node
 ├── models/                # fitted ML/optimization artifacts (gitignored)
 │   ├── README.md          # what belongs here vs the run directory
 │   ├── .gitignore         # artifacts are rebuilt, never committed
@@ -287,6 +290,7 @@ crypto_trading/
     ├── test_hourly_pipeline.py # run-features-hourly.json end to end, with differential leak tests
     ├── test_runbook.py    # every runbook register / pull line is real; its snippets run
     ├── test_market_state.py # candle state and the no-peeking rule
+    ├── test_minute_features.py # minute features: point-in-time, gaps, family arms (synthetic bars)
     ├── test_spot_features.py # strict-prior leak tests with a control
     ├── test_zero_edge.py  # a zero-edge world scores zero edge; a stale quote does not
     ├── test_guard_pins.py # edge-of-data and degenerate-input guards, each pinned by one case

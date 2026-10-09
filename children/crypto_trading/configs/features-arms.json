@@ -1,0 +1,55 @@
+{
+  "notes": "Family-ablation arms for the minute-feature predictor (plan 2026-10-09-data-windows.md, 'Feature families and selection'). Each arm is the list of KEPT families, passed as the `families` param of crypto_trading.minute_features:MinuteFeatures; a dropped family loses every column with its `<family>__` prefix and nothing else, so labels, scale and the row set are identical in every arm. Run `all`, then each `minus_*` arm on the same folds and seeds; keep a family only if dropping it hurts beyond fold noise. `xasset` is the other asset's ret/vol columns and is a separate family from `ret`/`vol`. `bvol` is an ablation family (26 missing days). tests/test_minute_features.py pins these lists to the node's declared FAMILIES, so a renamed or added family fails there until this file follows.",
+  "arms": {
+    "all": [
+      "ret",
+      "vol",
+      "flow",
+      "clock",
+      "xasset",
+      "bvol"
+    ],
+    "minus_ret": [
+      "vol",
+      "flow",
+      "clock",
+      "xasset",
+      "bvol"
+    ],
+    "minus_vol": [
+      "ret",
+      "flow",
+      "clock",
+      "xasset",
+      "bvol"
+    ],
+    "minus_flow": [
+      "ret",
+      "vol",
+      "clock",
+      "xasset",
+      "bvol"
+    ],
+    "minus_clock": [
+      "ret",
+      "vol",
+      "flow",
+      "xasset",
+      "bvol"
+    ],
+    "minus_xasset": [
+      "ret",
+      "vol",
+      "flow",
+      "clock",
+      "bvol"
+    ],
+    "minus_bvol": [
+      "ret",
+      "vol",
+      "flow",
+      "clock",
+      "xasset"
+    ]
+  }
+}
