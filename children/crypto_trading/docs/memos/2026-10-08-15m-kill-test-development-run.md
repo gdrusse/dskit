@@ -7,14 +7,14 @@ fair-value models beat the Kalshi market's own mid-price: every Brier and
 log-loss difference is positive (worse than the market), by 4.5 to 6.1 standard
 errors on Brier. The buy-at-the-touch rule does not make money after fees
 (-1.20 cents per trade for the implied-vol model; about zero for the other two).
-Nothing here justifies reading the held-out segment. This is a development read
+Whether to read the held-out segment is an owner decision (runbook B5). This is a development read
 only: held-out was deliberately not enabled, the profit figures are an upper
 bound, and the scope is narrow (three specific formulas, one regime of about 45
 days, and one comparator, the market mid).
 
 In plain terms: we asked "can a simple formula predict whether Bitcoin or Ether
 ends a 15-minute window up or down better than the betting market already does?"
-On the data we are allowed to look at, the answer is no.
+On the development data, with these three formulas, the answer is no.
 
 ## Execution contract
 
@@ -277,9 +277,9 @@ Known issues) and not removed by this run:
   ETH candles `531b1a4ac8eaa943ee24b562c5b51dde9b973d3e4e252f0640d9a69fac41d261`,
   fee schedules `cbb15ebbda1fd2f99860a23d896c2cf491619fedb06a6b59af8ea416c3927a7b`.
   The written table's sha256 begins `5ee576854947` (from the run log).
-- Git state: nothing committed. Uncommitted changes are the journal edits to
+- Git state: committed on branch `crypto-killtest-20261007` (journal edits to
   `children/crypto_trading/docs/decisioning/README.md` and `actions.csv`, plus
-  this memo (new). The pipeline run directory and the data store are ignored
+  this memo). The pipeline run directory and the data store are ignored
   artifacts, not tracked.
 - Held-out status: read into the table and counted, but not scored or reported
   (13,044 eligible rows after 2026-09-15; the labelled rows are in the
@@ -289,10 +289,10 @@ Known issues) and not removed by this run:
   never move the cut or retune. Runbook B5 (lines 305 to 311) says only a
   negative held-out Brier difference with a positive after-fee profit,
   each by a few block-clustered standard errors, survives. That is runbook
-  text. That reading step is not warranted is this memo's own judgement: on
-  the pooled development numbers no model shows a negative Brier difference
-  or a positive after-fee profit. The lead-2 P&L cells are positive, but not
-  alongside a better Brier. Before any B5, close the held-out coverage hole.
+  text. On the pooled development numbers no model shows a negative Brier
+  difference or a positive after-fee profit; the lead-2 P&L cells are positive
+  but not alongside a better Brier. Whether to read held-out is left to the
+  owner. Before any B5, close the held-out coverage hole.
 - Open items: investigate the failing runbook test (`No module named 'dskit'`
   in the temp `bin/python`); decide whether the 10 strike-type and 26 BVOL-file
   warnings need a look; verify the BVOL 365-day year before any hourly work.

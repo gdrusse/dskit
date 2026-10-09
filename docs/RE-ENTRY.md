@@ -55,14 +55,19 @@ The per-ADR backlog is in `TODO.md`.
 - Optional ADRs: a date bound for `kalshi_history` pulls, an open-to-close duration filter for the hourly
   document, and a memory budget refusal for hourly runs. The runbook's B6 gives about 9.7 KB a decision row.
 
-**Next (on WSL).** `git pull` main. Follow `children/crypto_trading/docs/plans/2026-10-06-wsl-data-pull-runbook.md`
-in order:
-1. Stage A acquisitions.
-2. The 15-minute features run (B1-B5).
-3. Read the development kill-test report.
-4. Only then decide on held-out.
-
-Pull the 15-minute trades (about 6-8 days, 52 GB) and the hourly history last.
+**Update 2026-10-08 (WSL run done).** Owner confirmed leads [2,5,10], cut 2026-09-15, margin 0.02, exec lag 5 s,
+strike lag 30 s, `$OB=/home/russell/data/crypto_trading/ob`. Stage A (fees, markets, Binance klines + BVOL,
+Kalshi 15M candles) pulled and gated with no blocks (expected warnings only); `run-features-15m.json` exit 0,
+38,724 rows published as source `features-15m`; `verify` clean (9 snapshots). Development kill test: fair_rms,
+fair_ewma, fair_bvol Brier diffs vs the mid +0.0034/+0.0030/+0.0149 (block SE 0.0007/0.0007/0.0024); take P&L per
+trade -0.0006/-0.0005/-0.0120 (SE 0.0043/0.0048/0.0046); lead-2 P&L positive for all three (exploratory).
+Held-out NOT enabled. Memo: `children/crypto_trading/docs/memos/2026-10-08-15m-kill-test-development-run.md`
+(skeptic-reviewed, 0 Critical/Major). Limits: development-only, ~45 days, three formulas, one comparator; fills
+are an upper bound. Open: held-out coverage hole (1,178 held-out rows lack forecasts; Binance/BVOL end
+2026-10-05; re-pull stage A before any B5); child test
+`test_the_sizing_copy_runs_as_pasted_and_is_repeatable_after_a_failed_attempt` fails in a fresh venv
+(`No module named 'dskit'`, uninvestigated). Unrun: 15M trades (7e), hourly history (7a-7d), B6, live books,
+Coinbase/Deribit. Held-out and any follow-up are owner decisions.
 
 # Continuation — 2026-10-07: explicit MIO handoff and Stage-0 census
 
