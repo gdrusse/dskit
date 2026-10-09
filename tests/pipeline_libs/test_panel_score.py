@@ -52,6 +52,7 @@ BOUNDS = {"train_end_ms": CUT - DAY_MS - 1, "val_start_ms": CUT, "val_end_ms": C
 GRID = {"z_min": -12.0, "z_max": 12.0, "z_points": 401, "levels": [0.1, 0.5, 0.9],
         "tail_intervals": [[-12.0, -2.0], [2.0, 12.0]]}
 TAIL_WEIGHT = 0.5
+EARLY_END_DAYS = 20
 
 
 def make_columns(seed=0):
@@ -74,10 +75,8 @@ def ctx(tmp_path):
     return NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path))
 
 
-@pytest.fixture(scope="module")
-def store(tmp_path_factory):
-    """A real onboarding store holding one registered panel; yields its source spec."""
-    base = tmp_path_factory.mktemp("store")
+def build_store(base, columns):
+    """Register ``columns`` as one onboarding panel under ``base``; returns its source spec."""
     ticks = itertools.count()
     start = datetime(2026, 6, 1, 12, tzinfo=timezone.utc)
     patch = pytest.MonkeyPatch()
@@ -88,7 +87,7 @@ def store(tmp_path_factory):
         archive.mkdir()
         ArrayPanelWrite("w", {"time": "t", "group": "g", "reference": "ref", "label_prefix": "y_",
                               "horizons": HORIZONS, "step_ms": STEP, "path": str(archive / "px")}
-                        ).run(ctx(base), {"columns": make_columns()})
+                        ).run(ctx(base), {"columns": columns})
         root = OnboardingRoot.create(str(base / "ob"))
         registry = root.registry()
         vid = registry.register("source_config", {
@@ -96,9 +95,23 @@ def store(tmp_path_factory):
             "config": {"path": str(archive), "as_of": "2026-01-01T00:00:00+00:00"}}, origin="test")
         registry.transition(vid, "active", origin="test")
         run_acquisition(root, registry, "blobs", "files", "backfill")
-        yield {"root": root.root, "source": "blobs", "stream": "files", "relpath": "px"}
+        return {"root": root.root, "source": "blobs", "stream": "files", "relpath": "px"}
     finally:
         patch.undo()
+
+
+@pytest.fixture(scope="module")
+def store(tmp_path_factory):
+    """A real onboarding store holding one registered panel; yields its source spec."""
+    return build_store(tmp_path_factory.mktemp("store"), make_columns())
+
+
+@pytest.fixture(scope="module")
+def short_store(tmp_path_factory):
+    """A store whose second group stops before the validation window, so it has no validation rows."""
+    columns = make_columns()
+    keep = ~((columns["g"] == GROUPS[1]) & (columns["t"] >= T0 + EARLY_END_DAYS * DAY_MS))
+    return build_store(tmp_path_factory.mktemp("short"), {k: v[keep] for k, v in columns.items()})
 
 
 @pytest.fixture(scope="module")
@@ -360,6 +373,17 @@ def test_single_asset_scores_once_and_reports_it(store, tmp_path):
         art = json.load(fh)
     assert list(art["per_asset"]) == [str(GROUPS[1])]
     assert art["per_asset"][str(GROUPS[1])] == art["overall"]
+
+
+def test_a_group_without_validation_rows_is_reported_as_null_not_a_crash(short_store, tmp_path):
+    _, model = train(EmpiricalBaseline, tmp_path, short_store)
+    node, metrics = run_score(short_store, tmp_path, model)
+    with open(os.path.join(node.artifact_dir(ctx(tmp_path)), "horizon_scores.json"), encoding="utf-8") as fh:
+        art = json.load(fh)
+    empty = str(GROUPS[1])
+    assert art["per_asset"][empty] is None and art["pinball_by_level"]["per_asset"][empty] is None
+    assert art["per_asset"][str(GROUPS[0])] == art["overall"] and metrics["n_rows"] > 0
+    assert sorted(art["pinball_by_level"]["per_asset"]) == sorted(art["per_asset"])
 
 
 class _Declared(HorizonForecaster):

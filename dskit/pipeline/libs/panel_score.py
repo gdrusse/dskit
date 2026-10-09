@@ -141,7 +141,8 @@ class PanelScore(_PanelBound, Node):
         ``weighted_crps``. ``split`` (``"val"``, required): the band scored; the planner makes
         every ``score`` node declare one, and ``val`` is the only band this node reads.
         ``assets`` (non-empty list of group codes, optional): score only those
-        groups; the artifact reports each. Default: every group in the panel.
+        groups; the artifact reports each, as ``null`` for a group with no validation rows. Default:
+        every group in the panel.
 
     Raises
     ------
@@ -267,7 +268,11 @@ class PanelScore(_PanelBound, Node):
                                  f"from this node's {self.params['bounds'][key]}: not one common row set")
 
     def _per_asset(self, grid, model, panel, bands, overall):
-        """Return the per-asset summaries and per-level pinball tables, keyed by group code."""
+        """Return the per-asset summaries and per-level pinball tables, keyed by group code.
+
+        A group with no validation rows (the pooled band is non-empty, that group's bars ended
+        early) has nothing to score: it is reported as ``None`` in both tables, never a crash.
+        """
         import numpy as np
 
         if len(bands.assets) == 1:
@@ -276,7 +281,8 @@ class PanelScore(_PanelBound, Node):
         group = np.asarray(panel.group)[bands.val_idx]
         tables, levels = {}, {}
         for code in bands.assets:
-            tables[str(code)], levels[str(code)] = self._evaluate(grid, model, panel, bands.val_idx[group == code])
+            rows = bands.val_idx[group == code]
+            tables[str(code)], levels[str(code)] = self._evaluate(grid, model, panel, rows) if len(rows) else (None, None)
         return tables, levels
 
     def _evaluate(self, grid, model, panel, rows):
