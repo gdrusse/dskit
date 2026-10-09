@@ -1,55 +1,171 @@
 {
-  "notes": "Family-ablation arms for the minute-feature predictor (plan 2026-10-09-data-windows.md, 'Feature families and selection'). Each arm is the list of KEPT families, passed as the `families` param of crypto_trading.minute_features:MinuteFeatures; a dropped family loses every column with its `<family>__` prefix and nothing else, so labels, `meta__scale` (the label divisor, in no family and not a model input) and the row set are identical in every arm. Run `all`, then each `minus_*` arm on the same folds and seeds; keep a family only if dropping it hurts beyond fold noise. `xasset` is the other asset's ret/vol columns and is a separate family from `ret`/`vol`. `bvol` is an ablation family (26 missing days). tests/test_minute_features.py pins these lists to the node's declared FAMILIES, so a renamed or added family fails there until this file follows.",
+  "notes": "Ablation arms for the minute-feature predictor (plan 2026-10-09-data-windows.md, 'Feature families and selection'). `arms`: each is the list of KEPT families, passed as the `families` param of crypto_trading.minute_features:MinuteFeatures; a dropped family loses every column with its `<family>__` prefix and nothing else, so labels, `meta__scale` (the label divisor, in no family and not a model input) and the row set are identical in every arm. `scale_arms`: each is the list of KEPT scales (minutes), passed as the `scales` param; it drops that scale's columns from ret, trend, vol (rms, hl, jump) and the xasset pair change, and nothing else. The row set stays the same because `history_minutes` (default: the widest scale of the grid) fixes the warm-up, so leave it unset. Run `all`, then each `minus_*` arm, then each `minus_scale_*` arm on the same folds and seeds; keep a family or scale only if dropping it hurts beyond fold noise. The two ablations are separate runs: do not combine a family arm with a scale arm. `xasset` is the other asset's ret/vol columns plus the pair log ratio, a separate family from `ret`/`vol`. `holiday` needs the exchange_calendars library. `bvol` is an ablation family (26 missing days). tests/test_minute_features.py pins both lists to the node's declared FAMILIES and DEFAULT_SCALES, so a renamed or added family or scale fails there until this file follows.",
   "arms": {
     "all": [
       "ret",
+      "trend",
       "vol",
+      "range",
+      "shock",
       "flow",
       "clock",
+      "holiday",
       "xasset",
       "bvol"
     ],
     "minus_ret": [
+      "trend",
       "vol",
+      "range",
+      "shock",
       "flow",
       "clock",
+      "holiday",
+      "xasset",
+      "bvol"
+    ],
+    "minus_trend": [
+      "ret",
+      "vol",
+      "range",
+      "shock",
+      "flow",
+      "clock",
+      "holiday",
       "xasset",
       "bvol"
     ],
     "minus_vol": [
       "ret",
+      "trend",
+      "range",
+      "shock",
       "flow",
       "clock",
+      "holiday",
+      "xasset",
+      "bvol"
+    ],
+    "minus_range": [
+      "ret",
+      "trend",
+      "vol",
+      "shock",
+      "flow",
+      "clock",
+      "holiday",
+      "xasset",
+      "bvol"
+    ],
+    "minus_shock": [
+      "ret",
+      "trend",
+      "vol",
+      "range",
+      "flow",
+      "clock",
+      "holiday",
       "xasset",
       "bvol"
     ],
     "minus_flow": [
       "ret",
+      "trend",
       "vol",
+      "range",
+      "shock",
       "clock",
+      "holiday",
       "xasset",
       "bvol"
     ],
     "minus_clock": [
       "ret",
+      "trend",
       "vol",
+      "range",
+      "shock",
       "flow",
+      "holiday",
+      "xasset",
+      "bvol"
+    ],
+    "minus_holiday": [
+      "ret",
+      "trend",
+      "vol",
+      "range",
+      "shock",
+      "flow",
+      "clock",
       "xasset",
       "bvol"
     ],
     "minus_xasset": [
       "ret",
+      "trend",
       "vol",
+      "range",
+      "shock",
       "flow",
       "clock",
+      "holiday",
       "bvol"
     ],
     "minus_bvol": [
       "ret",
+      "trend",
       "vol",
+      "range",
+      "shock",
       "flow",
       "clock",
+      "holiday",
       "xasset"
+    ]
+  },
+  "scale_arms": {
+    "minus_scale_5": [
+      15,
+      60,
+      240,
+      1440,
+      10080
+    ],
+    "minus_scale_15": [
+      5,
+      60,
+      240,
+      1440,
+      10080
+    ],
+    "minus_scale_60": [
+      5,
+      15,
+      240,
+      1440,
+      10080
+    ],
+    "minus_scale_240": [
+      5,
+      15,
+      60,
+      1440,
+      10080
+    ],
+    "minus_scale_1440": [
+      5,
+      15,
+      60,
+      240,
+      10080
+    ],
+    "minus_scale_10080": [
+      5,
+      15,
+      60,
+      240,
+      1440
     ]
   }
 }

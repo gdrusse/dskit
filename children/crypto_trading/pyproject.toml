@@ -27,6 +27,8 @@ dependencies = ["dskit"]
 parquet = ["pyarrow>=15"]
 # numpy and pyarrow are imported only inside SpotFeatures.run and the day-file reader (stage B).
 features = ["numpy>=1.26", "pyarrow>=15"]
+# the `holiday` family of MinuteFeatures reads dskit's `exchange` calendar, which imports this only when it runs.
+holiday = ["exchange_calendars>=4.5"]
 
 [tool.setuptools.packages.find]
 include = ["crypto_trading*"]          # <- 3. matches the renamed package dir
