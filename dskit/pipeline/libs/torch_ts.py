@@ -11,12 +11,25 @@ anywhere in ``dskit/pipeline/``, including inside a class body.
 Every arch maps ``(B, seq_len, channels)`` to ``(B, n_ahead)`` with
 ``n_ahead`` default 1 (ADR-0041's ``(B, 1)``). The flat row is
 channel-major; the ONE reshape lives in ``build_module``.
+
+``quantiles`` (strictly increasing floats in ``(0, 1)``, at least two)
+turns the regression head into a multi-horizon multi-quantile one:
+``n_ahead`` is then the horizon count ``H``, the arch's final ``Linear``
+is widened to ``H * K`` and the module returns ``(B, H, K)``, SORTED
+along ``K`` so the quantiles can never cross. The objective is pinned to
+the mean pinball loss (:func:`quantile_pinball_loss`), so a document may
+not also declare ``loss`` / ``loss_params``.
 """
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
 
-from dskit.pipeline.libs.torch import DEFAULT_LOSS, TorchPredict, TorchTrain
+from dskit.pipeline.libs.torch import (
+    DEFAULT_LOSS,
+    TorchPredict,
+    TorchTrain,
+    pinball_loss,
+)
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     check_int_param,
@@ -32,8 +45,10 @@ __all__ = [
     "ZooEstimator",
     "DEFAULT_ORDER",
     "NODE_KINDS",
+    "QUANTILE_LOSS",
     "TimeSeriesPredict",
     "TimeSeriesTrain",
+    "quantile_pinball_loss",
     "register",
     "register_arch",
     "zoo_regime",
@@ -68,6 +83,12 @@ ESTIMATOR_DEFAULTS = {
     "device": None,
     "standardize": True,
 }
+
+#: The objective a ``quantiles`` head is fitted under, as an import path
+#: so it reaches the pack's ``loss`` doorway (``build_loss``) like any
+#: declared objective. Named ONCE: the trainer sets it, the plan refusal
+#: of a competing ``loss`` cites it.
+QUANTILE_LOSS = "dskit.pipeline.libs.torch_ts:quantile_pinball_loss"
 
 _ORDERS = ("recent_first", "chrono")
 DEFAULT_ORDER = "recent_first"
@@ -109,6 +130,78 @@ def register_arch(name, build, *, problems, defaults, doc=""):
         "build": build, "problems": problems, "defaults": dict(defaults),
         "doc": doc,
     }
+
+
+def quantile_pinball_loss(pred, target, taus):
+    """Mean pinball loss over batch, horizons and quantiles.
+
+    One :func:`~dskit.pipeline.libs.torch.pinball_loss` per quantile,
+    averaged.
+
+    Parameters
+    ----------
+    pred : tensor
+        ``(B, H, K)`` quantile values, or that tensor flattened (the
+        shape the row adapter hands a loss).
+    target : tensor
+        ``(B, H)`` realised values (``(B,)`` when ``H`` is 1).
+    taus : sequence of float
+        The ``K`` quantile levels, in the order of ``pred``'s last axis.
+
+    Returns
+    -------
+    tensor
+        A scalar.
+
+    Examples
+    --------
+    Two quantiles, one horizon::
+
+        loss = quantile_pinball_loss(
+            torch.zeros(1, 1, 2), torch.ones(1, 1), taus=[0.25, 0.75]
+        )
+        # -> tensor(0.5000)
+    """
+    k = len(taus)
+    flat_pred = pred.reshape(-1, k)
+    flat_target = target.reshape(-1)
+    return sum(
+        pinball_loss(flat_pred[:, i], flat_target, tau=tau)
+        for i, tau in enumerate(taus)
+    ) / k
+
+
+def _quantile_problems(params):
+    """Problems with ``quantiles`` and the knobs it cannot coexist with."""
+    if "quantiles" not in params:
+        return []
+    quantiles = params["quantiles"]
+    problems = []
+    ok = (
+        isinstance(quantiles, (list, tuple))
+        and len(quantiles) >= 2
+        and all(
+            isinstance(q, (int, float))
+            and not isinstance(q, bool)
+            and 0.0 < q < 1.0
+            for q in quantiles
+        )
+        and all(a < b for a, b in zip(quantiles, quantiles[1:]))
+    )
+    if not ok:
+        problems.append(
+            "quantiles must be a list of at least two floats, strictly "
+            f"increasing, each in (0, 1), got {quantiles!r}"
+        )
+    if params.get("head") == "binary":
+        problems.append("quantiles is regression-only, got head='binary'")
+    for knob in ("loss", "loss_params"):
+        if params.get(knob):
+            problems.append(
+                f"{knob} cannot be declared with quantiles — the objective "
+                f"is the mean pinball loss ({QUANTILE_LOSS})"
+            )
+    return problems
 
 
 def _int_ge(name, value, lo):
@@ -1592,7 +1685,8 @@ class _TsModel:
     """Shared ``build_module`` for the train/predict pair (ADR-0041)."""
 
     _EXTRA_PARAMS = (
-        "arch", "arch_params", "channels", "n_ahead", "order", "seq_len",
+        "arch", "arch_params", "channels", "n_ahead", "order", "quantiles",
+        "seq_len",
     )
 
     def build_module(self, params):
@@ -1613,7 +1707,10 @@ class _TsModel:
         )
         n_ahead = params.get("n_ahead", 1)
         n_ahead = 1 if n_ahead is None else int(n_ahead)
-        inner = entry["build"](knobs, seq_len, channels, n_ahead)
+        n_quantiles = len(params.get("quantiles") or ())
+        inner = entry["build"](
+            knobs, seq_len, channels, n_ahead * max(n_quantiles, 1)
+        )
 
         class _Window(torch.nn.Module):
             def __init__(self):
@@ -1630,7 +1727,13 @@ class _TsModel:
                 if order == "recent_first":
                     x = torch.flip(x, dims=(-1,))
                 x = x.transpose(1, 2)
-                return self.inner(x)
+                out = self.inner(x)
+                if not n_quantiles:
+                    return out
+                # Sorting along K is the non-crossing guarantee; it is
+                # differentiable, so the fit trains the sorted values.
+                out = out.reshape(out.size(0), n_ahead, n_quantiles)
+                return torch.sort(out, dim=-1).values
 
         return _Window()
 
@@ -1674,6 +1777,7 @@ def _ts_problems(params, *, require_shape):
             problems.append(
                 f"len(label) must equal n_ahead ({ahead}), got {len(label)}"
             )
+    problems.extend(_quantile_problems(params))
     order = params.get("order")
     if order is not None and (not isinstance(order, str) or order not in _ORDERS):
         problems.append(
@@ -1761,9 +1865,15 @@ class TimeSeriesTrain(_TsModel, TorchTrain):
         return problems
 
     def run_train(self, ctx, inputs):
-        """Apply the head's default loss when the document omitted one."""
+        """Apply the head's default loss; ``quantiles`` pins the pinball one."""
         head = self.params.get("head")
-        if head in _HEADS and not self.params.get("loss"):
+        if self.params.get("quantiles"):
+            self.params = {
+                **self.params,
+                "loss": QUANTILE_LOSS,
+                "loss_params": {"taus": list(self.params["quantiles"])},
+            }
+        elif head in _HEADS and not self.params.get("loss"):
             self.params = {**self.params, "loss": _HEADS[head]}
         return super().run_train(ctx, inputs)
 

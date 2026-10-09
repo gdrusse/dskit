@@ -674,3 +674,118 @@ def test_categorical_temporal_fusion_keeps_static_features_outside_time(arch):
     assert np.isfinite(prediction).all()
     assert model._module.static[0].in_features == 2
     assert model._module.head.in_features == 4 + 3 + 2
+
+
+# ---------------------------------------------------------------------------
+# Multi-horizon multi-quantile head (``quantiles`` + ``n_ahead``)
+# ---------------------------------------------------------------------------
+
+QUANTILES = [0.1, 0.5, 0.9]
+Q_PARAMS = {
+    **TRAIN_PARAMS,
+    "arch": "mlp",
+    "n_ahead": 2,
+    "label": ["y0", "y1"],
+    "quantiles": QUANTILES,
+}
+
+
+def quantile_rows(n=32):
+    rows = ts_rows(n)
+    for row in rows:
+        row["y0"] = row["y"]
+        row["y1"] = 2.0 * row["y"] + 0.1
+    return rows
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [0.5],  # fewer than two
+        [0.9, 0.1],  # unsorted
+        [0.1, 0.1, 0.9],  # duplicate
+        [0.0, 0.5],  # open interval
+        [0.5, 1.0],
+        [0.1, True],  # bool is not a probability
+        [0.1, "0.9"],
+        "0.1,0.9",  # not a list
+    ],
+)
+def test_bad_quantiles_are_refused_at_plan(bad):
+    problems = TimeSeriesTrain.validate_params({**Q_PARAMS, "quantiles": bad})
+    assert any("quantiles" in p for p in problems), bad
+
+
+def test_quantiles_are_regression_only_and_own_the_objective():
+    binary = TimeSeriesTrain.validate_params({**Q_PARAMS, "head": "binary"})
+    assert any("quantiles" in p and "binary" in p for p in binary)
+    for knob, value in (
+        ("loss", "torch.nn.functional:mse_loss"),
+        ("loss_params", {"reduction": "sum"}),
+    ):
+        problems = TimeSeriesTrain.validate_params({**Q_PARAMS, knob: value})
+        assert any("quantiles" in p and knob in p for p in problems), knob
+    assert TimeSeriesTrain.validate_params(Q_PARAMS) == []
+    assert TimeSeriesPredict.validate_params(
+        {"artifact": "x.pt", "quantiles": QUANTILES}
+    ) == []
+
+
+@pytest.mark.parametrize("arch", SHIPPED)
+def test_quantile_head_maps_to_B_H_K_and_never_crosses(arch):
+    params = {**Q_PARAMS, "arch": arch}
+    module = TimeSeriesTrain("m", params).build_module(params)
+    torch.manual_seed(0)
+    out = module(torch.randn(5, SEQ * CH))
+    assert tuple(out.shape) == (5, 2, len(QUANTILES))
+    assert bool((out[..., 1:] >= out[..., :-1]).all()), arch
+
+
+def test_pinball_loss_value_on_a_hand_computed_case():
+    from dskit.pipeline.libs.torch_ts import quantile_pinball_loss
+
+    taus = [0.25, 0.75]
+    target = torch.tensor([[1.0]])  # (B=1, H=1)
+    # pred 0 under both taus: err = 1 -> 0.25*1 and 0.75*1 -> mean 0.5
+    flat = torch.zeros(2)
+    assert float(quantile_pinball_loss(flat, target, taus=taus)) == pytest.approx(0.5)
+    # pred (0, 2): 0.25*1 and (0.75-1)*(-1) = 0.25 -> mean 0.25
+    shaped = torch.tensor([[[0.0, 2.0]]])
+    assert float(quantile_pinball_loss(shaped, target, taus=taus)) == pytest.approx(0.25)
+
+
+def test_quantile_fit_lowers_the_loss_and_serves_ordered_horizons(tmp_path):
+    def fit(epochs):
+        node = TimeSeriesTrain("q", {**Q_PARAMS, "epochs": epochs})
+        ctx = NodeContext(
+            name="q", asof="2026-01-01", run_dir=str(tmp_path / f"run{epochs}"),
+        )
+        return node.run(ctx, {"rows": quantile_rows()})
+
+    short, long_ = fit(1), fit(40)
+    assert long_["metrics"]["final_loss"] < short["metrics"]["final_loss"]
+    record = {name: 0.3 for name in FEATURES}
+    served = long_["signal"].predict(record)
+    assert len(served) == 2 * len(QUANTILES)  # row-major (H, K)
+    for h in range(2):
+        row = served[h * 3:(h + 1) * 3]
+        assert row == sorted(row)
+    # The predictor restores the quantile head from the sidecar alone.
+    restored = TimeSeriesPredict("p", {"artifact": long_["artifact_path"]}).run(
+        NodeContext(name="p", asof="2026-01-01", run_dir=str(tmp_path / "p")),
+        {},
+    )["signal"]
+    assert restored.predict(record) == pytest.approx(served)
+
+
+def test_without_quantiles_the_head_and_objective_are_unchanged(tmp_path):
+    params = {**TRAIN_PARAMS, "arch": "mlp", "n_ahead": 2, "label": ["y0", "y1"]}
+    module = TimeSeriesTrain("m", params).build_module(params)
+    assert tuple(module(torch.zeros(3, SEQ * CH)).shape) == (3, 2)
+    node = TimeSeriesTrain("m", dict(TRAIN_PARAMS))
+    node.run(
+        NodeContext(name="m", asof="2026-01-01", run_dir=str(tmp_path / "r")),
+        {"rows": ts_rows()},
+    )
+    assert node.params.get("loss") == "torch.nn.functional:mse_loss"
+    assert "loss_params" not in node.params
