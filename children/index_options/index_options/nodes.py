@@ -4328,9 +4328,12 @@ class ExactDteBarChain(Node):
 
     @staticmethod
     def _fill_for(index, sessions, record):
-        """Return ``fill_session`` (t', the first stream session after the record's date and
-        before its expiry, else ``None``) and ``fill`` (the contract's bar on exactly t', else
-        ``None``)."""
+        """Return the record's t' and its bar on exactly that session.
+
+        ``fill_session`` is the fills stream's first session after the record's
+        date and before its expiry (else ``None``); ``fill`` is the contract's
+        bar on exactly that session (else ``None``).
+        """
         at = bisect_right(sessions, record["quote_date"])
         if at == len(sessions) or sessions[at] >= record["expiry"]:
             return {"fill_session": None, "fill": None}
