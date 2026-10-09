@@ -750,6 +750,17 @@ they register only into private registries, never the default one.
   tried, and `crossed_band` means a crossing beyond both edges' errors. `BinaryCoherence`'s `tolerance` gates only
   the feasible verdict (legs use `LEG_DUST`); an infeasible verdict with no profitable position raises.
 
+**ADR-0259 panel zoo (tier-2, all by import path):**
+
+- `libs/array_panel.py`: `ArrayPanelWrite` writes one memory-mapped panel (features, `[N, H]` labels, time, group, `run`);
+  `ColumnSelector` (an ablation arm is a selector), `PanelBands` (the one place fit / calibration / validation rows are cut),
+  `DevicePanel` (windows gathered by row index, never stored). Labels arrive already divided by their scale.
+- `libs/horizon_cdf.py`: `HorizonForecaster`, `CommonGrid` (one scoring grid; refuses a model whose levels, wings or bounds differ).
+- `libs/panel_torch.py`: `PanelTrain` (encoder + trunk + `mixture` or `quantile` head, no `rows` port) returns a forecaster.
+- `libs/panel_score.py`: `PanelScore` (flat `crps_h*`, `weighted_crps`, `rows_sha256`) plus `EmpiricalBaseline` and `EwmaStudentBaseline`.
+- A lane is `PanelTrain -> PanelScore` in one `walkforward` document; `runs` tabulates every lane's flat metrics per fold.
+  Run it with `tests/pipeline_libs/test_panel_zoo_e2e.py` as the worked example (3 folds, `embargo_days: 1`).
+
 ## Writing your own node
 
 ```python
@@ -978,6 +989,7 @@ dskit/pipeline/
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
+│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0259)
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows over the observations seam, every
 │                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0256),
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
@@ -989,6 +1001,7 @@ Tests: `python -m pytest tests/pipeline -q` (tier-1 + purity gate),
 `tests/pipeline_libs -q` (tier-2 packs, importorskip per library).
 ADR-0243..0247 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binary_contract_e2e,binary_contract_pins,fee_mechanics,fee_mechanics_pins,kinds_run_write}.py`,
 `tests/pipeline_libs/test_{parquet_series,parquet_series_guards,vol_estimators,vol_estimators_golden}.py`
+ADR-0259: `tests/pipeline_libs/test_{array_panel,horizon_cdf,panel_score,panel_torch,panel_zoo_e2e}.py`.
 (the `*_golden` file holds the former child's output, frozen in `golden/`).
 ADR-0256: `tests/pipeline/test_binary_decisions.py`, `tests/pipeline_libs/test_binary_market_rows.py`.
 ADR-0257: `tests/pipeline/test_{digital_bounds,binary_curve}.py`, `tests/pipeline_libs/test_binary_coherence.py`.

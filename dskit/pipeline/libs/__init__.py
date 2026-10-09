@@ -9,6 +9,13 @@ library, but imports it only inside a method (``run()`` for a node pack)
 pack in a fresh interpreter with the library blocked from
 ``sys.modules``). This is the ONLY subdirectory the toolkit sanctions.
 
+The panel zoo (ADR-0259) is four more packs, all wired by import path with an
+empty ``NODE_KINDS``: ``array_panel`` (a memory-mapped panel, its bands and
+windows gathered by index), ``horizon_cdf`` (per-horizon distributions and
+the common scoring grid), ``panel_score`` (``PanelScore`` and two fit-band
+baselines) and ``panel_torch`` (``PanelTrain``, a trainer that reads the
+panel). Each names numpy or torch only inside methods.
+
 Packs are consumed by IMPORT PATH from documents
 (``"uses": "dskit.pipeline.libs.sklearn:SklearnFit"`` or a project's
 own subclass); nothing here auto-registers into ``DEFAULT_NODE_KINDS``
