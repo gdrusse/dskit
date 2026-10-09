@@ -1211,3 +1211,64 @@ def test_the_lag_path_and_the_dm_wrapper_inherit_the_noise_rule():
 
     assert stats.newey_west_mean(NOISY, lags=1)["t"] is None
     assert stats.diebold_mariano_test(NOISY)["t"] is None
+
+
+class TestCalendarBlockBootstrap:
+    def sampler(self, days, width):
+        from datetime import date
+        from dskit.pipeline import stats
+
+        cls = getattr(stats, "CalendarBlockBootstrap", None)
+        assert cls is not None, "complete-calendar sampler is missing"
+        return cls([date(2024, 1, d) for d in days], width)
+
+    def test_complete_calendar_spans_and_deterministic_group_draws(self):
+        sampler = self.sampler([1, 2, 4, 5], 2)
+        assert sampler.supported
+        assert sampler.evidence["eligible_starts"] == [
+            "2024-01-01", "2024-01-02", "2024-01-04"]
+        draws = sampler.sample_indices(200, 17)
+        assert draws == sampler.sample_indices(200, 17)
+        assert all(len(draw) == 4 for draw in draws)
+        assert set(i for draw in draws for i in draw) == {0, 1, 2, 3}
+        # Every complete block is (0,1), (1,), or (2,3), never (3,0).
+        # Parse each draw using the uniquely determined first date index.
+        for draw in draws:
+            pos = 0
+            while pos < len(draw):
+                block = {0: [0, 1], 1: [1], 2: [2, 3]}[draw[pos]]
+                taken = min(len(block), len(draw) - pos)
+                assert draw[pos:pos+taken] == block[:taken]
+                pos += taken
+
+    @pytest.mark.parametrize("days,width,zero", [
+        ([1, 3], 2, ["2024-01-03"]),
+        ([1, 2], 3, ["2024-01-01", "2024-01-02"]),
+        ([1], 1, []),
+    ])
+    def test_unsupported_history_preserves_evidence_and_refuses_draw(self, days, width, zero):
+        sampler = self.sampler(days, width)
+        assert not sampler.supported
+        assert sampler.evidence["zero_inclusion_dates"] == zero
+        with pytest.raises(ValueError, match="support"):
+            sampler.sample_indices(20, 1)
+
+    def test_endpoint_complete_block_includes_last_observed_date(self):
+        sampler = self.sampler([1, 2, 3, 4], 2)
+        assert sampler.evidence["inclusion_counts"] == [1, 2, 2, 1]
+        assert sampler.evidence["distinct_blocks"] == 3
+
+    @pytest.mark.parametrize("width", [0, -1, True, 1.5])
+    def test_invalid_width_refuses(self, width):
+        with pytest.raises(ValueError, match="block_days"):
+            self.sampler([1, 2], width)
+
+    def test_unsorted_duplicate_or_non_date_inputs_refuse(self):
+        from datetime import date, datetime
+        from dskit.pipeline.stats import CalendarBlockBootstrap
+
+        for dates in ([date(2024,1,2), date(2024,1,1)],
+                      [date(2024,1,1)] * 2, ["2024-01-01"],
+                      [datetime(2024,1,1)], []):
+            with pytest.raises(ValueError, match="dates"):
+                CalendarBlockBootstrap(dates, 1)
