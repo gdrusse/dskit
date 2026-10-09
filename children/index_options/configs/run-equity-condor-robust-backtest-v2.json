@@ -1,8 +1,8 @@
 {
-  "name": "equity-condor-executable-clock",
-  "notes": "ADR-0256 (PROPOSED, owner-approved contract): the ADR-0255 robust condor replay on an EXECUTABLE DECISION CLOCK. Decide after the close of t from information known at t; one order for the first session t' > t; all four legs fill at the t' VWAP with the ARM's own haircut and liquidity rule, all-or-none. A leg without a t' bar, failing the arm rule at t', or with a negative net short price leaves the order 'unfilled': counted by reason, never replaced. Expiry stays the forecast's own, so the hold shortens (remaining_dte recorded) and fills are dated t'. Everything else is the run-equity-condor-robust-backtest.json document; the changes are: a 'fills' stream and fill_session 'next' on the chain, null max_relative_gap, block_geometry 'edge_padded', exercise_threshold_usd 0.01 on settlement, and the labels. The fill PRICE is still a daily-bar VWAP proxy (owned option data have no bid/ask/size): a bar-proxy replay on an executable decision clock, never production-realistic or a qualification. 2024-2025 is already inspected: development evidence only. Run 793013c0 is never re-run or edited. The replay itself needs separate authorization.",
+  "name": "equity-condor-robust-backtest-v2",
+  "notes": "ADR-0256 (PROPOSED, owner-approved contract): the ADR-0255 robust condor replay on an EXECUTABLE DECISION CLOCK. Decide after the close of t from information known at t; one order for the first session t' > t; all four legs fill at the t' VWAP with the ARM's own haircut and liquidity rule, all-or-none. A leg without a t' bar, failing the arm rule at t', or with a negative net short price leaves the order 'unfilled': counted by reason, never replaced. Expiry stays the forecast's own, so the hold shortens (remaining_dte recorded) and fills are dated t'. Everything else is the run-equity-condor-robust-backtest.json document; the changes are: a 'fills' stream and fill_session 'next' on the chain, null max_relative_gap, block_geometry 'edge_padded', exercise_threshold_usd 0.01 on settlement, and the labels. The fill PRICE is still a daily-bar VWAP proxy (owned option data have no bid/ask/size): a bar-proxy replay on an executable decision clock, never production-realistic or a qualification. 2024-2025 is already inspected: development evidence only. Run 793013c0 is never re-run or edited. The replay itself needs separate authorization. v2 (ADR-0256): same-day average fill accepted by the owner; edge-padded rho support; null relative gap with primal parity; exercise disclosure flags. Account study runs read-only afterwards.",
   "outputs": {
-    "run_root": "/home/russell/data/index_options/production-universe-rerun-20261008/condor-replay-executable-clock-run-v1",
+    "run_root": "/home/russell/data/index_options/production-universe-rerun-20261008/condor-replay-run-v2",
     "notes": "'' resolves to ./pipeline_runs (dskit/pipeline/README.md:176); excluded from the identity hash."
   },
   "pipeline": {
@@ -19,24 +19,10 @@
       },
       "notes": "Verified bounded exact-DTE31 derived chain; source corpus404 symbols, retained modeled chain388 of intended392. Outside-model rows preserved in private refusal ledger. Never read mixed-year original streams here."
     },
-    "fills": {
-      "uses": "dskit.pipeline.libs.observations:ObservationRows",
-      "params": {
-        "root": "/home/russell/data/index_options/ob",
-        "source": "condor-replay-inputs-20261009-v6",
-        "stream": "fills",
-        "key_fields": [
-          "contract",
-          "quote_date"
-        ]
-      },
-      "notes": "ADR-0256: one bounded projection of the candidate contracts' bars on every session after their decision date (extract-v3 boundary and checks), onboarded as condor-replay-inputs-20261009-v6. ExactDteBarChain joins, per chain row, the same contract's first bar strictly after its decision date and strictly before its expiry; a row at or after end_before refuses. Same field mapping as the chain."
-    },
     "option_chain": {
       "uses": "index_options.nodes:ExactDteBarChain",
       "inputs": {
-        "records": "$option_rows.records",
-        "fills": "$fills.records"
+        "records": "$option_rows.records"
       },
       "params": {
         "fields": {
@@ -66,9 +52,9 @@
             "end": "2025-11-28"
           }
         ],
-        "fill_session": "next"
+        "fill_session": "same"
       },
-      "notes": "Implemented pure exact-DTE adapter; source conversion must normalize verified integral contract multiplier/volume/count values. This node does not provide a protected reader or certify price basis. ADR-0256: fill_session 'next' attaches each row's t' bar as 'fill' (or null) from the fills port; 'same' (the default) is the ADR-0255 identity."
+      "notes": "Implemented pure exact-DTE adapter; source conversion must normalize verified integral contract multiplier/volume/count values. This node does not provide a protected reader or certify price basis. ADR-0256: fill_session 'next' attaches each row's t' bar as 'fill' (or null) from the fills port; 'same' (the default) is the ADR-0255 identity. Owner decision 2026-10-09: the same-day average (VWAP) fill is the accepted assumption, the best the owned data allow (the archive holds only DTE 31-45 per session, so no next-session bar exists: adr0256-fills-census-v1.json); fill_session 'same'."
     },
     "as_traded": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
@@ -263,7 +249,7 @@
         "settlement_field": "as_traded_close",
         "max_settlement_gap_days": 4,
         "labels": {
-          "fill": "assumed first-session-after-decision VWAP fill with the arm's haircut",
+          "fill": "assumed same-day average fill (owner-accepted assumption; no next-session bar in the owned archive)",
           "exercise": "intrinsic settlement at the as-traded expiry close; early exercise, assignment and share delivery not simulated"
         },
         "end_before": "2026-01-01",

@@ -385,7 +385,7 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   a combined book with none (k would not be a positive scale), refuses with one
   `error:` line.
 - Executable decision clock and account study (ADR-0256, PROPOSED; never
-  decision-eligible). `configs/run-equity-condor-executable-clock.json` is the
+  decision-eligible). `configs/run-equity-condor-robust-backtest-v2.json` is the
   robust condor replay decided after the close of t and filled at the first later
   session's VWAP: `ExactDteBarChain` `fill_session: "next"` (default `"same"` =
   legacy) joins a `fills` stream, `RobustCondorBatchSelect` reprices each trade
@@ -562,7 +562,7 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # -index-wide.json (wide recorder + vol indices)
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
-                           # run-equity-condor-executable-clock.json (ADR-0256: the robust
+                           # run-equity-condor-robust-backtest-v2.json (ADR-0256: the robust
                            # condor replay with fill_session next, a fills stream, exercise flags)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,

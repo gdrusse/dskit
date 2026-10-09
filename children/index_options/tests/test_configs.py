@@ -60,7 +60,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-equity-condor-robust-backtest.json",
         # ADR-0256 (PROPOSED): the executable-decision-clock variant and its contract memo; plus
         # the robust-replay memo and four report artifacts the previous wrap added unlisted.
-        "configs/run-equity-condor-executable-clock.json",
+        "configs/run-equity-condor-robust-backtest-v2.json",
         "docs/memos/2026-10-09-condor-executable-clock-contract.md",
         "docs/memos/2026-10-09-condor-executable-clock-result.md",
         "docs/memos/2026-10-09-robust-condor-replay.md",
@@ -3786,7 +3786,7 @@ def test_the_perticker_workflow_leaves_the_worker_width_to_the_machine(child_roo
 def _clock_docs(child_root):
     configs = child_root / "configs"
     return tuple(json.loads((configs / name).read_text(encoding="utf-8")) for name in (
-        "run-equity-condor-robust-backtest.json", "run-equity-condor-executable-clock.json"))
+        "run-equity-condor-robust-backtest.json", "run-equity-condor-robust-backtest-v2.json"))
 
 
 def _without_notes(value):
@@ -3800,14 +3800,10 @@ def _without_notes(value):
 def test_executable_clock_config_differs_from_the_robust_backtest_only_where_declared(child_root):
     base, clock = _clock_docs(child_root)
     pipeline = copy.deepcopy(clock["pipeline"])
-    fills = pipeline.pop("fills")
-    assert fills["uses"] == base["pipeline"]["option_rows"]["uses"]
-    assert fills["params"] == {**base["pipeline"]["option_rows"]["params"],
-                               "source": "condor-replay-inputs-20261009-v6", "stream": "fills"}
     assert list(pipeline) == list(base["pipeline"])
     chain = pipeline["option_chain"]
-    assert chain["params"].pop("fill_session") == "next"
-    assert chain["inputs"].pop("fills") == "$fills.records"
+    # owner decision 2026-10-09: the same-day average fill is the accepted assumption
+    assert chain["params"].pop("fill_session") == "same"
     assert pipeline["rho_calibration"]["params"].pop("block_geometry") == "edge_padded"
     assert pipeline["select"]["params"].pop("max_relative_gap") is None
     assert pipeline["select"]["params"].pop("objective_parity_usd") == 1e-5
@@ -3816,24 +3812,25 @@ def test_executable_clock_config_differs_from_the_robust_backtest_only_where_dec
     settle = pipeline["settle"]["params"]
     assert settle.pop("exercise_threshold_usd") == 0.01
     assert settle["labels"] == {
-        "fill": "assumed first-session-after-decision VWAP fill with the arm's haircut",
+        "fill": "assumed same-day average fill (owner-accepted assumption; no next-session "
+                "bar in the owned archive)",
         "exercise": "intrinsic settlement at the as-traded expiry close; early exercise, "
                     "assignment and share delivery not simulated"}
     settle["labels"] = base["pipeline"]["settle"]["params"]["labels"]
     assert _without_notes(pipeline) == _without_notes(base["pipeline"])
     # every changed key is explained: each touched node's notes name ADR-0256
-    for name in ("option_chain", "rho_calibration", "select", "settle", "fills"):
+    for name in ("option_chain", "rho_calibration", "select", "settle"):
         assert "ADR-0256" in clock["pipeline"][name]["notes"], name
     assert clock["name"] != base["name"]
     assert clock["outputs"]["run_root"] != base["outputs"]["run_root"]
 
 
-def test_executable_clock_config_reads_the_fills_stream_through_the_same_store(child_root):
+def test_v2_config_keeps_the_same_day_fill_and_the_v5_streams(child_root):
     base, clock = _clock_docs(child_root)
-    fills = clock["pipeline"]["fills"]["params"]
-    assert fills["root"] == base["pipeline"]["option_rows"]["params"]["root"]
-    assert (fills["source"], fills["stream"]) == ("condor-replay-inputs-20261009-v6", "fills")
-    assert "$fills.records" in clock["pipeline"]["option_chain"]["inputs"].values()
+    assert "fills" not in clock["pipeline"]
+    assert clock["pipeline"]["option_chain"]["params"]["fill_session"] == "same"
+    for key in ("option_rows", "as_traded", "holding_exclusions", "forecasts"):
+        assert clock["pipeline"][key]["params"] == base["pipeline"][key]["params"], key
 
 
 def test_executable_clock_config_every_node_params_validate(child_root):
@@ -3864,4 +3861,4 @@ def test_executable_clock_config_identity_is_pinned_and_differs_from_the_legacy_
     assert PipelineDocument.from_obj(base).hash == (
         "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55")
     assert PipelineDocument.from_obj(clock).hash == (
-        "412736806a541de2af251c5c4cf9954ceb5224ba2a3c1bd1acfa4d751c504915")
+        "0135e9ff8494fd4a03c5297c5f97abc3c3fa88f6de331a1c9a447856179863e9")
