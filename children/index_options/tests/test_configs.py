@@ -3814,7 +3814,10 @@ def test_executable_clock_config_differs_from_the_robust_backtest_only_where_dec
         "max_relative_gap"]
     settle = pipeline["settle"]["params"]
     assert settle.pop("exercise_threshold_usd") == 0.01
-    assert settle["labels"] != base["pipeline"]["settle"]["params"]["labels"]
+    assert settle["labels"] == {
+        "fill": "assumed first-session-after-decision VWAP fill with the arm's haircut",
+        "exercise": "intrinsic settlement at the as-traded expiry close; early exercise, "
+                    "assignment and share delivery not simulated"}
     settle["labels"] = base["pipeline"]["settle"]["params"]["labels"]
     assert _without_notes(pipeline) == _without_notes(base["pipeline"])
     # every changed key is explained: each touched node's notes name ADR-0256
@@ -3853,3 +3856,11 @@ def test_account_study_defaults_name_the_config_report_node_and_its_ports(child_
     assert ports[ledger_studies.SELECT_STAGE] == "$select.evidence"
     assert ports[ledger_studies.SETTLE_STAGE] == "$settle.evidence"
     assert ledger_studies.NOMINAL_ARM in pipeline["select"]["params"]["arms"]
+
+def test_executable_clock_config_identity_is_pinned_and_differs_from_the_legacy_one(child_root):
+    from dskit.pipeline.document import PipelineDocument
+    base, clock = _clock_docs(child_root)
+    assert PipelineDocument.from_obj(base).hash == (
+        "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55")
+    assert PipelineDocument.from_obj(clock).hash == (
+        "412736806a541de2af251c5c4cf9954ceb5224ba2a3c1bd1acfa4d751c504915")

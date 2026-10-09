@@ -1430,3 +1430,24 @@ def test_account_study_reads_and_never_writes(tmp_path, capsys):
 
 def test_account_study_is_registered():
     assert ledger_studies.STUDIES["account"] is ledger_studies.AccountStudy
+
+
+def test_account_peak_reservation_is_concurrent_not_cumulative(tmp_path):
+    # two 300 USD orders that never overlap: a settles before b is decided
+    selections = [_sel("a", "AAA", day="2025-02-04", expiry="2025-03-07"),
+                  _sel("b", "BBB", day="2025-03-10", expiry="2025-04-10")]
+    outcomes = [_out("a", settle="2025-03-07", pnl=1.), _out("b", settle="2025-04-10", pnl=2.)]
+    rows = _account(tmp_path, selections, outcomes)
+    assert rows[0].peak_reserved_usd == 300.
+    assert [r.capital_usd for r in rows] == [None, 300., 150., 75.]
+    assert [r.admitted for r in rows] == [2, 2, 0, 0]
+
+
+def test_account_date_cap_counts_only_admitted_orders(tmp_path):
+    # a outranks b on the same date but fails max_per_symbol; the one date slot stays for b
+    selections = [_sel("z", "AAA", day="2025-02-03", value=30.),
+                  _sel("a", "AAA", day="2025-02-04", value=60.),
+                  _sel("b", "BBB", day="2025-02-04", value=30.)]
+    got = _row(_account(tmp_path, selections, [_out(d) for d in "zab"],
+                        max_per_symbol=1, max_per_date=1))
+    assert (got.admitted, got.rejected) == (2, {"max_per_symbol": 1})

@@ -3488,6 +3488,11 @@ def test_expiry_condor_unfilled_still_needs_identity_and_a_reason():
     (94.995, [], ["SP"], 0),
     (95, [], ["SP"], 0),
     (95.01, [], [], 0),
+    (104.99, [], [], 0),
+    (105, [], ["SC"], 0),
+    (105.005, [], ["SC"], 0),
+    (105.01, ["SC"], [], -100),
+    (110.01, ["SC", "LC"], [], 0),
 ])
 def test_expiry_condor_discloses_itm_pin_zone_and_would_deliver_shares(close, itm, pin, shares):
     out = _settle([_filled()], close, exercise_threshold_usd=0.01)

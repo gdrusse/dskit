@@ -63,7 +63,7 @@ from .contracts import (
 from .datafiles import entry_problems
 from .distribution import CondorGeometry, condor_payoff
 
-__all__ = ["ExactDteBarChain", "CondorExpirySettle", "CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
+__all__ = ["FILL_BAR_KEYS", "ExactDteBarChain", "CondorExpirySettle", "CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
@@ -3350,6 +3350,10 @@ def liquid_leg_haircut(price, trade_count, volume, liquidity, tier_terms, multip
     return haircut, haircut <= price
 
 
+FILL_BAR_KEYS = ("date", "vwap", "trade_count", "volume")
+"""The one shape of a t' fill bar: written by ExactDteBarChain, read by RobustCondorBatchSelect."""
+
+
 def _mip_abs_gap(params):
     """One reader of ``solver_options.mip_abs_gap``; a non-dict block reads as unset."""
     options = params.get("solver_options")
@@ -3922,8 +3926,6 @@ class RobustCondorBatchSelect(RobustCondorSelect):
         return RobustCondorSelect.run(self, ctx, {"context": context})
 
 
-    _FILL_KEYS = ("date", "vwap", "trade_count", "volume")
-
     def _fill_bar(self, row, day):
         """Return a chain row's ``fill`` bar after refusing a malformed one or one off t'."""
         if "fill_session" not in row:
@@ -3934,7 +3936,7 @@ class RobustCondorBatchSelect(RobustCondorSelect):
                              "and before expiry")
         if fill is None:
             return None
-        if (not isinstance(fill, dict) or set(fill) != set(self._FILL_KEYS)
+        if (not isinstance(fill, dict) or set(fill) != set(FILL_BAR_KEYS)
                 or not _iso_day(fill["date"]) or not number_ok(fill["vwap"]) or fill["vwap"] < 0
                 or any(type(fill[k]) is not int or fill[k] < 0 for k in ("trade_count", "volume"))):
             raise ValueError("chain fill must be null or a date/vwap/trade_count/volume bar")
@@ -4346,4 +4348,4 @@ class ExactDteBarChain(Node):
                 record["symbol"], record["expiry"], record["right"], float(record["strike"])):
             raise ValueError("fill row disagrees with its contract's symbol, expiry, right or strike")
         return {"fill_session": session,
-                "fill": {key: bar[key] for key in ("date", "vwap", "trade_count", "volume")}}
+                "fill": {key: bar[key] for key in FILL_BAR_KEYS}}

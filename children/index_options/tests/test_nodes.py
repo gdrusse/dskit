@@ -2168,3 +2168,29 @@ def test_robust_parity_recompute_goes_through_the_primal_owner(monkeypatch):
     monkeypatch.setattr(RobustCondorSelect, "_primal_value",
                         lambda self, legs: (float("nan"), float("nan")))
     assert node.run(None, {"context": context})["decision"]["reason"] == "parity_failed"
+
+
+def test_condor_batch_fill_uses_the_tickers_own_haircut_tier():
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    params["haircut_tiers"] = {"low": {"pct": .5, "floor_usd": .01},
+                               "mid": {"pct": .01, "floor_usd": .01},
+                               "high": {"pct": .01, "floor_usd": .01}}
+    # AAA's calibration median (7) is the lowest of two symbols: tier low, pct .5
+    out = RobustCondorBatchSelect("batch", params).run(None, inputs)
+    nominal = _by_arm(out)["nominal"]
+    assert nominal["status"] == "trade"
+    for leg in nominal["legs"]:
+        decision, fill = leg["decision_price_usd_per_share"], leg["price_usd_per_share"]
+        bar = next(r for r in inputs["chain"] if r["contract"] == leg["contract"]
+                   and r["quote_date"] == "2025-02-04")["fill"]
+        expected = bar["vwap"] * (.5 if leg["side"] == "sell" else 1.5)
+        assert fill == pytest.approx(expected), (leg["role"], decision, fill)
+
+
+def test_fill_bar_keys_have_one_owner():
+    import inspect
+    from index_options import nodes
+    assert nodes.FILL_BAR_KEYS == ("date", "vwap", "trade_count", "volume")
+    source = inspect.getsource(nodes)
+    assert source.count('("date", "vwap", "trade_count", "volume")') == 1
