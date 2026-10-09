@@ -15,6 +15,7 @@ from dskit.pipeline.document import date_problem
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
+from dskit.pipeline.stats import CalendarBlockBootstrap, EdgePaddedCalendarBlockBootstrap
 from dskit.pipeline.libs.predictive_cdf import (
     ChronologicalCDFStudy, CDFHyperparameterStudy, CDFThresholdAudit,
     DiscreteCDFGrid, GridCurve,
@@ -165,9 +166,27 @@ class CausalStrikeCDFCorrection:
 
 
 class AdaptiveWassersteinRadius:
-    """Select the smallest W1 radius passing a causal date-block residual bound."""
+    """Select the smallest W1 radius passing a causal date-block residual bound.
 
-    def __init__(self, radii, min_dates, block_dates, replicates, alpha, seed):
+    Parameters
+    ----------
+    radii, min_dates, block_dates, replicates, alpha, seed
+        The sorted radius grid and bootstrap settings.
+    sampler_class : type
+        Calendar-block sampler strategy used in calendar mode; a
+        ``CalendarBlockBootstrap`` subclass (default: the legacy class).
+
+    Examples
+    --------
+    Select a radius with edge-padded calendar blocks::
+
+        owner = AdaptiveWassersteinRadius(
+            [0., .01], 4, 1, 100, .1, 7,
+            sampler_class=EdgePaddedCalendarBlockBootstrap)
+    """
+
+    def __init__(self, radii, min_dates, block_dates, replicates, alpha, seed,
+                 sampler_class=CalendarBlockBootstrap):
         import math
 
         if (not isinstance(radii, list) or not radii
@@ -178,8 +197,11 @@ class AdaptiveWassersteinRadius:
                 or type(block_dates) is not int or not 1 <= block_dates <= min_dates
                 or type(replicates) is not int or replicates < 20
                 or isinstance(alpha, bool) or not 0 < alpha < 0.5
-                or type(seed) is not int):
+                or type(seed) is not int
+                or not isinstance(sampler_class, type)
+                or not issubclass(sampler_class, CalendarBlockBootstrap)):
             raise ValueError("invalid adaptive radius settings")
+        self.sampler_class = sampler_class
         self.radii = tuple(float(v) for v in radii)
         self.min_dates, self.block_dates = min_dates, block_dates
         self.replicates, self.alpha, self.seed = replicates, float(alpha), seed
@@ -244,7 +266,6 @@ class AdaptiveWassersteinRadius:
         """Use the shared complete-calendar sampler on paired daily means."""
         from datetime import date
         import numpy as np
-        from dskit.pipeline.stats import CalendarBlockBootstrap
 
         if type(calendar_days) is not int or calendar_days < 1:
             raise ValueError("calendar_days must be a positive integer")
@@ -270,8 +291,8 @@ class AdaptiveWassersteinRadius:
         support = {"supported": False, "date_count": len(days),
                    "block_days": calendar_days, "reason": "insufficient_dates"}
         if len(days) >= self.min_dates:
-            sampler = CalendarBlockBootstrap([date.fromisoformat(day) for day in days],
-                                             calendar_days)
+            sampler = self.sampler_class([date.fromisoformat(day) for day in days],
+                                         calendar_days)
             support = sampler.evidence
             if sampler.supported:
                 # Shared draws pair every radius; no LP is solved during resampling.
@@ -286,6 +307,11 @@ class AdaptiveWassersteinRadius:
                 "full_means": means, "support": support,
                 "reason": None if passing else "insufficient_or_uncovered_history"}
 
+DEFAULT_BLOCK_GEOMETRY = "complete"
+BLOCK_GEOMETRIES = {DEFAULT_BLOCK_GEOMETRY: CalendarBlockBootstrap,
+                    "edge_padded": EdgePaddedCalendarBlockBootstrap}
+
+
 class HeldOutRhoCalibration(Node):
     """Calibrate a frozen quantile-wing audit population without future leakage.
 
@@ -294,6 +320,9 @@ class HeldOutRhoCalibration(Node):
     params : dict
         Explicit grid, bootstrap, template, liquidity and publication settings;
         settlement_field and end_before declare the governed bar projection.
+        Optional ``block_geometry`` names the calendar-block sampler in
+        ``BLOCK_GEOMETRIES`` (absent means ``DEFAULT_BLOCK_GEOMETRY``, the
+        legacy complete-block sampler).
         Inputs must already satisfy ExactDteBarChain standard-contract rules.
 
     Examples
@@ -308,7 +337,24 @@ class HeldOutRhoCalibration(Node):
     _PARAMS = ("rho_grid", "min_dates", "block_days", "replicates", "alpha", "seed",
                "short_q", "wing_strikes", "min_trade_count", "min_volume",
                "publication_lag_sessions", "max_settlement_gap_days",
-               "settlement_field", "end_before")
+               "settlement_field", "end_before", "block_geometry")
+    _OPTIONAL_PARAMS = ("block_geometry",)
+
+    @classmethod
+    def _sampler_class(cls, params):
+        """Resolve the optional block geometry through the registry or refuse."""
+        name = params.get("block_geometry", DEFAULT_BLOCK_GEOMETRY)
+        if not isinstance(name, str) or name not in BLOCK_GEOMETRIES:
+            raise ValueError(f"unknown block_geometry {name!r}; known: "
+                             f"{', '.join(sorted(BLOCK_GEOMETRIES))}")
+        return BLOCK_GEOMETRIES[name]
+
+    def _radius_owner(self):
+        """Build the radius owner with the configured block geometry."""
+        return AdaptiveWassersteinRadius(
+            self.params["rho_grid"], self.params["min_dates"], 1,
+            self.params["replicates"], self.params["alpha"], self.params["seed"],
+            sampler_class=self._sampler_class(self.params))
 
     @classmethod
     def validate_params(cls, params):
@@ -317,9 +363,13 @@ class HeldOutRhoCalibration(Node):
 
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
-        if set(params) != set(cls._PARAMS):
+        if set(params) | set(cls._OPTIONAL_PARAMS) != set(cls._PARAMS):
             problems.append("explicit held-out rho settings required")
             return problems
+        try:
+            cls._sampler_class(params)
+        except ValueError as exc:
+            problems.append(str(exc))
         if (not isinstance(params["settlement_field"], str)
                 or not params["settlement_field"]
                 or not _iso_day(params["end_before"])):
@@ -498,9 +548,9 @@ class HeldOutRhoCalibration(Node):
             residuals = [{"quote_date": item["quote_date"], "radius": radius,
                           "residual": item["realized_loss"]-item["losses"][radius]}
                          for item in history for radius in self.params["rho_grid"]]
-            owner = AdaptiveWassersteinRadius(self.params["rho_grid"], self.params["min_dates"], 1, self.params["replicates"], self.params["alpha"], self.params["seed"])
+            owner = self._radius_owner()
             result = owner.select(pd.DataFrame(residuals, columns=("quote_date", "radius", "residual")), calendar_days=self.params["block_days"]["primary"]) if residuals else {"radius": None, "reason": "insufficient_or_uncovered_history"}
-            sensitivity = AdaptiveWassersteinRadius(self.params["rho_grid"], self.params["min_dates"], 1, self.params["replicates"], self.params["alpha"], self.params["seed"]).select(pd.DataFrame(residuals, columns=("quote_date", "radius", "residual")), calendar_days=self.params["block_days"]["sensitivity"]) if residuals else {"radius": None}
+            sensitivity = owner.select(pd.DataFrame(residuals, columns=("quote_date", "radius", "residual")), calendar_days=self.params["block_days"]["sensitivity"]) if residuals else {"radius": None}
             monthly[month] = result["radius"]
             for item in records:
                 if item["quote_date"][:7] == month:

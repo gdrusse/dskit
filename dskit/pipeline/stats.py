@@ -74,6 +74,7 @@ __all__ = [
     "CORRECTIONS",
     "CalendarBlockBootstrap",
     "EULER_MASCHERONI",
+    "EdgePaddedCalendarBlockBootstrap",
     "METHODS",
     "NO_VARIANCE_RTOL",
     "across_fold_t",
@@ -1994,14 +1995,21 @@ class CalendarBlockBootstrap:
         self._dates = tuple(dates)
         # Ordinals avoid overflow for valid date.max and arbitrarily long spans.
         ordinals = [day.toordinal() for day in dates]
-        self._blocks = tuple(
-            tuple(range(start, bisect.bisect_left(ordinals, ordinal + block_days)))
-            for start, ordinal in enumerate(ordinals)
-            if ordinal + block_days <= ordinals[-1] + 1)
+        self._block_days = block_days
+        pairs = self._blocks_for(ordinals, block_days)
+        self._starts = tuple(start for start, _ in pairs)
+        self._blocks = tuple(block for _, block in pairs)
         self._inclusion = tuple(
             sum(index in block for block in self._blocks)
             for index in range(len(dates)))
-        self._block_days = block_days
+
+    def _blocks_for(self, ordinals, block_days):
+        """Return the (start ordinal, index tuple) pairs of complete blocks."""
+        return tuple(
+            (ordinal,
+             tuple(range(start, bisect.bisect_left(ordinals, ordinal + block_days))))
+            for start, ordinal in enumerate(ordinals)
+            if ordinal + block_days <= ordinals[-1] + 1)
 
     @property
     def supported(self):
@@ -2011,11 +2019,13 @@ class CalendarBlockBootstrap:
     @property
     def evidence(self):
         """Return support diagnostics without generating a bootstrap draw."""
+        from datetime import date
+
         return {
             "block_days": self._block_days,
             "date_count": len(self._dates),
-            "eligible_starts": [self._dates[block[0]].isoformat()
-                                for block in self._blocks],
+            "eligible_starts": [date.fromordinal(start).isoformat()
+                                for start in self._starts],
             "distinct_blocks": len(set(self._blocks)),
             "inclusion_counts": list(self._inclusion),
             "zero_inclusion_dates": [day.isoformat()
@@ -2058,3 +2068,65 @@ class CalendarBlockBootstrap:
                 indices.extend(rng.choice(self._blocks))
             samples.append(indices[:n])
         return samples
+
+
+class EdgePaddedCalendarBlockBootstrap(CalendarBlockBootstrap):
+    """Resample calendar blocks whose starts may precede the first date.
+
+    Every calendar day from ``first - (block_days - 1)`` to ``last`` starts a
+    half-open interval ``[start, start + block_days)``; the block is that
+    interval intersected with the observed dates, and empty blocks are
+    dropped. Each observed date therefore lies in exactly ``block_days``
+    blocks, so no date, including the trailing one, is left uncovered. Edge
+    blocks are shorter than ``block_days`` and are reported as truncated.
+    Inclusion counts are equal but expected draw weights are not.
+
+    Parameters
+    ----------
+    dates : sequence of datetime.date
+        Strictly increasing distinct dates, excluding datetime timestamps.
+    block_days : int
+        Positive calendar length of each block interval. The earliest padded
+        start must be a representable date, else ``ValueError``.
+
+    Examples
+    --------
+    Cover a trailing date the complete-block sampler leaves out::
+
+        from datetime import date
+        sampler = EdgePaddedCalendarBlockBootstrap(
+            [date(2024, 1, d) for d in (1, 2, 4, 5, 8)], 3)
+        sampler.evidence["zero_inclusion_dates"]
+        # -> []
+    """
+
+    def _blocks_for(self, ordinals, block_days):
+        """Return one (start ordinal, index tuple) pair per non-empty padded start."""
+        first = ordinals[0] - (block_days - 1)
+        if first < 1:
+            raise ValueError("block_days pads before the earliest representable date")
+        pairs = []
+        for start in range(first, ordinals[-1] + 1):
+            lo = bisect.bisect_left(ordinals, start)
+            hi = bisect.bisect_left(ordinals, start + block_days)
+            if lo < hi:
+                pairs.append((start, tuple(range(lo, hi))))
+        return tuple(pairs)
+
+    @property
+    def supported(self):
+        """Complete-sampler support plus a span floor of two block lengths.
+
+        The floor is ``floor(span_days / block_days) >= 2`` and ignores how
+        the observed dates cluster inside the span.
+        """
+        first, last = self._dates[0].toordinal(), self._dates[-1].toordinal()
+        return (last - first + 1) // self._block_days >= 2 and super().supported
+
+    @property
+    def evidence(self):
+        """Return base diagnostics plus ``truncated_blocks`` (edge-overhanging blocks)."""
+        first, last = self._dates[0].toordinal(), self._dates[-1].toordinal()
+        truncated = sum(1 for start in self._starts
+                        if start < first or start + self._block_days > last + 1)
+        return {**super().evidence, "truncated_blocks": truncated}

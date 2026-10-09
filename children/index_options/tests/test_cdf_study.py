@@ -2361,6 +2361,92 @@ def test_held_out_rho_calendar_days_are_not_minimum_observation_counts():
     assert cdf_study.HeldOutRhoCalibration.validate_params(params) == []
 
 
+LEGACY_ROBUST_CONFIG = (Path(__file__).parents[1]/"configs"/
+                        "run-equity-condor-robust-backtest.json")
+LEGACY_ROBUST_HASH = "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55"
+
+
+def _legacy_rho_params():
+    config = json.loads(LEGACY_ROBUST_CONFIG.read_text())
+    return config["pipeline"]["rho_calibration"]["params"]
+
+
+def test_legacy_rho_config_still_validates_and_keeps_its_identity_hash():
+    from dskit.pipeline.document import PipelineDocument
+
+    config = json.loads(LEGACY_ROBUST_CONFIG.read_text())
+    params = config["pipeline"]["rho_calibration"]["params"]
+    assert "block_geometry" not in params
+    assert cdf_study.HeldOutRhoCalibration.validate_params(params) == []
+    assert PipelineDocument.from_obj(config).hash == LEGACY_ROBUST_HASH
+
+
+def test_held_out_rho_block_geometry_is_optional_known_and_default_deny():
+    node = cdf_study.HeldOutRhoCalibration
+    base = _legacy_rho_params()
+    assert node.validate_params({**base, "block_geometry": "edge_padded"}) == []
+    assert node.validate_params({**base, "block_geometry": "complete"}) == []
+    for bad in ("circular", None, ["edge_padded"]):
+        problems = node.validate_params({**base, "block_geometry": bad})
+        assert any("complete" in p and "edge_padded" in p for p in problems)
+    assert node.validate_params({**base, "unknown_knob": 1})
+    missing = {k: v for k, v in base.items() if k != "seed"}
+    assert node.validate_params(missing)
+
+
+def test_held_out_rho_block_geometry_threads_to_the_radius_sampler():
+    from dskit.pipeline.stats import (CalendarBlockBootstrap,
+                                      EdgePaddedCalendarBlockBootstrap)
+
+    base = _legacy_rho_params()
+    legacy = cdf_study.HeldOutRhoCalibration("rho", base)
+    padded = cdf_study.HeldOutRhoCalibration(
+        "rho", {**base, "block_geometry": "edge_padded"})
+    assert legacy._radius_owner().sampler_class is CalendarBlockBootstrap
+    assert padded._radius_owner().sampler_class is EdgePaddedCalendarBlockBootstrap
+    with pytest.raises(ValueError, match="complete.*edge_padded"):
+        cdf_study.HeldOutRhoCalibration(
+            "rho", {**base, "block_geometry": "nope"})._radius_owner()
+
+
+def test_adaptive_radius_rejects_a_non_sampler_strategy():
+    with pytest.raises(ValueError, match="invalid adaptive radius settings"):
+        cdf_study.AdaptiveWassersteinRadius(
+            radii=[0.], min_dates=2, block_dates=1, replicates=100, alpha=.1,
+            seed=7, sampler_class=dict)
+
+
+def test_edge_padded_sampler_turns_an_uncovered_trailing_date_into_a_radius():
+    from dskit.pipeline.stats import EdgePaddedCalendarBlockBootstrap
+
+    # Weekly dates: the legacy sampler leaves the final date uncovered at
+    # calendar_days=10 because no observed start sits 9 days before it.
+    days = ["2024-01-01", "2024-01-08", "2024-01-15", "2024-01-22",
+            "2024-01-29", "2024-02-05"]
+    history = pd.DataFrame([
+        {"quote_date": day, "radius": radius, "residual": residual}
+        for day in days for radius, residual in ((0., .2), (.01, -.2))])
+    settings = dict(radii=[0., .01], min_dates=4, block_dates=1,
+                    replicates=100, alpha=.1, seed=7)
+    legacy = cdf_study.AdaptiveWassersteinRadius(**settings).select(
+        history, calendar_days=10)
+    assert legacy["radius"] is None
+    assert legacy["support"]["zero_inclusion_dates"] == ["2024-02-05"]
+    padded_owner = cdf_study.AdaptiveWassersteinRadius(
+        **settings, sampler_class=EdgePaddedCalendarBlockBootstrap)
+    padded = padded_owner.select(history, calendar_days=10)
+    assert padded["support"]["supported"]
+    assert padded["support"]["zero_inclusion_dates"] == []
+    assert padded["support"]["truncated_blocks"] > 0
+    assert all(bound is not None for bound in padded["upper_bounds"].values())
+    # The unchanged smallest-passing rule: rho=0 has positive mean, .01 passes.
+    assert padded["radius"] == .01
+    assert padded["reason"] is None
+    # An unsupported padded update still abstains (span floor: 10 > 36/2).
+    short = padded_owner.select(history, calendar_days=30)
+    assert short["radius"] is None and not short["support"]["supported"]
+
+
 def test_held_out_rho_publication_from_settlement_and_label_date_agreement():
     mass={"symbol":"X","expiry":"2025-01-31","settlement_date":"2025-01-31"}
     bars=[dict(symbol="X",date=day,as_traded_close=100.)
