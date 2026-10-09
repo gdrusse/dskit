@@ -1,1 +1,2 @@
 id,label,purpose,relevant_files,locked,current_work,criteria
+A0077,Data windows W1-W5,"Lock predictor selection/HPO, check, retrain, MIO tuning and holdout windows before any modelling",children/crypto_trading/docs/plans/2026-10-09-data-windows.md,Y,,judgemental

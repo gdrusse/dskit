@@ -43,7 +43,6 @@ Display only: `actions.csv` remains the complete, append-only journal.
 
 | ID | Category | Step | Execution Date | Relevant Inputs | Relevant Outputs | Database Location | Notes |
 |---|---|---|---|---|---|---|---|
-| A0067 | acquire | validate | 2026-10-09T04:10:22+00:00 | --root /home/russell/data/crypto_trading/ob --source  --stream  --mode | c85cda6dc8c81a1ee062cc028b2b7b5f64027c2dc7f06e33b18f56d3e881b515 | /home/russell/data/crypto_trading/ob | gating=warn suite=configs/suite-binance-files.json |
 | A0068 | acquire | backfill kalshi-crypto/markets | 2026-10-09T04:28:09+00:00 | --root /home/russell/data/crypto_trading/ob --source kalshi-crypto --stream markets --mode backfill | 3c15a6e7ce0a8fbbd6617c0d641710da3450a99aa96b7ca27e9cc6a25d1ad39e | /home/russell/data/crypto_trading/ob |  |
 | A0069 | acquire | validate | 2026-10-09T04:28:25+00:00 | --root /home/russell/data/crypto_trading/ob --source  --stream  --mode | dd3390a8c4f4d4e3fff9bee8574631c5a63dfc460c33450e7b4552bb32884196 | /home/russell/data/crypto_trading/ob | gating=warn suite=configs/suite-kalshi-crypto-markets.json |
 | A0070 | acquire | backfill kalshi-crypto-candles-btc/candles | 2026-10-09T04:28:32+00:00 | --root /home/russell/data/crypto_trading/ob --source kalshi-crypto-candles-btc --stream candles --mode backfill | 0d15c701e7bdc802c4409428455b71bb5a11ebe6508616add071e32550429601 | /home/russell/data/crypto_trading/ob |  |
@@ -53,9 +52,10 @@ Display only: `actions.csv` remains the complete, append-only journal.
 | A0074 | execute | crypto-features-15m | 2026-10-09T04:29:53+00:00 | crypto-features-15m | /home/russell/wt/crypto-completion-20261008/children/crypto_trading/pipeline_runs/crypto-features-15m-2026-10-09-d7e56be5 | /home/russell/wt/crypto-completion-20261008/children/crypto_trading/pipeline_runs/crypto-features-15m-2026-10-09-d7e56be5 | state=ran hash=d7e56be5 asof=2026-10-09 |
 | A0075 | acquire | backfill features-15m/decision_features-crypto-features-15m-2026-10-09-d7e56be5 | 2026-10-09T04:30:04+00:00 | --root /home/russell/data/crypto_trading/ob --source features-15m --stream decision_features-crypto-features-15m-2026-10-09-d7e56be5 --mode backfill | 25122c7cf5b8b4e094acede66ddda06bfad15dcd9a76625d29b761110b77a5fc | /home/russell/data/crypto_trading/ob |  |
 | A0076 | research | memo/2026-10-09-stage-a-refresh-and-15m-rerun | 2026-10-09T04:33:35+00:00 | Stage A refresh through 2026-10-08/09 and 15M rerun (items 1) | docs/memos/2026-10-09-stage-a-refresh-and-15m-rerun.md |  | development-only; held-out not enabled; new stream decision_features-crypto-features-15m-2026-10-09-d7e56be5 |
+| A0077 | research | plan/2026-10-09-data-windows | 2026-10-09T16:40:29+00:00 | Owner-approved data windows W1-W5 | docs/plans/2026-10-09-data-windows.md |  | plan only; nothing run |
 
 ## Path to Production
 
 | ID | Label | Purpose | Relevant Files | LOCKED | Current Work (owner only) | Category | Step | Decision Criteria | DB Location |
 |---|---|---|---|---|---|---|---|---|---|
-| — | — | — | — | — | — | — | — | — | — |
+| A0077 | Data windows W1-W5 | Lock predictor selection/HPO, check, retrain, MIO tuning and holdout windows before any modelling | children/crypto_trading/docs/plans/2026-10-09-data-windows.md | Y |  | research | plan/2026-10-09-data-windows | judgemental |  |
