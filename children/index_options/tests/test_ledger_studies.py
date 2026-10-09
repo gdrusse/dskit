@@ -1451,3 +1451,9 @@ def test_account_date_cap_counts_only_admitted_orders(tmp_path):
     got = _row(_account(tmp_path, selections, [_out(d) for d in "zab"],
                         max_per_symbol=1, max_per_date=1))
     assert (got.admitted, got.rejected) == (2, {"max_per_symbol": 1})
+
+
+def test_account_refuses_a_non_iso_decision_date(tmp_path):
+    bad = _sel("a", day="2025-2-4")
+    with pytest.raises(ValueError, match="quote_date|date"):
+        ledger_studies.SavedReplay(_replay(tmp_path, [bad], [_out("a")]))

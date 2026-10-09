@@ -2509,6 +2509,5 @@ def test_held_out_rho_run_threads_edge_padded_to_primary_and_sensitivity_support
         assert support["zero_inclusion_dates"] == []
         assert support["truncated_blocks"] > 0
         assert support["date_count"] == 6
-        assert all(month[horizon]["upper_bounds"][str(r)] is not None
-                   for r in params["rho_grid"]) or all(
-            v is not None for v in month[horizon]["upper_bounds"].values())
+        assert set(month[horizon]["upper_bounds"]) == set(params["rho_grid"])
+        assert all(v is not None for v in month[horizon]["upper_bounds"].values())

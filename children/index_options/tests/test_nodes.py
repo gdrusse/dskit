@@ -2194,3 +2194,35 @@ def test_fill_bar_keys_have_one_owner():
     assert nodes.FILL_BAR_KEYS == ("date", "vwap", "trade_count", "volume")
     source = inspect.getsource(nodes)
     assert source.count('("date", "vwap", "trade_count", "volume")') == 1
+
+
+def test_condor_batch_fill_credit_flags_use_the_wider_wing_gross_of_fees_at_the_boundary():
+    from index_options.nodes import RobustCondorBatchSelect
+    node = RobustCondorBatchSelect("batch", _robust_batch_params())
+    legs = [dict(role="LP", strike=80., side="buy"), dict(role="SP", strike=90., side="sell"),
+            dict(role="SC", strike=110., side="sell"), dict(role="LC", strike=125., side="buy")]
+    # wider wing is the call side (15): the flag fires at exactly 1500, not at the put wing's 1000
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=1500.)) == [
+        "fill_credit_ge_width"]
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=1499.99)) == []
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=1000.)) == []
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=0.)) == [
+        "fill_credit_nonpositive"]
+    assert node._fill_credit_flags(dict(legs=legs, multiplier=100, fill_credit_usd=.01)) == []
+
+
+@pytest.mark.parametrize("edit,fragment", [
+    (lambda r: r.update(fill_session=None), "fill_session"),
+    (lambda r: r.pop("fill_session"), "fill_session"),
+    (lambda r: r.update(fill_session=r["expiry"], fill={**r["fill"], "date": r["expiry"]}),
+     "before expiry"),
+    (lambda r: r.update(fill_session="2025-02-04", fill={**r["fill"], "date": "2025-02-04"}),
+     "after the decision date"),
+])
+def test_condor_batch_refuses_a_fill_without_or_off_its_session(edit, fragment):
+    from index_options.nodes import RobustCondorBatchSelect
+    params, inputs = _fill_setup()
+    row = next(r for r in inputs["chain"] if r["quote_date"] == "2025-02-04")
+    edit(row)
+    with pytest.raises(ValueError, match=fragment):
+        RobustCondorBatchSelect("batch", params).run(None, inputs)
