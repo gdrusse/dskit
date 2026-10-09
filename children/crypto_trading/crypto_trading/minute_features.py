@@ -22,6 +22,9 @@ feature family, so no ablation arm selects it and it is NOT a model input (with 
   (RMS, high-low, jump share) and the pair change read it, so a scale ablation is a shorter ``scales`` list.
   The trailing ``range`` windows are their own param. Every window is TRAILING (the bars at or before t),
   never a calendar day's high or low, which would include the future.
+- **Two views, one set of arrays.** ``columns`` is the same cells as ``records`` as one array per name (plus
+  the raw ``seq__`` channels no family owns), cut from the arrays the families already computed; the ``emit``
+  param names which ports are built, so ``["columns"]`` never makes the per-row dicts a 3M-row panel cannot hold.
 - **The row set never depends on the families or the scales.** Eligibility is decided from every window the
   node could use plus ``history_minutes`` (default: the widest scale of the grid), whichever families and
   scales are kept, so an ablation compares models on identical samples.
@@ -61,11 +64,16 @@ from dskit.pipeline.records import number_ok
 from .ports import ListPortsNode
 
 __all__ = [
-    "BAR_MS", "DEFAULT_SCALES", "FAMILIES", "FAMILY_TYPES", "MinuteFeatures", "REFUSALS", "FeatureFamily",
+    "BAR_MS", "DEFAULT_EMIT", "DEFAULT_SCALES", "EMIT_PORTS", "FAMILIES", "FAMILY_TYPES", "MinuteFeatures",
+    "REFUSALS", "SEQ_COLUMNS", "FeatureFamily",
 ]
 
 #: The bar this node is built for: one minute, in epoch ms.
 BAR_MS = 60_000
+#: The two views of the same arrays a run may build: ``records`` (one dict per row) and ``columns`` (one array per name).
+EMIT_PORTS = ("records", "columns")
+#: Both by default, so the rows port is exactly what it was; a panel too large for row dicts names ``["columns"]``.
+DEFAULT_EMIT = EMIT_PORTS
 #: Binance stamps a bar's ``close_time_ms`` one millisecond before the next bar opens.
 CLOSE_OFFSET_MS = 1
 _DAYS_PER_WEEK = 7
@@ -147,6 +155,12 @@ def _qualified(family, name):
 
 #: The label divisor's column: under the reserved ``meta`` prefix, so it is in no family and no arm.
 _SCALE_COLUMN = _qualified(_META, "scale")
+#: The prefix of the raw sequence channels of the ``columns`` port: no family, so no arm drops one.
+_SEQ = "seq"
+#: The raw per-bar channels a sequence model reads (one-minute log return, log volume, taker-buy share of volume).
+SEQ_COLUMNS = tuple(_qualified(_SEQ, name) for name in ("ret_1m", "log_volume", "taker_share"))
+#: The ``columns`` port's keys that are no feature: the asset's ordinal in ``assets`` and the row's ``t_ms``.
+_ASSET_COLUMN, _TIME_COLUMN = "asset", "time_ms"
 
 
 class _LocalClock:
@@ -1016,8 +1030,11 @@ class MinuteFeatures(ListPortsNode):
     close, volume, close_time_ms, trades, taker_buy_volume}``, for both assets) and optionally ``bvol``
     (a list of ``{asset, calc_time_ms, index_value}``). Outputs: ``records`` (one row per eligible
     ``(asset, t)``: ``asset``, ``t_ms``, the family columns, ``meta__scale`` (the label divisor, not a
-    feature), ``y_h1`` ... ``y_h<max_horizon>``)
-    and ``provenance`` (``families``, ``need_bars`` and per asset ``bars``, ``rows``, ``refused`` by name,
+    feature), ``y_h1`` ... ``y_h<max_horizon>``),
+    ``columns`` (the same cells as ``name -> 1-D float64 array``, sorted by asset (its ordinal in ``assets``,
+    as ``asset``) then time (``time_ms``, the row's ``t_ms``); it adds the raw channels ``seq__ret_1m``,
+    ``seq__log_volume`` and ``seq__taker_share``, which belong to no family and so to no ablation arm, and a
+    missing cell is NaN where the row holds None) and ``provenance`` (``families``, ``need_bars`` and per asset ``bars``, ``rows``, ``refused`` by name,
     ``label_missing`` by horizon, ``bvol_missing``).
 
     Parameters
@@ -1037,7 +1054,8 @@ class MinuteFeatures(ListPortsNode):
         ``us_open_tz`` / ``us_open_start_minute`` / ``us_open_minutes`` (the wall-clock window),
         ``funding_hours_utc`` (UTC hours 0..23), ``holiday_exchange`` (a calendar code of the
         ``exchange_calendars`` library), ``max_horizon`` (labels ``y_h1..y_h<max_horizon>``),
-        ``bvol_max_age_ms``, ``bvol_change_minutes``.
+        ``bvol_max_age_ms``, ``bvol_change_minutes``, ``emit`` (non-empty subset of :data:`EMIT_PORTS`: the
+        ports built; a port not named is None, and ``["columns"]`` builds no row dict at all).
 
     Examples
     --------
@@ -1050,7 +1068,7 @@ class MinuteFeatures(ListPortsNode):
     """
 
     role = "transform"
-    outputs = ("records", "provenance")
+    outputs = ("records", "provenance", "columns")
     LIST_PORTS = ("klines",)
     FAMILIES = FAMILIES
     DEFAULTS = {
@@ -1064,7 +1082,7 @@ class MinuteFeatures(ListPortsNode):
         "us_open_start_minute": DEFAULT_US_OPEN_START_MINUTE, "us_open_minutes": DEFAULT_US_OPEN_MINUTES,
         "funding_hours_utc": DEFAULT_FUNDING_HOURS_UTC, "holiday_exchange": DEFAULT_HOLIDAY_EXCHANGE,
         "max_horizon": DEFAULT_MAX_HORIZON, "bvol_max_age_ms": DEFAULT_BVOL_MAX_AGE_MS,
-        "bvol_change_minutes": DEFAULT_BVOL_CHANGE_MINUTES,
+        "bvol_change_minutes": DEFAULT_BVOL_CHANGE_MINUTES, "emit": DEFAULT_EMIT,
     }
     _PARAMS = ("assets",) + tuple(DEFAULTS)
 
@@ -1097,6 +1115,13 @@ class MinuteFeatures(ListPortsNode):
         ok = (isinstance(families, (list, tuple)) and families and len(set(families)) == len(families)
               and all(f in FAMILIES for f in families))
         return [] if ok else [f"families must be a non-empty list of distinct names from {list(FAMILIES)}, got {families!r}"]
+
+    @classmethod
+    def _emit_problems(cls, emit):
+        """Problems with ``emit``: a non-empty list of distinct names from :data:`EMIT_PORTS`."""
+        ok = (isinstance(emit, (list, tuple)) and emit and len(set(emit)) == len(emit)
+              and all(e in EMIT_PORTS for e in emit))
+        return [] if ok else [f"emit must be a non-empty list of distinct names from {list(EMIT_PORTS)}, got {emit!r}"]
 
     @classmethod
     def _list_problems(cls, name, values, ge=1):
@@ -1165,6 +1190,7 @@ class MinuteFeatures(ListPortsNode):
         full = cls.resolve(params)
         problems += cls._assets_problems(full.get("assets"))
         problems += cls._families_problems(full["families"])
+        problems += cls._emit_problems(full["emit"])
         for name, smallest in _LIST_KNOBS.items():
             problems += cls._list_problems(name, full[name], ge=smallest)
         if full["taker_check_windows"] not in ((), []):  # an empty extra list is the default, not a mistake
@@ -1342,26 +1368,57 @@ class MinuteFeatures(ListPortsNode):
             frame.bvol_times, frame.bvol_values = bvol[asset]
         return frames
 
-    def _asset_rows(self, frame, resolved, reasons, scale):
-        """Build the rows of the bars with no refusal."""
-        kept = resolved["families"]
-        columns = {}
-        for family in FAMILIES:
-            if family in kept:
-                columns.update(frame.columns(family))
-        labels = {f"{_LABEL_PREFIX}{h}": self._labels(frame, scale, h) for h in range(1, resolved["max_horizon"] + 1)}
-        rows = []
-        for i in range(frame.size):
-            if reasons[i]:
-                continue
-            row = {"asset": frame.asset, "t_ms": int(frame.close_time[i])}
-            row.update({name: _cell(values[i]) for name, values in columns.items()})
-            row[_SCALE_COLUMN] = _cell(scale[i])
-            row.update({name: _cell(values[i]) for name, values in labels.items()})
-            rows.append(row)
-        return rows, labels
+    def _asset_arrays(self, frame, resolved, scale):
+        """Return every per-bar array of the asset: kept families, the label divisor, the labels, the channels."""
+        import numpy as np
 
-    def _asset_provenance(self, frame, resolved, reasons, labels, rows):
+        arrays = {}
+        for family in FAMILIES:
+            if family in resolved["families"]:
+                arrays.update(frame.columns(family))
+        arrays[_SCALE_COLUMN] = scale
+        for name, values in zip(SEQ_COLUMNS, self._channels(frame)):
+            arrays[name] = values
+        arrays.update({f"{_LABEL_PREFIX}{h}": self._labels(frame, scale, h)
+                       for h in range(1, resolved["max_horizon"] + 1)})
+        return {name: np.asarray(values, dtype=np.float64) for name, values in arrays.items()}
+
+    @staticmethod
+    def _channels(frame):
+        """Return the raw sequence channels per bar: one-minute log return, log volume and taker-buy share of volume."""
+        import numpy as np
+
+        volume = frame.flow["volume"]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return frame.returns(), np.log(volume), frame.flow["taker_buy_volume"] / volume
+
+    def _asset_rows(self, frame, arrays, kept):
+        """Build the rows of the bars in the ``kept`` mask: ``asset``, ``t_ms``, then the cells of ``arrays``."""
+        rows = []
+        for i in kept.nonzero()[0]:
+            row = {"asset": frame.asset, "t_ms": int(frame.close_time[i])}
+            row.update({name: _cell(values[i]) for name, values in arrays.items() if name not in SEQ_COLUMNS})
+            rows.append(row)
+        return rows
+
+    def _asset_columns(self, frame, arrays, kept, code):
+        """Cut the kept bars out of every array (a copy), led by the asset's ordinal and the row's ``t_ms``."""
+        import numpy as np
+
+        size = int(kept.sum())
+        columns = {_ASSET_COLUMN: np.full(size, code, dtype=np.int64), _TIME_COLUMN: frame.close_time[kept]}
+        columns.update({name: values[kept] for name, values in arrays.items()})
+        return columns
+
+    @staticmethod
+    def _joined(pieces):
+        """Concatenate the per-asset column dicts name by name, in the order given (asset, then time)."""
+        import numpy as np
+
+        names = list(pieces[0])
+        return {name: np.concatenate([piece[name] for piece in pieces]) for name in names}
+
+    def _asset_provenance(self, frame, resolved, reasons, labels, count):
         """Count bars, rows, named refusals and missing labels / BVOL readings for one asset."""
         import numpy as np
 
@@ -1369,7 +1426,7 @@ class MinuteFeatures(ListPortsNode):
         ok = reasons == ""
         missing = {h[len(_LABEL_PREFIX):]: int((ok & ~np.isfinite(v)).sum()) for h, v in labels.items()}
         bvol_level = frame.columns("bvol")[_qualified("bvol", "level")]
-        return {"bars": int(frame.size), "rows": len(rows), "refused": refused, "label_missing": missing,
+        return {"bars": int(frame.size), "rows": count, "refused": refused, "label_missing": missing,
                 "bvol_missing": int((ok & ~np.isfinite(bvol_level)).sum())}
 
     def run(self, ctx, inputs):
@@ -1385,7 +1442,8 @@ class MinuteFeatures(ListPortsNode):
         Returns
         -------
         dict
-            ``records`` (rows sorted by ``t_ms`` then asset order) and ``provenance``.
+            ``records`` (rows sorted by ``t_ms`` then asset order; None unless ``emit`` names it), ``columns``
+            (arrays sorted by asset then time; None unless ``emit`` names it) and ``provenance``.
 
         Raises
         ------
@@ -1401,14 +1459,20 @@ class MinuteFeatures(ListPortsNode):
         reasons = {a: self._with_partner(frames[a], local[a], local[frames[a].partner.asset], frames[a].partner)
                    for a in frames}
         order = {a: n for n, a in enumerate(resolved["assets"])}
-        records, provenance = [], {}
+        records, pieces, provenance = [], [], {}
         for asset, frame in frames.items():
-            rows, labels = self._asset_rows(frame, resolved, reasons[asset], scales[asset])
-            provenance[asset] = self._asset_provenance(frame, resolved, reasons[asset], labels, rows)
-            records += rows
+            kept = reasons[asset] == ""
+            arrays = self._asset_arrays(frame, resolved, scales[asset])
+            labels = {n: v for n, v in arrays.items() if n.startswith(_LABEL_PREFIX)}
+            provenance[asset] = self._asset_provenance(frame, resolved, reasons[asset], labels, int(kept.sum()))
+            if "records" in resolved["emit"]:
+                records += self._asset_rows(frame, arrays, kept)
+            if "columns" in resolved["emit"]:
+                pieces.append(self._asset_columns(frame, arrays, kept, order[asset]))
         records.sort(key=lambda r: (r["t_ms"], order[r["asset"]]))
-        return {"records": records, "provenance": {"families": list(resolved["families"]), "need_bars": need,
-                                                   "assets": provenance}}
+        return {"records": records if "records" in resolved["emit"] else None,
+                "columns": self._joined(pieces) if pieces else None,
+                "provenance": {"families": list(resolved["families"]), "need_bars": need, "assets": provenance}}
 
     @staticmethod
     def _with_partner(frame, own, other, partner):

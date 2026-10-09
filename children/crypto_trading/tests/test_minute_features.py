@@ -438,7 +438,7 @@ GOOD_KNOBS = {
     "taker_check_windows": [3, 6], "scale_window": 10, "shock_k": 3.0, "shock_window": 5, "shock_max_minutes": 8, "history_minutes": 13,
     "month_end_days": 2, "us_open_tz": "America/New_York", "us_open_start_minute": 570,
     "us_open_minutes": 30, "funding_hours_utc": [0, 12], "holiday_exchange": "XNYS",
-    "max_horizon": 4, "bvol_max_age_ms": 1000, "bvol_change_minutes": 5,
+    "max_horizon": 4, "bvol_max_age_ms": 1000, "bvol_change_minutes": 5, "emit": ["records", "columns"],
 }
 
 
@@ -1005,3 +1005,125 @@ def test_a_gap_anywhere_in_the_10080_minute_window_is_refused_by_name():
     assert prov["refused"]["gap_in_window"] == 10  # bars past the 10080th, until a window clears the gap
     assert min(r["t_ms"] for r in out["records"] if r["asset"] == A) == t_of(10_091)
     assert all(r["trend__ma_10080"] is not None for r in out["records"])
+
+
+# ---------------------------------------------------------------------------
+# the columnar port (a second view of the same arrays, for panels too large for row dicts)
+# ---------------------------------------------------------------------------
+
+SEQ = ("seq__ret_1m", "seq__log_volume", "seq__taker_share")  # restated on purpose
+
+
+def _cells(value):
+    """A row cell restated for comparison: None is NaN in a column."""
+    return float("nan") if value is None else value
+
+
+def _column_rows(out):
+    """Rebuild ``{(asset, t_ms): {name: cell}}`` from the ``columns`` port (asset code 0/1 -> A/B)."""
+    columns = out["columns"]
+    names = {0: A, 1: B}
+    return {(names[int(columns["asset"][i])], int(columns["time_ms"][i])): {k: v[i] for k, v in columns.items()}
+            for i in range(len(columns["time_ms"]))}
+
+
+def test_the_columns_port_and_the_rows_port_agree_cell_for_cell():
+    import numpy as np
+
+    out = run(world(70), bvol(A, 70, 3) + bvol(B, 70, 4))
+    rows, cols = by_key(out), _column_rows(out)
+    assert rows and set(rows) == set(cols)
+    for key, row in rows.items():
+        for name, value in row.items():
+            if name in ("asset", "t_ms"):
+                continue
+            assert np.array_equal(np.float64(_cells(value)), cols[key][name], equal_nan=True), (key, name)
+        assert set(cols[key]) - set(row) == {"time_ms", *SEQ}  # a column view adds only the time key and the channels
+
+
+def test_the_columns_are_sorted_by_asset_then_time_and_equal_length_float_arrays():
+    import numpy as np
+
+    columns = run(world(70))["columns"]
+    assert len({len(v) for v in columns.values()}) == 1
+    assert all(isinstance(v, np.ndarray) and v.ndim == 1 for v in columns.values())
+    order = list(zip(columns["asset"].tolist(), columns["time_ms"].tolist()))
+    assert order == sorted(order) and len(set(order)) == len(order)
+    assert set(columns["asset"].tolist()) == {0, 1}
+    assert [k for k in columns if k.startswith("y_h")] == [f"y_h{h}" for h in range(1, SMALL["max_horizon"] + 1)]
+    assert SCALE in columns and set(SEQ) <= set(columns)
+
+
+def test_the_sequence_channels_are_the_raw_bar_quantities():
+    klines = world(70)
+    out = run(klines)
+    cols = _column_rows(out)
+    raw = {(r["asset"], r["close_time_ms"]): r for r in klines}
+    price = {(r["asset"], r["open_time_ms"]): r["close"] for r in klines}
+    for (asset, t_ms), cell in cols.items():
+        bar = raw[(asset, t_ms)]
+        assert cell["seq__ret_1m"] == pytest.approx(math.log(bar["close"] / price[(asset, bar["open_time_ms"] - BAR)]))
+        assert cell["seq__log_volume"] == pytest.approx(math.log(bar["volume"]))
+        assert cell["seq__taker_share"] == pytest.approx(bar["taker_buy_volume"] / bar["volume"])
+
+
+def test_the_sequence_channels_belong_to_no_family_and_to_no_row():
+    out = run(world(70))
+    assert not any(k.startswith("seq__") for r in out["records"] for k in r)
+    assert not any(f == "seq" for f in FAMILIES)  # restated on purpose: no arm can ablate a channel
+    kept = run(world(70), families=["ret"])["columns"]
+    assert set(SEQ) <= set(kept)  # the channels are there whichever families are kept
+
+
+@pytest.mark.parametrize("shaken_asset", [A, B])
+def test_changing_a_future_bar_changes_no_column_at_t(shaken_asset):
+    klines, readings = world(), bvol(A, 60, 3) + bvol(B, 60, 4)
+    base = _column_rows(run(klines, readings))
+    i = 30
+    moved = _column_rows(run(_shaken(klines, shaken_asset, START + (i + 1) * BAR), readings))
+    for asset in (A, B):
+        for j in range(SMALL_NEED, i + 1):
+            before, after = base[(asset, t_of(j))], moved[(asset, t_of(j))]
+            same = {k: (v == after[k]) or (v != v and after[k] != after[k]) for k, v in before.items()
+                    if not k.startswith("y_h")}
+            assert all(same.values()), (asset, j, [k for k, ok in same.items() if not ok])
+    assert base[(shaken_asset, t_of(i))]["y_h1"] != moved[(shaken_asset, t_of(i))]["y_h1"]  # the label is what a future bar is FOR
+
+
+def test_the_sequence_channel_at_t_moves_with_the_last_legal_bar():
+    klines = world()
+    i = 30
+    last_legal = START + i * BAR
+    moved = _column_rows(run(_shaken([r for r in klines if r["open_time_ms"] <= last_legal or r["asset"] == B], A, last_legal)))
+    base = _column_rows(run(klines))
+    assert all(base[(A, t_of(i))][c] != moved[(A, t_of(i))][c] for c in SEQ[:2])  # the spike scales both flows alike
+    tilted = [{**r, "taker_buy_volume": r["taker_buy_volume"] * 0.5} if (r["asset"], r["open_time_ms"]) == (A, last_legal)
+              else r for r in klines]
+    assert _column_rows(run(tilted))[(A, t_of(i))]["seq__taker_share"] != base[(A, t_of(i))]["seq__taker_share"]
+
+
+def test_the_refusal_accounting_is_identical_on_every_emit():
+    klines = world(70, drop_a=(40,), drop_b=(50,))
+    both = run(klines)
+    only_columns = run(klines, emit=["columns"])
+    only_rows = run(klines, emit=["records"])
+    assert both["provenance"] == only_columns["provenance"] == only_rows["provenance"]
+    assert both["provenance"]["assets"][A]["rows"] + both["provenance"]["assets"][B]["rows"] == len(both["records"])
+    assert len(both["columns"]["time_ms"]) == len(both["records"])
+    assert both["provenance"]["assets"][A]["refused"]  # the dropped bar is counted, not hidden
+
+
+def test_emitting_only_columns_builds_no_row_dicts_and_the_rows_port_is_not_a_list():
+    out = run(world(70), emit=["columns"])
+    assert out["records"] is None and out["columns"]["time_ms"].size > 0
+    assert run(world(70), emit=["records"])["columns"] is None
+    assert run(world(70))["records"]  # the default keeps the rows port exactly as it was
+
+
+def test_the_default_emit_is_both_ports_and_a_bad_emit_is_refused():
+    assert tuple(MinuteFeatures.DEFAULTS["emit"]) == ("records", "columns")
+    for bad in ([], ["rows"], ["records", "records"], "records", None):
+        problems = MinuteFeatures.validate_params({**SMALL, "emit": bad})
+        assert problems and any("emit" in p for p in problems), (bad, problems)
+    assert MinuteFeatures.validate_params({**SMALL, "emit": ["columns"]}) == []
+    assert "columns" in MinuteFeatures.outputs
