@@ -277,8 +277,13 @@ This describes required reuse of run artifacts, not a newly built cache service.
 Bootstrap resamples reuse the stored residuals; they do not solve the LP
 again. For N admitted templates, there are5N loss values and normally4N LP
 solves, not an additional factor of the bootstrap replicate count.
-A later prior-only update may reuse unchanged values for retained observations
-and compute values for newly admitted observations only.
+The owner also approved monthly prior-only updates: include calibration and
+entry-phase audit templates only after their outcomes have settled and been
+published strictly before that month's reference. Include the fixed audit
+template whether or not the optimizer traded; do not substitute selected-trade
+losses. Reuse unchanged values for retained observations and compute values
+for newly admitted observations only. Recompute the calibration bound under
+the frozen rule; previous decisions and their radii remain unchanged.
 
 After calibration, each ticker-date/arm uses its assigned rho for the
 dualized selection MILP, including the certified no-trade tie solve and
@@ -314,8 +319,8 @@ The [draft JSON](../../configs/run-equity-condor-robust-backtest.json) and
 [evaluation calendar](../memos/2026-10-08-forecast-mio-evaluation-scheme.md)
 own the remaining proposals: calibration forecast dates2024-02-06..2024-12-31,
 later entries2025-02-04..2025-11-28, with settled/available labels only.
-Update phases, exact weights, projection-offset policy and numerical settings
-still require closure. Existing candidates/settings are not permission to
+Monthly calibration-plus-entry updates are approved. Exact weights,
+projection-offset policy and numerical settings still require closure. Existing candidates/settings are not permission to
 read protected rows or launch an unresolved pipeline.
 
 Optional Q bands remain disabled pending separate evidence. More rho does

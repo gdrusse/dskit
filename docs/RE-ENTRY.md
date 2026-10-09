@@ -117328,3 +117328,10 @@ Only the criterion is settled. Next owner choice, asked one at a time per ADR025
 Owner approved the explained grid procedure after confirming that each audit template is evaluated at five candidate radii and bootstrap reuses cached losses. Record expected_loss_bound / finite_grid / smallest_passing in the proposed JSON; retain its five original radii and all other numerical values. Zero radius may use the nominal expectation directly; no passing value is unsupported, without automatic expansion.
 
 Correct the worked explanation: current ADR audits fixed templates, not a newly optimized trade at each radius. Evidence applies to those templates; later MILP-policy assessment remains separate. Cache identity includes all relevant forecast/model/source/grid/payoff/band/numerical inputs. These are proposed adapter semantics, not implemented caching or a real run. Exact residual weighting/update phases and remaining G3 settings are still open. Source/test blobs and prior clean component review remain unchanged. Scoped documentary/config consistency reviews pending; no market records, fits or replay.
+
+
+### Empirical grid publication review and monthly-history owner choice
+
+Candidate54381811af5606e337961b877425de1c179e5ec5 closed independent GPT-6 /root/rho_grid_explanation_math and /root/rho_grid_explanation_integration, each0C/0Major/0Minor/0Nit; full actual verdicts retained in their transcripts. Shape hash7fa7e0bbace265c58ea74b868bb2f2742759842d7e49a4174bb1713b413eecf9, one focused manifest check passed, changed links/diff check passed. Source/test blobs remain identical to623e800e.
+
+Owner then selected monthly updates appending only2025 outcomes settled and published before each monthly cutoff. Proposed config replaces calibration-only phase with explicit history_phases=[calibration,entry]. Keep the same fixed audit-template population regardless of optimizer trade/no-trade; no selected-policy substitution or retrospective decision changes. No new numeric lag/weights/Delta approval inferred. Scoped monthly-delta review pending; no market records, fits or real replay.
