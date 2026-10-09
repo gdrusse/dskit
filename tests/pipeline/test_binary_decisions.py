@@ -266,6 +266,27 @@ def test_the_candle_age_cap_is_inclusive_to_the_millisecond():
     assert state([row()], [candle(DECISION - cap - 1)])[0][bd.QUOTE_MISSING] is True, "one millisecond over is stale"
 
 
+def test_the_quote_state_and_the_series_asof_rule_choose_the_same_bar_at_every_boundary():
+    # A bar's END is exclusive: bar k covers [end - 1 min, end), so its last covered instant is end - 1 and the
+    # bar is known at `end`. The platform's series as-of rule (the last row STRICTLY BEFORE the instant) applied to
+    # each bar's last covered instant must therefore pick what QuoteState picks, at end - 1, end and end + 1.
+    import numpy as np
+
+    from dskit.pipeline.libs.parquet_series import prior_index
+
+    ends = [DECISION + k * MINUTE for k in range(4)]
+    bars = [candle(end, bid=0.10 + 0.01 * k, ask=0.20 + 0.01 * k) for k, end in enumerate(ends)]
+    last_covered = np.array([end - 1 for end in ends])
+    instants = [end + step for end in ends for step in (-1, 0, 1)]
+    chosen = prior_index(last_covered, np.array(instants))
+    out = state([row(i) for i in instants], bars, max_candle_age_ms=10 * MINUTE)
+    for instant, got, index in zip(instants, out, chosen):
+        want = None if index < 0 else bars[index][bd.YES_BID]
+        assert got[bd.YES_BID] == want, f"decision at {instant - DECISION} ms"
+    picks = [int(i) for i in chosen]
+    assert picks == [-1, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3], "end - 1 still sees the previous bar, end sees this one"
+
+
 def test_both_ports_must_be_lists():
     node = QuoteState("state", PARAMS)
     assert node.validate_inputs({"records": [], "candles": []}) == []

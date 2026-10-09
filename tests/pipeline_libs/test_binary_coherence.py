@@ -4,7 +4,9 @@ Every expected arbitrage is worked by hand in the comments: the legs, the credit
 the position pays nothing net in every outcome the declared relations allow.
 """
 
+import itertools
 import json
+import math
 import random
 import subprocess
 import sys
@@ -19,12 +21,13 @@ pytest.importorskip("highspy")
 from dskit.pipeline import binary_curve
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.libs import binary_coherence
-from dskit.pipeline.libs.binary_coherence import RELATIONS, STATUS_OK, BinaryCoherence, Relation
+from dskit.pipeline.libs.binary_coherence import RELATION_KINDS, RELATIONS, STATUS_OK, BinaryCoherence, Relation
 from dskit.pipeline.libs.pyomo import PyomoSolve
 from tests.pipeline.test_binary_curve import ABSENT, SPEC, SPEC_IDS, spec_cell, Three
 
 BASE = {"id_field": "id", "bid_field": "bid", "ask_field": "ask", "fair_field": "coherent",
         "min_spread": 0.01, "solver": "highs"}
+FLOOR = binary_coherence.MIN_SPREAD_FLOOR
 
 
 def contract(cid, bid, ask, **extra):
@@ -313,7 +316,7 @@ MIN_SPREADS = (0.01, 0.001, 1e-4)
 
 def two_sided(bid, ask):
     """The side rule restated: a sale needs bid > 0, a purchase needs 0 < ask < 1 (and bid <= ask)."""
-    return bid > 0 and 0 < ask < 1
+    return bid is not None and ask is not None and bid > 0 and 0 < ask < 1
 
 
 def pava_nonincreasing(values, weights):
@@ -484,6 +487,386 @@ def test_the_projection_matches_an_independent_oracle_on_random_ladders(kind):
                 assert row["coherent"] == pytest.approx(want, abs=1e-6), where
 
 
+# -- one exact oracle per structure, written here and never reading the node ---------------------------------
+#
+# The PAVA and water-filling oracles above cover one relation kind at a time. These cover the kinds COMBINED,
+# with one-sided contracts and weights spanning 1e8 (the supported domain, MIN_SPREAD_FLOOR). Where a contract
+# has no objective term (one-sided) the oracles give it weight ZERO, not a small one: a weight of 1e-6 moved the
+# two-sided values by up to 8e-7 over 400 strike worlds, most of the 1e-6 tolerance the tests assert.
+
+SPREAD_DRAWS = (0.0, 1e-6, 1e-4, 1e-2, 0.3, 0.9)   # at the floor 1e-4 the weights span (0.9 / 1e-4)^2 = 8e7
+
+
+def draw_two_sided(rng):
+    """A two-sided (bid, ask): a spread from SPREAD_DRAWS (or uniform), shrunk to fit strictly inside (0, 1)."""
+    spread = rng.choice(SPREAD_DRAWS) if rng.random() < 0.75 else rng.uniform(0.0, 0.95)
+    mid = rng.uniform(0.02, 0.98)
+    spread = min(spread, 1.96 * min(mid, 1 - mid))
+    return mid - spread / 2, mid + spread / 2
+
+
+def draw_world_quote(rng):
+    """Mostly two-sided; else one side only or none. Every draw is a valid quote, so no relation is skipped."""
+    roll, price = rng.random(), round(rng.uniform(0.05, 0.95), 3)
+    if roll < 0.72:
+        return draw_two_sided(rng)
+    if roll < 0.80:
+        return price, None          # bid only
+    if roll < 0.86:
+        return price, 1.0           # an ask of one binds nothing
+    if roll < 0.92:
+        return None, price          # ask only
+    return (0.0, price) if roll < 0.96 else (None, None)    # a bid of zero is no sale; nothing at all
+
+
+def weight_ratio(quotes, min_spread):
+    """Largest over smallest projection weight among the two-sided quotes (1 when there are none)."""
+    weights = [1 / max(ask - bid, min_spread) ** 2 for bid, ask in quotes if two_sided(bid, ask)]
+    return max(weights) / min(weights) if weights else 1.0
+
+
+def least_squares_summing_to_one(a, b):
+    """argmin |a x - b|^2 subject to sum(x) = 1, by the null-space method (``a`` has k columns)."""
+    k = a.shape[1]
+    start = np.full(k, 1.0 / k)
+    if k == 1:
+        return start
+    null = np.linalg.svd(np.ones((1, k)))[2][1:].T          # k x (k - 1), orthonormal, spans sum(x) = 0
+    return start + null @ np.linalg.lstsq(a @ null, b - a @ start, rcond=None)[0]
+
+
+def payout_simplex_optimum(payout, quotes, min_spread):
+    """Exact projection of a strike world: p = P pi, pi >= 0, sum pi = 1 over its regions.
+
+    Minimises ``sum w_i (p_i - mid_i)^2`` over the two-sided contracts by enumerating the SUPPORT of pi: on each
+    support the optimum is an equality-constrained least squares, and an optimal pi of minimal support is the
+    unique solution of its own support's problem, so the best feasible candidate is the optimum.
+    """
+    ids = [cid for cid in payout if two_sided(*quotes[cid])]
+    if not ids:
+        return {}
+    regions = len(payout[ids[0]])
+    rows = np.array([payout[cid] for cid in ids], float)
+    mids = np.array([sum(quotes[cid]) / 2 for cid in ids])
+    root_w = np.array([1 / max(quotes[cid][1] - quotes[cid][0], min_spread) for cid in ids])
+    best_cost, best = math.inf, None
+    for mask in range(1, 2 ** regions):
+        support = [r for r in range(regions) if mask >> r & 1]
+        pi = least_squares_summing_to_one(root_w[:, None] * rows[:, support], root_w * mids)
+        if pi.min() < -1e-12:
+            continue
+        cost = float(np.sum((root_w * (rows[:, support] @ pi - mids)) ** 2))
+        if cost < best_cost:
+            best_cost, best = cost, rows[:, support] @ pi
+    return dict(zip(ids, best.tolist()))
+
+
+# Each relation kind's rows as ({id: coefficient}, rhs) pairs: (equalities coef.p = rhs, inequalities coef.p >= rhs).
+# Keyed by kind, so a kind added to RELATIONS without rows here fails the census test below.
+ORACLE_ROWS = {
+    "partitions": lambda ids: ([({cid: 1 for cid in ids}, 1.0)], []),
+    "chains": lambda ids: ([], [({a: 1, b: -1}, 0.0) for a, b in zip(ids, ids[1:])]),
+    "differences": lambda ids: ([({ids[0]: 1, ids[1]: -1, ids[2]: 1}, 0.0)], []),
+}
+
+
+def active_set_optimum(quotes, relations, min_spread):
+    """Exact projection of any small system, by enumerating which inequalities are active.
+
+    ``quotes`` maps each LINKED id to its (bid, ask); ``relations`` is the node's params shape. Every subset of
+    the relation inequalities (and every free / at-0 / at-1 state per variable) is tried as an equality system:
+    ``pinv`` finds a point (kept only if the system is consistent to 1e-9), the null space is then searched for
+    the least-squares point, and the best candidate that satisfies every inequality is the optimum. None when no
+    candidate is feasible (the relations admit no probability vector).
+    """
+    ids = list(quotes)
+    n, where = len(ids), {cid: i for i, cid in enumerate(ids)}
+    equalities, inequalities = [], []
+    for kind, id_lists in relations.items():
+        for listed in id_lists:
+            found_eq, found_ge = ORACLE_ROWS[kind](listed)
+            equalities += found_eq
+            inequalities += found_ge
+
+    def vector(coefs):
+        out = np.zeros(n)
+        for cid, coef in coefs.items():
+            out[where[cid]] = coef
+        return out
+
+    eq_rows = [(vector(c), r) for c, r in equalities]
+    ge_rows = [(vector(c), r) for c, r in inequalities]
+    two = [i for i, cid in enumerate(ids) if two_sided(*quotes[cid])]
+    pick = np.zeros((len(two), n))
+    for row, i in enumerate(two):
+        pick[row, i] = 1 / max(quotes[ids[i]][1] - quotes[ids[i]][0], min_spread)
+    target = pick @ np.array([sum(quotes[cid]) / 2 if two_sided(*quotes[cid]) else 0.0 for cid in ids])
+    best_cost, best = math.inf, None
+    for active in itertools.product((False, True), repeat=len(ge_rows)):
+        for pins in itertools.product((None, 0.0, 1.0), repeat=n):
+            rows = [a for a, _ in eq_rows] + [a for (a, _), on in zip(ge_rows, active) if on]
+            rhs = [r for _, r in eq_rows] + [r for (_, r), on in zip(ge_rows, active) if on]
+            for i, pinned in enumerate(pins):
+                if pinned is not None:
+                    rows.append(vector({ids[i]: 1}))
+                    rhs.append(pinned)
+            if rows:
+                matrix, right = np.array(rows), np.array(rhs)
+                point = np.linalg.pinv(matrix) @ right
+                if np.max(np.abs(matrix @ point - right)) > 1e-9:
+                    continue
+                singular, basis = np.linalg.svd(matrix)[1:]
+                null = basis[int(np.sum(singular > 1e-10)):].T
+            else:
+                point, null = np.zeros(n), np.eye(n)
+            if null.shape[1]:
+                point = point + null @ (np.linalg.pinv(pick @ null) @ (target - pick @ point))
+            if point.min() < -1e-10 or point.max() > 1 + 1e-10 or any(a @ point < r - 1e-10 for a, r in ge_rows):
+                continue
+            cost = float(np.sum((pick @ point - target) ** 2))
+            if cost < best_cost:
+                best_cost, best = cost, point
+    return None if best is None else {ids[i]: float(best[i]) for i in two}
+
+
+def mixed_system(rng):
+    """Up to six ids and one to three relations of any kinds; the enumeration size is capped at 6000 active sets."""
+    while True:
+        ids = [f"c{i}" for i in range(rng.randint(3, 6))]
+        relations = {}
+        for _ in range(rng.randint(1, 3)):
+            kind = rng.choice(RELATION_KINDS)
+            size = 3 if kind == "differences" else rng.randint(2, min(4, len(ids)))
+            relations.setdefault(kind, []).append(rng.sample(ids, size))
+        chain_rows = sum(len(listed) - 1 for listed in relations.get("chains", []))
+        if 2 ** chain_rows * 3 ** len(ids) <= 6000:
+            return ids, relations
+
+
+SPREAD_FLOORS = (FLOOR, 1e-3, 1e-2)
+
+
+def assert_projected(out, quotes, want, linked, where):
+    """Each row against the oracle: its value if linked and two-sided, else None and the status that says why."""
+    for row in out["records"]:
+        cid = row["id"]
+        if cid in want:
+            assert row["coherent_status"] == "ok", f"{where}: {cid}"
+            assert row["coherent"] == pytest.approx(want[cid], abs=1e-6), f"{where}: {cid}"
+        else:
+            status = "unrelated" if two_sided(*quotes[cid]) and cid not in linked else "bad_quote"
+            assert (row["coherent"], row["coherent_status"]) == (None, status), f"{where}: {cid}"
+
+
+@pytest.mark.parametrize("min_spread", SPREAD_FLOORS)
+def test_the_projection_equals_the_exact_payout_simplex_optimum_on_strike_worlds(min_spread):
+    # 4 to 14 contracts: chain + differences + partition over m strikes, a mix of two-sided and one-sided quotes
+    rng = random.Random(f"simplex {min_spread}")
+    ratios, one_sided = [], 0
+    for case in range(60):
+        payout, chain, differences, partition = strike_world(rng.randint(2, 7))
+        quotes = {cid: draw_world_quote(rng) for cid in payout}
+        one_sided += sum(not two_sided(*q) for q in quotes.values())
+        ratios.append(weight_ratio(quotes.values(), min_spread))
+        out = run([contract(cid, *q) for cid, q in quotes.items()], chains=[chain], differences=differences,
+                  partitions=[partition], min_spread=min_spread)
+        want = payout_simplex_optimum(payout, quotes, min_spread)
+        assert_projected(out, quotes, want, set(payout), f"strike world {case}: {quotes}")
+    assert max(ratios) > 0.4 * (0.9 / min_spread) ** 2, "the draws must reach the widest weight ratio min_spread allows"
+    assert one_sided > 40, "the draws must include one-sided contracts"
+
+
+@pytest.mark.parametrize("min_spread", SPREAD_FLOORS)
+def test_the_projection_equals_the_exact_active_set_optimum_on_small_mixed_systems(min_spread):
+    rng = random.Random(f"active set {min_spread}")
+    evaluated = infeasible = 0
+    while evaluated < 20:
+        ids, relations = mixed_system(rng)
+        quotes = {cid: draw_world_quote(rng) for cid in ids}
+        rows = [contract(cid, *q) for cid, q in quotes.items()]
+        linked = {cid for listed in relations.values() for found in listed for cid in found}
+        want = active_set_optimum({cid: quotes[cid] for cid in ids if cid in linked}, relations, min_spread)
+        where = f"{relations} {quotes}"
+        if want is None:
+            infeasible += 1
+            with pytest.raises(RuntimeError, match="widening LP"):
+                run(rows, min_spread=min_spread, **relations)
+            continue
+        evaluated += 1
+        assert_projected(run(rows, min_spread=min_spread, **relations), quotes, want, linked, where)
+    assert infeasible < 20, "the draws must mostly admit a probability vector"
+
+
+
+# -- hand repros: the two shapes that separate a correct bound from a mutant that drops one ------------------
+
+
+def test_a_projection_that_hits_the_unit_bound_keeps_it_active_while_the_rest_move():
+    # X = A - B with mids A 0.99 (spread 0.01), B 0.30 (0.02), X 0.99 (0.01); weights 1e4, 2500, 1e4 (floor 0.01).
+    # Unconstrained: normal equations 2a - b = 1.98 and 5b = 4a - 3.66 give a = 1.04 > 1. With a = 1 the b-equation
+    # b - 0.3 = 4 (a - b - 0.99) gives 5b = 0.34: b = 0.068 and X = 1 - 0.068 = 0.932. A dropped p <= 1 bound would
+    # return a = 1.04 (clipped to 1) with b = 0.1 and X = 0.94.
+    rows = [contract("A", 0.985, 0.995), contract("B", 0.29, 0.31), contract("X", 0.985, 0.995)]
+    fair = fair_of(run(rows, differences=[["X", "A", "B"]], min_spread=0.01))
+    assert fair == {"A": pytest.approx(1.0, abs=1e-6), "B": pytest.approx(0.068, abs=1e-6),
+                    "X": pytest.approx(0.932, abs=1e-6)}
+
+
+def test_a_one_sided_member_still_binds_the_relation_through_its_unit_bound():
+    # A has a bid only (an ask of one binds nothing): it floats in [0, 1] but X = A - B still needs X + B <= 1.
+    # Mids X 0.70, B 0.50 (equal weights) sum to 1.2: project onto X + B = 1, taking 0.1 from each. A = X + B = 1.
+    # A dropped relation (or a free variable bounded by 2) would leave X 0.7 and B 0.5.
+    rows = [contract("A", 0.40, 1.0), contract("B", 0.49, 0.51), contract("X", 0.69, 0.71)]
+    out = run(rows, differences=[["X", "A", "B"]])
+    assert fair_of(out) == {"A": None, "B": pytest.approx(0.4, abs=1e-6), "X": pytest.approx(0.6, abs=1e-6)}
+    assert out["records"][0]["coherent_status"] == "bad_quote"
+
+
+# -- every relation kind has an oracle-backed projection case and an LP per-position case (census) -----------
+
+# kind -> (label, quotes by id, relations, min_spread): checked against active_set_optimum, never against the node
+PROJECTION_CASES = {
+    "chains": [
+        ("an inverted pair", {"k1": (0.39, 0.41), "k2": (0.48, 0.52)}, {"chains": [["k1", "k2"]]}, 0.01),
+        ("a violation in the middle of three", {"a": (0.59, 0.61), "b": (0.29, 0.31), "c": (0.39, 0.41)},
+         {"chains": [["a", "b", "c"]]}, 0.01),
+        ("a one-sided member between two violators", {"a": (0.59, 0.61), "b": (0.40, None), "c": (0.69, 0.71)},
+         {"chains": [["a", "b", "c"]]}, 0.01),
+    ],
+    "partitions": [
+        ("asks under one", {"lo": (0.28, 0.30), "mid": (0.36, 0.38), "hi": (0.27, 0.29)},
+         {"partitions": [["lo", "mid", "hi"]]}, 0.01),
+        ("an excess clipped at zero", {"a": (0.01, 0.03), "b": (0.97, 0.99), "c": (0.97, 0.99)},
+         {"partitions": [["a", "b", "c"]]}, 0.01),
+        ("an excess the one-sided member cannot absorb", {"a": (0.59, 0.61), "b": (0.69, 0.71), "c": (None, 0.9)},
+         {"partitions": [["a", "b", "c"]]}, 0.01),
+    ],
+    "differences": [
+        ("the planted bucket violation", {"A": (0.50, 0.52), "B": (0.20, 0.22), "X": (0.35, 0.37)},
+         {"differences": [["X", "A", "B"]]}, 0.01),
+        ("the unit bound active", {"A": (0.985, 0.995), "B": (0.29, 0.31), "X": (0.985, 0.995)},
+         {"differences": [["X", "A", "B"]]}, 0.01),
+        ("a one-sided threshold", {"A": (0.40, 1.0), "B": (0.49, 0.51), "X": (0.69, 0.71)},
+         {"differences": [["X", "A", "B"]]}, 0.01),
+    ],
+}
+PROJECTION_PARAMS = [pytest.param(kind, case, id=f"{kind}: {case[0]}")
+                     for kind, cases in PROJECTION_CASES.items() for case in cases]
+
+# kind -> (label, quotes, relations, {id: (side, price)} legs, violation): each hand-worked
+LP_POSITION_CASES = {
+    "chains": [
+        # c2 bids 0.81 over c1's ask 0.76: sell c2 at 0.81, buy c1 at 0.76 (c1 >= c2), credit 0.05, worst payout 0
+        ("the second pair inverted", {"c0": (0.89, 0.91), "c1": (0.74, 0.76), "c2": (0.81, 0.83)},
+         {"chains": [["c0", "c1", "c2"]]}, {"c2": ("sell", 0.81), "c1": ("buy", 0.76)}, 0.05),
+    ],
+    "partitions": [
+        # bids sum to 1.03: sell all three, owe exactly 1
+        ("bids over one", {"lo": (0.30, 0.32), "mid": (0.40, 0.42), "hi": (0.33, 0.35)},
+         {"partitions": [["lo", "mid", "hi"]]}, {"lo": ("sell", 0.30), "mid": ("sell", 0.40), "hi": ("sell", 0.33)},
+         0.03),
+        # asks sum to 0.97: buy all three, receive exactly 1
+        ("asks under one", {"lo": (0.28, 0.30), "mid": (0.36, 0.38), "hi": (0.27, 0.29)},
+         {"partitions": [["lo", "mid", "hi"]]}, {"lo": ("buy", 0.30), "mid": ("buy", 0.38), "hi": ("buy", 0.29)},
+         0.03),
+    ],
+    "differences": [
+        # X = A - B is worth at most ask A - bid B = 0.32, yet X bids 0.35
+        ("the range bids over its thresholds", {"A": (0.50, 0.52), "B": (0.20, 0.22), "X": (0.35, 0.37)},
+         {"differences": [["X", "A", "B"]]}, {"X": ("sell", 0.35), "A": ("buy", 0.52), "B": ("sell", 0.20)}, 0.03),
+        # X = A - B is worth at least bid A - ask B = 0.28, yet X offers at 0.25
+        ("the range offers under its thresholds", {"A": (0.50, 0.52), "B": (0.20, 0.22), "X": (0.23, 0.25)},
+         {"differences": [["X", "A", "B"]]}, {"X": ("buy", 0.25), "A": ("sell", 0.50), "B": ("buy", 0.22)}, 0.03),
+    ],
+}
+LP_PARAMS = [pytest.param(kind, case, id=f"{kind}: {case[0]}")
+             for kind, cases in LP_POSITION_CASES.items() for case in cases]
+
+
+def test_every_relation_kind_has_oracle_rows_a_projection_case_and_an_lp_position_case():
+    kinds = set(RELATION_KINDS)
+    assert set(ORACLE_ROWS) == set(PROJECTION_CASES) == set(LP_POSITION_CASES) == kinds
+    for table in (PROJECTION_CASES, LP_POSITION_CASES):
+        for kind, cases in table.items():
+            assert cases and all(kind in case[2] for case in cases), f"{kind} needs cases that declare it"
+
+
+@pytest.mark.parametrize("kind, case", PROJECTION_PARAMS)
+def test_the_projection_cases_of_each_relation_kind_match_the_exact_active_set_optimum(kind, case):
+    label, quotes, relations, min_spread = case
+    linked = {cid for listed in relations.values() for found in listed for cid in found}
+    want = active_set_optimum({cid: q for cid, q in quotes.items() if cid in linked}, relations, min_spread)
+    out = run([contract(cid, *q) for cid, q in quotes.items()], min_spread=min_spread, **relations)
+    assert_projected(out, quotes, want, linked, label)
+
+
+@pytest.mark.parametrize("kind, case", LP_PARAMS)
+def test_the_lp_position_cases_of_each_relation_kind_name_the_legs_the_violation_and_the_relation(kind, case):
+    label, quotes, relations, legs, violation = case
+    arb = run([contract(cid, *q) for cid, q in quotes.items()], **relations)["arbitrage"]
+    assert arb["feasible"] is False and arb["violation"] == pytest.approx(violation, abs=1e-9), label
+    assert {leg["id"]: (leg["side"], leg["price"]) for leg in arb["legs"]} == legs, label
+    assert [r["kind"] for r in arb["relations"]] == [kind], label
+
+
+# -- the supported domain: the floor on min_spread, and ladders of 30 at exactly the floor --------------------
+
+
+def wide_ladder(rng, kind, count=30):
+    """``count`` two-sided quotes with one spread-0.9 contract (weight ~1.2) and one zero-spread (weight 1/FLOOR^2)."""
+    wide, tight = rng.sample(range(count), 2)
+    if kind == "chains":
+        mids = sorted((rng.uniform(0.03, 0.97) for _ in range(count)), reverse=True)
+        mids = [min(0.97, max(0.03, m + rng.uniform(-0.04, 0.04))) for m in mids]    # noise breaks the order
+        mids[wide] = 0.5
+    else:
+        raw = [rng.random() + 0.2 for _ in range(count)]
+        others = rng.uniform(0.9, 1.1) - 0.5                                          # the rest sum to about 0.5
+        mids = [r / sum(raw) * others for r in raw]
+        mids[wide] = 0.5
+    quotes = []
+    for i, mid in enumerate(mids):
+        spread = 0.9 if i == wide else 0.0 if i == tight else min(rng.choice(SPREAD_DRAWS), 1.96 * min(mid, 1 - mid))
+        quotes.append((mid - spread / 2, mid + spread / 2))
+    return quotes
+
+
+@pytest.mark.parametrize("kind", ["chains", "partitions"])
+def test_thirty_contract_ladders_at_exactly_the_floor_match_pava_and_water_filling(kind):
+    rng = random.Random(f"wide ladders {kind}")
+    for case in range(25):
+        quotes = wide_ladder(rng, kind)
+        assert weight_ratio(quotes, FLOOR) > 7e7, "the weights must span the full 1e8 the floor allows"
+        ids = [f"c{i}" for i in range(len(quotes))]
+        out = run(rows_of(ids, quotes), min_spread=FLOOR, **{kind: [ids]})
+        for row, want in zip(out["records"], expected_fair(kind, quotes, FLOOR)):
+            assert row["coherent"] == pytest.approx(want, abs=1e-6), f"{kind} ladder {case}: {row['id']}"
+
+
+def test_min_spread_is_accepted_at_exactly_the_floor_and_the_floor_is_the_measured_one():
+    assert FLOOR == 1e-4 and "MIN_SPREAD_FLOOR" in binary_coherence.__all__
+    assert BinaryCoherence.validate_params({**BASE, "min_spread": FLOOR, "chains": [["a", "b"]]}) == []
+    BinaryCoherence("coh", {**BASE, "min_spread": FLOOR, "chains": [["a", "b"]]})
+
+
+def test_min_spread_just_below_the_floor_is_refused_naming_the_floor_and_why():
+    below = math.nextafter(FLOOR, 0)
+    assert below < FLOOR
+    problems = BinaryCoherence.validate_params({**BASE, "min_spread": below, "chains": [["a", "b"]]})
+    assert len(problems) == 1 and "min_spread" in problems[0]
+    assert "MIN_SPREAD_FLOOR" in problems[0] and f"{FLOOR:g}" in problems[0] and "suboptimal" in problems[0]
+    with pytest.raises(Exception, match="MIN_SPREAD_FLOOR"):
+        BinaryCoherence("coh", {**BASE, "min_spread": below, "chains": [["a", "b"]]})
+
+
+@pytest.mark.parametrize("spread", [5e-5, 1e-5, 1e-6, 1e-7, 1e-9, 1e-12])
+def test_the_min_spreads_that_measured_silent_wrong_answers_are_refused(spread):
+    # HiGHS returned suboptimal points as optimal: 1 in 12,000 draws at 1e-5, 64 at 1e-6, 411 at 1e-7
+    problems = BinaryCoherence.validate_params({**BASE, "min_spread": spread, "chains": [["a", "b"]]})
+    assert any("min_spread" in p and "MIN_SPREAD_FLOOR" in p for p in problems)
+
+
+
 # -- an exactly coherent set is returned untouched, without a solve ----------------------------------------
 
 
@@ -622,6 +1005,135 @@ def test_an_optimal_projection_that_breaks_a_relation_is_refused_by_name(monkeyp
     assert binary_coherence.PROJECTION_TOLERANCE == 1e-7
     with pytest.raises(RuntimeError, match=r"projection QP.*chains\[0\]|chains\[0\].*projection QP"):
         run([contract("k100", 0.38, 0.40), contract("k110", 0.45, 0.47)], chains=[["k100", "k110"]])
+
+
+# -- the relation guard reads every row of every relation; solved values are clipped into [0, 1] -------------
+
+
+def tamper_projection(monkeypatch, edit):
+    """Solve the projection for real, then let ``edit(model)`` move the solved values before the guard reads them."""
+    real = BinaryCoherence._solve
+
+    def solve(self, solver, model):
+        results = real(self, solver, model)
+        if "projection" in model.name:
+            edit(model)
+        return results
+
+    monkeypatch.setattr(BinaryCoherence, "_solve", solve)
+
+
+GUARD_CHAINS = [["a0", "a1", "a2"], ["b0", "b1", "b2"]]
+GUARD_QUOTES = [(0.39, 0.41), (0.49, 0.51), (0.19, 0.21), (0.89, 0.91), (0.59, 0.61), (0.29, 0.31)]   # a0 < a1: QP runs
+
+
+@pytest.mark.parametrize("index, row", [(0, 0), (0, 1), (1, 0), (1, 1)])
+def test_the_relation_guard_fires_on_a_later_relation_and_a_later_row(monkeypatch, index, row):
+    from pyomo.environ import value
+
+    ids = sum(GUARD_CHAINS, [])
+    run(rows_of(ids, GUARD_QUOTES), chains=GUARD_CHAINS)            # untampered, every row passes the guard
+    chain = GUARD_CHAINS[index]
+
+    def lift_above_its_predecessor(model):
+        # spreads are 0.02, so a contract's variable is its probability / 0.02; chain[row + 1] rises 0.05 over chain[row]
+        model.units[chain[row + 1]].set_value((value(model._probability[chain[row]]) + 0.05) / 0.02)
+
+    tamper_projection(monkeypatch, lift_above_its_predecessor)
+    with pytest.raises(RuntimeError, match=rf"projection QP.*chains\[{index}\] row {row} by 0\.05"):
+        run(rows_of(ids, GUARD_QUOTES), chains=GUARD_CHAINS)
+
+
+def test_a_solved_value_a_hair_outside_the_unit_interval_is_clipped_into_it(monkeypatch):
+    def nudge_outside(model):
+        model.units["hi"].set_value((1 + 1e-9) / 0.02)
+        model.units["lo"].set_value(-1e-9 / 0.02)
+
+    tamper_projection(monkeypatch, nudge_outside)
+    out = run([contract("hi", 0.49, 0.51), contract("lo", 0.59, 0.61)], chains=[["hi", "lo"]])   # inverted: QP runs
+    assert fair_of(out) == {"hi": 1.0, "lo": 0.0}, "the chain still holds, so only the clip can bring them back"
+
+
+# -- tolerance 0, and the output-column collisions ------------------------------------------------------------
+
+
+def test_tolerance_zero_calls_a_coherent_set_feasible_and_reports_a_violation_of_one_nano_unit():
+    coherent = run(LADDER, tolerance=0, **LADDER_RELATIONS)["arbitrage"]
+    assert coherent["feasible"] is True and coherent["legs"] == [] and coherent["violation"] <= 1e-12
+    rows = [contract("k100", 0.38, 0.40), contract("k110", 0.40 + 1e-9, 0.47)]       # k110 bids 1e-9 over k100's ask
+    tight = {"primal_feasibility_tolerance": 1e-10}                                    # see the next test: why
+    strict = run(rows, tolerance=0, chains=[["k100", "k110"]], solver_options=tight)["arbitrage"]
+    assert strict["feasible"] is False and strict["violation"] == pytest.approx(1e-9, rel=1e-3)
+    assert {leg["id"]: leg["side"] for leg in strict["legs"]} == {"k100": "buy", "k110": "sell"}
+    default = run(rows, chains=[["k100", "k110"]], solver_options=tight)["arbitrage"]
+    assert default["feasible"] is True, "the default tolerance 1e-7 reads a 1e-9 violation as coherent"
+
+
+def test_the_lp_resolves_a_violation_only_down_to_highs_own_feasibility_tolerance():
+    # recorded limit (module docstring): at HiGHS' default primal feasibility tolerance 1e-7 the LP returns 0 for a
+    # smaller violation whatever `tolerance` says; one above it is reported to full precision
+    def inverted_by(over):
+        return [contract("k100", 0.38, 0.40), contract("k110", 0.40 + over, 0.47)]
+
+    below = run(inverted_by(5e-8), tolerance=0, chains=[["k100", "k110"]])["arbitrage"]
+    assert below["feasible"] is True and below["violation"] == 0.0
+    above = run(inverted_by(5e-7), tolerance=0, chains=[["k100", "k110"]])["arbitrage"]
+    assert above["feasible"] is False and above["violation"] == pytest.approx(5e-7, rel=1e-6)
+
+
+SIZED = {**BASE, "chains": [["a", "b"]], "bid_size_field": "bs", "ask_size_field": "az"}
+
+
+@pytest.mark.parametrize("field", ["id_field", "bid_field", "ask_field", "bid_size_field", "ask_size_field"])
+@pytest.mark.parametrize("column", ["coherent", "coherent_status"])
+def test_a_fair_field_that_would_overwrite_any_input_column_or_the_status_column_is_refused(field, column):
+    # fair_field 'coherent' writes 'coherent' and 'coherent_status': no input knob may name either
+    problems = BinaryCoherence.validate_params({**SIZED, field: column})
+    assert any("overwrite" in p and column in p for p in problems), problems
+    assert not BinaryCoherence.validate_params(SIZED), "the same params with distinct columns are fine"
+
+
+def test_an_empty_id_field_is_refused_by_name():
+    problems = BinaryCoherence.validate_params({**BASE, "id_field": "", "chains": [["a", "b"]]})
+    assert any("id_field" in p for p in problems)
+
+
+# -- the QP hint is for a solver that may not take a QP, never for the one that does ---------------------------
+
+
+class _Raises:
+    def solve(self, model):
+        raise ValueError("boom")
+
+
+def solver_error(solver, program):
+    """The message of the RuntimeError ``_solve`` raises when ``solver`` raises on ``program`` (a stub model)."""
+    import types
+
+    node = BinaryCoherence("coh", {**BASE, "solver": solver, "chains": [["a", "b"]]})
+    with pytest.raises(RuntimeError) as caught:
+        node._solve(_Raises(), types.SimpleNamespace(_program=program))
+    return str(caught.value)
+
+
+@pytest.mark.parametrize("solver, hinted", [("appsi_highs", True), ("ipopt", True), ("highs", False)])
+def test_the_qp_hint_is_given_unless_the_solver_is_the_interface_that_takes_a_qp(solver, hinted):
+    message = solver_error(solver, "the projection QP")
+    assert "boom" in message and f"solver {solver!r} raised on the projection QP" in message
+    assert ("needs a QP solver, e.g. 'highs'" in message) is hinted
+
+
+def test_the_qp_hint_is_never_given_for_the_lp():
+    for solver in ("highs", "appsi_highs", "ipopt"):
+        assert "QP solver" not in solver_error(solver, "the widening LP")
+
+
+def test_a_highs_failure_on_the_projection_does_not_blame_the_solver_choice(monkeypatch):
+    failing_solver(monkeypatch, "projection")
+    with pytest.raises(RuntimeError) as caught:
+        run(LADDER, **LADDER_RELATIONS)
+    assert "boom: the backend fell over" in str(caught.value) and "QP solver" not in str(caught.value)
+
 
 
 # -- the side rule: one reading of a quote (ruling B) ------------------------------------------------------
@@ -808,13 +1320,17 @@ def test_a_relation_is_skipped_naming_whichever_of_its_ids_has_an_unusable_quote
 def strike_world(m):
     """Contracts on strikes K1 < ... < Km; the m + 1 regions are S < K1, K_j <= S < K_{j+1}, S >= Km.
 
-    Returns ``(payout, chain, differences, partition)``: each contract's payout per region and the
-    relations that are TRUE in this world (above_j pays in regions j.., between_j in region j, below in 0).
+    Returns ``(payout, chain, differences, partition)``: each contract's 0/1 payout per region, derived from its
+    own strikes (above pays where S >= K_j, between where K_j <= S < K_{j+1}, below where S < K_1), and the
+    relations that are TRUE in this world.
     """
-    regions = range(m + 1)
-    payout = {f"above{j}": [int(r >= j) for r in regions] for j in range(1, m + 1)}
-    payout.update({f"between{j}": [int(r == j) for r in regions] for j in range(1, m)})
-    payout["below"] = [int(r == 0) for r in regions]
+    strikes = [100 + 10 * j for j in range(m)]
+    sampled = [strikes[0] - 5, *(k + 5 for k in strikes)]         # one S inside each region
+    spans = {"below": (None, strikes[0])}
+    spans.update({f"above{j}": (strikes[j - 1], None) for j in range(1, m + 1)})
+    spans.update({f"between{j}": (strikes[j - 1], strikes[j]) for j in range(1, m)})
+    payout = {cid: [int((low is None or s >= low) and (high is None or s < high)) for s in sampled]
+              for cid, (low, high) in spans.items()}
     chain = [f"above{j}" for j in range(1, m + 1)]
     differences = [[f"between{j}", f"above{j}", f"above{j + 1}"] for j in range(1, m)]
     partition = ["below", *[f"between{j}" for j in range(1, m)], f"above{m}"]

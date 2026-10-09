@@ -248,7 +248,8 @@ class BinaryMarketRows(_StreamRows):
         :data:`dskit.pipeline.binary_pricing.PAYOFFS`; ``result_labels`` (dict) the venue's result
         -> 0 or 1; ``settled_statuses`` (non-empty list of str) the statuses that mean settled;
         ``strike_known_lag_s`` (dict, may be empty) a listed series -> seconds >= 0 from the open
-        until its strike is known.
+        until its strike is known; a series absent from it gets lag 0 (its strike is treated as
+        known at the open, which is optimistic when the venue publishes later).
 
     Examples
     --------
@@ -467,6 +468,11 @@ class BinaryMarketRows(_StreamRows):
 class QuoteBarRows(_StreamRows):
     """Read quote bars with the END instant in epoch milliseconds (role ``data``).
 
+    A bar's END is EXCLUSIVE: it covers ``[start, end)``, every quote in it precedes ``end``, so the
+    bar is known at ``end`` (:class:`~dskit.pipeline.binary_decisions.QuoteState` reads it from a
+    decision at ``end`` on). A source whose end stamp is inclusive must be mapped by the child to
+    end + 1 unit (or its last-covered instant + 1); this reader only converts seconds to ms.
+
     Parameters
     ----------
     params : dict
@@ -620,6 +626,10 @@ class FeeColumns(bd.ListPortsNode):
     ``fee_buy_no`` (per contract, buying NO at ``1 - bid``), ``fee_status`` and
     ``fee_schedule_retrieved``. Statuses besides ``ok``: ``no_schedule``,
     ``unsupported_fee_type``, ``no_multiplier``, ``no_quote``.
+
+    Point in time. It uses the newest RETRIEVED schedule of a series whatever the row's decision
+    time, so it is look-ahead-optimistic when a stream holds more than one retrieval: a backtest
+    across a fee change prices old decisions at the new fee.
 
     Parameters
     ----------

@@ -43,6 +43,11 @@ a QP-less solver is therefore not built. Both solves go through the base's
 ``_resolve_solver``/``_solve``; the LP through the base lifecycle (its ``SolveRecord`` is kept),
 the QP as a second solve of the same instance.
 
+Supported domain. ``min_spread`` must be at least :data:`MIN_SPREAD_FLOOR`: below it HiGHS' QP
+solver returned suboptimal points as "optimal" (see the constant for the measurements), and no
+optimality certificate is checked here. The floor bounds the weight ratio at 1e8 for spreads up
+to one.
+
 The projection is solved WHITENED: a two-sided contract's variable is ``u = p / s`` with ``s =
 max(ask - bid, min_spread)``, bounded to ``[0, 1 / s]``, and the objective is ``sum((u - mid /
 s)^2)``: the minimiser of the weighted objective (weights ``1 / s^2``) with an identity Hessian.
@@ -60,6 +65,12 @@ other solver is handed only the document's options: its option names differ, so 
 its own limit. A non-optimal termination is refused by name; so is a solver that raises (naming
 the node and the program), and an "optimal" projection that breaks a relation row by more than
 :data:`PROJECTION_TOLERANCE`.
+
+Recorded limits. When the projection refuses (a non-optimal stop, a raising solver, a broken
+relation), the run raises and the LP verdict computed before it is lost. The LP resolves a
+violation only down to HiGHS' primal feasibility tolerance (1e-7 by default, so ``tolerance`` below
+that cannot see a smaller one); lower ``primal_feasibility_tolerance`` under ``solver_options`` to
+resolve a smaller one.
 
 Ids. Every contract id — a row's ``id_field`` cell and every id a relation declares — is read by
 :func:`dskit.pipeline.binary_curve.row_key`: a non-empty str (by its characters) or a non-bool int,
@@ -94,6 +105,7 @@ __all__ = [
     "DEFAULT_TOLERANCE",
     "HIGHS_SOLVERS",
     "LEG_DUST",
+    "MIN_SPREAD_FLOOR",
     "NODE_KINDS",
     "PROJECTION_TOLERANCE",
     "RELATIONS",
@@ -129,6 +141,17 @@ DEFAULT_TIME_LIMIT_S = 60.0
 
 #: The solver names whose option names are HiGHS': only these are injected the two limits above.
 HIGHS_SOLVERS = ("highs", "appsi_highs")
+
+#: The solver names whose pyomo interface takes the projection's quadratic objective: ``highs`` does,
+#: ``appsi_highs`` raises on it. Only a solver outside this tuple is hinted that a QP needs a QP solver.
+_QP_SOLVERS = ("highs",)
+
+#: The smallest ``min_spread`` accepted. Below it HiGHS' QP solver returned SUBOPTIMAL points as "optimal"
+#: (the weights ``1 / s^2`` then span too wide a range). Measured on random systems, 12,000 per setting: 1 wrong at
+#: 1e-5, 64 at 1e-6, 411 at 1e-7; none in 72,000 at 1e-4 (worst error 1.1e-7). At the floor and spreads up to one
+#: the weight ratio is at most 1e8, and the first failures appeared near 1e10. That is EVIDENCE, not proof: the
+#: solver is unobserved to fail here, not certified, and no optimality certificate is checked.
+MIN_SPREAD_FLOOR = 1e-4
 
 #: The most an "optimal" projection may break a relation row by before it is refused: the solver's
 #: word is checked against the relations, never trusted. Equal to HiGHS' default primal
@@ -375,8 +398,9 @@ class BinaryCoherence(PyomoSolve):
     ----------
     params : dict
         REQUIRED: ``id_field``, ``bid_field``, ``ask_field`` (column names), ``fair_field``
-        (output column), ``min_spread`` (positive: the spread floor in the projection weights)
-        and ``solver`` (a pyomo solver that takes a quadratic objective, e.g. ``"highs"``).
+        (output column), ``min_spread`` (a number >= :data:`MIN_SPREAD_FLOOR`: the spread floor in
+        the projection weights) and ``solver`` (a pyomo solver that takes a quadratic objective,
+        e.g. ``"highs"``).
         At least one of ``partitions``, ``chains`` and ``differences``: each a list of id
         lists (:data:`RELATIONS`). OPTIONAL: ``bid_size_field`` and ``ask_size_field`` (both
         or neither), ``tolerance`` (>= 0, default :data:`DEFAULT_TOLERANCE`; it gates only the
@@ -433,6 +457,9 @@ class BinaryCoherence(PyomoSolve):
         spread = params.get("min_spread")
         if not (number_ok(spread) and spread > 0):
             problems.append(f"min_spread is required: a positive number, got {spread!r}")
+        elif spread < MIN_SPREAD_FLOOR:
+            problems.append(f"min_spread {spread!r} is below MIN_SPREAD_FLOOR {MIN_SPREAD_FLOOR:g}: under it HiGHS' "
+                            "QP solver returns suboptimal points as optimal")
         tolerance = params.get("tolerance", DEFAULT_TOLERANCE)
         if not (number_ok(tolerance) and tolerance >= 0):
             problems.append(f"tolerance must be a number >= 0, got {tolerance!r}")
@@ -550,7 +577,9 @@ class BinaryCoherence(PyomoSolve):
             The solver raised (an interface that cannot take the program, or no loadable solution).
         """
         program = getattr(model, "_program", "the program")
-        hint = " (a quadratic objective needs a QP solver, e.g. 'highs')" if program == _QP else ""
+        hint = ""
+        if program == _QP and self.params.get("solver") not in _QP_SOLVERS:
+            hint = f" (a quadratic objective needs a QP solver, e.g. {_QP_SOLVERS[0]!r})"
         try:
             return solver.solve(model)
         except Exception as exc:

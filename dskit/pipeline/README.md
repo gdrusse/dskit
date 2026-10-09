@@ -737,7 +737,7 @@ they register only into private registries, never the default one.
   bounds on a digital from option bid/ask (`DigitalBounds`; a strike without bracketing quotes is marked, never
   interpolated), a binary priced from any CDF curve through the existing payoffs (`CurveBinaryFairValue`), and an
   LP coherence check plus a weighted projection across linked binaries (`BinaryCoherence`; the projection is a QP, so
-  `solver` must name one that solves QPs, e.g. pyomo's `highs`, not `appsi_highs`).
+  `solver` must name one that solves QPs, e.g. pyomo's `highs`, not `appsi_highs`; `min_spread` >= 1e-4).
   `CurveBinaryFairValue` reads curve rows keyed by one id column; `OptionCDFPanel`'s `cdfs` artifact needs an adapter
   step first. `DigitalBounds` reads quotes as forward prices unless `discount_field` is named.
   Ids, chain keys and rights match by `binary_curve.row_key`: a non-empty str or a non-bool int (`1` is not

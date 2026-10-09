@@ -300,6 +300,11 @@ class QuoteState(ListPortsNode):
     ``candle_price``, ``candle_volume``, ``candle_open_interest``, ``candle_age_ms``,
     ``quote_missing`` and ``two_sided``.
 
+    Point in time. A bar's END is EXCLUSIVE: it covers ``[start, end)``, every quote in it precedes
+    ``end``, so the bar is known at ``end``: a decision at ``end`` reads it, one at ``end - 1`` ms
+    does not. A source whose end stamp is inclusive must be mapped by the child to end + 1 unit
+    (or its last-covered instant + 1), or its bar is read one interval early.
+
     Parameters
     ----------
     params : dict

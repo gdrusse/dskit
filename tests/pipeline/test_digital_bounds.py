@@ -230,6 +230,21 @@ def test_each_edge_is_clipped_before_a_between_band_combines_them():
     assert row["dig_upper"] == pytest.approx(0.95)
 
 
+def test_each_put_edge_is_clipped_on_its_own_side_before_a_between_band_combines_them():
+    # puts only; between(100, 110) = above(100) - above(110), so lower = lower(100) - upper(110) and
+    # upper = upper(100) - lower(110). Each edge is one of the docstring's cases 3 and 4, with h = 10:
+    #   lower(100), puts ahead:  1 - (ask P110 - bid P100) / 10 = 1 - (1.2 - 4.0) / 10 = 1.28  (a lower edge clips at 0 only)
+    #   upper(110), puts behind: 1 - (bid P110 - ask P100) / 10 = 1 - (1.0 - 4.2) / 10 = 1.32  -> clipped to 1
+    #   lower(110), puts ahead:  1 - (ask P120 - bid P110) / 10 = 1 - (18.0 - 1.0) / 10 = -0.7 -> clipped to 0
+    #   upper(100), puts behind: 1 - (bid P100 - ask P90) / 10 = 1 - (4.0 - 1.4) / 10 = 0.74
+    # lower = 1.28 - 1 = 0.28 and upper = 0.74 - 0 = 0.74. With the two put-side flags swapped, 1.28 would clip to 1
+    # and 1.32 stay (lower 0), and -0.7 stay (upper min(1, 0.74 + 0.7) = 1).
+    puts = [quote("P", 90, 1.0, 1.4), quote("P", 100, 4.0, 4.2), quote("P", 110, 1.0, 1.2), quote("P", 120, 1.0, 18.0)]
+    row = run([contract("between", lo=100.0, hi=110.0)], puts)["records"][0]
+    assert (row["dig_lower"], row["dig_upper"]) == (pytest.approx(0.28), pytest.approx(0.74))
+    assert row["dig_status"] == STATUS_OK
+
+
 def test_a_refusal_row_names_the_quote_by_its_declared_chain_columns():
     quotes = [{**q, "und": "X", "exp": 20261016} for q in HAND] + [
         {"und": "X", "exp": 20261016, "right": "C", "strike": 105, "bid": 1.3, "ask": 1.2}]
@@ -783,6 +798,22 @@ def test_a_locked_coherent_chain_never_reports_crossed_band(chain):
 ])
 def test_quote_problems_names_each_rule(args, needle):
     assert any(needle in p for p in quote_problems(*args))
+
+
+BAD_SIZES = [None, -1, -0.5, "5", float("nan"), float("inf"), True, b"5"]
+
+
+@pytest.mark.parametrize("bad", BAD_SIZES, ids=repr)
+def test_quote_problems_refuses_a_size_that_is_not_a_nonnegative_number_whatever_the_count(bad):
+    # not only a size below the count: a missing, negative or non-number size is its own named problem
+    for count in (0, 1):
+        assert any("bid_size must be a number >= 0" in p for p in quote_problems(0.1, 0.2, bad, 9, count, "sell"))
+        assert any("ask_size must be a number >= 0" in p for p in quote_problems(0.1, 0.2, 9, bad, count, "buy"))
+        both = quote_problems(0.1, 0.2, bad, bad, count)
+        assert any("bid_size must be" in p for p in both) and any("ask_size must be" in p for p in both)
+    # a named side judges only its own size
+    assert quote_problems(0.1, 0.2, 9, bad, 1, "sell") == []
+    assert quote_problems(0.1, 0.2, bad, 9, 1, "buy") == []
 
 
 def test_quote_problems_passes_a_clean_quote_and_an_unbid_wing_stays_buyable():
