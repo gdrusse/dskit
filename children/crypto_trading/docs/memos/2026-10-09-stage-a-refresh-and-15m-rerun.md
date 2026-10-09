@@ -3,7 +3,7 @@
 ## TL;DR
 
 The Stage A data was refreshed up to the newest files the vendors have published
-(Binance through 2026-10-08, Kalshi through 2026-10-09 01:30 UTC), and the
+(Binance through 2026-10-08, Kalshi markets through the 04:15 UTC close of 2026-10-09), and the
 15-minute document was rerun with an unchanged config. The development table is
 identical to the 2026-10-08 memo, and held-out was not enabled. The held-out
 rows with no usable price data fell from 1,182 to 102 (plus 528 that lack only
@@ -52,7 +52,7 @@ These show the machinery worked; they say nothing about the models.
 | stream | gate | records or note | journal |
 |---|---|---|---|
 | kalshi fee schedules | pass | 6 records | A0035-36 |
-| kalshi markets | warn | 1,495,781 records; exactly 10 failing rows on `markets-strike-type-set` (warn severity), the same count as the 2026-10-08 pull; re-pulled 04:10-04:28 UTC | A0037-38, A0068-69 |
+| kalshi markets | warn | 1,495,781 records at the 01:46 UTC pull and 1,498,730 at the final 04:28 UTC pull (the one the run read); exactly 10 failing rows on `markets-strike-type-set` (warn severity), the same count as the 2026-10-08 pull; re-pulled 04:10-04:28 UTC after the Binance pulls | A0037-38, A0068-69 |
 | Binance klines BTCUSDT, ETHUSDT | pass | 1,207 records each | A0039-42, redone A0060-63 |
 | Binance BVOL BTC, ETH | warn | rule `files-all-ok`: 27 failing files each = the 26 documented vendor-missing days + 2026-10-08 (not published); `max_refused` 31 holds | A0043-46, redone A0064-67 |
 | Kalshi 15-minute candles BTC, ETH | pass | incremental (cursor) | A0047-50, A0070-73 |
@@ -87,7 +87,7 @@ These show the machinery worked; they say nothing about the models.
 | Failing known test | `tests/test_runbook.py::test_the_sizing_copy_runs_as_pasted_and_is_repeatable_after_a_failed_attempt`: "No module named 'dskit'" inside the test's temporary `bin/python`. Same failure as before this work; not fixed here (item 7 of the plan). |
 | 9 skipped tests | Reasons not examined. |
 | 26 vendor-missing BVOL days; 10 strike-type rows | Not investigated (carried from the 2026-10-08 memo). Whether the 10 rows are the same markets as the 10 excluded earlier is not proven. |
-| `fee_schedules` row count | Reconciled: each pull yields 6 records (one per series); the store now holds two fee pulls (2026-10-08 and 2026-10-09), `scan_stream` keyed on `series_ticker` returns the 6 latest, and the pipeline's fee node reads both versions (12 rows in `resolved.json`) so each decision can use the schedule retrieved before it. |
+| `fee_schedules` row count | Reconciled: each pull yields 6 records (one per series); the store now holds two fee pulls (2026-10-08 and 2026-10-09), `scan_stream` keyed on `series_ticker` returns the 6 latest, and the fee node reads both versions (12 rows in `resolved.json`). Review finding F1 (Minor, backlog): the node uses the most recent version for every decision, not an as-of lookup, so every row carries `fee_schedule_retrieved` 2026-10-09T01:28Z; both versions have `fee_multiplier` 1.0 for all six series, so no number moves, but a future multiplier change would reprice old rows. |
 | Held-out read (B5) | NOT enabled. Held-out rows were built into the table and counted, not scored or reported. |
 | Not done by design | No commit, no hourly work, no trades pull, no live order books, Coinbase or Deribit. |
 | BVOL 365-day-year assumption | Still unverified. |
@@ -109,9 +109,9 @@ rows in each table, eligible or not (computed from the two published tables).
 | `no_spot` by close date | 10-06: 570; 10-07: 576; 10-08: 36 | 10-09: 102 |
 | scoring census: not eligible / unreported held-out | 410 / 13,044 | 417 / 13,637 |
 
-All 1,182 old `no_spot` rows are now priced. Rows with `no_spot` whose data now
+All 1,182 old `no_spot` rows are now priced for `fair_rms` and `fair_ewma`; for `fair_bvol` 1,152 are priced and 30 are `no_vol` (the 2026-10-08 BVOL gap). Rows with `no_spot` whose data now
 exists: 0. The remaining 102 and 528 rows are the two vendor gaps above. The old
-`fair_bvol` split (0 `no_vol`) was checked directly in the old table (held-out: 11,958 ok, 1,182 `no_spot`). Development rows: 25,584 have all
+`fair_bvol` split shows 0 `no_vol` only because `no_spot` takes precedence in the old table (it hides any BVOL gap on those days). Development rows: 25,584 have all
 three forecasts, before and after.
 
 ## Empirical results (development segment only; unchanged)
@@ -142,10 +142,10 @@ here. Held-out scores were not computed or reported.
   `c694a9ca...`, BTC klines `642caa03...`, ETH bvol `fad633f3...`, ETH klines
   `d16ddbcf...`; markets sha256 `df03fda860b8...`; BTC candles `dbc594048...`;
   ETH candles `d67d7db05...`; fee schedules `1a7e72dc713...`.
-- Git state: nothing committed. Modified in the worktree:
+- Git state: committed as be7a517d on branch `crypto-completion-20261008` (before the review corrections to this memo). Modified in the worktree:
   `configs/binance_vision_dates.json`, the four `configs/source-binance-*.json`
   (pin and `as_of`), and `docs/decisioning/{actions.csv,README.md}` (journal rows
-  A0036-A0075, the acquires and runs). This memo is new and also uncommitted.
+  A0036-A0075, the acquires and runs). This memo is part of that commit.
   The pipeline run directory and the data store are ignored artifacts.
 - Open items: the two vendor gaps close only when Binance publishes the 2026-10-09
   klines and the 2026-10-08 BVOL files; the failing runbook test; the unjournaled
@@ -154,3 +154,16 @@ here. Held-out scores were not computed or reported.
 - Held-out status: B5 read not authorized or enabled here. Per runbook B5 it needs
   a recorded edit of `report_segments`, a commit, one run and one read.
 - Next authorized action: item 2 (kalshi-history markets).
+
+## Review exit (2026-10-09)
+
+Fresh Haiku skeptic on `be7a517d`: 0 Critical, 0 Major, 3 Minor, 4 Nit. The
+development table, run/table/pin hashes, the 1,207-day dates list, the
+unchanged config and the coverage counts all reproduced; `verify` clean (25
+snapshots). Minor backlog: F1 fee lookup is latest-version, not as-of (above);
+F2 stale pull counts (corrected here); F3 the retire transitions are not
+journaled (disclosed above). Nit backlog: source-binance notes still say
+as_of 03:00 (pinned value is 02:55; notes are outside the identity hash);
+two wording points (corrected here); this memo's own git-state sentence
+(corrected). Resolved by the reviewer: the 10 strike-less markets are exactly
+the 10 `no_strike` exclusions in `artifacts/markets/excluded.json`.
