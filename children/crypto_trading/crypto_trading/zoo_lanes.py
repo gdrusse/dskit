@@ -102,7 +102,7 @@ class ZooLanes:
         params = {"panel": self._panel(), "assets": groups, "asset_indicator": indicator, "bounds": self._bounds(bounds),
                   "context": copy.deepcopy(self.recipe["features"]["context"]), "trunk": copy.deepcopy(self.zoo["trunk"]),
                   "head": self._head(loss), "missing": t["missing"], "device": t["device"], "epochs": t["epochs"],
-                  "patience": t["patience"], "monitor": t["monitor"], "lr": t["lr"], "optimizer": t["optimizer"],
+                  "patience": t["patience"], "row_stride": t["row_stride"], "monitor": t["monitor"], "lr": t["lr"], "optimizer": t["optimizer"],
                   "optimizer_params": {"weight_decay": t["weight_decay"]},
                   "loader": {"batch_size": t["batch_size"], "seed": t["seed"]}}
         if spec.get("encoder"):

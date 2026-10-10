@@ -27,7 +27,7 @@
       ]
     },
     "training": {
-      "notes": "Fixed across every arm and both classes. Hyperparameters are the options child's pooled settings (children/index_options/configs/advanced-cdf-zoo.json `training`: 3 components, lr 0.0003, weight decay 0.01, patience 10 (owner 2026-10-10; the options studies used 20), 500-epoch ceiling, batch 512, seed 11, CRPS + tail CRPS weight 1 each); the Gaussian family and min_scale 0.1 are provisional. One seed per run (loader.seed): more seeds = rerun with --args overlaying `training.seed`. The fold score is crps + tail_weight * tail_crps on the common grid. Epochs/batch are provisional until the GPU probe sizes them.",
+      "notes": "Fixed across every arm and both classes. Hyperparameters are the options child's pooled settings (children/index_options/configs/advanced-cdf-zoo.json `training`: 3 components, lr 0.0003, weight decay 0.01, patience 10 (owner 2026-10-10; the options studies used 20), 500-epoch ceiling, batch 512, seed 11, CRPS + tail CRPS weight 1 each); the Gaussian family and min_scale 0.1 are provisional. One seed per run (loader.seed): more seeds = rerun with --args overlaying `training.seed`. The fold score is crps + tail_weight * tail_crps on the common grid. Epochs/batch are provisional until the GPU probe sizes them. row_stride 5 (owner, 2026-10-10): the fit band trains on every 5th minute by clock phase (adjacent minutes are near-duplicates; ~45 s/epoch at full resolution made the study ~175 h); calibration and validation rows, the scaler and every window are NOT thinned, so scoring is still every minute.",
       "losses": [
         {
           "kind": "crps",
@@ -52,7 +52,8 @@
       "weight_decay": 0.01,
       "batch_size": 512,
       "device": "cuda",
-      "missing": "mean"
+      "missing": "mean",
+      "row_stride": 5
     },
     "grid": {
       "notes": "What the score node evaluates: every horizon the feature node labels (1 to 15), on one common grid (z in label units, i.e. vol-standardised log return; the wings are provisional: a wing is fixed in z, so at h=15 where the spread is about sqrt(15) times h=1 it covers more of the bulk -- an open decision). tail_weight must equal the tail_crps weight in training.losses (a test pins it); the wings in training and scoring are the SAME list (the head reads grid.common.tail_intervals).",

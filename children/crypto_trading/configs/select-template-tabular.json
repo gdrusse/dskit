@@ -33,6 +33,7 @@
         "missing": "${training.missing}",
         "device": "${training.device}",
         "epochs": "${training.epochs}",
+        "row_stride": "${training.row_stride}",
         "patience": "${training.patience}",
         "monitor": "${training.monitor}",
         "lr": "${training.lr}",
