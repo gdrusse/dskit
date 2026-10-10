@@ -92,6 +92,8 @@ class ZooLanes:
         terms = self._ref(spec["terms"])
         head = {"kind": "mixture", "components": self.training["components"], "family": self.training["family"],
                 "losses": terms, "min_scale": self.training["min_scale"]}
+        if "compile" in self.training:
+            head["compile"] = self.training["compile"]
         if any(t["kind"] == "tail_crps" for t in terms):
             head["tail_intervals"] = copy.deepcopy(common["tail_intervals"])
         return head

@@ -59,6 +59,19 @@ def _gauss_legendre(n):
     return nodes.copy(), weights.copy()
 
 
+_QUADRATURE_TENSORS = {}
+
+
+def _quadrature_tensors(dtype, device):
+    """Return the Gauss-Legendre nodes and weights as tensors, built once per dtype and device."""
+    import torch
+    key = (dtype, str(device), _QUADRATURE_NODES)
+    if key not in _QUADRATURE_TENSORS:
+        _QUADRATURE_TENSORS[key] = tuple(
+            torch.as_tensor(a, dtype=dtype, device=device) for a in _gauss_legendre(_QUADRATURE_NODES))
+    return _QUADRATURE_TENSORS[key]
+
+
 class CDFThresholdAudit:
     """Score one coherent CDF on thresholds fixed before the forecast is ranked.
 
@@ -3959,25 +3972,24 @@ class _CDFWingTwCRPS(_CDFLossTerm):
         logw, mu, sigma = (a.to(y.dtype) for a in (logw, mu, sigma))
         lower, upper, density = (context[k].to(y.dtype) for k in self.context_keys)
         density = self._segment_weights(density)
-        x, g = _gauss_legendre(_QUADRATURE_NODES)
-        nodes, weights = (torch.as_tensor(a, dtype=y.dtype, device=y.device) for a in (x, g))
+        nodes, weights = _quadrature_tensors(y.dtype, y.device)
         cut = torch.minimum(torch.maximum(y, lower), upper)
         start, stop = torch.stack([lower, cut], -1), torch.stack([cut, upper], -1)
         kinks = mu.detach()[:, None, None, :]
         inner = torch.minimum(torch.maximum(kinks, start.unsqueeze(-1)), stop.unsqueeze(-1))
         edges = torch.sort(torch.cat(
             [start.unsqueeze(-1), inner, stop.unsqueeze(-1)], -1), -1).values
-        a, b = edges[..., :-1], edges[..., 1:]
-        found = (b > a).nonzero(as_tuple=True)
-        row, segment, side = found[:3]
-        low, high = a[found], b[found]
+        low, high = edges[..., :-1], edges[..., 1:]
+        # Dense over every (row, segment, side, sub-piece): a zero-width piece weighs
+        # (high-low)/2 = 0, so evaluating it adds exactly nothing, and no data-dependent
+        # shape (a host sync per step) is needed.
         z = ((low+high)/2).unsqueeze(-1) + ((high-low)/2).unsqueeze(-1)*nodes
-        f = self.family.mixture_cdf(z, logw[row], mu[row], sigma[row])
+        f = self.family.mixture_cdf(z, logw, mu, sigma)
         # Left of the outcome the error is F, right of it F - 1.
-        gap = (f-side.to(y.dtype).unsqueeze(-1))**2
+        side = torch.arange(2, dtype=y.dtype, device=y.device).reshape(1, 1, 2, 1, 1)
+        gap = (f-side)**2
         piece = (high-low)/2*(gap*weights).sum(-1)
-        total = torch.zeros(len(y), dtype=y.dtype, device=y.device)
-        return total.index_add(0, row, density[row, segment]*piece), self.eligible(context)
+        return (density[:, :, None, None]*piece).sum((1, 2, 3)), self.eligible(context)
 
 
 class _CDFTailCRPS(_CDFWingTwCRPS):
@@ -4111,6 +4123,7 @@ class _CompositeLossCDF:
                                      "calibration", "calibration")
 
     def _objective_loss(self, y, logw, mu, sigma, indices, context):
+        import torch
         local = {key: value[indices] for key, value in context.items()}
         rows = len(context["weights"])
         total = mu.sum()*0.
@@ -4119,7 +4132,9 @@ class _CompositeLossCDF:
             # Uniform minibatches estimate the full-population objective,
             # including batches with no locally eligible observations.
             normalization = rows/term.population_count(context)
-            total = total + term_config["weight"]*values[eligible].sum()/len(y)*normalization
+            # A mask, not values[eligible]: boolean indexing syncs the host every step.
+            masked = torch.where(eligible, values, torch.zeros_like(values))
+            total = total + term_config["weight"]*masked.sum()/len(y)*normalization
         return total
 
     def loss_report(self, x, y, context):

@@ -52,6 +52,7 @@
         "kind": "gaussian"
       },
       "min_scale": 0.1,
+      "compile": true,
       "epochs": 500,
       "patience": 10,
       "monitor": "val_loss",
@@ -436,7 +437,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -582,7 +584,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -733,6 +736,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -1033,7 +1037,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -1176,7 +1181,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -1324,6 +1330,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -1614,7 +1621,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -1750,7 +1758,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -1891,6 +1900,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -2157,7 +2167,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -2276,7 +2287,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -2400,6 +2412,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -2666,7 +2679,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -2802,7 +2816,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -2943,6 +2958,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -3233,7 +3249,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -3377,7 +3394,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -3526,6 +3544,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -3822,7 +3841,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -3963,7 +3983,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -4109,6 +4130,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -4395,7 +4417,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -4529,7 +4552,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -4668,6 +4692,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -4930,7 +4955,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -5047,7 +5073,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -5169,6 +5196,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -5431,7 +5459,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -5565,7 +5594,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -5704,6 +5734,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -5993,7 +6024,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -6137,7 +6169,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -6286,6 +6319,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -6582,7 +6616,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -6723,7 +6758,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -6869,6 +6905,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -7155,7 +7192,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -7289,7 +7327,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -7428,6 +7467,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -7690,7 +7730,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -7807,7 +7848,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -7929,6 +7971,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,
@@ -8191,7 +8234,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -8325,7 +8369,8 @@
                 "weight": 1.0
               }
             ],
-            "min_scale": 0.1
+            "min_scale": 0.1,
+            "compile": true
           },
           "missing": "mean",
           "device": "cuda",
@@ -8464,6 +8509,7 @@
               }
             ],
             "min_scale": 0.1,
+            "compile": true,
             "tail_intervals": [
               [
                 -12.0,

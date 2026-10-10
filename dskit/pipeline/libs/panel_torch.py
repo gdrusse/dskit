@@ -239,7 +239,9 @@ class MixtureHead(HorizonHead):
     ``tail_intervals``: ``components`` (int ``>= 1``), ``family`` (``{"kind": "gaussian"}`` or
     ``{"kind": "student", "degrees": k}``), ``losses`` (``nll`` / ``crps`` / ``tail_crps`` terms),
     ``min_scale`` (positive scale floor) and ``tail_intervals`` (required exactly when ``tail_crps``
-    is a term; the same wings the scoring grid declares).
+    is a term; the same wings the scoring grid declares). Optional ``compile`` (bool, default off)
+    runs the loss through ``torch.compile``: the same value, fused into a few kernels, which is the
+    difference between a launch-bound and a compute-bound step.
 
     Examples
     --------
@@ -251,7 +253,7 @@ class MixtureHead(HorizonHead):
     """
 
     kind = "mixture"
-    _KEYS = ("components", "family", "losses", "tail_intervals", "min_scale")
+    _KEYS = ("components", "family", "losses", "tail_intervals", "min_scale", "compile")
     _REQUIRED = ("components", "family", "losses", "min_scale")
 
     @classmethod
@@ -263,6 +265,11 @@ class MixtureHead(HorizonHead):
         check_int_param(problems, "head.components", spec["components"], ge=1)
         if not number_ok(spec["min_scale"]) or spec["min_scale"] <= 0:
             problems.append(f"head.min_scale must be a number > 0, got {spec['min_scale']!r}")
+        if not isinstance(spec.get("compile", False), bool):
+            problems.append(f"head.compile must be a bool, got {spec['compile']!r}")
+        elif spec.get("compile") and spec["family"].get("kind") != "gaussian":
+            # The Student CDF series fails Triton's pass manager (torch 2.11), so it is refused up front.
+            problems.append("head.compile is supported for the gaussian family only")
         try:
             MixtureLossSpec(spec["losses"], spec["family"], spec.get("tail_intervals"))
         except Exception as exc:  # noqa: BLE001 - the loss owner's refusal is the message
@@ -275,6 +282,7 @@ class MixtureHead(HorizonHead):
         self.min_scale = float(spec["min_scale"])
         self._spec = MixtureLossSpec(spec["losses"], spec["family"], spec.get("tail_intervals"))
         self.training_tail = self._spec.tail_intervals
+        self._loss_fn = None
 
     def width(self, horizons):
         """Return ``3 * components * horizons``: logits, means and raw scales per horizon."""
@@ -284,9 +292,16 @@ class MixtureHead(HorizonHead):
         """Return ``(logw, mu, sigma)``, each ``(B * H, K)``, from ``raw`` ``(B, H, 3K)``."""
         return mixture_parts(raw.reshape(-1, raw.shape[-1]), self.min_scale)
 
-    def loss(self, raw, y):
+    def _loss_of(self, raw, y):
         """Return the composite loss over every row and horizon, as ``MixtureLossSpec`` computes it."""
         return self._spec.loss(y.reshape(-1), *self._parts(raw))
+
+    def loss(self, raw, y):
+        """Return :meth:`_loss_of`, compiled on first use when the spec says ``compile``."""
+        if self._loss_fn is None:
+            import torch
+            self._loss_fn = torch.compile(self._loss_of) if self.spec.get("compile", False) else self._loss_of
+        return self._loss_fn(raw, y)
 
     def distribution(self, raw):
         """Return the :class:`MixtureHorizons` ``raw`` describes."""
@@ -681,7 +696,8 @@ class PanelAdapter(TorchAdapter):
             raise ValueError(f"PanelAdapter reads the panel's '{_FIT_BAND}' and '{_MONITOR_BAND}' "
                              f"bands and no rows; got where={where!r}")
         self._open(params)
-        index = torch.as_tensor(self.band_rows(params, where), dtype=torch.long)
+        index = torch.as_tensor(self.band_rows(params, where), dtype=torch.long,
+                                device=self._dev.device)
         return TorchBatches(len(index), (self._dev, index))
 
     def module_params(self, batches, params):
@@ -693,9 +709,23 @@ class PanelAdapter(TorchAdapter):
         dev, rows = batches.payload
         return dev.gather(rows if index is None else rows[index])
 
+    def index_device(self, batches):
+        """Return the resident panel's device: the order is uploaded once per epoch."""
+        return batches.payload[0].device
+
     def to_device(self, batch, device):
         """Return ``batch`` unchanged: the panel is already resident where the fit runs."""
         return batch
+
+    def _codes(self, group):
+        """Return the declared asset codes on ``group``'s device and dtype, uploaded once."""
+        import torch
+
+        key = (group.dtype, group.device)
+        if getattr(self, "_code_key", None) != key:
+            self._code_key = key
+            self._code_tensor = torch.as_tensor(self.params["assets"], dtype=group.dtype, device=group.device)
+        return self._code_tensor
 
     def model_inputs(self, batch):
         """Return ``(context, sequence)``: the flat features plus the one-hot asset code, if declared."""
@@ -703,8 +733,7 @@ class PanelAdapter(TorchAdapter):
 
         context = batch.x
         if self.params.get("asset_indicator", DEFAULT_ASSET_INDICATOR):
-            codes = torch.as_tensor(self.params["assets"], dtype=batch.group.dtype,
-                                    device=batch.group.device)
+            codes = self._codes(batch.group)
             context = torch.cat([context, (batch.group[:, None] == codes).to(context.dtype)], dim=1)
         return context, batch.seq
 

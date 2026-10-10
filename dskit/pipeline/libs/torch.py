@@ -867,6 +867,14 @@ class TorchAdapter(_LossPromise, ABC):
         """
         return None, None
 
+    def index_device(self, batches):
+        """Return the device ``select`` wants its ``index`` on, or ``None`` to keep it on the host.
+
+        An adapter whose split already lives on the accelerator overrides this, so the epoch's
+        shuffled order is uploaded once and no step pays a host-to-device copy to cut its batch.
+        """
+        return None
+
     def to_device(self, batch, device):
         """Move ``batch`` onto ``device``.
 
@@ -1911,7 +1919,12 @@ class TorchTrain(_TorchModel):
             order = torch.randperm(n, generator=fit.order_gen)
         else:
             order = torch.arange(n)
-        batch_loss_sum, n_batches = 0.0, 0
+        # A duck-typed adapter (no TorchAdapter base) has no hook: its index stays on the host.
+        where = getattr(fit.adapter, "index_device", lambda batches: None)(fit.train_set)
+        if where is not None:
+            order = order.to(where)
+        # Summed on the device: float(loss) per step would stall the host on every step.
+        batch_loss_sum, n_batches = torch.zeros((), dtype=torch.float64, device=fit.device), 0
         for start in range(0, n, fit.batch_size):
             idx = order[start : start + fit.batch_size]
             fit.optimizer.zero_grad()
@@ -1920,9 +1933,9 @@ class TorchTrain(_TorchModel):
             )
             batch_loss.backward()
             fit.optimizer.step()
-            batch_loss_sum += float(batch_loss.detach())
+            batch_loss_sum += batch_loss.detach().double()
             n_batches += 1
-        return batch_loss_sum / max(n_batches, 1)
+        return float(batch_loss_sum) / max(n_batches, 1)
 
     def _score_epoch(self, fit):
         """Score one epoch on the validation set, as ``(val_loss, metrics)``.

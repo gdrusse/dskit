@@ -28,7 +28,8 @@
           "family": "${training.family}",
           "losses": "${training.losses}",
           "tail_intervals": "${grid.common.tail_intervals}",
-          "min_scale": "${training.min_scale}"
+          "min_scale": "${training.min_scale}",
+          "compile": "${training.compile}"
         },
         "missing": "${training.missing}",
         "device": "${training.device}",

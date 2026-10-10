@@ -45,6 +45,7 @@
         "kind": "gaussian"
       },
       "min_scale": 0.1,
+      "compile": true,
       "epochs": 500,
       "patience": 10,
       "monitor": "val_loss",

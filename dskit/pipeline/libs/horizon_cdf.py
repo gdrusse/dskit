@@ -677,8 +677,9 @@ class HorizonScores:
             raise ValueError(f"chunk has {h} horizons, earlier chunks {len(self._pits)}")
         for k, total in self._sums.items():
             total += out[k].sum(0, dtype=torch.float64).cpu()
+        pit = out["pit"].cpu()  # one transfer per chunk, not one per horizon
         for j in range(h):
-            self._pits[j].append(out["pit"][:, j].cpu())
+            self._pits[j].append(pit[:, j])
         self.n += y.shape[0]
         self._bases.add(dist.basis)
 

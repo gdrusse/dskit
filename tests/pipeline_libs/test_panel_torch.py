@@ -5,6 +5,7 @@ seconds-long. Expected values are restated in plain numpy / torch, independently
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,6 +38,7 @@ from dskit.pipeline.libs.panel_torch import (  # noqa: E402
     TorchHorizonForecaster,
 )
 from dskit.pipeline.libs.predictive_cdf import MixtureLossSpec, mixture_parts  # noqa: E402
+from dskit.pipeline.libs.torch import TorchAdapter  # noqa: E402
 from dskit.pipeline.libs.torch_ts import quantile_pinball_loss  # noqa: E402
 from dskit.pipeline.node import NodeContext  # noqa: E402
 
@@ -55,6 +57,7 @@ MIXTURE = {"kind": "mixture", "components": 2, "family": {"kind": "gaussian"},
 MIXTURE_TAIL = {"kind": "mixture", "components": 2, "family": {"kind": "student", "degrees": 5},
                 "losses": [{"kind": "crps", "weight": 1.0}, {"kind": "tail_crps", "weight": 0.5}],
                 "tail_intervals": TAIL, "min_scale": 0.1}
+GAUSSIAN_TAIL = {**MIXTURE_TAIL, "family": {"kind": "gaussian"}}
 QUANTILE = {"kind": "quantile", "quantiles": [0.1, 0.5, 0.9], "bounds": [-8.0, 8.0]}
 GRID = {"z_min": -8.0, "z_max": 8.0, "levels": [0.1, 0.5, 0.9], "tail_intervals": TAIL}
 
@@ -225,6 +228,35 @@ def test_mixture_head_loss_is_mixture_loss_spec_on_the_same_tensors():
     assert torch.allclose(head.loss(raw, y), expected)
     # float32 on the device, float64 as the reference: the same number to float32 precision
     assert torch.allclose(head.loss(raw, y), head.loss(raw.double(), y.double()).float(), rtol=1e-4)
+
+
+def test_compile_is_an_optional_bool_on_the_mixture_head_only():
+    assert HorizonHead.check({**GAUSSIAN_TAIL, "compile": True}) == []
+    assert any("compile" in p for p in HorizonHead.check({**GAUSSIAN_TAIL, "compile": "yes"}))
+    assert any("gaussian" in p for p in HorizonHead.check({**MIXTURE_TAIL, "compile": True}))
+    assert any("compile" in p for p in HorizonHead.check({**QUANTILE, "compile": True}))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="no cuda device")
+def test_a_compiled_mixture_loss_has_the_same_value_and_gradient_as_the_eager_one():
+    eager, fused = (HorizonHead.build({**GAUSSIAN_TAIL, "compile": flag}) for flag in (False, True))
+    torch.manual_seed(3)
+    y = (torch.randn(64, 3) * 3).cuda()
+    values, grads = [], []
+    for head in (eager, fused):
+        raw = torch.randn(64, 3, 6, generator=torch.Generator().manual_seed(4)).cuda().requires_grad_()
+        loss = head.loss(raw, y)
+        loss.backward()
+        values.append(loss.detach())
+        grads.append(raw.grad)
+    assert torch.allclose(values[0], values[1], rtol=1e-5)
+    assert torch.allclose(grads[0], grads[1], rtol=1e-4, atol=1e-6)
+
+
+def test_the_panel_adapter_asks_for_its_order_on_the_panel_device_and_the_base_does_not():
+    resident = SimpleNamespace(payload=(SimpleNamespace(device=torch.device("meta")), None))
+    assert PanelAdapter.index_device(object.__new__(PanelAdapter), resident) == torch.device("meta")
+    assert TorchAdapter.index_device(object.__new__(PanelAdapter), resident) is None
 
 
 def test_mixture_head_distribution_is_a_valid_mixture_per_row_and_horizon():
