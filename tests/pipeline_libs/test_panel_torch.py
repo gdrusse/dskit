@@ -716,3 +716,143 @@ def test_a_cuda_fit_forecasts_on_the_device(tmp_path, path, head):
     panel, bands = val_rows(path)
     dist = out["model"].forecast(panel, bands.val_idx[:6], 6)
     assert dist.device.type == "cuda" and dist.shape == (6, 2)
+
+
+# --- row_stride: thin the FIT band by bar index -----------------------------------------------
+
+
+def fit_index(path, **over):
+    """The fit rows the adapter hands the trainer for these knobs, plus the adapter's other bands."""
+    knobs = params(path, **over)
+    adapter = PanelAdapter(knobs)
+    try:
+        fit_rows = adapter.prepare(None, knobs, where="fit").payload[1].numpy()
+        cal_rows = adapter.prepare(None, knobs, where="cal").payload[1].numpy()
+        scaler_mean = list(adapter.state.mean)
+    finally:
+        adapter.release()
+    return fit_rows, cal_rows, scaler_mean
+
+
+def hand_bars(path, rows):
+    """Bar index of each row, restated from the construction in ``make_columns`` (not the node)."""
+    panel = ArrayPanel.open(path)
+    return np.asarray(panel.time)[rows] // STEP
+
+
+def test_default_row_stride_reproduces_the_existing_fit_rows(path):
+    _, bands = val_rows(path)
+    omitted, _, _ = fit_index(path)
+    explicit, _, _ = fit_index(path, row_stride=pt.DEFAULT_ROW_STRIDE, stride_offset=pt.DEFAULT_STRIDE_OFFSET)
+    assert pt.DEFAULT_ROW_STRIDE == 1 and pt.DEFAULT_STRIDE_OFFSET == 0
+    assert np.array_equal(omitted, bands.fit_idx)
+    assert np.array_equal(explicit, bands.fit_idx)
+
+
+@pytest.mark.parametrize("stride,offset", [(2, 0), (2, 1), (3, 0), (3, 2), (5, 4), (7, 3)])
+def test_a_stride_keeps_exactly_the_rows_on_its_bar_phase(path, stride, offset):
+    _, bands = val_rows(path)
+    kept, _, _ = fit_index(path, row_stride=stride, stride_offset=offset)
+    all_bars = hand_bars(path, bands.fit_idx)
+    expected = bands.fit_idx[all_bars % stride == offset]
+    assert len(expected) and len(expected) < len(bands.fit_idx)
+    assert np.array_equal(kept, expected)
+    assert np.all(hand_bars(path, kept) % stride == offset)
+
+
+def test_a_stride_of_three_keeps_hand_listed_instants_of_the_first_group(path):
+    kept, _, _ = fit_index(path, assets=[10], asset_indicator=False, row_stride=3, stride_offset=0)
+    first_bar = T0 // STEP
+    bars = hand_bars(path, kept)
+    # group 10 fit rows start at min_run - 1 = 14 and run (gap included) to a purged tail; the first
+    # kept bar is the first multiple of 3 at or after first_bar + 14
+    start = first_bar + MIN_RUN - 1
+    assert bars[0] == start + (-start) % 3
+    assert set(np.diff(bars[bars < first_bar + 200])) == {3}
+
+
+def test_the_phase_is_time_based_so_a_gap_does_not_shift_it_and_groups_agree(path):
+    kept, _, _ = fit_index(path, row_stride=3, stride_offset=1)
+    panel = ArrayPanel.open(path)
+    group, bars = np.asarray(panel.group)[kept], hand_bars(path, kept)
+    assert np.all(bars % 3 == 1)
+    after_gap = bars[(group == 10) & (np.asarray(panel.time)[kept] >= T0 + 204 * STEP)]
+    assert len(after_gap) and np.all(after_gap % 3 == 1)       # row-index phase would drift by 4 bars
+    _, bands = val_rows(path)
+    every = hand_bars(path, bands.fit_idx[np.asarray(panel.group)[bands.fit_idx] == 20])
+    assert set(bars[group == 20]) == {b for b in every if b % 3 == 1}   # pooled groups keep the same instants
+
+
+def test_calibration_and_validation_rows_and_the_scaler_do_not_depend_on_the_stride(tmp_path, path):
+    _, bands = val_rows(path)
+    _, cal_1, mean_1 = fit_index(path)
+    for stride in (2, 5):
+        _, cal_k, mean_k = fit_index(path, row_stride=stride, stride_offset=1)
+        assert np.array_equal(cal_k, cal_1) and np.array_equal(cal_k, bands.cal_idx)
+        assert mean_k == mean_1                                  # the scaler sees the whole fit band
+    _, plain = fit(tmp_path, path, run="plain", epochs=1)
+    _, thin = fit(tmp_path, path, run="thin", epochs=1, row_stride=4)
+    assert thin["metrics"]["n_val_rows"] == plain["metrics"]["n_val_rows"] == len(bands.cal_idx)
+    assert 0 < thin["metrics"]["n_rows"] < plain["metrics"]["n_rows"]
+    _, bands_after = val_rows(path)
+    assert bands_after.rows_sha256() == bands.rows_sha256()
+
+
+def test_the_default_stride_fit_is_byte_identical_to_an_explicit_stride_of_one(tmp_path, path):
+    _, plain = fit(tmp_path, path, run="plain", epochs=2)
+    _, one = fit(tmp_path, path, run="one", epochs=2, row_stride=1, stride_offset=0)
+    a = torch.load(plain["artifact_path"], weights_only=True)
+    b = torch.load(one["artifact_path"], weights_only=True)
+    assert all(torch.equal(a[k], b[k]) for k in a)
+    assert plain["metrics"]["n_rows"] == one["metrics"]["n_rows"]
+
+
+def test_a_thinned_row_still_gathers_its_full_window(path):
+    knobs = params(path, row_stride=4)
+    adapter = PanelAdapter(knobs)
+    try:
+        batches = adapter.prepare(None, knobs, where="fit")
+        thin = adapter.select(batches, None)
+        full_batches = PanelAdapter(params(path))
+        try:
+            full = full_batches.select(full_batches.prepare(None, params(path), where="fit"), None)
+            keep = np.isin(full_batches.prepare(None, params(path), where="fit").payload[1].numpy(),
+                           batches.payload[1].numpy())
+            assert thin.seq.shape[1:] == full.seq.shape[1:]
+            assert torch.equal(thin.seq, full.seq[torch.as_tensor(keep)])
+        finally:
+            full_batches.release()
+    finally:
+        adapter.release()
+
+
+@pytest.mark.parametrize("over,fragment", [
+    ({"row_stride": 0}, "row_stride"),
+    ({"row_stride": -2}, "row_stride"),
+    ({"row_stride": 1.5}, "row_stride"),
+    ({"row_stride": True}, "row_stride"),
+    ({"row_stride": "2"}, "row_stride"),
+    ({"stride_offset": -1}, "stride_offset"),
+    ({"stride_offset": 1}, "stride_offset"),                    # default stride 1: only offset 0
+    ({"row_stride": 3, "stride_offset": 3}, "stride_offset"),
+    ({"row_stride": 3, "stride_offset": 1.5}, "stride_offset"),
+    ({"row_stride": 3, "stride_offset": False}, "stride_offset"),
+])
+def test_bad_row_stride_knobs_are_refused_at_plan(path, over, fragment):
+    problems = PanelTrain.validate_params(params(path, **over))
+    assert any(fragment in p for p in problems), problems
+
+
+def test_good_row_stride_knobs_and_node_refs_pass_plan(path):
+    assert PanelTrain.validate_params(params(path, row_stride=4, stride_offset=3)) == []
+    assert PanelTrain.validate_params(params(path, row_stride="$s.stride", stride_offset="$s.off")) == []
+
+
+def test_a_stride_that_leaves_no_fit_rows_is_refused_by_name(path):
+    knobs = params(path, row_stride=10_000_000, stride_offset=1)
+    adapter = PanelAdapter(knobs)
+    try:
+        with pytest.raises(ValueError, match="row_stride.*no fit rows"):
+            adapter.prepare(None, knobs, where="fit")
+    finally:
+        adapter.release()
