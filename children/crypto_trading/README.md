@@ -100,6 +100,10 @@ A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
 (pipeline), its own asset model (assets). The domain lives in `configs/`.
 
+## Stage C: the minute panel and the zoo
+
+`configs/run-panel-build.json` builds one memory-mapped panel (W1 + embargo + W2 bars, 91 feature columns, 15 labels) that `configs/source-panel-minute.json` publishes as the `panel-minute` blob source. Selection and zoo read it through dskit's `array_panel` / `panel_torch` / `panel_score` packs (ADR-0259): an arm is a `ColumnSelector`, a zoo cell is a `PanelTrain` + `PanelScore` lane, and a lane trains on the GPU. `configs/zoo-lanes-recipe.json` + `crypto_trading/zoo_lanes.py` generate `configs/workflow-zoo-w1.json` (5 models x 4 losses x pooled/BTC/ETH, plus two baselines, 66 lanes) and the single-read `workflow-zoo-w2.json` skeleton (frozen finalists, W2's fixed bounds). Nothing in the zoo has been run beyond a one-fold timing probe.
+
 ## Running a model, end to end
 
 Every command runs from the child's own root and none references where
