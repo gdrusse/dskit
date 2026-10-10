@@ -6,7 +6,7 @@
   "work_dir": "./pipeline_runs/zoo-w1",
   "adapter": "crypto_trading",
   "features": {
-    "notes": "The selected feature set, as a ColumnSelector over the panel's summary columns (never the raw seq__ channels, which the sequence models read separately). Default = all families (the selection's `all` arm); the selection output fills it: {\"names\": [...]} from selected-features-<class>.json.",
+    "notes": "The selected feature set, as a ColumnSelector over the panel's summary columns (never the raw seq__ columns, which the sequence models read separately). `context` is the default (all families, the selection's `all` arm) and is what a class uses when its `classes.<class>.from` is null. Set `from` to the feature-selection output (the directory holding selected-features-<class>.json, or the file) and regenerate: that class's models then read {\"names\": columns}. Each model's `class` (tabular = no encoder, sequence = has one) picks which. A missing, mislabelled or empty file refuses. `--features-from CLASS=PATH` overlays from the command line.",
     "context": {
       "prefixes": [
         "ret__",
@@ -20,14 +20,28 @@
         "xasset__",
         "bvol__"
       ]
+    },
+    "classes": {
+      "notes": "One source per model class; the class names are the selection run's (select-features.json `classes`), pinned by a test.",
+      "sequence": {
+        "from": null,
+        "notes": "patchtst, cnn1d, gru, transformer. Null = the default context above."
+      },
+      "tabular": {
+        "from": null,
+        "notes": "mlp. Null = the default context above."
+      }
     }
   },
+  "lane_runs": "{root}/{lane}/runs/{lane}",
   "models": {
     "patchtst": {
+      "class": "sequence",
       "encoder": "@zoo.encoder",
       "notes": "The options child's HF PatchTST (pooled, 64 wide); identical to the selection's encoder, pinned by a test."
     },
     "cnn1d": {
+      "class": "sequence",
       "encoder": {
         "arch": "tcn",
         "width": 64,
@@ -46,6 +60,7 @@
       "notes": "A causal 1D CNN: dskit's tcn arch; 1 + 2*(1+2+4+8+16) = 63 >= the 60-bar window."
     },
     "gru": {
+      "class": "sequence",
       "encoder": {
         "arch": "gru",
         "width": 64,
@@ -57,9 +72,11 @@
       "notes": "A one-layer GRU; the options child's pooled GRU used 16 hidden, widened to the PatchTST's 64."
     },
     "mlp": {
+      "class": "tabular",
       "notes": "Context-only: the trunk is the whole model (no sequence, no encoder); with the mixture head it is the options child's mixture MLP."
     },
     "transformer": {
+      "class": "sequence",
       "encoder": {
         "arch": "transformer",
         "width": 64,
@@ -119,6 +136,209 @@
         ]
       },
       "notes": "A Student-t whose scale is a fitted multiple of the 60-minute-half-life EWMA volatility column; degrees chosen on the fit band."
+    }
+  },
+  "pick": {
+    "notes": "`python -m crypto_trading.zoo_lanes pick --root <zoo batch root> --recipe configs/zoo-lanes-recipe.json --out DIR` ranks MODEL cells (a pooled cell is its one lane; an unpooled cell is its btc and eth lanes combined, each fold row-weighted by the lanes' validation row counts from their horizon_scores.json) on the mean over the W1 folds of the zoo-template.json walk-forward objective (read from the template, not restated). A cell is eligible only if its mean beats BOTH baselines of its scope. Writes zoo-pick.json and a short zoo-pick.md; with no eligible cell it still writes them and exits 3 (the chain stops).",
+    "metrics": [
+      "crps",
+      "tail_crps",
+      "pinball",
+      "pit_ks",
+      "pit_pvalue"
+    ],
+    "metrics_notes": "Horizon means from each fold's horizon_scores.json (overall table); an unpooled cell's value is the row-weighted mean of its two lanes, which is exact for the CRPS family and pinball and only an approximation for the PIT statistics (a KS statistic does not add).",
+    "near_tie_z": 1.0,
+    "near_tie_notes": "An eligible cell whose per-fold gap to the winner is within this many paired standard errors (gap mean <= z * SE) is reported as a near-tie; the lowest mean is still the pick.",
+    "top_rows": 10,
+    "top_rows_notes": "Rows of the ranking shown in zoo-pick.md (zoo-pick.json holds all).",
+    "out_json": "zoo-pick.json",
+    "out_md": "zoo-pick.md"
+  },
+  "hpo": {
+    "notes": "HPO on a warmup of W1 only, then frozen (plan 2026-10-09-data-windows.md; W2 is never touched). `hpo-manifest --pick zoo-pick.json --out M` writes one lane per candidate of the PICKED cell (an unpooled pick: both asset lanes) over the first `warmup_folds` folds of the W1 schedule; `hpo-pick --root R --pick zoo-pick.json --out hpo-frozen.json` takes the lowest warmup mean (the `default` candidate wins ties) and records its full fit params; `frozen-manifest --frozen hpo-frozen.json --out M2` runs the default cell and the frozen winner over the REMAINING folds, so tuned and untuned are compared out of sample on identical folds. Every candidate trains with the zoo's seed, stride, patience, epochs and loss; only the mapped bundle knobs differ.",
+    "warmup_folds": 4,
+    "default_candidate": "default",
+    "default_notes": "The cell exactly as the zoo ran it (no overrides); it is always a candidate and wins ties.",
+    "frozen_label": "frozen",
+    "work_dir": "./pipeline_runs/zoo-hpo",
+    "frozen_work_dir": "./pipeline_runs/zoo-frozen",
+    "candidates": {
+      "a": {
+        "source": "separate_normal_a",
+        "params": {
+          "components": 1,
+          "hidden": [
+            16
+          ],
+          "epochs": 20,
+          "batch_size": 1024,
+          "learning_rate": 0.003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "notes": "The options child's predeclared Gaussian-family bundle A (run-predictive-cdf-hpo.json), verbatim; the same params sit under pooled_normal_a. A test pins this copy to that file."
+      },
+      "b": {
+        "source": "separate_normal_b",
+        "params": {
+          "components": 1,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 512,
+          "learning_rate": 0.001,
+          "weight_decay": 0.1,
+          "min_scale": 0.05,
+          "activation": "silu",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "notes": "The options child's predeclared Gaussian-family bundle B (run-predictive-cdf-hpo.json), verbatim; the same params sit under pooled_normal_b. A test pins this copy to that file."
+      },
+      "c": {
+        "source": "separate_normal_c",
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            32
+          ],
+          "epochs": 40,
+          "batch_size": 1024,
+          "learning_rate": 0.001,
+          "weight_decay": 0.01,
+          "min_scale": 0.05,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "notes": "The options child's predeclared Gaussian-family bundle C (run-predictive-cdf-hpo.json), verbatim; the same params sit under pooled_normal_c. A test pins this copy to that file."
+      },
+      "d": {
+        "source": "separate_normal_d",
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 1024,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "silu",
+          "dropout": 0.1,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "notes": "The options child's predeclared Gaussian-family bundle D (run-predictive-cdf-hpo.json), verbatim; the same params sit under pooled_normal_d. A test pins this copy to that file."
+      }
+    },
+    "map": {
+      "notes": "Bundle param -> dotted path in the PanelTrain fit params. `head` restricts a mapping to a head kind: the quantile head has no components or min_scale, so a pinball pick skips those two (recorded per candidate). Every bundle param must be here or in `unmapped`, so a new bundle knob refuses instead of being dropped.",
+      "hidden": {
+        "to": "trunk.hidden",
+        "notes": "The trunk's MLP widths (the sequence encoder's own width is not tuned here)."
+      },
+      "activation": {
+        "to": "trunk.activation",
+        "notes": "tanh/silu/relu are the trunk's MLP_ACTIVATIONS."
+      },
+      "dropout": {
+        "to": "trunk.dropout"
+      },
+      "learning_rate": {
+        "to": "lr"
+      },
+      "weight_decay": {
+        "to": "optimizer_params.weight_decay"
+      },
+      "batch_size": {
+        "to": "loader.batch_size"
+      },
+      "min_scale": {
+        "to": "head.min_scale",
+        "head": "mixture"
+      },
+      "components": {
+        "to": "head.components",
+        "head": "mixture"
+      }
+    },
+    "unmapped": {
+      "notes": "Bundle params with no counterpart, and why.",
+      "epochs": "The zoo trains to its patience stop under one epoch ceiling; a fixed epoch count would change the stopping rule, not the model.",
+      "seeds": "One seed per run, the zoo's loader.seed, held fixed so candidates differ only in the bundle.",
+      "device": "The zoo's device."
+    },
+    "search_notes": {
+      "folds": "The first `warmup_folds` folds of the zoo's own W1 schedule (same first, step, val, embargo).",
+      "manifest": "HPO search: one lane per candidate of the picked cell over the warmup folds of W1. Generated by crypto_trading.zoo_lanes hpo-manifest from the zoo pick and the recipe's hpo section; edit those, never this file.",
+      "args": "Inherited from the zoo manifest; `cell` holds each candidate lane's full fit and score params (the default as the zoo ran it, the bundles mapped by hpo.map); `hpo` records which knobs each candidate set and skipped."
+    },
+    "evaluate_notes": {
+      "folds": "The folds after the warmup: the zoo schedule shifted by `warmup_folds`, so they are folds warmup+1..N of the zoo's own.",
+      "manifest": "Tuned vs untuned: the default cell and the frozen HPO winner over the folds after the warmup, out of sample on identical folds. No search node, no W2. Generated by crypto_trading.zoo_lanes frozen-manifest.",
+      "args": "Inherited from the zoo manifest; `cell` holds the default lanes and (unless the default won) the frozen winner's lanes, with the full frozen params."
+    },
+    "pipeline": {
+      "notes": "The HPO pipeline as ONE workflow manifest: search (candidate lanes over the warmup folds of W1) -> freeze (hpo-frozen.json: the selected model and its full hyperparameters) -> evaluate (default vs frozen winner over the later W1 folds). Run: `python -m dskit.pipeline workflow configs/workflow-hpo.json --args hpo-args.json` where hpo-args.json holds {\"args\": {\"pick\": \"<path to zoo-pick.json>\"}} (or any overlay of args). It reads no W2. The lane manifests it writes sit under the work dir. Regenerate with `python -m crypto_trading.zoo_lanes configs/zoo-lanes-recipe.json --out ... --hpo-out configs/workflow-hpo.json`; a test pins it. Note the workflow ledger keys a step on its config and its in-values, which name the pick by path: after re-picking, delete the work dir.",
+      "args_notes": "`pick` is the zoo's zoo-pick.json (unfilled until --args supplies it); `recipe` is this recipe as run from the child root; `parallel` is workflow-batch's lane parallelism (two lanes at once).",
+      "cli": "crypto_trading.zoo_lanes",
+      "recipe": "configs/zoo-lanes-recipe.json",
+      "stage_template": "stage-template.json",
+      "pick_unfilled": "<zoo-pick.json: the zoo's pick, from `zoo_lanes pick`>",
+      "parallel": 2
+    }
+  },
+  "production": {
+    "notes": "The production pipeline (owner 2026-10-10): the picked model with the HPO's frozen hyperparameters, run end to end as production would. Block 1 trains on the whole 1-minute history up to `forward_start` (less the embargo); every `retrain_days` it is refit on an expanding window with the same frozen hyperparameters (no search); each block's forward days are scored out of sample on the zoo's common grid beside both baselines of the scope. `forward_start` and `evaluate_through` (exclusive) default to W2 (2026-05-02 to 2026-08-01); a test pins them to w2.bounds. W4 (2026-08-01 to 2026-09-15) and W5 (the holdout) are reserved, owner-only: an evaluate_through past W2's end is refused unless `allow_past_w2` is true, and a forward_start before W2's start is always refused.",
+    "forward_start": "2026-05-02",
+    "evaluate_through": "2026-08-01",
+    "retrain_days": 60,
+    "allow_past_w2": false,
+    "work_dir": "./pipeline_runs/zoo-production",
+    "template": "production-template.json",
+    "files": {
+      "notes": "Names under the production work dir. The model of each retrain is copied to <work>/<models_dir>/<zoo lane>/block-<k>-<cutoff>/ and listed in <index>; <sidecar> is PanelTrain's model.json (it holds the content hash).",
+      "models_dir": "models",
+      "index": "models.json",
+      "sidecar": "model.json",
+      "report": "production-report.json",
+      "report_md": "production-report.md"
+    },
+    "manifest_notes": {
+      "manifest": "Production lanes: one lane per retrain block and zoo lane (the frozen model's lanes and the scope's baselines), each a one-fold walk-forward. Generated by crypto_trading.zoo_lanes production-manifest from the zoo pick, hpo-frozen.json and the recipe's production section.",
+      "args": "Inherited from the zoo manifest; `cell` holds each lane's full params (the frozen hyperparameters for the model), `block` each lane's cutoff and scored days, `production` the window and the hyperparameter hashes."
+    },
+    "pipeline": {
+      "notes": "The production pipeline as ONE workflow manifest: blocks (one lane per retrain block) -> train (those lanes, in parallel) -> index (every retrain's model under a stable path, models.json, the forward report). Run: `python -m dskit.pipeline workflow configs/workflow-production.json --args production-args.json` with {\"args\": {\"pick\": \"<zoo-pick.json>\", \"frozen\": \"<hpo-frozen.json>\"}} (add forward_start, evaluate_through, retrain_days to override). A window past W2 refuses unless the recipe's allow_past_w2 is true. Regenerate with `zoo_lanes ... --production-out configs/workflow-production.json`.",
+      "args_notes": "`pick` and `frozen` are unfilled until --args supplies them; forward_start, evaluate_through, retrain_days and allow_past_w2 are the recipe's production values; `parallel` is workflow-batch's lane parallelism.",
+      "cli": "crypto_trading.zoo_lanes",
+      "recipe": "configs/zoo-lanes-recipe.json",
+      "stage_template": "stage-template.json",
+      "pick_unfilled": "<zoo-pick.json: the zoo's pick, from `zoo_lanes pick`>",
+      "frozen_unfilled": "<hpo-frozen.json: the HPO's freeze, from the HPO pipeline>",
+      "parallel": 2
     }
   },
   "w2": {

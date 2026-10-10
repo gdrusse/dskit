@@ -174,7 +174,8 @@ def test_the_recipe_models_and_grid_are_the_owner_approved_ones(recipe):
 
 
 def test_every_config_object_explains_itself(recipe):
-    for name in ("zoo-lanes-recipe.json", "zoo-template.json", "w2-read-template.json", "workflow-zoo-w1.json", "workflow-zoo-w2.json"):
+    for name in ("zoo-lanes-recipe.json", "zoo-template.json", "w2-read-template.json", "workflow-zoo-w1.json", "workflow-zoo-w2.json",
+                 "stage-template.json", "production-template.json", "workflow-hpo.json", "workflow-production.json"):
         doc = _load(name)
         assert doc.get("notes"), name
         for key, node in doc.get("pipeline", {}).items():
@@ -187,3 +188,159 @@ def test_the_generator_does_not_edit_its_inputs(recipe):
     before = copy.deepcopy(recipe)
     ZooLanes(recipe, _load(recipe["base"])).manifest()
     assert recipe == before
+
+
+# --- per-class features ----------------------------------------------------------------------------------------------
+
+TABULAR_COLUMNS = ["ret__r5", "vol__rms_60", "clock__dow_sin"]
+SEQUENCE_COLUMNS = ["ret__r5", "ret__r15", "vol__ewma_60", "flow__taker_15", "xasset__r5"]
+
+
+def _selection(directory, name, columns, **over):
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"selected-features-{name}.json"
+    path.write_text(json.dumps({"class": name, "columns": columns, **over}), encoding="utf-8")
+    return path
+
+
+def _fit_contexts(manifest):
+    out = {}
+    for lane, cell in manifest["args"]["cell"].items():
+        if lane != "notes" and cell["uses"].endswith("PanelTrain"):
+            out.setdefault(lane.split("-")[0], set()).add(json.dumps(cell["fit"]["context"], sort_keys=True))
+    return out
+
+
+def test_without_a_selection_every_class_keeps_the_default_context(lanes, recipe):
+    default = json.dumps(recipe["features"]["context"], sort_keys=True)
+    assert _fit_contexts(lanes.manifest()) == {m: {default} for m in MODELS}
+    classes = lanes.manifest()["args"]["features"]["classes"]
+    assert classes["tabular"]["from"] is None and classes["sequence"]["context"] == recipe["features"]["context"]
+
+
+def test_mlp_lanes_read_the_tabular_selection_and_the_sequence_archs_the_sequence_one(recipe, tmp_path):
+    tab, seq = _selection(tmp_path / "t", "tabular", TABULAR_COLUMNS), _selection(tmp_path / "s", "sequence", SEQUENCE_COLUMNS)
+    built = ZooLanes(recipe, _load(recipe["base"]), {"tabular": str(tmp_path / "t"), "sequence": str(seq)})
+    manifest = built.manifest()
+    contexts = _fit_contexts(manifest)
+    expected_tab, expected_seq = json.dumps({"names": TABULAR_COLUMNS}), json.dumps({"names": SEQUENCE_COLUMNS})
+    assert contexts["mlp"] == {expected_tab}
+    for model in ("patchtst", "cnn1d", "gru", "transformer"):
+        assert contexts[model] == {expected_seq}, model
+    classes = manifest["args"]["features"]["classes"]
+    assert classes["tabular"]["from"] == str(tab) and len(classes["tabular"]["sha256"]) == 64
+    assert classes["sequence"]["context"] == {"names": SEQUENCE_COLUMNS}
+    baseline = manifest["args"]["cell"]["empirical-pooled"]["fit"]
+    assert "context" not in baseline, "a baseline reads no feature set"
+    w2 = built.w2_manifest(["mlp-crps-pooled", "gru-crps-pooled"], recipe["w2"]["bounds"], recipe["w2"]["template"])
+    assert w2["args"]["cell"]["mlp-crps-pooled"]["fit"]["context"] == {"names": TABULAR_COLUMNS}
+    assert w2["args"]["cell"]["gru-crps-pooled"]["fit"]["context"] == {"names": SEQUENCE_COLUMNS}
+
+
+def test_one_class_may_have_a_source_while_the_other_keeps_the_default(recipe, tmp_path):
+    _selection(tmp_path, "tabular", TABULAR_COLUMNS)
+    built = ZooLanes(recipe, _load(recipe["base"]), {"tabular": str(tmp_path)})
+    contexts = _fit_contexts(built.manifest())
+    assert contexts["mlp"] == {json.dumps({"names": TABULAR_COLUMNS})}
+    assert contexts["gru"] == {json.dumps(recipe["features"]["context"], sort_keys=True)}
+
+
+@pytest.mark.parametrize("make, fragment", [
+    (lambda d: None, "no selection file"),
+    (lambda d: _selection(d, "tabular", []), "non-empty list"),
+    (lambda d: _selection(d, "tabular", ["a", "a"]), "distinct"),
+    (lambda d: _selection(d, "tabular", [1, 2]), "non-empty list"),
+    (lambda d: _selection(d, "tabular", ["a"], **{"class": "sequence"}), "is for class 'sequence'"),
+    (lambda d: (d.mkdir(), (d / "selected-features-tabular.json").write_text("{not json", encoding="utf-8")), "not JSON"),
+    (lambda d: (d.mkdir(), (d / "selected-features-tabular.json").write_text("[1]", encoding="utf-8")), "is for class"),
+])
+def test_a_missing_empty_or_mislabelled_selection_refuses_loudly(recipe, tmp_path, make, fragment):
+    directory = tmp_path / "sel"
+    make(directory)
+    if not directory.exists():
+        directory.mkdir()
+    with pytest.raises(ValueError, match=fragment):
+        ZooLanes(recipe, _load(recipe["base"]), {"tabular": str(directory)})
+
+
+def test_a_source_for_an_undeclared_class_refuses(recipe, tmp_path):
+    with pytest.raises(ValueError, match="features-from names"):
+        ZooLanes(recipe, _load(recipe["base"]), {"cnn": str(tmp_path)})
+
+
+def test_the_cli_takes_features_from_per_class(recipe, tmp_path):
+    _selection(tmp_path, "tabular", TABULAR_COLUMNS)
+    out = tmp_path / "w1.json"
+    assert main([os.path.join(CONFIGS, "zoo-lanes-recipe.json"), "--out", str(out), "--features-from", f"tabular={tmp_path}"]) == 0
+    assert _fit_contexts(json.loads(out.read_text(encoding="utf-8")))["mlp"] == {json.dumps({"names": TABULAR_COLUMNS})}
+    with pytest.raises(SystemExit):
+        main([os.path.join(CONFIGS, "zoo-lanes-recipe.json"), "--out", str(out), "--features-from", "tabular"])
+
+
+def test_the_model_classes_are_the_selection_runs_and_tabular_means_no_encoder(recipe):
+    classes = set(_load("select-features.json")["pipeline"]["select"]["params"]["classes"])
+    assert set(k for k in recipe["features"]["classes"] if k != "notes") == classes == {"tabular", "sequence"}
+    for model, spec in recipe["models"].items():
+        assert spec["class"] == ("sequence" if spec.get("encoder") else "tabular"), model
+    assert [m for m, s in recipe["models"].items() if s["class"] == "tabular"] == ["mlp"]
+
+
+# --- the two pipelines -----------------------------------------------------------------------------------------------
+
+
+def test_the_hpo_and_production_pipelines_are_two_distinct_shipped_files_equal_to_a_fresh_generation(recipe):
+    from crypto_trading.zoo_pipelines import HpoPipeline, ProductionPipeline
+
+    hpo, production = _load("workflow-hpo.json"), _load("workflow-production.json")
+    assert hpo == HpoPipeline(recipe).manifest() and production == ProductionPipeline(recipe).manifest()
+    assert hpo != production and list(hpo["steps"]) == ["search", "freeze", "evaluate"] and list(production["steps"]) == ["blocks", "train", "index"]
+    assert not set(hpo["steps"]) & set(production["steps"])
+
+
+def test_the_cli_regenerates_both_pipelines(tmp_path):
+    out = {k: tmp_path / f"{k}.json" for k in ("w1", "hpo", "production")}
+    assert main([os.path.join(CONFIGS, "zoo-lanes-recipe.json"), "--out", str(out["w1"]), "--hpo-out", str(out["hpo"]),
+                 "--production-out", str(out["production"])]) == 0
+    assert json.loads(out["hpo"].read_text(encoding="utf-8")) == _load("workflow-hpo.json")
+    assert json.loads(out["production"].read_text(encoding="utf-8")) == _load("workflow-production.json")
+
+
+def test_both_pipelines_plan_with_only_the_pick_and_the_freeze_unfilled():
+    from dskit.pipeline.workflow import run_workflow
+
+    for name, unfilled in (("workflow-hpo.json", {"search.pick", "freeze.pick"}),
+                           ("workflow-production.json", {"blocks.pick", "blocks.frozen", "index.pick"})):
+        lines = []
+        assert run_workflow(os.path.join(CONFIGS, name), plan=True, out=lines.append) == 0
+        assert {line.split()[-1] for line in lines if line.startswith("unfilled arg")} == unfilled, name
+
+
+def test_every_pipeline_command_is_a_zoo_lanes_subcommand_that_exists():
+    import importlib
+    import re
+
+    from crypto_trading.zoo_lanes import COMMANDS
+
+    used = set()
+    for name in ("workflow-hpo.json", "workflow-production.json"):
+        for entry in _load(name)["registry"].values():
+            for command in [entry["command"], *entry.get("before", []), *entry.get("after", [])]:
+                used.update(re.findall(r"crypto_trading\.zoo_lanes (\S+)", command))
+    assert used and used <= set(COMMANDS), used - set(COMMANDS)
+    for target in COMMANDS.values():
+        module, _, function = target.partition(":")
+        assert callable(getattr(importlib.import_module(module), function))
+
+
+def test_the_production_template_is_the_zoo_template_with_a_one_block_fold_schedule():
+    zoo, production = _load("zoo-template.json"), _load("production-template.json")
+    assert production["pipeline"] == zoo["pipeline"] and production["outputs"] == zoo["outputs"]
+    assert production["walkforward"]["objective"] == zoo["walkforward"]["objective"]
+    assert production["walkforward"]["select"] == zoo["walkforward"]["select"]
+
+
+def test_the_hpo_pipeline_reads_no_w2_and_the_production_one_defaults_to_it(recipe):
+    hpo, production = json.dumps(_load("workflow-hpo.json")), _load("workflow-production.json")
+    assert "2026-05-02" not in hpo and "2026-08-01" not in hpo and str(W2_START_MS) not in hpo
+    assert production["args"]["forward_start"] == "2026-05-02" and production["args"]["evaluate_through"] == "2026-08-01"
+    assert production["args"]["retrain_days"] == 60 and production["args"]["allow_past_w2"] is False

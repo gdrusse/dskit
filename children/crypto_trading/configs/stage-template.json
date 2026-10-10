@@ -1,0 +1,4 @@
+{
+  "name": "zoo-stage",
+  "notes": "Placement only. A stage of an orchestration manifest (workflow-hpo.json, workflow-production.json) is a command; its work is in the manifest's registry entry, so this document only gives the runner a config to hash and place."
+}

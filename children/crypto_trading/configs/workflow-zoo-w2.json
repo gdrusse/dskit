@@ -141,7 +141,7 @@
       }
     },
     "features": {
-      "notes": "The selected feature set, as a ColumnSelector over the panel's summary columns (never the raw seq__ channels, which the sequence models read separately). Default = all families (the selection's `all` arm); the selection output fills it: {\"names\": [...]} from selected-features-<class>.json.",
+      "notes": "The selected feature set, as a ColumnSelector over the panel's summary columns (never the raw seq__ columns, which the sequence models read separately). `context` is the default (all families, the selection's `all` arm) and is what a class uses when its `classes.<class>.from` is null. Set `from` to the feature-selection output (the directory holding selected-features-<class>.json, or the file) and regenerate: that class's models then read {\"names\": columns}. Each model's `class` (tabular = no encoder, sequence = has one) picks which. A missing, mislabelled or empty file refuses. `--features-from CLASS=PATH` overlays from the command line.",
       "context": {
         "prefixes": [
           "ret__",
@@ -155,6 +155,45 @@
           "xasset__",
           "bvol__"
         ]
+      },
+      "classes": {
+        "notes": "One source per model class; the class names are the selection run's (select-features.json `classes`), pinned by a test.",
+        "sequence": {
+          "from": null,
+          "notes": "patchtst, cnn1d, gru, transformer. Null = the default context above.",
+          "context": {
+            "prefixes": [
+              "ret__",
+              "trend__",
+              "vol__",
+              "range__",
+              "shock__",
+              "flow__",
+              "clock__",
+              "holiday__",
+              "xasset__",
+              "bvol__"
+            ]
+          }
+        },
+        "tabular": {
+          "from": null,
+          "notes": "mlp. Null = the default context above.",
+          "context": {
+            "prefixes": [
+              "ret__",
+              "trend__",
+              "vol__",
+              "range__",
+              "shock__",
+              "flow__",
+              "clock__",
+              "holiday__",
+              "xasset__",
+              "bvol__"
+            ]
+          }
+        }
       }
     },
     "arms": [

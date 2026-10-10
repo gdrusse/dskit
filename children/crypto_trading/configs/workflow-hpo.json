@@ -1,0 +1,100 @@
+{
+  "notes": "The HPO pipeline as ONE workflow manifest: search (candidate lanes over the warmup folds of W1) -> freeze (hpo-frozen.json: the selected model and its full hyperparameters) -> evaluate (default vs frozen winner over the later W1 folds). Run: `python -m dskit.pipeline workflow configs/workflow-hpo.json --args hpo-args.json` where hpo-args.json holds {\"args\": {\"pick\": \"<path to zoo-pick.json>\"}} (or any overlay of args). It reads no W2. The lane manifests it writes sit under the work dir. Regenerate with `python -m crypto_trading.zoo_lanes configs/zoo-lanes-recipe.json --out ... --hpo-out configs/workflow-hpo.json`; a test pins it. Note the workflow ledger keys a step on its config and its in-values, which name the pick by path: after re-picking, delete the work dir.",
+  "args": {
+    "notes": "`pick` is the zoo's zoo-pick.json (unfilled until --args supplies it); `recipe` is this recipe as run from the child root; `parallel` is workflow-batch's lane parallelism (two lanes at once).",
+    "work_dir": "./pipeline_runs/zoo-hpo",
+    "recipe": "configs/zoo-lanes-recipe.json",
+    "pick": "<zoo-pick.json: the zoo's pick, from `zoo_lanes pick`>",
+    "parallel": 2
+  },
+  "layout": {
+    "search": {
+      "dir": "{W}/search",
+      "lanes": "{W}/search/hpo-lanes.json",
+      "batch": "{W}/search/lanes/batch.json"
+    },
+    "freeze": {
+      "dir": "{W}",
+      "frozen": "{W}/hpo-frozen.json"
+    },
+    "evaluate": {
+      "dir": "{W}/evaluate",
+      "lanes": "{W}/evaluate/frozen-lanes.json",
+      "batch": "{W}/evaluate/lanes/batch.json",
+      "evaluation": "{W}/hpo-evaluation.json"
+    }
+  },
+  "registry": {
+    "search": {
+      "notes": "Write the candidate lanes of the picked cell, then run them over the warmup folds.",
+      "template": "stage-template.json",
+      "extends": null,
+      "command": "{python} -m dskit.pipeline workflow-batch {out.lanes} --root {dir}/lanes --parallel {in.parallel}",
+      "before": [
+        "{python} -m crypto_trading.zoo_lanes hpo-manifest --pick {in.pick} --recipe {in.recipe} --out {out.lanes}"
+      ]
+    },
+    "freeze": {
+      "notes": "Take the lowest warmup mean (the default wins ties) and write its full params.",
+      "template": "stage-template.json",
+      "extends": null,
+      "command": "{python} -m crypto_trading.zoo_lanes hpo-pick --batch {in.search_batch} --pick {in.pick} --recipe {in.recipe} --out {out.frozen}"
+    },
+    "evaluate": {
+      "notes": "Default vs the frozen winner over the folds after the warmup, then the paired comparison.",
+      "template": "stage-template.json",
+      "extends": null,
+      "command": "{python} -m dskit.pipeline workflow-batch {out.lanes} --root {dir}/lanes --parallel {in.parallel}",
+      "before": [
+        "{python} -m crypto_trading.zoo_lanes frozen-manifest --frozen {in.frozen} --recipe {in.recipe} --out {out.lanes}"
+      ],
+      "after": [
+        "{python} -m crypto_trading.zoo_lanes hpo-evaluate --batch {out.batch} --frozen {in.frozen} --recipe {in.recipe} --out {out.evaluation}"
+      ]
+    }
+  },
+  "steps": {
+    "search": {
+      "notes": "Needs the zoo pick (`--args` fills `pick`).",
+      "registry": "search",
+      "out": [
+        "lanes",
+        "batch"
+      ],
+      "in": {
+        "W": "$args.work_dir",
+        "pick": "$args.pick",
+        "recipe": "$args.recipe",
+        "parallel": "$args.parallel"
+      }
+    },
+    "freeze": {
+      "notes": "Refuses unless every search lane is ok.",
+      "registry": "freeze",
+      "out": [
+        "frozen"
+      ],
+      "in": {
+        "W": "$args.work_dir",
+        "pick": "$args.pick",
+        "recipe": "$args.recipe",
+        "search_batch": "$search.out.batch"
+      }
+    },
+    "evaluate": {
+      "notes": "No search node: both cells are fixed, the folds are the schedule's remaining ones.",
+      "registry": "evaluate",
+      "out": [
+        "lanes",
+        "batch",
+        "evaluation"
+      ],
+      "in": {
+        "W": "$args.work_dir",
+        "recipe": "$args.recipe",
+        "parallel": "$args.parallel",
+        "frozen": "$freeze.out.frozen"
+      }
+    }
+  }
+}
