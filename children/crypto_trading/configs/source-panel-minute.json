@@ -1,0 +1,9 @@
+{
+  "notes": "Registration input, not a run input: publishes the minute panel back through onboarding so the zoo reads it by source, stream and relpath ({panel-minute, files, minute-w1w2}), never by path. A BLOB source (localblobs, ADR-0225): the panel is a directory of hashed .npy files plus manifest.json, which dskit's ArrayPanel.from_source resolves through payload_files. `path` is the ONE place this directory is named: run-panel-build.json's `panel` node carries a path relative to the directory it is run from (which must be this path's parent; a test pins the directory names equal; `~` expands). `include` takes only the one panel directory, so a rebuild under another name is a new relpath in a new snapshot and the old one stays readable. `as_of` declares the inventory current at that instant (never read from file times). Register once, then acquire after each build: see run-panel-build.json notes.",
+  "path": "~/data/crypto_trading/panels",
+  "as_of": "2026-10-09T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "minute-w1w2/*"
+  ]
+}

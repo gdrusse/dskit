@@ -43,8 +43,6 @@ Display only: `actions.csv` remains the complete, append-only journal.
 
 | ID | Category | Step | Execution Date | Relevant Inputs | Relevant Outputs | Database Location | Notes |
 |---|---|---|---|---|---|---|---|
-| A0069 | acquire | validate | 2026-10-09T04:28:25+00:00 | --root /home/russell/data/crypto_trading/ob --source  --stream  --mode | dd3390a8c4f4d4e3fff9bee8574631c5a63dfc460c33450e7b4552bb32884196 | /home/russell/data/crypto_trading/ob | gating=warn suite=configs/suite-kalshi-crypto-markets.json |
-| A0070 | acquire | backfill kalshi-crypto-candles-btc/candles | 2026-10-09T04:28:32+00:00 | --root /home/russell/data/crypto_trading/ob --source kalshi-crypto-candles-btc --stream candles --mode backfill | 0d15c701e7bdc802c4409428455b71bb5a11ebe6508616add071e32550429601 | /home/russell/data/crypto_trading/ob |  |
 | A0071 | acquire | validate | 2026-10-09T04:28:33+00:00 | --root /home/russell/data/crypto_trading/ob --source  --stream  --mode | d350273a9820b6607b6081efdac784eb0defbc50af1c1471ce3178e9274ea783 | /home/russell/data/crypto_trading/ob | gating=pass suite=configs/suite-kalshi-crypto-candles.json |
 | A0072 | acquire | backfill kalshi-crypto-candles-eth/candles | 2026-10-09T04:28:40+00:00 | --root /home/russell/data/crypto_trading/ob --source kalshi-crypto-candles-eth --stream candles --mode backfill | 902943ce13b830f07ba5671d454a24fb3f6cead4eb85a28098e114c38bcf7abc | /home/russell/data/crypto_trading/ob |  |
 | A0073 | acquire | validate | 2026-10-09T04:28:40+00:00 | --root /home/russell/data/crypto_trading/ob --source  --stream  --mode | b62110eeb25c2ee295a4d699b53912f3b59334ea18f2818ddcdce1b61db8b36a | /home/russell/data/crypto_trading/ob | gating=pass suite=configs/suite-kalshi-crypto-candles.json |
@@ -53,6 +51,8 @@ Display only: `actions.csv` remains the complete, append-only journal.
 | A0076 | research | memo/2026-10-09-stage-a-refresh-and-15m-rerun | 2026-10-09T04:33:35+00:00 | Stage A refresh through 2026-10-08/09 and 15M rerun (items 1) | docs/memos/2026-10-09-stage-a-refresh-and-15m-rerun.md |  | development-only; held-out not enabled; new stream decision_features-crypto-features-15m-2026-10-09-d7e56be5 |
 | A0077 | research | plan/2026-10-09-data-windows | 2026-10-09T16:40:29+00:00 | Owner-approved data windows W1-W5 | docs/plans/2026-10-09-data-windows.md |  | plan only; nothing run |
 | A0078 | research | plan/2026-10-09-zoo-grid | 2026-10-09T17:09:37+00:00 | Owner-approved predictor zoo grid and target | docs/plans/2026-10-09-data-windows.md |  | plan only; nothing run |
+| A0079 | acquire | register-source panel-minute | 2026-10-10T03:00:08+00:00 | --root /home/russell/data/crypto_trading/ob --source  --stream  --mode | 15126db80b6543cb5d1193a00e604501349d4acad6346bc30180c6dbd2868c42 | /home/russell/data/crypto_trading/ob | connector=localblobs |
+| A0080 | acquire | backfill panel-minute/files | 2026-10-10T03:00:10+00:00 | --root /home/russell/data/crypto_trading/ob --source panel-minute --stream files --mode backfill | 57fc9d448bbe2752bfc89314b13434725ed0e5865106731279e62228982fa459 | /home/russell/data/crypto_trading/ob |  |
 
 ## Path to Production
 

@@ -480,15 +480,17 @@ def test_defaults_come_from_one_table():
 
 
 @pytest.mark.parametrize("klines", [None, "rows", {"AAA": []}])
-def test_klines_must_be_a_list(klines):
+def test_klines_must_be_a_list_of_rows_or_a_mapping_of_per_asset_arrays(klines):
     node = MinuteFeatures("m", SMALL)
     assert node.validate_inputs({"klines": klines})
 
 
-def test_bvol_if_wired_must_be_a_list():
+def test_bvol_if_wired_must_be_a_list_or_a_mapping_of_per_asset_arrays():
     node = MinuteFeatures("m", SMALL)
-    assert node.validate_inputs({"klines": [], "bvol": {}})
+    assert node.validate_inputs({"klines": [], "bvol": "rows"})
+    assert node.validate_inputs({"klines": [], "bvol": {"AAA": []}})
     assert node.validate_inputs({"klines": []}) == []
+    assert node.validate_inputs({"klines": {"AAA": {}}, "bvol": {"AAA": {}}}) == []
 
 
 def test_bad_rows_raise_with_the_defect_named():

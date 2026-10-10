@@ -211,8 +211,9 @@ class _Frame:
     ----------
     asset : str
         The asset's name.
-    rows : list of dict
-        Its validated kline rows (any order).
+    rows : list of dict or dict
+        Its validated kline rows (any order), or the same bars as a ``{field: array}`` mapping (the columnar form
+        :meth:`MinuteFeatures._kline_arrays` validates: no per-row dict is ever built).
     params : dict
         The node's resolved params.
 
@@ -228,13 +229,12 @@ class _Frame:
         import numpy as np
 
         self.asset, self.params, self._memo = asset, params, {}
-        ordered = sorted(rows, key=lambda r: r["open_time_ms"])
-        self.open_time = np.array([r["open_time_ms"] for r in ordered], dtype=np.int64)
-        self.close_time = np.array([r["close_time_ms"] for r in ordered], dtype=np.int64)
+        columns = self._columns(rows)
+        self.open_time = columns["open_time_ms"].astype(np.int64)
+        self.close_time = columns["close_time_ms"].astype(np.int64)
         self.info_ms = self.close_time + CLOSE_OFFSET_MS
-        self.price = {k: np.array([r[k] for r in ordered], dtype=np.float64) for k in ("open", "high", "low", "close")}
-        self.flow = {k: np.array([r[k] for r in ordered], dtype=np.float64)
-                     for k in ("volume", "trades", "taker_buy_volume")}
+        self.price = {k: columns[k].astype(np.float64) for k in ("open", "high", "low", "close")}
+        self.flow = {k: columns[k].astype(np.float64) for k in ("volume", "trades", "taker_buy_volume")}
         self.bars = Bars(self.open_time, BAR_MS, high=self.price["high"], low=self.price["low"],
                          close=self.price["close"])
         self.size = self.open_time.size
@@ -242,6 +242,17 @@ class _Frame:
         self._returns = self._scale = None
         #: Set by the node once both assets exist: the other asset's frame, and this asset's BVOL arrays.
         self.partner, self.bvol_times, self.bvol_values = None, None, None
+
+    @staticmethod
+    def _columns(rows):
+        """Return the bars as ``{field: array}`` sorted by ``open_time_ms``, from rows or from a mapping."""
+        import numpy as np
+
+        if isinstance(rows, dict):
+            order = np.argsort(rows["open_time_ms"], kind="stable")
+            return {k: np.asarray(rows[k])[order] for k in _KLINE_FIELDS}
+        ordered = sorted(rows, key=lambda r: r["open_time_ms"])
+        return {k: np.array([r[k] for r in ordered]) for k in _KLINE_FIELDS}
 
     def _run_lengths(self):
         """Count, per bar, the consecutive contiguous bars ending there (0 at a bar after a gap)."""
@@ -1069,7 +1080,7 @@ class MinuteFeatures(ListPortsNode):
 
     role = "transform"
     outputs = ("records", "provenance", "columns")
-    LIST_PORTS = ("klines",)
+    LIST_PORTS = ()  # klines / bvol are lists of rows OR per-asset field arrays: validate_inputs says which
     FAMILIES = FAMILIES
     DEFAULTS = {
         "families": FAMILIES, "scales": DEFAULT_SCALES, "history_minutes": DEFAULT_HISTORY_MINUTES,
@@ -1209,7 +1220,7 @@ class MinuteFeatures(ListPortsNode):
         return problems
 
     def validate_inputs(self, inputs):
-        """Refuse a ``klines`` or a wired ``bvol`` port that is not a list.
+        """Refuse a ``klines`` or a wired ``bvol`` port that is neither a list of rows nor a mapping of arrays.
 
         Parameters
         ----------
@@ -1222,8 +1233,14 @@ class MinuteFeatures(ListPortsNode):
             One problem per bad port.
         """
         problems = super().validate_inputs(inputs)
-        if inputs.get("bvol") is not None and not isinstance(inputs["bvol"], list):
-            problems.append(f"bvol must be a list of rows, got {type(inputs['bvol']).__name__}")
+        for port, required in (("klines", True), ("bvol", False)):
+            value = inputs.get(port)
+            if value is None and not required:
+                continue
+            columnar = isinstance(value, dict) and all(isinstance(block, dict) for block in value.values())
+            if not (isinstance(value, list) or columnar):
+                problems.append(f"{port} must be a list of rows or a per-asset mapping of field arrays, "
+                                f"got {type(value).__name__}")
         return problems
 
     # -- reading the rows ---------------------------------------------------
@@ -1234,8 +1251,38 @@ class MinuteFeatures(ListPortsNode):
             if field not in row or not number_ok(row[field]):
                 raise ValueError(f"{self.key}: {label} row has no numeric {field!r}: {row!r}")
 
+    def _kline_arrays(self, mapping, resolved):
+        """Validate the columnar klines (``{asset: {field: array}}``) with the row form's refusals; return them."""
+        import numpy as np
+
+        assets = resolved["assets"]
+        if set(mapping) != set(assets):
+            raise ValueError(f"{self.key}: kline arrays for assets {sorted(mapping)}, expected {assets}")
+        for asset in assets:
+            block = mapping[asset]
+            missing = [f for f in _KLINE_FIELDS if f not in block]
+            if missing:
+                raise ValueError(f"{self.key}: kline arrays of asset {asset!r} lack {missing}")
+            sizes = {np.asarray(block[f]).size for f in _KLINE_FIELDS}
+            if len(sizes) != 1 or not sizes.pop():
+                raise ValueError(f"{self.key}: no kline rows for asset {asset!r}, or unequal field lengths")
+            for field in _KLINE_FIELDS:
+                values = np.asarray(block[field])
+                if values.dtype.kind not in "iuf" or not np.isfinite(values.astype(np.float64)).all():
+                    raise ValueError(f"{self.key}: kline arrays of asset {asset!r} have a non-numeric or non-finite "
+                                     f"{field!r}")
+            bad = np.asarray(block["close_time_ms"]) + CLOSE_OFFSET_MS != np.asarray(block["open_time_ms"]) + BAR_MS
+            if bad.any():
+                raise ValueError(f"{self.key}: kline close_time_ms must be open_time_ms + {BAR_MS - CLOSE_OFFSET_MS}, "
+                                 f"first failure at open_time_ms {np.asarray(block['open_time_ms'])[bad][0]}")
+            if np.unique(block["open_time_ms"]).size != np.asarray(block["open_time_ms"]).size:
+                raise ValueError(f"{self.key}: duplicate open_time_ms for asset {asset!r}")
+        return {asset: mapping[asset] for asset in assets}
+
     def _kline_rows(self, rows, resolved):
         """Group the kline rows by asset, validated and duplicate-free."""
+        if isinstance(rows, dict):
+            return self._kline_arrays(rows, resolved)
         assets = resolved["assets"]
         grouped = {asset: [] for asset in assets}
         for row in rows:
@@ -1255,9 +1302,32 @@ class MinuteFeatures(ListPortsNode):
                 raise ValueError(f"{self.key}: duplicate open_time_ms for asset {asset!r}")
         return grouped
 
+    def _bvol_arrays(self, mapping, resolved):
+        """Return ``{asset: (times, values)}`` sorted by time then value, a non-finite reading dropped."""
+        import numpy as np
+
+        if set(mapping) - set(resolved["assets"]):
+            raise ValueError(f"{self.key}: bvol arrays of assets {sorted(set(mapping) - set(resolved['assets']))}, "
+                             f"expected {resolved['assets']}")
+        out = {}
+        for asset in resolved["assets"]:
+            block = mapping.get(asset)
+            times = np.asarray(block["calc_time_ms"]) if block else np.empty(0, dtype=np.int64)
+            values = np.asarray(block["index_value"], dtype=np.float64) if block else np.empty(0)
+            if times.dtype.kind not in "iuf" or not np.isfinite(times.astype(np.float64)).all():
+                raise ValueError(f"{self.key}: bvol arrays of asset {asset!r} have a non-numeric calc_time_ms")
+            keep = np.isfinite(values)  # a NaN reading is a missing one
+            times, values = times[keep], values[keep]
+            order = np.lexsort((values, times))
+            out[asset] = (times[order].astype(np.int64), values[order])
+        return out
+
     def _bvol_rows(self, rows, resolved):
         """Group the BVOL rows by asset as sorted arrays."""
         import numpy as np
+
+        if isinstance(rows, dict):
+            return self._bvol_arrays(rows, resolved)
 
         grouped = {asset: [] for asset in resolved["assets"]}
         for row in rows or []:
@@ -1412,11 +1482,14 @@ class MinuteFeatures(ListPortsNode):
 
     @staticmethod
     def _joined(pieces):
-        """Concatenate the per-asset column dicts name by name, in the order given (asset, then time)."""
+        """Concatenate the per-asset column dicts name by name, in the order given (asset, then time).
+
+        Each piece gives up a column as it is joined, so the peak is one extra column, not a second copy of the table.
+        """
         import numpy as np
 
         names = list(pieces[0])
-        return {name: np.concatenate([piece[name] for piece in pieces]) for name in names}
+        return {name: np.concatenate([piece.pop(name) for piece in pieces]) for name in names}
 
     def _asset_provenance(self, frame, resolved, reasons, labels, count):
         """Count bars, rows, named refusals and missing labels / BVOL readings for one asset."""
@@ -1469,6 +1542,7 @@ class MinuteFeatures(ListPortsNode):
                 records += self._asset_rows(frame, arrays, kept)
             if "columns" in resolved["emit"]:
                 pieces.append(self._asset_columns(frame, arrays, kept, order[asset]))
+            del arrays, labels  # the full-length arrays are not needed once the kept bars are cut out of them
         records.sort(key=lambda r: (r["t_ms"], order[r["asset"]]))
         return {"records": records if "records" in resolved["emit"] else None,
                 "columns": self._joined(pieces) if pieces else None,
