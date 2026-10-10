@@ -49,7 +49,7 @@ Orientation for an agent working inside this package. Read
   writes `docs/research/<topic>/<date>-<name>.md` and the row. No
   markdown in the research root. Skills: `record-research` and
   `deep-research` under `.cursor/skills/` and `.claude/skills/`
-  (Claude `/research`).
+  (the `/research` command).
 - **The process text is `render.PROCESS`.** The generated child README
   and `journal/README.md` restate it; `test_store.py` pins the copies.
 
@@ -59,5 +59,5 @@ Orientation for an agent working inside this package. Read
 dskit/journal/
 ├── __init__.py __main__.py base.py model.py locate.py
 ├── store.py render.py record.py hooks.py research.py
-├── README.md CLAUDE.md
+├── README.md CLAUDE.md AGENTS.md
 ```

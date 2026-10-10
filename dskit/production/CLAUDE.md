@@ -145,7 +145,12 @@ class behind a replay feed and a paper feed is what makes the two bodies
 identical by construction rather than by review.
 `bundles.ReplayTape` is the seam a replay hands the composition root: DATA
 (instants, feed results, id allocations) and never an object, so which objects
-a replay runs stays `compose.py`'s decision.
+a replay runs stays `compose.py`'s decision. `bundles.CapturedReplayTape`
+(ADR-0127) is the default-deny `dskit.captured-replay-tape/v1` inner-manifest
+codec the plan assigns to `bundles.py`: a value that recomputes
+`ordered_envelopes_sha256` and `tape_digest` from canonical bytes, refuses
+placeholder/self digests, and has no public constructor (`parse`/the private
+factory only).
 
 ## Testing
 
