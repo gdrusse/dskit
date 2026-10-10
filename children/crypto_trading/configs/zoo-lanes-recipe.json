@@ -1,0 +1,136 @@
+{
+  "notes": "Recipe of the W1 predictor zoo (plan docs/plans/2026-10-09-data-windows.md, 'Zoo grid'): 5 models x 4 losses x 2 regimes, plus two baselines in the same regimes, every lane scored on the same W1 walk-forward by PanelScore. Regime 'pooled' is one trunk and head over BTC and ETH with an asset indicator; 'per asset' is one lane per asset (so a pooled cell is one lane and its unpooled twin is two). `python -m crypto_trading.zoo_lanes configs/zoo-lanes-recipe.json --out configs/workflow-zoo-w1.json --w2-out configs/workflow-zoo-w2.json` writes the manifests; a test pins the shipped files to a fresh generation. Panel, window, folds, training, grid and zoo settings are inherited from `base` (the selection manifest), so the zoo and the selection cannot disagree on rows, folds or loss. Hyperparameters: children/index_options/configs/advanced-cdf-zoo.json (pooled PatchTST 64 wide, 3-component mixture, lr 3e-4, weight decay 0.01, patience 20) and run-pooled-zoo-417.json (GRU/LSTM, lr grid 3e-4..3e-3); the 1D-CNN is dskit's tcn arch with kernel 3 and dilations 1..16 (receptive field 63 >= the 60-bar window, refused at build otherwise). Run: `python -m dskit.pipeline workflow-batch configs/workflow-zoo-w1.json --root pipeline_runs/zoo-w1 --parallel 1` on ONE GPU lane at a time; `--only-lanes <lane>` for one cell. The zoo is not run until the owner approves epochs/stride/folds from the GPU probe.",
+  "args_notes": "Inherited from the selection manifest (workflow-select-sequence.json) except `features`, `arms` (the lane names) and `cell` (each lane's full fit/score params, generated). `features.context` is the selected feature set: replace it with {\"names\": <selected-features-<class>.json columns>} (or overlay with --args) and regenerate; the default is every family, i.e. the selection's `all` arm.",
+  "base": "workflow-select-sequence.json",
+  "template": "zoo-template.json",
+  "work_dir": "./pipeline_runs/zoo-w1",
+  "adapter": "crypto_trading",
+  "features": {
+    "notes": "The selected feature set, as a ColumnSelector over the panel's summary columns (never the raw seq__ channels, which the sequence models read separately). Default = all families (the selection's `all` arm); the selection output fills it: {\"names\": [...]} from selected-features-<class>.json.",
+    "context": {
+      "prefixes": [
+        "ret__",
+        "trend__",
+        "vol__",
+        "range__",
+        "shock__",
+        "flow__",
+        "clock__",
+        "holiday__",
+        "xasset__",
+        "bvol__"
+      ]
+    }
+  },
+  "models": {
+    "patchtst": {
+      "encoder": "@zoo.encoder",
+      "notes": "The options child's HF PatchTST (pooled, 64 wide); identical to the selection's encoder, pinned by a test."
+    },
+    "cnn1d": {
+      "encoder": {
+        "arch": "tcn",
+        "width": 64,
+        "arch_params": {
+          "hidden_size": 64,
+          "kernel_size": 3,
+          "dilations": [
+            1,
+            2,
+            4,
+            8,
+            16
+          ]
+        }
+      },
+      "notes": "A causal 1D CNN: dskit's tcn arch; 1 + 2*(1+2+4+8+16) = 63 >= the 60-bar window."
+    },
+    "gru": {
+      "encoder": {
+        "arch": "gru",
+        "width": 64,
+        "arch_params": {
+          "hidden_size": 64,
+          "num_layers": 1
+        }
+      },
+      "notes": "A one-layer GRU; the options child's pooled GRU used 16 hidden, widened to the PatchTST's 64."
+    },
+    "mlp": {
+      "notes": "Context-only: the trunk is the whole model (no sequence, no encoder); with the mixture head it is the options child's mixture MLP."
+    },
+    "transformer": {
+      "encoder": {
+        "arch": "transformer",
+        "width": 64,
+        "arch_params": {
+          "hidden_size": 64,
+          "nhead": 1
+        }
+      },
+      "notes": "The vanilla transformer encoder (dskit torch_ts arch; the options child's NeuralForecast VanillaTransformer is not installed here and takes one channel), 64 wide, 1 head as in advanced-cdf-zoo.json."
+    }
+  },
+  "losses": {
+    "pinball": {
+      "head": "quantile",
+      "notes": "Quantile head on the pinball loss at the grid's levels."
+    },
+    "crps": {
+      "head": "mixture",
+      "terms": [
+        {
+          "kind": "crps",
+          "weight": 1.0
+        }
+      ],
+      "notes": "Mixture head on CRPS alone."
+    },
+    "nll": {
+      "head": "mixture",
+      "terms": [
+        {
+          "kind": "nll",
+          "weight": 1.0
+        }
+      ],
+      "notes": "Mixture head on the likelihood."
+    },
+    "crps_tail": {
+      "head": "mixture",
+      "terms": "@training.losses",
+      "notes": "CRPS plus tail CRPS: the selection's loss, weights read from training.losses."
+    }
+  },
+  "baselines": {
+    "empirical": {
+      "class": "EmpiricalBaseline",
+      "params": {},
+      "notes": "The vol-standardised empirical distribution of the fit band."
+    },
+    "ewma_student": {
+      "class": "EwmaStudentBaseline",
+      "params": {
+        "vol_column": "vol__ewma_60",
+        "degrees": [
+          3,
+          5,
+          8
+        ]
+      },
+      "notes": "A Student-t whose scale is a fitted multiple of the 60-minute-half-life EWMA volatility column; degrees chosen on the fit band."
+    }
+  },
+  "w2": {
+    "notes": "The single W2 read. Bounds are fixed instants (plan: W2 is 2026-05-02 to 2026-08-01, the 1-day embargo day 2026-05-01 dropped; train_end is the last millisecond of W1); a test pins them to the plan. Finalists are frozen W1 lanes; with none chosen the manifest holds one unfilled lane that `workflow --plan` reports.",
+    "template": "w2-read-template.json",
+    "work_dir": "./pipeline_runs/zoo-w2",
+    "finalists": [],
+    "bounds": {
+      "asof": "2026-08-01",
+      "train_end_ms": 1777593599999,
+      "val_start_ms": 1777680000000,
+      "val_end_ms": 1785542399999
+    }
+  }
+}

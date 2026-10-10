@@ -1,0 +1,33 @@
+{
+  "name": "zoo-${A}",
+  "notes": "One zoo cell (or baseline) on the minute panel, walk-forward over W1. See zoo-lanes-recipe.json.",
+  "pipeline": {
+    "fit": {
+      "uses": "${cell.uses}",
+      "params": "${cell.fit}",
+      "notes": "A PanelTrain cell or a baseline: the generator (crypto_trading.zoo_lanes) writes the lane's whole params into args.cell, so this template only places them. Heavy nodes run on the GPU one lane at a time."
+    },
+    "score": {
+      "uses": "dskit.pipeline.libs.panel_score:PanelScore",
+      "inputs": {
+        "model": "$fit.model"
+      },
+      "params": "${cell.score}",
+      "notes": "The common-grid score of the lane's forecaster on the validation band: weighted CRPS (crps + tail_weight * tail_crps), per-horizon CRPS, pinball and PIT in the artifact. Every lane's rows_sha256 must agree."
+    }
+  },
+  "walkforward": {
+    "objective": "$score.metrics.weighted_crps",
+    "select": "min",
+    "first": "${folds.first}",
+    "step_days": "${folds.step_days}",
+    "count": "${folds.count}",
+    "val_days": "${folds.val_days}",
+    "embargo_days": "${folds.embargo_days}",
+    "notes": "The same expanding W1 schedule as the selection (it comes from the manifest, inherited from the selection manifest): every lane is scored on identical folds and rows."
+  },
+  "outputs": {
+    "run_root": "${L.fit.runs}",
+    "notes": "Placement only: this lane's run root."
+  }
+}

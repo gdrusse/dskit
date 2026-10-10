@@ -1,0 +1,23 @@
+{
+  "name": "zoo-w2-${A}",
+  "notes": "The single W2 read of one frozen finalist: fit on W1 (everything up to train_end, the embargo day dropped) and score once on W2, whose fixed bounds are in the cell. W2 is read once; a re-read or a change after seeing it is a new decision (plan).",
+  "pipeline": {
+    "fit": {
+      "uses": "${cell.uses}",
+      "params": "${cell.fit}",
+      "notes": "A PanelTrain cell or a baseline: the generator (crypto_trading.zoo_lanes) writes the lane's whole params into args.cell, so this template only places them. Heavy nodes run on the GPU one lane at a time."
+    },
+    "score": {
+      "uses": "dskit.pipeline.libs.panel_score:PanelScore",
+      "inputs": {
+        "model": "$fit.model"
+      },
+      "params": "${cell.score}",
+      "notes": "The common-grid score of the lane's forecaster on the validation band: weighted CRPS (crps + tail_weight * tail_crps), per-horizon CRPS, pinball and PIT in the artifact. Every lane's rows_sha256 must agree."
+    }
+  },
+  "outputs": {
+    "run_root": "${L.fit.runs}",
+    "notes": "Placement only."
+  }
+}

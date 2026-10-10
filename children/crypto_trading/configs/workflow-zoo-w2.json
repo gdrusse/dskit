@@ -1,0 +1,212 @@
+{
+  "notes": "Recipe of the W1 predictor zoo (plan docs/plans/2026-10-09-data-windows.md, 'Zoo grid'): 5 models x 4 losses x 2 regimes, plus two baselines in the same regimes, every lane scored on the same W1 walk-forward by PanelScore. Regime 'pooled' is one trunk and head over BTC and ETH with an asset indicator; 'per asset' is one lane per asset (so a pooled cell is one lane and its unpooled twin is two). `python -m crypto_trading.zoo_lanes configs/zoo-lanes-recipe.json --out configs/workflow-zoo-w1.json --w2-out configs/workflow-zoo-w2.json` writes the manifests; a test pins the shipped files to a fresh generation. Panel, window, folds, training, grid and zoo settings are inherited from `base` (the selection manifest), so the zoo and the selection cannot disagree on rows, folds or loss. Hyperparameters: children/index_options/configs/advanced-cdf-zoo.json (pooled PatchTST 64 wide, 3-component mixture, lr 3e-4, weight decay 0.01, patience 20) and run-pooled-zoo-417.json (GRU/LSTM, lr grid 3e-4..3e-3); the 1D-CNN is dskit's tcn arch with kernel 3 and dilations 1..16 (receptive field 63 >= the 60-bar window, refused at build otherwise). Run: `python -m dskit.pipeline workflow-batch configs/workflow-zoo-w1.json --root pipeline_runs/zoo-w1 --parallel 1` on ONE GPU lane at a time; `--only-lanes <lane>` for one cell. The zoo is not run until the owner approves epochs/stride/folds from the GPU probe.",
+  "args": {
+    "notes": "Inherited from the selection manifest (workflow-select-sequence.json) except `features`, `arms` (the lane names) and `cell` (each lane's full fit/score params, generated). `features.context` is the selected feature set: replace it with {\"names\": <selected-features-<class>.json columns>} (or overlay with --args) and regenerate; the default is every family, i.e. the selection's `all` arm.",
+    "work_dir": "./pipeline_runs/zoo-w2",
+    "adapter": "crypto_trading",
+    "panel": {
+      "notes": "Where the zoo's minute panel is read: the onboarded store (the one absolute path a run config may carry) and the localblobs source panel-minute registered from configs/source-panel-minute.json; relpath is the panel directory inside that stream (W1 + embargo + W2 bars, built by run-panel-build.json). Names, never file paths.",
+      "root": "/home/russell/data/crypto_trading/ob",
+      "source": "panel-minute",
+      "stream": "files",
+      "relpath": "minute-w1w2"
+    },
+    "window": {
+      "notes": "W1, the selection window (owner-approved 2026-10-09, UTC, end EXCLUSIVE): 2023-06-20 up to but excluding 2026-05-01. The end is the plan's W1/W2 boundary: nothing at or after it is read, fitted or scored here. start_ms and end_ms are the same instants in epoch ms for the row filter; a test pins the pairs. `assets` names the two assets of the feature node, BTC first. `groups` are the panel's integer asset codes (MinuteFeatures codes an asset by its position in `assets`: BTC 0, ETH 1; a test pins it).",
+      "assets": [
+        "BTC",
+        "ETH"
+      ],
+      "start": "2023-06-20",
+      "end": "2026-05-01",
+      "start_ms": 1687219200000,
+      "end_ms": 1777593600000,
+      "groups": [
+        0,
+        1
+      ]
+    },
+    "training": {
+      "notes": "Fixed across every arm and both classes. Hyperparameters are the options child's pooled settings (children/index_options/configs/advanced-cdf-zoo.json `training`: 3 components, lr 0.0003, weight decay 0.01, patience 20, 500-epoch ceiling, batch 512, seed 11, CRPS + tail CRPS weight 1 each); the Gaussian family and min_scale 0.1 are provisional. One seed per run (loader.seed): more seeds = rerun with --args overlaying `training.seed`. The fold score is crps + tail_weight * tail_crps on the common grid. Epochs/batch are provisional until the GPU probe sizes them.",
+      "losses": [
+        {
+          "kind": "crps",
+          "weight": 1.0
+        },
+        {
+          "kind": "tail_crps",
+          "weight": 1.0
+        }
+      ],
+      "seed": 11,
+      "components": 3,
+      "family": {
+        "kind": "gaussian"
+      },
+      "min_scale": 0.1,
+      "epochs": 500,
+      "patience": 20,
+      "monitor": "val_loss",
+      "lr": 0.0003,
+      "optimizer": "torch.optim.AdamW",
+      "weight_decay": 0.01,
+      "batch_size": 512,
+      "device": "cuda",
+      "missing": "mean"
+    },
+    "grid": {
+      "notes": "What the score node evaluates: every horizon the feature node labels (1 to 15), on one common grid (z in label units, i.e. vol-standardised log return; the wings are provisional: a wing is fixed in z, so at h=15 where the spread is about sqrt(15) times h=1 it covers more of the bulk -- an open decision). tail_weight must equal the tail_crps weight in training.losses (a test pins it); the wings in training and scoring are the SAME list (the head reads grid.common.tail_intervals).",
+      "horizons": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "common": {
+        "z_min": -12.0,
+        "z_max": 12.0,
+        "z_points": 241,
+        "levels": [
+          0.05,
+          0.1,
+          0.25,
+          0.5,
+          0.75,
+          0.9,
+          0.95
+        ],
+        "tail_intervals": [
+          [
+            -12.0,
+            -2.0
+          ],
+          [
+            2.0,
+            12.0
+          ]
+        ]
+      },
+      "tail_weight": 1.0
+    },
+    "zoo": {
+      "notes": "The panel models' shared settings, fixed across arms. window/stride: the raw sequence is `window` bars spaced `stride` minutes (60 x 1 = the last hour); min_run = (window-1)*stride+1 is the panel-level gap rule (a test pins it) and is the same for the tabular class so both see identical rows. cal_days: the last days of each fold's train period feed the early-stopping loss. The trunk and PatchTST encoder are the options child's PatchTST/TorchCDF settings (advanced-cdf-zoo.json pooled candidate: d_model 64, 1 layer, patch 4/3, ffn 128, dropout 0.1; run-pooled-zoo-417.json trunk). Window length, cal_days and these widths are provisional until the GPU probe.",
+      "window": 60,
+      "stride": 1,
+      "min_run": 60,
+      "cal_days": 30,
+      "sequence_columns": {
+        "prefixes": [
+          "seq__"
+        ]
+      },
+      "encoder": {
+        "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+        "params": {
+          "model": "PatchTST",
+          "config": {
+            "d_model": 64,
+            "num_hidden_layers": 1,
+            "patch_length": 4,
+            "patch_stride": 3,
+            "scaling": null,
+            "num_attention_heads": 1,
+            "ffn_dim": 128,
+            "norm_type": "layernorm",
+            "attention_dropout": 0.1,
+            "ff_dropout": 0.1
+          }
+        }
+      },
+      "trunk": {
+        "hidden": [
+          32,
+          16
+        ],
+        "activation": "relu",
+        "dropout": 0.1
+      }
+    },
+    "features": {
+      "notes": "The selected feature set, as a ColumnSelector over the panel's summary columns (never the raw seq__ channels, which the sequence models read separately). Default = all families (the selection's `all` arm); the selection output fills it: {\"names\": [...]} from selected-features-<class>.json.",
+      "context": {
+        "prefixes": [
+          "ret__",
+          "trend__",
+          "vol__",
+          "range__",
+          "shock__",
+          "flow__",
+          "clock__",
+          "holiday__",
+          "xasset__",
+          "bvol__"
+        ]
+      }
+    },
+    "arms": [
+      "finalist"
+    ],
+    "cell": {
+      "notes": "Frozen finalists' params with W2's fixed bounds.",
+      "finalist": {
+        "uses": "<frozen finalist: a lane's cell from workflow-zoo-w1.json, regenerated with W2's bounds by zoo_lanes>",
+        "fit": "<frozen finalist: a lane's cell from workflow-zoo-w1.json, regenerated with W2's bounds by zoo_lanes>",
+        "score": "<frozen finalist: a lane's cell from workflow-zoo-w1.json, regenerated with W2's bounds by zoo_lanes>"
+      }
+    },
+    "w2": {
+      "asof": "2026-08-01",
+      "train_end_ms": 1777593599999,
+      "val_start_ms": 1777680000000,
+      "val_end_ms": 1785542399999
+    }
+  },
+  "lanes": {
+    "notes": "One chain per cell: `$lane` binds the cell name and `cell` (keyed by lane) is narrowed to the lane's own entry.",
+    "key": "arms",
+    "keyed": [
+      "cell"
+    ]
+  },
+  "layout": {
+    "fit": {
+      "dir": "{W}/fit",
+      "runs": "{W}/runs/{A}"
+    }
+  },
+  "registry": {
+    "fit": {
+      "notes": "One walk-forward per cell; its summary lands under the layout's `runs` directory.",
+      "template": "w2-read-template.json",
+      "extends": null,
+      "command": "{python} -m dskit.pipeline run {config} --asof {in.asof} --adapter {in.adapter}"
+    }
+  },
+  "steps": {
+    "fit": {
+      "notes": "The as-of date is W1's end, so run names say what the data stops at.",
+      "registry": "fit",
+      "in": {
+        "A": "$lane",
+        "W": "$args.work_dir",
+        "asof": "$args.w2.asof",
+        "adapter": "$args.adapter",
+        "cell": "$args.cell.$lane"
+      },
+      "out": [
+        "runs"
+      ]
+    }
+  }
+}
