@@ -161,6 +161,7 @@ dskit/pipeline/
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0256),
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          user-facing docs
+├── EXTENDING.md       extension points + gotchas (moved out of this file 2026-10-10)
 └── AGENTS.md          this file
 ```
 

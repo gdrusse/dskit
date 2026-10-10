@@ -304,7 +304,7 @@ def test_register_is_explicit():
 
 
 # ---------------------------------------------------------------------------
-# Conformance (pipeline CLAUDE.md — probes are not optional)
+# Conformance (pipeline EXTENDING.md — probes are not optional)
 # ---------------------------------------------------------------------------
 
 PROBE_ROW = ts_rows()[0]

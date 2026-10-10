@@ -982,6 +982,7 @@ dskit/pipeline/
 │                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0256),
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          this file
+├── EXTENDING.md       extension points + gotchas (the seams, and what bites)
 └── CLAUDE.md          agent orientation
 ```
 
