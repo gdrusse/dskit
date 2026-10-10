@@ -1,143 +1,77 @@
 {
   "name": "select-tabular-${A}",
-  "notes": "Walk-forward template for the TABULAR class: the 3-component mixture MLP over every kept summary column (as the options child's pooled heads), scored by weighted CRPS on W1 folds. The manifest fills ${arm.*} per lane. Shared with the sequence template: bars, features, W1 filter, fold filters, score, walkforward; only the model differs. The bars, fit and score kinds are the zoo build's: `fit` takes the train rows, uses every column whose prefix is a kept family as a model input (never meta__scale, asset, t_ms or the labels), and adds the asset indicator; its estimator spec below is a dskit TorchCDF.",
+  "notes": "Walk-forward template for the TABULAR class on the minute PANEL (dskit array_panel / panel_torch / panel_score; ADR-0259). One arm = one ColumnSelector over the single panel `{panel.source}`, so every arm sees identical rows and labels; the manifest fills ${arm.*} per lane. The folds are an explicit expanding schedule on W1 only (the last validation window ends before 2026-05-01; a test pins it), the panel's W2 rows are never inside a fold's bands. No raw channels: a context-only model.",
   "pipeline": {
-    "bars": {
-      "uses": "${zoo.bars}",
-      "params": {
-        "root": "${store.root}",
-        "klines": "${store.klines}",
-        "bvol": "${store.bvol}",
-        "assets": "${window.assets}",
-        "start_ms": "${window.start_ms}",
-        "end_ms": "${window.end_ms}"
-      },
-      "notes": "The W1 bars of both assets as kline rows (and BVOL readings), read from the onboarded store by source and stream. The reader must stop at end_ms (exclusive): no bar at or after 2026-05-01 enters this study. The kind is the zoo build's (a marker in the manifest until then); the params are the contract it must meet."
-    },
-    "features": {
-      "uses": "crypto_trading.minute_features:MinuteFeatures",
-      "inputs": {
-        "klines": "$bars.klines",
-        "bvol": "$bars.bvol"
-      },
-      "params": {
-        "assets": "${window.assets}",
-        "families": "${arm.families}",
-        "scales": "${arm.scales}",
-        "ewma_half_lives": "${arm.ewma_half_lives}",
-        "range_windows": "${arm.range_windows}",
-        "taker_windows": "${arm.taker_windows}",
-        "taker_check_windows": "${arm.taker_check_windows}"
-      },
-      "notes": "The ONLY arm-dependent node: the kept families, the kept scales and the windows of those scales (EWMA half-life, range and taker windows of the same minutes) of this lane; `taker_check_windows` is the full taker list so an arm that drops a taker window still refuses the same bars. history_minutes is left unset on purpose, so the row set (and therefore every fold's rows and labels) is the same in every arm, and meta__scale, the label divisor, is in no family. Every other knob is the node's default, so the columns are exactly those the arm names."
-    },
-    "w1": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$features.records"
-      },
-      "params": {
-        "require_usable": false,
-        "where": [
-          {
-            "field": "t_ms",
-            "op": ">=",
-            "value": "${window.start_ms}"
-          },
-          {
-            "field": "t_ms",
-            "op": "<",
-            "value": "${window.end_ms}"
-          }
-        ]
-      },
-      "notes": "Keeps rows inside W1 by the information instant t_ms, end EXCLUSIVE. The bars reader already stops there; this clause says it again so a reader that over-reads cannot widen the study. A row whose t + h bar lies beyond the window has a missing (None) label and is dropped by the score node."
-    },
-    "train_rows": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$w1.records"
-      },
-      "params": {
-        "require_usable": false,
-        "where": [
-          {
-            "field": "t_ms",
-            "op": "<=",
-            "value": "$splits.train_end_ms"
-          }
-        ]
-      },
-      "notes": "Everything up to the fold's train cut (the cutoff minus the 1-day embargo). Expanding: the train window has no start bound. The embargo is longer than the 15-minute label reach, so no train label sees a validation bar."
-    },
-    "val_rows": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$w1.records"
-      },
-      "params": {
-        "require_usable": false,
-        "where": [
-          {
-            "field": "t_ms",
-            "op": ">=",
-            "value": "$splits.val_start_ms"
-          },
-          {
-            "field": "t_ms",
-            "op": "<=",
-            "value": "$splits.val_end_ms"
-          }
-        ]
-      },
-      "notes": "The fold's validation window, which starts AFTER the embargo band (val_start_ms exists because walkforward.embargo_days is above zero). The score node scores these rows only."
-    },
     "fit": {
-      "uses": "${zoo.fit}",
-      "inputs": {
-        "rows": "$train_rows.records"
-      },
+      "uses": "dskit.pipeline.libs.panel_torch:PanelTrain",
       "params": {
-        "estimator": {
-          "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
-          "params": {
-            "encoder": {
-              "kind": "mlp"
-            },
-            "components": 3,
-            "hidden": [
-              32,
-              16
-            ],
-            "epochs": 500,
-            "patience": 20,
-            "batch_size": 512,
-            "learning_rate": 0.0003,
-            "weight_decay": 0.01,
-            "dropout": 0.1,
-            "deterministic": true
-          }
+        "panel": {
+          "root": "${panel.root}",
+          "source": "${panel.source}",
+          "stream": "${panel.stream}",
+          "relpath": "${panel.relpath}"
         },
-        "losses": "${training.losses}",
-        "seeds": "${training.seeds}",
-        "horizons": "${grid.horizons}"
+        "assets": "${window.groups}",
+        "asset_indicator": true,
+        "bounds": {
+          "train_end_ms": "$splits.train_end_ms",
+          "val_start_ms": "$splits.val_start_ms",
+          "val_end_ms": "$splits.val_end_ms",
+          "cal_days": "${zoo.cal_days}",
+          "min_run": "${zoo.min_run}"
+        },
+        "context": "${arm.context}",
+        "trunk": "${zoo.trunk}",
+        "head": {
+          "kind": "mixture",
+          "components": "${training.components}",
+          "family": "${training.family}",
+          "losses": "${training.losses}",
+          "tail_intervals": "${grid.common.tail_intervals}",
+          "min_scale": "${training.min_scale}"
+        },
+        "missing": "${training.missing}",
+        "device": "${training.device}",
+        "epochs": "${training.epochs}",
+        "patience": "${training.patience}",
+        "monitor": "${training.monitor}",
+        "lr": "${training.lr}",
+        "optimizer": "${training.optimizer}",
+        "optimizer_params": {
+          "weight_decay": "${training.weight_decay}"
+        },
+        "loader": {
+          "batch_size": "${training.batch_size}",
+          "seed": "${training.seed}"
+        }
       },
-      "notes": "The tabular model: one mixture MLP (3 components) reading all kept summary columns plus the asset indicator, 15 horizons. Settings are the options child's training defaults (epochs, patience, learning rate, dropout) held FIXED across arms so only the features move; the zoo build's frozen settings replace them."
+      "notes": "The tabular model: one mixture MLP (3 components) reading the kept summary columns plus the asset indicator, 15 horizons from one head. Everything but the arm's `context` selector is fixed across arms, so only the features move."
     },
     "score": {
-      "uses": "${zoo.score}",
+      "uses": "dskit.pipeline.libs.panel_score:PanelScore",
       "inputs": {
-        "model": "$fit.model",
-        "rows": "$val_rows.records"
+        "model": "$fit.model"
       },
       "params": {
-        "split": "val",
-        "losses": "${training.losses}",
-        "horizons": "${grid.horizons}",
+        "panel": {
+          "root": "${panel.root}",
+          "source": "${panel.source}",
+          "stream": "${panel.stream}",
+          "relpath": "${panel.relpath}"
+        },
+        "bounds": {
+          "train_end_ms": "$splits.train_end_ms",
+          "val_start_ms": "$splits.val_start_ms",
+          "val_end_ms": "$splits.val_end_ms",
+          "cal_days": "${zoo.cal_days}",
+          "min_run": "${zoo.min_run}"
+        },
+        "assets": "${window.groups}",
         "grid": "${grid.common}",
-        "metric": "weighted_crps"
+        "tail_weight": "${grid.tail_weight}",
+        "split": "val"
       },
-      "notes": "Weighted CRPS = the training losses summed (CRPS plus tail CRPS) on the common grid, averaged over the 15 horizons, both assets and seeds; one number per fold, lower is better. It is the walk-forward objective, the same in both classes and every arm, so the per-fold differences between arms are paired."
+      "notes": "Weighted CRPS = crps + tail_weight * tail_crps on the common grid, averaged over the 15 horizons and both assets; one number per fold, lower is better. It is the walk-forward objective, the same in both classes and every arm, so per-fold differences between arms are paired. rows_sha256 in its artifact proves every arm scored the same rows."
     }
   },
   "walkforward": {
@@ -148,7 +82,7 @@
     "count": "${folds.count}",
     "val_days": "${folds.val_days}",
     "embargo_days": "${folds.embargo_days}",
-    "notes": "Expanding all-prior train windows, one run per fold, the same fold plan for every arm and both classes (it comes from the manifest, not from this file). `select: min` because the score is a loss; the selection node reads it as `positive difference = dropping the group hurts`."
+    "notes": "Expanding all-prior train windows, one run per fold, the same fold plan for every arm and both classes (it comes from the manifest). `select: min` because the score is a loss; the selection node reads it as `positive difference = dropping the group hurts`."
   },
   "outputs": {
     "run_root": "${L.fit.runs}",

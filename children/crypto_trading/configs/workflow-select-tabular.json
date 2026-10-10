@@ -1,35 +1,11 @@
 {
-  "notes": "Feature-selection ablation for the tabular model class (owner-approved 2026-10-09; plan docs/plans/2026-10-09-data-windows.md, 'Feature families and selection'). One lane per arm of features-arms.json (all, ten minus_<family>, six minus_scale_<n>); each lane is one `dskit.pipeline walkforward` over W1 only, on the same expanding folds, seeds, rows, loss and grid, so the arms differ in the feature families or scales alone. Run from children/crypto_trading: `python -m dskit.pipeline workflow-batch configs/workflow-select-tabular.json --root pipeline_runs/select-tabular --parallel N` (resumable; each lane gets its own work dir `<root>/<arm>` and ledger, so its summary lands in `<root>/<arm>/runs/<arm>`, where select-features.json reads it; keep --root equal to args.work_dir). One arm: `--only-lanes minus_flow`. `workflow --plan` lists every unfilled arg: the zoo-supplied kinds below do not exist yet, so a real run is refused until the zoo build fills them. Afterwards `python -m dskit.pipeline run configs/select-features.json --asof 2026-05-01 --adapter crypto_trading` reads both classes' summaries and writes selected-features-<class>.json into its run directory (never committed). The check: overlay a `selected` lane (args.arms plus args.arm.selected, shaped like any arm, from the class's file) with --args, run `--only-lanes selected`, then rerun select-features. The two workflow-select-* manifests are identical but for the template and work_dir; a test pins that.",
+  "notes": "Feature-selection ablation for the tabular model class on the minute PANEL (owner-approved 2026-10-09; plan docs/plans/2026-10-09-data-windows.md). One lane per arm of features-arms.json (all, ten minus_<family>, six minus_scale_<n>); each lane is one `dskit.pipeline walkforward` over W1 only, on the same expanding folds, seed, rows, loss and grid, so the arms differ in the feature columns alone. Run from children/crypto_trading, one lane at a time on the GPU (heavy): `python -m dskit.pipeline workflow-batch configs/workflow-select-tabular.json --root pipeline_runs/select-tabular --parallel 1` (resumable; each lane gets its own work dir `<root>/<arm>`, its summary lands in `<root>/<arm>/runs/<arm>`, where select-features.json reads it; keep --root equal to args.work_dir). One arm: `--only-lanes minus_flow`. Afterwards `python -m dskit.pipeline run configs/select-features.json --asof 2026-05-01 --adapter crypto_trading` reads both classes' summaries and writes selected-features-<class>.json into its run directory (never committed). The two workflow-select-* manifests are identical but for the template and work_dir; a test pins that.",
   "args": {
-    "notes": "Every input in one place; the only block a person edits (or overlays with --args). Arms are copied from features-arms.json and pinned to it, and to the feature node's FAMILIES, DEFAULT_SCALES and default windows, by tests/test_feature_selection.py: the runner has no way to take lanes from another file's keys. A scale arm sets `scales` and also removes that scale's EWMA half-life, range window and taker window; every arm carries `taker_check_windows` (the full taker list) so the row set is the same in all 17.",
+    "notes": "Every input in one place; the only block a person edits (or overlays with --args). Arms are copied from features-arms.json and pinned to it by tests/test_feature_selection.py: each arm keeps its families and scales and carries `context`, the ColumnSelector over the panel that those resolve to against the feature node's own columns (a test pins the resolved columns to FeatureGroups.select_columns, and `all` to every family). To check a selection, overlay a `selected` arm shaped like these, with `context: {\"names\": <selected-features-<class>.json columns>}`.",
     "work_dir": "./pipeline_runs/select-tabular",
     "adapter": "crypto_trading",
-    "store": {
-      "notes": "Where the zoo's bars reader finds the W1 bars: the onboarded store (the one absolute path a run config may carry; the same value as the runbook's OB and the stage B document) and the sources and streams of the Binance 1-minute klines and BVOL. Names, never file paths.",
-      "root": "/home/russell/data/crypto_trading/ob",
-      "klines": {
-        "BTC": {
-          "source": "binance-btcusdt-1m",
-          "stream": "files"
-        },
-        "ETH": {
-          "source": "binance-ethusdt-1m",
-          "stream": "files"
-        }
-      },
-      "bvol": {
-        "BTC": {
-          "source": "binance-btcbvol",
-          "stream": "files"
-        },
-        "ETH": {
-          "source": "binance-ethbvol",
-          "stream": "files"
-        }
-      }
-    },
     "window": {
-      "notes": "W1, the selection window (owner-approved 2026-10-09, UTC, end EXCLUSIVE): 2023-06-20 up to but excluding 2026-05-01. The end is the plan's W1/W2 boundary: nothing at or after it is read, fitted or scored here. start_ms and end_ms are the same instants in epoch ms for the row filter; a test pins the pairs. `assets` names the two assets of the feature node, BTC first.",
+      "notes": "W1, the selection window (owner-approved 2026-10-09, UTC, end EXCLUSIVE): 2023-06-20 up to but excluding 2026-05-01. The end is the plan's W1/W2 boundary: nothing at or after it is read, fitted or scored here. start_ms and end_ms are the same instants in epoch ms for the row filter; a test pins the pairs. `assets` names the two assets of the feature node, BTC first. `groups` are the panel's integer asset codes (MinuteFeatures codes an asset by its position in `assets`: BTC 0, ETH 1; a test pins it).",
       "assets": [
         "BTC",
         "ETH"
@@ -37,10 +13,14 @@
       "start": "2023-06-20",
       "end": "2026-05-01",
       "start_ms": 1687219200000,
-      "end_ms": 1777593600000
+      "end_ms": 1777593600000,
+      "groups": [
+        0,
+        1
+      ]
     },
     "folds": {
-      "notes": "Expanding walk-forward folds on W1: the train window is everything before the cutoff minus the embargo, and the validation window is val_days from the cutoff. 14 folds of 60 days from 2024-01-01 end 2026-04-21, inside W1, and clear the rule's floor of 8. The 1-day embargo purges the labels' 15-minute reach. Replace with the zoo build's W1 fold table once it is published (reuse it verbatim); the numbers are tested to stay inside W1, never to be these.",
+      "notes": "Explicit expanding walk-forward schedule on W1 only: the train window is everything before the cutoff minus the embargo, and the validation window is val_days from the cutoff. 14 folds of 60 days from 2024-01-01 end 2026-04-21, inside W1, and clear the rule's floor of 8. The 1-day embargo purges the labels' 15-minute reach. A test pins the schedule inside W1; the panel itself also holds W2, which no fold reaches.",
       "first": "2024-01-01",
       "step_days": 60,
       "count": 14,
@@ -48,12 +28,7 @@
       "embargo_days": 1
     },
     "training": {
-      "notes": "Fixed across every arm and both classes: the same seeds and the one loss, weighted CRPS (CRPS plus tail CRPS, weight 1 each, as in the options child's feature selection). The fold score is the sum of the two on the common grid, averaged over horizons, assets and seeds. Replace seeds with the zoo build's when it is published.",
-      "seeds": [
-        11,
-        12,
-        13
-      ],
+      "notes": "Fixed across every arm and both classes. Hyperparameters are the options child's pooled settings (children/index_options/configs/advanced-cdf-zoo.json `training`: 3 components, lr 0.0003, weight decay 0.01, patience 20, 500-epoch ceiling, batch 512, seed 11, CRPS + tail CRPS weight 1 each); the Gaussian family and min_scale 0.1 are provisional. One seed per run (loader.seed): more seeds = rerun with --args overlaying `training.seed`. The fold score is crps + tail_weight * tail_crps on the common grid. Epochs/batch are provisional until the GPU probe sizes them.",
       "losses": [
         {
           "kind": "crps",
@@ -63,10 +38,25 @@
           "kind": "tail_crps",
           "weight": 1.0
         }
-      ]
+      ],
+      "seed": 11,
+      "components": 3,
+      "family": {
+        "kind": "gaussian"
+      },
+      "min_scale": 0.1,
+      "epochs": 500,
+      "patience": 20,
+      "monitor": "val_loss",
+      "lr": 0.0003,
+      "optimizer": "torch.optim.AdamW",
+      "weight_decay": 0.01,
+      "batch_size": 512,
+      "device": "cuda",
+      "missing": "mean"
     },
     "grid": {
-      "notes": "What the score node evaluates: every horizon the feature node labels (1 to 15), on the zoo's common grid. The grid itself is the zoo build's; it stays unfilled until then.",
+      "notes": "What the score node evaluates: every horizon the feature node labels (1 to 15), on one common grid (z in label units, i.e. vol-standardised log return; the wings are provisional: a wing is fixed in z, so at h=15 where the spread is about sqrt(15) times h=1 it covers more of the bulk -- an open decision). tail_weight must equal the tail_crps weight in training.losses (a test pins it); the wings in training and scoring are the SAME list (the head reads grid.common.tail_intervals).",
       "horizons": [
         1,
         2,
@@ -84,15 +74,69 @@
         14,
         15
       ],
-      "common": "<zoo build: the common evaluation grid of the model zoo's score node>"
+      "common": {
+        "z_min": -12.0,
+        "z_max": 12.0,
+        "z_points": 241,
+        "levels": [
+          0.05,
+          0.1,
+          0.25,
+          0.5,
+          0.75,
+          0.9,
+          0.95
+        ],
+        "tail_intervals": [
+          [
+            -12.0,
+            -2.0
+          ],
+          [
+            2.0,
+            12.0
+          ]
+        ]
+      },
+      "tail_weight": 1.0
     },
     "zoo": {
-      "notes": "Node kinds the zoo build supplies and this slice does not build: a bars reader (W1 klines and BVOL as rows), a raw-channel window builder (sequence class only), a fit node and a score node (weighted CRPS on the common grid, 15 horizons from one model). They are unfilled markers so that `workflow --plan` shows the gap and a real run refuses. torch_ts's quantile head is pinball-only and is not the scorer.",
-      "bars": "<zoo build: node kind that reads the W1 Binance klines and BVOL of both assets from the store into rows>",
-      "windows": "<zoo build: node kind that appends the raw per-step window channels to each feature row>",
-      "lookback": "<zoo build: raw window length in minutes>",
-      "fit": "<zoo build: node kind that fits a predictive_cdf estimator on the train rows>",
-      "score": "<zoo build: node kind that scores a fitted estimator on the validation rows>"
+      "notes": "The panel models' shared settings, fixed across arms. window/stride: the raw sequence is `window` bars spaced `stride` minutes (60 x 1 = the last hour); min_run = (window-1)*stride+1 is the panel-level gap rule (a test pins it) and is the same for the tabular class so both see identical rows. cal_days: the last days of each fold's train period feed the early-stopping loss. The trunk and PatchTST encoder are the options child's PatchTST/TorchCDF settings (advanced-cdf-zoo.json pooled candidate: d_model 64, 1 layer, patch 4/3, ffn 128, dropout 0.1; run-pooled-zoo-417.json trunk). Window length, cal_days and these widths are provisional until the GPU probe.",
+      "window": 60,
+      "stride": 1,
+      "min_run": 60,
+      "cal_days": 30,
+      "sequence_columns": {
+        "prefixes": [
+          "seq__"
+        ]
+      },
+      "encoder": {
+        "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+        "params": {
+          "model": "PatchTST",
+          "config": {
+            "d_model": 64,
+            "num_hidden_layers": 1,
+            "patch_length": 4,
+            "patch_stride": 3,
+            "scaling": null,
+            "num_attention_heads": 1,
+            "ffn_dim": 128,
+            "norm_type": "layernorm",
+            "attention_dropout": 0.1,
+            "ff_dropout": 0.1
+          }
+        }
+      },
+      "trunk": {
+        "hidden": [
+          32,
+          16
+        ],
+        "activation": "relu",
+        "dropout": 0.1
+      }
     },
     "arms": [
       "all",
@@ -135,23 +179,20 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_ret": {
         "families": [
@@ -173,23 +214,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_trend": {
         "families": [
@@ -211,23 +248,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_vol": {
         "families": [
@@ -249,23 +282,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_range": {
         "families": [
@@ -287,23 +316,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_shock": {
         "families": [
@@ -325,23 +350,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_flow": {
         "families": [
@@ -363,23 +384,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_clock": {
         "families": [
@@ -401,23 +418,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_holiday": {
         "families": [
@@ -439,23 +452,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "xasset__",
+            "bvol__"
+          ]
+        }
       },
       "minus_xasset": {
         "families": [
@@ -477,23 +486,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "bvol__"
+          ]
+        }
       },
       "minus_bvol": {
         "families": [
@@ -515,23 +520,19 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__"
+          ]
+        }
       },
       "minus_scale_5": {
         "families": [
@@ -553,23 +554,32 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ],
+          "except_names": [
+            "ret__r5",
+            "trend__ma_5",
+            "vol__hl_5",
+            "vol__jump_5",
+            "vol__rms_5",
+            "xasset__hl_5",
+            "xasset__jump_5",
+            "xasset__pair_chg_5",
+            "xasset__r5",
+            "xasset__rms_5"
+          ]
+        }
       },
       "minus_scale_15": {
         "families": [
@@ -591,21 +601,35 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ],
+          "except_names": [
+            "flow__taker_15",
+            "ret__r15",
+            "trend__ma_15",
+            "vol__ewma_15",
+            "vol__hl_15",
+            "vol__jump_15",
+            "vol__rms_15",
+            "xasset__ewma_15",
+            "xasset__hl_15",
+            "xasset__jump_15",
+            "xasset__pair_chg_15",
+            "xasset__r15",
+            "xasset__rms_15"
+          ]
+        }
       },
       "minus_scale_60": {
         "families": [
@@ -627,20 +651,37 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15
-        ],
-        "range_windows": [
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ],
+          "except_names": [
+            "flow__taker_60",
+            "range__hi_60",
+            "range__lo_60",
+            "ret__r60",
+            "trend__ma_60",
+            "vol__ewma_60",
+            "vol__hl_60",
+            "vol__jump_60",
+            "vol__rms_60",
+            "xasset__ewma_60",
+            "xasset__hl_60",
+            "xasset__jump_60",
+            "xasset__pair_chg_60",
+            "xasset__r60",
+            "xasset__rms_60"
+          ]
+        }
       },
       "minus_scale_240": {
         "families": [
@@ -662,22 +703,34 @@
           1440,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ],
+          "except_names": [
+            "range__hi_240",
+            "range__lo_240",
+            "ret__r240",
+            "trend__ma_240",
+            "vol__hl_240",
+            "vol__jump_240",
+            "vol__rms_240",
+            "xasset__hl_240",
+            "xasset__jump_240",
+            "xasset__pair_chg_240",
+            "xasset__r240",
+            "xasset__rms_240"
+          ]
+        }
       },
       "minus_scale_1440": {
         "families": [
@@ -699,22 +752,34 @@
           240,
           10080
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ],
+          "except_names": [
+            "range__hi_1440",
+            "range__lo_1440",
+            "ret__r1440",
+            "trend__ma_1440",
+            "vol__hl_1440",
+            "vol__jump_1440",
+            "vol__rms_1440",
+            "xasset__hl_1440",
+            "xasset__jump_1440",
+            "xasset__pair_chg_1440",
+            "xasset__r1440",
+            "xasset__rms_1440"
+          ]
+        }
       },
       "minus_scale_10080": {
         "families": [
@@ -736,24 +801,40 @@
           240,
           1440
         ],
-        "ewma_half_lives": [
-          15,
-          60
-        ],
-        "range_windows": [
-          60,
-          240,
-          1440
-        ],
-        "taker_windows": [
-          15,
-          60
-        ],
-        "taker_check_windows": [
-          15,
-          60
-        ]
+        "context": {
+          "prefixes": [
+            "ret__",
+            "trend__",
+            "vol__",
+            "range__",
+            "shock__",
+            "flow__",
+            "clock__",
+            "holiday__",
+            "xasset__",
+            "bvol__"
+          ],
+          "except_names": [
+            "ret__r10080",
+            "trend__ma_10080",
+            "vol__hl_10080",
+            "vol__jump_10080",
+            "vol__rms_10080",
+            "xasset__hl_10080",
+            "xasset__jump_10080",
+            "xasset__pair_chg_10080",
+            "xasset__r10080",
+            "xasset__rms_10080"
+          ]
+        }
       }
+    },
+    "panel": {
+      "notes": "Where the zoo's minute panel is read: the onboarded store (the one absolute path a run config may carry) and the localblobs source panel-minute registered from configs/source-panel-minute.json; relpath is the panel directory inside that stream (W1 + embargo + W2 bars, built by run-panel-build.json). Names, never file paths.",
+      "root": "/home/russell/data/crypto_trading/ob",
+      "source": "panel-minute",
+      "stream": "files",
+      "relpath": "minute-w1w2"
     }
   },
   "lanes": {
@@ -787,12 +868,12 @@
         "asof": "$args.window.end",
         "adapter": "$args.adapter",
         "arm": "$args.arm.$lane",
-        "store": "$args.store",
         "window": "$args.window",
         "folds": "$args.folds",
         "training": "$args.training",
         "grid": "$args.grid",
-        "zoo": "$args.zoo"
+        "zoo": "$args.zoo",
+        "panel": "$args.panel"
       },
       "out": [
         "runs"

@@ -624,14 +624,16 @@ def test_the_rule_defaults_are_the_approved_ones():
 # config pins: arms, folds, seeds, loss, W1, the select document
 # ---------------------------------------------------------------------------
 
-# the node's default windows, restated on purpose (each is a minute of the scale grid)
-SHIPPED_WINDOWS = {"ewma_half_lives": [15, 60], "range_windows": [60, 240, 1440], "taker_windows": [15, 60]}
 MANIFESTS = {"sequence": "workflow-select-sequence.json", "tabular": "workflow-select-tabular.json"}
 TEMPLATES = {"sequence": "select-template-sequence.json", "tabular": "select-template-tabular.json"}
 
 
 def manifests():
     return {c: _config(n) for c, n in MANIFESTS.items()}
+
+
+def real_groups():
+    return FeatureGroups.from_probe(_config("features-arms.json"), {"assets": ["BTC", "ETH"]})
 
 
 def test_the_lanes_are_the_seventeen_arms_of_features_arms_json():
@@ -644,16 +646,37 @@ def test_the_lanes_are_the_seventeen_arms_of_features_arms_json():
         assert args["arms"] == expected, cls
         assert set(args["arm"]) == set(expected), cls
         for arm in features["arms"]:
-            assert args["arm"][arm] == {"families": features["arms"][arm], "scales": list(GRID), **SHIPPED_WINDOWS,
-                                        "taker_check_windows": SHIPPED_WINDOWS["taker_windows"]}, (cls, arm)
+            assert args["arm"][arm]["families"] == features["arms"][arm] and args["arm"][arm]["scales"] == list(GRID), (cls, arm)
         for arm, kept in features["scale_arms"].items():
-            (dropped,) = set(GRID) - set(kept)
-            assert args["arm"][arm] == {
-                "families": features["arms"]["all"], "scales": kept,
-                "ewma_half_lives": [w for w in SHIPPED_WINDOWS["ewma_half_lives"] if w != dropped],
-                "range_windows": [w for w in SHIPPED_WINDOWS["range_windows"] if w != dropped],
-                "taker_windows": [w for w in SHIPPED_WINDOWS["taker_windows"] if w != dropped],
-                "taker_check_windows": SHIPPED_WINDOWS["taker_windows"]}, (cls, arm)
+            assert args["arm"][arm]["families"] == features["arms"]["all"] and args["arm"][arm]["scales"] == kept, (cls, arm)
+
+
+def test_each_arm_selector_resolves_to_the_columns_of_its_kept_families_and_scales_in_the_real_node_output():
+    from dskit.pipeline.libs.array_panel import ColumnSelector
+
+    groups = real_groups()
+    panel_columns = list(groups.columns) + ["seq__ret_1m", "seq__log_volume", "seq__taker_share"]
+    for cls, manifest in manifests().items():
+        for arm, entry in manifest["args"]["arm"].items():
+            picked = [panel_columns[i] for i in ColumnSelector(entry["context"]).select(panel_columns)]
+            assert picked == list(groups.select_columns(entry["families"], entry["scales"])), (cls, arm)
+            assert not any(c.startswith("seq__") for c in picked), "the raw channels are the sequence input, never context"
+
+
+def test_the_all_arm_selects_every_family_column_and_a_minus_arm_exactly_one_group_fewer():
+    groups = real_groups()
+    manifest = manifests()["sequence"]["args"]["arm"]
+    every = set(groups.columns)
+    from dskit.pipeline.libs.array_panel import ColumnSelector
+
+    names = list(groups.columns)
+    assert {names[i] for i in ColumnSelector(manifest["all"]["context"]).select(names)} == every
+    for family in FAMILIES:
+        left = {names[i] for i in ColumnSelector(manifest[f"minus_{family}"]["context"]).select(names)}
+        assert every - left == set(groups.columns_of_family(family)), family
+    for scale in GRID:
+        left = {names[i] for i in ColumnSelector(manifest[f"minus_scale_{scale}"]["context"]).select(names)}
+        assert every - left == set(groups.columns_of_scale(scale)), scale
 
 
 def test_the_arm_lists_cannot_drift_from_the_nodes_declared_families_and_scales():
@@ -707,12 +730,35 @@ def test_the_folds_are_expanding_embargoed_one_day_and_end_inside_w1():
         assert first > datetime.date.fromisoformat("2023-06-20") + datetime.timedelta(days=folds["embargo_days"]), cls
 
 
-def test_the_loss_is_weighted_crps_and_the_seeds_are_fixed_in_both_manifests():
+def test_the_loss_is_weighted_crps_and_the_seed_is_fixed_in_both_manifests():
     for cls, manifest in manifests().items():
         training = manifest["args"]["training"]
         assert training["losses"] == [{"kind": "crps", "weight": 1.0}, {"kind": "tail_crps", "weight": 1.0}], cls
-        assert training["seeds"] == sorted(set(training["seeds"])) and len(training["seeds"]) >= 1, cls
+        assert type(training["seed"]) is int and training["device"] == "cuda", cls
         assert manifest["args"]["grid"]["horizons"] == list(range(1, 16)), cls
+
+
+def test_the_score_tail_weight_is_the_training_tail_crps_weight_and_the_wings_have_one_home():
+    for cls, manifest in manifests().items():
+        args = manifest["args"]
+        (tail,) = [loss for loss in args["training"]["losses"] if loss["kind"] == "tail_crps"]
+        assert args["grid"]["tail_weight"] == tail["weight"], cls
+        wings = args["grid"]["common"]["tail_intervals"]
+        assert all(args["grid"]["common"]["z_min"] <= lo < hi <= args["grid"]["common"]["z_max"] for lo, hi in wings), cls
+        head = _config(TEMPLATES[cls])["pipeline"]["fit"]["params"]["head"]
+        assert head["tail_intervals"] == "${grid.common.tail_intervals}", "the training wings read the grid's list"
+
+
+def test_the_panel_window_and_group_codes_agree_with_the_panel_and_the_feature_node():
+    for cls, manifest in manifests().items():
+        args = manifest["args"]
+        assert args["window"]["groups"] == list(range(len(args["window"]["assets"]))), "MinuteFeatures codes assets by position"
+        zoo = args["zoo"]
+        assert zoo["min_run"] == (zoo["window"] - 1) * zoo["stride"] + 1, cls
+        build = _config("run-panel-build.json")["pipeline"]
+        assert os.path.basename(build["panel"]["params"]["path"]) == args["panel"]["relpath"], cls
+        assert build["features"]["params"]["assets"] == args["window"]["assets"], cls
+        assert args["panel"]["source"] == "panel-minute" and args["panel"]["stream"] == "files", cls
 
 
 def test_the_horizons_agree_with_the_feature_node_labels():
@@ -722,33 +768,30 @@ def test_the_horizons_agree_with_the_feature_node_labels():
     assert horizons == list(range(1, MinuteFeatures.DEFAULTS["max_horizon"] + 1))
 
 
-def test_the_templates_share_every_node_that_is_not_the_model():
+def test_the_templates_share_the_score_node_and_the_fold_plan_and_differ_only_in_the_model():
     docs = {c: _config(n) for c, n in TEMPLATES.items()}
     seq, tab = docs["sequence"]["pipeline"], docs["tabular"]["pipeline"]
-    for node in ("bars", "features", "train_rows", "val_rows", "score"):
-        assert seq[node] == tab[node], node
-    assert seq["w1"]["params"] == tab["w1"]["params"] and seq["w1"]["uses"] == tab["w1"]["uses"]
-    assert tab["w1"]["inputs"] == {"records": "$features.records"}
-    assert seq["w1"]["inputs"] == {"records": "$windows.records"}, "the raw channels join before any row is cut"
+    assert seq["score"] == tab["score"] and set(seq) == set(tab) == {"fit", "score"}
     assert docs["sequence"]["walkforward"] == docs["tabular"]["walkforward"]
     assert docs["sequence"]["walkforward"]["objective"] == OBJECTIVE
     assert docs["sequence"]["walkforward"]["select"] == "min"
-    assert set(docs["sequence"]["pipeline"]) - set(docs["tabular"]["pipeline"]) == {"windows"}
-    assert set(docs["tabular"]["pipeline"]) - set(docs["sequence"]["pipeline"]) == set()
+    seq_fit, tab_fit = seq["fit"]["params"], tab["fit"]["params"]
+    assert set(seq_fit) - set(tab_fit) == {"sequence", "encoder"} and set(tab_fit) - set(seq_fit) == set()
+    assert {k: v for k, v in seq_fit.items() if k not in ("sequence", "encoder")} == tab_fit
 
 
-def test_the_templates_take_the_arm_and_the_w1_bounds_from_placeholders():
+def test_the_templates_take_the_arm_the_splits_and_the_folds_from_placeholders():
     for cls, name in TEMPLATES.items():
         doc = _config(name)
-        features = doc["pipeline"]["features"]
-        assert features["uses"] == "crypto_trading.minute_features:MinuteFeatures"
-        assert features["params"]["families"] == "${arm.families}" and features["params"]["scales"] == "${arm.scales}"
-        for knob in (*SHIPPED_WINDOWS, "taker_check_windows"):
-            assert features["params"][knob] == "${arm." + knob + "}", (cls, knob)
-        assert "history_minutes" not in features["params"], "left unset so every arm keeps the same rows"
-        assert doc["pipeline"]["w1"]["params"]["where"] == [
-            {"field": "t_ms", "op": ">=", "value": "${window.start_ms}"},
-            {"field": "t_ms", "op": "<", "value": "${window.end_ms}"}], "W1 is start-inclusive, end-EXCLUSIVE"
+        fit = doc["pipeline"]["fit"]
+        assert fit["uses"] == "dskit.pipeline.libs.panel_torch:PanelTrain"
+        assert fit["params"]["context"] == "${arm.context}", "the ONLY arm-dependent value"
+        for node in ("fit", "score"):
+            bounds = doc["pipeline"][node]["params"]["bounds"]
+            assert {k: bounds[k] for k in ("train_end_ms", "val_start_ms", "val_end_ms")} == {
+                "train_end_ms": "$splits.train_end_ms", "val_start_ms": "$splits.val_start_ms",
+                "val_end_ms": "$splits.val_end_ms"}, (cls, node)
+            assert bounds["cal_days"] == "${zoo.cal_days}" and bounds["min_run"] == "${zoo.min_run}"
         walk = doc["walkforward"]
         for key, ref in (("first", "folds.first"), ("step_days", "folds.step_days"), ("count", "folds.count"),
                          ("val_days", "folds.val_days"), ("embargo_days", "folds.embargo_days")):
@@ -756,17 +799,15 @@ def test_the_templates_take_the_arm_and_the_w1_bounds_from_placeholders():
 
 
 def test_the_fit_nodes_use_the_declared_model_classes():
-    seq, tab = (_config(TEMPLATES[c])["pipeline"]["fit"] for c in CLASSES)
-    seq_est, tab_est = seq["params"]["estimator"], tab["params"]["estimator"]
-    assert seq_est["class"] == tab_est["class"] == "dskit.pipeline.libs.predictive_cdf:TorchCDF"
-    assert tab_est["params"]["encoder"] == {"kind": "mlp"} and tab_est["params"]["components"] == 3
-    adapter = seq_est["params"]["encoder"]["adapter"]
-    assert seq_est["params"]["encoder"]["kind"] == "external"
-    assert adapter["class"] == "dskit.pipeline.libs.transformers:HFSequenceEncoder"
-    assert adapter["params"]["model"] == "PatchTST"
-    assert seq_est["params"]["components"] == tab_est["params"]["components"] == 3
-    for fit in (seq, tab):
-        assert fit["params"]["losses"] == "${training.losses}" and fit["params"]["seeds"] == "${training.seeds}"
+    seq, tab = (_config(TEMPLATES[c])["pipeline"]["fit"]["params"] for c in CLASSES)
+    assert tab["head"]["kind"] == seq["head"]["kind"] == "mixture" and tab["head"]["components"] == "${training.components}"
+    assert seq["encoder"] == "${zoo.encoder}" and "encoder" not in tab
+    for cls, manifest in manifests().items():
+        encoder = manifest["args"]["zoo"]["encoder"]
+        assert encoder["class"] == "dskit.pipeline.libs.transformers:HFSequenceEncoder"
+        assert encoder["params"]["model"] == "PatchTST"
+        assert manifest["args"]["training"]["components"] == 3
+    assert seq["asset_indicator"] is True and tab["asset_indicator"] is True
 
 
 def test_every_config_object_explains_itself():
@@ -788,7 +829,7 @@ def test_every_config_object_explains_itself():
             assert step.get("notes"), (name, "steps", key)
 
 
-def test_the_manifests_plan_with_seventeen_lanes_and_name_what_the_zoo_build_must_fill():
+def test_the_manifests_plan_with_seventeen_lanes_and_nothing_unfilled():
     from dskit.pipeline.workflow import run_workflow
 
     for cls, name in MANIFESTS.items():
@@ -796,31 +837,26 @@ def test_the_manifests_plan_with_seventeen_lanes_and_name_what_the_zoo_build_mus
         code = run_workflow(os.path.join(CONFIGS, name), plan=True, out=lines.append)
         assert code == 0, (cls, lines)
         assert sum(1 for line in lines if line.startswith("lane ")) == 17, cls
-        unfilled = {line.split()[-1].split(".")[1] for line in lines if line.startswith("unfilled arg")}
-        assert unfilled <= {"zoo", "grid", "window"}, (cls, unfilled)
-        assert any(line.startswith("unfilled arg") for line in lines), "the zoo kinds are not built yet: say so"
+        assert not [line for line in lines if line.startswith("unfilled arg")], cls
 
 
-def test_each_lane_expands_its_arm_into_the_feature_node():
+def test_each_lane_expands_into_nodes_the_panel_kinds_accept():
+    from dskit.pipeline.libs.panel_score import PanelScore
+    from dskit.pipeline.libs.panel_torch import PanelTrain
     from dskit.pipeline.workflow import lane_flows
 
-    features = _config("features-arms.json")
     for cls, name in MANIFESTS.items():
         manifest = _config(name)
         flows = lane_flows(manifest, CONFIGS)
         assert [flow.lane for flow in flows] == manifest["args"]["arms"]
         for flow in flows:
             doc = flow.expanded("fit", strict=False, rnd=0)
-            params_ = doc["pipeline"]["features"]["params"]
-            arm = flow.lane
-            assert params_["families"] == (features["arms"].get(arm) or features["arms"]["all"]), (cls, arm)
-            assert params_["scales"] == (features["scale_arms"].get(arm) or list(GRID)), (cls, arm)
-            assert {k: params_[k] for k in (*SHIPPED_WINDOWS, "taker_check_windows")} == {
-                k: v for k, v in manifest["args"]["arm"][arm].items() if k not in ("families", "scales")}, (cls, arm)
+            assert PanelTrain.validate_params(doc["pipeline"]["fit"]["params"]) == [], (cls, flow.lane)
+            assert PanelScore.validate_params(doc["pipeline"]["score"]["params"]) == [], (cls, flow.lane)
+            assert doc["pipeline"]["fit"]["params"]["context"] == manifest["args"]["arm"][flow.lane]["context"]
             assert doc["walkforward"]["count"] == manifest["args"]["folds"]["count"]
             assert doc["walkforward"]["embargo_days"] == 1
-            lanes_runs = {flow.path("fit", "runs") for flow in flows}
-            assert len(lanes_runs) == 17
+        assert len({flow.path("fit", "runs") for flow in flows}) == 17
 
 
 def test_the_select_document_reads_where_the_manifests_write():
