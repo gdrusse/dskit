@@ -267,7 +267,7 @@ class MixtureHead(HorizonHead):
             problems.append(f"head.min_scale must be a number > 0, got {spec['min_scale']!r}")
         if not isinstance(spec.get("compile", False), bool):
             problems.append(f"head.compile must be a bool, got {spec['compile']!r}")
-        elif spec.get("compile") and spec["family"].get("kind") != "gaussian":
+        elif spec.get("compile") and not (isinstance(spec["family"], dict) and spec["family"].get("kind") == "gaussian"):
             # The Student CDF series fails Triton's pass manager (torch 2.11), so it is refused up front.
             problems.append("head.compile is supported for the gaussian family only")
         try:
@@ -721,7 +721,7 @@ class PanelAdapter(TorchAdapter):
         """Return the declared asset codes on ``group``'s device and dtype, uploaded once."""
         import torch
 
-        key = (group.dtype, group.device)
+        key = (group.dtype, group.device, tuple(self.params["assets"]))
         if getattr(self, "_code_key", None) != key:
             self._code_key = key
             self._code_tensor = torch.as_tensor(self.params["assets"], dtype=group.dtype, device=group.device)
@@ -750,6 +750,7 @@ class PanelAdapter(TorchAdapter):
         if self._dev is not None:
             self._dev.release()
             self._dev = None
+        self._code_key = self._code_tensor = None
 
     def save_state(self, prefix):
         """Return the panel state (scaler, column names, band hash) for the sidecar."""
