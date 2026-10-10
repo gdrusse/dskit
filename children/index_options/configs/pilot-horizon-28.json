@@ -1,0 +1,5 @@
+{
+  "notes": "PILOT: horizon segmentation, 28 calendar days (four weeks, inside the 30-45 day band the condor trades). Stack on the base: python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json --args configs/pilot-horizon-28.json. Same question as pilot-horizon-14.json at the long end of the range where option-implied densities were found to help. Longer labels mean a longer embargo and fewer non-overlapping outcomes, so intervals widen; read the 60-date block bootstrap first.",
+  "work_dir": "./pipeline_runs/pilot-horizon-28",
+  "horizon": 28
+}

@@ -171,6 +171,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # sha256-pinned, ADR-0182 amendment)
                            # run-equity-condor-robust-backtest-v2.json (ADR-0258: the robust
                            # condor replay with fill_session next, a fills stream, exercise flags)
+                           # pilot-*.json: quick args overlays for workflow.json (base + crps-student,
+                           # regularize, window-250/750, horizon-14/28; docs/research performance-pilots)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner

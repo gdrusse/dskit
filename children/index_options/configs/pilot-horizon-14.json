@@ -1,0 +1,5 @@
+{
+  "notes": "PILOT: horizon segmentation, 14 calendar days. Stack on the base: python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json --args configs/pilot-horizon-14.json. The manifest uses 7 days because it has the most exact-expiry dates, not because a model has skill there. Option-implied densities beat time-series models at two to four weeks but not at one day (Shackleton, Taylor and Yu 2010), so the implied-information families and option_proxy_transport may earn more at longer horizons. Step 1 recomputes the 14-day target dates; if the cohort is too thin for warmup_folds + 1 folds, step 3 refuses. Pair with pilot-horizon-28.json.",
+  "work_dir": "./pipeline_runs/pilot-horizon-14",
+  "horizon": 14
+}
