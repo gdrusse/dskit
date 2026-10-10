@@ -14,7 +14,9 @@ the seam that already owns the job:
 * :class:`PanelTrain` -- a :class:`~dskit.pipeline.libs.torch.TorchTrain` family on that adapter. It
   reads no ``rows`` port: the panel, the bands (fit, calibration, validation) and the scaler are cut
   from the declared panel and bounds. Calibration rows feed the ``val_loss`` that patience watches;
-  validation rows are never uploaded. It also returns a :class:`TorchHorizonForecaster`, the object
+  validation rows are never uploaded. ``row_stride`` / ``stride_offset`` thin ONLY the fit rows to one
+  bar in k by instant (adjacent minutes are near-duplicates; the default 1 is the whole band). It
+  also returns a :class:`TorchHorizonForecaster`, the object
   :class:`~dskit.pipeline.libs.horizon_cdf.CommonGrid` scores.
 
 **Units.** Labels arrive already divided by their scale (the array-panel contract) and nothing here
@@ -57,6 +59,8 @@ __all__ = [
     "DEFAULT_ASSET_INDICATOR",
     "DEFAULT_DEVICE",
     "DEFAULT_DROPOUT",
+    "DEFAULT_ROW_STRIDE",
+    "DEFAULT_STRIDE_OFFSET",
     "DEFAULT_STRIDE",
     "HEADS",
     "HorizonHead",
@@ -77,6 +81,9 @@ DEFAULT_STRIDE = 1
 DEFAULT_DROPOUT = 0.0
 #: Whether a one-hot asset code is appended to the context unless declared.
 DEFAULT_ASSET_INDICATOR = False
+#: Keep every bar of the fit band unless ``row_stride`` says one in k, and at which phase.
+DEFAULT_ROW_STRIDE = 1
+DEFAULT_STRIDE_OFFSET = 0
 #: Where the panel is resident unless the node declares a ``device``.
 DEFAULT_DEVICE = "cpu"
 
@@ -584,6 +591,8 @@ class PanelAdapter(TorchAdapter):
     """
 
     requires_features = False
+    #: The bands ``row_stride`` thins; the others are read whole (``cal`` feeds ``val_loss``).
+    _THINNED_BANDS = (_FIT_BAND,)
 
     def __init__(self, params=None):
         super().__init__(params)
@@ -644,13 +653,27 @@ class PanelAdapter(TorchAdapter):
         self.bands, self._layout = bands, layout
         self.state = _PanelState.from_fit(panel, layout, scaler, bands)
 
+    def band_rows(self, params, where):
+        """Return the global rows of band ``where``, thinned by ``row_stride`` if the band is thinned.
+
+        The scaler and the resident span stay cut from the whole band: thinning picks which rows
+        the loss visits, and a thinned row still gathers its full window.
+        """
+        if where not in self._THINNED_BANDS:
+            return self.bands.rows(where)
+        return self.bands.thinned_rows(where, params.get("row_stride", DEFAULT_ROW_STRIDE),
+                                       params.get("stride_offset", DEFAULT_STRIDE_OFFSET))
+
     def prepare(self, rows, params, *, where):
         """Return the index set of the ``fit`` or ``cal`` band; ``rows`` must be ``None``.
+
+        The ``fit`` set is thinned by ``row_stride`` / ``stride_offset``; ``cal`` never is.
 
         Raises
         ------
         ValueError
-            For wired rows, or a band other than ``fit`` / ``cal`` (validation rows are never read).
+            For wired rows, a band other than ``fit`` / ``cal`` (validation rows are never read), or
+            a ``row_stride`` that leaves the fit band no rows.
         """
         import torch
 
@@ -658,7 +681,7 @@ class PanelAdapter(TorchAdapter):
             raise ValueError(f"PanelAdapter reads the panel's '{_FIT_BAND}' and '{_MONITOR_BAND}' "
                              f"bands and no rows; got where={where!r}")
         self._open(params)
-        index = torch.as_tensor(self.bands.rows(where), dtype=torch.long)
+        index = torch.as_tensor(self.band_rows(params, where), dtype=torch.long)
         return TorchBatches(len(index), (self._dev, index))
 
     def module_params(self, batches, params):
@@ -929,14 +952,22 @@ class _PanelKnobs:
 
     @classmethod
     def scalars(cls, params):
-        """Check ``max_parameters`` and ``missing``."""
+        """Check ``max_parameters``, ``missing``, and the ``row_stride`` / ``stride_offset`` pair."""
         problems = []
         if "max_parameters" in params and not is_node_ref(params["max_parameters"]):
             check_int_param(problems, "max_parameters", params["max_parameters"], ge=1)
         missing = params.get("missing", DEFAULT_MISSING)
         if not is_node_ref(missing) and missing not in MISSING_STRATEGIES:
             problems.append(f"missing must be one of {MISSING_STRATEGIES}, got {missing!r}")
+        problems.extend(cls.row_stride(params))
         return problems
+
+    @classmethod
+    def row_stride(cls, params):
+        """Check the thinning pair through :meth:`PanelBands.stride_problems`, which owns its bounds."""
+        pair = tuple(params.get(k, d) for k, d in (("row_stride", DEFAULT_ROW_STRIDE),
+                                                   ("stride_offset", DEFAULT_STRIDE_OFFSET)))
+        return [] if any(is_node_ref(v) for v in pair) else PanelBands.stride_problems(*pair)
 
 
 class PanelTrain(TorchTrain):
@@ -959,7 +990,10 @@ class PanelTrain(TorchTrain):
         (``columns``, ``window``, optional ``stride``) with its ``encoder`` (``{arch, width,
         arch_params}`` or ``{class, params}`` of a ``SequenceEncoderAdapter``; absent for a
         context-only MLP), ``context`` (a column selector), ``asset_indicator`` (bool), ``max_parameters``
-        (int), ``missing`` (``refuse`` or ``mean``), plus the base trainer's ``device``, ``epochs``,
+        (int), ``missing`` (``refuse`` or ``mean``), ``row_stride`` (int ``>= 1``, default 1) with
+        ``stride_offset`` (int in ``[0, row_stride)``, default 0), which thin only the FIT rows to
+        those whose bar index ``(time // step_ms) % row_stride`` equals the offset (calibration,
+        validation, the scaler and every window are untouched), plus the base trainer's ``device``, ``epochs``,
         ``lr``, ``optimizer``, ``loader``, ``monitor`` (``train_loss`` or ``val_loss``),
         ``patience``.
 
@@ -984,7 +1018,8 @@ class PanelTrain(TorchTrain):
     _ADAPTER = PanelAdapter
     _BASE_PARAMS = tuple(p for p in TorchTrain._BASE_PARAMS if p not in ("features", "label"))
     _EXTRA_PARAMS = ("panel", "assets", "asset_indicator", "bounds", "sequence", "context",
-                     "encoder", "trunk", "head", "max_parameters", "missing")
+                     "encoder", "trunk", "head", "max_parameters", "missing", "row_stride",
+                     "stride_offset")
     _MONITORS = _PANEL_MONITORS
 
     @classmethod

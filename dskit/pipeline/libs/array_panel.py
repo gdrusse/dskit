@@ -730,6 +730,71 @@ class PanelBands:
             raise ValueError(f"band must be one of {_BAND_NAMES}, got {band!r}")
         return getattr(self, f"{band}_idx")
 
+    @staticmethod
+    def stride_problems(row_stride, stride_offset):
+        """List the problems with a ``(row_stride, stride_offset)`` pair, empty when none.
+
+        Parameters
+        ----------
+        row_stride : int
+            Keep one bar in ``row_stride``; ``>= 1``.
+        stride_offset : int
+            The kept phase, ``0 <= stride_offset < row_stride``.
+
+        Returns
+        -------
+        list of str
+            One message per problem; the single owner of the thinning rule's bounds.
+        """
+        problems = []
+        check_int_param(problems, "row_stride", row_stride, ge=1)
+        check_int_param(problems, "stride_offset", stride_offset, ge=0)
+        if not problems and not stride_offset < row_stride:
+            problems.append(f"stride_offset must be below row_stride {row_stride}, got {stride_offset!r}")
+        return problems
+
+    def thinned_rows(self, band, row_stride, stride_offset):
+        """Return a band's rows whose bar index ``(time // step_ms) % row_stride`` is ``stride_offset``.
+
+        The phase is a function of the row's instant, never its position, so groups pooled on one
+        clock keep the same instants and a gap in a group does not shift its phase. The band itself
+        (purge, embargo, eligibility) is cut first and left untouched; nothing is random.
+
+        Parameters
+        ----------
+        band : str
+            ``"fit"``, ``"cal"`` or ``"val"``.
+        row_stride : int
+            Keep one bar in ``row_stride``; ``>= 1``.
+        stride_offset : int
+            The kept phase, ``0 <= stride_offset < row_stride``.
+
+        Returns
+        -------
+        numpy.ndarray
+            The kept global row indices, ascending; the band's own rows when ``row_stride == 1``.
+
+        Raises
+        ------
+        ValueError
+            For a bad stride or offset, or when no row of the band is on the phase.
+        """
+        import numpy as np
+
+        problems = self.stride_problems(row_stride, stride_offset)
+        if problems:
+            raise ValueError("; ".join(problems))
+        rows = self.rows(band)
+        row_stride, stride_offset = int(row_stride), int(stride_offset)
+        if row_stride == 1:
+            return rows
+        bar = np.asarray(self.panel.time)[rows] // self.panel.step_ms
+        kept = rows[bar % row_stride == stride_offset]
+        if not len(kept):
+            raise ValueError(f"row_stride {row_stride} with stride_offset {stride_offset} leaves no "
+                             f"{band} rows of the {len(rows)} in the band")
+        return kept
+
     def spans(self, band):
         """Return a band's per-group ``(lo, hi)`` half-open row ranges, for :meth:`DevicePanel.load`.
 

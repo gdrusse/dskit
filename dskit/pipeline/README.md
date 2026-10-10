@@ -756,7 +756,7 @@ they register only into private registries, never the default one.
   `ColumnSelector` (an ablation arm is a selector), `PanelBands` (the one place fit / calibration / validation rows are cut),
   `DevicePanel` (windows gathered by row index, never stored). Labels arrive already divided by their scale.
 - `libs/horizon_cdf.py`: `HorizonForecaster`, `CommonGrid` (one scoring grid; refuses a model whose levels, wings or bounds differ).
-- `libs/panel_torch.py`: `PanelTrain` (encoder + trunk + `mixture` or `quantile` head, no `rows` port) returns a forecaster.
+- `libs/panel_torch.py`: `PanelTrain` (encoder + trunk + `mixture` or `quantile` head, no `rows` port) returns a forecaster; optional `row_stride` / `stride_offset` train on one bar in k of the fit band (by instant; calibration, scaler and windows untouched).
 - `libs/panel_score.py`: `PanelScore` (flat `crps_h*`, `weighted_crps`, `rows_sha256`) plus `EmpiricalBaseline` and `EwmaStudentBaseline`.
 - A lane is `PanelTrain -> PanelScore` in one `walkforward` document; `runs` tabulates every lane's flat metrics per fold.
   Run it with `tests/pipeline_libs/test_panel_zoo_e2e.py` as the worked example (3 folds, `embargo_days: 1`).
