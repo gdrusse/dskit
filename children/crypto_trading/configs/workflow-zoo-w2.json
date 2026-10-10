@@ -79,6 +79,7 @@
         "z_min": -12.0,
         "z_max": 12.0,
         "z_points": 241,
+        "max_chunk_mb": 2048,
         "levels": [
           0.05,
           0.1,

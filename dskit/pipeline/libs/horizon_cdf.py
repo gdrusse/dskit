@@ -229,6 +229,7 @@ class MixtureHorizons(HorizonDistribution):
             raise ValueError("logw, mu and sigma must share one (rows, horizons, components) shape")
         self.logw, self.mu, self.sigma, self.family = logw, mu, sigma, family
         self._anchor = mu
+        self._quantiles = {}
 
     def cdf(self, z):
         """Evaluate the mixture CDF; see :meth:`HorizonDistribution.cdf`."""
@@ -240,7 +241,18 @@ class MixtureHorizons(HorizonDistribution):
         return self.family.mixture_cdf(flat, *parts).reshape(n, h, -1)
 
     def quantile(self, levels):
-        """Invert by vectorized bisection; see :meth:`HorizonDistribution.quantile`."""
+        """Invert by vectorized bisection; see :meth:`HorizonDistribution.quantile`.
+
+        The result for one set of levels is kept, because scoring asks for the grid's levels twice
+        per chunk (the pinball and its per-level table) and each ask is 60 bisection steps.
+        """
+        key = tuple(float(v) for v in levels)
+        if key not in self._quantiles:
+            self._quantiles[key] = self._bisect(key)
+        return self._quantiles[key]
+
+    def _bisect(self, levels):
+        """Return the quantiles at ``levels`` by 60 halvings of a bracket around the mixture."""
         import torch
         p = torch.as_tensor(levels, dtype=self.dtype, device=self.device)
         span = _BRACKET_SCALES * self.sigma
