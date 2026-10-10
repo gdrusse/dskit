@@ -156,6 +156,7 @@ intraday_equities/   # auth, connectors, nodes, forecast_bundle, nodes_capital, 
 configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, cash-flow policies, development-replay/-simulation, retrain-simulation (+ template), replay-report
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
+docs/RE-ENTRY.md     # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 docs/research/       # topic folders; <date>-synthesis.md + dated notes
 docs/explanations/   # standalone worked explanations
 docs/plans/          # implementation plans: scope, file ownership, owner gates

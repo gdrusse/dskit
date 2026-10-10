@@ -185,6 +185,7 @@ configs/               # asset-model / source-sample / suite-sample /
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
+docs/RE-ENTRY.md       # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 docs/explanations/     # README points to record-explanation
 docs/memos/            # README points to memo
 docs/plans/            # the child's own plan builds (the WSL runbook: stage A pulls, stage B run)

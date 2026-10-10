@@ -8,7 +8,7 @@ turning it into a fresh skeleton copy. Work from the child root.
 
 - Read the child's `AGENTS.md`, `CLAUDE.md`, and `README.md` first.
 - Compare only infrastructure with `children/_skeleton/`: `journal.json`,
-  `docs/decisioning/`, `docs/explanations/`, `docs/memos/`,
+  `docs/RE-ENTRY.md`, `docs/decisioning/`, `docs/explanations/`, `docs/memos/`,
   `docs/research/`, their README reminders, and layout/instruction prose.
 - Do not copy or overwrite the child's package, configs, tests, evidence,
   research, memos, explanations, `actions.csv`, or `path.csv`.
@@ -31,15 +31,19 @@ turning it into a fresh skeleton copy. Work from the child root.
    - `docs/memos/README.md`: `memo`
    - `docs/research/README.md`: `record-research`
    Do not overwrite a child README with substantive child-specific content.
-5. Ensure the child's `AGENTS.md`, `CLAUDE.md`, and README layout state:
+5. If `docs/RE-ENTRY.md` is missing, copy the skeleton template and fill Now /
+   Next from the child's newest memo or journal rows; never invent a state.
+   Add the child's row to the dskit `docs/RE-ENTRY.md` index.
+6. Ensure the child's `AGENTS.md`, `CLAUDE.md`, and README layout state:
    - the four documentation folders;
    - generated decisioning README and CSV store;
    - human-owner-only Path and Current Work;
-   - full Path display, latest-10 Actions display, and append-only history.
-6. Preserve all existing decision evidence. Run
+   - full Path display, latest-10 Actions display, and append-only history;
+   - the `docs/RE-ENTRY.md` lane note in the layout tree.
+7. Preserve all existing decision evidence. Run
    `python -m dskit.journal render --root .` only after confirming the
    existing ledger headers are supported; never hand-edit the generated README.
-7. Run the child's focused test command, normally `python -m pytest tests -q`.
+8. Run the child's focused test command, normally `python -m pytest tests -q`.
 
 ## Report
 

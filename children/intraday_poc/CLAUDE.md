@@ -64,6 +64,7 @@ configs/            # source-backfill (the ONE source config) / suite-bars /
 tests/              # conftest bootstrap + connectors/nodes/configs suites
 journal.json        # dskit.journal marker (ADR-0056)
 docs/decisioning/   # actions.csv + path.csv; README generated
+docs/RE-ENTRY.md    # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 docs/explanations/  # durable explanations; use record-explanation
 docs/memos/         # decision memos; use memo
 docs/research/      # topic folders; <date>-synthesis.md + dated notes

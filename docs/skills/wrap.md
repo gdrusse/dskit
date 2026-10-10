@@ -9,10 +9,16 @@ unrelated work, a new architecture, or real execution/deployment.
    zero unresolved in-scope Critical/Major, relevant tests, required checks,
    and disclosed Minor/Nit backlog. Do not trust a stale partial ReviewExit.
    A checkpoint commit is not approval.
-2. Freeze code/tests/contracts/dependencies. Update the existing evidence and
-   docs/RE-ENTRY.md with reviewed commit, results, limits, remaining blockers,
-   and next action. Pure evidence/editorial appends keep approval only after
-   checking the reviewed identities are unchanged. Do not fix nits after lock.
+2. Freeze code/tests/contracts/dependencies. Update the existing evidence, then
+   the lane's re-entry note: move the current `children/<child>/docs/RE-ENTRY.md`
+   (or the "Core" block of `docs/RE-ENTRY.md` for work with no child) to the top
+   of `docs/archive/re-entry/<lane>.md`, REWRITE the note whole (at most 80
+   lines: Now, Next, Blocked / owner decisions, Read first, Do not; reviewed
+   commit, results, limits, next action) and update the lane's dated row in
+   `docs/RE-ENTRY.md`. Never append to a note; a `keep-both` marker means prune
+   to one note first (`tests/docs/test_budgets.py` refuses it). Pure
+   evidence/editorial appends keep approval only after checking the reviewed
+   identities are unchanged. Do not fix nits after lock.
 3. Commit only this task's changes with the exact model/version author and
    trailer required by the root instructions. If committing is authorized,
    proceed. Never include another session's dirty files.

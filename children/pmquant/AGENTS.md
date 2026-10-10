@@ -139,6 +139,7 @@ configs/               # run-e2e + run-kalshi-ladders (twins); 5 sources; suite;
 notebooks/             # 01-ladder-e2e.ipynb
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
+docs/RE-ENTRY.md       # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 docs/explanations/     # durable explanations; use record-explanation
 docs/memos/            # decision memos; use memo
 docs/research/         # topic folders; <date>-synthesis.md + dated notes

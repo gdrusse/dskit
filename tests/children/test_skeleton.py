@@ -31,6 +31,7 @@ EXPECTED_FILES = {
     "docs/memos/README.md",
     "docs/plans/.gitkeep",
     "docs/plans/README.md",
+    "docs/RE-ENTRY.md",
     "docs/research/.gitkeep",
     "docs/research/README.md",
     "models/.gitignore",

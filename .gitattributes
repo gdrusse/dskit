@@ -3,4 +3,5 @@
 children/*/docs/decisioning/actions.csv merge=journal-union
 children/*/docs/decisioning/path.csv merge=journal-union
 children/*/docs/decisioning/README.md merge=render-journal
-docs/RE-ENTRY.md merge=keep-both
+children/*/docs/RE-ENTRY.md merge=keep-both
+docs/archive/re-entry/*.md merge=union

@@ -44,6 +44,7 @@ _skeleton/
 │   ├── README.md             # GENERATED from actions.csv / path.csv
 │   ├── actions.csv
 │   └── path.csv
+├── docs/RE-ENTRY.md          # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 ├── docs/research/            # research agent markdown
 │   └── .gitkeep
 ├── docs/memos/               # durable implementation and operational handoffs
@@ -94,6 +95,13 @@ _skeleton/
   outcomes, and operational caveats go in `docs/memos/`. They are reviewed
   documents, not ADRs and not journaled research. The skeleton initializes the
   folder so every copied child inherits it.
+- **Every child carries a re-entry note.** `docs/RE-ENTRY.md` is the lane's
+  one-screen handoff (Now, Next, Blocked / owner decisions, Read first, Do
+  not), at most 80 lines, rewritten whole at every `/wrap`; the replaced note
+  goes to the dskit repo's `docs/archive/re-entry/<child>.md` and the index
+  `docs/RE-ENTRY.md` keeps one dated row per lane. A session reads the index
+  and its own lane's note, nothing older. `tests/docs/test_budgets.py` refuses
+  a note over budget or carrying a merge marker.
 - **Fitted artifacts are `models/`; plans are `docs/plans/`.** The skeleton
   ships both: `models/` holds ML/optimization artifacts that outlive a run
   directory (gitignored — reproducibility is the identity hash), and

@@ -18,6 +18,7 @@ EXPECTED_FILES = {
     "docs/memos/README.md",
     "docs/plans/.gitkeep",
     "docs/plans/README.md",
+    "docs/RE-ENTRY.md",
     "docs/research/.gitkeep",
     "docs/research/README.md",
     "pyproject.toml",
@@ -28,6 +29,11 @@ EXPECTED_FILES = {
     "configs/source-underlying-history.json",
     "configs/source-option-panel.json",
     "configs/run-prepare-option-panel.json",
+    # Store registrations for the stock sources (committed 2026-10-03..07, unpinned until 2026-10-10).
+    "configs/source-store-stock-amzn-alpaca.json",
+    "configs/source-store-stock-msft-alpaca.json",
+    "configs/source-store-stock-orats-smv-sample.json",
+    "configs/source-store-stock-long-history-audit.json",
 }
 
 

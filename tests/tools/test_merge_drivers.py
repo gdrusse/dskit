@@ -750,8 +750,8 @@ def test_the_unresolved_marker_starts_on_its_own_line(tmp_path):
 def test_keep_both_survives_a_stray_byte(tmp_path):
     """BLOCKER, review round 4: the sibling driver had both fixed defects.
 
-    install.sh registers keep_both for docs/RE-ENTRY.md — the file /wrap
-    writes every session. One pasted smart-quote raised UnicodeDecodeError
+    install.sh registers keep_both for children/*/docs/RE-ENTRY.md — the
+    notes /wrap writes every session. One pasted smart-quote raised UnicodeDecodeError
     out of main(), leaving %A as OUR side alone with no marker: a whole
     session record silently dropped.
     """

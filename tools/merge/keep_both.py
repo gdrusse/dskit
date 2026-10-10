@@ -1,11 +1,15 @@
-"""Keep-both merge driver for ``docs/RE-ENTRY.md``.
+"""Keep-both merge driver for the lane notes ``children/*/docs/RE-ENTRY.md``.
 
 Git invokes this as ``keep_both.py %O %A %B`` (ADR-0109). Every ``/wrap``
-rewrites the re-entry note whole, so two parallel lanes always conflict
-and hand resolution silently drops one side's true session record. The
-driver keeps both — ours, a visible marker, theirs — and the next
-``/wrap`` rewrites the file and prunes. No false resolution: nothing is
-dropped, and the duplication is loud.
+rewrites a lane's re-entry note whole, so two parallel sessions on one lane
+always conflict and hand resolution silently drops one side's true session
+record. The driver keeps both — ours, a visible marker, theirs — and the
+next ``/wrap`` rewrites the note and prunes. No false resolution: nothing is
+dropped, and the duplication is loud. It is loud by test too:
+``tests/docs/test_budgets.py`` refuses a committed marker, which is what
+kept the single ``docs/RE-ENTRY.md`` doubling at every merge until 2026-10-10
+(469,597 lines, 4,431 unique). The notes are capped at 80 lines so a prune
+is always a rewrite a session can do.
 """
 
 from __future__ import annotations
@@ -144,7 +148,7 @@ def _merge(ours_path, theirs_path):
     if merged and not merged.endswith("\n"):
         merged += "\n"
     # Non-truncating: a plain open(..., "w") empties the file the instant it
-    # succeeds, so a failed write left RE-ENTRY.md cut mid-line with one side
+    # succeeds, so a failed write left the note cut mid-line with one side
     # only — and `git add` accepted it. A failure raises to main()'s guard,
     # which appends their side rather than losing it.
     replace_file(ours_path, merged.encode("utf-8", errors="surrogateescape"))
