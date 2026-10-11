@@ -133,7 +133,7 @@ class ProductionPipeline(_Pipeline):
             "train": self._entry(f"{self.batch} {{in.lanes}} --root {{dir}}/lanes --parallel {{in.parallel}}",
                                  "Train and score every block; each lane is an independent expanding-window retrain."),
             "index": self._entry(f"{self.cli} production-index --batch {{in.batch}} --lanes {{in.lanes}} --pick {{in.pick}} "
-                                 "--recipe {in.recipe} --out-dir {dir}",
+                                 "--frozen {in.frozen} --recipe {in.recipe} --out-dir {dir}",
                                  "Save every retrain's model under a stable path, index them and write the forward report.")}
         steps = {
             "blocks": {"notes": "Needs the zoo pick and the HPO freeze (`--args` fills `pick` and `frozen`).", "registry": "blocks", "out": ["lanes"],
@@ -143,6 +143,6 @@ class ProductionPipeline(_Pipeline):
             "train": {"notes": "Runs the generated lanes in parallel.", "registry": "train", "out": ["batch"],
                       "in": {"W": "$args.work_dir", "parallel": "$args.parallel", "lanes": "$blocks.out.lanes"}},
             "index": {"notes": "Refuses unless every lane is ok.", "registry": "index", "out": ["models", "report"],
-                      "in": {"W": "$args.work_dir", "pick": "$args.pick", "recipe": "$args.recipe", "batch": "$train.out.batch",
+                      "in": {"W": "$args.work_dir", "pick": "$args.pick", "frozen": "$args.frozen", "recipe": "$args.recipe", "batch": "$train.out.batch",
                              "lanes": "$blocks.out.lanes"}}}
         return self._assemble(args, layout, registry, steps)

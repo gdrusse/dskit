@@ -44,7 +44,7 @@
       "notes": "Save every retrain's model under a stable path, index them and write the forward report.",
       "template": "stage-template.json",
       "extends": null,
-      "command": "{python} -m crypto_trading.zoo_lanes production-index --batch {in.batch} --lanes {in.lanes} --pick {in.pick} --recipe {in.recipe} --out-dir {dir}"
+      "command": "{python} -m crypto_trading.zoo_lanes production-index --batch {in.batch} --lanes {in.lanes} --pick {in.pick} --frozen {in.frozen} --recipe {in.recipe} --out-dir {dir}"
     }
   },
   "steps": {
@@ -87,6 +87,7 @@
       "in": {
         "W": "$args.work_dir",
         "pick": "$args.pick",
+        "frozen": "$args.frozen",
         "recipe": "$args.recipe",
         "batch": "$train.out.batch",
         "lanes": "$blocks.out.lanes"

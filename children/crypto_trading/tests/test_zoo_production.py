@@ -5,6 +5,7 @@ The persistence tests run two REAL tiny CPU fits (a few hundred synthetic hourly
 
 import json
 import os
+import shutil
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -153,9 +154,6 @@ def test_the_manifest_cli_refuses_a_window_past_w2_and_a_mismatched_freeze(loade
 
 # --- a saved model per retrain ---------------------------------------------------------------------------------------
 
-np = pytest.importorskip("numpy")
-torch = pytest.importorskip("torch")
-
 STEP = 3_600_000
 T0 = 1_700_000_000_000 - (1_700_000_000_000 % STEP)
 WINDOW, STRIDE = 8, 2
@@ -164,6 +162,7 @@ GROUPS = {10: 420, 20: 360}
 
 
 def tiny_panel(tmp_path):
+    np = pytest.importorskip("numpy")
     from dskit.pipeline.libs.array_panel import ArrayPanelWrite
     from dskit.pipeline.node import NodeContext
 
@@ -199,6 +198,7 @@ def tiny_params(path, train_end_row):
 @pytest.fixture
 def forward_run(tmp_path, loaded, monkeypatch):
     """Two retrain blocks of a pooled GRU pick: real tiny fits for the model lane, fake artifacts for the baselines."""
+    pytest.importorskip("torch")
     from dskit.pipeline.libs.array_panel import ArrayPanel
     from dskit.pipeline.libs.panel_torch import PanelTrain
     from dskit.pipeline.node import NodeContext
@@ -229,7 +229,7 @@ def test_every_retrain_is_saved_under_a_stable_block_path_and_listed_in_the_inde
     recipe, _, template, _ = loaded
     manifest, root, fits, out = forward_run
     production_template = json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8"))
-    index = ModelIndex(recipe, production_template, manifest, root)
+    index = ModelIndex(recipe, production_template, manifest, root, records(loaded)[1])
     entries = index.persist(str(out))
     listed = json.load(open(out / "models.json", encoding="utf-8"))["models"]
     assert listed == entries and len(entries) == 6
@@ -251,12 +251,13 @@ def test_every_retrain_is_saved_under_a_stable_block_path_and_listed_in_the_inde
 
 
 def test_a_saved_model_loads_and_forecasts_exactly_as_the_retrain_did(loaded, forward_run):
+    torch = pytest.importorskip("torch")
     from dskit.pipeline.libs.array_panel import ArrayPanel, PanelBands
     from dskit.pipeline.libs.panel_torch import PanelTrain
     from dskit.pipeline.node import NodeContext
 
     manifest, root, fits, out = forward_run
-    ModelIndex(loaded[0], json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8")), manifest, root).persist(str(out))
+    ModelIndex(loaded[0], json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8")), manifest, root, records(loaded)[1]).persist(str(out))
     for k, name in ((1, "b01"), (2, "b02")):
         node, trained, panel_path, _ = fits[name]
         saved = out / "models" / "gru-crps_tail-pooled" / f"block-{k}-{manifest['args']['production']['blocks'][k - 1]['first']}" / "model.pt"
@@ -271,23 +272,21 @@ def test_a_saved_model_loads_and_forecasts_exactly_as_the_retrain_did(loaded, fo
 
 
 def test_a_retrain_that_saved_nothing_and_drifting_hyperparameters_are_refused(loaded, forward_run, tmp_path):
-    import shutil
-
     manifest, root, fits, out = forward_run
     template = json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8"))
     shutil.rmtree(os.path.join(fits["b02"][3], "artifacts", "fit"))
     with pytest.raises(ValueError, match="saved no model"):
-        ModelIndex(loaded[0], template, manifest, root).persist(str(out))
+        ModelIndex(loaded[0], template, manifest, root, records(loaded)[1]).persist(str(out))
     drifted = json.loads(json.dumps(manifest))
     drifted["args"]["cell"]["b01-gru-crps_tail-pooled"]["fit"]["lr"] = 9.0
     with pytest.raises(ValueError, match="realized config differs from the manifest"):
-        ModelIndex(loaded[0], template, drifted, root).persist(str(out))
+        ModelIndex(loaded[0], template, drifted, root, records(loaded)[1]).persist(str(out))
 
 
 def test_the_forward_report_scores_the_model_against_both_baselines_row_weighted(loaded, forward_run):
     manifest, root, _, _ = forward_run
     template = json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8"))
-    report = ModelIndex(loaded[0], template, manifest, root).report()
+    report = ModelIndex(loaded[0], template, manifest, root, records(loaded)[1]).report()
     rows = (6000, 3100)
     scores = {"gru-crps_tail": (1.1, 1.2), "empirical": (1.5, 1.6), "ewma_student": (1.3, 1.4)}
     for name, (a, b) in scores.items():
@@ -295,7 +294,7 @@ def test_the_forward_report_scores_the_model_against_both_baselines_row_weighted
     assert report["model_beats_baselines"] is True and report["rows"] == sum(rows)
     assert [b["block"] for b in report["blocks"]] == [1, 2] and report["blocks"][0]["best_baseline"] == "ewma_student"
     assert report["blocks"][0]["model_minus_best_baseline"] == pytest.approx(-0.2)
-    assert "Model gru-crps_tail" in ModelIndex(loaded[0], template, manifest, root).markdown(report)
+    assert "Model gru-crps_tail" in ModelIndex(loaded[0], template, manifest, root, records(loaded)[1]).markdown(report)
 
 
 # --- W5 is never open; the freeze is verified; the realized config is what is checked ----------------------------------
@@ -375,7 +374,7 @@ def test_a_freeze_from_another_pick_is_refused(loaded, tmp_path):
 def _persist(loaded, forward_run):
     manifest, root, _, out = forward_run
     template = json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8"))
-    return ModelIndex(loaded[0], template, manifest, root).persist(str(out))
+    return ModelIndex(loaded[0], template, manifest, root, records(loaded)[1]).persist(str(out))
 
 
 def _run_dir(loaded, forward_run, block, lane="gru-crps_tail-pooled"):
@@ -438,9 +437,36 @@ def test_a_production_lane_must_be_exactly_one_fold_at_its_blocks_cutoff(loaded,
     block = manifest["args"]["production"]["blocks"][0]
     name = f"{block['name']}-empirical-pooled"
     template = json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8"))
-    shutil_rmtree = __import__("shutil").rmtree
-    shutil_rmtree(recipe["lane_runs"].format(root=root, lane=name))
+    shutil.rmtree(recipe["lane_runs"].format(root=root, lane=name))
     write_lane(root, recipe, name, [block["first"], "2026-06-01"], [1.0, 1.0], [10, 10], template["walkforward"]["objective"],
                extra_files={"state.json": "{}"}, fit=manifest["args"]["cell"][name]["fit"])
     with pytest.raises(ValueError, match="one fold at the block's cutoff"):
         _persist(loaded, forward_run)
+
+
+def test_each_realized_config_is_checked_against_hpo_frozen_json_itself(loaded, forward_run):
+    manifest, root, _, out = forward_run
+    template = json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8"))
+    other = records(loaded, lr=0.4242)[1]          # a different, internally consistent freeze: the manifest and runs are the original
+    with pytest.raises(ValueError, match=r"differ from hpo-frozen.json's"):
+        ModelIndex(loaded[0], template, manifest, root, other).persist(str(out))
+    tampered = records(loaded)[1]
+    tampered["params"]["gru-crps_tail-pooled"]["lr"] = 0.5
+    with pytest.raises(ValueError, match="no longer hash"):
+        ModelIndex(loaded[0], template, manifest, root, tampered)
+
+
+def test_a_block_directory_that_cannot_be_cleared_is_a_refusal_not_a_silent_skip(loaded, forward_run, monkeypatch):
+    stale = forward_run[3] / "models" / "gru-crps_tail-pooled" / "block-1-2026-05-02"
+    stale.mkdir(parents=True)
+
+    def fail(path):
+        raise PermissionError("denied")
+    monkeypatch.setattr(shutil, "rmtree", fail)
+    with pytest.raises(ValueError, match="cannot clear the previous block directory"):
+        _persist(loaded, forward_run)
+
+
+def test_the_production_pipeline_hands_the_freeze_to_the_index_step():
+    manifest = json.load(open(os.path.join(CONFIGS, "workflow-production.json"), encoding="utf-8"))
+    assert "--frozen {in.frozen}" in manifest["registry"]["index"]["command"] and manifest["steps"]["index"]["in"]["frozen"] == "$args.frozen"

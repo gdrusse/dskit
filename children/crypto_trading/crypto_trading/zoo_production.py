@@ -262,17 +262,20 @@ class ModelIndex:
         The production lanes manifest (``args.production``, ``args.block``, ``args.cell``).
     root : str
         The workflow-batch root the lanes ran under.
+    frozen : dict
+        ``hpo-frozen.json``: every model lane's realized hyperparameters must hash to its ``hparams_sha256``.
 
     Examples
     --------
     Persist and index a finished batch::
 
-        index = ModelIndex(recipe, template, manifest, "pipeline_runs/zoo-production/train/lanes")
+        index = ModelIndex(recipe, template, manifest, "pipeline_runs/zoo-production/train/lanes", frozen)
         entries = index.persist("pipeline_runs/zoo-production")
     """
 
-    def __init__(self, recipe, template, manifest, root):
-        self.recipe, self.manifest, self.root = recipe, manifest, root
+    def __init__(self, recipe, template, manifest, root, frozen):
+        check_frozen(frozen)
+        self.recipe, self.manifest, self.root, self.frozen = recipe, manifest, root, frozen
         self.files = recipe["production"]["files"]
         self.info = manifest["args"]["production"]
         self.blocks = {b["name"]: b for b in self.info["blocks"]}
@@ -305,7 +308,8 @@ class ModelIndex:
         ValueError
             A lane that is not one fold at its block's cutoff; a run with no artifact, or a model lane without
             ``model.pt`` and ``model.json``; a run whose realized config (its ``config.json``) hashes differently from
-            the manifest's cell or, for a model lane, from the freeze. A block directory already present is replaced.
+            the manifest's cell or, for a model lane, from the manifest's recorded hash and ``hpo-frozen.json``'s;
+            a previous block directory that cannot be cleared. A block directory already present is replaced.
         """
         entries = []
         for block, lane, cell in self._lanes():
@@ -314,7 +318,7 @@ class ModelIndex:
             self._check_saved(run, source, lane)
             relative = os.path.join(self.files["models_dir"], lane, f"block-{block['k']}-{block['first']}")
             target = os.path.join(out_dir, relative)
-            shutil.rmtree(target, ignore_errors=True)
+            self._clear(target)
             os.makedirs(target)
             digests = {}
             for name in sorted(os.listdir(source)):
@@ -325,6 +329,16 @@ class ModelIndex:
             "pick": self.info["pick"], "frozen_winner": self.info["frozen_winner"], "blocks": self.info["blocks"],
             "models": entries})
         return entries
+
+    @staticmethod
+    def _clear(target):
+        """Remove a previous block directory, refusing (not ignoring) a failure."""
+        try:
+            shutil.rmtree(target)
+        except FileNotFoundError:
+            pass
+        except OSError as err:
+            raise ValueError(f"{target}: cannot clear the previous block directory ({err})") from err
 
     def _lane(self, block, lane):
         """Return the block's :class:`LaneFolds`, refusing anything but one fold at the block's cutoff."""
@@ -353,6 +367,9 @@ class ModelIndex:
         wanted = self.info["hparams_sha256"].get(lane)
         if wanted is not None and hashed != wanted:
             raise ValueError(f"{lane} block {block['k']}: the run's hyperparameters differ from the frozen ones")
+        frozen = self.frozen["hparams_sha256"].get(lane)
+        if frozen is not None and hashed != frozen:
+            raise ValueError(f"{lane} block {block['k']}: the run's hyperparameters differ from hpo-frozen.json's")
         sidecar = os.path.join(target, self.files["sidecar"])
         state = load_json(sidecar)["state_hash"] if os.path.isfile(sidecar) else None
         listing = "".join(f"{name}:{digest}\n" for name, digest in digests.items())
@@ -458,7 +475,7 @@ def index_main(argv=None):
     Parameters
     ----------
     argv : list of str, optional
-        ``--lanes`` (the production manifest), ``--out-dir``, one of ``--root`` / ``--batch``, ``--pick``,
+        ``--lanes`` (the production manifest), ``--out-dir``, one of ``--root`` / ``--batch``, ``--pick``, ``--frozen``,
         optional ``--recipe``.
 
     Returns
@@ -470,6 +487,7 @@ def index_main(argv=None):
     parser.add_argument("--lanes", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--pick", required=True)
+    parser.add_argument("--frozen", required=True, help="hpo-frozen.json: the realized hyperparameters are checked against it")
     parser.add_argument("--root")
     parser.add_argument("--batch")
     parser.add_argument("--recipe")
@@ -481,7 +499,7 @@ def index_main(argv=None):
     info = manifest["args"]["production"]
     ForwardWindow(recipe["production"], recipe["w2"]["bounds"], lanes.base["folds"]["embargo_days"], w5_start_ms(recipe["production"], here),
                   {k: info[k] for k in ("forward_start", "evaluate_through", "retrain_days", "allow_past_w2")})
-    index = ModelIndex(recipe, template, manifest, batch_root(args.root, args.batch))
+    index = ModelIndex(recipe, template, manifest, batch_root(args.root, args.batch), load_frozen(args.frozen, args.pick))
     entries = index.persist(args.out_dir)
     report = index.report()
     files = recipe["production"]["files"]
