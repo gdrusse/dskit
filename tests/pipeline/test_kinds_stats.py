@@ -1021,3 +1021,129 @@ class TestIntegrationPlantedEdge:
         doc = edge_document(tmp_path, pipeline, "kinds-doctrine")
         with pytest.raises(ConfigError, match="toolkit-owned"):
             plan(doc, private_registry())
+
+
+# -- CrossSectionIC: per-instant ordering skill across names (ADR-0259) -------
+
+from dskit.pipeline.kinds_stats import CrossSectionIC  # noqa: E402
+from dskit.pipeline.ordering import spearman  # noqa: E402
+
+IC = {"stamp_field": "d", "series_field": "s",
+      "measures": {"plain": {"forecast_field": "f", "outcome_field": "y"}}}
+
+
+def _ic_rows():
+    rows = []
+    for stamp in ("2024-01-02", "2024-01-09", "2024-02-06"):
+        for i, name in enumerate("ABCDE"):
+            # the benchmark iv is a permutation of the forecast order, never constant
+            rows.append({"d": stamp, "s": name, "f": float(i + 1), "y": float(i + 1),
+                         "iv": float((i * 7) % 5 + 1),
+                         "phase": "cal" if stamp < "2024-02" else "entry"})
+    return rows
+
+
+def _ic(rows, **over):
+    ctx = NodeContext(name="t", asof=ASOF, run_dir="/nonexistent")
+    return CrossSectionIC("ic", {**IC, **over}).run(ctx, {"records": rows})
+
+
+def test_cross_section_ic_perfect_ordering_scores_one_per_stamp():
+    out = _ic(_ic_rows())
+    m = out["summary"]["measures"]["plain"]
+    assert m["kind"] == "per_timestamp_cross_section"
+    assert m["ic"] == pytest.approx(1.0) and m["n_stamps"] == 3 and m["usable"] is True
+    assert m["rows_scored"] == 15 and m["dropped"] == {} and m["h_steps"] == 1
+    assert [(r["measure"], r["stamp"], r["rho"], r["n_names"]) for r in out["records"]] == [
+        ("plain", "2024-01-02", 1.0, 5), ("plain", "2024-01-09", 1.0, 5),
+        ("plain", "2024-02-06", 1.0, 5)]
+    assert out["summary"]["rows_in"] == 15 and out["summary"]["splits"] == {}
+    assert out["summary"]["stamp_field"] == "d" and out["summary"]["series_field"] == "s"
+    assert "plain" in out["summary"]["stage"] and "f" in out["summary"]["stage"]
+
+
+def test_control_field_partials_the_benchmark_out_and_abs_takes_the_outcomes_size():
+    rows = [{"d": "x", "s": s, "f": f, "y": y, "iv": iv} for s, f, y, iv in [
+        ("A", 1.0, -1.0, 1.0), ("B", 2.0, -2.0, 2.0), ("C", 3.0, 3.0, 3.0), ("D", 4.0, 4.0, 5.0),
+        ("E", 5.0, 5.0, 4.0)]]
+    out = _ic(rows + [dict(r, d="y") for r in rows], h_steps=1, measures={
+        "raw": {"forecast_field": "f", "outcome_field": "y"},
+        "size": {"forecast_field": "f", "outcome_field": "y", "outcome_transform": "abs"},
+        "beyond": {"forecast_field": "f", "outcome_field": "y", "control_field": "iv",
+                   "outcome_transform": "abs"},
+        "market": {"forecast_field": "iv", "outcome_field": "y", "outcome_transform": "abs"},
+        "nothing_left": {"forecast_field": "f", "outcome_field": "iv", "control_field": "iv"}})
+    m = out["summary"]["measures"]
+    assert m["raw"]["ic"] == pytest.approx(spearman([1, 2, 3, 4, 5], [-1, -2, 3, 4, 5]))
+    assert m["size"]["ic"] == pytest.approx(1.0)
+    # the benchmark orders |y| at 0.9; the forecast explains the rest: partial 1.0
+    assert m["market"]["ic"] == pytest.approx(0.9)
+    assert m["beyond"]["ic"] == pytest.approx(1.0)
+    # an outcome that IS the control leaves nothing: every stamp skipped, said out loud
+    assert m["nothing_left"]["ic"] is None and m["nothing_left"]["n_skipped"] == 2
+    assert [r["measure"] for r in out["records"]] == [
+        "raw", "raw", "size", "size", "beyond", "beyond", "market", "market"]
+    assert "beyond: f vs abs(y) | iv" in out["summary"]["stage"]
+
+
+def test_rows_with_unusable_values_are_dropped_and_counted_never_filled():
+    rows = _ic_rows()
+    rows[0]["f"] = None
+    rows[1]["y"] = float("nan")
+    rows[2]["iv"] = 0.0
+    rows[3]["iv"] = "7"
+    out = _ic(rows, measures={"ctl": {"forecast_field": "f", "outcome_field": "y",
+                                      "control_field": "iv"}})
+    m = out["summary"]["measures"]["ctl"]
+    assert m["dropped"] == {"f": 1, "y": 1, "iv": 1} and m["rows_scored"] == 12
+    assert m["n_stamps"] == 2 and m["n_skipped"] == 1  # the first stamp kept two names
+    assert out["summary"]["rows_in"] == 15
+    with pytest.raises(ValueError, match="row 3 .*'d'"):
+        _ic([dict(r, d=None) if i == 3 else r for i, r in enumerate(_ic_rows())])
+    with pytest.raises(ValueError, match="row 0 .*'s'"):
+        _ic([{"d": "x", "f": 1.0, "y": 1.0}])
+
+
+def test_splits_and_months_each_get_their_own_summary():
+    out = _ic(_ic_rows(), splits=["phase"], by_month=True)
+    s = out["summary"]["splits"]
+    assert set(s) == {"plain|phase=cal", "plain|phase=entry",
+                      "plain|month=2024-01", "plain|month=2024-02"}
+    assert s["plain|phase=cal"]["n_stamps"] == 2 and s["plain|phase=cal"]["rows_scored"] == 10
+    assert s["plain|month=2024-02"]["n_stamps"] == 1 and s["plain|month=2024-02"]["ic"] is None
+    # two stamps in 2024-01: the Bartlett band spans the sample, so the HAC t is withheld
+    january = s["plain|month=2024-01"]
+    assert january["n_stamps"] == 2 and january["ic_t"] is None and january["hac_withheld"]
+    assert out["summary"]["measures"]["plain"]["hac_withheld"] == ""
+    with pytest.raises(ValueError, match="row 0 .*'phase'"):
+        _ic([{"d": "x", "s": "A", "f": 1.0, "y": 1.0}], splits=["phase"])
+    # a null split value (an attachment that found nothing, say) is its own group, not a refusal
+    nulled = [dict(r, phase=None) if r["d"] == "2024-02-06" else r for r in _ic_rows()]
+    assert set(_ic(nulled, splits=["phase"])["summary"]["splits"]) == {
+        "plain|phase=cal", "plain|phase=None"}
+
+
+def test_cross_section_ic_default_denies_and_checks_each_knob():
+    measure = {"forecast_field": "f", "outcome_field": "y"}
+    for bad in ({**IC, "typo": 1}, {**IC, "stamp_field": ""}, {**IC, "series_field": None},
+                {**IC, "measures": {}}, {**IC, "measures": []},
+                {**IC, "measures": {"m": {"forecast_field": "f"}}},
+                {**IC, "measures": {"m": {**measure, "outcome_transform": "square"}}},
+                {**IC, "measures": {"m": {**measure, "typo": 1}}},
+                {**IC, "measures": {"m": {**measure, "control_field": ""}}},
+                {**IC, "measures": {"m": {**measure, "relative_field": "iv"}}},
+                {**IC, "splits": ["month"], "by_month": True},
+                {**IC, "measures": {"m|x": measure}}, {**IC, "measures": {"": measure}},
+                {**IC, "lags": -1}, {**IC, "h_steps": 0}, {**IC, "min_names": 1},
+                {**IC, "usable_names": True}, {**IC, "splits": []},
+                {**IC, "splits": ["phase", "phase"]}, {**IC, "by_month": "yes"}):
+        assert CrossSectionIC.validate_params(bad), bad
+    assert CrossSectionIC.validate_params(IC) == []
+    assert CrossSectionIC.validate_params({**IC, "lags": None, "h_steps": "$a.b", "min_names": 3,
+                                           "usable_names": 5, "splits": ["phase"],
+                                           "by_month": True}) == []
+    assert CrossSectionIC.role == "transform" and CrossSectionIC.outputs == ("summary", "records")
+    # integral floats pass validation (a wired count) and run as the ints they are
+    m = _ic(_ic_rows(), h_steps=1.0, lags=1.0, min_names=3.0, usable_names=5.0)["summary"]["measures"]["plain"]
+    assert m["h_steps"] == 1 and m["lags"] == 1 and m["n_stamps"] == 3
+    assert "CrossSectionIC" in __import__("dskit.pipeline.kinds_stats", fromlist=["x"]).__all__

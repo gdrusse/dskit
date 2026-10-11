@@ -60,7 +60,8 @@ def test_every_shipped_source_is_registered_by_the_runbook_with_a_connector_that
 def test_every_pull_names_the_stream_its_suite_gates_and_a_stream_the_source_declares(monkeypatch):
     monkeypatch.setenv("CRYPTO_TRADING_ROOT", CHILD_ROOT)
     registered, pulls = registrations(), PULL.findall(TEXT)
-    assert len(pulls) == 18 and len(ACQUIRE_ONLY.findall(TEXT)) == 1, "the eighteen pulls of sections 3, 4, 7 and 8 and the one ungated acquire (7e)"
+    assert len(pulls) == 18 and len(ACQUIRE_ONLY.findall(TEXT)) == 2, (
+        "the eighteen pulls of sections 3, 4, 7 and 8 and the two ungated acquires (7e, and B7 whose blob panel has no row suite)")
     for source, stream, mode in ACQUIRE_ONLY.findall(TEXT):
         config = {k: v for k, v in shipped(f"source-{source}.json").items() if k != "storage"}
         assert source in registered and stream in {d["stream"] for d in resolve_connector(registered[source])().discover(config)}
@@ -229,9 +230,11 @@ class Owner:
         (self.work / "configs").mkdir(parents=True)
         self.home.mkdir()
         (tmp_path / "bin").mkdir()
-        (tmp_path / "bin" / "python").symlink_to(sys.executable)
+        shim = tmp_path / "bin" / "python"  # an exec shim, not a symlink: a symlinked venv interpreter loses its site-packages
+        shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        shim.chmod(0o755)
         shutil.copy(HOURLY_DOC, self.work / "configs" / "run-features-hourly.json")
-        self.env = {**os.environ, "HOME": str(self.home), "OB": self.store, "PYTHONPATH": CHILD_ROOT,
+        self.env = {**os.environ, "HOME": str(self.home), "OB": self.store, "PYTHONPATH": os.pathsep.join(p for p in (CHILD_ROOT, os.environ.get("PYTHONPATH")) if p),
                     "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"}
 
     def paste(self, text):

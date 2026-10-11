@@ -83,3 +83,24 @@ here as a reminder that green code is not the bar — an approved design is.
 - [ ] Lineage approved
 - [ ] Testing strategy approved
 - [ ] Open issues addressed
+
+## Where the ADRs went (moved from the root CLAUDE.md, 2026-10-10)
+
+Both master-spec packages are **built**: Package 1 → `dskit/assets`
+(ADR-0007…0011), Package 2 → `dskit/onboarding` (ADR-0012…0016). The
+open-questions register is clear. ADRs continue past the specs: packs
+(0017…0019), integrity parity (0020), the child convention (0021),
+engine-parity ports (0022/0023), split policies + event bounds (0024),
+the rl_stocks-driven capability set (0025 + 0027…0030: the
+declared-model seam + trainlog, walk-forward + embargoed splits, the
+sb3 and matplotlib packs, the onboarding coverage ledger) and the
+proposal still awaiting the owner (0026), the §14/§13 graduation round
+(0033…0036), the observations read seam (0037), and the 2026-08-28
+closeout round (0038…0043: the `TrainableNode` mode-dispatch seam, the
+`foreach` fan-out grammar, gap-aware windows + the fitted-transform
+family, the time-series architecture zoo, feature selection, and
+HPO × walk-forward semantics), plus the follow-on (0044: per-knob searchability for
+`fitted_transform`, so ADR-0042's flow 2 can run). New
+significant design decisions still require an ADR in
+`docs/architecture/decision-log.md` before code — no decision
+undocumented.

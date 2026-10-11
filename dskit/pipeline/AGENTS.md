@@ -22,517 +22,13 @@ on it without breaking its rulings.
 - **Roles are declared by the class**, never by the config; planner
   rules attach to roles. New rules go in `planner.py`, not in nodes.
 
-## Extension points
+## Extension points and gotchas
 
-- **Node kinds** — subclass `Node`, then `register_node_kind(name, cls)`
-  at import, or reference `pkg.module:Class` directly (no registration;
-  an import path can never be `owned`). Project-specific kinds belong in
-  a child package (`children/README.md`), NEVER here — and the child is
-  the WHOLE adapter unit (ADR-0032): `pipeline_<venue>` sibling packages
-  are retired; do not reintroduce the pattern in code or prose.
-- **Trainable kinds** — a `train`/`signal` role subclasses
-  `TrainableNode` (ADR-0038), the only role a document may give
-  `mode`/`artifact`. `run` and `validate_inputs` are TEMPLATE methods:
-  implement `run_train`/`run_load` (both abstract) and the
-  `validate_common_inputs`/`validate_train_inputs`/`validate_load_inputs`
-  hooks; set `default_mode = "load"` for a kind that only ever loads and
-  make `run_train` its refusal. `default_mode` is graded against
-  `document.MODES` by `node_class_errors`, beside the `role` check — the
-  grammar and the dispatch read ONE vocabulary. Never override either
-  template method — the conformance bar checks both still resolve to the
-  base. Resolving a
-  pin is `Node.pinned_artifact` (node-level pin → declared param → wired
-  port) plus `Node.pin_port_problems`; they sit on `Node`, not the
-  trainable base, because `sb3-eval` (role `score`) needs them too.
-- **Library packs** — `libs/<lib>.py`: name the library only inside a
-  method (`run()` for node packs); expose a `NODE_KINDS` tuple +
-  `register()` — `libs/mlflow.py` keeps `NODE_KINDS` empty and its
-  `register()` claims a `SINK_KINDS` entry instead; ship abstract
-  bases with a small hook (`build_module`, `build_model`, `apply`) so
-  tier-3 code writes the domain, not the plumbing. The DECLARED kinds
-  (`torch-train`/`torch-predict`, `transformers-fit`) go further: the
-  document names the library class, `library_path_problems` /
-  `import_library_class` (base.py) validate it at plan time. The
-  PRETRAINED kinds (`transformers-encode`/`-classify`/`-forecast`,
-  ADR-0083) never name a hub: they pin an acquired snapshot by manifest
-  hash (`root`/`snapshot`/`stream`) and resolve it once per PIN per
-  instance through the read seam's `verified_payload_dir`, imported at
-  function depth like `scan_stream`; `build_model` / `build_tokenizer` /
-  `vectors` / `column_names` / `context_length_of` / `forecast` are their
-  hooks. `transformers-forecast` claims only the models whose forward
-  takes `past_values` alone and returns `prediction_outputs` (PatchTST,
-  PatchTSMixer) — a load-time probe refuses everything else BY NAME, and a
-  Chronos- or TimesFM-shaped forecaster is a subclass supplying the hooks.
-  Loads are `output_loading_info=True` + `use_safetensors=True`: a
-  non-empty `missing_keys` refuses, unused weights are only logged.
-- **Kronos** — `libs/kronos.py` is the non-Transformers-model counterpart:
-  a clean source revision and two verified WORM snapshots produce frozen,
-  causal session hidden states in one shared content-verified cache (ADR-0102).
-- **Reading an acquired stream** — the `observations` kind
-  (`libs/observations.py`, ADR-0077) fronts `dskit.onboarding`'s
-  `scan_stream`: children subclass `ObservationRows`, narrow `_PARAMS` to
-  the knobs their domain decides (`key_fields` is a fact about the stream,
-  not a document knob), and override `project()` to turn the deduplicated
-  rows into their record envelope. The scan is memoized per INSTANCE, so
-  `fingerprint()` at resolve and `run()` at execute see one snapshot;
-  `scan_stream` is imported inside the scan, never at module top.
-- **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
-- **Corrections** — `register_correction` (`stats.py`);
-  `bh`/`bonferroni`/`none`/`weighted-bh` ship. `needs_weights` metadata
-  gates the stat_test `weights` input port (plan-time mirror in
-  `planner.py`; the stage-list grammar refuses weighted corrections).
-  The STATISTIC itself (`METHODS`: plain | studentized) is a closed
-  tuple by owned-kind doctrine — never registrable.
-- **No-information / h*** — `no_information_test` /
-  `max_informative_horizon` (`stats.py`, ADR-0057). One time-ordered
-  `(y, ŷ)` series vs a mean; Newey–West `lags` is overlap in **steps**.
-  Not a `stat_test` `method`. A panel is the caller's to collapse or
-  test per unit. `clark_west_series` can feed `cluster_bootstrap_t`
-  when the independence unit is a cluster. `newey_west_mean` and
-  `across_fold_t` share ONE no-variance rule (`stats.NO_VARIANCE_RTOL`,
-  relative to the largest magnitude): a float-noise-constant series has
-  `t` None, never ~1e16. Do not restate that tolerance in a caller.
-  `NeweyWestInterval` inherits it: a float-noise-constant sample is refused
-  ("no spread") like an exactly constant one, never bracketed a few ulps wide.
-- **Split policies** — `register_split_policy` (`split_policy.py`);
-  `record` / `event-open` / `event-close` ship. An event policy needs a
-  data node implementing `event_bounds()`, and the driver refuses when
-  none supplies it — never a silent fall-back to `record`.
-- **Stage-list seams** — `register_transform_kind`,
-  `register_optimizer_kind` (empty by design), `register_sink_kind`,
-  `BackendRegistry` (zero venues ship — the mechanism is the product).
-- **Fitted transforms** — subclass `FittedTransform` (`fitted.py`) and
-  implement `fit(rows, params) -> state` + `apply_state(state, rows,
-  params) -> rows`. The base owns the rest: the `fit_split` selection,
-  the JSON sidecar, the restore under `mode="load"`, the purity screen,
-  and the metrics. It is `TrainableNode`'s subclass, so `mode` is never
-  yours to handle. Two rules bite: `apply_state` must be PURE and
-  ROW-INDEPENDENT (the screen re-applies it to one row alone), and the
-  `rows` port carries EVERY input row — `fit_split` says what was
-  LEARNED from, never what is emitted. Override `state_problems(state)`
-  when a knob DESCRIBES the state rather than sitting beside it (the
-  scaler's `features` does): under `mode="load"` a document may restate
-  what a state is and never misdescribe it, and a knob `apply_state`
-  never reads is where train/serve skew hides. Override
-  `sidecar_problems(payload)` (ADR-0160) when a restore must be refused on
-  a fact the base does not own: the base compares `fit_split` only when the
-  DOCUMENT declared one, and ADR-0040 lets a load omit it, so a member whose
-  state is meaningful from exactly one split has nowhere else to say so. It
-  is asked UNCONDITIONALLY in `_sidecar` and defaults to `[]` — every
-  pre-ADR-0160 member keeps that default, pinned in `test_fitted.py` and
-  `test_selector.py` on their existing fixtures. Override
-  `row_problems(rows)` for the member's own INPUT shape: it is asked on
-  both doorways — this node's stream and the second stream an
-  `apply-transform` wires its carrier to — so the sibling half cannot
-  validate clean and die inside `apply_state`. A knob `validate_params`
-  can judge belongs THERE and not in `state_problems`: the scaler's
-  duplicate `features` used to fit and write a sidecar, then have the
-  same document refuse its own artifact on the load-mode rerun. The
-  screen's comparison is nan-equal (`_same`), so a member may mark an
-  absence the way the rest of the repo does. The family's BASE knobs are
-  UNSEARCHABLE (`planner.unsearchable_space_why`, ADR-0044): a trial
-  override is never plan-checked, so a space addressing `fit_split`
-  would fit on the split its objective scores. A member's own knob is
-  searchable — that is owner flow 2. `fit_split` must name a split the document
-  actually CARVES, not merely one in the vocabulary — `fit_split: "cal"`
-  under a splits section with no cal band refuses at plan, where it used
-  to reach run and refuse naming the ROWS. And the fit rows arrive in
-  `order_field` order only so far as they can: a DECLARED `order_field` a
-  fit row cannot answer refuses by name, while a merely defaulted one
-  under a cluster-keyed cut (which reads no instant at all) leaves them
-  in the stream's order.
-- **Feature selectors** — subclass `FeatureSelector` (`fitted.py`,
-  ADR-0042) and implement ONE hook, `surviving_features(rows, params) ->
-  names`. `fit`/`apply_state` are the BASE's and are already written: the
-  state is `{candidates, features}`, the projection drops only the
-  REJECTED candidates (a row stripped to its features could neither be
-  trained on nor cut), and survivors are canonicalized to the order the
-  document DECLARED — return them in any order you like. The extra
-  `features` output exists because the surviving list cannot be written
-  into a document; the model below reads `"$select.features"`. Need more
-  than rows (importance off a fitted net)? Declare the port in
-  `validate_train_inputs` and read it with `wired(port)` — the hook's
-  signature is the family's and does not change. Two packs ship members:
-  `sklearn-select` (any selector by import path — `get_support` is the
-  whole requirement) and `torch-importance` (input-gradient sensitivity
-  over a wired `signal`). The family's other sklearn member,
-  `sklearn-segment` (ADR-0160), is NOT a selector: it is a plain
-  `FittedTransform` whose catalog is deliberately CLOSED
-  (`kmeans`/`minibatch_kmeans`/`birch`) because it persists EXTRACTED
-  centers and labels as JSON instead of a pickled model, and only those
-  three are known to expose them. It carries no
-  `serving_load_audited` licence — ADR-0160 adds no production authority —
-  so `serving_effect` answers `forbidden`. ADR-0044 made a member's own knobs searchable,
-  so owner flow 2 (a space over `select.n` / `select.selector`) plans
-  and runs; the family's three leakage knobs still refuse.
-- **Fold execution** — `BoundedFoldRunner` (`folds.py`, ADR-0093). Subclass
-  it and override `spawn(index, argv, cwd, env)` to change how ONE fold runs
-  — never the pooling; the override runs on a pool thread and must be
-  thread-safe. The cap is the caller's (`memory_limit_bytes`, no default
-  here, never divided); the width is the environment's (`env_var`, unset =
-  1, empty refused, an explicit `workers` wins, never a document's).
-  `measure_one` reads the peak in a fresh measuring interpreter whose one
-  child is the fold, so any stage may call it, in any order; an override
-  must run its fold through the default `spawn` or there is no reading.
-- **Model benchmarks** — `benchmarks.py` is a protocol over ordinary
-  candidate documents, never an estimator registry (ADR-0097). Candidate JSON
-  owns representation, leakage-safe feature policy, inner HPO, seeds, and
-  compute class. `BenchmarkPlan` must remain read-only and reject duplicate
-  identities, contract drift, and generic search nodes under walk-forward;
-  `BenchmarkApproval` must bind the exact reviewed inventory hash before
-  `BenchmarkRun`, the only candidate-executing stage; `BenchmarkCompare` reads
-  paired outer folds and never promotes a winner. Disabled candidates name a
-  prerequisite and do not count as attempts. `BenchmarkSelect` (ADR-0106)
-  joins several completed zoos' pinned `compare.json` artifacts and names one
-  winner by a config-declared `decision_metric` + `select` direction; it
-  reads only the emitted `ranking` rows, refuses incomplete sources, and
-  never promotes. Until walk-forward records a
-  portable resource contract, call `compute_rank` declared—not measured.
-- **One name per shared vocabulary.** `node.class_ref(cls)` is the
-  `module:QualName` an artifact sidecar RECORDS and load mode compares —
-  three modules used to write that f-string out, and a divergence there
-  orphans stored artifacts rather than returning a wrong number.
-  `split_policy.SPLIT_NAMES` is the split vocabulary (`document.py`
-  re-exports it as the document's), because the score nodes, the sb3
-  pack and the straddle report all ask it and `cal` was added to it once
-  already. `records.number_ok` is "a non-bool int or a finite float" —
-  `price_ok`/`lead_frac_ok` narrow it, the numpy pack lifts cells and
-  order keys by it, and `fitted.py` reads instants and features by it; a
-  private copy is how one record lifts on one side of a wire and is
-  refused on the other. `planner._carved_splits(document)` is which
-  split names a document's cuts actually PRODUCE (`cal` only where a
-  band is declared), asked by the `score` reader and the
-  `fitted_transform` fitter alike.
-- **Conformance** — point `conformance_suite(registry=, probes=,
-  expected_roles=)` at any pack; probes are behavioural, not optional
-  (`require_probes=False` is a written-down decision).
-
-## Gotchas
-
-- **Journal (ADR-0056).** ``run_document`` / ``run_walk_forward``
-  function-import ``dskit.journal`` after RECORD. Module-level is
-  still illegal. Folds pass ``journal=False``. Pytest is a no-op.
-  An uninitialized child refuses.
-- **`_Trackers` SWALLOWS every sink exception** (`driver.py:139-153`) so
-  telemetry can never kill a run. Deliberate, and never to be "fixed" —
-  the consequence is that a misconfigured sink logs nothing and SAYS
-  nothing, so a sink must validate LOUDLY where the swallow cannot
-  reach: `validate_params` (runs in `SinkConfig.__post_init__`, i.e. at
-  plan) and the constructor (`_open_sinks` runs before the node loop).
-  `libs/mlflow.py` is the worked example — default-deny knobs plus a
-  stdlib reachability probe of the tracking URI, both at plan time; its
-  module docstring carries the whole rationale.
-- **…but a sink that RAISES at construction kills the run.**
-  `run_document` calls `_open_sinks` one line ABOVE the `try` that wraps
-  `_resolve_run`, so a `ConfigError` from a sink
-  factory aborts the run before a single node executes. That is right
-  for a MISconfiguration and wrong for a destination having a bad day,
-  and the two look identical from inside the `except`. `libs/mlflow.py`
-  splits them by whose fault they are: mlflow missing, a non-active
-  experiment or a store family the installed mlflow refuses raise —
-  each names something a human can change; a degraded `http`/`https`
-  server that passed the TCP probe, and a LOCAL store that is merely
-  BUSY (sqlite lock contention, read off the DBAPI's error classes),
-  disable the sink and log a warning. "The probe already proved it
-  writable" does NOT make a later local failure the document's fault —
-  contention is the ordinary cost of a shared store, and treating it as
-  misconfiguration kills correctly configured runs. A new sink pack
-  must make the same split, and must bound its own remote calls — a
-  telemetry destination that HANGS stalls the run just as fatally as
-  one that raises, and no swallow catches a hang.
-- **A store family owns BOTH its probe and its failure semantics.**
-  `libs/mlflow.py` keeps them in one class-level table
-  (`MlflowTracker._DESTINATIONS`: scheme -> `(probe, remote)`) read by
-  `probe_destination` and `destination_is_remote`. The version that
-  advertised only the probe hook, and decided remote-ness from a private
-  module table, handed every subclass failure semantics it never chose.
-  If you extend a seam, extend all of what the extension decides.
-- **`Tracker.close()` carries no status** and the driver calls it from a
-  `finally` on every path, so a sink cannot tell a crashed run from a
-  clean one — an mlflow run reads `FINISHED` either way. Giving it one
-  is core's change (`protocols.py` + both call sites + the `memory`
-  sink), i.e. an ADR; a pack must not guess from `sys.exc_info()`. What
-  a pack CAN do, and `libs/mlflow.py` does, is create its remote run
-  lazily on the first log, so a run refused before execution leaves no
-  empty `FINISHED` run behind at all.
-- **Tracking config is hash-EXCLUDED, and excluded a second way.**
-  `tracking` is in `DOC_NON_IDENTITY_SECTIONS` (and in base's
-  `NON_IDENTITY_SECTIONS`) beside `env`/`outputs`/`schedule`: WHERE
-  metrics land is placement, and identity grades what a run COMPUTES.
-  But `to_obj` emits a `"tracking"` key for EVERY document, and the
-  recipe REMOVES an excluded key — so removing it would have moved
-  every hash in the repo, sink or no sink, orphaning every run dir and
-  stored artifact. Excluded sections named in `NULLED_IDENTITY_SECTIONS`
-  are therefore rendered UNDECLARED (`null`) instead of removed, which
-  excludes them just as completely and leaves the canonical JSON
-  byte-identical — the same reasoning as `walkforward`'s emit-only-when-
-  present. Adding a section to an exclusion list AFTER documents exist
-  always needs that treatment. Pinned in
-  `tests/pipeline_libs/test_mlflow.py::TestHashPlacement` (identity and
-  a golden hash), `test_env_outputs.py` and
-  `test_driver.py::test_the_run_hash_ignores_the_tracking_section` —
-  the driver keeps its own copy of the recipe.
-- **The numpy pack registers no kinds** — `ArrayMap`/`ArrayFeatures`
-  (and the concrete `ReturnWindows`) subclasses wired by import path only.
-- **An overridden numpy accessor NARROWS `_PARAMS`** (ADR-0040). Answer
-  `fields()`/`max_gap()`/… from your own vocabulary and you must drop that
-  knob with `narrow_params`, or default-deny approves a value the run
-  discards. It is a REFUSAL, not a convention:
-  `accessor_narrowing_problems` reports through `validate_params`, so the
-  class fails to construct — and it is DERIVED from the MRO, never a
-  table of knob names, so a knob that gains an accessor (including one
-  YOUR subclass invents) is covered the day it exists rather than the day
-  someone remembers to list it. The mirror rule: every per-knob check in
-  that pack is guarded by `if "<knob>" in cls._PARAMS`, or a narrowing
-  subclass would be refused for omitting a knob it does not have.
-- **`keep_mask` compacts, and `latest_rows` therefore checks the MASK.**
-  Dropping a position makes the survivors adjacent, which is what
-  TRAINING wants and what SERVING must not have: a group whose newest
-  position was masked out is ABSENT from `latest_rows`, never served the
-  newest survivor wearing a one-bar-old stamp. The other half is
-  unconditional too: an INCOMPLETE newest row is absent whatever
-  `drop_incomplete` says — that knob governs what `run` EMITS, and a
-  serving vector half full of warm-up NaNs is not the truth about now.
-- **A carried `group` is normalized by the ENVELOPE's rule**
-  (`records.cluster_ok`, imported — the `price_ok` precedent). A dict
-  record is interchangeable with a `MarketRecord` throughout that pack,
-  so a `group` the envelope would refuse rides as absent: a random split
-  hashes `"{seed}:{cluster}"`, and passing `5` through would bucket the
-  row differently from the envelope's own answer.
-- **A row's split identity is `records.cluster_of`, one function.** The
-  envelope publishes `cluster` as a PROPERTY, but a feature row carries
-  the raw `group`/`contract` it was built from and no `cluster` key at
-  all — so a reader that picked one vocabulary silently mis-cut the
-  other. `cluster_of` reads `cluster`, then `CLUSTER_FIELD`, then
-  `CONTRACT_FIELD`, each held to `cluster_ok`: an unusable id (`""`, an
-  int) hashes exactly like a missing one, so it must not become a bucket
-  of its own.
-- **`keep_mask` drops are COUNTED** (`n_dropped`, and the `array
-  features`/`array map` log lines). Compaction destroys the evidence, so
-  the count is taken before it — a vendor outage that zeroes prices has
-  to be visible somewhere, and "everything is counted and logged" is the
-  pack's promise.
-- **Base `Node.validate_params` accepts anything.** The deny lives in
-  each class (`_PARAMS` + `_reject_unknown`); forget it and typos pass.
-- **Owned kinds** (`validate`, `stat_test`, `run-report`): documents
-  cannot substitute their class — the statistics are not config-swappable.
-- **`$prev` refs are legal inside `params` only**; any other `$`-string
-  is refused. `$splits.<field>` reads the materialized split
-  (`val_start_ms` appears there ONLY when an embargo is set,
-  `cal_start_ms` only when a cal band is declared — ADR-0034,
-  `train_start_ms` only when train is bounded — ADR-0050).
-- **Trailing splits DO materialize** — from `Node.data_edge()`. Integer
-  `train_days` stamps `train_start_ms` (ADR-0050); `"all-prior"` leaves
-  train unbounded on the left.
-- **`$splits.train_start_ms` appears only when bounded**, same omission
-  discipline as `val_start_ms` / `cal_start_ms`.
-- **A `clock` section parses but refuses to run** — declared design.
-- **Document identity excludes `env`, `outputs`, AND `schedule`**;
-  the stage-list grammar excludes only `env`/`outputs`. The
-  `walkforward` section IS identity and is EMITTED ONLY WHEN PRESENT —
-  same for `val_start_ms`/`embargo_days`/`cal_start_ms`/`cal_days` on
-  splits: an always-emitted null/zero would move every pre-ADR-0027
-  document's hash. Keep that omission discipline for any future
-  optional field.
-- **Walk-forward folds are separate run series** — the driver suffixes
-  each derived document's name `-wf-<cutoff>`, so a `$prev` carry binds
-  within one fold's history, never across folds.
-- **HPO inside walk-forward MEASURES the tuning procedure (ADR-0043)** —
-  it is NOT nested CV, and no docstring here may imply it is: a fold's
-  evaluation window IS its val split, the planner forces every search
-  objective onto a `val` score node, and folds refuse a cal band, so
-  nothing de-biases a fold's own score. Cost is folds x (one base pass +
-  that fold's executed trials + one winner pass) — but the summary's cost
-  line prints only what `_search_cost_line` COUNTED off the fold records
-  (folds that searched, trials executed, winner passes applied), because
-  a fold that halted before the search node, or whose search raised,
-  never paid the shape. Shipping is the plain `run`; freezing a winner is
-  an EDIT of the document (pin the values, drop the search node) and
-  moves its hash by design — there is deliberately no `freeze` knob and
-  no `search_mode`, and adding one would be a second way to say it. The
-  fold-internal outer band that WOULD de-bias the estimate is deferred,
-  not forgotten.
-- **The search diagnostic is emitted only when non-empty** — a fold row
-  and the aggregate grow a `search` key only when a fold ran a search
-  node, and `_walkforward_search_lines` returns `[]` rather than an
-  empty section, so an HPO-free summary stays byte-identical
-  (`test_walkforward.py::test_an_hpo_free_summary_is_byte_identical`
-  restates the whole report independently and pins it). Same omission
-  discipline as the optional document fields — for the same reason.
-- **A search winner is recorded by PRESENCE, never coerced** —
-  `_search_record` copies `best_params`/`best_score` under the run's own
-  names (`winner`/`winner_score`) only when the kind emitted the key, so
-  "no winner produced" and "a winner of `None`" stay distinguishable; a
-  value JSON cannot hold is NAMED in `winner_dropped`, never summarized
-  into a printable stand-in the search never chose. It is populated
-  BEFORE `apply_winner`, so a winner-flip refusal still reports the
-  winner that caused it. `_json_text` is the single JSON-legality rule
-  the record and `carry.json` share, and `_SEARCH_WINNER_FIELDS` (read
-  back through `_winner_names`) is the single owner of the two spellings
-  — a reader that re-spelled `winner` would silently report every fold as
-  winner-less. The aggregate row prints the dropped count beside the
-  distinct one: without it, "2 folds with a winner, 1 distinct" reads
-  exactly like two folds that agreed.
-- **Read `document.expanded`, never `document.pipeline`, in the engine**
-  (ADR-0039). `pipeline` is what was WRITTEN; `expanded` is what RUNS —
-  and with no `foreach` section it IS `pipeline`, the same object, so the
-  switch is byte-identical today. `expanded` and `foreach_groups` are
-  `init=False` derived fields that `to_obj` NEVER emits, which is what
-  makes them provably not hash material (the hash reads `to_obj` alone).
-  A new engine site reading `pipeline` would silently skip every
-  fanned-out instance.
-- **`"$each"` is a reserved token, not a reference** — `is_node_ref`
-  excludes it, so every walker composed of that predicate steps over it
-  and outside a template it rides through as a literal. Substituted as a
-  WHOLE value only; as a params dict KEY it refuses.
-- **A `foreach` template may not pin a node-level `artifact`** — which
-  refuses `mode: "load"` templates, since the grammar couples the two.
-  Rule 3 substitutes into `params` only and whole-value only, so the
-  per-instance PATH cannot be spelled at all; a shared pin would bind N
-  instances to one stored model while their training half wrote an
-  artifact dir each (`Node.artifact_dir` keys on the node key), and only
-  the loud half of that asymmetry is visible. The expressible forms are a
-  `default_mode = "load"` kind taking its reference from a param or a
-  wired port, or longhand nodes. ADR-0039 is silent here; this is the
-  reading, and widening it later is additive.
-- **A search `space` key is the one node reference spelled without a
-  `$`** — an override PATH, `'<node>.<param.path>'` — so the `foreach`
-  expansion re-aims it exactly as it re-aims a wire (ADR-0039, "search
-  spaces come for free"): at THIS instance inside a template, at EVERY
-  instance in a shared node, so N instances take one declaration instead
-  of N copies nothing pins. It needs no `__each` opt-in, because a head
-  either names a template or does not, where a port's fannability is
-  unknowable. The param name is `document.SEARCH_SPACE_PARAM`, imported
-  by the planner and the driver; a new params key whose KEYS address
-  other nodes must join that rewrite or it will address a template that
-  is not a node.
-- **A search `space` value's grammar is SPLIT, not the kind's alone** —
-  the planner owns the structural rules (key shape, declared params,
-  ancestors of the objective, winner-consistency) AND the one shape
-  every search kind shares: a LIST value must be non-empty and hold
-  JSON scalars (`planner._is_json_scalar` — restated in
-  `kinds_search`, the two pinned to agree), and a DICT value must be
-  non-empty — `{}` refuses at plan like `[]`. Past that a dict passes
-  through untouched: its INTERNALS are the kind's range-spec form.
-  `optuna-search` accepts both; `hpo-grid` refuses range dicts and pins
-  that refusal itself. Adding a search kind means writing that value
-  grammar **within** the list/dict shapes above — a list of objects, or
-  an empty value of either shape, is refused by the planner before your
-  kind is consulted.
-- **A search node's params defer plan-time `validate_params` whenever a
-  param carries an unresolved `$`-ref** — the `objective` contract
-  normally guarantees one, so a bad range spec usually refuses when the
-  node is CONSTRUCTED mid-run, after the upstream nodes executed. The
-  deferral is ref-driven, not kind-driven: with no ref anywhere in
-  params, the kind's validator DOES run at plan. A guaranteed plan-time
-  gate would be a new planner↔kind protocol — ADR first.
-- **Generic search values** - CandidateInventory, TrialLedger, and
-  OneStandardErrorSelector are plain values, not nodes. Reuse canonical grid
-  ordering; callers own the eager max_candidates cap, evidence fields, SE units,
-  and simplicity. TrialLedger binds an exact CandidateInventory value; standard
-  errors are nonnegative at admission (negative zero
-  canonicalizes to 0.0); a rejected ledger row must leave no consumed member behind (ADR-0113).
-- **TrialLedger's concurrency contract is public, not incidental** — its
-  class docstring is the source of truth (thread-safe/process-local,
-  reserve→freeze→commit atomicity, duplicate-admission and
-  interruption/retry behavior); every clause there has a test in
-  `TestTrialLedgerConcurrencyContract` (ADR-0113). Do not extend `record()`
-  without extending both.
-- **SelectionRecord has no public constructor** — `SelectionRecord(...)`
-  always raises; only `OneStandardErrorSelector.select()` builds one, via
-  the internal `_build`/`_seal` factory that validates the exact
-  nine-field schema and cross-checks both digests against the real ledger
-  (never a caller-supplied string). Simplicity keys are ordered by
-  `_ordering_key`'s canonical tagged total order (numbers < strings <
-  tuples, recursively) — never raw Python `<` — so two keys of different
-  types are always comparable and never silently tied (ADR-0113).
-- **Multi-head estimator bundles** — `write_bundle`/`load_bundle`/
-  `EstimatorBundle` (`libs/sklearn.py`, ADR-0114 Phase 2) generalize
-  `SklearnFit`'s single-estimator `sklearn-joblib-v1` artifact to an
-  ORDERED, caller-NAMED mapping of many fitted estimators ("heads") in
-  one joblib file plus one JSON manifest — a plain value API, not a node
-  kind. The digest is the single-estimator artifact's S2-A rule widened
-  to the whole manifest (joblib bytes + every schema-bearing field;
-  `sha256`/`library_versions` stay provenance-only, excluded); load also
-  REPLAYS the manifest's own deterministic `predict_fixture` through the
-  restored heads and refuses on a `predict_checksum` mismatch, catching
-  a restored head that does not reproduce write-time beliefs even when
-  the on-disk bytes verified clean. A head name is a plain identifier
-  (`_HEAD_NAME_RE`) so it can never escape the bundle's own directory.
-  `node.atomic_write` (moved here from `kinds_table.py`, which now
-  imports it) is what makes the joblib write itself atomic;
-  `SklearnFit`'s own single-estimator `joblib.dump` is unchanged.
-  `driver._atomic_write_text` stays a separate, deliberately inlined
-  copy — not an import-graph barrier (`driver.py` already imports from
-  `node.py`), just outside this ADR's authorized file list and serving
-  an unrelated purpose (one JSON node record, not a multi-file bundle).
-- **Spent record streams are released** (ADR-0048). After a node's last
-  `$` reader runs, a list of length `>= 256` (or too big to carry) is
-  replaced with `_summarize` and the pinned instance is dropped. A
-  not-yet-run search still holds its objective's ancestors. `_carryable`
-  never `json.dumps` those streams. `flags` is kept. Do not re-derive
-  the length floor — `_RELEASE_MIN_LEN` is the one name.
-- **Durable JSON is explicit.** Wrap evidence in `node.JsonArtifact`; the
-  driver atomically writes canonical content-addressed bytes and substitutes
-  the small path/digest/size/media-type manifest before release and RECORD.
-  Never raise the carry ceiling or infer persistence from output size.
-- **An occupied run dir refuses** — reruns need a new asof or name.
-- **`runs.py` reads RECORDS, never `report.md`** — a `metrics` dict is
-  summarized out of `nodes/NN-*.json` and recovered from `carry.json`;
-  the numeric rule is restated by `driver._node_metrics`, the two copies
-  pinned in `test_runs.py::TestMetricRulePin` (same for the run root).
-- **Two markdown emitters, ONE pipe-escape.** `runs.py` and
-  `driver.py` both print tables and their FORMATS are free to differ —
-  a table's shape is taste, which is the ruling that let the second
-  emitter ship. Escaping is not taste: a raw `|` ends a cell and hands
-  the row a phantom column, so `runs._escape_pipe` is the single owner
-  and `driver._md_cell` calls it. What each emitter still decides for
-  itself is WHICH values need escaping. Pinned in
-  `test_runs.py::TestTableRendering`.
-- **Every `RunSummary.note` is PRINTED by the verb** — on refusals too,
-  and BEFORE the refusal. `--limit` < 1, a `--metric` nothing scanned
-  reported, and a `--param` path nothing scanned declares are refused,
-  so a blank cell means "did not measure (or declare) it", nothing else.
-- **The run-dir layout is named by `runs.RESULT_FILE`…`NODES_DIR`**;
-  `dskit/assets/ingest.py` cannot import pipeline, so its copy is pinned
-  in `test_runs.py::TestRunDirLayout`. `resolve.py`'s legacy stage-list
-  tree and `{data_root}/pipeline_runs` default are SEPARATE knobs.
-- The purity gate (`tests/pipeline/test_purity.py`) fails on ANY
-  module-level import outside stdlib + this package — heavy imports go
-  inside `run()`.
-- The synthetic `stat_test` is owned in DEMO registries only; never
-  register synthetic nodes into `DEFAULT_NODE_KINDS`.
-- **`wing_twcrps` is NOT the study's `tail_crps`** (ADR-0236): it weighs each
-  wing side by a normalized density (1/4 per unit on `[[-2.5,-.5],[.5,2.5]]`).
-  Train on `tail_crps` to match `weighted_crps`; `TorchCDF` and
-  `BoostedTorchCDF` share ONE loss through `_CompositeLossCDF` — never copy it.
-- **Binary-market readers take the venue's field map as params** (ADR-0256):
-  every `*_field` is required with no default and the vocabularies are params;
-  the venue's map lives in the child's config. `instant_ms` restates
-  `production.base.parse_utc_ms` (a pack may not import production); a test pins them.
-- **`BinaryCoherence` needs a QP-capable solver** (ADR-0257): `solver` has no default; pyomo's
-  `appsi_highs` refuses a quadratic objective, `highs` solves it. An LP that is infeasible because the
-  declared relations contradict each other raises, it is not a coherence verdict. `tolerance` gates only the
-  verdict; leg and relation dust is `LEG_DUST` relative to the largest dual, and an infeasible verdict whose legs
-  are empty or cannot profit raises by name. The projection is WHITENED (`u = p / s`); never go back to
-  scaling by the largest weight (it hung HiGHS and returned wrong optima). `min_spread` is in
-  [`MIN_SPREAD_FLOOR`, `MIN_SPREAD_CEILING`] = [0.01, 1] (below the floor HiGHS returned suboptimal points as
-  optimal; above the ceiling every weight is equal), and EVERY projection is certified: `_certify` bounds its
-  error by the duality gap of the QP's relation multipliers and refuses a bound above `PROJECTION_BOUND_LIMIT`
-  (1e-2) by name; `summary["projection_bound"]` reports it (0.0 on the exact shortcut, None if nothing was
-  projected). A multiplier of the wrong sign counts as zero (it can only loosen the bound). HiGHS gets
-  `qp_iteration_limit`/`time_limit` defaults under `solver_options`; a stop is refused, never reported.
-  One quote reader, `_sides`: a one-sided row stays in its relations, fair None, `bad_quote` (owner ruling B).
-- **Binary keys are SCALARS** (`binary_curve.row_key`, ADR-0257): a non-empty str (read by
-  `str.__str__`, never `str(x)`; no Unicode normalisation) or a non-bool int (numpy ints and `IntEnum` by
-  value). `1` and `"1"` differ. None, absent and `""` are MISSING (`no_chain` / `no_curve`); bool, floats,
-  Decimal, pandas NA, lists, tuples, dicts and every other object are REFUSED by name (`bad_chain_key` /
-  `bad_curve_key`). Never widen it back to nested values: a composite key is a LIST of columns in config
-  (`chain_fields`/`quote_chain_fields`, `curve_key_fields`/`curve_id_fields`, read by `fields_key`).
-  `BinaryCoherence` reads every id (rows and relation params) through `row_key`. `DigitalBounds` reads a
-  right through ONE method, `_right`, and refuses a nonzero price, strike or discount below `PRICE_FLOOR`
-  on its own check (never `records.price_ok`). Never reintroduce a chain-wide tolerance: each edge carries
-  its own proven error (module docstring).
+Both live in [EXTENDING.md](EXTENDING.md): every registry and doorway
+(node kinds, trainable kinds, library packs, metrics, split policies, fitted
+transforms, feature selectors, fold execution, benchmarks, search values,
+bundles, run attestation, uncertainty intake and sets, conformance) and the
+rulings that bite when you extend them. Open it before adding a seam.
 
 ## Contents
 
@@ -554,6 +50,8 @@ dskit/pipeline/
 ├── workflow.py        manifest runner: chained pipeline steps from neutral templates (ADR-0227)
 ├── workflow_hooks.py  study strategies: candidate generators, stage sequence, collectors, no-gain rule (ADR-0229)
 ├── workflow_report.py verified report from a workflow ledger: md + html + csv, refuses on hash mismatch
+├── workflow_batch.py  workflow-batch: one workflow process per lane, parallel, retry, resume, batch.json
+├── workflow_rollup.py cross-lane table (csv + sortable html): skill intervals, verdict, failures
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        HorizonConquest: per-(unit,horizon) contiguous cap over
 │                      config-declared checks + slice stability (ADR-0107)
@@ -565,6 +63,8 @@ dskit/pipeline/
 │                      with the <5-name usability refusal (ADR-0068, `ordering` verb)
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
+├── outcome_interval.py block-conformal predictive intervals + joint scenario sets
+│                      over dependent residual vectors (ADR-0155)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
 │                      weekday-onehot, attach-by-identity — flow verbs (keyby: records ->
@@ -577,9 +77,13 @@ dskit/pipeline/
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
 ├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
+├── kinds_run_write.py RecordsWriteRun (records-write-run, a RecordsWrite subclass): `{run}` in the file stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085),
-│                      horizon-pairs (dated close paired with the close H days later, ADR-0228)
-├── kinds_stats.py     owned validate + stat_test
+│                      horizon-pairs (dated close paired with the close H days later, ADR-0228;
+│                      one series or one per `symbol_field`, ADR-0259)
+├── kinds_stats.py     owned validate + stat_test; CrossSectionIC (by import path, ADR-0259):
+│                      per-instant rank IC of named measures across names, a benchmark
+│                      partialled out, split/month summaries, drop census
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
 │                      are generic search values (ADR-0113).
@@ -590,6 +94,12 @@ dskit/pipeline/
 ├── release_rotation.py pure ReleaseRotationCalendar values: explicit UTC
 │                      anchor/cadence/training/embargo -> bounded pinned windows
 ├── synthetic_nodes.py demo/test nodes, private registries only
+├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
+│                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
+├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
+│                      relative_scale hook (ADR-0168); ScaleModelLocationScale +
+│                      LinearScaleLocationScale (log-HAR) fitted-scale rungs (ADR-0181)
+├── synthetic_paths.py SynthGjrPaths: seeded GJR-GARCH-t price path, known truth (ADR-0168)
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction
@@ -602,14 +112,32 @@ dskit/pipeline/
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
+│                      CalendarBlockBootstrap + EdgePaddedCalendarBlockBootstrap:
+│                      calendar-day block resampling, one `_blocks_for` hook (ADR-0258)
+├── binary_pricing.py  AveragedLognormal law, Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
 ├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)
 ├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0257)
 ├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0256)
+├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
+├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
 │                      to [floor, ceiling], a smile that dips below zero refused
 │                      (ADR-0182 tier placement)
+├── false_signal.py    pi_hat + a widened pi_widened per signal, from
+│                      out-of-fold evidence and a scramble null (ADR-0152);
+│                      pi_widened is a widened point estimate, not a bound
+├── mean_interval.py   MeanEvidence + MeanIntervalEstimator: mean, dependence-
+│                      aware SE, two-sided bounds; dependence never defaulted;
+│                      ConfidenceInterval only where coverage was measured
+├── uncertainty_set.py budgeted uncertainty sets: worst case over a set,
+│                      robust counterpart, weighted realizations
+├── uncertainty_intake.py  whether an artifact may inform THIS decision:
+│                      attestation + demand, six refusals, admission_problems
+│                      answering from the REGISTRY at use time, and a
+│                      ProbabilityUpperBound family no intake answers
+│                      (ADR-0165)
 ├── records.py         MarketRecord + accounting seams + WEEKDAY_TAGS / weekday_flags
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets
@@ -619,25 +147,32 @@ dskit/pipeline/
 ├── features.py        stage-list stream transforms
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry (no venues ship)
-├── libs/predictive_cdf.py offline conditional CDFs, pooled heads and JSON HPO (ADR-0189/0190)
+├── libs/predictive_cdf.py offline conditional CDFs, pooled heads and JSON HPO (ADR-0189/0190);
+│                      CurveMoments: a saved curve's analytic mean/sd onto its row (ADR-0259)
 ├── libs/              numpy, sklearn, torch + torch_ts (ADR-0041 zoo),
 │                      transformers (+ the pretrained encode/classify/forecast
 │                      trio over an acquired snapshot, ADR-0083), kronos
 │                      (frozen causal session states, ADR-0102), optuna,
-│                      pyomo, sb3, matplotlib,
+│                      pyomo, sb3, matplotlib, lightgbm (a fitted volatility-
+│                      scale rung, ADR-0181),
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
-│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0259)
+│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260)
+│                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date; underlying_close writes the moneyness denominator out, ADR-0259)
+│                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment),
+│                      parquet_series (ParquetSeries + prior_index + the stream-manifests node, ADR-0243),
+│                      vol_estimators (VolEstimatorFeatures: rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0256),
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          user-facing docs
+├── EXTENDING.md       extension points + gotchas (moved out of this file 2026-10-10)
 └── AGENTS.md          this file
 ```
 
 Keep both trees (here and in README.md) current when files change.
 
-**ADR-0259 panel zoo gotchas.** One `min_run` serves every lane (>= the widest `(window-1)*stride+1`); `PanelScore`
+**ADR-0260 panel zoo gotchas.** One `min_run` serves every lane (>= the widest `(window-1)*stride+1`); `PanelScore`
 refuses a model that declares another. Labels are stored as given, already divided by their scale; nothing divides
 twice. Head wings / bounds equal the `CommonGrid` values (the grid refuses a mismatch). A lane is `PanelTrain ->
 PanelScore` in a `walkforward` document; the unpooled regime is one lane per asset (a template cannot fan in).

@@ -9,7 +9,7 @@ library, but imports it only inside a method (``run()`` for a node pack)
 pack in a fresh interpreter with the library blocked from
 ``sys.modules``). This is the ONLY subdirectory the toolkit sanctions.
 
-The panel zoo (ADR-0259) is four more packs, all wired by import path with an
+The panel zoo (ADR-0260) is four more packs, all wired by import path with an
 empty ``NODE_KINDS``: ``array_panel`` (a memory-mapped panel, its bands and
 windows gathered by index), ``horizon_cdf`` (per-horizon distributions and
 the common scoring grid), ``panel_score`` (``PanelScore`` and two fit-band

@@ -30,7 +30,7 @@ refuses. A scale arm sets ``scales`` and the three window knobs, and ``taker_che
 list) so the node's row set is the same in every arm; :meth:`FeatureGroups.arm_params` is the one place that
 derives them, and a test pins the shipped manifests to it.
 
-Interim home: ``KeepRule`` and ``FoldScores`` are generic and graduate to dskit under ADR-0258 (PROPOSED, not
+Interim home: ``KeepRule`` and ``FoldScores`` are generic and graduate to dskit under ADR-0261 (PROPOSED, not
 yet approved); this module keeps them, unchanged, until that ADR is approved and built.
 
 Import cost: stdlib + dskit; numpy only inside the feature node's ``run``.

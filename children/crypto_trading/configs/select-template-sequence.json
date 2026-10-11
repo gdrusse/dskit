@@ -1,6 +1,6 @@
 {
   "name": "select-sequence-${A}",
-  "notes": "Walk-forward template for the SEQUENCE class on the minute PANEL (dskit array_panel / panel_torch / panel_score; ADR-0259). One arm = one ColumnSelector over the single panel `{panel.source}`, so every arm sees identical rows and labels; the manifest fills ${arm.*} per lane. The folds are an explicit expanding schedule on W1 only (the last validation window ends before 2026-05-01; a test pins it), the panel's W2 rows are never inside a fold's bands. The raw seq__ channels (1-minute return, log volume, taker share) are the same in every arm and never ablated, so a flow or vol verdict is marginal to them.",
+  "notes": "Walk-forward template for the SEQUENCE class on the minute PANEL (dskit array_panel / panel_torch / panel_score; ADR-0260). One arm = one ColumnSelector over the single panel `{panel.source}`, so every arm sees identical rows and labels; the manifest fills ${arm.*} per lane. The folds are an explicit expanding schedule on W1 only (the last validation window ends before 2026-05-01; a test pins it), the panel's W2 rows are never inside a fold's bands. The raw seq__ channels (1-minute return, log volume, taker share) are the same in every arm and never ablated, so a flow or vol verdict is marginal to them.",
   "pipeline": {
     "fit": {
       "uses": "dskit.pipeline.libs.panel_torch:PanelTrain",

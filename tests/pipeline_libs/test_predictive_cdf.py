@@ -5421,3 +5421,75 @@ def test_mixture_loss_spec_refuses_malformed_tensors():
         spec.loss(y, logw, mu[:, :2], sigma)
     with pytest.raises(ValueError):
         spec.loss(y.reshape(2, 3), logw, mu, sigma)
+
+# -- analytic moments and the CurveMoments node (ADR-0259) --------------------
+
+def _moments_ctx():
+    from dskit.pipeline.node import NodeContext
+    return NodeContext(name="t", asof="2026-01-01", run_dir="/nonexistent")
+
+
+def test_mixture_moments_are_the_analytic_mean_and_standard_deviation():
+    curve = MixtureCurve([[.25, .75]], [[-1., 2.]], [[.5, 1.5]])
+    mean, sd = curve.moments()
+    m = .25 * -1 + .75 * 2
+    second = .25 * (.25 + 1) + .75 * (2.25 + 4)
+    assert mean == pytest.approx([m]) and sd == pytest.approx([np.sqrt(second - m * m)])
+    student = predictive_cdf.StudentMixtureCurve([[1.]], [[0.]], [[2.]], degrees=5)
+    assert student.moments()[1] == pytest.approx([2. * np.sqrt(5 / 3)])
+    two_rows = MixtureCurve([[1.], [1.]], [[3.], [0.]], [[1.], [2.]])
+    assert two_rows.moments()[0] == pytest.approx([3., 0.])
+    assert two_rows.moments()[1] == pytest.approx([1., 2.])
+
+
+def _curve_rows():
+    return [{"symbol": "A", "quote_date": "2024-01-02", "spot": 10., "reference": .2,
+             "curve": {"kind": "mixture", "weights": [[1.]], "means": [[.5]], "scales": [[1.]]},
+             "extra": "dropped by keep"},
+            {"symbol": "B", "quote_date": "2024-01-02", "spot": 20., "reference": .1,
+             "curve": {"kind": "student_mixture", "weights": [[1.]], "means": [[0.]],
+                       "scales": [[1.]], "degrees": 5},
+             "extra": "dropped by keep"}]
+
+
+def test_curve_moments_node_writes_the_declared_moments_and_projects_to_keep():
+    node = predictive_cdf.CurveMoments("m", {
+        "curve_field": "curve", "reference_field": "reference",
+        "fields": {"sd_z": "sd_z", "sd_return": "sd", "mean_return": "mu"},
+        "keep": ["symbol", "quote_date", "spot"]})
+    out = node.run(_moments_ctx(), {"records": _curve_rows()})
+    a, b = out["records"]
+    assert a == {"symbol": "A", "quote_date": "2024-01-02", "spot": 10., "sd_z": pytest.approx(1.),
+                 "sd": pytest.approx(.2), "mu": pytest.approx(.1)}
+    assert b["sd_z"] == pytest.approx(np.sqrt(5 / 3)) and b["sd"] == pytest.approx(.1 * np.sqrt(5 / 3))
+    assert out["metrics"] == {"rows": 2, "kinds": {"mixture": 1, "student_mixture": 1}}
+    everything = predictive_cdf.CurveMoments("m", {
+        "curve_field": "curve", "reference_field": "reference", "fields": {"sd_z": "sd_z"}})
+    rows = _curve_rows()
+    assert set(everything.run(_moments_ctx(), {"records": rows})["records"][0]) == set(rows[0]) | {"sd_z"}
+    assert predictive_cdf.CurveMoments.role == "transform"
+    assert "CurveMoments" in predictive_cdf.__all__
+
+
+def test_curve_moments_node_refuses_by_row_and_default_denies():
+    good = {"curve_field": "curve", "reference_field": "reference", "fields": {"sd_z": "sd_z"}}
+    for bad in ({**good, "typo": 1}, {**good, "fields": {}}, {**good, "fields": {"sd_q": "x"}},
+                {**good, "fields": {"sd_z": "a", "sd_return": "a"}}, {**good, "fields": {"sd_z": ""}},
+                {**good, "keep": []}, {**good, "keep": ["symbol", "symbol"]},
+                {**good, "keep": ["sd_z"]}, {**good, "curve_field": ""}, {**good, "reference_field": 3}):
+        assert predictive_cdf.CurveMoments.validate_params(bad), bad
+    assert predictive_cdf.CurveMoments.validate_params(good) == []
+    node = predictive_cdf.CurveMoments("m", good)
+    row = {"reference": .2,
+           "curve": {"kind": "mixture", "weights": [[1.]], "means": [[0.]], "scales": [[1.]]}}
+    two_rows = {"kind": "mixture", "weights": [[1.], [1.]], "means": [[0.], [0.]],
+                "scales": [[1.], [1.]]}
+    for broken in ({**row, "reference": 0.}, {**row, "reference": None}, {**row, "reference": True},
+                   {**row, "curve": {"kind": "grid"}}, {**row, "curve": None},
+                   {**row, "curve": {"kind": "mixture", "weights": [[1.]]}},
+                   {**row, "curve": two_rows}, {**row, "sd_z": 1.}):
+        with pytest.raises(ValueError, match="row 1"):
+            node.run(_moments_ctx(), {"records": [row, broken]})
+    with pytest.raises(ValueError, match="row 0"):
+        predictive_cdf.CurveMoments("m", {**good, "keep": ["missing"]}).run(
+            _moments_ctx(), {"records": [row]})

@@ -382,21 +382,85 @@ def pooled_name_time_ic(y, yhat):
     }
 
 
-def _stamp_groups(stamps, series, y, yhat):
-    """Group aligned rows into ``{stamp: (names, y, yhat)}``, stamp-sorted."""
+#: Below this residual spread a partial correlation is undefined, not small.
+_PARTIAL_EPS = 1e-12
+
+
+def partial_spearman(x, y, z):
+    """Spearman rank correlation of ``x`` and ``y`` with ``z`` partialled out.
+
+    The correlation of the two residuals left when the ranks of ``x`` and
+    of ``y`` are each regressed on the ranks of ``z`` — computed as the
+    first-order partial correlation of the three pairwise Spearman
+    correlations, which is the same number. It is the "beyond ``z``"
+    question: a forecast ``x`` that is a monotone function of a benchmark
+    ``z`` and nothing else has no partial correlation with the outcome
+    ``y``, however well ``z`` itself orders ``y``. It is NOT the
+    correlation of ``x / z`` with ``y / z``: a shared denominator
+    correlates two independent numerators (Pearson's spurious ratio
+    correlation), so that ratio rewards noise.
+
+    Parameters
+    ----------
+    x, y, z : list or tuple of float
+        Equal-length sequences of at least two finite numbers.
+
+    Returns
+    -------
+    float or None
+        The partial rank correlation in ``[-1, 1]``, or ``None`` when a
+        sequence is constant or ``x`` or ``y`` is a monotone function of
+        ``z`` (a residual with no variance leaves the number undefined).
+
+    Raises
+    ------
+    ValueError
+        On lengths that disagree, fewer than two triples, or a non-finite
+        cell.
+
+    Examples
+    --------
+    An outcome that tracks the benchmark exactly leaves nothing to explain::
+
+        partial_spearman([1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4])  # None
+    """
+    xy, xz, yz = spearman(x, y), spearman(x, z), spearman(y, z)
+    if xy is None or xz is None or yz is None:
+        return None
+    spread = (1.0 - xz * xz) * (1.0 - yz * yz)
+    if spread <= _PARTIAL_EPS:
+        return None
+    return max(-1.0, min(1.0, (xy - xz * yz) / math.sqrt(spread)))
+
+
+def _stamp_groups(stamps, series, y, yhat, control=None):
+    """Group aligned rows into ``{stamp: (names, y, yhat, control)}``, stamp-sorted.
+
+    A row whose ``y``, ``yhat`` or (when given) ``control`` is not a
+    finite number is left out; the control list stays empty when no
+    control was given.
+    """
     if not (len(stamps) == len(series) == len(y) == len(yhat)):
         raise ValueError(
             f"stamps/series/y/yhat lengths disagree: {len(stamps)}, "
             f"{len(series)}, {len(y)}, {len(yhat)}"
         )
+    if control is not None and len(control) != len(stamps):
+        raise ValueError(
+            f"control has {len(control)} values, stamps {len(stamps)} — must agree"
+        )
     grouped = {}
     for i, stamp in enumerate(stamps):
         if not number_ok(y[i]) or not number_ok(yhat[i]):
             continue
-        cell = grouped.setdefault(stamp, ([], [], []))
+        if control is not None and not number_ok(control[i]):
+            continue
+        cell = grouped.setdefault(stamp, ([], [], [], []))
         cell[0].append(str(series[i]))
         cell[1].append(float(y[i]))
         cell[2].append(float(yhat[i]))
+        if control is not None:
+            cell[3].append(float(control[i]))
     return grouped
 
 
@@ -445,7 +509,7 @@ def demean_by_series(series, values):
     return [v - totals[k] / counts[k] for k, v in zip(series, vals)]
 
 
-def cross_section_by_stamp(stamps, series, y, yhat, min_names=None):
+def cross_section_by_stamp(stamps, series, y, yhat, min_names=None, control=None):
     """One rank correlation per instant, plus the names present at each.
 
     Parameters
@@ -462,6 +526,12 @@ def cross_section_by_stamp(stamps, series, y, yhat, min_names=None):
         Fewest names for an instant to yield a correlation at all.
         ``None`` takes :data:`MIN_CROSS_SECTION_NAMES`. Instants below
         it are skipped, but they are still COUNTED in ``n_names``.
+    control : list or tuple of float or None
+        A benchmark aligned with ``stamps``; given, each instant's number
+        is :func:`partial_spearman` of the forecast and the outcome with
+        the benchmark partialled out (an instant where that is undefined
+        is skipped, and counted). ``None`` keeps the plain
+        :func:`spearman`.
 
     Returns
     -------
@@ -488,16 +558,16 @@ def cross_section_by_stamp(stamps, series, y, yhat, min_names=None):
     floor = MIN_CROSS_SECTION_NAMES if min_names is None else min_names
     if isinstance(floor, bool) or not isinstance(floor, int) or floor < 2:
         raise ValueError(f"min_names must be an int >= 2, got {min_names!r}")
-    grouped = _stamp_groups(stamps, series, y, yhat)
+    grouped = _stamp_groups(stamps, series, y, yhat, control=control)
     kept_stamps, rhos, kept_names, all_names = [], [], [], []
     skipped = 0
     for stamp in sorted(grouped):
-        names, ys, fs = grouped[stamp]
+        names, ys, fs, zs = grouped[stamp]
         all_names.append(len(names))
         if len(names) < floor:
             skipped += 1
             continue
-        rho = spearman(fs, ys)
+        rho = spearman(fs, ys) if control is None else partial_spearman(fs, ys, zs)
         if rho is None:
             skipped += 1
             continue
@@ -545,7 +615,7 @@ def _usability(names, usable_names):
 
 def per_timestamp_ic(
     stamps, series, y, yhat, lags=None, h_steps=1, usable_names=None,
-    min_names=None,
+    min_names=None, control=None,
 ):
     """Score the selector's ordering: rank WITHIN each instant, then test.
 
@@ -582,6 +652,9 @@ def per_timestamp_ic(
         Reporting floor. ``None`` takes :data:`USABLE_NAMES`.
     min_names : int or None
         Ranking floor. ``None`` takes :data:`MIN_CROSS_SECTION_NAMES`.
+    control : list or tuple of float or None
+        A benchmark to partial out at each instant
+        (:func:`cross_section_by_stamp`); ``None`` for the plain IC.
 
     Returns
     -------
@@ -604,7 +677,9 @@ def per_timestamp_ic(
         out = per_timestamp_ic(stamps, names, y, yhat)
         out["usable"]  # True
     """
-    cs = cross_section_by_stamp(stamps, series, y, yhat, min_names=min_names)
+    cs = cross_section_by_stamp(
+        stamps, series, y, yhat, min_names=min_names, control=control
+    )
     return ic_from_rho(
         cs["rho"],
         cs["n_names_all"],

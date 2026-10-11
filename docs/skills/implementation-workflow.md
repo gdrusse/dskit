@@ -10,7 +10,9 @@ dependency gates, evidence schemas, or execution restrictions.
 ## Start and scope
 
 1. Work in WSL2. Fetch origin, create an isolated worktree from current
-   origin/main, and read root/nearest AGENTS.md or CLAUDE.md and RE-ENTRY.
+   origin/main, and read root/nearest AGENTS.md or CLAUDE.md, `docs/RE-ENTRY.md`
+   (the one-screen index) and ONLY the lane's note
+   `children/<child>/docs/RE-ENTRY.md`; never `docs/archive/` at session start.
    For a resumed older branch, first read the current origin/main versions of
    this workflow, skeptic-review, and wrap; then reconcile its code and contracts.
    Never pull, reset, or edit another session's dirty checkout.

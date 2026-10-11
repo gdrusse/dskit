@@ -750,7 +750,7 @@ they register only into private registries, never the default one.
   tried, and `crossed_band` means a crossing beyond both edges' errors. `BinaryCoherence`'s `tolerance` gates only
   the feasible verdict (legs use `LEG_DUST`); an infeasible verdict with no profitable position raises.
 
-**ADR-0259 panel zoo (tier-2, all by import path):**
+**ADR-0260 panel zoo (tier-2, all by import path):**
 
 - `libs/array_panel.py`: `ArrayPanelWrite` writes one memory-mapped panel (features, `[N, H]` labels, time, group, `run`);
   `ColumnSelector` (an ablation arm is a selector), `PanelBands` (the one place fit / calibration / validation rows are cut),
@@ -886,8 +886,11 @@ dskit/pipeline/
 ├── kinds_run_write.py RecordsWriteRun (records-write-run): a table file, and so a published stream, named by the run; `{run}` in the path stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
 │                      tables + the FileWrite base both writers share, ADR-0085;
-│                      horizon-pairs: entry/settle pairs + log return, ADR-0228)
-├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
+│                      horizon-pairs: entry/settle pairs + log return, ADR-0228; one series or
+│                      one per `symbol_field`, ADR-0259)
+├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections);
+│                      CrossSectionIC (by import path, ADR-0259): per-instant rank IC of named
+│                      measures across names, a benchmark partialled out, split/month summaries, drop census
 ├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
 │                      are generic search values (ADR-0113).
@@ -898,7 +901,8 @@ dskit/pipeline/
 │                      FeatureSelector (the surviving-columns member)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
-├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190/0191)
+├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190/0191);
+│                      CurveMoments: a saved curve's analytic mean/sd onto its row (ADR-0259)
 ├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
 │                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
 ├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
@@ -985,15 +989,16 @@ dskit/pipeline/
 │                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187),
 │                      + ObservationStreamRows (lazy projected read, by import path, for multi-million-row streams),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
-│                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
+│                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date; underlying_close writes the moneyness denominator out, ADR-0259)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
-│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0259)
+│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260)
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows over the observations seam, every
 │                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0256),
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          this file
+├── EXTENDING.md       extension points + gotchas (the seams, and what bites)
 └── CLAUDE.md          agent orientation
 ```
 
@@ -1001,7 +1006,7 @@ Tests: `python -m pytest tests/pipeline -q` (tier-1 + purity gate),
 `tests/pipeline_libs -q` (tier-2 packs, importorskip per library).
 ADR-0243..0247 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binary_contract_e2e,binary_contract_pins,fee_mechanics,fee_mechanics_pins,kinds_run_write}.py`,
 `tests/pipeline_libs/test_{parquet_series,parquet_series_guards,vol_estimators,vol_estimators_golden}.py`
-ADR-0259: `tests/pipeline_libs/test_{array_panel,horizon_cdf,panel_score,panel_torch,panel_zoo_e2e}.py`.
+ADR-0260: `tests/pipeline_libs/test_{array_panel,horizon_cdf,panel_score,panel_torch,panel_zoo_e2e}.py`.
 (the `*_golden` file holds the former child's output, frozen in `golden/`).
 ADR-0256: `tests/pipeline/test_binary_decisions.py`, `tests/pipeline_libs/test_binary_market_rows.py`.
 ADR-0257: `tests/pipeline/test_{digital_bounds,binary_curve}.py`, `tests/pipeline_libs/test_binary_coherence.py`.

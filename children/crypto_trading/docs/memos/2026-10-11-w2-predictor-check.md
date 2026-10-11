@@ -27,7 +27,7 @@ Other metrics, block 1 (GRU vs empirical): CRPS 1.5402 vs 1.5571, tail CRPS 0.68
 - This is the one W2 read. Any re-read or change after seeing it is a new decision (plan rules).
 - HPO found nothing (the default won), so the W2 model is the zoo default retrained on every minute; the stride change (5 to 1) and the retrain are not separable here, but W1 and W2 gains agree.
 - Two blocks of different lengths; no standard error is reported. One seed.
-- The feature selection rule (ADR-0258), tail wings (provisional), BVOL `missing: mean` and the W4 "already scored" question remain open owner decisions.
+- The feature selection rule (ADR-0261), tail wings (provisional), BVOL `missing: mean` and the W4 "already scored" question remain open owner decisions.
 
 ## Handoff
 

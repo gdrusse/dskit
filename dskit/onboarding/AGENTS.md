@@ -52,6 +52,18 @@ on it without breaking its rulings (ADR-0012…0016).
   the venue does not date are stamped at the pull's capture MINUTE so two
   pulls inside a minute collide on their key (`acquired_at` itself is the
   commit instant, ADR-0079, so a capture instant never post-dates it).
+  `libs/kalshi_history.py` and `libs/restwindow.py` are STANDALONE siblings of
+  `kalshi` and `restapi` (ADR-0239/0240): they import only public (`__all__`)
+  names of those packs, so the transport is restated and parity-pinned (`tests/onboarding/test_restwindow_pins.py`
+  holds the retried statuses, client name and path reader equal to `restapi`'s and `kalshi`'s), never
+  shared through an underscore name. `kalshi_history` scans live statuses in
+  lifecycle order, the archive last, and holds a series' listing before any
+  per-market request; a ticker the archive listed is the archive's, never also
+  live, whatever it settled (A2-01); its label (`expiration_value`) exists only from
+  `settlement_ts`. `restwindow` clips each response to its own half-open window;
+  a short `page_size` page ends a cursor walk. `libs/zipcsv.py` is an
+  `httpblobs` transform (ADR-0242), wired by import path; its `transform_params`
+  take no `notes`, which would move the declaration digest.
 - **OAuth connectors** — expose `oauth_service(config)` returning
   `OAuth2TokenService`; the CLI stays provider-polymorphic.
 - **Recurring pulls** — call `run_watch`; it repeats `run_acquisition`
@@ -135,7 +147,7 @@ dskit/onboarding/
 ├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)
 ├── leads.py           LeadGrid — lead-fraction capture grid; due_periods speaks the ledger's period spelling (ADR-0075)
 ├── codec.py           extension-declared codecs — deterministic gzip (ADR-0036)
-├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037); verified_payload_dir (ADR-0083)
+├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037); verified_payload_dir (ADR-0083); stream_members (ADR-0187)
 ├── oauth.py           OAuth2 exchange/refresh + atomic owner-only token files
 ├── snapshot.py        build_manifest / write_snapshot / verify / find_snapshot_dir
 ├── acquire.py         run_acquisition — the orchestrated pull + durability order
@@ -149,14 +161,18 @@ dskit/onboarding/
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
+│   ├── kalshi_history.py Kalshi history (ADR-0239): /historical routing, event-level candles, trades, settlement fields; standalone, public `kalshi` names only
+│   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache (stdlib, ADR-0233)
 │   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file (ADR-0225)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON tables, PinnedArchiveConnector, JsonSQLProjection
-│   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain, sha256-pinned (pyarrow inside verbs, ADR-0182)
+│   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain + index_daily (ADR-0187), sha256-pinned (pyarrow inside verbs, ADR-0182)
 │   ├── polymarket.py  Polymarket Gamma/CLOB REST + pmxt HF hour archive (stdlib urllib; hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
 │   ├── restapi.py     declarative REST connector (stdlib urllib)
+│   ├── restwindow.py  declarative time-window REST (ADR-0240): window/cursor pagination, positional rows, epoch instants; standalone, no `restapi` underscore names
 │   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
+│   ├── zipcsv.py      httpblobs transform: vendor zip of one CSV -> typed parquet under a JSON layout (ADR-0242)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        CLI

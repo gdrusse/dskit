@@ -1,7 +1,7 @@
 # Implement a research finding or plan
 
 1. Read implementation-workflow.md, the source finding/plan, nearest agent
-   instructions and current RE-ENTRY. Select one bounded approved acceptance
+   instructions, `docs/RE-ENTRY.md` and the lane's own `docs/RE-ENTRY.md` note. Select one bounded approved acceptance
    result and check the controlling dependency DAG and latest findings.
 2. Inventory existing capability. Generic reusable behavior belongs in dskit
    core or its library pack; only domain policy belongs in the child. Extend

@@ -26,6 +26,7 @@ Keep it honest: mark it rough (`~`), prefer a range when unsure (`~10–15m`), a
 
 ## Do
 
+- **Start from the lane note.** `children/<child>/docs/RE-ENTRY.md` (or the Core block of `docs/RE-ENTRY.md`) already holds Now / Next / Blocked; a snapshot with no live session work is that note, compressed.
 - **Pull from the actual work.** Reference the real files, commands, results, or decisions from this session — "ladder tensor rebuilt, 289 tradeable markets" beats "made good progress". Specificity is what makes a status useful instead of noise.
 - **State, not story.** Where things *are* now, not a blow-by-blow of what happened to get there.
 - **Name the next step concretely** so it's actionable — "wire the depth recorder", not "keep going".

@@ -2,7 +2,7 @@
 
 Everything runs on tiny in-memory rows and tiny epochs (CPU, sub-second
 per fit); no real data file is read. The conformance suite at the bottom
-is the bar (pipeline/CLAUDE.md step 8): populated trainable probes with a
+is the bar (pipeline/EXTENDING.md step 8): populated trainable probes with a
 REAL fixture artifact for ``load_artifact`` and a ``verify_loaded`` that
 rejects a fresh fit by provenance.
 """
@@ -1178,7 +1178,7 @@ def test_load_mode_restores_the_columns_and_needs_no_module(tmp_path):
     assert restored["metrics"]["n_fit_rows"] == 0
 
 
-# -- the conformance suite (pipeline/CLAUDE.md step 8) ---------------------------
+# -- the conformance suite (pipeline/EXTENDING.md step 8) ---------------------------
 
 EXPECTED_ROLES = {
     "torch-train": "train",

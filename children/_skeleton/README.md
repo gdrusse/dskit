@@ -89,6 +89,11 @@ reproducibility is the run document's identity hash, never a committed binary.
 Run-scoped outputs stay in the run directory; a file belongs in `models/` only
 when a later config or the serving loop must reload it by stable name.
 
+**Re-entry.** `docs/RE-ENTRY.md` is the lane's one-screen handoff (Now, Next,
+Blocked / owner decisions, Read first, Do not), at most 80 lines, rewritten
+whole at every `/wrap`; the dskit index `docs/RE-ENTRY.md` carries one row per
+lane and the replaced notes go to `docs/archive/re-entry/`.
+
 **Plans.** Project-specific plan builds — the child's phased work plans and
 closeout checklists — live in `docs/plans/`. The dskit repo's `docs/plans/` is
 repo-level; this folder is the child's own, and it travels with graduation.
@@ -167,6 +172,7 @@ _skeleton/
 │   ├── README.md          # GENERATED — do not edit
 │   ├── actions.csv
 │   └── path.csv
+├── docs/RE-ENTRY.md       # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 ├── docs/explanations/     # child-specific tutorials and walkthroughs
 │   └── README.md          # use record-explanation
 ├── docs/memos/            # durable implementation and operational handoffs

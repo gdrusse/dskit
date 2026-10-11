@@ -369,6 +369,17 @@ python -m dskit.pipeline run ~/data/crypto_trading/features-hourly-sizing/run.js
 B3 to B5 apply. Rows also carry the labels `settle_value` and `settlement_ms` (the cut is on `settlement_ms`); daily and weekly
 ladders are pooled (7c counts them); most strikes have no two-sided quote: read the census before the pooled numbers.
 
+## B7. Minute panel (stage C)
+
+The predictor zoo reads one memory-mapped minute panel by source, never by path. After `configs/run-panel-build.json` has built it
+(its notes give the run), publish it once as a blob source; consumers name `{panel-minute, files, minute-w1w2}`:
+
+```bash
+python -m dskit.onboarding register-source panel-minute --root "$OB" --catalog-source panel-minute \
+    --connector localblobs --config @configs/source-panel-minute.json --activate   # once
+python -m dskit.onboarding acquire --root "$OB" --source panel-minute --stream files --mode backfill
+```
+
 ## Known issues
 
 - Size B6 before the full pull; the candle and trade pulls cost a chain per ARCHIVED market, with no date bound (7c, 7e).

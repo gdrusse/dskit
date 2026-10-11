@@ -43,9 +43,10 @@ TORCH_PY = (
 )
 #: Content pin of ``libs/torch.py``. Recompute on a deliberate engine-pack
 #: change (ADR-0045 moved it for batched eval; ADR-0091 added the audited
-#: serving-load declaration); accidental edits fail here.
+#: serving-load declaration; the sync-free tail loss and optional compiled
+#: mixture loss moved it for the 3x training speedup); accidental edits fail here.
 TORCH_PY_SHA256 = (
-    "3cdfc7a089f1a3009a0dca15a791aecc3bc7eb50484456ad85f20ea45757e556"
+    "09f40d690723f4c4fcbc45988e565153473b067090b639547691993e46cf0339"
 )
 
 SHIPPED = (
@@ -307,7 +308,7 @@ def test_register_is_explicit():
 
 
 # ---------------------------------------------------------------------------
-# Conformance (pipeline CLAUDE.md — probes are not optional)
+# Conformance (pipeline EXTENDING.md — probes are not optional)
 # ---------------------------------------------------------------------------
 
 PROBE_ROW = ts_rows()[0]

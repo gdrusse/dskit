@@ -1,6 +1,6 @@
 """The pyomo pack's suite: units, real-solver integration, conformance, example.
 
-Layout mirrors the pack's obligations (pipeline/CLAUDE.md, Author's Guide):
+Layout mirrors the pack's obligations (pipeline/EXTENDING.md, Author's Guide):
 
 * **Units** — validators and plumbing, all runnable WITHOUT pyomo: the
   empty-gate short-circuit and the undeclared-outputs refusal are proven

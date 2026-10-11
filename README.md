@@ -182,4 +182,12 @@ works from its own isolated git worktree, never directly on `main` in a
 shared checkout and never in a checkout another session is using. Sessions
 sharing one working tree is the repeat cause of cross-session conflicts and
 stepped-on work. See `AGENTS.md`/`CLAUDE.md`'s Session workflow section for
-the exact rule.
+the exact rule. `CLAUDE.md` (Claude Code) and `AGENTS.md` (Codex and the other
+OpenAI models, Cursor, OpenCode) are one document under two names; the
+standards they point at live in `docs/standards/`.
+
+A session starts from `docs/RE-ENTRY.md`, a one-screen index with one dated row
+per lane, and then reads only its lane's note, `children/<child>/docs/RE-ENTRY.md`
+(Now, Next, Blocked, Read first, Do not; at most 80 lines, rewritten whole at
+every `/wrap`). Replaced notes go to `docs/archive/re-entry/`; nothing there is
+read at session start.

@@ -19,6 +19,7 @@ from dskit.pipeline.document import date_problem
 from dskit.pipeline.folds import declared_width
 from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
+from dskit.pipeline.records import price_ok
 
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "BetaTransformedCurve", "CDFEstimator",
@@ -34,7 +35,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "DiscreteCDFGrid", "MeanPreservingCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
            "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel", "NominalStrikeMasses",
            "MixtureLossSpec", "mixture_family", "MIXTURE_FAMILY_KINDS",
-           "mlp_stack", "MLP_ACTIVATIONS", "mixture_parts"]
+           "mlp_stack", "MLP_ACTIVATIONS", "mixture_parts", "CurveMoments"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
 # CRPS terms (training) and the numpy curve rule (evaluation), so a loss and the
@@ -701,6 +702,29 @@ class MixtureCurve(_Curve):
         return {"kind": "mixture", "weights": self.weights,
                 "means": self.means, "scales": self.scales}
 
+    def _component_variances(self):
+        """Rowwise component variances: a Gaussian component's scale is its standard deviation."""
+        return self.scales ** 2
+
+    def moments(self):
+        """Return the rowwise analytic mean and standard deviation.
+
+        The mixture mean is the weighted component mean; the variance is
+        the weighted second moment (each component's variance from
+        :meth:`_component_variances` plus its squared mean) less the
+        squared mean.
+
+        Returns
+        -------
+        tuple of ndarray
+            ``(mean, sd)``, each of shape ``(rows,)``.
+        """
+        import numpy as np
+
+        mean = (self.weights * self.means).sum(1)
+        second = (self.weights * (self._component_variances() + self.means ** 2)).sum(1)
+        return mean, np.sqrt(np.maximum(second - mean ** 2, 0.))
+
     def _quadrature_breakpoints(self):
         return self.means
 
@@ -798,8 +822,45 @@ class StudentMixtureCurve(MixtureCurve):
         from scipy.special import stdtrit
         return stdtrit(self.degrees, probabilities)
 
+    def _component_variances(self):
+        """Rowwise component variances: scale squared times nu / (nu - 2), finite above two degrees."""
+        return self.scales ** 2 * (self.degrees / (self.degrees - 2.))
+
     def _arrays(self):
         return {**super()._arrays(), "kind": "student_mixture", "degrees": self.degrees}
+
+
+def _restore_curve(raw):
+    """Restore a saved single-family curve from its serialized mapping.
+
+    Parameters
+    ----------
+    raw : dict
+        ``kind`` (``"mixture"`` or ``"student_mixture"``) with its
+        ``weights``, ``means``, ``scales`` and, for Student, ``degrees``.
+
+    Returns
+    -------
+    MixtureCurve
+        The restored curve.
+
+    Raises
+    ------
+    ValueError
+        Not a mapping, an unsupported kind, or invalid arrays.
+    KeyError
+        A missing array.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("serialized curve must be a mapping")
+    kind = raw.get("kind")
+    if kind == "mixture":
+        return MixtureCurve(raw["weights"], raw["means"], raw["scales"])
+    if kind == "student_mixture":
+        return StudentMixtureCurve(
+            raw["weights"], raw["means"], raw["scales"], raw["degrees"]
+        )
+    raise ValueError("unsupported serialized forecast curve")
 
 
 class GridCurve(_Curve):
@@ -7870,16 +7931,7 @@ class NominalStrikeMasses(Node):
     @staticmethod
     def _curve(raw):
         """Restore the declared single-row distribution family."""
-        if not isinstance(raw, dict):
-            raise ValueError("serialized curve must be a mapping")
-        kind = raw.get("kind")
-        if kind == "mixture":
-            return MixtureCurve(raw["weights"], raw["means"], raw["scales"])
-        if kind == "student_mixture":
-            return StudentMixtureCurve(
-                raw["weights"], raw["means"], raw["scales"], raw["degrees"]
-            )
-        raise ValueError("unsupported serialized forecast curve")
+        return _restore_curve(raw)
 
     def run(self, ctx, inputs):
         """Project context-matched forecasts and retain identified refusals.
@@ -7991,3 +8043,165 @@ class NominalStrikeMasses(Node):
             "skips": skips,
             "evidence": JsonArtifact({"rows": len(rows), "skips": skips}),
         }
+
+
+class CurveMoments(Node):
+    """Write each saved forecast curve's analytic mean and standard deviation onto its row.
+
+    Role ``transform``; outputs ``records`` and ``metrics`` (ADR-0259). The
+    forecasting nodes save one standardized-return curve per context
+    (``kind`` ``mixture`` or ``student_mixture`` with its single-row arrays,
+    the family :class:`NominalStrikeMasses` restores) beside a positive
+    reference (the return scale the curve is standardized by). This node
+    restores each curve and writes the declared ``fields`` from
+    :meth:`MixtureCurve.moments`: ``mean_z`` and ``sd_z`` in standardized
+    units, ``mean_return`` and ``sd_return`` multiplied by the reference. A
+    row whose curve cannot be restored or has more than one row, whose
+    reference is not a positive finite number, or that already carries an
+    output name refuses by row index; nothing is nulled. ``keep`` projects
+    every output row to exactly those input fields plus the declared ones
+    (the table shape ``attach-by-identity`` takes); absent, every input
+    field is carried.
+
+    Parameters
+    ----------
+    params : dict
+        ``curve_field`` and ``reference_field`` (non-empty str, REQUIRED);
+        ``fields`` (non-empty map of :data:`MOMENTS` member -> distinct
+        non-empty output field name, REQUIRED); ``keep`` (optional non-empty
+        list of distinct input field names, none of them an output name).
+
+    Examples
+    --------
+    The return-scale standard deviation of each saved curve, as a
+    ``(symbol, quote_date)`` table keyed for attachment::
+
+        node = CurveMoments("scale", {
+            "curve_field": "curve", "reference_field": "reference",
+            "fields": {"sd_return": "forecast_sd"},
+            "keep": ["symbol", "quote_date", "spot"]})
+        out = node.run(ctx, {"records": forecasts})
+        # -> out["records"][0] == {"symbol": ..., "quote_date": ..., "spot": ..., "forecast_sd": 0.07}
+    """
+
+    role = "transform"
+    outputs = ("records", "metrics")
+    #: The moments ``fields`` may name.
+    MOMENTS = ("mean_z", "sd_z", "mean_return", "sd_return")
+    _PARAMS = ("curve_field", "reference_field", "fields", "keep")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with the declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block.
+
+        Returns
+        -------
+        list of str
+            One message per problem.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for name in ("curve_field", "reference_field"):
+            value = params.get(name)
+            if not isinstance(value, str) or not value:
+                problems.append(f"{name} must be a non-empty string, got {value!r}")
+        fields = params.get("fields")
+        names = []
+        if not isinstance(fields, dict) or not fields:
+            problems.append(f"fields must be a non-empty map of moment -> output field, got {fields!r}")
+        else:
+            unknown = sorted(set(fields) - set(cls.MOMENTS))
+            if unknown:
+                problems.append(f"fields: unknown moment(s) {unknown} - allowed: {list(cls.MOMENTS)}")
+            names = list(fields.values())
+            if not all(isinstance(v, str) and v for v in names):
+                problems.append("fields values must be non-empty strings")
+            elif len(set(names)) < len(names):
+                problems.append("fields values must be distinct output names")
+        keep = params.get("keep")
+        if "keep" in params:
+            if (not isinstance(keep, list) or not keep
+                    or not all(isinstance(v, str) and v for v in keep)):
+                problems.append(f"keep must be a non-empty list of field names, got {keep!r}")
+            elif len(set(keep)) < len(keep):
+                problems.append("keep names must be distinct")
+            elif set(keep) & set(names):
+                problems.append(f"keep and fields collide on {sorted(set(keep) & set(names))}")
+        return problems
+
+    def _reference(self, where, row):
+        """Return the row's positive finite reference, refusing by row otherwise."""
+        value = row.get(self.params["reference_field"])
+        if not price_ok(value):
+            raise ValueError(
+                f"{where}: {self.params['reference_field']!r} must be a positive finite "
+                f"number, got {value!r}")
+        return float(value)
+
+    def _moments(self, where, row):
+        """Return the row's four moments and its curve kind, refusing by row otherwise."""
+        raw = row.get(self.params["curve_field"])
+        try:
+            curve = _restore_curve(raw)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{where}: {self.params['curve_field']!r} is not a restorable curve ({exc})"
+            ) from None
+        if len(curve.weights) != 1:
+            raise ValueError(f"{where}: the curve must have exactly one row")
+        reference = self._reference(where, row)
+        mean, sd = curve.moments()
+        mean, sd = float(mean[0]), float(sd[0])
+        return ({"mean_z": mean, "sd_z": sd, "mean_return": mean * reference,
+                 "sd_return": sd * reference}, raw["kind"])
+
+    def run(self, ctx, inputs):
+        """Write the declared moments onto every row.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused.
+        inputs : dict
+            ``records`` (REQUIRED): mapping rows carrying the curve and
+            reference fields.
+
+        Returns
+        -------
+        dict
+            ``records`` (input order) and ``metrics`` (``rows`` and
+            ``kinds``, rows per curve kind).
+
+        Raises
+        ------
+        ValueError
+            A row that is not a mapping, lacks a kept field, already carries
+            an output name, or whose curve or reference is unusable.
+        """
+        p = self.params
+        fields, keep = p["fields"], p.get("keep")
+        rows, kinds = [], {}
+        for index, row in enumerate(inputs["records"]):
+            where = f"{self.key}: row {index}"
+            if not isinstance(row, dict):
+                raise ValueError(f"{where} must be a mapping, got {type(row).__name__}")
+            moments, kind = self._moments(where, row)
+            kinds[kind] = kinds.get(kind, 0) + 1
+            if keep is None:
+                out = dict(row)
+            else:
+                missing = [f for f in keep if f not in row]
+                if missing:
+                    raise ValueError(f"{where} lacks kept field(s) {missing}")
+                out = {f: row[f] for f in keep}
+            for moment, name in fields.items():
+                if name in out:
+                    raise ValueError(f"{where} already carries {name!r}")
+                out[name] = moments[moment]
+            rows.append(out)
+        return {"records": rows, "metrics": {"rows": len(rows), "kinds": kinds}}

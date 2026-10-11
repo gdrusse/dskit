@@ -9,7 +9,7 @@ The W1 zoo picked **`gru-crps_tail-pooled`** (a GRU trained on CRPS plus tail CR
 - Window: W1 only (2023-06-20 to 2026-05-01), 14 expanding walk-forward folds (first 2024-01-01, 60-day steps and validation, 1-day embargo). W2, W4 and W5 were not read.
 - Training: every 5th minute (`row_stride` 5, fit band only), scoring every minute; seed 11 (one seed); up to 500 epochs, early-stopping patience 10; GPU. Gaussian mixture heads, 3 components, 15 horizons (1 to 15 minutes), vol-standardized log-return target.
 - Speed work (same computation, not bit-identical): the loss is `torch.compile`d for the Gaussian family and several host syncs were removed. Old versus new code agree to about 1e-5 relative on CRPS, tail CRPS and pinball.
-- Selection: tabular (MLP) and sequence (other four) classes each ran 17 ablation arms x 14 folds; keep rule z = 1 standard error of the paired per-fold difference (ADR-0258 rule, **not yet owner-approved**).
+- Selection: tabular (MLP) and sequence (other four) classes each ran 17 ablation arms x 14 folds; keep rule z = 1 standard error of the paired per-fold difference (ADR-0261 rule, **not yet owner-approved**).
 - Zoo: 5 architectures x 4 losses x 3 scopes = 60 trained lanes (pooled, BTC-only, ETH-only), plus 6 baseline lanes. All 66 lanes finished OK (no failures).
 - Data: batch roots under `/home/russell/data/crypto_trading/` (`batch-select-tabular-v3`, `batch-select-sequence-v3`, `batch-zoo-w1`); pick and selection in `chain/pick/` and `chain/runs/select-features-2026-05-01-15b8e3ca/`. Recipe sha256 `307558dc…ac0597`. Code: branch `claude/crypto-hpo-20261010`.
 
@@ -46,7 +46,7 @@ Per-fold gain over the empirical baseline: -0.82% to -1.31%, better in 14 of 14 
 - The gaps between the top architectures (0.003 to 0.01) are small against that SE; the GRU lead is not strongly established. One seed only.
 - Stride 5 training is a deliberate compute deviation. Every-minute training is planned for the chosen model after HPO and for simulations.
 - The EWMA-Student baseline is much worse than the empirical one; the empirical distribution is the real bar.
-- The ADR-0258 keep rule, wing placement for the tail loss (provisional), BVOL `missing: mean` handling and the "already scored" W4 question remain open owner decisions.
+- The ADR-0261 keep rule, wing placement for the tail loss (provisional), BVOL `missing: mean` handling and the "already scored" W4 question remain open owner decisions.
 
 ## HPO result (2026-10-11)
 
