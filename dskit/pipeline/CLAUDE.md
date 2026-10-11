@@ -82,8 +82,8 @@ dskit/pipeline/
 │                      horizon-pairs (dated close paired with the close H days later, ADR-0228;
 │                      one series or one per `symbol_field`, ADR-0259)
 ├── kinds_stats.py     owned validate + stat_test; CrossSectionIC (by import path, ADR-0259):
-│                      per-instant rank IC of named measures across names, relative scales,
-│                      split/month summaries, drop census
+│                      per-instant rank IC of named measures across names, a benchmark
+│                      partialled out, split/month summaries, drop census
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
 │                      are generic search values (ADR-0113).

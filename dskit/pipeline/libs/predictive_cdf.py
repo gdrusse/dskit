@@ -19,6 +19,7 @@ from dskit.pipeline.document import date_problem
 from dskit.pipeline.folds import declared_width
 from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
+from dskit.pipeline.records import price_ok
 
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "BetaTransformedCurve", "CDFEstimator",
@@ -7903,11 +7904,8 @@ class CurveMoments(Node):
 
     def _reference(self, where, row):
         """Return the row's positive finite reference, refusing by row otherwise."""
-        import math
-
         value = row.get(self.params["reference_field"])
-        if (isinstance(value, bool) or not isinstance(value, (int, float))
-                or not math.isfinite(value) or value <= 0):
+        if not price_ok(value):
             raise ValueError(
                 f"{where}: {self.params['reference_field']!r} must be a positive finite "
                 f"number, got {value!r}")

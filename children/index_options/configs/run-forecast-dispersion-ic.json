@@ -1,6 +1,6 @@
 {
   "name": "forecast-dispersion-ic",
-  "notes": "T2 of the 2026-10-11 edge-and-harvest research note (A1127/A1128), ADR-0259: does the PatchTST forecast's SCALE order the names beyond what the option market implies? Per quote date, the Spearman rank correlation across names of forecast sd / implied straddle ratio against |realized 31-day log move| / implied straddle ratio, tested over the dates with the toolkit's per-timestamp IC (a Newey-West mean over the stamp series; the owned test, in place of the note's block bootstrap, same question). Two controls on the same rows: the forecast sd alone and the implied straddle ratio alone, each against |realized move|. Pass per the note: mean IC > 0 with t >= 2.5 on the relative measure, and the controls say whether the forecast adds to what the market already prices. INPUTS are the v2 replay's saved inputs only (condor-replay-inputs-20261009-v5: forecasts = the exact saved seed-11 curves, chain = the exact-DTE-31 trade bars, bars = as-traded closes), all pre-2026; nothing is fitted and no 2026 price is read. CLOCK: the forecast and the straddle are both taken at the quote date's close (same-day, the ADR-0258 decision clock); the realized move settles on the expiry's as-traded close or the latest earlier session (horizon-pairs, 31 calendar days, fallback previous: the replay's own settlement rule) and is known only after expiry. PRICE BASIS: both attachments agree on spot (the as-traded close) between the straddle's denominator, the forecast row and the pairs' entry close, so a basis mismatch REFUSES instead of correlating two bases; if that refusal fires, the finding is the mismatch, not the IC. The implied straddle ratio is (call vwap + put vwap) / close at the in-band strike nearest the money with both sides traded in the DTE-31 expiry: about 0.8 * sigma * sqrt(T), a constant factor that cancels in ranks; null where no in-band strike has both sides traded, and such rows are dropped and counted, never filled. The forecast sd is the analytic standard deviation of the saved mixture or Student mixture times the row's reference (return units). No earnings calendar is among the saved inputs, so the note's T4-proxy repeat is not run here; the by-phase and by-month splits are. h_steps 5: the stamps are weekly (an expiry exactly 31 days out falls on a Friday from a Tuesday) and a 31-day label overlaps about four of them. Owner-run: python -m dskit.pipeline run configs/run-forecast-dispersion-ic.json --asof 2025-12-31 from children/index_options on the WSL host that holds the onboarding root.",
+  "notes": "T2 of the 2026-10-11 edge-and-harvest research note (A1127/A1128), ADR-0259: does the PatchTST forecast's SCALE order the names beyond what the option market implies? Per quote date, the rank correlation across names of forecast sd with |realized 31-day log move| GIVEN the implied ATM straddle ratio (the partial Spearman: both sides rank-regressed on the straddle within the date, residuals correlated), tested over the dates with the toolkit's per-timestamp IC (a Newey-West mean over the stamp series; the owned test, in place of the note's block bootstrap, same question). AMENDMENT, recorded before any run: the note wrote T2 as the ratio form, forecast sd / implied against |move| / implied. That ratio is Pearson's spurious correlation (one noisy denominator on both sides): in a dry run on synthetic rows a PURE-NOISE forecast scored IC +0.32 with t = 7.2 under it, and a forecast that was only a function of the implied scale kept t > 5 after being permuted within each date. The partial form answers the pre-registered question (information beyond the market) without that artifact, so the pass rule is read on beyond_market: mean IC > 0 with t >= 2.5. Two controls on the same rows: forecast_alone (the forecast sd against |move|, no control) and implied_alone (the straddle ratio against |move|): the market's own ordering skill, the bar the forecast must add to. INPUTS are the v2 replay's saved inputs only (condor-replay-inputs-20261009-v5: forecasts = the exact saved seed-11 curves, chain = the exact-DTE-31 trade bars, bars = as-traded closes), all pre-2026; nothing is fitted and no 2026 price is read. CLOCK: the forecast and the straddle are both taken at the quote date's close (same-day, the ADR-0258 decision clock); the realized move settles on the expiry's as-traded close or the latest earlier session (horizon-pairs, 31 calendar days, fallback previous: the replay's own settlement rule) and is known only after expiry. PRICE BASIS: both attachments agree on spot (the as-traded close) between the straddle's denominator, the forecast row and the pairs' entry close, so a basis mismatch REFUSES instead of correlating two bases; if that refusal fires, the finding is the mismatch, not the IC. The implied straddle ratio is (call vwap + put vwap) / close at the in-band strike nearest the money with both sides traded in the DTE-31 expiry: about 0.8 * sigma * sqrt(T), a constant factor that cancels in ranks; null where no in-band strike has both sides traded. The forecast sd is the analytic standard deviation of the saved mixture or Student mixture times the row's reference (return units). All three measures score the SAME rows: the scored filter keeps a row only when its forecast sd, its straddle ratio and its realized move are all present; the unfiltered rows, nulls included, are written for audit. No earnings calendar is among the saved inputs, so the note's T4-proxy repeat is not run here; the by-phase and by-month splits are (a month holds about four stamps, so its HAC t is withheld by the node and only its mean IC is read). h_steps 5: the stamps are weekly (an expiry exactly 31 days out falls on a Friday from a Tuesday) and a 31-day label overlaps about four of them. Owner-run: python -m dskit.pipeline run configs/run-forecast-dispersion-ic.json --asof 2025-12-31 from children/index_options on the WSL host that holds the onboarding root.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/production-universe-rerun-20261008/forecast-dispersion-ic",
     "notes": "Beside the v2 replay's run root; excluded from the identity hash."
@@ -137,6 +137,22 @@
       },
       "notes": "What the market implies for the same 31 days: the ATM straddle over the close, from the same chain the replay traded (the 0.05 band is the universe feature table's, workflow-features.json). underlying_close writes the denominator out as spot so both attachments can agree on it. Null where no in-band strike has both sides traded; the IC node drops and counts those rows."
     },
+    "implied_priced": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$implied.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "spot",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "A straddle row whose (symbol, quote_date) has no priced bar carries spot null; the attachment's agreement check is exact and would refuse the whole run on one such row, so those rows leave here, counted in the log, before anything is attached."
+    },
     "realized": {
       "uses": "horizon-pairs",
       "inputs": {
@@ -163,7 +179,7 @@
     "with_forecast": {
       "uses": "attach-by-identity",
       "inputs": {
-        "records": "$implied.records",
+        "records": "$implied_priced.records",
         "table": "$forecast_scale.records"
       },
       "params": {
@@ -267,29 +283,55 @@
       },
       "notes": "The v2 replay's two windows (ExactDteBarChain windows: calibration 2024-02-06..2024-12-31, entry 2025-02-04..2025-11-28) stamped from the quote date itself, so the split does not depend on any upstream row carrying a phase. 'outside' names a date in neither window out loud; expected empty."
     },
+    "scored": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "forecast_sd",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "implied_straddle_ratio",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "realized_log_move",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "The one row set every measure scores: a forecast attached (forecast_sd present and positive), a two-sided in-band straddle (ratio positive) and a settled move (not null). A row failing any of the three leaves all three measures together, so the controls are read on exactly the rows the test is; the rows node writes the unfiltered rows with their attachment statuses for the census."
+    },
     "ic": {
       "uses": "dskit.pipeline.kinds_stats:CrossSectionIC",
       "inputs": {
-        "records": "$phased.records"
+        "records": "$scored.records"
       },
       "params": {
         "stamp_field": "quote_date",
         "series_field": "symbol",
         "measures": {
-          "relative": {
-            "forecast_field": "fc_forecast_sd",
-            "outcome_field": "rz_realized_log_move",
-            "relative_field": "implied_straddle_ratio",
+          "beyond_market": {
+            "forecast_field": "forecast_sd",
+            "outcome_field": "realized_log_move",
+            "control_field": "implied_straddle_ratio",
             "outcome_transform": "abs"
           },
           "forecast_alone": {
-            "forecast_field": "fc_forecast_sd",
-            "outcome_field": "rz_realized_log_move",
+            "forecast_field": "forecast_sd",
+            "outcome_field": "realized_log_move",
             "outcome_transform": "abs"
           },
           "implied_alone": {
             "forecast_field": "implied_straddle_ratio",
-            "outcome_field": "rz_realized_log_move",
+            "outcome_field": "realized_log_move",
             "outcome_transform": "abs"
           }
         },
@@ -299,7 +341,7 @@
         ],
         "by_month": true
       },
-      "notes": "T2 itself. relative is the pre-registered measure: forecast sd over the implied straddle ratio against |realized log move| over the same ratio, ranked within each quote date across the names. forecast_alone and implied_alone are the controls. Rows with a null forecast (no attachment), a null straddle (no two-sided in-band strike) or a null realized move are dropped and counted per measure. The t is the Newey-West mean over the dates with the automatic band, at least h_steps - 1 = 4 (the 31-day label spans about four weekly stamps); usable is false if the median date carries fewer than 5 names."
+      "notes": "T2 itself. beyond_market is the amended pre-registered measure: within each quote date, the partial Spearman of the forecast sd with |realized log move| given the implied straddle ratio. forecast_alone and implied_alone are the controls. The attachments write family fields under their own names (forecast_sd, realized_log_move; the fc_/rz_ prefixes name only the status and reasons columns). The t is the Newey-West mean over the dates with the automatic band, at least h_steps - 1 = 4 (the 31-day label spans about four weekly stamps); usable is false if the median date carries fewer than 5 names; a split whose band spans its stamps reports its mean IC only (hac_withheld says so)."
     },
     "rows": {
       "uses": "records-write",

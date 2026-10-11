@@ -6,19 +6,26 @@ this replaced is at the top of `docs/archive/re-entry/index_options.md` (dskit r
 ## Now
 
 - T2 of the edge-and-harvest note is BUILT, not run (ADR-0259 PROPOSED, built at
-  the owner's instruction; ledger A1129): `configs/run-forecast-dispersion-ic.json`
-  (identity `eb5c9b3c…`; validate and plan clean, 15 nodes). Per quote date, the
-  Spearman rank IC across names of forecast sd / ATM straddle ratio against
-  |realized 31-day log move| / the same ratio, Newey–West t over the dates
-  (`h_steps` 5), split by phase and by month; controls `forecast_alone` and
-  `implied_alone` on the same rows. Inputs: the v2 replay's saved
-  `condor-replay-inputs-20261009-v5` only; nothing fitted; no 2026 read.
-- JSON alone could not express it; four generic additions landed in dskit:
-  `CrossSectionIC` (kinds_stats, by import path), `CurveMoments` and
-  `MixtureCurve.moments()` (predictive_cdf), `horizon-pairs` `symbol_field`,
-  `TradeBarFeatures` `underlying_close`. Tests in the four suites ADR-0259 names.
-- Pass rule (the note): `relative` IC > 0 with t >= 2.5. Both attachments agree
-  on `spot`; a disagreement REFUSES the run and is itself the finding (price
+  the owner's instruction; ledger A1129, amended A1130):
+  `configs/run-forecast-dispersion-ic.json` (identity `1ad8d730…`; validate and
+  plan clean, 17 nodes). Per quote date, the partial Spearman across names of
+  forecast sd with |realized 31-day log move| GIVEN the ATM straddle ratio,
+  Newey–West t over the dates (`h_steps` 5), split by phase and by month;
+  controls `forecast_alone` and `implied_alone` on the same rows. Inputs: the
+  v2 replay's saved `condor-replay-inputs-20261009-v5` only; nothing fitted.
+- AMENDED before any run (skeptic review): the note's ratio form
+  (forecast/implied vs |move|/implied) is Pearson's spurious ratio correlation;
+  a pure-noise forecast scored t = 7.2 under it on synthetic rows. The partial
+  form asks the same "beyond the market" question without the artifact. The
+  review also caught the attachments writing fields unprefixed (the first
+  document would have scored nothing); fixed, dry-run proven.
+- JSON alone could not express it; the generic additions in dskit:
+  `CrossSectionIC` (kinds_stats, by import path) on `ordering.partial_spearman`
+  and a `control` column, `CurveMoments` and `MixtureCurve.moments()`
+  (predictive_cdf), `horizon-pairs` `symbol_field`, `TradeBarFeatures`
+  `underlying_close`. Tests in the suites ADR-0259 names.
+- Pass rule: `beyond_market` IC > 0 with t >= 2.5. Both attachments agree on
+  `spot`; a disagreement REFUSES the run and is itself the finding (price
   basis), not an IC.
 - Research note A1127/A1128, replay v2 `a1c35e4b` and its diagnostics stand
   unchanged (the archived note carries the numbers).

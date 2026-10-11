@@ -382,3 +382,39 @@ class TestReadingARealWalk:
         assert "xs_ic" in text
         assert "pooled_name_time_ic" in text
         assert "not the same number" in text
+
+
+# -- partial_spearman and the control column (ADR-0259) ----------------------
+
+from dskit.pipeline.ordering import partial_spearman  # noqa: E402
+
+
+def test_partial_spearman_is_the_rank_correlation_with_the_control_partialled_out():
+    x, y, z = [1.0, 2, 3, 4, 5], [1.0, 2, 3, 4, 5], [1.0, 2, 3, 5, 4]
+    # x explains all of y and z explains 0.9 of each: the residuals correlate fully
+    assert spearman(x, z) == pytest.approx(0.9)
+    assert partial_spearman(x, y, z) == pytest.approx(1.0)
+    # by hand: xy 0.8, xz 0.8, yz 0.3 -> (0.8 - 0.24) / sqrt(0.36 * 0.91)
+    assert partial_spearman(x, [2.0, 1, 4, 3, 5], [1.0, 3, 2, 5, 4]) == pytest.approx(0.9784, abs=1e-4)
+    # an outcome or a forecast that IS the control leaves nothing to explain: undefined
+    assert partial_spearman(x, z, z) is None and partial_spearman(z, y, z) is None
+    assert partial_spearman(x, y, [1.0] * 5) is None  # a constant side, as for spearman
+    with pytest.raises(ValueError):
+        partial_spearman(x, y, [1.0, 2])
+
+
+def test_cross_section_by_stamp_takes_a_control_column():
+    stamps, names = [1] * 5 + [2] * 5, list("ABCDE") * 2
+    y = yhat = [1.0, 2, 3, 4, 5] * 2
+    z = [1.0, 2, 3, 5, 4] * 2
+    out = cross_section_by_stamp(stamps, names, y, yhat, control=z)
+    assert out["rho"] == pytest.approx([1.0, 1.0]) and out["n_names"] == [5, 5]
+    nothing = cross_section_by_stamp(stamps, names, y, yhat, control=y)
+    assert nothing["rho"] == [] and nothing["n_skipped"] == 2 and nothing["n_names_all"] == [5, 5]
+    with pytest.raises(ValueError, match="control"):
+        cross_section_by_stamp(stamps, names, y, yhat, control=z[:3])
+    broken = list(z)
+    broken[0] = float("nan")  # a non-finite control drops its row, as y and yhat do
+    assert cross_section_by_stamp(stamps, names, y, yhat, control=broken)["n_names"] == [4, 5]
+    assert per_timestamp_ic(stamps, names, y, yhat, control=z)["ic"] == pytest.approx(1.0)
+    assert cross_section_by_stamp(stamps, names, y, yhat)["rho"] == pytest.approx([1.0, 1.0])
