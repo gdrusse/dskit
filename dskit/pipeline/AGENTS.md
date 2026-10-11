@@ -79,8 +79,11 @@ dskit/pipeline/
 ├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
 ├── kinds_run_write.py RecordsWriteRun (records-write-run, a RecordsWrite subclass): `{run}` in the file stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085),
-│                      horizon-pairs (dated close paired with the close H days later, ADR-0228)
-├── kinds_stats.py     owned validate + stat_test
+│                      horizon-pairs (dated close paired with the close H days later, ADR-0228;
+│                      one series or one per `symbol_field`, ADR-0259)
+├── kinds_stats.py     owned validate + stat_test; CrossSectionIC (by import path, ADR-0259):
+│                      per-instant rank IC of named measures across names, relative scales,
+│                      split/month summaries, drop census
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
 │                      are generic search values (ADR-0113).
@@ -144,7 +147,8 @@ dskit/pipeline/
 ├── features.py        stage-list stream transforms
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry (no venues ship)
-├── libs/predictive_cdf.py offline conditional CDFs, pooled heads and JSON HPO (ADR-0189/0190)
+├── libs/predictive_cdf.py offline conditional CDFs, pooled heads and JSON HPO (ADR-0189/0190);
+│                      CurveMoments: a saved curve's analytic mean/sd onto its row (ADR-0259)
 ├── libs/              numpy, sklearn, torch + torch_ts (ADR-0041 zoo),
 │                      transformers (+ the pretrained encode/classify/forecast
 │                      trio over an acquired snapshot, ADR-0083), kronos
@@ -154,7 +158,7 @@ dskit/pipeline/
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
-│                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
+│                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date; underlying_close writes the moneyness denominator out, ADR-0259)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries + prior_index + the stream-manifests node, ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),

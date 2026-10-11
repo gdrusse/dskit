@@ -171,6 +171,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # sha256-pinned, ADR-0182 amendment)
                            # run-equity-condor-robust-backtest-v2.json (ADR-0258: the robust
                            # condor replay with fill_session next, a fills stream, exercise flags)
+                           # run-forecast-dispersion-ic.json (ADR-0259: T2 of the edge-and-harvest
+                           # note, the forecast-dispersion IC on the v2 saved inputs; not yet run)
                            # pilot-*.json: quick args overlays for workflow.json (base + crps-student,
                            # regularize, window-250/750, horizon-14/28; docs/research performance-pilots)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json

@@ -875,8 +875,11 @@ dskit/pipeline/
 ├── kinds_run_write.py RecordsWriteRun (records-write-run): a table file, and so a published stream, named by the run; `{run}` in the path stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
 │                      tables + the FileWrite base both writers share, ADR-0085;
-│                      horizon-pairs: entry/settle pairs + log return, ADR-0228)
-├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
+│                      horizon-pairs: entry/settle pairs + log return, ADR-0228; one series or
+│                      one per `symbol_field`, ADR-0259)
+├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections);
+│                      CrossSectionIC (by import path, ADR-0259): per-instant rank IC of named
+│                      measures across names, relative scales, split/month summaries, drop census
 ├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
 │                      are generic search values (ADR-0113).
@@ -887,7 +890,8 @@ dskit/pipeline/
 │                      FeatureSelector (the surviving-columns member)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
-├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190/0191)
+├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190/0191);
+│                      CurveMoments: a saved curve's analytic mean/sd onto its row (ADR-0259)
 ├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
 │                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
 ├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
@@ -974,7 +978,7 @@ dskit/pipeline/
 │                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187),
 │                      + ObservationStreamRows (lazy projected read, by import path, for multi-million-row streams),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
-│                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
+│                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date; underlying_close writes the moneyness denominator out, ADR-0259)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),

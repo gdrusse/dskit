@@ -514,3 +514,17 @@ def test_as_traded_close_per_entity_and_nulls_and_refusals():
         _atc(_split_bars() + _split_bars()[:1])
     assert AsTradedClose.validate_params({**ATC, "irregular_tolerance": None})
     assert AsTradedClose.validate_params({k: v for k, v in ATC.items() if k != "split_field"})
+
+
+def test_underlying_close_is_the_trade_dates_close_as_the_underlying_states_it():
+    out = _trade(TRADES + [_t(D2, "E1", 100, "P", 1, 1.0)],
+                 closes=[{"sym": "X", "date": D1, "close": 100.0}],
+                 fields={"underlying_close": "spot", "atm_straddle_ratio": "atm"})
+    a, b = out
+    assert a == {"sym": "X", "date": D1, "spot": 100.0, "atm": pytest.approx(0.09)}
+    assert b["spot"] is None and b["atm"] is None  # no close on D2: nothing is filled
+    lean = {k: v for k, v in TRADE.items() if k not in (
+        "underlying_entity_field", "underlying_date_field", "underlying_close_field",
+        "moneyness_band", "price_field", "expiry_field")}
+    lean["fields"] = {"underlying_close": "spot"}
+    assert ["fields.underlying_close needs the underlying param(s)"] == TradeBarFeatures.validate_params(lean)

@@ -19,6 +19,10 @@ document swaps a synthetic registry for the toolkit one without rewiring.
   per-cluster paired improvements the stat test consumes. ``baseline`` is
   optional — absent means absolute metric reporting with no beats-gate
   (the plain-ML case, docs/24 §5).
+* :class:`CrossSectionIC` (role ``transform``, by import path, ADR-0259) —
+  the per-instant ordering skill of one or more measures over a record
+  stream: :func:`~dskit.pipeline.ordering.per_timestamp_ic` as a node,
+  with relative scales, split and monthly summaries, and the drop census.
 
 Registration is deliberate, never an import side effect: the orchestrator
 calls :func:`register` to claim the owned kind names in a registry
@@ -34,6 +38,7 @@ import math
 from collections.abc import Mapping
 from types import SimpleNamespace
 
+from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.metrics import METRICS
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
@@ -41,6 +46,8 @@ from dskit.pipeline.node import (
     check_int_param,
     reject_unknown_params,
 )
+from dskit.pipeline.ordering import cross_section_by_stamp, ic_from_rho
+from dskit.pipeline.records import number_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
 from dskit.pipeline.stats import (
     CORRECTIONS,
@@ -49,7 +56,7 @@ from dskit.pipeline.stats import (
     cluster_bootstrap_t,
 )
 
-__all__ = ["MIN_CLUSTERS", "StatTest", "Validate", "register"]
+__all__ = ["MIN_CLUSTERS", "CrossSectionIC", "StatTest", "Validate", "register"]
 
 #: The bootstrap's honesty floor: below this many clusters an instrument's
 #: resampling distribution is degenerate (one cluster resamples to itself
@@ -780,6 +787,279 @@ class Validate(Node):
                 ]
             ),
         }
+
+
+class CrossSectionIC(Node):
+    """Per-instant ordering skill across names, one row table per measure — by import path.
+
+    Role ``transform``. ``uses: "dskit.pipeline.kinds_stats:CrossSectionIC"``;
+    never registered, so no document gains it by accident (ADR-0259). The
+    number is :func:`~dskit.pipeline.ordering.per_timestamp_ic` over a
+    record stream: at each ``stamp_field`` value the names
+    (``series_field``) are ranked by a measure's forecast and by its
+    outcome, the two orderings are Spearman-correlated, and the per-instant
+    series is tested with the Newey–West mean (``lags``, ``h_steps``),
+    which says itself when the cross-sections are too thin to mean
+    anything (``usable``). Every measure is computed on the same rows in
+    one pass.
+
+    A measure names its ``forecast_field`` and ``outcome_field``; with a
+    ``relative_field`` both are first divided by that field's value on the
+    same row (a forecast scale and a realized move, each relative to an
+    implied scale); ``outcome_transform`` ``"abs"`` takes the outcome's
+    size. A row whose forecast, outcome or relative value is null, not a
+    finite number — or, for the relative field, not positive — is DROPPED
+    from that measure and counted under ``dropped`` by field; nothing is
+    filled. A row missing the stamp, the series or a split field is
+    malformed and refuses by index (a split field may be null: those rows
+    form their own group). ``splits`` names fields whose every distinct
+    value gets its own summary per measure; ``by_month`` adds one per ISO
+    month of the stamp (the stamps must then be ISO dates).
+
+    Outputs
+    -------
+    ``summary``
+        ``stage`` (a one-line self-description), ``rows_in``,
+        ``stamp_field``, ``series_field``, ``measures`` (per measure the
+        :func:`~dskit.pipeline.ordering.per_timestamp_ic` dict plus
+        ``rows_scored`` and ``dropped``) and ``splits`` (the same shape per
+        ``"<measure>|<field>=<value>"`` and ``"<measure>|month=<YYYY-MM>"``).
+    ``records``
+        One row per measure and scored instant — ``measure``, ``stamp``,
+        ``rho``, ``n_names`` — in measure order, then stamp order.
+
+    Parameters
+    ----------
+    params : dict
+        ``stamp_field``, ``series_field`` (non-empty str, REQUIRED);
+        ``measures`` (non-empty ``{name: {"forecast_field",
+        "outcome_field", optional "relative_field", optional
+        "outcome_transform"}}``, names non-empty and without ``|``,
+        REQUIRED); ``outcome_transform`` one of :data:`OUTCOME_TRANSFORMS`
+        (default ``"identity"``); ``lags`` (int >= 0, or null for the
+        automatic band); ``h_steps`` (int >= 1, default 1: the horizon in
+        stamp steps); ``min_names`` and ``usable_names`` (int >= 2, or null
+        for the ordering module's floors); ``splits`` (optional non-empty
+        list of distinct field names); ``by_month`` (bool, default false).
+
+    Examples
+    --------
+    A forecast scale against the realized move's size, both relative to the
+    implied scale, split by phase and by month::
+
+        node = CrossSectionIC("ic", {
+            "stamp_field": "quote_date", "series_field": "symbol",
+            "measures": {"relative": {
+                "forecast_field": "forecast_sd", "outcome_field": "log_move",
+                "relative_field": "implied", "outcome_transform": "abs"}},
+            "h_steps": 5, "splits": ["phase"], "by_month": True})
+        out = node.run(ctx, {"records": rows})
+        out["summary"]["measures"]["relative"]["ic"]
+    """
+
+    role = "transform"
+    outputs = ("summary", "records")
+    #: What may be done to the outcome before ranking.
+    OUTCOME_TRANSFORMS = ("identity", "abs")
+    _PARAMS = ("stamp_field", "series_field", "measures", "lags", "h_steps",
+               "min_names", "usable_names", "splits", "by_month")
+    _MEASURE_KEYS = ("forecast_field", "outcome_field", "relative_field", "outcome_transform")
+    #: The optional floors: knob -> its inclusive lower bound.
+    _FLOORS = {"lags": 0, "h_steps": 1, "min_names": 2, "usable_names": 2}
+
+    @classmethod
+    def _measure_problems(cls, name, spec):
+        """Problems with one measure's declaration."""
+        where = f"measures[{name!r}]"
+        if not isinstance(name, str) or not name or "|" in name:
+            return [f"{where}: a measure name is a non-empty string without '|'"]
+        if not isinstance(spec, dict):
+            return [f"{where} must be a dict, got {spec!r}"]
+        problems = []
+        unknown = sorted(set(spec) - set(cls._MEASURE_KEYS))
+        if unknown:
+            problems.append(f"{where}: unknown key(s) {unknown} — allowed: {list(cls._MEASURE_KEYS)}")
+        for key in ("forecast_field", "outcome_field", "relative_field"):
+            value = spec.get(key)
+            if (key in spec or key != "relative_field") and not is_node_ref(value) and (
+                    not isinstance(value, str) or not value):
+                problems.append(f"{where}.{key} must be a non-empty string, got {value!r}")
+        transform = spec.get("outcome_transform", "identity")
+        if not is_node_ref(transform) and transform not in cls.OUTCOME_TRANSFORMS:
+            problems.append(f"{where}.outcome_transform must be one of "
+                            f"{list(cls.OUTCOME_TRANSFORMS)}, got {transform!r}")
+        return problems
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with the declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying ``$`` references.
+
+        Returns
+        -------
+        list of str
+            One message per problem.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for name in ("stamp_field", "series_field"):
+            value = params.get(name)
+            if not is_node_ref(value) and (not isinstance(value, str) or not value):
+                problems.append(f"{name} must be a non-empty string, got {value!r}")
+        measures = params.get("measures")
+        if is_node_ref(measures):
+            pass
+        elif not isinstance(measures, dict) or not measures:
+            problems.append(f"measures must be a non-empty dict of name -> measure, got {measures!r}")
+        else:
+            for name, spec in measures.items():
+                problems.extend(cls._measure_problems(name, spec))
+        for name, floor in cls._FLOORS.items():
+            value = params.get(name)
+            if name in params and value is not None and not is_node_ref(value):
+                check_int_param(problems, name, value, ge=floor)
+        splits = params.get("splits")
+        if "splits" in params and not is_node_ref(splits):
+            if (not isinstance(splits, list) or not splits
+                    or not all(isinstance(v, str) and v for v in splits)):
+                problems.append(f"splits must be a non-empty list of field names, got {splits!r}")
+            elif len(set(splits)) < len(splits):
+                problems.append("splits names must be distinct")
+        by_month = params.get("by_month", False)
+        if not is_node_ref(by_month) and not isinstance(by_month, bool):
+            problems.append(f"by_month must be a boolean, got {by_month!r}")
+        return problems
+
+    @staticmethod
+    def _describe(name, spec):
+        """One measure as text: ``name: f/rel vs abs(y)/rel``."""
+        outcome = spec["outcome_field"]
+        if spec.get("outcome_transform", "identity") == "abs":
+            outcome = f"abs({outcome})"
+        relative = spec.get("relative_field")
+        suffix = f"/{relative}" if relative else ""
+        return f"{name}: {spec['forecast_field']}{suffix} vs {outcome}{suffix}"
+
+    @staticmethod
+    def _required(where, row, field, null_ok=False):
+        """Return the row's value of a field it must carry, refusing by row otherwise."""
+        if field not in row or (row[field] is None and not null_ok):
+            raise ValueError(f"{where} lacks the field {field!r}")
+        return row[field]
+
+    @staticmethod
+    def _pair(spec, row):
+        """``((forecast, outcome), None)`` for a usable row, else ``(None, the field that failed)``."""
+        forecast, outcome = row.get(spec["forecast_field"]), row.get(spec["outcome_field"])
+        if not number_ok(forecast):
+            return None, spec["forecast_field"]
+        if not number_ok(outcome):
+            return None, spec["outcome_field"]
+        forecast, outcome = float(forecast), float(outcome)
+        if spec.get("outcome_transform", "identity") == "abs":
+            outcome = abs(outcome)
+        relative = spec.get("relative_field")
+        if relative is not None:
+            scale = row.get(relative)
+            if not number_ok(scale) or scale <= 0:
+                return None, relative
+            forecast, outcome = forecast / float(scale), outcome / float(scale)
+        return (forecast, outcome), None
+
+    def _score(self, stamps, names, outcomes, forecasts):
+        """The per_timestamp_ic dict and the scored ``(stamp, rho, n_names)`` triples."""
+        p = self.params
+        cs = cross_section_by_stamp(stamps, names, outcomes, forecasts, min_names=p.get("min_names"))
+        stats = ic_from_rho(
+            cs["rho"], cs["n_names_all"], lags=p.get("lags"), h_steps=p.get("h_steps") or 1,
+            usable_names=p.get("usable_names"), n_skipped=cs["n_skipped"])
+        return stats, list(zip(cs["stamps"], cs["rho"], cs["n_names"]))
+
+    def _collect(self, rows):
+        """Read the stream once: per measure its usable columns, labels and drop census."""
+        p = self.params
+        stamp_field, series_field = p["stamp_field"], p["series_field"]
+        splits = list(p.get("splits") or [])
+        panels = {name: {"stamps": [], "names": [], "y": [], "yhat": [], "labels": [], "dropped": {}}
+                  for name in p["measures"]}
+        rows_in = 0
+        for index, row in enumerate(rows):
+            rows_in += 1
+            where = f"{self.key}: row {index}"
+            if not isinstance(row, Mapping):
+                raise ValueError(f"{where} must be a mapping, got {type(row).__name__}")
+            stamp = self._required(where, row, stamp_field)
+            name = self._required(where, row, series_field)
+            labels = [(field, self._required(where, row, field, null_ok=True)) for field in splits]
+            if p.get("by_month", False):
+                labels.append(("month", str(stamp)[:7]))
+            for measure, spec in p["measures"].items():
+                pair, failed = self._pair(spec, row)
+                panel = panels[measure]
+                if pair is None:
+                    panel["dropped"][failed] = panel["dropped"].get(failed, 0) + 1
+                    continue
+                panel["stamps"].append(stamp)
+                panel["names"].append(name)
+                panel["yhat"].append(pair[0])
+                panel["y"].append(pair[1])
+                panel["labels"].append(labels)
+        return rows_in, panels
+
+    def run(self, ctx, inputs):
+        """Score every measure's ordering, overall and per split.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused.
+        inputs : dict
+            ``records`` (REQUIRED): mapping rows carrying the stamp, series
+            and measure fields.
+
+        Returns
+        -------
+        dict
+            ``summary`` and ``records`` as the class docstring states.
+
+        Raises
+        ------
+        ValueError
+            A row that is not a mapping or lacks the stamp, series or a
+            split field.
+        """
+        p = self.params
+        rows_in, panels = self._collect(inputs["records"])
+        measures, splits, records = {}, {}, []
+        for name, panel in panels.items():
+            stats, scored = self._score(panel["stamps"], panel["names"], panel["y"], panel["yhat"])
+            measures[name] = {**stats, "rows_scored": len(panel["y"]), "dropped": panel["dropped"]}
+            records.extend({"measure": name, "stamp": stamp, "rho": rho, "n_names": n}
+                           for stamp, rho, n in scored)
+            groups = {}
+            for position, labels in enumerate(panel["labels"]):
+                for field, value in labels:
+                    groups.setdefault((field, value), []).append(position)
+            for (field, value), positions in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+                stats, _ = self._score(*([panel[col][i] for i in positions]
+                                         for col in ("stamps", "names", "y", "yhat")))
+                splits[f"{name}|{field}={value}"] = {**stats, "rows_scored": len(positions)}
+        summary = {
+            "stage": f"per-{p['stamp_field']} rank IC across {p['series_field']} — "
+                     + "; ".join(self._describe(n, s) for n, s in p["measures"].items()),
+            "rows_in": rows_in,
+            "stamp_field": p["stamp_field"],
+            "series_field": p["series_field"],
+            "measures": measures,
+            "splits": splits,
+        }
+        self.log.info("%s: %d row(s) in, %d measure(s), %d split summar(ies)",
+                      self.key, rows_in, len(measures), len(splits))
+        return {"summary": summary, "records": records}
 
 
 def register(registry=None) -> None:

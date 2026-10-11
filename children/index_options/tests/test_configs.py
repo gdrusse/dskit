@@ -61,6 +61,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         # ADR-0258 (PROPOSED): the executable-decision-clock variant and its contract memo; plus
         # the robust-replay memo and four report artifacts the previous wrap added unlisted.
         "configs/run-equity-condor-robust-backtest-v2.json",
+        # ADR-0259 (PROPOSED): T2 of the edge-and-harvest note, the forecast-dispersion IC
+        # on the v2 replay's saved inputs (built 2026-10-11 at the owner's instruction).
+        "configs/run-forecast-dispersion-ic.json",
         "docs/memos/2026-10-09-condor-executable-clock-contract.md",
         "docs/memos/2026-10-09-condor-executable-clock-result.md",
         "docs/research/distribution-modeling/2026-10-09-condor-selection-intuition.md",
@@ -339,8 +342,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # report artifacts, the executable-clock contract memo) = 484, plus ADR-0258's executable-clock
     # run config = 485; the executable-clock result memo = 486; the selection-intuition research note = 487.
     # Plus the seven performance-pilot overlays and their research note (merged 2026-10-10) = 495,
-    # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497.
-    assert len(actual) == 497
+    # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497,
+    # plus the ADR-0259 forecast-dispersion IC document = 498.
+    assert len(actual) == 498
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

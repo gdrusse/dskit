@@ -94,3 +94,51 @@ def test_validate_params_default_deny():
 
 def test_node_refs_pass_validation():
     assert HorizonPairs.validate_params(_params(symbol="$each", horizon_days="$a.b")) == []
+
+
+# -- symbol_field: one series per value of an input field (ADR-0259) ----------
+
+MULTI = [{"s": s, "d": d, "c": c} for s, d, c in [
+    ("B", "2024-01-01", 10.0), ("A", "2024-01-01", 100.0), ("A", "2024-01-04", 103.0),
+    ("B", "2024-01-04", 20.0), ("A", "2024-01-05", 104.0), ("B", "2024-01-05", 30.0),
+    ("A", "2024-01-09", 110.0)]]
+
+
+def _multi(rows=MULTI, **over):
+    params = _params(symbol_field="s", **over)
+    del params["symbol"]
+    return HorizonPairs("h", params).run(_ctx(), {"records": rows})["records"]
+
+
+def test_symbol_field_pairs_each_series_within_itself_in_series_then_date_order():
+    out = _multi()
+    # A's 04 entry targets Sun 07 and settles on its previous close, Fri 05; B's 04 entry
+    # targets a day past B's OWN last close and is dropped; A's 05 entry would settle on
+    # itself (no close on 08) and is dropped.
+    assert [(r["sym"], r["dt"], r["sd"], r["ec"], r["sc"]) for r in out] == [
+        ("A", "2024-01-01", "2024-01-04", 100.0, 103.0),
+        ("A", "2024-01-04", "2024-01-05", 103.0, 104.0),
+        ("B", "2024-01-01", "2024-01-04", 10.0, 20.0)]
+    assert out[0]["tr"] == pytest.approx(math.log(1.03)) and out[2]["tr"] == pytest.approx(math.log(2.0))
+
+
+def test_symbol_field_refuses_a_missing_or_blank_series_and_a_duplicate_date_within_one():
+    for bad in ({"d": "2024-01-01", "c": 1.0}, {"s": "", "d": "2024-01-01", "c": 1.0},
+                {"s": 7, "d": "2024-01-01", "c": 1.0}):
+        with pytest.raises(ValueError, match="'s' must be a non-empty string"):
+            _multi([bad])
+    with pytest.raises(ValueError, match="2024-01-01"):
+        _multi([MULTI[1], dict(MULTI[1]), MULTI[2]])
+    assert len(_multi()) == 3  # two series may share a date
+
+
+def test_exactly_one_of_symbol_and_symbol_field():
+    assert HorizonPairs.validate_params(_params(symbol_field="s"))  # both
+    neither = _params()
+    del neither["symbol"]
+    assert HorizonPairs.validate_params(neither)
+    only = _params(symbol_field="s")
+    del only["symbol"]
+    assert HorizonPairs.validate_params(only) == []
+    assert HorizonPairs.validate_params({**only, "symbol_field": ""})
+    assert HorizonPairs.validate_params({**only, "symbol_field": "$each"}) == []

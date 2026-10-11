@@ -1,0 +1,342 @@
+{
+  "name": "forecast-dispersion-ic",
+  "notes": "T2 of the 2026-10-11 edge-and-harvest research note (A1127/A1128), ADR-0259: does the PatchTST forecast's SCALE order the names beyond what the option market implies? Per quote date, the Spearman rank correlation across names of forecast sd / implied straddle ratio against |realized 31-day log move| / implied straddle ratio, tested over the dates with the toolkit's per-timestamp IC (a Newey-West mean over the stamp series; the owned test, in place of the note's block bootstrap, same question). Two controls on the same rows: the forecast sd alone and the implied straddle ratio alone, each against |realized move|. Pass per the note: mean IC > 0 with t >= 2.5 on the relative measure, and the controls say whether the forecast adds to what the market already prices. INPUTS are the v2 replay's saved inputs only (condor-replay-inputs-20261009-v5: forecasts = the exact saved seed-11 curves, chain = the exact-DTE-31 trade bars, bars = as-traded closes), all pre-2026; nothing is fitted and no 2026 price is read. CLOCK: the forecast and the straddle are both taken at the quote date's close (same-day, the ADR-0258 decision clock); the realized move settles on the expiry's as-traded close or the latest earlier session (horizon-pairs, 31 calendar days, fallback previous: the replay's own settlement rule) and is known only after expiry. PRICE BASIS: both attachments agree on spot (the as-traded close) between the straddle's denominator, the forecast row and the pairs' entry close, so a basis mismatch REFUSES instead of correlating two bases; if that refusal fires, the finding is the mismatch, not the IC. The implied straddle ratio is (call vwap + put vwap) / close at the in-band strike nearest the money with both sides traded in the DTE-31 expiry: about 0.8 * sigma * sqrt(T), a constant factor that cancels in ranks; null where no in-band strike has both sides traded, and such rows are dropped and counted, never filled. The forecast sd is the analytic standard deviation of the saved mixture or Student mixture times the row's reference (return units). No earnings calendar is among the saved inputs, so the note's T4-proxy repeat is not run here; the by-phase and by-month splits are. h_steps 5: the stamps are weekly (an expiry exactly 31 days out falls on a Friday from a Tuesday) and a 31-day label overlaps about four of them. Owner-run: python -m dskit.pipeline run configs/run-forecast-dispersion-ic.json --asof 2025-12-31 from children/index_options on the WSL host that holds the onboarding root.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/production-universe-rerun-20261008/forecast-dispersion-ic",
+    "notes": "Beside the v2 replay's run root; excluded from the identity hash."
+  },
+  "pipeline": {
+    "forecasts": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "condor-replay-inputs-20261009-v5",
+        "stream": "forecasts",
+        "key_fields": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ]
+      },
+      "notes": "The exact saved seed-11 curves of the v2 replay (ADR-0258): one standardized-return curve per (symbol, quote_date, expiry) with its reference (return scale) and as-traded spot. No inference, no fits, no later-checkpoint substitution."
+    },
+    "chain": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "condor-replay-inputs-20261009-v5",
+        "stream": "chain",
+        "key_fields": [
+          "contract",
+          "quote_date"
+        ]
+      },
+      "notes": "The verified bounded exact-DTE-31 trade-bar chain the v2 replay decided on: one row per (contract, quote_date) with symbol, expiry, type (call/put), strike, vwap and volume."
+    },
+    "bars": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "condor-replay-inputs-20261009-v5",
+        "stream": "bars",
+        "key_fields": [
+          "symbol",
+          "date"
+        ]
+      },
+      "notes": "The as-traded USD/share closes the v2 replay settled on (as_traded_close), all pre-2026."
+    },
+    "bars_priced": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bars.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "as_traded_close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "A bar whose as-traded close is missing, null or non-positive (an unreconciled history is a per-context refusal upstream) carries no price: it is dropped here, counted in the log, so neither the straddle's denominator nor the pairs read it."
+    },
+    "chain_traded": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$chain.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "volume",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "vwap",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "A chain row with no volume or no vwap is not a trade; the straddle reads traded bars only."
+    },
+    "forecast_scale": {
+      "uses": "dskit.pipeline.libs.predictive_cdf:CurveMoments",
+      "inputs": {
+        "records": "$forecasts.records"
+      },
+      "params": {
+        "curve_field": "curve",
+        "reference_field": "reference",
+        "fields": {
+          "sd_return": "forecast_sd",
+          "sd_z": "forecast_sd_z"
+        },
+        "keep": [
+          "symbol",
+          "quote_date",
+          "expiry",
+          "spot"
+        ]
+      },
+      "notes": "The forecast's scale: the analytic standard deviation of the saved curve, in standardized units (forecast_sd_z) and in return units (forecast_sd = sd_z * reference). keep projects the rows to exactly the identity, the agreed spot and the family fields the attachment below declares; a curve that cannot be restored or a non-positive reference refuses by row."
+    },
+    "implied": {
+      "uses": "dskit.pipeline.libs.bar_features:TradeBarFeatures",
+      "inputs": {
+        "trades": "$chain_traded.records",
+        "underlying": "$bars_priced.records"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "date_field": "quote_date",
+        "right_field": "type",
+        "strike_field": "strike",
+        "size_field": "volume",
+        "price_field": "vwap",
+        "expiry_field": "expiry",
+        "call_values": [
+          "call"
+        ],
+        "put_values": [
+          "put"
+        ],
+        "underlying_entity_field": "symbol",
+        "underlying_date_field": "date",
+        "underlying_close_field": "as_traded_close",
+        "moneyness_band": 0.05,
+        "strict_prior": false,
+        "clock_note": "same-day: the forecast and the straddle are both taken at the quote date's close, the ADR-0258 decision clock; the bar is known when the decision is taken",
+        "fields": {
+          "atm_straddle_ratio": "implied_straddle_ratio",
+          "underlying_close": "spot"
+        }
+      },
+      "notes": "What the market implies for the same 31 days: the ATM straddle over the close, from the same chain the replay traded (the 0.05 band is the universe feature table's, workflow-features.json). underlying_close writes the denominator out as spot so both attachments can agree on it. Null where no in-band strike has both sides traded; the IC node drops and counts those rows."
+    },
+    "realized": {
+      "uses": "horizon-pairs",
+      "inputs": {
+        "records": "$bars_priced.records"
+      },
+      "params": {
+        "horizon_days": 31,
+        "fallback": "previous",
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "close_field": "as_traded_close",
+        "fields": {
+          "symbol": "symbol",
+          "date": "quote_date",
+          "settlement_date": "settlement_date",
+          "entry_close": "spot",
+          "settle_close": "settle_close",
+          "terminal_return": "realized_log_move",
+          "period": "entry_year"
+        }
+      },
+      "notes": "The realized 31-day log move of every name from every close: the expiry is the quote date plus 31 calendar days (exact DTE 31), settled on that day's as-traded close or the latest earlier session, the replay's own rule (CondorExpirySettle, max gap 4). An entry whose expiry lies past the last pre-2026 close is dropped, never nulled. entry_close is named spot so the attachment agrees on it."
+    },
+    "with_forecast": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$implied.records",
+        "table": "$forecast_scale.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "quote_date"
+        ],
+        "agree_fields": [
+          "spot"
+        ],
+        "max_absent_fraction": 0.1,
+        "column_prefix": "fc_",
+        "families": {
+          "forecast": {
+            "fields": [
+              "expiry",
+              "forecast_sd",
+              "forecast_sd_z"
+            ],
+            "withheld_fields": {},
+            "clock_note": "the saved curve of the quote date's close (ADR-0258 decision clock): known when the decision is taken"
+          }
+        }
+      },
+      "notes": "The forecast scale onto the implied rows by (symbol, quote_date); spot must agree exactly (the forecast's as-traded spot against the straddle's denominator). At most 10% of implied rows may have no forecast (names outside the modeled 388); more refuses."
+    },
+    "with_realized": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$with_forecast.records",
+        "table": "$realized.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "quote_date"
+        ],
+        "agree_fields": [
+          "spot"
+        ],
+        "max_absent_fraction": 0.1,
+        "column_prefix": "rz_",
+        "families": {
+          "realized": {
+            "fields": [
+              "settlement_date",
+              "settle_close",
+              "realized_log_move",
+              "entry_year"
+            ],
+            "withheld_fields": {},
+            "clock_note": "settlement: the as-traded close on the expiry date or the latest earlier session; known only after expiry, never at the decision"
+          }
+        }
+      },
+      "notes": "The realized move onto the same rows; spot must agree exactly (the pairs' entry close is the same as-traded close). The settlement columns are label-time values: nothing downstream decides on them, the IC only scores."
+    },
+    "phased": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$with_realized.records"
+      },
+      "params": {
+        "field": "phase",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "quote_date",
+                "op": ">=",
+                "value": "2024-02-06"
+              },
+              {
+                "field": "quote_date",
+                "op": "<=",
+                "value": "2024-12-31"
+              }
+            ],
+            "value": "calibration"
+          },
+          {
+            "when": [
+              {
+                "field": "quote_date",
+                "op": ">=",
+                "value": "2025-02-04"
+              },
+              {
+                "field": "quote_date",
+                "op": "<=",
+                "value": "2025-11-28"
+              }
+            ],
+            "value": "entry"
+          },
+          {
+            "when": [],
+            "value": "outside"
+          }
+        ]
+      },
+      "notes": "The v2 replay's two windows (ExactDteBarChain windows: calibration 2024-02-06..2024-12-31, entry 2025-02-04..2025-11-28) stamped from the quote date itself, so the split does not depend on any upstream row carrying a phase. 'outside' names a date in neither window out loud; expected empty."
+    },
+    "ic": {
+      "uses": "dskit.pipeline.kinds_stats:CrossSectionIC",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "quote_date",
+        "series_field": "symbol",
+        "measures": {
+          "relative": {
+            "forecast_field": "fc_forecast_sd",
+            "outcome_field": "rz_realized_log_move",
+            "relative_field": "implied_straddle_ratio",
+            "outcome_transform": "abs"
+          },
+          "forecast_alone": {
+            "forecast_field": "fc_forecast_sd",
+            "outcome_field": "rz_realized_log_move",
+            "outcome_transform": "abs"
+          },
+          "implied_alone": {
+            "forecast_field": "implied_straddle_ratio",
+            "outcome_field": "rz_realized_log_move",
+            "outcome_transform": "abs"
+          }
+        },
+        "h_steps": 5,
+        "splits": [
+          "phase"
+        ],
+        "by_month": true
+      },
+      "notes": "T2 itself. relative is the pre-registered measure: forecast sd over the implied straddle ratio against |realized log move| over the same ratio, ranked within each quote date across the names. forecast_alone and implied_alone are the controls. Rows with a null forecast (no attachment), a null straddle (no two-sided in-band strike) or a null realized move are dropped and counted per measure. The t is the Newey-West mean over the dates with the automatic band, at least h_steps - 1 = 4 (the 31-day label spans about four weekly stamps); usable is false if the median date carries fewer than 5 names."
+    },
+    "rows": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/production-universe-rerun-20261008/forecast-dispersion-ic/dispersion-rows.jsonl",
+        "overwrite": true,
+        "source": "one row per (symbol, quote_date): implied straddle ratio, forecast sd, realized 31-day log move and settlement, all on the as-traded spot basis, with the attachment statuses and the phase"
+      },
+      "notes": "The audit rows the IC was computed from, so the regression slope (the note's kappa) or any other reading can be taken without recomputing. Overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "by_stamp": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$ic.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/production-universe-rerun-20261008/forecast-dispersion-ic/dispersion-by-stamp.jsonl",
+        "overwrite": true,
+        "source": "one row per measure and quote date: the cross-sectional Spearman rho and the number of names ranked"
+      },
+      "notes": "The per-date series the HAC mean was taken over."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "edge": "$ic.summary"
+      },
+      "params": {
+        "title": "Forecast dispersion information coefficient (T2)",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the three measures, the drop census and the split table; evidence.json holds every value."
+    }
+  }
+}

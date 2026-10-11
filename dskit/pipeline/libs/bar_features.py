@@ -52,6 +52,7 @@ TRADE_KEYS = {
     "log_call_put_ratio": (), "put_share": (), "log_total_volume": (),
     "log_trade_count": (), "n_strikes": (),
     "vw_log_moneyness": ("underlying",), "atm_straddle_ratio": ("underlying", "price", "band", "expiry"),
+    "underlying_close": ("underlying",),
 }
 
 #: The one spelling of the window placeholder in ``relative_field``.
@@ -654,7 +655,10 @@ class TradeBarFeatures(_BarNode):
         (size-weighted), ``atm_straddle_ratio`` (call vwap plus put vwap,
         over the close, at the in-band strike nearest the money that has BOTH
         sides traded in one expiry; ties go to the earlier expiry then the
-        lower strike).
+        lower strike), ``underlying_close`` (the entity's close on the trade
+        date as the underlying input states it — the denominator the
+        moneyness fields divide by, written out so a consumer can audit or
+        agree on it; ``None`` when the underlying has no row for the date).
 
     Examples
     --------
@@ -870,6 +874,7 @@ class TradeBarFeatures(_BarNode):
             "n_strikes": len(strikes),
             "vw_log_moneyness": self._weighted_moneyness(cells, close, volume),
             "atm_straddle_ratio": self._straddle(cells, close),
+            "underlying_close": close,
         }
 
     @staticmethod

@@ -794,17 +794,22 @@ class HorizonPairs(Node):
     ``fallback="previous"`` a target without one settles on the latest earlier
     day that has one, with ``"none"`` the entry is dropped. An entry whose
     target lies past the last close, or whose settlement would be the entry
-    day itself, is dropped, never nulled. Rows come out in date order.
+    day itself, is dropped, never nulled. The input is one series stamped
+    ``symbol``, or — with ``symbol_field`` (ADR-0259) — one series per value
+    of that field, each paired within itself. Rows come out in series order,
+    then date order.
 
     Parameters
     ----------
     params : dict
         ``horizon_days`` (int >= 1), ``fallback`` (``"previous"`` or
-        ``"none"``), ``symbol`` (str stamped on each row), ``date_field`` and
-        ``close_field`` (input field names; the date is an ISO string),
-        ``fields`` (dict naming the output fields ``symbol``, ``date``,
-        ``settlement_date``, ``entry_close``, ``settle_close``,
-        ``terminal_return`` and ``period``; distinct, no others). All required.
+        ``"none"``), exactly one of ``symbol`` (str stamped on each row) and
+        ``symbol_field`` (the input field whose non-empty string value names
+        each row's series), ``date_field`` and ``close_field`` (input field
+        names; the date is an ISO string), ``fields`` (dict naming the output
+        fields ``symbol``, ``date``, ``settlement_date``, ``entry_close``,
+        ``settle_close``, ``terminal_return`` and ``period``; distinct, no
+        others). All but the symbol alternative required.
 
     Examples
     --------
@@ -823,7 +828,8 @@ class HorizonPairs(Node):
     role = "transform"
     outputs = ("records",)
 
-    _PARAMS = ("horizon_days", "fallback", "symbol", "date_field", "close_field", "fields")
+    _PARAMS = ("horizon_days", "fallback", "symbol", "symbol_field", "date_field",
+               "close_field", "fields")
     #: The semantic output slots ``fields`` must name, once each.
     FIELD_SLOTS = ("symbol", "date", "settlement_date", "entry_close", "settle_close",
                    "terminal_return", "period")
@@ -869,7 +875,11 @@ class HorizonPairs(Node):
         fallback = params.get("fallback")
         if not is_node_ref(fallback) and fallback not in cls.FALLBACKS:
             problems.append(f"fallback must be one of {list(cls.FALLBACKS)}, got {fallback!r}")
-        for name in ("symbol", "date_field", "close_field"):
+        if ("symbol" in params) == ("symbol_field" in params):
+            problems.append("declare exactly one of symbol (one series, stamped on every row) "
+                            "and symbol_field (the input field naming each row's series)")
+        names = [n for n in ("symbol", "symbol_field") if n in params] + ["date_field", "close_field"]
+        for name in names:
             value = params.get(name)
             if not is_node_ref(value) and (not isinstance(value, str) or not value):
                 problems.append(f"{name} must be a non-empty string, got {value!r}")
@@ -928,6 +938,21 @@ class HorizonPairs(Node):
             return settle
         return None
 
+    def _series(self, records):
+        """``[(symbol, records)]`` in symbol order: one series, or one per ``symbol_field`` value."""
+        field = self.params.get("symbol_field")
+        if field is None:
+            return [(self.params["symbol"], list(records))]
+        groups = {}
+        for index, record in enumerate(records):
+            symbol = record.get(field)
+            if not isinstance(symbol, str) or not symbol:
+                raise ValueError(
+                    f"{self.key}: record {index} {field!r} must be a non-empty string, got {symbol!r}"
+                )
+            groups.setdefault(symbol, []).append(record)
+        return sorted(groups.items())
+
     def run(self, ctx, inputs):
         """Build the entry/settlement rows.
 
@@ -936,20 +961,29 @@ class HorizonPairs(Node):
         ctx : NodeContext
             The run frame; unused.
         inputs : dict
-            ``records`` (REQUIRED): mappings with the date and close fields.
+            ``records`` (REQUIRED): mappings with the date and close fields
+            (and the ``symbol_field`` when declared).
 
         Returns
         -------
         dict
-            ``{"records": [...]}`` in entry-date order.
+            ``{"records": [...]}`` in series order, then entry-date order.
 
         Raises
         ------
         ValueError
-            A non-ISO date, a duplicate date, or a non-positive close.
+            A non-ISO date, a duplicate date within a series, a non-positive
+            close, or a row whose ``symbol_field`` is not a non-empty string.
         """
+        rows = []
+        for symbol, records in self._series(inputs["records"]):
+            rows.extend(self._pairs(symbol, self._closes(records)))
+        self.log.info("paired %d entries", len(rows))
+        return {"records": rows}
+
+    def _pairs(self, symbol, closes):
+        """The entry/settlement rows of one series, in entry-date order."""
         out_names = self.params["fields"]
-        closes = self._closes(inputs["records"])
         days = sorted(closes)
         horizon = timedelta(days=int(self.params["horizon_days"]))
         rows = []
@@ -958,7 +992,7 @@ class HorizonPairs(Node):
             if settle is None or settle <= entry:
                 continue
             rows.append({
-                out_names["symbol"]: self.params["symbol"],
+                out_names["symbol"]: symbol,
                 out_names["date"]: entry.isoformat(),
                 out_names["settlement_date"]: settle.isoformat(),
                 out_names["entry_close"]: closes[entry],
@@ -966,8 +1000,7 @@ class HorizonPairs(Node):
                 out_names["terminal_return"]: math.log(closes[settle] / closes[entry]),
                 out_names["period"]: entry.year,
             })
-        self.log.info("paired %d of %d entries", len(rows), len(days))
-        return {"records": rows}
+        return rows
 
 
 #: The kinds this module ships, in registration order.
