@@ -208,20 +208,22 @@ def batch_root(root, batch):
     return root or os.path.dirname(os.path.abspath(batch))
 
 
-def hparams_sha256(fit):
+def hparams_sha256(fit, exclude=()):
     """Return the hex sha256 of a cell's whole ``fit`` params minus ``bounds`` (architecture, features, optimizer, loss: everything but the split).
 
     Parameters
     ----------
     fit : dict
         A cell's ``fit`` params.
+    exclude : tuple of str, default ()
+        Further keys left out (the production pipeline's declared overrides, e.g. ``row_stride``).
 
     Returns
     -------
     str
         The hash of the canonical JSON; equal for a lane across folds and blocks exactly when no hyperparameter moved.
     """
-    body = {k: v for k, v in fit.items() if k != "bounds"}
+    body = {k: v for k, v in fit.items() if k != "bounds" and k not in exclude}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 

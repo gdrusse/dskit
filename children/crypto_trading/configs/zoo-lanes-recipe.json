@@ -301,7 +301,7 @@
       "args": "Inherited from the zoo manifest; `cell` holds the default lanes and (unless the default won) the frozen winner's lanes, with the full frozen params."
     },
     "pipeline": {
-      "notes": "The HPO pipeline as ONE workflow manifest: search (candidate lanes over the warmup folds of W1) -> freeze (hpo-frozen.json: the selected model and its full hyperparameters) -> evaluate (default vs frozen winner over the later W1 folds). Run: `python -m dskit.pipeline workflow configs/workflow-hpo.json --args hpo-args.json` where hpo-args.json holds {\"args\": {\"pick\": \"<path to zoo-pick.json>\"}} (or any overlay of args). It reads no W2. The lane manifests it writes sit under the work dir. Regenerate with `python -m crypto_trading.zoo_lanes configs/zoo-lanes-recipe.json --out ... --hpo-out configs/workflow-hpo.json`; a test pins it. Note the workflow ledger keys a step on its config and its in-values, which name the pick by path: after re-picking, delete the work dir.",
+      "notes": "The HPO pipeline as ONE workflow manifest: search (candidate lanes over the warmup folds of W1) -> freeze (hpo-frozen.json: the selected model and its full hyperparameters) -> evaluate (default vs frozen winner over the later W1 folds). Run: `python -m dskit.pipeline workflow configs/workflow-hpo.json --args hpo-args.json` where hpo-args.json is a FLAT overlay of the manifest args, e.g. {\"pick\": \"<path to zoo-pick.json>\"} (do not wrap it in an \"args\" key: that leaves the args unfilled). It reads no W2. The lane manifests it writes sit under the work dir. Regenerate with `python -m crypto_trading.zoo_lanes configs/zoo-lanes-recipe.json --out ... --hpo-out configs/workflow-hpo.json`; a test pins it. Note the workflow ledger keys a step on its config and its in-values, which name the pick by path: after re-picking, delete the work dir.",
       "args_notes": "`pick` is the zoo's zoo-pick.json (unfilled until --args supplies it); `recipe` is this recipe as run from the child root; `parallel` is workflow-batch's lane parallelism (two lanes at once).",
       "cli": "crypto_trading.zoo_lanes",
       "recipe": "configs/zoo-lanes-recipe.json",
@@ -316,6 +316,8 @@
     "evaluate_through": "2026-08-01",
     "retrain_days": 60,
     "allow_past_w2": false,
+    "row_stride": 1,
+    "row_stride_notes": "The production retrain trains on EVERY minute (owner 2026-10-11); the zoo and the HPO used the training row_stride of 5. It is the one fit param production overrides on the frozen model: every other param must hash to the freeze, and the realized stride must equal this value (checked when the lanes are built and when the models are indexed). Scoring is unchanged (every minute).",
     "work_dir": "./pipeline_runs/zoo-production",
     "template": "production-template.json",
     "files": {
@@ -333,7 +335,7 @@
       "args": "Inherited from the zoo manifest; `cell` holds each lane's full params (the frozen hyperparameters for the model), `block` each lane's cutoff and scored days, `production` the window and the hyperparameter hashes."
     },
     "pipeline": {
-      "notes": "The production pipeline as ONE workflow manifest: blocks (one lane per retrain block) -> train (those lanes, in parallel) -> index (every retrain's model under a stable path, models.json, the forward report). Run: `python -m dskit.pipeline workflow configs/workflow-production.json --args production-args.json` with {\"args\": {\"pick\": \"<zoo-pick.json>\", \"frozen\": \"<hpo-frozen.json>\"}} (add forward_start, evaluate_through, retrain_days to override). A window past W2 refuses unless the recipe's allow_past_w2 is true. Regenerate with `zoo_lanes ... --production-out configs/workflow-production.json`.",
+      "notes": "The production pipeline as ONE workflow manifest: blocks (one lane per retrain block) -> train (those lanes, in parallel) -> index (every retrain's model under a stable path, models.json, the forward report). Run: `python -m dskit.pipeline workflow configs/workflow-production.json --args production-args.json` with a FLAT overlay {\"pick\": \"<zoo-pick.json>\", \"frozen\": \"<hpo-frozen.json>\"} (do not wrap it in an \"args\" key; add forward_start, evaluate_through, retrain_days to override). The production retrain trains on every minute (production.row_stride 1), unlike the zoo. A window past W2 refuses unless the recipe's allow_past_w2 is true. Regenerate with `zoo_lanes ... --production-out configs/workflow-production.json`.",
       "args_notes": "`pick` and `frozen` are unfilled until --args supplies them; forward_start, evaluate_through, retrain_days and allow_past_w2 are the recipe's production values; `parallel` is workflow-batch's lane parallelism.",
       "cli": "crypto_trading.zoo_lanes",
       "recipe": "configs/zoo-lanes-recipe.json",

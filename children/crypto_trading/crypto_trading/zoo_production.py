@@ -40,6 +40,8 @@ from .zoo_pick import (
 __all__ = ["ForwardWindow", "ModelIndex", "ProductionPlan", "index_main", "manifest_main"]
 
 _MS = 1000
+#: The one fit param the production pipeline overrides (its value is the recipe's ``production.row_stride``).
+_STRIDE = "row_stride"
 _NOTES = "notes"
 _TRUE = ("true", "1", "yes")
 _FALSE = ("false", "0", "no")
@@ -203,6 +205,9 @@ class ProductionPlan:
         check_frozen(frozen)
         self.recipe, self.lanes, self.pick, self.frozen, self.window = recipe, lanes, pick, frozen, window
         self.production = recipe["production"]
+        self.stride = self.production[_STRIDE]
+        if isinstance(self.stride, bool) or not isinstance(self.stride, int) or self.stride < 1:
+            raise ValueError(f"production.{_STRIDE} must be an integer >= 1, got {self.stride!r}")
         self.model_lanes = list(pick["winner"]["lanes"])
         self.scope = pick["winner"]["scope"]
 
@@ -218,7 +223,11 @@ class ProductionPlan:
         model, baselines = self.zoo_lanes()
         cells = {lane: zoo[lane] for lane in baselines}
         for lane in model:
-            cells[lane] = {**zoo[lane], "fit": copy.deepcopy(self.frozen["params"][lane])}
+            fit = copy.deepcopy(self.frozen["params"][lane])
+            fit[_STRIDE] = self.stride
+            if hparams_sha256(fit, (_STRIDE,)) != hparams_sha256(self.frozen["params"][lane], (_STRIDE,)):
+                raise ValueError(f"{lane}: the production fit differs from the frozen one beyond {_STRIDE}")
+            cells[lane] = {**zoo[lane], "fit": fit}
         return cells
 
     def manifest(self, template):
@@ -244,7 +253,8 @@ class ProductionPlan:
             "pick": self.pick["winner"]["cell"], "model_lanes": self.model_lanes, "blocks": blocks,
             "forward_start": self.window.start.isoformat(), "evaluate_through": self.window.through.isoformat(),
             "retrain_days": self.window.retrain_days, "allow_past_w2": self.window.allow,
-            "hparams_sha256": {lane: hparams_sha256(self.frozen["params"][lane]) for lane in self.model_lanes},
+            _STRIDE: self.stride,
+            "hparams_sha256": {lane: hparams_sha256(self.frozen["params"][lane], (_STRIDE,)) for lane in self.model_lanes},
             "frozen_winner": self.frozen["winner"]}
         return manifest
 
@@ -278,6 +288,9 @@ class ModelIndex:
         self.recipe, self.manifest, self.root, self.frozen = recipe, manifest, root, frozen
         self.files = recipe["production"]["files"]
         self.info = manifest["args"]["production"]
+        self.stride = recipe["production"][_STRIDE]
+        if self.info.get(_STRIDE) != self.stride:
+            raise ValueError(f"the manifest was built with {_STRIDE} {self.info.get(_STRIDE)!r}, the recipe declares {self.stride!r}")
         self.blocks = {b["name"]: b for b in self.info["blocks"]}
         self.results = {name: ZooResults(root, recipe, template, f"{name}-") for name in self.blocks}
         self.fit_node = self.results[next(iter(self.blocks))].spec.model_node
@@ -360,21 +373,25 @@ class ModelIndex:
         return load_json(os.path.join(run, self.files["config"]))["pipeline"][self.fit_node]["params"]
 
     def _entry(self, block, lane, cell, run, relative, digests, target):
-        """Build one index entry; the run's REALIZED hyperparameters must match the manifest cell and the freeze."""
-        hashed = hparams_sha256(self._realized(run))
-        if hashed != hparams_sha256(cell["fit"]):
+        """Build one index entry; the run's REALIZED config must match the manifest cell and the freeze, bar the declared stride."""
+        realized = self._realized(run)
+        if hparams_sha256(realized) != hparams_sha256(cell["fit"]):
             raise ValueError(f"{lane} block {block['k']}: the run's realized config differs from the manifest's cell")
+        model = lane in self.info["model_lanes"]
+        if model and realized.get(_STRIDE) != self.stride:
+            raise ValueError(f"{lane} block {block['k']}: realized {_STRIDE} {realized.get(_STRIDE)!r} is not the declared "
+                             f"production.{_STRIDE} {self.stride!r}")
+        hashed = hparams_sha256(realized, (_STRIDE,) if model else ())
         wanted = self.info["hparams_sha256"].get(lane)
         if wanted is not None and hashed != wanted:
             raise ValueError(f"{lane} block {block['k']}: the run's hyperparameters differ from the frozen ones")
-        frozen = self.frozen["hparams_sha256"].get(lane)
-        if frozen is not None and hashed != frozen:
+        if model and hashed != hparams_sha256(self.frozen["params"][lane], (_STRIDE,)):
             raise ValueError(f"{lane} block {block['k']}: the run's hyperparameters differ from hpo-frozen.json's")
         sidecar = os.path.join(target, self.files["sidecar"])
         state = load_json(sidecar)["state_hash"] if os.path.isfile(sidecar) else None
         listing = "".join(f"{name}:{digest}\n" for name, digest in digests.items())
         return {"lane": lane, "block": block["k"], "cutoff": block["first"], "train_end": block["train_end"],
-                "hparams_sha256": hashed, "path": relative, "files": digests, "state_hash": state,
+                "hparams_sha256": hashed, _STRIDE: realized.get(_STRIDE), "path": relative, "files": digests, "state_hash": state,
                 "sha256": hashlib.sha256(listing.encode("utf-8")).hexdigest()}
 
     def report(self):

@@ -102,7 +102,7 @@ def test_the_block_lanes_are_the_frozen_model_and_the_scopes_baselines_one_set_p
     assert args["cell"]["b02-gru-crps_tail-pooled"]["fit"]["lr"] == 0.123, "the frozen hyperparameters, not the zoo's"
     assert args["block"]["b02-empirical-pooled"] == {"k": 2, "first": "2026-07-01", "val_days": 31, "embargo_days": 1}
     assert "folds" not in args and manifest["lanes"]["keyed"] == ["cell", "block"] and "folds" not in manifest["steps"]["fit"]["in"]
-    assert args["production"]["hparams_sha256"] == {"gru-crps_tail-pooled": hparams_sha256(frozen["params"]["gru-crps_tail-pooled"])}
+    assert args["production"]["hparams_sha256"] == {"gru-crps_tail-pooled": hparams_sha256(frozen["params"]["gru-crps_tail-pooled"], ("row_stride",))}
 
 
 def test_an_unpooled_pick_runs_both_asset_lanes_and_both_baselines_per_asset(loaded):
@@ -238,7 +238,8 @@ def test_every_retrain_is_saved_under_a_stable_block_path_and_listed_in_the_inde
     assert gru[1]["path"] == os.path.join("models", "gru-crps_tail-pooled", "block-1-2026-05-02")
     assert gru[2]["path"] == os.path.join("models", "gru-crps_tail-pooled", "block-2-2026-07-01")
     assert gru[1]["train_end"] == "2026-05-01" and gru[2]["train_end"] == "2026-06-30"
-    assert gru[1]["hparams_sha256"] == gru[2]["hparams_sha256"] == hparams_sha256(manifest["args"]["cell"]["b01-gru-crps_tail-pooled"]["fit"])
+    assert gru[1]["hparams_sha256"] == gru[2]["hparams_sha256"] == hparams_sha256(manifest["args"]["cell"]["b01-gru-crps_tail-pooled"]["fit"], ("row_stride",))
+    assert gru[1]["row_stride"] == gru[2]["row_stride"] == 1
     assert set(gru[1]["files"]) == {"model.pt", "model.json", "training_curve.json"} and gru[1]["files"] != gru[2]["files"]
     for entry in gru.values():
         assert entry["files"]["model.pt"] == file_sha256(str(out / entry["path"] / "model.pt"))
@@ -470,3 +471,74 @@ def test_a_block_directory_that_cannot_be_cleared_is_a_refusal_not_a_silent_skip
 def test_the_production_pipeline_hands_the_freeze_to_the_index_step():
     manifest = json.load(open(os.path.join(CONFIGS, "workflow-production.json"), encoding="utf-8"))
     assert "--frozen {in.frozen}" in manifest["registry"]["index"]["command"] and manifest["steps"]["index"]["in"]["frozen"] == "$args.frozen"
+
+
+# --- the production retrain trains on every minute ---------------------------------------------------------------------
+
+
+def _differences(a, b, path=""):
+    """Return the dotted paths where two nested dicts differ."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return [d for k in sorted(set(a) | set(b)) for d in _differences(a.get(k), b.get(k), f"{path}.{k}" if path else k)]
+    return [] if a == b else [path]
+
+
+def test_the_recipe_declares_the_production_stride_once_and_it_is_every_minute(loaded):
+    assert loaded[0]["production"]["row_stride"] == 1
+    assert loaded[1].base["training"]["row_stride"] == 5, "the zoo and the HPO keep their stride"
+
+
+def test_a_stride_1_manifest_changes_the_frozen_fit_in_row_stride_and_nothing_else(loaded):
+    pick, frozen = records(loaded)
+    assert frozen["params"]["gru-crps_tail-pooled"]["row_stride"] == 5
+    manifest = ProductionPlan(loaded[0], loaded[1], pick, frozen, window(loaded)).manifest("production-template.json")
+    cells = manifest["args"]["cell"]
+    for block in ("b01", "b02"):
+        fit = cells[f"{block}-gru-crps_tail-pooled"]["fit"]
+        assert fit["row_stride"] == 1
+        assert _differences(fit, frozen["params"]["gru-crps_tail-pooled"]) == ["row_stride"]
+        assert "row_stride" not in cells[f"{block}-empirical-pooled"]["fit"]
+        assert cells[f"{block}-gru-crps_tail-pooled"]["score"] == loaded[1].cells()["gru-crps_tail-pooled"]["score"], "scoring is unchanged"
+    assert manifest["args"]["production"]["row_stride"] == 1
+
+
+def test_the_declared_stride_must_be_a_positive_integer(loaded):
+    pick, frozen = records(loaded)
+    for bad in (0, -1, 1.5, True, None):
+        recipe = {**loaded[0], "production": {**loaded[0]["production"], "row_stride": bad}}
+        with pytest.raises(ValueError, match="row_stride must be an integer >= 1"):
+            ProductionPlan(recipe, loaded[1], pick, frozen, window(loaded))
+
+
+def _mutate_realized(loaded, forward_run, **changes):
+    block = forward_run[0]["args"]["production"]["blocks"][0]
+    path = os.path.join(_run_dir(loaded, forward_run, block), "config.json")
+    config = json.load(open(path, encoding="utf-8"))
+    config["pipeline"]["fit"]["params"].update(changes)
+    json.dump(config, open(path, "w", encoding="utf-8"))
+    manifest = forward_run[0]
+    manifest["args"]["cell"][f"{block['name']}-gru-crps_tail-pooled"]["fit"].update(changes)   # the manifest agrees with the run
+
+
+def test_a_production_run_that_trained_on_stride_5_is_refused(loaded, forward_run):
+    _mutate_realized(loaded, forward_run, row_stride=5)
+    with pytest.raises(ValueError, match=r"realized row_stride 5 is not the declared production.row_stride 1"):
+        _persist(loaded, forward_run)
+
+
+def test_a_mutated_lr_is_still_refused_under_the_stride_override(loaded, forward_run):
+    _mutate_realized(loaded, forward_run, lr=0.999)
+    with pytest.raises(ValueError, match="differ from the frozen ones"):
+        _persist(loaded, forward_run)
+
+
+def test_the_index_refuses_a_manifest_built_with_another_stride_than_the_recipe_declares(loaded, forward_run):
+    forward_run[0]["args"]["production"]["row_stride"] = 5
+    with pytest.raises(ValueError, match="recipe declares 1"):
+        _persist(loaded, forward_run)
+
+
+def test_the_pipeline_notes_describe_a_flat_args_overlay():
+    for name in ("workflow-hpo.json", "workflow-production.json"):
+        notes = json.load(open(os.path.join(CONFIGS, name), encoding="utf-8"))["notes"]
+        assert "FLAT overlay" in notes and '{"args"' not in notes, name
