@@ -6,7 +6,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-10-10: repo cleanup landed; owner purges 7 remote branches |
+| dskit core | "Core" below | 2026-10-11: repo cleanup landed; owner purges 8 remote branches |
 | index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-11: T2 dispersion-IC test built (ADR-0259, `configs/run-forecast-dispersion-ic.json`), not run; owner runs it on WSL, then dispersion book vs premium program |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-08: 15m kill test, development read: no model beats the Kalshi mid; held-out is the owner's call |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
@@ -33,7 +33,8 @@ Known reds on main, untouched here, each its own bounded task:
 deletion): delete the contained remote branches `claude/correlation-arb-research`,
 `claude/crypto-trading-child`, `claude/ct-kalshi-history`, `claude/ct-parquet-io`,
 `claude/ct-restwindow`, `claude/ct-zipcsv`, `claude/index-options-perf-pilots`,
-`claude/repo-cleanup-20261010` (this cleanup, fast-forwarded into main);
+`claude/repo-cleanup-20261010` (this cleanup, fast-forwarded into main),
+`claude/index-options-dispersion-ic` (ADR-0259, fast-forwarded into main);
 tag `codex/index-options-iterative-validation`'s tip `80f0e4ee` as
 `archive/codex-index-options-iterative-validation`, push the tag, then delete
 that branch (superseded; ADR-0215's `CDFEstimatorModel` lives only there).
