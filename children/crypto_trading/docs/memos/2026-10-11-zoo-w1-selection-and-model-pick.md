@@ -48,6 +48,20 @@ Per-fold gain over the empirical baseline: -0.82% to -1.31%, better in 14 of 14 
 - The EWMA-Student baseline is much worse than the empirical one; the empirical distribution is the real bar.
 - The ADR-0258 keep rule, wing placement for the tail loss (provisional), BVOL `missing: mean` handling and the "already scored" W4 question remain open owner decisions.
 
+## HPO result (2026-10-11)
+
+HPO ran on W1 folds 1 to 4 (warmup, 2024-01-01 to 2024-08-28) for the picked cell: the zoo default plus the options child's bundles a to d (mapped onto the trunk and optimizer). The default won; nothing was tuned.
+
+| Candidate | Warmup mean weighted CRPS |
+|---|---|
+| default | 2.25153 |
+| c | 2.25183 |
+| a | 2.25401 |
+| b | 2.25419 |
+| d | 2.25698 |
+
+Frozen hyperparameters = the zoo default (`/home/russell/data/crypto_trading/hpo/hpo-frozen.json`, sha256 in the file). There is no tuned cell, so the tuned-versus-default evaluation on folds 5 to 14 recorded none (`hpo-evaluation.json`). The default's warmup fold scores equal the zoo run's exactly, so a rerun of the same code is deterministic here. A 5-candidate predeclared grid is a small search; a wider space is an owner decision.
+
 ## Handoff
 
 - Next (running): HPO on W1 folds 1 to 4 for this cell (bundles a to d plus default), freeze, then compare tuned and default on folds 5 to 14 (no W2).
