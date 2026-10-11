@@ -32,7 +32,8 @@ Known reds on main, untouched here, each its own bounded task:
 **Next.** Owner, from a machine with push rights (the cloud proxy refuses ref
 deletion): delete the contained remote branches `claude/correlation-arb-research`,
 `claude/crypto-trading-child`, `claude/ct-kalshi-history`, `claude/ct-parquet-io`,
-`claude/ct-restwindow`, `claude/ct-zipcsv`, `claude/index-options-perf-pilots`;
+`claude/ct-restwindow`, `claude/ct-zipcsv`, `claude/index-options-perf-pilots`,
+`claude/repo-cleanup-20261010` (this cleanup, fast-forwarded into main);
 push the local tag `archive/codex-index-options-iterative-validation`, then delete
 `codex/index-options-iterative-validation` (superseded; ADR-0215's
 `CDFEstimatorModel` lives only on that tag).
