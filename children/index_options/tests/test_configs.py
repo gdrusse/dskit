@@ -305,6 +305,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/research/distribution-modeling/2026-10-05-performance-pilots.md",
         # The lane re-entry note (2026-10-10 protocol: one note per child, rewritten at /wrap).
         "docs/RE-ENTRY.md",
+        # The 2026-10-11 edge-and-harvest research note (A1127).
+        "docs/research/strategy-alternatives/2026-10-11-patchtst-edge-and-harvest.md",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -337,8 +339,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # report artifacts, the executable-clock contract memo) = 484, plus ADR-0258's executable-clock
     # run config = 485; the executable-clock result memo = 486; the selection-intuition research note = 487.
     # Plus the seven performance-pilot overlays and their research note (merged 2026-10-10) = 495,
-    # plus the lane re-entry note docs/RE-ENTRY.md = 496.
-    assert len(actual) == 496
+    # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497.
+    assert len(actual) == 497
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
