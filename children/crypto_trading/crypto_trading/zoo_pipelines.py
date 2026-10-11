@@ -83,8 +83,8 @@ class HpoPipeline(_Pipeline):
                                   "Take the lowest warmup mean (the default wins ties) and write its full params."),
             "evaluate": self._entry(f"{self.batch} {{out.lanes}} --root {{dir}}/lanes --parallel {{in.parallel}}",
                                     "Default vs the frozen winner over the folds after the warmup, then the paired comparison.",
-                                    before="frozen-manifest --frozen {in.frozen} --recipe {in.recipe} --out {out.lanes}",
-                                    after="hpo-evaluate --batch {out.batch} --frozen {in.frozen} --recipe {in.recipe} --out {out.evaluation}")}
+                                    before="frozen-manifest --frozen {in.frozen} --pick {in.pick} --recipe {in.recipe} --out {out.lanes}",
+                                    after="hpo-evaluate --batch {out.batch} --frozen {in.frozen} --pick {in.pick} --recipe {in.recipe} --out {out.evaluation}")}
         steps = {
             "search": {"notes": "Needs the zoo pick (`--args` fills `pick`).", "registry": "search", "out": ["lanes", "batch"],
                        "in": {"W": "$args.work_dir", "pick": "$args.pick", "recipe": "$args.recipe", "parallel": "$args.parallel"}},
@@ -92,7 +92,8 @@ class HpoPipeline(_Pipeline):
                        "in": {"W": "$args.work_dir", "pick": "$args.pick", "recipe": "$args.recipe", "search_batch": "$search.out.batch"}},
             "evaluate": {"notes": "No search node: both cells are fixed, the folds are the schedule's remaining ones.", "registry": "evaluate",
                          "out": ["lanes", "batch", "evaluation"],
-                         "in": {"W": "$args.work_dir", "recipe": "$args.recipe", "parallel": "$args.parallel", "frozen": "$freeze.out.frozen"}}}
+                         "in": {"W": "$args.work_dir", "pick": "$args.pick", "recipe": "$args.recipe", "parallel": "$args.parallel",
+                                "frozen": "$freeze.out.frozen"}}}
         return self._assemble(args, layout, registry, steps)
 
 

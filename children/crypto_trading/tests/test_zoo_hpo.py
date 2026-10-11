@@ -129,8 +129,9 @@ def test_every_fold_sits_inside_w1_and_nothing_reaches_w2(loaded):
 
 def plan_frozen(plan, winner_name="c"):
     cells, record = plan.cells(plan.candidates.names())
-    return {"winner": winner_name, "pick_winner": plan.winner, "recipe": {}, "hparams_sha256": {},
-            "params": {lane: cells[plan.lane(winner_name, lane)]["fit"] for lane in plan.lane_names},
+    params = {lane: cells[plan.lane(winner_name, lane)]["fit"] for lane in plan.lane_names}
+    return {"winner": winner_name, "pick_winner": plan.winner, "recipe": {},
+            "hparams_sha256": {lane: hparams_sha256(fit) for lane, fit in params.items()}, "params": params,
             "default_params": {lane: cells[plan.lane("default", lane)]["fit"] for lane in plan.lane_names}}
 
 
@@ -294,3 +295,20 @@ def test_the_evaluation_record_is_the_paired_tuned_minus_default_gap(loaded, tmp
     gap = record["tuned_vs_default"]
     assert gap["mean"] == pytest.approx(-0.1) and gap["n"] == 10 and record["tuned_better"] is True
     assert record["cutoffs"] == zoo_cutoffs()[4:]
+
+
+def test_hpo_pick_with_a_root_runs_the_same_all_ok_check_as_with_a_batch(loaded, tmp_path):
+    plan = plan_for(loaded)
+    root = tmp_path / "search"
+    candidate_tree(root, loaded, plan, {n: 1.0 for n in plan.candidates.names()})
+    pick = {"winner": winner("gru-crps_tail", "pooled"), "recipe": {"path": RECIPE_PATH, "sha256": file_sha256(RECIPE_PATH)}}
+    (tmp_path / "zoo-pick.json").write_text(json.dumps(pick), encoding="utf-8")
+    argv = ["hpo-pick", "--pick", str(tmp_path / "zoo-pick.json"), "--root", str(root), "--out", str(tmp_path / "hpo-frozen.json")]
+    with pytest.raises(ValueError, match="no batch.json"):
+        lanes_main(argv)
+    lanes = [plan.lane(n, ln) for n in plan.candidates.names() for ln in plan.lane_names]
+    write_batch_status(str(root), lanes, "failed")
+    with pytest.raises(ValueError, match="not every lane is ok"):
+        lanes_main(argv)
+    write_batch_status(str(root), lanes)
+    assert lanes_main(argv) == 0

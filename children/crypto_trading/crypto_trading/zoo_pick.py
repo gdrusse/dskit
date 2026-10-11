@@ -30,7 +30,7 @@ from .feature_selection import FoldScores
 from .zoo_lanes import ZooLanes
 
 __all__ = ["CellFolds", "EXIT_NO_WINNER", "LaneFolds", "ScoreSpec", "ZooPick", "ZooResults", "file_sha256", "hparams_sha256", "load_json", "load_recipe", "main",
-           "paired", "resolve_recipe", "template_path", "write_json", "batch_root"]
+           "paired", "resolve_recipe", "template_path", "write_json", "batch_root", "check_frozen", "load_frozen"]
 
 #: A pick with no eligible cell is a result, not an error: the repo's "halted" exit code (a NO-GO gate).
 EXIT_NO_WINNER = 3
@@ -38,6 +38,7 @@ _ARTIFACTS = "artifacts"
 _OVERALL = "overall"
 _ROWS = "n_rows"
 BATCH_OK = "ok"
+BATCH_FILE = "batch.json"
 _PANEL_SCORE = "dskit.pipeline.libs.panel_score:PanelScore"
 
 
@@ -105,6 +106,54 @@ def resolve_recipe(record, override=None):
     return path
 
 
+def check_frozen(frozen):
+    """Refuse an ``hpo-frozen.json`` whose parameters no longer hash to the ``hparams_sha256`` it recorded.
+
+    Parameters
+    ----------
+    frozen : dict
+        The freeze record (``params`` per lane, ``hparams_sha256`` per lane).
+
+    Raises
+    ------
+    ValueError
+        A lane with no recorded hash, a recorded hash with no params, or params edited after the freeze.
+    """
+    recorded, params = frozen.get("hparams_sha256"), frozen.get("params")
+    if not isinstance(recorded, dict) or not isinstance(params, dict) or set(recorded) != set(params) or not params:
+        raise ValueError("hpo-frozen.json: `params` and `hparams_sha256` must name the same non-empty set of lanes")
+    for lane, fit in params.items():
+        if hparams_sha256(fit) != recorded[lane]:
+            raise ValueError(f"hpo-frozen.json: lane {lane} params no longer hash to the recorded hparams_sha256 (edited since the freeze?)")
+
+
+def load_frozen(path, pick_path=None):
+    """Load ``hpo-frozen.json``, verifying its parameter hashes and (given) the pick it was frozen from.
+
+    Parameters
+    ----------
+    path : str
+        The freeze file.
+    pick_path : str, optional
+        The ``zoo-pick.json`` in use; its bytes must hash to the ``pick_file.sha256`` the freeze recorded.
+
+    Returns
+    -------
+    dict
+        The freeze record.
+
+    Raises
+    ------
+    ValueError
+        As :func:`check_frozen`, or a pick other than the one the freeze was made from.
+    """
+    frozen = load_json(path)
+    check_frozen(frozen)
+    if pick_path is not None and file_sha256(pick_path) != frozen["pick_file"]["sha256"]:
+        raise ValueError(f"{pick_path} is not the zoo pick {path} was frozen from (sha256 differs)")
+    return frozen
+
+
 def template_path(recipe_dir, template, out):
     """Return the path a manifest written to ``out`` uses to reach ``template`` (a file beside the recipe).
 
@@ -126,14 +175,14 @@ def template_path(recipe_dir, template, out):
 
 
 def batch_root(root, batch):
-    """Return a workflow-batch root from ``--root``, or from ``--batch`` after checking every lane is ok.
+    """Return a workflow-batch root from ``--root`` or ``--batch``, after checking its ``batch.json`` shows every lane ok.
 
     Parameters
     ----------
     root : str or None
-        The batch root.
+        The batch root; its ``batch.json`` is read.
     batch : str or None
-        The root's ``batch.json``; every lane in it must be ``ok``.
+        The root's ``batch.json``.
 
     Returns
     -------
@@ -143,23 +192,24 @@ def batch_root(root, batch):
     Raises
     ------
     ValueError
-        A lane that is not ok, or a ``batch.json`` with no lanes.
+        A lane that is not ok, a ``batch.json`` with no lanes, or no ``batch.json`` under ``root``.
     SystemExit
         Neither or both of ``root`` and ``batch`` given.
     """
     if bool(root) == bool(batch):
         raise SystemExit("give exactly one of --root and --batch")
-    if root:
-        return root
-    status = load_json(batch)
+    path = batch or os.path.join(root, BATCH_FILE)
+    if not os.path.isfile(path):
+        raise ValueError(f"{path}: no batch.json: the batch did not run to the end")
+    status = load_json(path)
     bad = {x.get("lane"): x.get("status") for x in status.get("lanes", []) if x.get("status") != BATCH_OK}
     if bad or not status.get("lanes"):
-        raise ValueError(f"{batch}: not every lane is ok: {bad or 'no lanes recorded'}")
-    return os.path.dirname(os.path.abspath(batch))
+        raise ValueError(f"{path}: not every lane is ok: {bad or 'no lanes recorded'}")
+    return root or os.path.dirname(os.path.abspath(batch))
 
 
 def hparams_sha256(fit):
-    """Return the hex sha256 of a cell's hyperparameters: its PanelTrain params without the per-fold ``bounds``.
+    """Return the hex sha256 of a cell's whole ``fit`` params minus ``bounds`` (architecture, features, optimizer, loss: everything but the split).
 
     Parameters
     ----------

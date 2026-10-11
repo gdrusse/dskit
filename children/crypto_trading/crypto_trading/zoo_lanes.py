@@ -40,7 +40,6 @@ _SPLITS = {"train_end_ms": "$splits.train_end_ms", "val_start_ms": "$splits.val_
            "val_end_ms": "$splits.val_end_ms"}
 _INHERITED = ("panel", "window", "folds", "training", "grid", "zoo")
 _TRAIN_USES = "dskit.pipeline.libs.panel_torch:PanelTrain"
-_SCORE_USES = "dskit.pipeline.libs.panel_score:PanelScore"
 _CELL_KEYS = ("uses", "fit", "score")
 _UNFILLED_LANE = "finalist"
 _UNFILLED_CELL = "<frozen finalist: a lane's cell from workflow-zoo-w1.json, regenerated with W2's bounds by zoo_lanes>"
@@ -425,17 +424,13 @@ def main(argv=None):
         recipe = json.load(handle)
     with open(os.path.join(here, recipe["base"]), encoding="utf-8") as handle:
         lanes = ZooLanes(recipe, json.load(handle), _features_from(args.features_from))
-    with open(args.out, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(lanes.manifest(), indent=2) + "\n")
+    write_json = importlib.import_module("crypto_trading.zoo_pick").write_json
+    write_json(args.out, lanes.manifest())
     if args.w2_out:
-        with open(args.w2_out, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(lanes.w2_manifest(recipe["w2"]["finalists"], recipe["w2"]["bounds"], recipe["w2"]["template"]),
-                                    indent=2) + "\n")
-    for flag, pipeline in ((args.hpo_out, "HpoPipeline"), (args.production_out, "ProductionPipeline")):
-        if flag:
-            module = importlib.import_module("crypto_trading.zoo_pipelines")
-            with open(flag, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(getattr(module, pipeline)(recipe).manifest(), indent=2) + "\n")
+        write_json(args.w2_out, lanes.w2_manifest(recipe["w2"]["finalists"], recipe["w2"]["bounds"], recipe["w2"]["template"]))
+    for path, pipeline in ((args.hpo_out, "HpoPipeline"), (args.production_out, "ProductionPipeline")):
+        if path:
+            write_json(path, getattr(importlib.import_module("crypto_trading.zoo_pipelines"), pipeline)(recipe).manifest())
     return 0
 
 

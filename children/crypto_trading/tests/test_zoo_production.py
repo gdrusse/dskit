@@ -12,7 +12,7 @@ from zoo_fakes import write_batch_status, write_lane
 
 from crypto_trading.zoo_lanes import main as lanes_main
 from crypto_trading.zoo_pick import file_sha256, hparams_sha256, load_recipe
-from crypto_trading.zoo_production import ForwardWindow, ModelIndex, ProductionPlan
+from crypto_trading.zoo_production import ForwardWindow, ModelIndex, ProductionPlan, w5_start_ms
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
@@ -26,7 +26,8 @@ def loaded():
 
 
 def window(loaded, **over):
-    return ForwardWindow(loaded[0]["production"], loaded[0]["w2"]["bounds"], loaded[1].base["folds"]["embargo_days"], over)
+    return ForwardWindow(loaded[0]["production"], loaded[0]["w2"]["bounds"], loaded[1].base["folds"]["embargo_days"],
+                         w5_start_ms(loaded[0]["production"], CONFIGS), over)
 
 
 def winner(cell, scope):
@@ -45,7 +46,8 @@ def records(loaded, cell="gru-crps_tail", scope="pooled", **fit_over):
         fit.update(fit_over)
         params[lane] = fit
     pick = {"winner": won, "recipe": sha}
-    frozen = {"winner": "c", "pick_winner": won, "recipe": sha, "params": params}
+    frozen = {"winner": "c", "pick_winner": won, "recipe": sha, "params": params,
+              "hparams_sha256": {lane: hparams_sha256(fit) for lane, fit in params.items()}}
     return pick, frozen
 
 
@@ -76,7 +78,7 @@ def test_a_window_past_w2_is_refused_unless_the_recipe_flag_is_true(loaded):
     with pytest.raises(ValueError, match="W4 and W5 are reserved"):
         window(loaded, evaluate_through="2026-09-15")
     allowed = window(loaded, evaluate_through="2026-09-15", allow_past_w2=True)
-    assert allowed.blocks()[-1]["val_end"] == "2026-09-15"
+    assert allowed.blocks()[-1]["val_end"] == "2026-09-15"          # W4 is open with the flag, W5 starts there
     assert window(loaded, evaluate_through="2026-08-01").through == W2_END   # exactly W2's end is fine
 
 
@@ -135,9 +137,7 @@ def test_every_lane_expands_to_a_one_fold_walk_forward_that_ends_inside_the_wind
 
 
 def test_the_manifest_cli_refuses_a_window_past_w2_and_a_mismatched_freeze(loaded, tmp_path):
-    pick, frozen = records(loaded)
-    (tmp_path / "pick.json").write_text(json.dumps(pick), encoding="utf-8")
-    (tmp_path / "frozen.json").write_text(json.dumps(frozen), encoding="utf-8")
+    frozen = frozen_files(loaded, tmp_path)
     base = ["production-manifest", "--pick", str(tmp_path / "pick.json"), "--frozen", str(tmp_path / "frozen.json"), "--out", str(tmp_path / "m.json")]
     with pytest.raises(ValueError, match="W4 and W5 are reserved"):
         lanes_main(base + ["--evaluate-through", "2026-09-15"])
@@ -215,7 +215,8 @@ def forward_run(tmp_path, loaded, monkeypatch):
             name = f"{block['name']}-{lane}"
             score = {"gru-crps_tail-pooled": 1.0, "empirical-pooled": 1.4, "ewma_student-pooled": 1.2}[lane] + 0.1 * block["k"]
             write_lane(str(root), recipe, name, [block["first"]], [score], [100 * block["val_days"]], template["walkforward"]["objective"],
-                       extra_files=None if lane.startswith("gru") else {"state.json": json.dumps({"lane": name})})
+                       extra_files=None if lane.startswith("gru") else {"state.json": json.dumps({"lane": name})},
+                       fit=manifest["args"]["cell"][name]["fit"])
             if lane.startswith("gru"):
                 run = os.path.join(recipe["lane_runs"].format(root=str(root), lane=name), f"{name}-wf-{block['first']}-0000")
                 node = PanelTrain("fit", tiny_params(panel, 300 + 20 * block["k"]))
@@ -279,7 +280,7 @@ def test_a_retrain_that_saved_nothing_and_drifting_hyperparameters_are_refused(l
         ModelIndex(loaded[0], template, manifest, root).persist(str(out))
     drifted = json.loads(json.dumps(manifest))
     drifted["args"]["cell"]["b01-gru-crps_tail-pooled"]["fit"]["lr"] = 9.0
-    with pytest.raises(ValueError, match="differ from the frozen"):
+    with pytest.raises(ValueError, match="realized config differs from the manifest"):
         ModelIndex(loaded[0], template, drifted, root).persist(str(out))
 
 
@@ -295,3 +296,151 @@ def test_the_forward_report_scores_the_model_against_both_baselines_row_weighted
     assert [b["block"] for b in report["blocks"]] == [1, 2] and report["blocks"][0]["best_baseline"] == "ewma_student"
     assert report["blocks"][0]["model_minus_best_baseline"] == pytest.approx(-0.2)
     assert "Model gru-crps_tail" in ModelIndex(loaded[0], template, manifest, root).markdown(report)
+
+
+# --- W5 is never open; the freeze is verified; the realized config is what is checked ----------------------------------
+
+
+def test_w5s_start_is_read_from_the_one_file_that_owns_the_cut_and_is_the_plans_date(loaded):
+    cut = w5_start_ms(loaded[0]["production"], CONFIGS)
+    assert datetime.fromtimestamp(cut / 1000, tz=timezone.utc).date() == date(2026, 9, 15)
+    features = json.load(open(os.path.join(CONFIGS, "run-features-15m.json"), encoding="utf-8"))
+    segments = features["pipeline"]["kill_test"]["params"]["segments"]
+    assert cut == segments["heldout"]["start_ms"] == segments["development"]["end_ms"]
+    assert set(loaded[0]["production"]["w5"]) == {"file", "path", "notes"} and "1789430400000" not in json.dumps(loaded[0])
+
+
+def test_no_setting_opens_w5_and_the_flag_opens_w4_only(loaded):
+    for flag in (True, False):
+        with pytest.raises(ValueError, match="W5's start"):
+            window(loaded, evaluate_through="2026-10-08", allow_past_w2=flag)
+        with pytest.raises(ValueError, match="W5's start"):
+            window(loaded, evaluate_through="2026-09-16", allow_past_w2=flag)
+    assert window(loaded, evaluate_through="2026-09-15", allow_past_w2=True).through == date(2026, 9, 15)
+    with pytest.raises(ValueError, match="W4 and W5 are reserved"):
+        window(loaded, evaluate_through="2026-09-15")
+    with pytest.raises(ValueError, match="W4 and W5 are reserved"):
+        window(loaded, evaluate_through="2026-08-02")
+    recipe_flag = {**loaded[0]["production"], "evaluate_through": "2026-10-08", "allow_past_w2": True}      # the recipe itself cannot open it
+    with pytest.raises(ValueError, match="W5's start"):
+        ForwardWindow(recipe_flag, loaded[0]["w2"]["bounds"], 1, w5_start_ms(loaded[0]["production"], CONFIGS))
+
+
+def test_the_cli_refuses_w5_even_with_the_flag(loaded, tmp_path):
+    pick, frozen = records(loaded)
+    (tmp_path / "pick.json").write_text(json.dumps(pick), encoding="utf-8")
+    (tmp_path / "frozen.json").write_text(json.dumps({**frozen, "pick_file": {"path": "p", "sha256": file_sha256(str(tmp_path / "pick.json"))}}), encoding="utf-8")
+    argv = ["production-manifest", "--pick", str(tmp_path / "pick.json"), "--frozen", str(tmp_path / "frozen.json"), "--out", str(tmp_path / "m.json")]
+    with pytest.raises(ValueError, match="W5's start"):
+        lanes_main(argv + ["--evaluate-through", "2026-10-08", "--allow-past-w2", "true"])
+    assert not (tmp_path / "m.json").exists()
+    assert lanes_main(argv + ["--evaluate-through", "2026-09-15", "--allow-past-w2", "true"]) == 0
+
+
+def frozen_files(loaded, tmp_path):
+    pick, frozen = records(loaded)
+    (tmp_path / "pick.json").write_text(json.dumps(pick), encoding="utf-8")
+    frozen = {**frozen, "pick_file": {"path": str(tmp_path / "pick.json"), "sha256": file_sha256(str(tmp_path / "pick.json"))}}
+    (tmp_path / "frozen.json").write_text(json.dumps(frozen), encoding="utf-8")
+    return frozen
+
+
+def test_an_edited_frozen_file_is_refused_by_every_step_that_loads_it(loaded, tmp_path):
+    frozen = frozen_files(loaded, tmp_path)
+    lane = next(iter(frozen["params"]))
+    frozen["params"][lane]["lr"] = 0.5
+    (tmp_path / "frozen.json").write_text(json.dumps(frozen), encoding="utf-8")
+    common = ["--pick", str(tmp_path / "pick.json"), "--frozen", str(tmp_path / "frozen.json")]
+    for argv in (["production-manifest", *common, "--out", str(tmp_path / "m.json")],
+                 ["frozen-manifest", *common, "--out", str(tmp_path / "m.json")],
+                 ["hpo-evaluate", *common, "--batch", str(tmp_path / "batch.json"), "--out", str(tmp_path / "e.json")]):
+        with pytest.raises(ValueError, match="no longer hash to the recorded hparams_sha256"):
+            lanes_main(argv)
+    pick, other = records(loaded)
+    del other["hparams_sha256"]
+    with pytest.raises(ValueError, match="same non-empty set of lanes"):
+        ProductionPlan(loaded[0], loaded[1], pick, other, window(loaded))
+
+
+def test_a_freeze_from_another_pick_is_refused(loaded, tmp_path):
+    frozen_files(loaded, tmp_path)
+    (tmp_path / "pick.json").write_text(json.dumps({**json.loads((tmp_path / "pick.json").read_text(encoding="utf-8")), "extra": 1}), encoding="utf-8")
+    common = ["--pick", str(tmp_path / "pick.json"), "--frozen", str(tmp_path / "frozen.json")]
+    for argv in (["production-manifest", *common, "--out", str(tmp_path / "m.json")],
+                 ["hpo-evaluate", *common, "--batch", str(tmp_path / "batch.json"), "--out", str(tmp_path / "e.json")]):
+        with pytest.raises(ValueError, match="is not the zoo pick"):
+            lanes_main(argv)
+
+
+def _persist(loaded, forward_run):
+    manifest, root, _, out = forward_run
+    template = json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8"))
+    return ModelIndex(loaded[0], template, manifest, root).persist(str(out))
+
+
+def _run_dir(loaded, forward_run, block, lane="gru-crps_tail-pooled"):
+    manifest, root, _, _ = forward_run
+    name = f"{block['name']}-{lane}"
+    return os.path.join(loaded[0]["lane_runs"].format(root=root, lane=name), f"{name}-wf-{block['first']}-0000")
+
+
+def test_the_realized_config_not_the_manifest_is_what_is_checked_against_the_freeze(loaded, forward_run):
+    manifest = forward_run[0]
+    block = manifest["args"]["production"]["blocks"][1]
+    path = os.path.join(_run_dir(loaded, forward_run, block), "config.json")
+    config = json.load(open(path, encoding="utf-8"))
+    config["pipeline"]["fit"]["params"]["lr"] = 0.999      # the run drifted; the manifest and freeze are untouched
+    json.dump(config, open(path, "w", encoding="utf-8"))
+    with pytest.raises(ValueError, match="realized config differs from the manifest"):
+        _persist(loaded, forward_run)
+
+
+def test_a_realized_config_that_matches_the_manifest_but_not_the_freeze_is_refused(loaded, forward_run):
+    manifest = forward_run[0]
+    manifest["args"]["production"]["hparams_sha256"]["gru-crps_tail-pooled"] = "0" * 64     # a stale freeze hash
+    with pytest.raises(ValueError, match="differ from the frozen ones"):
+        _persist(loaded, forward_run)
+
+
+def test_bounds_are_the_only_thing_the_hyperparameter_hash_ignores(loaded):
+    fit = records(loaded)[1]["params"]["gru-crps_tail-pooled"]
+    moved = json.loads(json.dumps(fit))
+    moved["bounds"]["train_end_ms"] = 1
+    assert hparams_sha256(moved) == hparams_sha256(fit)
+    moved["trunk"]["dropout"] = 0.77
+    assert hparams_sha256(moved) != hparams_sha256(fit)
+
+
+@pytest.mark.parametrize("missing", ["model.pt", "model.json"])
+def test_a_model_lane_without_its_weights_or_sidecar_is_refused_though_the_directory_is_not_empty(loaded, forward_run, missing):
+    block = forward_run[0]["args"]["production"]["blocks"][0]
+    os.remove(os.path.join(_run_dir(loaded, forward_run, block), "artifacts", "fit", missing))
+    with pytest.raises(ValueError, match="saved no model"):
+        _persist(loaded, forward_run)
+
+
+def test_a_baseline_lane_needs_only_a_non_empty_artifact_directory(loaded, forward_run):
+    assert len(_persist(loaded, forward_run)) == 6
+
+
+def test_a_stale_block_directory_is_cleared_before_the_copy(loaded, forward_run):
+    out = forward_run[3]
+    stale = out / "models" / "gru-crps_tail-pooled" / "block-1-2026-05-02" / "left-over.bin"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old", encoding="utf-8")
+    entries = _persist(loaded, forward_run)
+    assert not stale.exists() and "left-over.bin" not in next(e for e in entries if e["lane"] == "gru-crps_tail-pooled")["files"]
+
+
+def test_a_production_lane_must_be_exactly_one_fold_at_its_blocks_cutoff(loaded, forward_run):
+    recipe = loaded[0]
+    manifest, root, _, _ = forward_run
+    block = manifest["args"]["production"]["blocks"][0]
+    name = f"{block['name']}-empirical-pooled"
+    template = json.load(open(os.path.join(CONFIGS, "production-template.json"), encoding="utf-8"))
+    shutil_rmtree = __import__("shutil").rmtree
+    shutil_rmtree(recipe["lane_runs"].format(root=root, lane=name))
+    write_lane(root, recipe, name, [block["first"], "2026-06-01"], [1.0, 1.0], [10, 10], template["walkforward"]["objective"],
+               extra_files={"state.json": "{}"}, fit=manifest["args"]["cell"][name]["fit"])
+    with pytest.raises(ValueError, match="one fold at the block's cutoff"):
+        _persist(loaded, forward_run)

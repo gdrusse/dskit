@@ -46,10 +46,10 @@
       "extends": null,
       "command": "{python} -m dskit.pipeline workflow-batch {out.lanes} --root {dir}/lanes --parallel {in.parallel}",
       "before": [
-        "{python} -m crypto_trading.zoo_lanes frozen-manifest --frozen {in.frozen} --recipe {in.recipe} --out {out.lanes}"
+        "{python} -m crypto_trading.zoo_lanes frozen-manifest --frozen {in.frozen} --pick {in.pick} --recipe {in.recipe} --out {out.lanes}"
       ],
       "after": [
-        "{python} -m crypto_trading.zoo_lanes hpo-evaluate --batch {out.batch} --frozen {in.frozen} --recipe {in.recipe} --out {out.evaluation}"
+        "{python} -m crypto_trading.zoo_lanes hpo-evaluate --batch {out.batch} --frozen {in.frozen} --pick {in.pick} --recipe {in.recipe} --out {out.evaluation}"
       ]
     }
   },
@@ -91,6 +91,7 @@
       ],
       "in": {
         "W": "$args.work_dir",
+        "pick": "$args.pick",
         "recipe": "$args.recipe",
         "parallel": "$args.parallel",
         "frozen": "$freeze.out.frozen"

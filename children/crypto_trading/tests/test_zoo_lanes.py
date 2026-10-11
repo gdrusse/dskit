@@ -308,7 +308,7 @@ def test_the_cli_regenerates_both_pipelines(tmp_path):
 def test_both_pipelines_plan_with_only_the_pick_and_the_freeze_unfilled():
     from dskit.pipeline.workflow import run_workflow
 
-    for name, unfilled in (("workflow-hpo.json", {"search.pick", "freeze.pick"}),
+    for name, unfilled in (("workflow-hpo.json", {"search.pick", "freeze.pick", "evaluate.pick"}),
                            ("workflow-production.json", {"blocks.pick", "blocks.frozen", "index.pick"})):
         lines = []
         assert run_workflow(os.path.join(CONFIGS, name), plan=True, out=lines.append) == 0

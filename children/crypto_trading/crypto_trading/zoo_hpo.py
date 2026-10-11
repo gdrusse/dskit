@@ -22,7 +22,7 @@ import os
 
 from .zoo_lanes import FoldSchedule
 from .zoo_pick import (
-    ZooResults, batch_root, file_sha256, hparams_sha256, load_json, load_recipe, paired, resolve_recipe, template_path, write_json,
+    ZooResults, batch_root, check_frozen, file_sha256, hparams_sha256, load_frozen, load_json, load_recipe, paired, resolve_recipe, template_path, write_json,
 )
 
 __all__ = ["Candidates", "HpoPlan", "evaluate_main", "frozen_manifest_main", "hpo_manifest_main", "hpo_pick_main"]
@@ -269,6 +269,7 @@ class HpoPlan:
         ValueError
             The recipe's default cell is no longer the one the HPO ran against.
         """
+        check_frozen(frozen)
         cells, _ = self.cells([self.candidates.default])
         for lane in self.lane_names:
             if cells[self.lane(self.candidates.default, lane)]["fit"] != frozen["default_params"][lane]:
@@ -385,7 +386,7 @@ def frozen_manifest_main(argv=None):
     Parameters
     ----------
     argv : list of str, optional
-        ``--frozen hpo-frozen.json``, ``--out MANIFEST``, optional ``--recipe``.
+        ``--frozen hpo-frozen.json``, ``--pick zoo-pick.json``, ``--out MANIFEST``, optional ``--recipe``.
 
     Returns
     -------
@@ -394,10 +395,11 @@ def frozen_manifest_main(argv=None):
     """
     parser = argparse.ArgumentParser(prog="zoo_lanes frozen-manifest", description="Default vs frozen winner over the folds after the warmup.")
     parser.add_argument("--frozen", required=True)
+    parser.add_argument("--pick", required=True, help="the zoo-pick.json the freeze was made from (its sha256 is checked)")
     parser.add_argument("--out", required=True)
     parser.add_argument("--recipe")
     args = parser.parse_args(argv)
-    frozen = load_json(args.frozen)
+    frozen = load_frozen(args.frozen, args.pick)
     recipe_path = resolve_recipe(frozen, args.recipe)
     recipe, lanes, _, here = load_recipe(recipe_path)
     write_json(args.out, HpoPlan(recipe, lanes, {"winner": frozen["pick_winner"]}).evaluation_manifest(frozen, template_path(here, recipe["template"], args.out)))
@@ -410,7 +412,7 @@ def evaluate_main(argv=None):
     Parameters
     ----------
     argv : list of str, optional
-        ``--frozen``, ``--out``, one of ``--root`` / ``--batch``, optional ``--recipe``.
+        ``--frozen``, ``--pick``, ``--out``, one of ``--root`` / ``--batch``, optional ``--recipe``.
 
     Returns
     -------
@@ -419,12 +421,13 @@ def evaluate_main(argv=None):
     """
     parser = argparse.ArgumentParser(prog="zoo_lanes hpo-evaluate", description="Tuned vs default on the folds after the warmup.")
     parser.add_argument("--frozen", required=True)
+    parser.add_argument("--pick", required=True, help="the zoo-pick.json the freeze was made from (its sha256 is checked)")
     parser.add_argument("--out", required=True)
     parser.add_argument("--root")
     parser.add_argument("--batch")
     parser.add_argument("--recipe")
     args = parser.parse_args(argv)
-    frozen = load_json(args.frozen)
+    frozen = load_frozen(args.frozen, args.pick)
     recipe_path = resolve_recipe(frozen, args.recipe)
     recipe, lanes, template, _ = load_recipe(recipe_path)
     plan = HpoPlan(recipe, lanes, {"winner": frozen["pick_winner"]})

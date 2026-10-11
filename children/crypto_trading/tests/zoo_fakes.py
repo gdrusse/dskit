@@ -17,11 +17,13 @@ def _dump(path, record):
         json.dump(record, handle)
 
 
-def write_lane(root, recipe, lane, cutoffs, scores, rows, objective, metrics=None, score_node="score", tail_weight=1.0, extra_files=None):
+def write_lane(root, recipe, lane, cutoffs, scores, rows, objective, metrics=None, score_node="score", tail_weight=1.0, extra_files=None,
+               fit=None, fit_node="fit"):
     """Write one lane's run root under ``root`` following the recipe's ``lane_runs`` pattern; returns the run root.
 
     ``scores`` and ``rows`` are per fold; ``metrics`` maps a metric name to its per-fold value (default: the score).
-    ``extra_files`` maps a file name to its text, written under each fold's ``artifacts/fit``.
+    ``extra_files`` maps a file name to its text, written under each fold's ``artifacts/fit``; ``fit`` is the realized
+    fit params written to each fold's ``config.json`` (as the driver does).
     """
     run_root = recipe["lane_runs"].format(root=root, lane=lane)
     folds = []
@@ -33,6 +35,8 @@ def write_lane(root, recipe, lane, cutoffs, scores, rows, objective, metrics=Non
             overall[name] = [value] * HORIZONS
         _dump(os.path.join(run, "artifacts", score_node, "horizon_scores.json"),
               {"overall": overall, "rows_sha256": f"rows-{lane.rsplit('-', 1)[1]}-{i}", "tail_weight": tail_weight})
+        if fit is not None:
+            _dump(os.path.join(run, "config.json"), {"pipeline": {fit_node: {"params": fit}}})
         for name, text in (extra_files or {}).items():
             os.makedirs(os.path.join(run, "artifacts", "fit"), exist_ok=True)
             with open(os.path.join(run, "artifacts", "fit", name), "w", encoding="utf-8") as handle:

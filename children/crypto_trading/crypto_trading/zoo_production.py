@@ -9,8 +9,10 @@ embargo, fit and score machinery); lanes are independent, so they run in paralle
 
 Window rule. ``forward_start`` and ``evaluate_through`` (exclusive) default to W2's start and end, from the recipe's
 ``production`` section, pinned by a test to ``w2.bounds``. W4 and W5 are reserved (owner-only decision): an
-``evaluate_through`` past W2's end is refused unless the recipe's ``allow_past_w2`` is true; a ``forward_start`` before
-W2's start is refused always (those days are W1's selection folds and the embargo).
+``evaluate_through`` past W2's end is refused unless the recipe's ``allow_past_w2`` is true, and that flag opens W4
+only: an ``evaluate_through`` past W5's start (the held-out cut, read from the one file that owns it, named by
+``production.w5``) is refused ALWAYS. A ``forward_start`` before W2's start is refused always (those days are W1's
+selection folds and the embargo).
 
 Models are saved at every retrain by the existing seam, not a new one: ``PanelTrain`` already writes ``model.pt`` (the
 weights), ``model.json`` (module parameters, window/stride/assets/columns, the scaler and band hash in
@@ -26,13 +28,13 @@ Import cost: stdlib + dskit core (no torch).
 import argparse
 import copy
 import hashlib
-import json
 import os
 import shutil
 from datetime import date, datetime, timedelta, timezone
 
 from .zoo_pick import (
-    ZooResults, batch_root, file_sha256, hparams_sha256, load_json, load_recipe, resolve_recipe, template_path, write_json,
+    ZooResults, batch_root, check_frozen, file_sha256, hparams_sha256, load_frozen, load_json, load_recipe, resolve_recipe, template_path,
+    write_json,
 )
 
 __all__ = ["ForwardWindow", "ModelIndex", "ProductionPlan", "index_main", "manifest_main"]
@@ -46,6 +48,37 @@ _FALSE = ("false", "0", "no")
 def _date_of(ms):
     """Return the UTC date of an epoch-millisecond instant."""
     return datetime.fromtimestamp(ms / _MS, tz=timezone.utc).date()
+
+
+def w5_start_ms(production, recipe_dir):
+    """Return W5's start instant: the held-out cut, read from the file and path ``production.w5`` names.
+
+    Parameters
+    ----------
+    production : dict
+        ``recipe["production"]``; ``w5`` is ``{"file", "path"}`` (a file beside the recipe, a dotted path in it).
+    recipe_dir : str
+        The recipe's directory.
+
+    Returns
+    -------
+    int
+        The cut, epoch milliseconds.
+
+    Raises
+    ------
+    ValueError
+        The path is not in the file or does not hold an integer.
+    """
+    spec = production["w5"]
+    node = load_json(os.path.join(recipe_dir, spec["file"]))
+    for part in spec["path"].split("."):
+        if not isinstance(node, dict) or part not in node:
+            raise ValueError(f"production.w5: {spec['path']!r} is not in {spec['file']}")
+        node = node[part]
+    if isinstance(node, bool) or not isinstance(node, int):
+        raise ValueError(f"production.w5: {spec['path']!r} in {spec['file']} is not an integer instant, got {node!r}")
+    return node
 
 
 def _flag(text):
@@ -68,40 +101,45 @@ class ForwardWindow:
         ``recipe["w2"]["bounds"]``: the W2 instants that bound the default window.
     embargo_days : int
         The zoo's embargo (``folds.embargo_days``).
+    w5 : int
+        W5's start instant (:func:`w5_start_ms`): no ``evaluate_through`` may pass it, whatever ``allow_past_w2`` says.
     overrides : dict, optional
         Replacements for any ``production`` key (the command line).
 
     Raises
     ------
     ValueError
-        ``evaluate_through`` past W2's end without ``allow_past_w2``; ``forward_start`` before W2's start; an empty
-        window; a ``retrain_days`` that is not a positive integer.
+        ``evaluate_through`` past W5's start; past W2's end without ``allow_past_w2``; ``forward_start`` before W2's
+        start; an empty window; a ``retrain_days`` that is not a positive integer.
 
     Examples
     --------
     Blocks of the default window::
 
-        window = ForwardWindow(recipe["production"], recipe["w2"]["bounds"], 1)
+        window = ForwardWindow(recipe["production"], recipe["w2"]["bounds"], 1, w5_start_ms(recipe["production"], configs_dir))
         [b["first"] for b in window.blocks()]
         # -> ["2026-05-02", "2026-07-01"]
     """
 
-    def __init__(self, production, w2, embargo_days, overrides=None):
+    def __init__(self, production, w2, embargo_days, w5, overrides=None):
         cfg = {**{k: v for k, v in production.items() if k != _NOTES}, **{k: v for k, v in (overrides or {}).items() if v is not None}}
         self.start = date.fromisoformat(cfg["forward_start"])
         self.through = date.fromisoformat(cfg["evaluate_through"])
         self.retrain_days, self.allow = cfg["retrain_days"], cfg["allow_past_w2"]
         self.embargo_days = embargo_days
-        w2_start, w2_end = _date_of(w2["val_start_ms"]), _date_of(w2["val_end_ms"] + 1)
+        w2_start, w2_end, w5_start = _date_of(w2["val_start_ms"]), _date_of(w2["val_end_ms"] + 1), _date_of(w5)
         if isinstance(self.retrain_days, bool) or not isinstance(self.retrain_days, int) or self.retrain_days < 1:
             raise ValueError(f"retrain_days must be an integer >= 1, got {self.retrain_days!r}")
         if not isinstance(self.allow, bool):
             raise ValueError(f"allow_past_w2 must be true or false, got {self.allow!r}")
         if self.start < w2_start:
             raise ValueError(f"forward_start {self.start} is before W2's start {w2_start}: those days are W1's folds and the embargo")
+        if self.through > w5_start:
+            raise ValueError(f"evaluate_through {self.through} is past W5's start {w5_start}: the holdout is read once, by the owner, "
+                             "and no setting opens it")
         if self.through > w2_end and not self.allow:
             raise ValueError(f"evaluate_through {self.through} is past W2's end {w2_end}: W4 and W5 are reserved (owner-only "
-                             "decision); set allow_past_w2 to true in the recipe to override")
+                             "decision); allow_past_w2 opens W4 only")
         if self.through <= self.start:
             raise ValueError(f"evaluate_through {self.through} must be after forward_start {self.start}")
 
@@ -162,6 +200,7 @@ class ProductionPlan:
             raise ValueError(f"hpo-frozen.json is for {frozen['pick_winner']['cell']}, the pick is {pick['winner']['cell']}")
         if frozen["recipe"] != pick["recipe"]:
             raise ValueError("hpo-frozen.json and zoo-pick.json were written from different recipes")
+        check_frozen(frozen)
         self.recipe, self.lanes, self.pick, self.frozen, self.window = recipe, lanes, pick, frozen, window
         self.production = recipe["production"]
         self.model_lanes = list(pick["winner"]["lanes"])
@@ -264,33 +303,56 @@ class ModelIndex:
         Raises
         ------
         ValueError
-            A lane whose run holds no artifact, or whose model lane's hyperparameter hash differs from the freeze.
+            A lane that is not one fold at its block's cutoff; a run with no artifact, or a model lane without
+            ``model.pt`` and ``model.json``; a run whose realized config (its ``config.json``) hashes differently from
+            the manifest's cell or, for a model lane, from the freeze. A block directory already present is replaced.
         """
         entries = []
         for block, lane, cell in self._lanes():
-            run = self.results[block["name"]].lane(lane).run_dirs[0]
+            run = self._lane(block, lane).run_dirs[0]
             source = os.path.join(run, "artifacts", self.fit_node)
-            if not os.path.isdir(source) or not os.listdir(source):
-                raise ValueError(f"{run}: no artifact under artifacts/{self.fit_node}: the retrain saved no model")
+            self._check_saved(run, source, lane)
             relative = os.path.join(self.files["models_dir"], lane, f"block-{block['k']}-{block['first']}")
             target = os.path.join(out_dir, relative)
-            os.makedirs(target, exist_ok=True)
+            shutil.rmtree(target, ignore_errors=True)
+            os.makedirs(target)
             digests = {}
             for name in sorted(os.listdir(source)):
                 shutil.copy2(os.path.join(source, name), os.path.join(target, name))
                 digests[name] = file_sha256(os.path.join(target, name))
-            entries.append(self._entry(block, lane, cell, relative, digests, target))
+            entries.append(self._entry(block, lane, cell, run, relative, digests, target))
         write_json(os.path.join(out_dir, self.files["index"]), {
             "pick": self.info["pick"], "frozen_winner": self.info["frozen_winner"], "blocks": self.info["blocks"],
             "models": entries})
         return entries
 
-    def _entry(self, block, lane, cell, relative, digests, target):
-        """Build one index entry; checks a model lane's hyperparameter hash against the freeze."""
-        hashed = hparams_sha256(cell["fit"])
+    def _lane(self, block, lane):
+        """Return the block's :class:`LaneFolds`, refusing anything but one fold at the block's cutoff."""
+        found = self.results[block["name"]].lane(lane)
+        if list(found.cutoffs) != [block["first"]]:
+            raise ValueError(f"{found.lane}: a production lane is one fold at the block's cutoff {block['first']}, "
+                             f"got {list(found.cutoffs)}")
+        return found
+
+    def _check_saved(self, run, source, lane):
+        """Refuse a retrain that left no artifact; a model lane must hold its weights and its sidecar."""
+        present = set(os.listdir(source)) if os.path.isdir(source) else set()
+        needed = {self.files["weights"], self.files["sidecar"]} if lane in self.info["model_lanes"] else set()
+        if not present or needed - present:
+            raise ValueError(f"{run}: artifacts/{self.fit_node} lacks {sorted(needed - present) or 'any file'}: the retrain saved no model")
+
+    def _realized(self, run):
+        """Return the fit params the run actually executed (its ``config.json``), not the manifest's copy."""
+        return load_json(os.path.join(run, self.files["config"]))["pipeline"][self.fit_node]["params"]
+
+    def _entry(self, block, lane, cell, run, relative, digests, target):
+        """Build one index entry; the run's REALIZED hyperparameters must match the manifest cell and the freeze."""
+        hashed = hparams_sha256(self._realized(run))
+        if hashed != hparams_sha256(cell["fit"]):
+            raise ValueError(f"{lane} block {block['k']}: the run's realized config differs from the manifest's cell")
         wanted = self.info["hparams_sha256"].get(lane)
         if wanted is not None and hashed != wanted:
-            raise ValueError(f"{lane} block {block['k']}: hyperparameters differ from the frozen ones")
+            raise ValueError(f"{lane} block {block['k']}: the run's hyperparameters differ from the frozen ones")
         sidecar = os.path.join(target, self.files["sidecar"])
         state = load_json(sidecar)["state_hash"] if os.path.isfile(sidecar) else None
         listing = "".join(f"{name}:{digest}\n" for name, digest in digests.items())
@@ -312,6 +374,8 @@ class ModelIndex:
         model_name = model_lanes[0].rsplit("-", 1)[0]
         baselines = sorted({lane.rsplit("-", 1)[0] for _, lane, _ in self._lanes()} - {model_name})
         per_block, totals = [], {}
+        for block, lane, _ in self._lanes():
+            self._lane(block, lane)
         for name, block in self.blocks.items():
             res = self.results[name]
             cells = {model_name: res.cell(model_name, suffixes)}
@@ -369,9 +433,10 @@ def manifest_main(argv=None):
     parser.add_argument("--retrain-days", type=int)
     parser.add_argument("--allow-past-w2", type=_flag)
     args = parser.parse_args(argv)
-    pick, frozen = load_json(args.pick), load_json(args.frozen)
+    pick, frozen = load_json(args.pick), load_frozen(args.frozen, args.pick)
     recipe, lanes, _, here = _recipe_for(pick, frozen, args.recipe)
     window = ForwardWindow(recipe["production"], recipe["w2"]["bounds"], lanes.base["folds"]["embargo_days"],
+                           w5_start_ms(recipe["production"], here),
                            {"forward_start": args.forward_start, "evaluate_through": args.evaluate_through,
                             "retrain_days": args.retrain_days, "allow_past_w2": args.allow_past_w2})
     template = template_path(here, recipe["production"]["template"], args.out)
@@ -410,10 +475,13 @@ def index_main(argv=None):
     parser.add_argument("--recipe")
     args = parser.parse_args(argv)
     pick = load_json(args.pick)
-    recipe, _, _, here = load_recipe(resolve_recipe(pick, args.recipe))
-    with open(os.path.join(here, recipe["production"]["template"]), encoding="utf-8") as handle:
-        template = json.load(handle)
-    index = ModelIndex(recipe, template, load_json(args.lanes), batch_root(args.root, args.batch))
+    recipe, lanes, _, here = load_recipe(resolve_recipe(pick, args.recipe))
+    template = load_json(os.path.join(here, recipe["production"]["template"]))
+    manifest = load_json(args.lanes)
+    info = manifest["args"]["production"]
+    ForwardWindow(recipe["production"], recipe["w2"]["bounds"], lanes.base["folds"]["embargo_days"], w5_start_ms(recipe["production"], here),
+                  {k: info[k] for k in ("forward_start", "evaluate_through", "retrain_days", "allow_past_w2")})
+    index = ModelIndex(recipe, template, manifest, batch_root(args.root, args.batch))
     entries = index.persist(args.out_dir)
     report = index.report()
     files = recipe["production"]["files"]
