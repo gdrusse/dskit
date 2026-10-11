@@ -310,6 +310,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/RE-ENTRY.md",
         # The 2026-10-11 edge-and-harvest research note (A1127).
         "docs/research/strategy-alternatives/2026-10-11-patchtst-edge-and-harvest.md",
+        # The 2026-10-10 T2 result (first run refused on null spot; amendment 2; then the IC).
+        "docs/memos/2026-10-10-t2-dispersion-ic-result.md",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -343,8 +345,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # run config = 485; the executable-clock result memo = 486; the selection-intuition research note = 487.
     # Plus the seven performance-pilot overlays and their research note (merged 2026-10-10) = 495,
     # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497,
-    # plus the ADR-0259 forecast-dispersion IC document = 498.
-    assert len(actual) == 498
+    # plus the ADR-0259 forecast-dispersion IC document = 498, plus its result memo = 499.
+    assert len(actual) == 499
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

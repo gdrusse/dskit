@@ -104,6 +104,22 @@
       },
       "notes": "The forecast's scale: the analytic standard deviation of the saved curve, in standardized units (forecast_sd_z) and in return units (forecast_sd = sd_z * reference). keep projects the rows to exactly the identity, the agreed spot and the family fields the attachment below declares; a curve that cannot be restored or a non-positive reference refuses by row."
     },
+    "forecast_priced": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$forecast_scale.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "spot",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "A saved forecast row whose as-traded price basis the replay refused (basis_refusal: unknown_historical_price_basis, outside_declared_phase, split_inside_holding_window, irregular_postdate_split_basis, source_vintage_unreconciled) carries spot null by design: 80,112 of 99,225 rows. Those rows leave here, counted in the log, before anything is attached, so the attachment's exact spot agreement is never asked of a row that has no basis. Rows inside a split's holding window leave with them, which also keeps an unadjusted close across a split out of the realized move. Added before any T2 IC existed (ADR-0259 amendment 2)."
+    },
     "implied": {
       "uses": "dskit.pipeline.libs.bar_features:TradeBarFeatures",
       "inputs": {
@@ -180,7 +196,7 @@
       "uses": "attach-by-identity",
       "inputs": {
         "records": "$implied_priced.records",
-        "table": "$forecast_scale.records"
+        "table": "$forecast_priced.records"
       },
       "params": {
         "identity": [
@@ -204,7 +220,7 @@
           }
         }
       },
-      "notes": "The forecast scale onto the implied rows by (symbol, quote_date); spot must agree exactly (the forecast's as-traded spot against the straddle's denominator). At most 10% of implied rows may have no forecast (names outside the modeled 388); more refuses."
+      "notes": "The forecast scale onto the implied rows by (symbol, quote_date); spot must agree exactly (the forecast's as-traded spot against the straddle's denominator). Forecast rows with no reconciled basis were dropped upstream (forecast_priced). At most 10% of implied rows may have no forecast (names outside the modeled 388, or without a reconciled basis); more refuses. The guard is unchanged from the first build."
     },
     "with_realized": {
       "uses": "attach-by-identity",
