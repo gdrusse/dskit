@@ -26,7 +26,7 @@
           "underlying_price"
         ]
       },
-      "notes": "The ThetaData daily chain through the onboarding read seam, member by member in acquisition order, deduplicated by UNIT (symbol, date) only: a (root, date) already read from an earlier member is skipped and counted (a batch re-pulled after a crash), so memory is the number of units, not the number of rows (the per-row key table of ObservationStreamRows would hold about 200 bytes for each of about 2 billion rows). The first copy of a unit stands; this is not a latest-wins rule. Projected to the seven fields the census reads. Lazy. Read-only. The reader's counters (members, rows, units, skipped rows) land in the census summary under reader."
+      "notes": "The ThetaData daily chain through the onboarding read seam, newest member first, deduplicated by UNIT (symbol, date) only: the latest-acquired copy of a (root, date) wins and older copies are skipped and counted (a batch re-pulled after a crash, or a revised day), so memory is the number of units, not the number of rows (the per-row key table of ObservationStreamRows would hold about 200 bytes for each of about 2 billion rows). An older copy with another row count is a split unit: it is counted as unit_row_mismatch and the census refuses unless allow_unit_mismatch is set. Projected to the seven fields the census reads. Lazy. Read-only. The reader's counters (members, rows, units, skipped rows) land in the census summary under reader."
     },
     "census": {
       "uses": "dskit.pipeline.libs.chain_census:ChainCensus",

@@ -25,7 +25,9 @@ filled):
   forward in log terms among those with both sides usable inside ``atm_band``, ties to the lower strike.
   ``atm_iv`` is the mean of the call and put implied vols there; ``straddle_ratio`` is the call mid plus
   the put mid over ``spot``; ``half_spread_over_premium`` is the two half-spreads over the two mids.
-* ``put_wing_iv`` / ``call_wing_iv``: the implied vol at forward delta of magnitude ``wing_delta`` (puts
+* ``put_wing_iv`` / ``call_wing_iv``: the implied vol at forward delta of magnitude ``wing_delta`` (the DISCOUNTED
+  forward delta, ``e^(-rT) N(d1)``, as ``black76_delta`` returns it, so at a positive rate it is smaller than the
+  undiscounted ``N(d1)`` a vendor quotes; puts
   below the forward, calls above), linear in delta between the two bracketing strikes; ``None`` without
   a bracket (no extrapolation). ``risk_reversal`` is put wing minus call wing: positive when downside
   protection costs more.
@@ -46,6 +48,9 @@ flushes it when the symbol changes, processing its dates in true date order so t
 right, and refuses a symbol that reappears after its flush; ``presorted`` true (grouped by symbol, dates
 ascending) holds one symbol-date. Pair it with a unit-deduplicating reader
 (:class:`~dskit.pipeline.libs.observations.ObservationUnitRows`) for a store too large for a per-row key.
+Budget: about 61 bytes a row held, so a root of 30,000 rows a day over 2,500 dates (an index weekly) needs
+about 4.6 GB; ``max_symbol_rows`` makes the node refuse, naming the root and its row count, instead of
+exhausting memory.
 
 **Rows and statuses.** Every requested target of every symbol-date emits a row; ``status_field`` says what
 it holds: ``ok``, ``no_expiry`` (no listed expiry inside the tolerance), ``no_forward`` (too few parity pairs),
@@ -319,7 +324,10 @@ class ChainDayFeatures(Node):
         ``open_interest_field``, ``volume_field``, ``underlying_price_field``. ``end_before`` (REQUIRED
         ISO date): a row at or after it refuses. ``targets`` (REQUIRED non-empty list of
         ``{"dte": int >= 1, "tolerance": int >= 0}``, distinct ``dte``) and ``target_field`` (the
-        output name of the requested DTE). ``atm_band`` (> 0, log-moneyness), ``wing_delta`` (in
+        output name of the requested DTE). ``status_field`` (REQUIRED, the output name of the row status).
+        ``max_symbol_rows`` (int >= 1, default none) refuses, naming the symbol, when more rows than that are
+        held at once (see Memory). ``allow_unit_mismatch`` (bool, default false): a reader whose ``report()``
+        counts ``unit_row_mismatch`` > 0 refuses the run unless this is true. ``atm_band`` (> 0, log-moneyness), ``wing_delta`` (in
         (0, 0.5)), ``min_forward_pairs`` (int >= 1), ``fields`` (non-empty map of feature -> output
         name): REQUIRED. Needed by what ``fields`` names: ``term_pair`` (``[short_dte, long_dte]``,
         both targets), ``oi_scope`` (``"expiry"`` | ``"chain"``), ``oi_lag_sessions`` and
@@ -352,7 +360,7 @@ class ChainDayFeatures(Node):
     _PARAMS = (*_ROWS, *_OPTIONAL_ROWS, "call_values", "put_values", "end_before", "targets", "target_field",
                "status_field", "atm_band", "wing_delta", "min_forward_pairs", "fields", "term_pair", "oi_scope",
                "oi_lag_sessions", "oi_lag_max_days", "days_per_year", "iv_min", "iv_max", "presorted",
-               "symbol_contiguous", "rate", "rate_field", "rate_scale", *_RATES)
+               "symbol_contiguous", "rate", "rate_field", "rate_scale", "max_symbol_rows", "allow_unit_mismatch", *_RATES)
 
     # -- validation ------------------------------------------------------------------------
 
@@ -386,7 +394,9 @@ class ChainDayFeatures(Node):
                 problems.append(f"{name} must be {bound}, got {value!r}")
         check_int_param(problems, "min_forward_pairs", params.get("min_forward_pairs"), ge=1)
         cls._solver_problems(problems, params)
-        for name in ("presorted", "symbol_contiguous"):
+        if "max_symbol_rows" in params:
+            check_int_param(problems, "max_symbol_rows", params["max_symbol_rows"], ge=1)
+        for name in ("presorted", "symbol_contiguous", "allow_unit_mismatch"):
             if name in params and not isinstance(params[name], bool):
                 problems.append(f"{name} must be a boolean, got {params[name]!r}")
         if params.get("presorted") is True and params.get("symbol_contiguous") is True:
@@ -581,7 +591,8 @@ class ChainDayFeatures(Node):
         """
         p = self.params
         flush_symbols, streaming = p.get("symbol_contiguous", False), p.get("presorted", False)
-        memo, held, closed, seen = {}, {}, set(), 0
+        memo, held, closed, seen, held_rows = {}, {}, set(), 0, 0
+        limit = p.get("max_symbol_rows")
         current_symbol = current_day = None
         for index, record in enumerate(rows):
             seen += 1
@@ -590,6 +601,7 @@ class ChainDayFeatures(Node):
             if flush_symbols or streaming:
                 if symbol != current_symbol:
                     yield from self._flush(held)
+                    held_rows = 0
                     if current_symbol is not None:
                         closed.add(current_symbol)
                     if symbol in closed:
@@ -601,8 +613,14 @@ class ChainDayFeatures(Node):
                         raise ValueError(f"{self.key}: presorted input out of order at ({symbol!r}, {day!r})")
                     if current_day is not None and day != current_day:
                         yield from self._flush(held)
+                        held_rows = 0
                     current_day = day
             held.setdefault((symbol, day), _DayCells(symbol, day)).add(cell)
+            held_rows += 1
+            if limit is not None and held_rows > limit:
+                raise ValueError(f"{self.key}: {symbol!r} holds more than max_symbol_rows={limit} rows "
+                                 f"({held_rows} so far) - refusing before memory runs out; raise the limit, "
+                                 "or run the roots in smaller batches")
         if not seen:
             raise ValueError(f"{self.key}: the records input is empty - features of nothing are refused, not passed")
         yield from self._flush(held)
@@ -720,6 +738,8 @@ class ChainDayFeatures(Node):
                 feats["status"] = self._quote_features(by_exp[expiration], years, rate, spot, feats, counts)
                 self._positioning(feats, expiration if p.get("oi_scope") == "expiry" else _CHAIN, totals, state,
                                   day, counts)
+                if feats["status"] != "ok":
+                    feats = dict.fromkeys(FEATURES, None) | {"status": feats["status"]}
             counted["emitted" if feats["status"] == "ok" else feats["status"]] += 1
             built.append((target["dte"], feats))
         self._term(built)
@@ -803,6 +823,10 @@ class ChainDayFeatures(Node):
         report = getattr(inputs["records"], "report", None)
         if callable(report):
             counts["reader"] = report()
+            if counts["reader"].get("unit_row_mismatch", 0) and not p.get("allow_unit_mismatch", False):
+                raise ValueError(f"{self.key}: the reader found {counts['reader']['unit_row_mismatch']} unit(s) whose "
+                                 "older copy has a different row count than the kept one (a split or partial "
+                                 "unit): unit_row_mismatch > 0 refuses unless allow_unit_mismatch is true")
         self.log.info("features: %d row(s) from %d group(s), %d symbol(s)", len(out), counts["groups"], len(symbols))
         return {"records": out, "summary": counts}
 
@@ -812,7 +836,8 @@ class ChainDayFeatures(Node):
         if table is None:
             if "rate_date_field" in p:
                 raise ValueError(f"{self.key}: the rates-table params are declared but no rates input is wired")
-            return _Rates(None if "rate_field" in p else p.get("rate", 0.0), None, 0)
+            constant = None if "rate_field" in p else p.get("rate", 0.0) * p.get("rate_scale", 1.0)
+            return _Rates(constant, None, 0)
         if "rate_date_field" not in p:
             raise ValueError(f"{self.key}: a rates input is wired but the rate_date_field / rate_value_field / "
                              "rate_max_age_days params are not declared")

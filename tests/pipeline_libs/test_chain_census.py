@@ -277,6 +277,17 @@ def test_the_reader_counters_are_copied_into_the_summary():
     assert "reader" not in census(AAA)["summary"]
 
 
+def test_a_reader_reporting_split_units_refuses_unless_allowed():
+    class Splitting(list):
+        def report(self):
+            return {"unit_row_mismatch": 1}
+
+    with pytest.raises(ValueError, match="unit_row_mismatch"):
+        census(Splitting(AAA))
+    assert census(Splitting(AAA), allow_unit_mismatch=True)["summary"]["reader"]["unit_row_mismatch"] == 1
+    assert ChainCensus.validate_params(dict(PARAMS, allow_unit_mismatch="yes"))
+
+
 def test_memory_is_roots_times_dates_not_rows():
     import tracemalloc
     rows = [row("AAA", f"2020-01-{1 + d % 28:02d}", 100.0 + k, 1.0, 1.1) for d in range(28) for k in range(400)]

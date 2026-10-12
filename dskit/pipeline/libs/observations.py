@@ -774,18 +774,20 @@ class ObservationStreamRows(ObservationRows):
 
 
 class ObservationUnitRows(ObservationStreamRows):
-    """Stream an observation stream member by member, deduplicated by UNIT only (ADR-0265 scale).
+    """Stream an observation stream newest member first, deduplicated by UNIT only (ADR-0265 scale).
 
     :class:`ObservationStreamRows` keeps a key per row, about 200 bytes each, which a store of
-    billions of rows cannot hold. This sibling reads the acquisition members in order through
+    billions of rows cannot hold. This sibling walks the acquisition members NEWEST first through
     :func:`dskit.onboarding.observations.iter_stream_units` and keeps a key per UNIT
-    (``unit_fields``, e.g. a root and a date), so memory is the number of units. A unit already
-    read from an earlier member is skipped and counted (a batch re-pulled after a crash lands
-    twice and the earlier copy stands); this is NOT the bitemporal latest-wins rule. Rows arrive
-    in member order, so an acquisition that pulled one root at a time yields root-contiguous rows.
-    The output ``records`` re-iterates the store and answers ``report()`` with the last pass's
-    counters (``members``, ``rows``, ``units``, ``skipped_rows``, ``skipped_units``), which the
-    chain nodes copy into their summaries.
+    (``unit_fields``, e.g. a root and a date), so memory is the number of units. A unit's rows come
+    from the latest-acquired member that holds it (the store's latest-wins rule at unit
+    granularity); the unit's rows in older members are skipped and counted, and an older copy with
+    a different row count is a split unit, counted in ``unit_row_mismatch``. Consecutive members
+    of one root stay adjacent, so an acquisition that pulled one root at a time yields
+    root-contiguous rows. The output ``records`` re-iterates the store and answers ``report()``
+    with the last pass's counters (``members``, ``rows``, ``units``, ``skipped_rows``,
+    ``skipped_units``, ``unit_row_mismatch``), which the chain nodes copy into their summaries and
+    refuse on.
 
     Parameters
     ----------

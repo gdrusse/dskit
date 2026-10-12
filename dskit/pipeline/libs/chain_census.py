@@ -249,6 +249,8 @@ class ChainCensus(Node):
         ``liquidity_end_before`` (ISO date; the development median and terciles use dates before
         it); ``underlying_price_field`` with, for the price check, ``close_symbol_field``,
         ``close_date_field``, ``close_field`` and ``price_tolerance`` (a relative tolerance, > 0).
+        ``allow_unit_mismatch`` (bool, default false): a reader whose ``report()`` counts
+        ``unit_row_mismatch`` > 0 (a split or partial unit) makes the run refuse unless this is true.
 
     Examples
     --------
@@ -267,7 +269,7 @@ class ChainCensus(Node):
     _REQUIRED = ("symbol_field", "date_field", "strike_field", "bid_field", "ask_field", "end_before")
     _CLOSE = ("close_symbol_field", "close_date_field", "close_field", "price_tolerance")
     _PARAMS = (*_REQUIRED, "iv_error_field", "iv_error_flag", "strike_grid", "strike_tolerance",
-               "liquidity_end_before", "underlying_price_field", *_CLOSE)
+               "liquidity_end_before", "underlying_price_field", "allow_unit_mismatch", *_CLOSE)
 
     @classmethod
     def validate_params(cls, params):
@@ -293,6 +295,8 @@ class ChainCensus(Node):
             if name in params or name == "end_before":
                 cls._date_problem(problems, name, params.get(name))
         cls._flag_problems(problems, params)
+        if "allow_unit_mismatch" in params and not isinstance(params["allow_unit_mismatch"], bool):
+            problems.append(f"allow_unit_mismatch must be a boolean, got {params['allow_unit_mismatch']!r}")
         if "strike_grid" in params:
             problems.extend(StrikeGrid.problems(params["strike_grid"]))
         tol = params.get("strike_tolerance")
@@ -591,6 +595,10 @@ class ChainCensus(Node):
         report = getattr(inputs["records"], "report", None)
         if callable(report):
             summary["reader"] = report()
+            if summary["reader"].get("unit_row_mismatch", 0) and not self.params.get("allow_unit_mismatch", False):
+                raise ValueError(f"{self.key}: the reader found {summary['reader']['unit_row_mismatch']} unit(s) "
+                                 "whose older copy has a different row count than the kept one (a split or partial "
+                                 "unit): unit_row_mismatch > 0 refuses unless allow_unit_mismatch is true")
         self.log.info("census: %d root(s), %d row(s), %d never quoted", summary["roots"],
                       summary["rows"], summary["never_quoted_roots"])
         return {"records": rows, "rows_by_year": self._by_year(roots), "strikes_by_month": by_month,

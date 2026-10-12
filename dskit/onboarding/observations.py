@@ -849,17 +849,21 @@ def _winning_rows(args, key_fields, fields, ts_field, ts_out):
 
 
 class StreamUnits:
-    """Rows of a stream read member by member, deduplicated by UNIT only (ADR-0265 scale).
+    """Rows of a stream read member by member, newest member first, deduplicated by UNIT only (ADR-0265 scale).
 
     :func:`iter_stream` holds a key for every row, which a stream of billions of rows cannot
     afford. This reader holds one key per UNIT (the ``unit_fields`` tuple, e.g. a root and a
-    date), so its memory is the number of units, not rows. Members are read in acquisition order;
-    every row of a unit is kept from the FIRST member that holds the unit and the unit's rows in
-    any later member are skipped and counted (a batch re-pulled after a crash lands twice; the
-    earlier copy stands). Within one member nothing is deduplicated, so a unit's rows must be
-    distinct there, which the writer guarantees per request. This is NOT the bitemporal
-    latest-wins rule: a deliberately revised row in a later member is skipped, so use
-    :func:`iter_stream` when revisions matter and the stream fits.
+    date), so its memory is the number of units, not rows. Members are walked in REVERSE
+    acquisition order (newest first), and every row of a unit is kept from the first member read
+    that holds it, which is the LATEST acquired: the same latest-wins rule as :func:`iter_stream`,
+    applied to a whole unit instead of a row. The unit's rows in any older member are skipped and
+    counted (a batch re-pulled after a crash, or a unit revised later). Consecutive members of one
+    root stay adjacent in the output, so a consumer that wants a root's rows together still gets
+    them. Within one member nothing is deduplicated.
+
+    A skipped copy whose row count differs from the kept copy's is a split or partial unit (one
+    row against two, say): it is counted in ``unit_row_mismatch`` so a consumer can refuse it.
+    Recency is the member's name order, which the writer mints from the acquisition instant.
 
     Re-iterable; the counters describe the most recent pass (reset when a pass starts).
 
@@ -868,7 +872,9 @@ class StreamUnits:
     members, rows, units : int
         Members read, rows yielded and distinct units yielded in the last pass.
     skipped_rows, skipped_units : int
-        Rows (and distinct units) dropped because an earlier member held the unit.
+        Rows (and distinct units) dropped because a newer member held the unit.
+    unit_row_mismatch : int
+        Distinct units whose skipped copy in some older member had a different row count.
     """
 
     def __init__(self, args, unit_fields, fields, ts_out):
@@ -876,39 +882,50 @@ class StreamUnits:
         self._reset()
 
     def _reset(self):
-        self.members = self.rows = self.units = self.skipped_rows = self.skipped_units = 0
+        self.members = self.rows = self.units = 0
+        self.skipped_rows = self.skipped_units = self.unit_row_mismatch = 0
 
     def report(self):
         """Return the last pass's counters as a plain dict."""
         return {"members": self.members, "rows": self.rows, "units": self.units,
-                "skipped_rows": self.skipped_rows, "skipped_units": self.skipped_units}
+                "skipped_rows": self.skipped_rows, "skipped_units": self.skipped_units,
+                "unit_row_mismatch": self.unit_row_mismatch}
+
+    def _close_member(self, kept, fresh, skipped, mismatched, skipped_units):
+        """Fold a finished member into ``kept`` and judge its skipped units against the kept copies."""
+        for unit, count in skipped.items():
+            skipped_units.add(unit)
+            if count != kept[unit]:
+                mismatched.add(unit)
+        kept.update(fresh)
 
     def __iter__(self):
         self._reset()
-        seen, fresh, skipped, current = set(), set(), set(), None
+        kept, fresh, skipped, current = {}, {}, {}, None
+        mismatched, skipped_units = set(), set()
         for path, n, data, _when, _acquired, stamp in _intake(*self._args):
             if path != current:
-                seen |= fresh
-                fresh, current = set(), path
+                self._close_member(kept, fresh, skipped, mismatched, skipped_units)
+                fresh, skipped, current = {}, {}, path
                 self.members += 1
             unit = _winner_key(path, n, data, self._units)
-            if unit in seen:
+            if unit in kept:
+                skipped[unit] = skipped.get(unit, 0) + 1
                 self.skipped_rows += 1
-                if unit not in skipped:
-                    skipped.add(unit)
-                    self.skipped_units += 1
                 continue
             missing = [f for f in self._fields if f not in data]
             if missing:
                 raise AssetError([f"{path}:{n}: data is missing projected field(s) {missing}"])
-            if unit not in fresh:
-                fresh.add(unit)
-                self.units += 1
+            fresh[unit] = fresh.get(unit, 0) + 1
             self.rows += 1
             row = {f: data[f] for f in self._fields}
             if stamp is not None:
                 row[self._ts_out] = stamp
             yield row
+        self._close_member(kept, fresh, skipped, mismatched, skipped_units)
+        self.units = len(kept)
+        self.skipped_units = len(skipped_units)
+        self.unit_row_mismatch = len(mismatched)
 
 
 def iter_stream_units(root, source, stream, unit_fields, fields, keep_values=None,
@@ -965,7 +982,7 @@ def iter_stream_units(root, source, stream, unit_fields, fields, keep_values=Non
     if members is not None:
         wanted = set(members)
         entries = [e for e in entries if e in wanted]
-    args = (base, entries, stream, unit_fields, None, "asof_ms", None, allow, None, as_of_acquisition_ms)
+    args = (base, entries[::-1], stream, unit_fields, None, "asof_ms", None, allow, None, as_of_acquisition_ms)
     return StreamUnits(args, unit_fields, fields, "asof_ms")
 
 

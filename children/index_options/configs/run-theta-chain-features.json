@@ -36,7 +36,7 @@
           ]
         }
       },
-      "notes": "The ThetaData daily chain through the onboarding read seam, member by member, deduplicated by UNIT (symbol, date) only (see the census document), restricted at intake to the sample roots and projected to the ten fields the features read. A pull lands one root at a time, so rows arrive grouped by root with dates newest first, which is what symbol_contiguous reads. Lazy. Read-only."
+      "notes": "The ThetaData daily chain through the onboarding read seam, newest member first, deduplicated by UNIT (symbol, date) only, latest acquired wins (see the census document), restricted at intake to the sample roots and projected to the ten fields the features read. A pull lands one root at a time, so rows arrive grouped by root with dates newest first, which is what symbol_contiguous reads. Lazy. Read-only."
     },
     "features": {
       "uses": "dskit.pipeline.libs.chain_features:ChainDayFeatures",

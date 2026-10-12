@@ -231,8 +231,8 @@ def test_a_day_with_too_few_parity_pairs_keeps_its_row_with_nothing_filled():
     row = out["records"][0]
     assert row["symbol"] == "AAA" and out["records"][1]["status"] == "ok"
     assert row["forward"] is None and row["atm_iv"] is None and row["straddle_ratio"] is None
-    assert row["status"] == "no_forward"
-    assert row["oi_call"] == 20                                    # aggregates do not need a forward
+    assert row["status"] == "no_forward" and row["target_dte"] == 30
+    assert all(v is None for k, v in row.items() if k not in ("symbol", "date", "target_dte", "status"))
     assert out["summary"]["targets"]["30"]["no_forward"] == 1
 
 
@@ -398,6 +398,8 @@ def test_a_malformed_row_refuses_by_row():
     ({"rate": "high"}, "rate"),
     ({"rate": 0.04, "rate_field": "r"}, "rate"),
     ({"rate_field": ""}, "rate_field"),
+    ({"max_symbol_rows": 0}, "max_symbol_rows"),
+    ({"allow_unit_mismatch": "yes"}, "allow_unit_mismatch"),
     ({"rate_scale": 0}, "rate_scale"),
     ({"rate_date_field": "date"}, "rate_date_field"),
     ({"rate_max_age_days": -1, "rate_date_field": "d", "rate_value_field": "v"}, "rate_max_age_days"),
@@ -553,7 +555,9 @@ def test_a_day_with_no_rate_inside_the_age_is_a_no_rate_row_not_a_zero_rate():
     rows = rated_chain() + rated_chain(day="2020-03-09")
     table = [{"d": "2020-02-28", "v": "4.5"}]
     out = run_with(rows, rates=table, rate_date_field="d", rate_value_field="v", rate_scale=0.01, rate_max_age_days=5)
-    assert [r["status"] for r in out["records"]] == ["ok", "no_rate"] and out["records"][1]["atm_iv"] is None
+    assert [r["status"] for r in out["records"]] == ["ok", "no_rate"]
+    assert all(v is None for k, v in out["records"][1].items() if k not in ("symbol", "date", "target_dte", "status"))
+    assert out["records"][1]["target_dte"] == 30
     assert out["summary"]["targets"]["30"]["no_rate"] == 1
 
 
@@ -639,3 +643,111 @@ def test_features_through_the_real_unit_reader_over_newest_first_members(tmp_pat
     ordered = lambda rows: sorted(rows, key=lambda r: (r["symbol"], r["date"], r["target_dte"]))
     assert ordered(out["records"]) == ordered(reference) and len(reference) == 8
     assert out["summary"]["reader"]["units"] == 8 and out["summary"]["reader"]["skipped_rows"] == 0
+
+
+def test_a_constant_rate_is_scaled_like_the_table():
+    rows = rated_chain()
+    percent = only(run_with(rows, rate=RATE * 100, rate_scale=0.01))
+    assert percent["atm_iv"] == pytest.approx(0.30, abs=1e-4)
+    assert percent["forward"] == pytest.approx(100.0, abs=1e-6)
+
+
+def test_max_symbol_rows_refuses_a_root_that_would_exhaust_memory_naming_it():
+    rows = chain(symbol="BIGROOT")
+    with pytest.raises(ValueError, match=r"BIGROOT.*max_symbol_rows|max_symbol_rows.*BIGROOT"):
+        run_with(rows, symbol_contiguous=True, max_symbol_rows=len(rows) - 1)
+    assert len(run_with(rows, symbol_contiguous=True, max_symbol_rows=len(rows))["records"]) == 1
+    with pytest.raises(ValueError, match="max_symbol_rows"):
+        run_with(rows, max_symbol_rows=len(rows) - 1)                      # also guards the hold-everything mode
+
+
+def test_a_reader_reporting_split_units_refuses_unless_allowed():
+    class Splitting(list):
+        def report(self):
+            return {"unit_row_mismatch": 2, "skipped_rows": 3}
+
+    with pytest.raises(ValueError, match="unit_row_mismatch"):
+        run_with(Splitting(chain()))
+    out = run_with(Splitting(chain()), allow_unit_mismatch=True)
+    assert out["summary"]["reader"]["unit_row_mismatch"] == 2
+
+
+# -- the real unit reader: spanning, revising, splitting -------------------------------------
+
+
+READ_FIELDS = ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "open_interest", "volume",
+               "underlying_price"]
+
+
+def land(tmp_path, members):
+    """Write ``members`` ([(acquisition name, rows, acquired_at)]) as onboarded stream members."""
+    import json
+    root = tmp_path / "ob"
+    for name, rows, acquired in members:
+        directory = root / "observations" / "theta" / name
+        directory.mkdir(parents=True)
+        with open(directory / "option_eod.jsonl", "w", encoding="utf-8") as fh:
+            for r in rows:
+                fh.write(json.dumps({"acquired_at": acquired, "data": r, "kind": "observation",
+                                     "mode": "backfill", "stream": "option_eod",
+                                     "effective_date": r["date"]}, sort_keys=True) + "\n")
+    return str(root)
+
+
+def read_through(tmp_path, root, **over):
+    from dskit.pipeline.libs.observations import ObservationUnitRows
+    reader = ObservationUnitRows("chain", {"root": root, "source": "theta", "stream": "option_eod",
+                                           "unit_fields": ["symbol", "date"], "fields": READ_FIELDS})
+    ctx = NodeContext(name="t", asof="2025-12-31", run_dir=str(tmp_path / "run"))
+    reader.fingerprint()
+    rows = reader.run(ctx, {})["records"]
+    params = dict(PARAMS, symbol_contiguous=True, **over)
+    return ChainDayFeatures("features", params).run(ctx, {"records": rows})
+
+
+def oi_days(symbol, plan, **kw):
+    rows = []
+    for day, call_oi, put_oi in plan:
+        for r in chain(symbol=symbol, day=day, expiration="2020-03-30", strikes=[99, 100, 101, 102, 103], **kw):
+            r["open_interest"] = call_oi if r["right"] == "call" else put_oi
+            rows.append(r)
+    return rows
+
+
+PLAN = [("2020-03-05", 15, 30), ("2020-03-04", 12, 24), ("2020-03-03", 11, 21), ("2020-03-02", 10, 20)]
+
+
+def test_one_root_spanning_two_consecutive_members_is_one_symbol_in_true_date_order(tmp_path):
+    newer, older = oi_days("AAA", PLAN[:2]), oi_days("AAA", PLAN[2:])
+    other = oi_days("BBB", PLAN)
+    root = land(tmp_path, [("20200101T000000Z-a", older, "2026-01-01T00:00:00+00:00"),
+                           ("20200101T000100Z-b", newer, "2026-01-02T00:00:00+00:00"),
+                           ("20200101T000200Z-c", other, "2026-01-03T00:00:00+00:00")])
+    out = read_through(tmp_path, root)
+    aaa = [r for r in out["records"] if r["symbol"] == "AAA"]
+    assert [r["date"] for r in aaa] == ["2020-03-02", "2020-03-03", "2020-03-04", "2020-03-05"]
+    assert aaa[2]["oi_change"] == pytest.approx(180 / 150 - 1)             # needs 03-02 from the OTHER member
+    assert out["summary"]["reader"]["skipped_rows"] == 0 and out["summary"]["reader"]["members"] == 3
+
+
+def test_a_later_member_that_revises_a_unit_wins(tmp_path):
+    original = oi_days("AAA", PLAN)
+    revised = oi_days("AAA", [("2020-03-03", 22, 44)])
+    root = land(tmp_path, [("20200101T000000Z-a", original, "2026-01-01T00:00:00+00:00"),
+                           ("20200101T000100Z-b", revised, "2026-01-02T00:00:00+00:00")])
+    out = read_through(tmp_path, root)
+    by_day = {r["date"]: r for r in out["records"]}
+    assert (by_day["2020-03-03"]["oi_call"], by_day["2020-03-03"]["oi_put"]) == (5 * 22, 5 * 44)    # not 5*11, 5*21
+    assert (by_day["2020-03-04"]["oi_call"], by_day["2020-03-04"]["oi_put"]) == (5 * 12, 5 * 24)
+    assert out["summary"]["reader"]["skipped_rows"] == 10 and out["summary"]["reader"]["unit_row_mismatch"] == 0
+
+
+def test_a_split_unit_refuses_and_is_allowed_by_a_param(tmp_path):
+    full = oi_days("AAA", PLAN[3:])
+    half = full[:5]                                   # the same (AAA, 2020-03-02) unit, half of it, in the newer member
+    root = land(tmp_path, [("20200101T000000Z-a", full, "2026-01-01T00:00:00+00:00"),
+                           ("20200101T000100Z-b", half + oi_days("AAA", PLAN[:1]), "2026-01-02T00:00:00+00:00")])
+    with pytest.raises(ValueError, match="unit_row_mismatch"):
+        read_through(tmp_path, root)
+    out = read_through(tmp_path, root, allow_unit_mismatch=True)
+    assert out["summary"]["reader"]["unit_row_mismatch"] == 1
