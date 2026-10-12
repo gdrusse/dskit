@@ -498,6 +498,55 @@ contract (rounded up to the cent); the fair value ignores the few seconds to the
 seed, 45 days. The scorer selects on the mid but pays the ask (or 1 - bid): its realized hurdle is the margin minus half the spread, which is why step 8 also selects on the executable price. The readers scan the whole acquired Kalshi streams (as `run-features-15m.json` does) but every market, anchor and candle at or
 after 2026-09-15 is cut before any join. Step 4 and the take run each read W4 once; a change after seeing it is a new decision.
 
+## B9. The forward refit (owner 2026-10-12)
+
+The retrained-GRU arm of docs/memos/2026-10-12-forward-preregistration.md: reported, never tested. The frozen W1 hyperparameters are
+refit on every minute through 2026-10-05 (2026-10-06 is the embargo day) and scored on 2026-10-07, the last day the W5 panel
+(`panel-minute-w5`, `minute-w1w5`, ends 2026-10-07 23:59) has rows for; a block starting 2026-10-08 would have an empty validation band.
+Early stopping watches the last `cal_days` (30) of the training window, never the scored day. The guard now reads the forward cut
+(`configs/holdout-forward.json`, 2026-10-12) through the recipe's `production.holdout`, so the recipe's sha256 moved and the W4 pick
+and freeze no longer match it: re-pick against a fresh config copy (steps 1 and 2 are cheap, no GPU; they reproduce the W4 pick and
+freeze exactly, only their recipe and pick-file records move). Step 4 is the GPU refit.
+
+```bash
+D=~/data/crypto_trading; CH=$D/chain
+# 0. The W5 panel as its own source (skip if W5 already registered and acquired it).
+python -m dskit.onboarding register-source panel-minute-w5 --root "$OB" --catalog-source panel-minute-w5 \
+    --connector localblobs --config @configs/source-panel-minute-w5.json --activate   # once
+python -m dskit.onboarding acquire --root "$OB" --source panel-minute-w5 --stream files --mode backfill
+# 1. A fresh copy of the configs the W4 pick used, with only the recipe's production section taken from this checkout
+#    (the W4 copy's other recipe sections must stay: the freeze was made from them), plus the file that owns the forward cut.
+python - <<'PY'
+import json, os, shutil
+chain = os.path.expanduser("~/data/crypto_trading/chain")
+shutil.copytree(f"{chain}/configs-w4", f"{chain}/configs-fwd")      # refuses a copy that already exists: move it aside first
+shutil.copy("configs/holdout-forward.json", f"{chain}/configs-fwd/holdout-forward.json")
+path = f"{chain}/configs-fwd/zoo-lanes-recipe.json"
+copy, repo = json.load(open(path)), json.load(open("configs/zoo-lanes-recipe.json"))
+copy["production"] = repo["production"]          # w5 is replaced by holdout; nothing else of the recipe moves
+open(path, "w").write(json.dumps(copy, indent=2) + "\n")
+PY
+# 2. Re-pick from the finished W1 zoo (reads results only), then re-freeze from the finished HPO search.
+python -m crypto_trading.zoo_lanes pick --root $D/batch-zoo-w1 --recipe $CH/configs-fwd/zoo-lanes-recipe.json --out $CH/pick-fwd
+python -m crypto_trading.zoo_lanes hpo-pick --batch $D/hpo/search/lanes/batch.json --pick $CH/pick-fwd/zoo-pick.json \
+    --recipe $CH/configs-fwd/zoo-lanes-recipe.json --out $CH/hpo-frozen-fwd.json
+# 3. The local overlay, then a plan (nothing runs; it must list no unfilled arg).
+python - <<'PY'
+import json, os
+data = os.path.expanduser("~/data/crypto_trading")
+json.dump({"pick": f"{data}/chain/pick-fwd/zoo-pick.json", "frozen": f"{data}/chain/hpo-frozen-fwd.json",
+           "recipe": f"{data}/chain/configs-fwd/zoo-lanes-recipe.json"}, open(f"{data}/production-fwd-local.json", "w"), indent=1)
+PY
+python -m dskit.pipeline workflow configs/workflow-production.json --args configs/production-args-fwd.json \
+    --args ~/data/crypto_trading/production-fwd-local.json --plan
+# 4. The refit (GPU, one block, every minute). The model lands under pipeline_runs/zoo-production-fwd/models/.
+python -m dskit.pipeline workflow configs/workflow-production.json --args configs/production-args-fwd.json \
+    --args ~/data/crypto_trading/production-fwd-local.json
+```
+
+The W4 refit (`state_hash` 541bff85...) stays the frozen model of the primary forward test; this arm only reports beside it. Read
+`production-report.md` and the sidecar `model.json` (`val_start_ms` is the scored day, not early-stopping data).
+
 ## Known issues
 
 - Size B6 before the full pull; the candle and trade pulls cost a chain per ARCHIVED market, with no date bound (7c, 7e).

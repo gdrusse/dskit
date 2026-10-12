@@ -325,7 +325,7 @@
     }
   },
   "production": {
-    "notes": "The production pipeline (owner 2026-10-10): the picked model with the HPO's frozen hyperparameters, run end to end as production would. Block 1 trains on the whole 1-minute history up to `forward_start` (less the embargo); every `retrain_days` it is refit on an expanding window with the same frozen hyperparameters (no search); each block's forward days are scored out of sample on the zoo's common grid beside both baselines of the scope. `forward_start` and `evaluate_through` (exclusive) default to W2 (2026-05-02 to 2026-08-01); a test pins them to w2.bounds. W4 (2026-08-01 to 2026-09-15) and W5 (the holdout) are reserved, owner-only: an evaluate_through past W2's end is refused unless `allow_past_w2` is true (that opens W4 only: one past W5's start is refused always), and a forward_start before W2's start is always refused.",
+    "notes": "The production pipeline (owner 2026-10-10): the picked model with the HPO's frozen hyperparameters, run end to end as production would. Block 1 trains on the whole 1-minute history up to `forward_start` (less the embargo); every `retrain_days` it is refit on an expanding window with the same frozen hyperparameters (no search); each block's forward days are scored out of sample on the zoo's common grid beside both baselines of the scope. `forward_start` and `evaluate_through` (exclusive) default to W2 (2026-05-02 to 2026-08-01); a test pins them to w2.bounds. W4 (2026-08-01 to 2026-09-15) and W5 (2026-09-15 on, development data since 2026-10-12) are owner-only: an evaluate_through past W2's end is refused unless `allow_past_w2` is true (that opens everything before the forward holdout: one past the cut named by `holdout` is refused always), and a forward_start before W2's start is always refused.",
     "forward_start": "2026-05-02",
     "evaluate_through": "2026-08-01",
     "retrain_days": 60,
@@ -360,10 +360,10 @@
       "panel_relpath": "",
       "parallel": 2
     },
-    "w5": {
-      "file": "run-features-15m.json",
-      "path": "pipeline.kill_test.params.segments.heldout.start_ms",
-      "notes": "Where W5's start (the held-out cut, 2026-09-15) lives: the one owner of the cut, read at run time, never restated here; a test pins its date. No evaluate_through may pass it, whatever allow_past_w2 says."
+    "holdout": {
+      "file": "holdout-forward.json",
+      "path": "start_ms",
+      "notes": "Where the holdout's start (the forward cut, 2026-10-12) lives: the one owner of the cut, read at run time from a file beside the recipe, never restated here; a test pins its date. No evaluate_through may pass it, whatever allow_past_w2 says. W5 (2026-09-15 on) is development data since its result was read, so allow_past_w2 now opens everything before this cut."
     }
   },
   "w2": {

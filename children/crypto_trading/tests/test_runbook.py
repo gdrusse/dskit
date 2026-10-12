@@ -60,8 +60,8 @@ def test_every_shipped_source_is_registered_by_the_runbook_with_a_connector_that
 def test_every_pull_names_the_stream_its_suite_gates_and_a_stream_the_source_declares(monkeypatch):
     monkeypatch.setenv("CRYPTO_TRADING_ROOT", CHILD_ROOT)
     registered, pulls = registrations(), PULL.findall(TEXT)
-    assert len(pulls) == 18 and len(ACQUIRE_ONLY.findall(TEXT)) == 3, (
-        "the eighteen pulls of sections 3, 4, 7 and 8 and the three ungated acquires (7e, and B7 and B8 whose blob panels have no row suite)")
+    assert len(pulls) == 18 and len(ACQUIRE_ONLY.findall(TEXT)) == 4, (
+        "the eighteen pulls of sections 3, 4, 7 and 8 and the four ungated acquires (7e, and B7, B8 and B9 whose blob panels have no row suite)")
     for source, stream, mode in ACQUIRE_ONLY.findall(TEXT):
         config = {k: v for k, v in shipped(f"source-{source}.json").items() if k != "storage"}
         assert source in registered and stream in {d["stream"] for d in resolve_connector(registered[source])().discover(config)}

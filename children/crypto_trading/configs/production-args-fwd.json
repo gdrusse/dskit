@@ -1,0 +1,9 @@
+{
+  "notes": "The forward refit (owner 2026-10-12): the retrained-GRU arm of the forward pre-registration (docs/memos/2026-10-12-forward-preregistration.md), REPORTED and never tested. A FLAT overlay for configs/workflow-production.json, layered BEFORE a machine-local file that supplies `pick`, `frozen` and `recipe` (fresh copies; runbook B9): python -m dskit.pipeline workflow configs/workflow-production.json --args configs/production-args-fwd.json --args <local>.json. One block: forward_start 2026-10-07 and a 1-day embargo mean the model trains on every minute through 2026-10-05, 2026-10-06 is the embargo day, and 2026-10-07 is the scored block (evaluate_through 2026-10-08, exclusive). Early stopping watches the LAST cal_days of the training window (PanelTrain's cal band), never the scored block. Why 10-07 and not later: the W5 panel (panel-minute-w5, relpath minute-w1w5) ends at 2026-10-07 23:59, so a block that starts 2026-10-08 would have an empty validation band and PanelBands would refuse it; a later block needs a longer panel build. Everything here stays far below the forward holdout (2026-10-12): the cut in configs/holdout-forward.json refuses any evaluate_through past it, and a test pins this overlay under it and under the panel's end. allow_past_w2 is true because the window is past W2; it opens development data only. work_dir is relative to the child root and git-ignored.",
+  "work_dir": "./pipeline_runs/zoo-production-fwd",
+  "forward_start": "2026-10-07",
+  "evaluate_through": "2026-10-08",
+  "allow_past_w2": true,
+  "panel_source": "panel-minute-w5",
+  "panel_relpath": "minute-w1w5"
+}

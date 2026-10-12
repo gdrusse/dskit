@@ -8,11 +8,17 @@ to both baselines of the scope. A block is one lane (a one-fold ``walkforward``,
 embargo, fit and score machinery); lanes are independent, so they run in parallel.
 
 Window rule. ``forward_start`` and ``evaluate_through`` (exclusive) default to W2's start and end, from the recipe's
-``production`` section, pinned by a test to ``w2.bounds``. W4 and W5 are reserved (owner-only decision): an
-``evaluate_through`` past W2's end is refused unless the recipe's ``allow_past_w2`` is true, and that flag opens W4
-only: an ``evaluate_through`` past W5's start (the held-out cut, read from the one file that owns it, named by
-``production.w5``) is refused ALWAYS. A ``forward_start`` before W2's start is refused always (those days are W1's
-selection folds and the embargo).
+``production`` section, pinned by a test to ``w2.bounds``. Later windows are an owner-only decision: an
+``evaluate_through`` past W2's end is refused unless the recipe's ``allow_past_w2`` is true, and that flag opens
+everything BEFORE the holdout (W4 and W5, development data once W5's result was read): an ``evaluate_through`` past the
+forward holdout's start (read from the one file that owns it, named by ``production.holdout``) is refused ALWAYS. A
+``forward_start`` before W2's start is refused always (those days are W1's selection folds and the embargo).
+
+Early stopping never sees the scored block. Each retrain is a one-fold walk-forward, so its training window ends at
+``first - embargo_days`` and the block is the fold's validation band; ``PanelTrain`` cuts the early-stopping slice (its
+``cal`` band, ``cal_days`` from the zoo's training params) from the END of that training window, purges fit rows whose
+labels reach it, and never uploads the validation band. A ``model.json`` sidecar's ``val_start_ms``/``val_end_ms`` name
+the scoring band, not the early-stopping data. Pinned by ``tests/test_zoo_production.py``.
 
 The panel. The frozen model was fitted on the zoo's panel, which stops at W2's end; a window past it (W4) needs a panel
 that reaches it. ``production-manifest --panel-source/--panel-relpath`` repoint every lane (the model, both baselines and
@@ -42,7 +48,7 @@ from .zoo_pick import (
     write_json,
 )
 
-__all__ = ["ForwardWindow", "ModelIndex", "PRODUCTION_OVERRIDES", "ProductionPlan", "index_main", "manifest_main"]
+__all__ = ["ForwardWindow", "ModelIndex", "PRODUCTION_OVERRIDES", "ProductionPlan", "holdout_start_ms", "index_main", "manifest_main"]
 
 _MS = 1000
 #: The one fit param the production pipeline overrides (its value is the recipe's ``production.row_stride``).
@@ -62,13 +68,13 @@ def _date_of(ms):
     return datetime.fromtimestamp(ms / _MS, tz=timezone.utc).date()
 
 
-def w5_start_ms(production, recipe_dir):
-    """Return W5's start instant: the held-out cut, read from the file and path ``production.w5`` names.
+def holdout_start_ms(production, recipe_dir):
+    """Return the forward holdout's start instant, read from the file and path ``production.holdout`` names.
 
     Parameters
     ----------
     production : dict
-        ``recipe["production"]``; ``w5`` is ``{"file", "path"}`` (a file beside the recipe, a dotted path in it).
+        ``recipe["production"]``; ``holdout`` is ``{"file", "path"}`` (a file beside the recipe, a dotted path in it).
     recipe_dir : str
         The recipe's directory.
 
@@ -80,16 +86,26 @@ def w5_start_ms(production, recipe_dir):
     Raises
     ------
     ValueError
-        The path is not in the file or does not hold an integer.
+        The recipe names no ``holdout`` (a copy older than the forward cut); the path is not in the file or does not
+        hold an integer.
+
+    Examples
+    --------
+    Read the cut a recipe's production section names::
+
+        holdout_start_ms(recipe["production"], "configs")
+        # -> 1791763200000
     """
-    spec = production["w5"]
+    if "holdout" not in production:
+        raise ValueError("production.holdout is missing: this recipe predates the forward holdout cut; copy the current configs/")
+    spec = production["holdout"]
     node = load_json(os.path.join(recipe_dir, spec["file"]))
     for part in spec["path"].split("."):
         if not isinstance(node, dict) or part not in node:
-            raise ValueError(f"production.w5: {spec['path']!r} is not in {spec['file']}")
+            raise ValueError(f"production.holdout: {spec['path']!r} is not in {spec['file']}")
         node = node[part]
     if isinstance(node, bool) or not isinstance(node, int):
-        raise ValueError(f"production.w5: {spec['path']!r} in {spec['file']} is not an integer instant, got {node!r}")
+        raise ValueError(f"production.holdout: {spec['path']!r} in {spec['file']} is not an integer instant, got {node!r}")
     return node
 
 
@@ -113,45 +129,46 @@ class ForwardWindow:
         ``recipe["w2"]["bounds"]``: the W2 instants that bound the default window.
     embargo_days : int
         The zoo's embargo (``folds.embargo_days``).
-    w5 : int
-        W5's start instant (:func:`w5_start_ms`): no ``evaluate_through`` may pass it, whatever ``allow_past_w2`` says.
+    holdout : int
+        The forward holdout's start instant (:func:`holdout_start_ms`): no ``evaluate_through`` may pass it, whatever
+        ``allow_past_w2`` says.
     overrides : dict, optional
         Replacements for any ``production`` key (the command line).
 
     Raises
     ------
     ValueError
-        ``evaluate_through`` past W5's start; past W2's end without ``allow_past_w2``; ``forward_start`` before W2's
+        ``evaluate_through`` past the holdout's start; past W2's end without ``allow_past_w2``; ``forward_start`` before W2's
         start; an empty window; a ``retrain_days`` that is not a positive integer.
 
     Examples
     --------
     Blocks of the default window::
 
-        window = ForwardWindow(recipe["production"], recipe["w2"]["bounds"], 1, w5_start_ms(recipe["production"], configs_dir))
+        window = ForwardWindow(recipe["production"], recipe["w2"]["bounds"], 1, holdout_start_ms(recipe["production"], configs_dir))
         [b["first"] for b in window.blocks()]
         # -> ["2026-05-02", "2026-07-01"]
     """
 
-    def __init__(self, production, w2, embargo_days, w5, overrides=None):
+    def __init__(self, production, w2, embargo_days, holdout, overrides=None):
         cfg = {**{k: v for k, v in production.items() if k != _NOTES}, **{k: v for k, v in (overrides or {}).items() if v is not None}}
         self.start = date.fromisoformat(cfg["forward_start"])
         self.through = date.fromisoformat(cfg["evaluate_through"])
         self.retrain_days, self.allow = cfg["retrain_days"], cfg["allow_past_w2"]
         self.embargo_days = embargo_days
-        w2_start, w2_end, w5_start = _date_of(w2["val_start_ms"]), _date_of(w2["val_end_ms"] + 1), _date_of(w5)
+        w2_start, w2_end, holdout_start = _date_of(w2["val_start_ms"]), _date_of(w2["val_end_ms"] + 1), _date_of(holdout)
         if isinstance(self.retrain_days, bool) or not isinstance(self.retrain_days, int) or self.retrain_days < 1:
             raise ValueError(f"retrain_days must be an integer >= 1, got {self.retrain_days!r}")
         if not isinstance(self.allow, bool):
             raise ValueError(f"allow_past_w2 must be true or false, got {self.allow!r}")
         if self.start < w2_start:
             raise ValueError(f"forward_start {self.start} is before W2's start {w2_start}: those days are W1's folds and the embargo")
-        if self.through > w5_start:
-            raise ValueError(f"evaluate_through {self.through} is past W5's start {w5_start}: the holdout is read once, by the owner, "
-                             "and no setting opens it")
+        if self.through > holdout_start:
+            raise ValueError(f"evaluate_through {self.through} is past the holdout's start {holdout_start}: the holdout is read once, "
+                             "by the owner, and no setting opens it")
         if self.through > w2_end and not self.allow:
-            raise ValueError(f"evaluate_through {self.through} is past W2's end {w2_end}: W4 and W5 are reserved (owner-only "
-                             "decision); allow_past_w2 opens W4 only")
+            raise ValueError(f"evaluate_through {self.through} is past W2's end {w2_end}: W4 and W5 are owner-only "
+                             "(allow_past_w2 opens them, never the holdout)")
         if self.through <= self.start:
             raise ValueError(f"evaluate_through {self.through} must be after forward_start {self.start}")
 
@@ -490,7 +507,7 @@ def manifest_main(argv=None):
     if args.panel_source or args.panel_relpath:
         lanes.use_panel(args.panel_source, args.panel_relpath)
     window = ForwardWindow(recipe["production"], recipe["w2"]["bounds"], lanes.base["folds"]["embargo_days"],
-                           w5_start_ms(recipe["production"], here),
+                           holdout_start_ms(recipe["production"], here),
                            {"forward_start": args.forward_start, "evaluate_through": args.evaluate_through,
                             "retrain_days": args.retrain_days, "allow_past_w2": args.allow_past_w2})
     template = template_path(here, recipe["production"]["template"], args.out)
@@ -534,7 +551,7 @@ def index_main(argv=None):
     template = load_json(os.path.join(here, recipe["production"]["template"]))
     manifest = load_json(args.lanes)
     info = manifest["args"]["production"]
-    ForwardWindow(recipe["production"], recipe["w2"]["bounds"], lanes.base["folds"]["embargo_days"], w5_start_ms(recipe["production"], here),
+    ForwardWindow(recipe["production"], recipe["w2"]["bounds"], lanes.base["folds"]["embargo_days"], holdout_start_ms(recipe["production"], here),
                   {k: info[k] for k in ("forward_start", "evaluate_through", "retrain_days", "allow_past_w2")})
     index = ModelIndex(recipe, template, manifest, batch_root(args.root, args.batch), load_frozen(args.frozen, args.pick))
     entries = index.persist(args.out_dir)

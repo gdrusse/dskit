@@ -1,0 +1,4 @@
+{
+  "notes": "The one owner of the forward holdout cut (owner 2026-10-12): the first instant of the pre-registered forward window, markets closing at or after 2026-10-12T00:00Z (docs/memos/2026-10-12-forward-preregistration.md). The production pipeline reads it through the recipe's production.holdout and refuses any evaluate_through past it, whatever allow_past_w2 says; nothing else restates the instant. It replaces the W5 cut in run-features-15m.json as the production guard, because W5 became development data once its result was read (docs/memos/2026-10-12-w5-preregistration.md); run-features-15m.json is untouched (its identity hash keys every prior run). Moving this cut LATER widens what production may score and needs the owner; a test pins the date.",
+  "start_ms": 1791763200000
+}

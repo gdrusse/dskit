@@ -13,7 +13,7 @@ from zoo_fakes import write_batch_status, write_lane
 
 from crypto_trading.zoo_lanes import main as lanes_main
 from crypto_trading.zoo_pick import file_sha256, hparams_sha256, load_recipe
-from crypto_trading.zoo_production import PRODUCTION_OVERRIDES, ForwardWindow, ModelIndex, ProductionPlan, w5_start_ms
+from crypto_trading.zoo_production import PRODUCTION_OVERRIDES, ForwardWindow, ModelIndex, ProductionPlan, holdout_start_ms
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
@@ -28,7 +28,7 @@ def loaded():
 
 def window(loaded, **over):
     return ForwardWindow(loaded[0]["production"], loaded[0]["w2"]["bounds"], loaded[1].base["folds"]["embargo_days"],
-                         w5_start_ms(loaded[0]["production"], CONFIGS), over)
+                         holdout_start_ms(loaded[0]["production"], CONFIGS), over)
 
 
 def winner(cell, scope):
@@ -74,9 +74,9 @@ def test_the_retrain_cadence_changes_the_blocks_but_never_the_end(loaded):
 
 
 def test_a_window_past_w2_is_refused_unless_the_recipe_flag_is_true(loaded):
-    with pytest.raises(ValueError, match="W4 and W5 are reserved"):
+    with pytest.raises(ValueError, match="W4 and W5 are owner-only"):
         window(loaded, evaluate_through="2026-08-02")
-    with pytest.raises(ValueError, match="W4 and W5 are reserved"):
+    with pytest.raises(ValueError, match="W4 and W5 are owner-only"):
         window(loaded, evaluate_through="2026-09-15")
     allowed = window(loaded, evaluate_through="2026-09-15", allow_past_w2=True)
     assert allowed.blocks()[-1]["val_end"] == "2026-09-15"          # W4 is open with the flag, W5 starts there
@@ -140,7 +140,7 @@ def test_every_lane_expands_to_a_one_fold_walk_forward_that_ends_inside_the_wind
 def test_the_manifest_cli_refuses_a_window_past_w2_and_a_mismatched_freeze(loaded, tmp_path):
     frozen = frozen_files(loaded, tmp_path)
     base = ["production-manifest", "--pick", str(tmp_path / "pick.json"), "--frozen", str(tmp_path / "frozen.json"), "--out", str(tmp_path / "m.json")]
-    with pytest.raises(ValueError, match="W4 and W5 are reserved"):
+    with pytest.raises(ValueError, match="W4 and W5 are owner-only"):
         lanes_main(base + ["--evaluate-through", "2026-09-15"])
     assert not (tmp_path / "m.json").exists()
     assert lanes_main(base + ["--evaluate-through", "2026-09-15", "--allow-past-w2", "true"]) == 0
@@ -298,43 +298,52 @@ def test_the_forward_report_scores_the_model_against_both_baselines_row_weighted
     assert "Model gru-crps_tail" in ModelIndex(loaded[0], template, manifest, root, records(loaded)[1]).markdown(report)
 
 
-# --- W5 is never open; the freeze is verified; the realized config is what is checked ----------------------------------
+# --- the forward holdout is never open; the freeze is verified; the realized config is what is checked ----------------------------------
 
 
-def test_w5s_start_is_read_from_the_one_file_that_owns_the_cut_and_is_the_plans_date(loaded):
-    cut = w5_start_ms(loaded[0]["production"], CONFIGS)
-    assert datetime.fromtimestamp(cut / 1000, tz=timezone.utc).date() == date(2026, 9, 15)
-    features = json.load(open(os.path.join(CONFIGS, "run-features-15m.json"), encoding="utf-8"))
-    segments = features["pipeline"]["kill_test"]["params"]["segments"]
-    assert cut == segments["heldout"]["start_ms"] == segments["development"]["end_ms"]
-    assert set(loaded[0]["production"]["w5"]) == {"file", "path", "notes"} and "1789430400000" not in json.dumps(loaded[0])
+HOLDOUT_FILE = os.path.join(CONFIGS, "holdout-forward.json")
+HOLDOUT_DATE = date(2026, 10, 12)   # forward pre-registration: markets closing at or after 2026-10-12T00:00Z
 
 
-def test_no_setting_opens_w5_and_the_flag_opens_w4_only(loaded):
+def test_the_holdout_start_is_read_from_the_one_file_that_owns_the_cut_and_is_the_preregistered_date(loaded):
+    cut = holdout_start_ms(loaded[0]["production"], CONFIGS)
+    assert datetime.fromtimestamp(cut / 1000, tz=timezone.utc) == datetime(2026, 10, 12, tzinfo=timezone.utc)
+    assert cut == json.load(open(HOLDOUT_FILE, encoding="utf-8"))["start_ms"] == 1791763200000
+    assert set(loaded[0]["production"]["holdout"]) == {"file", "path", "notes"} and "w5" not in loaded[0]["production"]
+    assert str(cut) not in json.dumps(loaded[0]), "the recipe names the owner, it never restates the instant"
+    memo = open(os.path.join(CHILD_ROOT, "docs", "memos", "2026-10-12-forward-preregistration.md"), encoding="utf-8").read()
+    assert "2026-10-12T00:00Z" in memo, "the cut is the window the forward pre-registration names"
+
+
+def test_a_recipe_without_the_holdout_key_is_refused_by_name(loaded):
+    stale = {k: v for k, v in loaded[0]["production"].items() if k != "holdout"}
+    with pytest.raises(ValueError, match="production.holdout is missing"):
+        holdout_start_ms(stale, CONFIGS)
+
+
+def test_w5_is_development_data_the_flag_opens_everything_before_the_holdout_and_nothing_opens_the_holdout(loaded):
     for flag in (True, False):
-        with pytest.raises(ValueError, match="W5's start"):
-            window(loaded, evaluate_through="2026-10-08", allow_past_w2=flag)
-        with pytest.raises(ValueError, match="W5's start"):
-            window(loaded, evaluate_through="2026-09-16", allow_past_w2=flag)
-    assert window(loaded, evaluate_through="2026-09-15", allow_past_w2=True).through == date(2026, 9, 15)
-    with pytest.raises(ValueError, match="W4 and W5 are reserved"):
-        window(loaded, evaluate_through="2026-09-15")
-    with pytest.raises(ValueError, match="W4 and W5 are reserved"):
-        window(loaded, evaluate_through="2026-08-02")
-    recipe_flag = {**loaded[0]["production"], "evaluate_through": "2026-10-08", "allow_past_w2": True}      # the recipe itself cannot open it
-    with pytest.raises(ValueError, match="W5's start"):
-        ForwardWindow(recipe_flag, loaded[0]["w2"]["bounds"], 1, w5_start_ms(loaded[0]["production"], CONFIGS))
+        for through in ("2026-10-13", "2026-11-11"):
+            with pytest.raises(ValueError, match="holdout's start"):
+                window(loaded, evaluate_through=through, allow_past_w2=flag)
+    for through in ("2026-09-15", "2026-10-08", "2026-10-12"):                        # W4's end, inside W5, exactly the cut (exclusive end)
+        assert window(loaded, evaluate_through=through, allow_past_w2=True).through == date.fromisoformat(through)
+        with pytest.raises(ValueError, match="W4 and W5 are owner-only"):
+            window(loaded, evaluate_through=through)
+    recipe_flag = {**loaded[0]["production"], "evaluate_through": "2026-10-13", "allow_past_w2": True}      # the recipe itself cannot open it
+    with pytest.raises(ValueError, match="holdout's start"):
+        ForwardWindow(recipe_flag, loaded[0]["w2"]["bounds"], 1, holdout_start_ms(loaded[0]["production"], CONFIGS))
 
 
-def test_the_cli_refuses_w5_even_with_the_flag(loaded, tmp_path):
+def test_the_cli_refuses_the_holdout_even_with_the_flag(loaded, tmp_path):
     pick, frozen = records(loaded)
     (tmp_path / "pick.json").write_text(json.dumps(pick), encoding="utf-8")
     (tmp_path / "frozen.json").write_text(json.dumps({**frozen, "pick_file": {"path": "p", "sha256": file_sha256(str(tmp_path / "pick.json"))}}), encoding="utf-8")
     argv = ["production-manifest", "--pick", str(tmp_path / "pick.json"), "--frozen", str(tmp_path / "frozen.json"), "--out", str(tmp_path / "m.json")]
-    with pytest.raises(ValueError, match="W5's start"):
-        lanes_main(argv + ["--evaluate-through", "2026-10-08", "--allow-past-w2", "true"])
+    with pytest.raises(ValueError, match="holdout's start"):
+        lanes_main(argv + ["--evaluate-through", "2026-10-13", "--allow-past-w2", "true"])
     assert not (tmp_path / "m.json").exists()
-    assert lanes_main(argv + ["--evaluate-through", "2026-09-15", "--allow-past-w2", "true"]) == 0
+    assert lanes_main(argv + ["--evaluate-through", "2026-10-12", "--allow-past-w2", "true"]) == 0
 
 
 def frozen_files(loaded, tmp_path):
@@ -567,12 +576,14 @@ def test_the_w4_profile_agrees_with_the_cuts_that_own_its_dates(loaded):
     args = w4_args()
     as_date = lambda ms: datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date()  # noqa: E731
     assert date.fromisoformat(args["forward_start"]) == as_date(loaded[0]["w2"]["bounds"]["val_end_ms"] + 1) == W4_START
-    assert date.fromisoformat(args["evaluate_through"]) == as_date(w5_start_ms(loaded[0]["production"], CONFIGS)) == W4_END
+    features = json.load(open(os.path.join(CONFIGS, "run-features-15m.json"), encoding="utf-8"))
+    w5_cut = features["pipeline"]["kill_test"]["params"]["segments"]["heldout"]["start_ms"]       # W4's end is W5's start, still owned there
+    assert date.fromisoformat(args["evaluate_through"]) == as_date(w5_cut) == W4_END
 
 
-def test_the_w4_profile_cannot_open_w5_whatever_it_says(loaded):
-    for through in ("2026-09-16", "2026-10-08"):
-        with pytest.raises(ValueError, match="W5's start"):
+def test_the_w4_profile_cannot_open_the_holdout_whatever_it_says(loaded):
+    for through in ("2026-10-13", "2026-11-11"):
+        with pytest.raises(ValueError, match="holdout's start"):
             window(loaded, **{**w4_args(), "evaluate_through": through})
 
 
@@ -587,7 +598,7 @@ def test_a_panel_override_moves_every_lane_and_only_the_panel():
     pick, frozen = records((recipe, lanes, None, None))
     other = {"source": "panel-minute-w4", "relpath": "minute-w1w4"}
     lanes.use_panel(**other)
-    plan = ProductionPlan(recipe, lanes, pick, frozen, ForwardWindow(recipe["production"], recipe["w2"]["bounds"], 1, w5_start_ms(recipe["production"], CONFIGS)))
+    plan = ProductionPlan(recipe, lanes, pick, frozen, ForwardWindow(recipe["production"], recipe["w2"]["bounds"], 1, holdout_start_ms(recipe["production"], CONFIGS)))
     manifest = plan.manifest("t.json")
     assert {k: manifest["args"]["panel"][k] for k in other} == other and manifest["args"]["production"]["panel"] == other
     for name, cell in manifest["args"]["cell"].items():
@@ -662,3 +673,114 @@ def test_the_w4_overlay_plans_the_production_pipeline_and_its_panel_flags_reach_
     assert "--panel-source={in.panel_source}" in command and "--panel-relpath={in.panel_relpath}" in command
     assert manifest["steps"]["blocks"]["in"]["panel_source"] == "$args.panel_source"
     assert manifest["args"]["panel_source"] == manifest["args"]["panel_relpath"] == "", "unset by default: the base panel"
+
+
+# --- early stopping never sees the scored block --------------------------------------------------------------------------
+
+DAY_MS = 86_400_000
+FWD_ARGS = os.path.join(CONFIGS, "production-args-fwd.json")
+HOUR_MS = 3_600_000
+
+
+def args_of(path):
+    return {k: v for k, v in json.load(open(path, encoding="utf-8")).items() if k != "notes"}
+
+
+def profiles(loaded):
+    """The windows production runs: the W2 default cut into four blocks, the W4 refit and the forward refit."""
+    return {"w2-four-blocks": {"retrain_days": 30}, "w4": args_of(W4_ARGS), "forward": args_of(FWD_ARGS)}
+
+
+def one_asset_panel(tmp_path, first_ms, days_before, days_after):
+    """An hourly one-asset panel around a block's cutoff (the real bands cut it exactly as the minute panel's)."""
+    np = pytest.importorskip("numpy")
+    from dskit.pipeline.libs.array_panel import ArrayPanel, ArrayPanelWrite
+    from dskit.pipeline.node import NodeContext
+
+    start = first_ms - days_before * DAY_MS
+    n = (days_before + days_after) * 24
+    time = start + np.arange(n, dtype=np.int64) * HOUR_MS
+    cols = {"t": time, "g": np.zeros(n, dtype=np.int64), "ref": np.ones(n), "f0": np.arange(n, dtype=float)}
+    for h in (1, 2):
+        y = np.ones(n)
+        y[n - h:] = np.nan
+        cols[f"y_{h}"] = y
+    path = str(tmp_path / f"panel-{first_ms}")
+    ArrayPanelWrite("w", {"time": "t", "group": "g", "reference": "ref", "label_prefix": "y_", "horizons": [1, 2], "step_ms": HOUR_MS,
+                          "path": path}).run(NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path)), {"columns": cols})
+    return ArrayPanel.open(path)
+
+
+@pytest.mark.parametrize("profile", ["w2-four-blocks", "w4", "forward"])
+def test_every_blocks_early_stopping_slice_sits_inside_its_own_training_window_before_the_embargo(loaded, tmp_path, profile):
+    """Each retrain's split, cut by the real PanelBands: the early-stopping (cal) rows end before ``first - embargo`` and the block is never trained on."""
+    pytest.importorskip("numpy")
+    import numpy as np
+    from dskit.pipeline.libs.array_panel import PanelBands
+
+    recipe, lanes, _, _ = loaded
+    cal_days = lanes.cells()["gru-crps_tail-pooled"]["fit"]["bounds"]["cal_days"]
+    embargo_days = lanes.base["folds"]["embargo_days"]
+    blocks = window(loaded, **profiles(loaded)[profile]).blocks()
+    assert blocks and embargo_days >= 1
+    for block in blocks:
+        first_ms = int(datetime.fromisoformat(block["first"]).replace(tzinfo=timezone.utc).timestamp() * 1000)
+        panel = one_asset_panel(tmp_path, first_ms, cal_days + embargo_days + 12, block["val_days"] + 2)
+        span = panel.label_span_ms
+        assert embargo_days * DAY_MS > span, "the embargo must outlast the label's reach"
+        train_end, val_start = first_ms - embargo_days * DAY_MS - 1, first_ms           # restated independently of the walk-forward driver
+        val_end = first_ms + block["val_days"] * DAY_MS - 1
+        bands = PanelBands(panel, [0], train_end, val_start, val_end, cal_days, 1)
+        t = np.asarray(panel.time)
+        assert t[bands.cal_idx].max() <= train_end < first_ms - embargo_days * DAY_MS + 1, "early stopping ends before the embargo"
+        assert t[bands.cal_idx].min() >= train_end - cal_days * DAY_MS + 1, "and is the TAIL of the training window, cal_days long"
+        assert t[bands.fit_idx].max() + span < t[bands.cal_idx].min(), "the loss rows' labels do not reach the early-stopping slice"
+        assert t[bands.cal_idx].max() + span < first_ms, "no early-stopping label reaches the scored block"
+        assert t[bands.val_idx].min() >= first_ms and t[bands.val_idx].max() <= val_end, "the scored band is exactly the block"
+        assert not set(bands.val_idx.tolist()) & (set(bands.cal_idx.tolist()) | set(bands.fit_idx.tolist()))
+        assert block["train_end"] == (date.fromisoformat(block["first"]) - timedelta(days=embargo_days)).isoformat()
+
+
+def test_the_early_stopping_slice_is_one_knob_with_one_owner_the_zoos_cal_days(loaded):
+    """Production adds no second validation knob: the slice is the zoo's ``cal_days``, which no production lane overrides."""
+    recipe, lanes, _, _ = loaded
+    assert "val_days" not in recipe["production"] and "cal_days" not in recipe["production"]
+    pick, frozen = records(loaded)
+    cells = ProductionPlan(recipe, lanes, pick, frozen, window(loaded)).cells()
+    zoo = lanes.cells()["gru-crps_tail-pooled"]["fit"]["bounds"]
+    produced = cells["gru-crps_tail-pooled"]["fit"]
+    assert produced["bounds"]["cal_days"] == zoo["cal_days"] == lanes.base["zoo"]["cal_days"] > 0
+    assert produced["monitor"] == "val_loss", "patience watches the calibration band, never the scored one"
+
+
+def test_the_forward_overlay_sits_under_the_holdout_and_inside_the_panel_it_names(loaded):
+    args = args_of(FWD_ARGS)
+    holdout = datetime.fromtimestamp(holdout_start_ms(loaded[0]["production"], CONFIGS) / 1000, tz=timezone.utc).date()
+    blocks = window(loaded, **args).blocks()
+    # train_end is exclusive: 10-06 is the embargo day, so the model trains through 10-05
+    assert len(blocks) == 1 and blocks[0]["train_end"] == "2026-10-06" and blocks[0]["first"] == "2026-10-07"
+    assert date.fromisoformat(args["evaluate_through"]) <= holdout and args["allow_past_w2"] is True
+    assert set(args) <= set(json.load(open(os.path.join(CONFIGS, "workflow-production.json"), encoding="utf-8"))["args"])
+    assert not any(isinstance(v, str) and v.startswith(("/", "~")) for v in args.values()), "no machine path in a committed overlay"
+    build = json.load(open(os.path.join(CONFIGS, "run-panel-build-w5.json"), encoding="utf-8"))["pipeline"]
+    panel_end = datetime.fromtimestamp(build["tapes"]["params"]["end_ms"] / 1000, tz=timezone.utc).date()
+    assert build["panel"]["params"]["path"].endswith(args["panel_relpath"]) and json.load(
+        open(os.path.join(CONFIGS, "source-panel-minute-w5.json"), encoding="utf-8"))["include"] == [f"{args['panel_relpath']}/*"]
+    assert panel_end >= date.fromisoformat(args["evaluate_through"]), "the scored block needs rows: an empty validation band is refused"
+    assert args["panel_source"] == "panel-minute-w5"
+
+
+def test_the_forward_overlay_cannot_be_pushed_past_the_holdout(loaded):
+    for through in ("2026-10-13", "2026-11-11"):
+        with pytest.raises(ValueError, match="holdout's start"):
+            window(loaded, **{**args_of(FWD_ARGS), "evaluate_through": through})
+
+
+def test_the_forward_overlay_plans_the_production_pipeline(tmp_path):
+    from dskit.pipeline.workflow import run_workflow
+
+    local = tmp_path / "local.json"
+    local.write_text(json.dumps({"pick": "pick.json", "frozen": "frozen.json", "recipe": "recipe.json"}), encoding="utf-8")
+    lines = []
+    assert run_workflow(os.path.join(CONFIGS, "workflow-production.json"), [FWD_ARGS, str(local)], plan=True, out=lines.append) == 0
+    assert "zoo-production-fwd" in "\n".join(lines) and not any(line.startswith("unfilled arg") for line in lines)
