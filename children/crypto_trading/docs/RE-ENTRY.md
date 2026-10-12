@@ -39,7 +39,9 @@ this replaced is at the top of `docs/archive/re-entry/crypto_trading.md` (dskit 
 
 ## Next
 
-Fix the rule (blend, leads 8-14, 2c) and read W5 once when the owner approves. Book/trade data for maker quoting is the parallel track.
+W5 read once (pre-registered, `docs/memos/2026-10-12-w5-preregistration.md`): the blend rule FAILED
+(leads 8-14, 2c: -0.15c x 1,874 trades, t -0.10); half-Kelly lost 45%. Rule closed; W5 is now
+development data. New rules are tested on forward data (markets closing from 2026-10-12). Book/trade data for maker quoting is the parallel track.
 
 ## Blocked / owner decisions
 

@@ -22,3 +22,20 @@ The 1c and 3c margins, leads 2–7, each lead, BTC and ETH separately, `fair_gru
 ## After the read
 
 The result is recorded as it comes out. If the primary test fails, this rule is closed: nothing is tuned on W5, and W5 becomes development data. Any new rule is tested on markets closing from 2026-10-12 onward (forward data). If it passes, the next steps are acquiring depth data and a forward shadow test before any capital is committed.
+
+## Result (read once, 2026-10-12): FAIL
+
+Run `crypto-w5-blend-2026-10-08-0aa3e2c8`. The first run, `-6a94138c`, computed the w5 rows but left `report_segments` at w4. Commit cf60ad8c changed only the reporting, before any W5 outcome was read. The W5 panel reproduces every W1–W4 row.
+
+| Cell (W5, one contract) | Trades | Per trade | t |
+|---|---|---|---|
+| **Primary: blend, leads 8–14, 2c** | **1,874** | **−0.15c** | **−0.10** |
+| Blend, leads 8–14, 1c | 4,897 | +1.27c | +1.22 |
+| Blend, leads 8–14, 3c | 650 | +0.64c | +0.35 |
+| Blend, leads 2–7, 2c | 1,671 | −3.02c | −1.51 |
+| GRU alone, all leads, 2c | 22,519 | −0.72c | −0.85 |
+
+- Brier, blend vs market: −0.00028 at leads 8–14 (t −1.1), so the blend is closer to the outcome than the market but the difference is not significant. The GRU alone is worse than the market (+0.0020, t +3.2).
+- The blend's weights did not drift: about 0.76 mid and 0.32 GRU in logits on 2026-08-16, mid-W4 and the last W5 day. The model stayed the same while the edge it found on W4 disappeared.
+- Sizing on W5 decisions only, from $1,000: half-Kelly $547 (worst drawdown 70%), quarter-Kelly $788 (46%), flat $1,005.
+- Per the plan, this rule is closed. W5 is now development data, and any new rule is tested on markets closing from 2026-10-12.
