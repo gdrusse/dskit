@@ -27,7 +27,7 @@ STRADDLE = (("put", 1), ("call", 1))
 def test_the_public_surface_is_exactly_the_declared_names():
     assert set(option_structures.__all__) == {
         "QUOTE_DEFECTS", "is_amount", "leg_intrinsic", "payoff_total", "quote_defect",
-        "structure_credit", "structure_max_loss", "structure_payoff"}
+        "quote_defects", "structure_credit", "structure_max_loss", "structure_payoff"}
 
 
 def test_a_short_leg_sells_at_the_bid_and_a_long_leg_buys_at_the_ask():
@@ -115,3 +115,15 @@ def test_quote_defect_codes_are_the_declared_vocabulary():
 def test_quote_defect_refuses_an_unknown_side():
     with pytest.raises(ValueError):
         quote_defect(1.0, 1.1, "hold")
+
+
+@pytest.mark.parametrize("bid,ask,side,want", [
+    (1.0, 1.2, "buy", []), (None, 1.2, "sell", ["not_finite"]),
+    (-1.0, 1.2, "sell", ["negative", "sold_leg_no_bid"]),
+    (-1.0, 1.2, "buy", ["negative"]), (1.3, 1.2, "buy", ["crossed"]),
+    (0.0, 0.0, "buy", ["bought_leg_no_ask"]), (0.0, 0.4, "sell", ["sold_leg_no_bid"]),
+    (1.2, 1.2, "buy", ["locked"])])
+def test_quote_defects_lists_every_defect_and_quote_defect_is_the_first(bid, ask, side, want):
+    got = option_structures.quote_defects(bid, ask, side)
+    assert got == want
+    assert quote_defect(bid, ask, side) == (want[0] if want else None)

@@ -13,7 +13,7 @@ re-exports these functions.
 * :func:`structure_payoff` / :func:`leg_intrinsic` / :func:`payoff_total` - the settlement
   payoff of the leg set, exact for Decimal, bit-identical fast path for float.
 * :func:`structure_max_loss` - the most a leg set can lose at settlement.
-* :func:`quote_defect` - why a bid/ask pair cannot fill on a side, as a stable code
+* :func:`quote_defects` / :func:`quote_defect` - why a bid/ask pair cannot fill on a side, as a stable code
   (:data:`QUOTE_DEFECTS`) a caller can count by reason.
 
 Import cost: stdlib only.
@@ -32,6 +32,7 @@ __all__ = [
     "leg_intrinsic",
     "payoff_total",
     "quote_defect",
+    "quote_defects",
     "structure_credit",
     "structure_max_loss",
     "structure_payoff",
@@ -264,16 +265,17 @@ def structure_credit(legs, strikes, quotes):
     return credit, widths
 
 
-def quote_defect(bid, ask, side=None, locked_ok=False):
-    """Return why a bid/ask pair cannot fill on ``side``, as a stable code, or ``None``.
+def quote_defects(bid, ask, side=None, locked_ok=False):
+    """Return every reason a bid/ask pair cannot fill on ``side``, as stable codes.
 
     The code form of the quote rules, so a ledger can count refusals by reason.
-    Checks run in the order of :data:`QUOTE_DEFECTS` and the first hit is
-    returned: a non-finite (or ``None``, or boolean) side, a negative side, an
-    ask below the bid, an ask equal to the bid (``locked``, unless
-    ``locked_ok``), then the side traded: a sale needs a positive bid and a
-    purchase a positive ask. A provider ``0`` on the side traded means no
-    market, never a free fill; a far wing with no bid stays buyable.
+    A non-finite (or ``None``, or boolean) side is ``not_finite`` and ends the
+    check. Otherwise: a negative side, or else an ask below the bid
+    (``crossed``), or else an ask equal to the bid (``locked``, unless
+    ``locked_ok``); and, independently, the side traded: a sale needs a
+    positive bid and a purchase a positive ask. A provider ``0`` on the side
+    traded means no market, never a free fill; a far wing with no bid stays
+    buyable.
 
     Parameters
     ----------
@@ -282,13 +284,12 @@ def quote_defect(bid, ask, side=None, locked_ok=False):
     side : None, "sell" or "buy"
         Which side is traded; ``None`` judges the structure of the quote only.
     locked_ok : bool
-        Accept ``ask == bid`` (a mark or a close can use a locked quote; an
-        open does not).
+        Accept ``ask == bid`` (a mark can use a locked quote; an open does not).
 
     Returns
     -------
-    str or None
-        A member of :data:`QUOTE_DEFECTS`, or ``None`` when the quote fills.
+    list of str
+        Members of :data:`QUOTE_DEFECTS` in check order; empty when the quote fills.
 
     Raises
     ------
@@ -299,21 +300,48 @@ def quote_defect(bid, ask, side=None, locked_ok=False):
     --------
     A sale into a quote with no bid::
 
-        quote_defect(0.0, 0.4, "sell")  # -> "sold_leg_no_bid"
+        quote_defects(0.0, 0.4, "sell")  # -> ["sold_leg_no_bid"]
     """
     if side not in _SIDES:
         raise ValueError(f"side must be one of {_SIDES}, got {side!r}")
     if not (is_amount(bid) and is_amount(ask)):
-        return "not_finite"
+        return ["not_finite"]
+    found = []
     if bid < 0 or ask < 0:
-        return "negative"
-    if ask < bid:
-        return "crossed"
-    # A zero-zero quote traded on a side is "no market" below, not "locked".
-    if ask == bid and not locked_ok and (side is None or bid > 0):
-        return "locked"
+        found.append("negative")
+    elif ask < bid:
+        found.append("crossed")
+    elif ask == bid and not locked_ok and (side is None or bid > 0):
+        # A zero-zero quote traded on a side is "no market" below, not "locked".
+        found.append("locked")
     if side == "sell" and not bid > 0:
-        return "sold_leg_no_bid"
+        found.append("sold_leg_no_bid")
     if side == "buy" and not ask > 0:
-        return "bought_leg_no_ask"
-    return None
+        found.append("bought_leg_no_ask")
+    return found
+
+
+def quote_defect(bid, ask, side=None, locked_ok=False):
+    """Return the first of :func:`quote_defects`, or ``None`` when the quote fills.
+
+    Parameters
+    ----------
+    bid, ask : float or Decimal
+        The quote; ``None`` and NaN are ``not_finite``.
+    side : None, "sell" or "buy"
+        Which side is traded.
+    locked_ok : bool
+        Accept ``ask == bid``.
+
+    Returns
+    -------
+    str or None
+        A member of :data:`QUOTE_DEFECTS`, or ``None``.
+
+    Raises
+    ------
+    ValueError
+        When ``side`` is not one of ``None``, ``"sell"``, ``"buy"``.
+    """
+    found = quote_defects(bid, ask, side, locked_ok)
+    return found[0] if found else None

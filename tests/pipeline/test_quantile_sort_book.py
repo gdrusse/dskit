@@ -306,3 +306,46 @@ def test_it_is_wired_by_import_path_and_not_registered():
     assert "QuantileSortBook" not in DEFAULT_NODE_KINDS
     assert QuantileSortBook.role == "transform"
     assert QuantileSortBook.outputs == ("summary", "records")
+
+
+# -- review findings 2, 6, 7 -------------------------------------------------------------------
+
+def test_a_no_variance_series_reports_no_p_value_and_a_named_reason(ctx):
+    rows = make_rows(n_stamps=12, names=10, slope=0.001)
+    out = run(ctx, rows, min_names=10)
+    net = out["summary"]["signals"]["s"]["net"]
+    assert net["n"] == 12 and net["mean"] > 0
+    assert net["t"] is None and net["p_value"] is None
+    assert net["hac_withheld"] == "no_variance"
+    family = out["summary"]["family"]
+    assert family["withheld"] == ["s"] and family["p"]["s"] == 1.0
+    assert family["decisions"]["bh"]["s"] is False
+
+
+def test_the_outcome_must_start_after_the_stamp_when_the_column_is_declared(ctx):
+    rows = make_rows(n_stamps=4)
+    for row in rows:
+        row["start"] = row["d"]                      # outcome starts AT the stamp: not strictly after
+    with pytest.raises(ValueError, match="outcome_after_field"):
+        run(ctx, rows, outcome_after_field="start")
+    for row in rows:
+        row["start"] = (date.fromisoformat(row["d"]) + timedelta(days=1)).isoformat()
+    assert run(ctx, rows, outcome_after_field="start")["summary"]["signals"]["s"]["n_stamps"] == 4
+    del rows[3]["start"]
+    with pytest.raises(ValueError, match="lacks the field 'start'"):
+        run(ctx, rows, outcome_after_field="start")
+    rows[3]["start"] = 5
+    with pytest.raises(ValueError, match="outcome_after_field"):
+        run(ctx, rows, outcome_after_field="start")
+
+
+def test_outcome_after_field_is_a_validated_name():
+    assert QuantileSortBook.validate_params({**BASE, "outcome_after_field": ""})
+    assert QuantileSortBook.validate_params({**BASE, "outcome_after_field": "start"}) == []
+
+
+def test_an_unhashable_name_or_stamp_refuses_as_a_value_error(ctx):
+    rows = make_rows(n_stamps=2)
+    rows[0]["name"] = ["a"]
+    with pytest.raises(ValueError, match="hashable"):
+        run(ctx, rows)

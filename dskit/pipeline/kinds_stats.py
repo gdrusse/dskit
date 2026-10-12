@@ -1131,7 +1131,9 @@ class QuantileSortBook(Node):
     (``lags``, or :func:`~dskit.pipeline.stats.dm_lags` over ``h_steps``);
     the gross series gets the same. A series whose Bartlett band spans it
     (``lags >= n - 1``, or fewer than two stamps) keeps its mean and
-    withholds the HAC statistics, saying so in ``hac_withheld``. With
+    withholds the HAC statistics, saying so in ``hac_withheld``; a series with no
+    variance (``t`` undefined) reports no ``p_value`` and ``hac_withheld`` of
+    ``"no_variance"``. With
     ``bootstrap`` the net series also gets a
     :class:`~dskit.pipeline.stats.CalendarBlockBootstrap` percentile interval
     of its mean (stamps must be ISO dates). The signals are ONE family: the
@@ -1139,6 +1141,12 @@ class QuantileSortBook(Node):
     Bonferroni) run over their net p-values at ``alpha``; a signal with no HAC
     statistic stays in the family at ``p = 1`` and is listed in
     ``family.withheld``, so the family size is the declared signal count.
+
+    **Caller contract: ``outcome_field`` is measured strictly AFTER the stamp**
+    that its signal was known at; the node cannot see when an outcome began. To
+    have it checked, name a timestamp column of the outcome's start in
+    ``outcome_after_field``: a row whose value is not strictly later than its
+    stamp (or is missing, or not comparable) refuses by index.
 
     A row whose signal, outcome or cost value is null or not a finite number
     is DROPPED from that signal and counted under ``dropped`` by field. A
@@ -1176,7 +1184,8 @@ class QuantileSortBook(Node):
         default 1), ``corrections`` (non-empty list from
         :data:`~dskit.pipeline.stats.CORRECTIONS` without a weighted one),
         ``bootstrap`` (``{"block_days", "replicates", "seed", "level"}``, all
-        required) and ``splits`` (non-empty list of distinct row fields).
+        required), ``splits`` (non-empty list of distinct row fields) and
+        ``outcome_after_field`` (a column naming when the outcome began; see above).
 
     Examples
     --------
@@ -1195,7 +1204,7 @@ class QuantileSortBook(Node):
     outputs = ("summary", "records")
     _PARAMS = ("stamp_field", "series_field", "quantiles", "min_names", "alpha", "signals",
                "cost_per_side", "sides_per_leg", "lags", "h_steps", "corrections", "bootstrap",
-               "splits")
+               "splits", "outcome_after_field")
     _REQUIRED = ("stamp_field", "series_field", "quantiles", "min_names", "alpha", "signals")
     _SIGNAL_KEYS = ("signal_field", "outcome_field", "sign", "cost_field")
     _BOOTSTRAP_KEYS = ("block_days", "replicates", "seed", "level")
@@ -1285,6 +1294,10 @@ class QuantileSortBook(Node):
         if "alpha" in params and not is_node_ref(alpha) and not (number_ok(alpha) and 0 < alpha < 1):
             problems.append(f"alpha must be a number in (0, 1), got {alpha!r}")
         problems.extend(cls._signals_problems(params))
+        after = params.get("outcome_after_field")
+        if "outcome_after_field" in params and not is_node_ref(after) and (
+                not isinstance(after, str) or not after):
+            problems.append(f"outcome_after_field must be a non-empty column name, got {after!r}")
         cost = params.get("cost_per_side")
         if "cost_per_side" in params and not is_node_ref(cost) and not (number_ok(cost) and cost >= 0):
             problems.append(f"cost_per_side must be a number >= 0, got {cost!r}")
@@ -1358,6 +1371,20 @@ class QuantileSortBook(Node):
             values.append(float(value))
         return tuple(values), None
 
+    def _check_outcome_after(self, where, row, stamp):
+        """Refuse a row whose outcome did not start strictly after its stamp (``outcome_after_field``)."""
+        field = self.params.get("outcome_after_field")
+        if field is None:
+            return
+        start = self._required(where, row, field)
+        try:
+            later = start > stamp
+        except TypeError:
+            later = False
+        if not later:
+            raise ValueError(f"{where}: outcome_after_field {field!r} = {start!r} is not strictly after "
+                             f"the stamp {stamp!r}: the outcome would overlap the signal")
+
     def _collect(self, rows):
         """Read the stream once: per signal its usable columns, labels and drop census."""
         p = self.params
@@ -1373,10 +1400,16 @@ class QuantileSortBook(Node):
                 raise ValueError(f"{where} must be a mapping, got {type(row).__name__}")
             stamp = self._required(where, row, p["stamp_field"])
             name = self._required(where, row, p["series_field"])
-            if (stamp, name) in seen:
+            self._check_outcome_after(where, row, stamp)
+            try:
+                repeated = (stamp, name) in seen
+                seen.add((stamp, name))
+            except TypeError:
+                raise ValueError(f"{where}: the stamp and the name must be hashable, got "
+                                 f"{stamp!r} and {name!r}") from None
+            if repeated:
                 raise ValueError(f"{where} repeats {p['series_field']}={name!r} at "
                                  f"{p['stamp_field']}={stamp!r}: a name counts once per stamp")
-            seen.add((stamp, name))
             labels = [(field, self._required(where, row, field, null_ok=True)) for field in splits]
             for signal, spec in p["signals"].items():
                 values, failed = self._usable(spec, row)
@@ -1453,6 +1486,8 @@ class QuantileSortBook(Node):
             return out
         hac = newey_west_mean(values, lags=lags)
         out.update(mean=hac["mean"], se=hac["se"], t=hac["t"], p_value=hac["p_value"])
+        if hac["t"] is None:         # no variance: the owner's p of 0.0 or 1.0 is a sign rule, not evidence
+            out.update(se=None, p_value=None, hac_withheld="no_variance")
         return out
 
     @staticmethod

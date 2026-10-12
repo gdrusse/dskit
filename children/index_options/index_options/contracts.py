@@ -40,6 +40,7 @@ from dskit.pipeline.node import check_int_param, reject_unknown_params
 from dskit.pipeline.option_structures import (
     is_amount,
     leg_intrinsic,
+    quote_defects,
     structure_credit,
     structure_max_loss,
     structure_payoff,
@@ -202,18 +203,17 @@ def quote_problems(bid, ask, bid_size, ask_size, count, side=None):
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         raise ValueError(f"count must be an int >= 0, got {count!r}")
     problems = []
-    for name, value in (("bid", bid), ("ask", ask)):
-        if not is_amount(value):
-            problems.append(f"{name} must be a finite number, got {value!r}")
-    if not problems:
-        if bid < 0 or ask < 0:
-            problems.append(f"quote must be nonnegative, got bid {bid} ask {ask}")
-        elif ask < bid:
-            problems.append(f"quote must be uncrossed, got bid {bid} above ask {ask}")
-        if side == "sell" and not bid > 0:
-            problems.append(f"bid must be positive to sell, got {bid}")
-        if side == "buy" and not ask > 0:
-            problems.append(f"ask must be positive to buy, got {ask}")
+    for code in quote_defects(bid, ask, side, locked_ok=True):    # the core owns the rules; this owns the text
+        if code == "not_finite":
+            problems.extend(f"{name} must be a finite number, got {value!r}"
+                            for name, value in (("bid", bid), ("ask", ask)) if not is_amount(value))
+        else:
+            problems.append({
+                "negative": f"quote must be nonnegative, got bid {bid} ask {ask}",
+                "crossed": f"quote must be uncrossed, got bid {bid} above ask {ask}",
+                "sold_leg_no_bid": f"bid must be positive to sell, got {bid}",
+                "bought_leg_no_ask": f"ask must be positive to buy, got {ask}",
+            }[code])
     for name, value in (("bid_size", bid_size), ("ask_size", ask_size)):
         if side is not None and name != f"{'bid' if side == 'sell' else 'ask'}_size":
             continue

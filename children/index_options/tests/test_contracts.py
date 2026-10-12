@@ -990,3 +990,15 @@ def test_the_leg_algebra_is_owned_by_dskit_and_contracts_re_exports_it():
     for name in ("leg_intrinsic", "structure_credit", "structure_max_loss", "structure_payoff"):
         assert getattr(contracts, name) is getattr(option_structures, name)
         assert name in contracts.__all__
+
+
+def test_quote_problems_is_the_core_quote_defects_in_words():
+    """The child owns the message text only; which defects exist is the core's (ADR-0265 review)."""
+    from dskit.pipeline.option_structures import quote_defects
+
+    quotes = [(1.0, 1.2), (None, 1.2), (-1.0, 1.2), (1.3, 1.2), (0.0, 0.0), (0.0, 0.4), (1.2, 1.2)]
+    for bid, ask in quotes:
+        for side in (None, "sell", "buy"):
+            words = contracts.quote_problems(bid, ask, 10, 10, 1, side)
+            codes = quote_defects(bid, ask, side, locked_ok=True)
+            assert len(words) == len(codes), (bid, ask, side, words, codes)

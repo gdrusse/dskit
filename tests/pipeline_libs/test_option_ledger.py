@@ -163,8 +163,9 @@ def test_an_exit_date_the_chain_never_shows_is_counted_not_silent(ctx):
 
 @pytest.mark.parametrize("exit_day,reason", [(0, "exit_not_after_open"), (5, "exit_after_expiry")])
 def test_an_exit_date_outside_the_trade_life_is_refused_and_counted(ctx, exit_day, reason):
-    out = run(ctx, spread_chain(), [order(exit_date=day(exit_day).isoformat())], **EXIT)
-    assert out["trades"] == [] and out["summary"]["refused_at_open"] == {reason: 1}
+    good = order(exit_date=day(3).isoformat())
+    out = run(ctx, exit_chain(), [order(exit_date=day(exit_day).isoformat()), good], **EXIT)
+    assert len(out["trades"]) == 1 and out["summary"]["refused_at_open"] == {reason: 1}
 
 
 # -- refusals at the open ----------------------------------------------------------------------
@@ -217,8 +218,18 @@ def test_an_expiry_with_no_underlying_is_unsettled_not_guessed(ctx):
     chain.append(row("ZZZ", 5, 10, "put", 0.1, 0.2, 10.0, expiration=9))   # the data runs past expiry
     out = run(ctx, chain, [order(), order("ZZZ", (10, 10), "straddle", open_day=5, expiration=9)])
     abc = next(t for t in out["trades"] if t["symbol"] == "ABC")
-    assert abc["status"] == "unsettled" and abc["unsettled_reason"] == "no_underlying_on_expiry"
+    assert abc["status"] == "unsettled" and abc["unsettled_reason"] == "no_rows_on_expiry"
     assert abc["pnl_usd"] is None
+    assert out["summary"]["unsettled"] == {"no_rows_on_expiry": 1}
+
+
+def test_an_expiry_row_with_no_underlying_is_a_different_unsettled_reason(ctx):
+    chain = spread_chain()
+    for r in chain:
+        if r["date"] == day(4).isoformat():
+            r["underlying_price"] = None
+    out = run(ctx, chain, [order()])
+    assert out["trades"][0]["unsettled_reason"] == "no_underlying_on_expiry"
     assert out["summary"]["unsettled"] == {"no_underlying_on_expiry": 1}
 
 
@@ -431,3 +442,62 @@ def test_it_is_wired_by_import_path_and_registers_nothing():
     assert "OptionStructureLedger" not in DEFAULT_NODE_KINDS
     assert OptionStructureLedger.role == "transform"
     assert OptionStructureLedger.outputs == ("trades", "marks", "summary")
+
+
+# -- exits are not free fills (review finding 1) ---------------------------------------------
+
+def zero_exit_chain(short_quote, long_quote=(0.4, 0.6)):
+    chain = [r for r in spread_chain() if r["date"] != day(3).isoformat()]
+    chain += [row("ABC", 3, 95, "put", *long_quote, 96.0), row("ABC", 3, 100, "put", *short_quote, 96.0)]
+    return chain
+
+
+def test_a_short_leg_cannot_be_bought_back_for_free_on_exit(ctx):
+    chain = zero_exit_chain((0.0, 0.0))
+    out = run(ctx, chain, [order(exit_date=day(3).isoformat())], **EXIT)
+    (trade,) = out["trades"]
+    assert out["summary"]["exit_refused"] == {"quote_bought_leg_no_ask": 1}
+    assert trade["exit_refused"] is True and trade["reason_closed"] == "expiry"
+    assert trade["pnl_usd"] == pytest.approx(180.0 - 600.0 - 2.6)       # not +400
+
+
+def test_a_long_leg_with_no_bid_refuses_the_exit_by_default(ctx):
+    chain = zero_exit_chain((1.0, 1.2), long_quote=(0.0, 0.1))
+    out = run(ctx, chain, [order(exit_date=day(3).isoformat())], **EXIT)
+    assert out["summary"]["exit_refused"] == {"exit_zero_bid_long": 1}
+    assert out["trades"][0]["reason_closed"] == "expiry"
+
+
+def test_a_zero_bid_long_may_close_at_nothing_when_declared_and_is_counted(ctx):
+    chain = zero_exit_chain((1.0, 1.2), long_quote=(0.0, 0.1))
+    out = run(ctx, chain, [order(exit_date=day(3).isoformat())], exit_zero_bid="allow", **EXIT)
+    (trade,) = out["trades"]
+    assert trade["reason_closed"] == "exit" and out["summary"]["exit_refused"] == {}
+    assert out["summary"]["exit_zero_bid_long"] == 1
+    assert trade["close_cash_usd"] == pytest.approx(200 * (0.0 - 1.2))
+
+
+def test_the_exit_zero_bid_param_is_default_deny():
+    bad = {**BASE, **EXIT, "exit_zero_bid": "maybe"}
+    assert OptionStructureLedger.validate_params(bad)
+
+
+# -- fees follow the quantities (review finding 4) ----------------------------------------------
+
+def test_fees_scale_with_the_absolute_leg_quantities_not_the_leg_count(ctx):
+    structures = {**STRUCTURES, "ratio": [["put", 1], ["put", -2]]}
+    out = run(ctx, spread_chain(), [order(structure="ratio")], structures=structures,
+              settle_fee_per_contract=1.0)
+    (trade,) = out["trades"]
+    assert trade["open_fees_usd"] == pytest.approx(0.65 * 3 * 2)         # 3 contracts a unit, x2 units
+    assert trade["close_fees_usd"] == pytest.approx(1.0 * 2 * 2)         # the 2-lot short put is ITM
+
+
+# -- every order refused (review finding 5) -----------------------------------------------------
+
+def test_when_every_order_is_refused_the_node_raises_with_the_counts(ctx):
+    with pytest.raises(ValueError, match=r"every order was refused.*expiry_not_after_open.*2"):
+        run(ctx, spread_chain(), [order(expiration=0), order(expiration=0)])
+    with pytest.raises(ValueError, match="sold_leg_no_bid"):
+        chain, orders = refusal_world()
+        run(ctx, chain, [o for o in orders if o["symbol"] == "A"])

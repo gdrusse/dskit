@@ -17,8 +17,10 @@ The rules, fixed by the node and not by the data:
   mark forward and the row says so (``carried`` and ``carry_reason``).
 * **Close** by the ledger's ``close_rule``. ``expiry``: settle intrinsic on the expiration date
   from the chain's underlying column. ``exit``: the order names a later date and the legs are
-  closed at the NBBO that day (sell what was bought at the bid, buy back what was sold at the ask;
-  a zero side is allowed on exit, a worthless leg closes for nothing). An exit that cannot be
+  closed at the NBBO that day (sell what was bought at the bid, buy back what was sold at the ask),
+  under the open's side rules for the closing side: a short with no ask is never a free buy-back, and
+  a long with no bid refuses the exit (``exit_zero_bid_long``) unless ``exit_zero_bid: "allow"``
+  closes it for nothing and counts it. An exit that cannot be
   quoted is counted and the trade runs on to its expiration. A trade whose expiry has no underlying
   is ``unsettled``; one the data ends before is ``open_at_end``. Neither has a realized P&L.
 * **Delta hedge** (optional ``hedge``): Black-76 deltas from each leg's own mid-implied vol
@@ -47,13 +49,14 @@ from dskit.pipeline.option_pricing import RIGHTS, black76_delta, black76_implied
 from dskit.pipeline.option_structures import (
     leg_intrinsic,
     quote_defect,
+    quote_defects,
     structure_credit,
     structure_max_loss,
     structure_payoff,
 )
 from dskit.pipeline.records import number_ok, price_ok
 
-__all__ = ["CHAIN_FIELDS", "FILLS", "NODE_KINDS", "ORDER_FIELDS", "REBALANCES",
+__all__ = ["CHAIN_FIELDS", "EXIT_ZERO_BID", "FILLS", "NODE_KINDS", "ORDER_FIELDS", "REBALANCES",
            "OptionStructureLedger"]
 
 NODE_KINDS = ()
@@ -66,6 +69,8 @@ ORDER_FIELDS = ("date", "symbol", "expiration", "strikes", "structure", "exit")
 FILLS = ("nbbo", "mid")
 #: The hedge rebalance rules.
 REBALANCES = ("daily", "every_n", "threshold")
+#: What an exit does with a long leg that has no bid: refuse (default) or close it at nothing.
+EXIT_ZERO_BID = ("refuse", "allow")
 _CLOSE_RULES = ("expiry", "exit")
 _RIGHT_NAMES = {"put": "put", "p": "put", "call": "call", "c": "call"}
 
@@ -213,6 +218,7 @@ class _Trade:
         self.mult = self.p["multiplier"]
         self.n = int(self.p.get("contracts", 1))
         self.legs = order.legs
+        self.units = sum(abs(sign) for _right, sign in order.legs)
         self.keys = tuple((order.expiration, k, right)
                           for (right, _sign), k in zip(order.legs, order.strikes, strict=True))
         self.hedge = (_Hedge(self.p["hedge"], int(self.p.get("year_days", 365)), self.mult, self.n)
@@ -246,6 +252,27 @@ class _Trade:
                 return None, f"quote_{defect}"
         return quotes, None
 
+    def _exit_quotes(self, day):
+        """Return ``(quotes, None)`` when every leg can be CLOSED on ``day``, else ``(None, reason)``.
+
+        A closing trade has the sides of the opposite trade: a short is bought back at the ask and
+        a long is sold at the bid, so a short with no ask is no market (never a free buy-back). A long
+        with no bid closes for nothing only under ``exit_zero_bid: "allow"``, and is counted.
+        """
+        quotes, reason = self._quotes(day)
+        if quotes is None:
+            return None, reason
+        zero_bids = 0
+        for (_right, sign), (bid, ask) in zip(self.legs, quotes, strict=True):
+            for defect in quote_defects(bid, ask, "sell" if sign > 0 else "buy", locked_ok=True):
+                if defect == "sold_leg_no_bid" and self.p.get("exit_zero_bid", "refuse") == "allow":
+                    zero_bids += 1
+                else:
+                    return None, ("exit_zero_bid_long" if defect == "sold_leg_no_bid"
+                                  else f"quote_{defect}")
+        self.tally["exit_zero_bid_long"] += zero_bids
+        return quotes, None
+
     def _fill_quotes(self, quotes):
         """Return the (bid, ask) pairs the fill model prices from: the NBBO as is, or the mid twice."""
         if self.p.get("fill", "nbbo") == "mid":
@@ -271,7 +298,7 @@ class _Trade:
                 return defect
         credit, _widths = structure_credit(self.legs, o.strikes, self._fill_quotes(quotes))
         self.premium = self.mult * self.n * credit
-        self.open_fees = self._fees(self.p.get("fee_per_contract", 0.0), len(self.legs))
+        self.open_fees = self._fees(self.p.get("fee_per_contract", 0.0), self.units)
         self.last_value = self.mult * self.n * self._mid_value(quotes)
         if self.hedge:
             under = self.chain.underlying(o.symbol, o.opened)
@@ -280,9 +307,9 @@ class _Trade:
         self._row(o.opened, "open", self.last_value, 0.0, False, None)
         return None
 
-    def _fees(self, per_contract, legs):
-        """Fees for ``legs`` legs of ``n`` contracts at ``per_contract``."""
-        return float(per_contract) * self.n * legs
+    def _fees(self, per_contract, units):
+        """Return the fees for ``units`` option units (summed absolute leg quantities) of ``n`` contracts."""
+        return float(per_contract) * self.n * units
 
     def _rebalance(self, day, under, quotes):
         """Rebalance the hedge toward its mid-implied target; count why it could not."""
@@ -332,14 +359,14 @@ class _Trade:
 
     def _try_exit(self, day):
         """Close at the NBBO on ``day``: ``(cash, fees)`` or ``None`` after counting why not."""
-        quotes, reason = self._usable(day)
+        quotes, reason = self._exit_quotes(day)
         if quotes is None:
             self.tally[f"exit_refused:{reason}"] += 1
             return None
         reversed_legs = tuple((right, -sign) for right, sign in self.legs)
         credit, _widths = structure_credit(reversed_legs, self.order.strikes, self._fill_quotes(quotes))
         return (self.mult * self.n * credit,
-                self._fees(self.p.get("fee_per_contract", 0.0), len(self.legs)))
+                self._fees(self.p.get("fee_per_contract", 0.0), self.units))
 
     def _exit_date_missing(self):
         """Count an exit date the chain never shows; the trade runs on to its expiration."""
@@ -348,7 +375,7 @@ class _Trade:
     def _settle(self, level):
         """Settlement cash and fees at the expiration level."""
         cash = self.mult * self.n * structure_payoff(self.legs, level, self.order.strikes)
-        itm = sum(1 for (right, _s), k in zip(self.legs, self.order.strikes, strict=True)
+        itm = sum(abs(sign) for (right, sign), k in zip(self.legs, self.order.strikes, strict=True)
                   if leg_intrinsic(right, k, level) > 0)
         return cash, self._fees(self.p.get("settle_fee_per_contract", 0.0), itm)
 
@@ -391,7 +418,8 @@ class _Trade:
         if closed:
             return "closed", None
         if self.chain.covers(self.order.expiration):
-            return "unsettled", "no_underlying_on_expiry"
+            seen = self.chain.has_rows(self.order.symbol, self.order.expiration)
+            return "unsettled", "no_underlying_on_expiry" if seen else "no_rows_on_expiry"
         return "open_at_end", None
 
     def _record(self, closed, exit_refused):
@@ -471,10 +499,11 @@ class OptionStructureLedger(Node):
         ``order_fields`` (a dict naming the order columns :data:`ORDER_FIELDS`; ``exit`` only
         under ``close_rule: "exit"``), ``structures`` (``{name: [[right, signed quantity], ...]}``,
         the document's leg-set vocabulary) and ``multiplier`` (int >= 1). Optional: ``contracts``
-        (int >= 1, default 1), ``fee_per_contract`` (>= 0, per leg per contract on open and exit),
-        ``settle_fee_per_contract`` (>= 0, per in-the-money leg at settlement), ``fill`` (one of
+        (int >= 1, default 1), ``fee_per_contract`` (>= 0, per contract of each leg quantity on open and exit),
+        ``settle_fee_per_contract`` (>= 0, per contract of each in-the-money leg quantity at settlement), ``fill`` (one of
         :data:`FILLS`, default ``nbbo``), ``close_rule`` (``expiry`` default, or ``exit``),
-        ``year_days`` (int >= 1, default 365) and ``hedge``: ``{"rebalance": one of
+        ``year_days`` (int >= 1, default 365), ``exit_zero_bid`` (one of :data:`EXIT_ZERO_BID`, default
+        ``refuse``) and ``hedge``: ``{"rebalance": one of
         :data:`REBALANCES`, "every_n": int (with ``every_n``), "threshold": shares (with
         ``threshold``), "rate": float, "fee_per_share": >= 0}``.
 
@@ -501,7 +530,7 @@ class OptionStructureLedger(Node):
     outputs = ("trades", "marks", "summary")
     _PARAMS = ("chain_fields", "order_fields", "structures", "multiplier", "contracts",
                "fee_per_contract", "settle_fee_per_contract", "fill", "close_rule", "year_days",
-               "hedge")
+               "hedge", "exit_zero_bid")
     _REQUIRED = ("chain_fields", "order_fields", "structures", "multiplier")
     _HEDGE_KEYS = ("rebalance", "every_n", "threshold", "rate", "fee_per_share")
 
@@ -609,6 +638,9 @@ class OptionStructureLedger(Node):
         for name in ("fee_per_contract", "settle_fee_per_contract"):
             if name in params and not (number_ok(params[name]) and params[name] >= 0):
                 problems.append(f"{name} must be a number >= 0, got {params[name]!r}")
+        if "exit_zero_bid" in params and params["exit_zero_bid"] not in EXIT_ZERO_BID:
+            problems.append(f"exit_zero_bid must be one of {list(EXIT_ZERO_BID)}, "
+                            f"got {params['exit_zero_bid']!r}")
         if "fill" in params and params["fill"] not in FILLS:
             problems.append(f"fill must be one of {list(FILLS)}, got {params['fill']!r}")
         if "hedge" in params and not is_node_ref(params["hedge"]):
@@ -755,7 +787,7 @@ class OptionStructureLedger(Node):
         Raises
         ------
         ValueError
-            No orders or no chain rows; an order that is not a mapping, lacks a field, names an
+            No orders or no chain rows; every order refused (the counts by reason are in the message); an order that is not a mapping, lacks a field, names an
             undeclared structure or has a bad date or strikes; a chain row that is not a mapping;
             a needed contract quoted twice on one day.
         """
@@ -771,6 +803,9 @@ class OptionStructureLedger(Node):
         for reason, count in refused.items():
             tally[f"refused_at_open:{reason}"] += count
         summary = self._summary(len(inputs["orders"]), trades, marks, tally, chain)
+        if not trades:
+            raise ValueError(f"{self.key}: every order was refused ({summary['orders_refused']} of "
+                             f"{summary['orders_in']}): {summary['refused_at_open']}")
         self.log.info("%s: %d order(s), %d opened, %d mark row(s)", self.key,
                       summary["orders_in"], summary["orders_opened"], len(marks))
         return {"trades": trades, "marks": marks, "summary": summary}
@@ -795,6 +830,7 @@ class OptionStructureLedger(Node):
             "closed": self._by(tally, "closed"), "open_at_end": tally["open_at_end"],
             "unsettled": self._by(tally, "unsettled"),
             "exit_refused": self._by(tally, "exit_refused"),
+            "exit_zero_bid_long": tally["exit_zero_bid_long"],
             "marks": len(marks), "marks_carried": self._by(tally, "marks_carried"),
             "totals": {"closed_trades": len(closed),
                        "pnl_usd": math.fsum(t["pnl_usd"] for t in closed),
