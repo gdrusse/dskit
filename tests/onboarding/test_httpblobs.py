@@ -464,7 +464,7 @@ def test_the_pack_is_stdlib_only_at_import():
     top = {a.name.split(".")[0] for n in tree.body if isinstance(n, ast.Import) for a in n.names}
     top |= {n.module.split(".")[0] for n in tree.body
             if isinstance(n, ast.ImportFrom) and n.module and not n.level}
-    assert top <= {"__future__", "hashlib", "importlib", "json", "os", "re", "shutil", "string", "tempfile",
+    assert top <= {"__future__", "datetime", "hashlib", "importlib", "json", "os", "re", "shutil", "string", "tempfile",
                    "time", "urllib"}
 
 
@@ -546,3 +546,354 @@ def test_a_transform_note_lands_in_the_record(server, config):
     assert recs["AAA"]["note"] == f"bytes={len(BODIES['AAA'])}"
     plain = {m["data"]["entity"]: m["data"] for m in _by(_read(HttpBlobsConnector(), config), "RECORD")}
     assert plain["AAA"]["note"] is None
+
+
+# -- entities_dates: UTC days that advance in live mode (ADR-0266) ---------------
+
+DATES_AS_OF = "2026-01-03T12:00:00+00:00"
+DATES = {"start": "2025-12-30", "lag_days": 1}
+BACKFILL_DAYS = ["2025-12-30", "2025-12-31", "2026-01-01", "2026-01-02"]
+CLOCK_START = "2026-01-06T03:00:00+00:00"  # UTC today 01-06, so live ends 01-05 at lag 1
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A settable clock (a one-cell list) behind the pack's own ``utc_now`` name."""
+    cell = [CLOCK_START]
+    monkeypatch.setattr(httpblobs, "utc_now", lambda: cell[0])
+    return cell
+
+
+@pytest.fixture
+def dates_config(server, config):
+    cfg = {k: v for k, v in config.items() if k != "entities"}
+    cfg.update(entities_dates=dict(DATES), as_of=DATES_AS_OF)
+    return cfg
+
+
+def _publish(server, *days):
+    for day in days:
+        server.script[f"/chart/{day}"] = [(200, ('{"day": "%s"}' % day).encode(), {})]
+
+
+def _paths(server):
+    return [h[0] for h in server.hits]
+
+
+def _record_days(msgs, status):
+    return [m["data"]["entity"] for m in _by(msgs, "RECORD") if m["data"]["status"] == status]
+
+
+def _seeded(server, cfg, through="2026-01-02"):
+    """A live checkpoint already past the backfill, as the first live pull would leave it."""
+    _publish(server, *BACKFILL_DAYS)
+    state = _read(HttpBlobsConnector(), cfg)[-1]["state"]
+    del server.hits[:]
+    return dict(state, through=through, absent=[])
+
+
+def test_backfill_covers_start_through_as_of_minus_lag_inclusive(dates_config):
+    knobs = HttpBlobsConnector().resolve_knobs(dates_config)
+    assert knobs["entities"] == BACKFILL_DAYS
+
+
+def test_lag_days_defaults_to_the_named_constant(dates_config):
+    dates_config["entities_dates"] = {"start": "2026-01-02"}
+    assert httpblobs.DEFAULT_LAG_DAYS == 0
+    assert HttpBlobsConnector().resolve_knobs(dates_config)["entities"] == ["2026-01-02", "2026-01-03"]
+
+
+def test_dates_check_config_passes_and_the_knob_is_declared(dates_config):
+    conn = HttpBlobsConnector()
+    check_config(conn, dates_config)
+    assert "entities_dates" in conn.spec()["params"]
+
+
+def test_a_dates_backfill_is_the_declaration_an_explicit_list_would_be(server, dates_config, config):
+    """Same days -> same checkpoint, so re-registering as dates re-pulls nothing."""
+    _publish(server, *BACKFILL_DAYS)
+    by_dates = _read(HttpBlobsConnector(), dates_config)
+    by_list = _read(HttpBlobsConnector(), {**config, "entities": BACKFILL_DAYS, "as_of": DATES_AS_OF})
+    assert by_dates[-1]["state"] == by_list[-1]["state"]
+    hits = len(server.hits)
+    again = _read(HttpBlobsConnector(), dates_config, state=by_list[-1]["state"])
+    assert [m["type"] for m in again] == ["LOG", "STATE"] and len(server.hits) == hits
+
+
+def test_backfill_ignores_the_clock(server, dates_config, clock):
+    _publish(server, *BACKFILL_DAYS)
+    clock[0] = "2030-01-01T00:00:00+00:00"
+    assert _record_days(_read(HttpBlobsConnector(), dates_config), "ok") == BACKFILL_DAYS
+
+
+def test_first_live_pull_starts_give_up_days_before_the_backfill_end(server, dates_config, clock):
+    dates_config["entities_dates"] = {**DATES, "give_up_days": 2}
+    days = ["2025-12-31", "2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05"]
+    _publish(server, *days)
+    msgs = _read(HttpBlobsConnector(), dates_config, mode="live")
+    assert _paths(server) == [f"/chart/{d}" for d in days]
+    assert _record_days(msgs, "ok") == days
+    assert [m["relpath"] for m in _by(msgs, "FILE")] == [f"{d}/payload.json" for d in days]
+    assert msgs[-1]["state"]["through"] == "2026-01-05"
+
+
+def test_the_first_live_window_never_starts_before_start(server, dates_config, clock):
+    _publish(server, *BACKFILL_DAYS, "2026-01-03", "2026-01-04", "2026-01-05")
+    _read(HttpBlobsConnector(), dates_config, mode="live")  # give_up_days 7 reaches past start
+    assert _paths(server)[0] == "/chart/2025-12-30"
+
+
+def test_a_backfill_refusal_published_since_is_fetched_by_the_first_live_pull(server, dates_config, clock):
+    dates_config["max_refused"] = 1
+    _publish(server, "2025-12-30", "2025-12-31", "2026-01-01")  # backfill: 01-02 refused
+    state = _read(HttpBlobsConnector(), dates_config)[-1]["state"]
+    _publish(server, "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05")  # now published
+    msgs = _read(HttpBlobsConnector(), dates_config, state=state, mode="live")
+    assert "2026-01-02" in _record_days(msgs, "ok") and not _record_days(msgs, "refused")
+
+
+def test_a_backfill_refusal_still_unpublished_blocks_young_and_is_given_up_when_old(server, dates_config, clock):
+    dates_config.update(max_refused=1, entities_dates={**DATES, "give_up_days": 4})
+    _publish(server, "2025-12-30", "2026-01-01", "2026-01-02")  # backfill: 12-31 refused
+    state = _read(HttpBlobsConnector(), dates_config)[-1]["state"]
+    _publish(server, "2026-01-03", "2026-01-04", "2026-01-05")
+    old = _read(HttpBlobsConnector(), dates_config, state=state, mode="live")  # clock 01-06: 12-31 is 6 days old
+    assert old[-1]["state"]["absent"] == ["2025-12-31"] and old[-1]["state"]["through"] == "2026-01-05"
+    assert "2025-12-31" in _log_text(old)
+    clock[0] = "2026-01-02T03:00:00+00:00"  # as if first pulled the day after: 12-31 is 2 days old
+    young = _read(HttpBlobsConnector(), {**dates_config, "as_of": "2026-01-01T12:00:00+00:00"},
+                  mode="live")
+    assert young[-1]["state"]["absent"] == [] and young[-1]["state"]["through"] == "2025-12-30"
+
+
+def test_live_resumes_from_its_checkpoint_and_advances_with_the_clock(server, dates_config, clock):
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06")
+    state = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")[-1]["state"]
+    hits = len(server.hits)
+    idle = _read(HttpBlobsConnector(), dates_config, state=state, mode="live")
+    assert [m["type"] for m in idle] == ["LOG", "STATE"] and idle[-1]["state"] == state
+    assert len(server.hits) == hits
+    clock[0] = "2026-01-07T00:00:01+00:00"
+    msgs = _read(HttpBlobsConnector(), dates_config, state=state, mode="live")
+    assert _paths(server)[hits:] == ["/chart/2026-01-06"]
+    assert msgs[-1]["state"]["through"] == "2026-01-06"
+    assert msgs[-1]["state"]["declaration"] == state["declaration"]
+
+
+def test_live_before_a_new_day_is_due_keeps_the_checkpoint(server, dates_config, clock):
+    seeded = _seeded(server, dates_config)
+    clock[0] = "2026-01-03T23:59:59+00:00"  # live ends 01-02 == the backfill end
+    msgs = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")
+    assert [m["type"] for m in msgs] == ["LOG", "STATE"] and not server.hits
+    assert msgs[-1]["state"]["through"] == "2026-01-02"
+
+
+def test_a_refused_day_is_retried_and_the_checkpoint_never_passes_it(server, dates_config, clock):
+    dates_config["max_refused"] = 1
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-03", "2026-01-05")  # 01-04 not published yet -> 404
+    first = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")
+    assert _record_days(first, "refused") == ["2026-01-04"]
+    assert _record_days(first, "ok") == ["2026-01-03", "2026-01-05"]
+    state = first[-1]["state"]
+    assert state["through"] == "2026-01-03"
+    _publish(server, "2026-01-04")
+    del server.hits[:]
+    second = _read(HttpBlobsConnector(), dates_config, state=state, mode="live")
+    assert _paths(server) == ["/chart/2026-01-04", "/chart/2026-01-05"]
+    assert _record_days(second, "refused") == [] and second[-1]["state"]["through"] == "2026-01-05"
+
+
+def test_a_refused_first_live_day_leaves_the_checkpoint_at_the_backfill_end(server, dates_config, clock):
+    dates_config["max_refused"] = 1
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-04", "2026-01-05")
+    msgs = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")
+    assert msgs[-1]["state"]["through"] == "2026-01-02"
+
+
+def test_live_refusals_count_toward_max_refused_and_abort_without_state(server, dates_config, clock):
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-03")
+    with pytest.raises(AssetError, match="max_refused"):
+        _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")  # default max_refused 0
+
+
+def test_a_live_state_without_through_initialises_at_the_backfill_end(server, dates_config, clock):
+    """The pre-ADR-0266 live state was the bare declaration digest."""
+    _publish(server, *BACKFILL_DAYS)
+    legacy = _read(HttpBlobsConnector(), dates_config)[-1]["state"]
+    assert "through" not in legacy
+    _publish(server, "2026-01-03", "2026-01-04", "2026-01-05")
+    msgs = _read(HttpBlobsConnector(), dates_config, state=legacy, mode="live")
+    assert _record_days(msgs, "ok") == [*BACKFILL_DAYS, "2026-01-03", "2026-01-04", "2026-01-05"]
+
+
+def test_a_live_state_from_another_declaration_is_discarded(server, dates_config, clock):
+    _publish(server, *BACKFILL_DAYS, "2026-01-03", "2026-01-04", "2026-01-05")
+    stale = {"declaration": "0" * 64, "through": "2026-01-05"}
+    msgs = _read(HttpBlobsConnector(), dates_config, state=stale, mode="live")
+    assert _record_days(msgs, "ok") == [*BACKFILL_DAYS, "2026-01-03", "2026-01-04", "2026-01-05"]
+
+
+@pytest.mark.parametrize("through", ["yesterday", 20260105, "2026-1-5", None])
+def test_a_malformed_live_through_refuses(server, dates_config, clock, through):
+    _publish(server, *BACKFILL_DAYS)
+    state = dict(_read(HttpBlobsConnector(), dates_config)[-1]["state"], through=through)
+    with pytest.raises(AssetError, match="through"):
+        _read(HttpBlobsConnector(), dates_config, state=state, mode="live")
+
+
+def test_live_with_plain_entities_is_unchanged(server, config, clock):
+    first = _read(HttpBlobsConnector(), config, mode="live")
+    assert len(_by(first, "FILE")) == 2 and "through" not in first[-1]["state"]
+    again = _read(HttpBlobsConnector(), config, state=first[-1]["state"], mode="live")
+    assert [m["type"] for m in again] == ["LOG", "STATE"]
+
+
+@pytest.mark.parametrize("patch, needle", [
+    ({"entities_dates": "2025-12-30"}, "entities_dates"),
+    ({"entities_dates": {}}, "start"),
+    ({"entities_dates": {"lag_days": 1}}, "start"),
+    ({"entities_dates": {"start": "2025-12-30", "stride": 2}}, "stride"),
+    ({"entities_dates": {"start": "2025-12-30", "notes": "x"}}, "notes"),
+    ({"entities_dates": {"start": "20251230"}}, "start"),
+    ({"entities_dates": {"start": "2025-13-40"}}, "start"),
+    ({"entities_dates": {"start": 20251230}}, "start"),
+    ({"entities_dates": {"start": "2025-12-30", "lag_days": -1}}, "lag_days"),
+    ({"entities_dates": {"start": "2025-12-30", "lag_days": 1.5}}, "lag_days"),
+    ({"entities_dates": {"start": "2025-12-30", "lag_days": True}}, "lag_days"),
+    ({"entities_dates": {"start": "2026-01-03", "lag_days": 1}}, "after"),
+    ({"entities": ["AAA"]}, "exactly one"),
+    ({"entities_file": "/abs/u.json", "entities_sha256": "0" * 64}, "exactly one"),
+    ({"entities_key": "dates"}, "entities_key needs"),
+    ({"entities_sha256": "0" * 64}, "entities_sha256 needs"),
+])
+def test_entities_dates_is_default_deny_and_exclusive(dates_config, patch, needle):
+    with pytest.raises(AssetError, match=needle):
+        HttpBlobsConnector().check({**dates_config, **patch})
+
+
+def test_none_of_the_three_entity_sources_refuses(dates_config):
+    del dates_config["entities_dates"]
+    with pytest.raises(AssetError, match="exactly one"):
+        HttpBlobsConnector().check(dates_config)
+
+
+def test_acquisition_advances_across_live_runs(root, registry, server, dates_config, clock):
+    vid = registry.register("source_config", {
+        "name": "http", "catalog_source": "http-src", "connector": "httpblobs",
+        "config": dates_config}, origin="test")
+    registry.transition(vid, "active", origin="test")
+    _publish(server, *BACKFILL_DAYS, "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06")
+    first = run_acquisition(root, registry, "http", "files", "live")
+    assert first["files"] == 7  # the four backfill days it re-tries, then the three due and first["state_saved"]
+    idle = run_acquisition(root, registry, "http", "files", "live")
+    assert idle["snapshot"] is None and idle["files"] == 0
+    clock[0] = "2026-01-07T00:00:01+00:00"
+    nxt = run_acquisition(root, registry, "http", "files", "live")
+    assert nxt["files"] == 1
+    assert "/chart/2026-01-06" == _paths(server)[-1]
+
+
+# -- give_up_days: a day the vendor never publishes stops blocking live (ADR-0266) --
+
+
+def _log_text(msgs):
+    return " ".join(m["message"] for m in _by(msgs, "LOG"))
+
+
+def test_give_up_days_defaults_to_the_named_constant(dates_config):
+    assert httpblobs.DEFAULT_GIVE_UP_DAYS == 7
+    assert HttpBlobsConnector().resolve_knobs(dates_config)["dates"]["give_up_days"] == 7
+
+
+def test_a_day_still_refused_past_give_up_days_is_recorded_absent_and_passed(server, dates_config, clock):
+    dates_config.update(max_refused=1, entities_dates={**DATES, "give_up_days": 2})
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-03", "2026-01-05", "2026-01-06")  # 01-04 never published
+    clock[0] = "2026-01-07T03:00:00+00:00"  # live ends 01-06; 01-04 is 3 days old, over 2
+    msgs = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")
+    state = msgs[-1]["state"]
+    assert state["through"] == "2026-01-06" and state["absent"] == ["2026-01-04"]
+    assert "2026-01-04" in _log_text(msgs) and "giving up" in _log_text(msgs)
+
+
+def test_a_refused_day_is_not_given_up_before_it_is_older_than_give_up_days(server, dates_config, clock):
+    dates_config.update(max_refused=1, entities_dates={**DATES, "give_up_days": 2})
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-03", "2026-01-05")  # clock 01-06: 01-04 is exactly 2 days old
+    msgs = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")
+    assert msgs[-1]["state"]["through"] == "2026-01-03" and msgs[-1]["state"]["absent"] == []
+    assert "giving up" not in _log_text(msgs)
+
+
+def test_absent_days_are_never_refetched_and_never_count_toward_max_refused(server, dates_config, clock):
+    dates_config.update(max_refused=1, entities_dates={**DATES, "give_up_days": 2})
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-03", "2026-01-05", "2026-01-06", "2026-01-07")
+    clock[0] = "2026-01-07T03:00:00+00:00"
+    state = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")[-1]["state"]
+    del server.hits[:]
+    clock[0] = "2026-01-08T03:00:00+00:00"
+    msgs = _read(HttpBlobsConnector(), {**dates_config, "max_refused": 0}, state=state, mode="live")
+    assert _paths(server) == ["/chart/2026-01-07"]
+    assert msgs[-1]["state"]["absent"] == ["2026-01-04"] and msgs[-1]["state"]["through"] == "2026-01-07"
+
+
+def test_only_the_old_refused_days_are_given_up_while_a_young_one_still_blocks(server, dates_config, clock):
+    dates_config.update(max_refused=2, entities_dates={**DATES, "give_up_days": 2})
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-04", "2026-01-06")  # 01-03 old, 01-05 young, both unpublished
+    clock[0] = "2026-01-07T03:00:00+00:00"
+    state = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")[-1]["state"]
+    assert state["absent"] == ["2026-01-03"] and state["through"] == "2026-01-04"
+
+
+@pytest.mark.parametrize("absent", ["2026-01-04", [20260104], ["soon"], None])
+def test_a_malformed_live_absent_list_refuses(server, dates_config, clock, absent):
+    _publish(server, *BACKFILL_DAYS)
+    state = dict(_read(HttpBlobsConnector(), dates_config)[-1]["state"], through="2026-01-02", absent=absent)
+    with pytest.raises(AssetError, match="absent"):
+        _read(HttpBlobsConnector(), dates_config, state=state, mode="live")
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, "7"])
+def test_give_up_days_is_validated(dates_config, value):
+    with pytest.raises(AssetError, match="give_up_days"):
+        HttpBlobsConnector().check({**dates_config, "entities_dates": {**DATES, "give_up_days": value}})
+
+
+def test_a_permanently_missing_run_does_not_trip_max_refused_once_old(server, dates_config, clock):
+    """Four never-published days with max_refused 3 must not stall every live pull."""
+    dates_config.update(max_refused=3, entities_dates={**DATES, "give_up_days": 3})
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-07", "2026-01-08", "2026-01-09")  # 01-03..01-06 never published
+    clock[0] = "2026-01-10T03:00:00+00:00"  # ages 7,6,5,4: all over give_up_days 3
+    msgs = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")
+    state = msgs[-1]["state"]
+    assert state["through"] == "2026-01-09"
+    assert state["absent"] == ["2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06"]
+    assert _log_text(msgs).count("giving up") == 4
+
+
+def test_only_young_refusals_count_toward_max_refused(server, dates_config, clock):
+    dates_config.update(max_refused=1, entities_dates={**DATES, "give_up_days": 3})
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-03", "2026-01-08")  # 01-04..01-06 old, 01-07 and 01-09 young, all missing
+    clock[0] = "2026-01-10T03:00:00+00:00"
+    with pytest.raises(AssetError, match="max_refused"):
+        _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")  # 2 young > 1
+    _publish(server, "2026-01-09")
+    msgs = _read(HttpBlobsConnector(), dates_config, state=seeded, mode="live")  # 1 young + 3 old
+    assert msgs[-1]["state"]["through"] == "2026-01-06"
+    assert msgs[-1]["state"]["absent"] == ["2026-01-04", "2026-01-05", "2026-01-06"]
+
+
+def test_a_day_that_blocks_is_not_logged_as_given_up(server, dates_config, clock):
+    dates_config.update(max_refused=1, entities_dates={**DATES, "give_up_days": 2})
+    seeded = _seeded(server, dates_config)
+    _publish(server, "2026-01-03", "2026-01-05")  # clock 01-06: 01-04 is 2 days old, still blocking
+    assert "giving up" not in _log_text(_read(HttpBlobsConnector(), dates_config, state=seeded,
+                                              mode="live"))

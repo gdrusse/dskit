@@ -123,7 +123,12 @@ BINANCE_SOURCES = {
         "ETHBVOLUSDT-BVOLIndex-{entity}.zip",
         "dskit.onboarding.libs.zipcsv:ZipCsvToParquet"),
 }
-DATES_FILE = "binance_vision_dates.json"
+#: The day window the four Binance sources declare (ADR-0266), restated here and not read from the configs:
+#: the first BVOL day, a one-day lag (a day's file appears after the day ends) and the last day the retired
+#: ``binance_vision_dates.json`` listed. ``DAYS_SHA256`` is the digest of that list as JSON, so the backfill
+#: set provably equals the one the store already holds and re-registering re-pulls nothing.
+BINANCE_START, BINANCE_LAG_DAYS, BINANCE_LAST_DAY, BINANCE_DAY_COUNT = "2023-06-20", 1, "2026-10-11", 1210
+DAYS_SHA256 = "26f739285124b12bd17dacc66a313c9ec3467236dd6450dd642d25381736c164"
 #: registration configs for tables a run of this child derives and a later run reads (localtables)
 DERIVED_SOURCES = ("source-features-15m.json", "source-features-hourly.json", "source-panel-minute.json",
                    "source-panel-minute-w4.json", "source-panel-minute-w5.json")
@@ -312,8 +317,10 @@ def test_binance_sources_pass_default_deny_and_resolve_their_knobs(name, child_r
     knobs = connector.resolve_knobs(config)
     assert knobs["url_template"] == url
     assert knobs["transform"] == transform
-    dates = _load(DATES_FILE)["dates"]
-    assert knobs["entities"] == dates
+    dates = knobs["entities"]
+    assert (dates[0], dates[-1], len(dates)) == (BINANCE_START, BINANCE_LAST_DAY, BINANCE_DAY_COUNT)
+    assert hashlib.sha256(json.dumps(dates).encode()).hexdigest() == DAYS_SHA256, (
+        "the backfill set must equal the retired dates file's list, so the declaration digest is unchanged")
     assert knobs["stream"] == "files"
     assert knobs["paths"][dates[0]] == {
         "relpath_template": f"{dates[0]}.parquet", "raw_relpath_template": f"_raw/{dates[0]}.zip"}
@@ -321,12 +328,11 @@ def test_binance_sources_pass_default_deny_and_resolve_their_knobs(name, child_r
 
 def test_binance_sources_agree_where_they_must(child_root_env):
     configs = [_load(name) for name in BINANCE_SOURCES]
-    for knob in ("entities_file", "entities_key", "entities_sha256", "as_of", "headers",
+    for knob in ("entities_dates", "as_of", "headers",
                  "throttle_s", "timeout", "max_retries", "max_bytes", "stream",
                  "relpath_template", "raw_relpath_template", "transform"):
         assert len({json.dumps(c[knob], sort_keys=True) for c in configs}) == 1, knob
-    with open(_path(DATES_FILE), "rb") as handle:
-        assert configs[0]["entities_sha256"] == hashlib.sha256(handle.read()).hexdigest()
+    assert configs[0]["entities_dates"] == {"start": BINANCE_START, "lag_days": BINANCE_LAG_DAYS}
 
 
 #: HEAD sweep of every URL on 2026-10-06 (data.binance.vision answered 404 NoSuchKey): missing days
@@ -352,12 +358,15 @@ def test_max_refused_covers_the_measured_missing_days_with_headroom_and_the_note
         assert day in config["notes"], f"{name}: the notes must list the missing range ending {day}"
 
 
-def test_binance_dates_are_whole_consecutive_utc_days_ending_before_as_of():
-    dates = [datetime.date.fromisoformat(d) for d in _load(DATES_FILE)["dates"]]
+@pytest.mark.parametrize("name", sorted(BINANCE_SOURCES))
+def test_binance_backfill_is_whole_consecutive_utc_days_ending_before_as_of(name, child_root_env):
+    knobs = HttpBlobsConnector().resolve_knobs(_load(name))
+    dates = [datetime.date.fromisoformat(d) for d in knobs["entities"]]
     assert dates[0] == datetime.date(2023, 6, 20), "the BVOL archive starts here; klines go further back"
     assert all(b - a == datetime.timedelta(days=1) for a, b in zip(dates, dates[1:]))
-    as_of = datetime.datetime.fromisoformat(_load("source-binance-btcusdt-1m.json")["as_of"])
+    as_of = datetime.datetime.fromisoformat(_load(name)["as_of"])
     assert dates[-1] < as_of.date(), "a day's file is published after the day ends"
+    assert knobs["dates"]["backfill_end"] == dates[-1] == as_of.date() - datetime.timedelta(days=BINANCE_LAG_DAYS)
 
 
 @pytest.mark.parametrize("name", sorted(BINANCE_SOURCES))

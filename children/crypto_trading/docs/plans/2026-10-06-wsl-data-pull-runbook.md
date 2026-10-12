@@ -66,6 +66,8 @@ pull kalshi-crypto-candles-btc candles    suite-kalshi-crypto-candles.json  # ~1
 pull kalshi-crypto-candles-eth candles    suite-kalshi-crypto-candles.json  # ~1.25 h
 ```
 
+Binance days advance without an edit: the four sources declare `entities_dates` (from 2023-06-20, `lag_days` 1). The backfill above is the fixed history through `as_of` minus one day. To advance, run the same `pull` helper with `live` as its fourth word, for example `pull binance-btcusdt-1m files suite-binance-files.json live`, then the other three. It fetches the days since that source's live checkpoint through yesterday UTC and validates the snapshot; the first live pull also re-tries the last week of the backfill, in case a refused day has been published since. A day Binance has not published is a refused row and is retried by each live pull until it is a week old, then given up on and recorded `absent`. Re-registering with a changed `as_of` restarts the live checkpoint at the new backfill end, so run `backfill` first then.
+
 Times are estimates (about 0.4 s a Kalshi request). A failed pull commits nothing: rerun it (stop WSL sleeping). `block` names
 the tripped rule: amend the suite deliberately (a new hash), never to get green.
 

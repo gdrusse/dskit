@@ -175,8 +175,8 @@ crypto_trading/           # tier-3 code: connectors.py, nodes.py, and the four
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample, plus stage A:
                        #   source-kalshi-crypto[-candles-*|-books-*] /
-                       #   source-binance-* (zip layouts in transform_params) /
-                       #   binance_vision_dates / suite-kalshi-crypto-* /
+                       #   source-binance-* (zip layouts in transform_params;
+                       #   entities_dates advance in live mode) / suite-kalshi-crypto-* /
                        #   suite-binance-files; history and restwindow:
                        #   source-kalshi-history-* / source-coinbase-* /
                        #   source-deribit-* with a suite each (suite-kalshi-history-*,
