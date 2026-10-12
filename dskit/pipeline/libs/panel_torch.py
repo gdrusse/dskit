@@ -1568,7 +1568,7 @@ class PanelHorizonFairValue(Node):
 
         rows = np.array([s.panel_row for s in chunk], dtype=np.int64)
         dist = forecaster.forecast(panel, rows, self.params["chunk_rows"])
-        if dist.shape != (len(chunk), len(panel.horizons)) and not (dist.n_rows == 1 and dist.shape[1] == len(panel.horizons)):
+        if dist.shape != (len(chunk), len(panel.horizons)):
             raise ValueError(f"{self.key}: the forecaster returned {dist.shape} for {len(chunk)} rows and "
                              f"{len(panel.horizons)} panel horizons")
         width = max(len(s.levels) for s in chunk)

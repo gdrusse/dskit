@@ -271,7 +271,7 @@ def model(tmp_path_factory):
     return {"panel": panel, "artifact": out["artifact_path"], "hash": sidecar["state_hash"], "forecaster": out["model"]}
 
 
-def shipped_doc(store, tmp_path, model, *, train_end=None):
+def shipped_doc(store, tmp_path, model, *, pin=True):
     """The shipped document with only placement moved: the store root, the panel and model paths, the output path."""
     doc = copy.deepcopy(DOC)
 
@@ -288,7 +288,9 @@ def shipped_doc(store, tmp_path, model, *, train_end=None):
 
     reroot(doc)
     gru = doc["pipeline"]["fair_gru"]["params"]
-    gru["panel"]["relpath"], gru["artifact"], gru["state_hash"] = model["panel"], model["artifact"], model["hash"]
+    gru["panel"]["relpath"], gru["artifact"] = model["panel"], model["artifact"]
+    if pin:
+        gru["state_hash"] = model["hash"]
     out = tmp_path / "w4-table"
     out.mkdir(exist_ok=True)
     doc["pipeline"]["write"]["params"]["path"] = str(out / os.path.basename(doc["pipeline"]["write"]["params"]["path"]))
@@ -297,11 +299,11 @@ def shipped_doc(store, tmp_path, model, *, train_end=None):
     return path
 
 
-def run(store, tmp_path, model, monkeypatch):
+def run(store, tmp_path, model, monkeypatch, *, pin=True):
     from dskit.pipeline.libs.array_panel import ArrayPanel
 
     monkeypatch.setattr(ArrayPanel, "from_source", classmethod(lambda cls, spec: cls.open(spec["relpath"])))
-    document = replace(load_document(str(shipped_doc(store, tmp_path, model))), outputs=OutputsConfig(run_root=str(tmp_path / "runs")))
+    document = replace(load_document(str(shipped_doc(store, tmp_path, model, pin=pin))), outputs=OutputsConfig(run_root=str(tmp_path / "runs")))
     return run_document(document, asof="2026-09-15")
 
 
@@ -361,6 +363,13 @@ def test_the_grid_is_monotone_in_trades_and_every_margin_reports_the_same_rows(r
         assert {"pnl_total", "pnl_mean", "pnl_se", "pnl_se_event", "n_trades", "hit_rate"} <= set(cell)
 
 
+def test_the_run_refuses_while_the_model_hash_is_the_shipped_placeholder(tmp_path, monkeypatch, model):
+    """Until runbook step 5 pins the refit's hash, the document cannot price a single row."""
+    assert DOC["pipeline"]["fair_gru"]["params"]["state_hash"].startswith("<")
+    result = run(build_world(tmp_path, monkeypatch), tmp_path, model, monkeypatch, pin=False)
+    assert result.state != "ran" and "state_hash" in str(result.error), (result.state, result.error)
+
+
 def test_a_decision_the_training_could_have_seen_stops_the_run(tmp_path, monkeypatch, model):
     """Moving the document's model to one that claims to be trained past the decisions makes the whole run refuse."""
     import torch
@@ -414,3 +423,51 @@ def test_runbook_step_7_reads_every_margin_with_its_t_statistic(ran, tmp_path, m
     assert lines and {line.split()[1] for line in lines} <= {f"{c / 100:.2f}" for c in MARGINS_CENTS}, lines
     assert any("fair_gru" in line for line in lines) or any("fair_rms" in line for line in lines), "the model columns are printed"
     assert all(" t " in line and "hit" in line for line in lines)
+
+
+def test_runbook_step_8_compares_models_on_common_trades_and_selects_on_the_executable_price(ran, tmp_path, monkeypatch, capsys):
+    import glob
+    import re
+    import shutil
+
+    from test_runbook import snippet
+
+    _, result = ran
+    table = tmp_path / "home" / "data" / "crypto_trading" / "w4-take"
+    table.mkdir(parents=True)
+    for source in glob.glob(str(tmp_path / "w4-table" / "decision_features-*.jsonl")):
+        shutil.copy(source, table)
+    (tmp_path / "configs").mkdir(exist_ok=True)
+    shutil.copy(os.path.join(CONFIGS, "run-w4-take.json"), tmp_path / "configs" / "run-w4-take.json")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    exec(compile(snippet("# 8. The same trades"), "B8-8", "exec"), {})
+    out = capsys.readouterr().out.splitlines()
+    pattern = re.compile(r"(mid|exec)\s+(own|common)\s+margin ([\d.]+) (\w+)\s+trades\s+(\d+) pnl\s+(-?[\d.]+) mean ([+-][\d.]+) se (\S+) t (\S+) hit ([\d.]+)")
+    cells = {m.group(1, 2, 3, 4): m for m in map(pattern.match, out) if m}
+    assert out[0].startswith("rows with a two-sided quote") and cells
+    assert any("fair_gru" in line for line in out[:1])
+    # the mid rule on a model's own rows is the dskit scorer's take rule: same trades, same total, same day-block error
+    compared = 0
+    for cents in MARGINS_CENTS:
+        for cell in result.outputs[f"take_m{cents:02d}"]["scores"]:
+            if cell["group"] == "all" and cell["bucket"] == "all":
+                mine = cells.get(("mid", "own", f"{cents / 100:.2f}", cell["model"]))
+                if cell["n_trades"] == 0:
+                    assert mine is None
+                else:
+                    compared += 1
+                    assert int(mine.group(5)) == cell["n_trades"] and float(mine.group(6)) == pytest.approx(cell["pnl_total"], abs=0.006)
+                    if cell["pnl_se"] is not None:
+                        assert float(mine.group(8)) == pytest.approx(cell["pnl_se"], abs=6e-5)
+    assert compared >= 4, "the fixture trades, so the comparison with the scorer is not vacuous"
+    # a common set is a subset of every model's own set; an exec trade pays a net edge above the margin by construction
+    for (rule, kind, margin, model), cell in cells.items():
+        if kind == "common":
+            assert int(cell.group(5)) <= int(cells[(rule, "own", margin, model)].group(5))
+    rows = result.outputs["fees"]["records"]
+    for margin in (0.0, 0.02):
+        want = sum(1 for r in rows if r["two_sided"] and r["fair_gru"] is not None and (
+            r["fair_gru"] - r["yes_ask"] - r["fee_buy_yes"] > margin or r["yes_bid"] - r["fair_gru"] - r["fee_buy_no"] > margin))
+        got = cells.get(("exec", "own", f"{margin:.2f}", "fair_gru"))
+        assert (int(got.group(5)) if got else 0) == want

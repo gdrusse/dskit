@@ -384,7 +384,7 @@ python -m dskit.onboarding acquire --root "$OB" --source panel-minute --stream f
 
 A simple profitability test: trade the 15-minute BTC/ETH binaries over W4 (2026-08-01 to 2026-09-15; W5 is never read) at the touch, one
 contract, with the frozen GRU's P(YES) beside the three closed-form fair values, at a margin grid fixed in the document. Steps 1 to 3
-use no GPU; step 4 is the W3 refit (GPU); 5 to 7 are cheap. Run each from section 0's shell.
+use no GPU; step 4 is the W3 refit (GPU); 5 to 8 are cheap. Run each from section 0's shell.
 
 ```bash
 # 1. Build the W4 panel to a NEW directory (minute-w1w2 is never touched). Needs the Binance days to 2026-09-14 in the store.
@@ -449,11 +449,53 @@ for path in sorted(glob.glob("pipeline_runs/crypto-w4-take-*/artifacts/take_m*/b
             print(f"margin {margin:.2f} {c['model']:9} {c['group']:16} trades {c['n_trades']:5} pnl {c['pnl_total']:9.2f} "
                   f"mean {c['pnl_mean']:+.4f} se {c['pnl_se'] or float('nan'):.4f} t {t:+.2f} hit {c['hit_rate']:.3f}")
 PY
+# 8. The same trades for every model, and selection on the executable price: from the table step 6 wrote, the dskit scorer unchanged.
+#     rule mid = the scorer's (select on fair - mid, pay the ask / 1 - bid); rule exec = select on fair - ask - fee > margin (YES) or
+#     bid - fair - fee > margin (NO). set own = rows that model priced; set common = rows ALL models priced (identical trades to compare).
+python - <<'PY'
+import glob, json, math, os
+doc = json.load(open("configs/run-w4-take.json"))["pipeline"]
+margins = sorted(n["params"]["margin"] for k, n in doc.items() if k.startswith("take_m"))
+models = doc["take_m00"]["params"]["model_fields"]
+block_ms = doc["take_m00"]["params"]["cluster_block_s"] * 1000
+path = max(glob.glob(os.path.expanduser("~/data/crypto_trading/w4-take/decision_features-*.jsonl")), key=os.path.getmtime)
+num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+rows = [r for r in map(json.loads, open(path)) if r.get("two_sided") is True and all(num(r.get(k)) for k in
+        ("yes_bid", "yes_ask", "mid", "fee_buy_yes", "fee_buy_no", "label", "close_ms"))]
+common = [r for r in rows if all(num(r.get(m)) for m in models)]
+
+def trade(r, fair, margin, rule):
+    yes_edge, no_edge = (fair - r["mid"], r["mid"] - fair) if rule == "mid" else (fair - r["yes_ask"], r["yes_bid"] - fair)
+    if yes_edge > r["fee_buy_yes"] + margin:
+        return r["label"] - r["yes_ask"] - r["fee_buy_yes"]
+    if no_edge > r["fee_buy_no"] + margin:
+        return (1 - r["label"]) - (1 - r["yes_bid"]) - r["fee_buy_no"]
+    return None
+
+def stats(pairs):   # (block, pnl) pairs -> n, total, mean, day-block se, t, hit
+    n, blocks = len(pairs), {}
+    for block, value in pairs:
+        blocks.setdefault(block, []).append(value)
+    mean = sum(v for _, v in pairs) / n
+    se = math.sqrt(len(blocks) / (len(blocks) - 1) * sum((sum(g) - mean * len(g)) ** 2 for g in blocks.values())) / n if len(blocks) > 1 else float("nan")
+    return n, mean * n, mean, se, mean / se if se else float("nan"), sum(v > 0 for _, v in pairs) / n
+
+print(f"rows with a two-sided quote {len(rows)}; priced by all models {len(common)}; " + "; ".join(f"{m} {sum(num(r.get(m)) for r in rows)}" for m in models))
+for rule in ("mid", "exec"):
+    for label, universe in (("own", None), ("common", common)):
+        for margin in margins:
+            for model in models:
+                pairs = [(int(r["close_ms"] // block_ms), p) for r in (universe or [r for r in rows if num(r.get(model))])
+                         if (p := trade(r, r[model], margin, rule)) is not None]
+                if pairs:
+                    n, total, mean, se, t, hit = stats(pairs)
+                    print(f"{rule:4} {label:6} margin {margin:.2f} {model:9} trades {n:5} pnl {total:9.2f} mean {mean:+.4f} se {se:.4f} t {t:+.2f} hit {hit:.3f}")
+PY
 ```
 
 Caveats: taker only; quotes are 1-minute candle closes, not a book (no depth, no queue); today's fee schedule applied to history, for ONE
 contract (rounded up to the cent); the fair value ignores the few seconds to the fill and the 60-second settlement average; one model, one
-seed, 45 days. The readers scan the whole acquired Kalshi streams (as `run-features-15m.json` does) but every market, anchor and candle at or
+seed, 45 days. The scorer selects on the mid but pays the ask (or 1 - bid): its realized hurdle is the margin minus half the spread, which is why step 8 also selects on the executable price. The readers scan the whole acquired Kalshi streams (as `run-features-15m.json` does) but every market, anchor and candle at or
 after 2026-09-15 is cut before any join. Step 4 and the take run each read W4 once; a change after seeing it is a new decision.
 
 ## Known issues

@@ -231,6 +231,17 @@ def test_a_row_the_model_cannot_window_is_named(tmp_path, path):
     assert out["records"][0]["fair_status"] == "window_gap"
 
 
+def test_a_one_row_distribution_for_a_multi_row_chunk_is_refused(tmp_path, path):
+    """A row-constant distribution would price every row from one forecast: refused, never broadcast."""
+    class OneRow(_Stub):
+        def forecast(self, panel, rows, chunk_rows):
+            return super().forecast(panel, rows[:1], chunk_rows)
+
+    panel, rows = val_rows(path, count=3)
+    with pytest.raises(ValueError, match="returned"):
+        run(spec(path), [decision(panel, r) for r in rows], tmp_path, model=OneRow())
+
+
 def test_a_non_finite_cdf_is_refused_not_dropped(tmp_path, path):
     panel, rows = val_rows(path, count=2)
     with pytest.raises(ValueError, match="finite"):
