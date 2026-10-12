@@ -20,6 +20,7 @@ from .kalshi_rows import CandleRows, FeeRows, MarketRows
 from .market_state import MarketState
 from .minute_features import MinuteFeatures
 from .nodes import NODE_KINDS, EnrichRecords, SampleRecords
+from .sizing import KalshiBinaryKellyMIO, KalshiKellyBacktest
 from .spot_features import SpotFeatures
 
 __all__ = [
@@ -29,6 +30,8 @@ __all__ = [
     "EnrichRecords",
     "FeeColumns",
     "FeeRows",
+    "KalshiBinaryKellyMIO",
+    "KalshiKellyBacktest",
     "MarketRows",
     "MarketState",
     "MinuteFeatures",

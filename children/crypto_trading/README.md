@@ -254,6 +254,7 @@ crypto_trading/
 │   ├── minute_features.py # stage B: per-minute feature families + 15-horizon labels (no Kalshi data)
 │   ├── feature_selection.py # predictor: AblationSelect, the keep rule over per-arm walk-forward fold scores, group-to-column grammar
 │   ├── fees.py            # stage B: FeeColumns, the Kalshi fee-type mapping over dskit's fee mechanics
+│   ├── sizing.py          # fractional-Kelly sizing: KalshiBinaryKellyMIO (a ScenarioUtilitySolve subclass), the sequential KalshiKellyBacktest
 │   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
 │   ├── nodes.py           # pipeline seam: node kinds, default-deny params
 │   ├── execution.py       # production seam: the venue executor (fail-closed)
@@ -286,6 +287,7 @@ crypto_trading/
 │   ├── run-features-hourly.json          # stage B: the hourly ladders, same nodes (own anchors and sources)
 │   ├── source-features-hourly.json       # stage B: localtables registration of the hourly table
 │   ├── run-w4-take.json                  # W4 take test: run-features-15m's decision table over W4 + the GRU's P(YES) (PanelHorizonFairValue), one scorer per margin
+│   ├── run-w4-kelly.json                 # W4 fractional-Kelly sizing (half and quarter) of the blend's trades, beside one contract each
 │   ├── run-panel-build-w4.json / source-panel-minute-w4.json # the same panel built to W4's end (new directory) and its own blob source
 │   ├── production-args-w4.json           # args overlay: the W3 refit as one W4 block on that panel (workflow-production.json)
 │   ├── features-arms.json                # predictor: family- and scale-ablation arms (kept-family and kept-scale lists), pinned to the node
@@ -323,6 +325,7 @@ crypto_trading/
     ├── test_features_pipeline.py # run-features-15m.json end to end, publish and read back
     ├── test_migration_golden.py # the dskit migration changed no row, column or score
     ├── test_fees.py       # the Kalshi fee mapping, schedule reader, FeeColumns
+    ├── test_sizing.py     # Kelly sizing vs a brute-force optimum, money conservation, venue rows, no look-ahead, config pins
     ├── test_kalshi_rows.py # readers: labels, exclusions, seconds to ms, the settlement value
     ├── test_history_sources.py # kalshi_history sources and suites against a scripted venue
     ├── test_restwindow_sources.py # Coinbase and Deribit sources and suites against scripted vendors
