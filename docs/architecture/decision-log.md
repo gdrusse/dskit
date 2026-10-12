@@ -31003,3 +31003,39 @@ The document `children/index_options/configs/run-forecast-dispersion-ic.json` co
 - warmup and status cases, group fits, transform registry and clip, default-deny params.
 
 The child test pins `run-w4-blend.json` to the lead map's nodes.
+
+## ADR-0265 — ThetaData research program: pre-registered hypotheses H0–H7 and the nodes that run them
+
+**Status:** APPROVED 2026-10-12 (owner: "I give approval for any ADRs to run these tests ... work within our framework. Write in Sonnet. Review in Haiku"). Rules below are fixed BEFORE any feature file exists; nothing here is tuned after a run.
+
+**Context.** ADR-0263 lands about 10 years (2016-01-04 to 2025-12-31) of daily option chains for 414 tested names, 12 index roots, 303 more core names and a partial next tier. Our 2024–25 tests had about 8–10 independent 31-day windows (A1136–A1152), so none could prove a modest edge. A Fable research pass (2026-10-12) ranked what 10 years can test. Time-series harvests (short premium, condors, put-write) need a Sharpe of about 0.8 to reach t 2.5 in 10 years, so they are MEASURED, not proven; cross-sectional and event tests gain from breadth and are where the data has power.
+
+**Decision.**
+
+1. **Split.** Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed. 2024–25 is a labelled subperiod (already inspected), never the sole basis of a pass. 2026 stays sealed; one confirmation of whatever passes validation needs a separate owner decision.
+2. **Universe gate.** A root enters a test only from its first date with bid > 0 (the census, H-census). Roots are stitched across renames (FB→META, SQ→XYZ, UTX/RTN→RTX). Liquidity terciles come from the census (median quoted contracts per date), fixed on development years only.
+3. **Cost model.** Buy at the ask, sell at the bid (NBBO at the 17:15 ET report); no mid fills. Marks at NBBO mid; `close` is never a mark (a different clock). Our own Black-76 implied vol from the mid and the parity forward; vendor greeks and `implied_vol` are recorded, not used (4.3% are placeholders).
+4. **Multiple testing.** Benjamini–Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim. Secondary analyses are reported, never promoted.
+5. **Hypotheses** (each: one primary statistic, pre-declared sign, pass rule on development AND validation separately):
+   - **H-census** (gate, no test): per root first quoted date; share null/zero/crossed/locked; `iv_error` 100 share; rows per date by year; non-standard strikes by month versus the split inventory; `underlying_price` against the Alpaca close; overlap with the Alpaca chains. Output freezes the universe.
+   - **H0** HAR-versus-implied straddle richness (the open ledger question): per-date Spearman IC of HAR scale / implied straddle against |31-day move| / implied; pass IC > 0, Newey–West t >= 2.5, quintile spread net of NBBO costs > 0.
+   - **H1** option-implied features → next 5- and 21-day stock return: 25-delta put-call IV spread, risk-reversal skew, 30/90-day term slope, open-interest put/call ratio and its 5-day change, volume/OI. Per-stamp Spearman IC, sign declared per feature before the run, NW t >= 2.5; decile spread > 10 bp round trip; BH across the 6 features.
+   - **H2** earnings: (a) implied move (front straddle) minus realized gap move; (b) long ATM straddle bought 3 sessions before the event, sold the session after, at NBBO. Events are detected from the chain itself (front-month IV collapse above a threshold frozen on 2016–2019 dates). Pass: mean > 0, t clustered by event week >= 2.5, same sign in both halves, terciles by liquidity.
+   - **H3** cross-section of 31-day ATM straddle returns sorted by RV−IV gap, term slope, skew, idiosyncratic vol: quintile long-short net of actual half-spreads > 0, t >= 2.5, BH across 4 sorts.
+   - **H4** per-name variance risk premium (level, slope, regime via `VolRegimeSignals`) and weekly versus monthly: descriptive with CIs; the timing signal passes if gated-minus-ungated short-straddle return > 0, t >= 2.5.
+   - **H5** index harvests on SPX/SPXW/XSP at NBBO (put-write, 1DTE strangle/condor, 16/5-delta put spread, tail-hedge cost): report Sharpe with block-bootstrap CI; pass only if the lower 90% bound > 0.5. Measurement, not proof.
+   - **H6** dispersion (index versus equal-weight basket of tested names; equal-weight proxy stated): correlation premium > 0, t >= 2.5 in both halves.
+   - **H7** pin/expiry (return toward the max-open-interest strike versus a placebo strike) and a spread census of wide-spread names.
+6. **Closure.** Negative when every primary fails validation with the 90% interval excluding the economic minimum (stock IC 0.01; option long-short 0.5% of premium a month net; earnings straddle 1% net). Then no further daily-chain tests; the remaining avenue is intraday or flow data. Positive only when a primary passes development and validation and the sealed 2026 confirmation (separate owner decision).
+7. **Nodes, in dependency order** (each sweeps first, reuses the owner named; tier 2 `libs/` by import path, `NODE_KINDS` untouched; thin child configs; Sonnet writes, Haiku reviews, TDD, skeptic round before main):
+   1. `ChainCensus` (tier 2) over `ObservationStreamRows` → the H-census table.
+   2. `ChainDayFeatures` (tier 2) per (root, date, target DTE): parity forward (`OptionPriceCDF`'s step), our Black-76 IV at ATM and 25 delta from NBBO mid, skew, put-call IV spread, 30/90 slope, straddle ratio, half-spread over premium, OI and volume aggregates, 5-day OI change.
+   3. H0/H1 documents: existing `horizon-pairs` (`symbol_field`), `attach-by-identity`, `derive`, `CrossSectionIC`; Alpaca split-adjusted bars for realized moves.
+   4. `OptionStructureLedger` (tier 2, over `contracts.structure_credit/payoff/max_loss`): open a leg set at NBBO side prices, mark daily at mid, settle intrinsic or exit later; optional Black-76 delta hedge → H2(b), H3, H4, H5.
+   5. `ChainEventDetector` (tier 2): front-month IV collapse events → event dates used as `splits`.
+   6. `QuantileSortBook` (tier 1 `kinds_stats`, or `TrailingRank` + `derive`): per-stamp quantile long-short series with `CalendarBlockBootstrap` CI and BH → H1/H3 books.
+8. **Gate.** Nodes are built and tested on the landed sample first. No hypothesis document runs before the census output exists and its universe is committed. Development runs may start as tiers land; each validation run happens once.
+
+**Consequences.** Documents and configs are JSON; no domain constants in dskit. The census, features and ledger are generic (option chain rows in, tables out). A run that touches a 2026 date refuses: every document sets `end_before` 2026-01-01. Ledger rows and memos record each run, passing or failing.
+
+**Sweep** (2026-10-12, `ChainCensus ChainDayFeatures OptionStructureLedger ChainEventDetector QuantileSortBook chain census features`): to be repeated per node by its implementer before its first file; the nearest owners are `OptionPriceCDF`, `TradeBarFeatures.atm_straddle_ratio`, `VolRegimeSignals`, `CrossSectionIC`, `ordering.per_timestamp_ic`, `contracts.structure_*`, `stats.CalendarBlockBootstrap`.
