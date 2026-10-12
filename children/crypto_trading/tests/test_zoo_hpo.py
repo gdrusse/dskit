@@ -10,7 +10,7 @@ from datetime import date, timedelta
 import pytest
 from zoo_fakes import write_batch_status, write_lane
 
-from crypto_trading.zoo_hpo import Candidates, HpoPlan
+from crypto_trading.zoo_hpo import DEFAULT_N_DRAWS, KNOBS, Candidates, HpoPlan, SearchSpace
 from crypto_trading.zoo_lanes import main as lanes_main
 from crypto_trading.zoo_pick import ZooResults, file_sha256, hparams_sha256, load_recipe
 
@@ -38,8 +38,12 @@ def loaded():
     return load_recipe(RECIPE_PATH)
 
 
-def plan_for(loaded, cell="gru-crps_tail", scope="pooled"):
+def plan_for(loaded, cell="gru-crps_tail", scope="pooled", wide=False):
+    """The HPO plan of a pick; the bundles-only one (the recipe without ``hpo.space``) unless ``wide``."""
     recipe, lanes, _, _ = loaded
+    if not wide:
+        recipe = copy.deepcopy(recipe)
+        del recipe["hpo"]["space"]
     return HpoPlan(recipe, lanes, {"winner": winner(cell, scope)})
 
 
@@ -174,7 +178,7 @@ def test_the_cli_writes_manifests_the_workflow_plans(loaded, tmp_path, capsys):
     assert lanes_main(["hpo-manifest", "--pick", str(tmp_path / "zoo-pick.json"), "--out", str(out)]) == 0
     lines = []
     assert run_workflow(str(out), plan=True, out=lines.append) == 0
-    assert sum(1 for line in lines if line.startswith("lane ")) == 5 and not [x for x in lines if x.startswith("unfilled arg")]
+    assert sum(1 for line in lines if line.startswith("lane ")) == len(plan_for(loaded, wide=True).candidates.names()) == 5 + 16 and not [x for x in lines if x.startswith("unfilled arg")]
 
 
 def test_a_pick_without_a_winner_and_a_changed_recipe_are_refused(loaded, tmp_path):
@@ -184,6 +188,9 @@ def test_a_pick_without_a_winner_and_a_changed_recipe_are_refused(loaded, tmp_pa
     (tmp_path / "p.json").write_text(json.dumps(pick), encoding="utf-8")
     with pytest.raises(ValueError, match="recipe changed since the pick"):
         lanes_main(["hpo-manifest", "--pick", str(tmp_path / "p.json"), "--out", str(tmp_path / "m.json")])
+
+
+SLOW_DRAWS = {f"s{i:02d}": 5.0 for i in range(1, 17)}
 
 
 def candidate_tree(root, loaded, plan, means, objective="$score.metrics.weighted_crps", names=None, cutoffs=None):
@@ -242,9 +249,9 @@ def test_the_freeze_refuses_candidates_scored_on_other_folds(loaded, tmp_path):
 
 
 def test_the_hpo_pick_cli_needs_every_search_lane_ok_and_writes_hpo_frozen_json(loaded, tmp_path):
-    plan = plan_for(loaded)
+    plan = plan_for(loaded, wide=True)
     root = tmp_path / "search"
-    candidate_tree(root, loaded, plan, {"default": 1.0, "a": 1.1, "b": 0.9, "c": 0.8, "d": 0.95})
+    candidate_tree(root, loaded, plan, {"default": 1.0, "a": 1.1, "b": 0.9, "c": 0.8, "d": 0.95, **SLOW_DRAWS})
     lanes = [plan.lane(n, ln) for n in plan.candidates.names() for ln in plan.lane_names]
     pick = {"winner": winner("gru-crps_tail", "pooled"), "recipe": {"path": RECIPE_PATH, "sha256": file_sha256(RECIPE_PATH)}}
     (tmp_path / "zoo-pick.json").write_text(json.dumps(pick), encoding="utf-8")
@@ -256,7 +263,7 @@ def test_the_hpo_pick_cli_needs_every_search_lane_ok_and_writes_hpo_frozen_json(
     assert lanes_main(argv) == 0
     frozen = json.loads((tmp_path / "hpo-frozen.json").read_text(encoding="utf-8"))
     assert frozen["winner"] == "c" and frozen["pick_winner"]["cell"] == "gru-crps_tail-pooled" and frozen["recipe"] == pick["recipe"]
-    assert set(frozen["sources"]) == {"default", "a", "b", "c", "d"}
+    assert set(frozen["sources"]) == {"default", "a", "b", "c", "d", *SLOW_DRAWS}
 
 
 def test_the_evaluation_runs_the_default_and_the_frozen_winner_on_folds_5_to_14(loaded):
@@ -298,7 +305,7 @@ def test_the_evaluation_record_is_the_paired_tuned_minus_default_gap(loaded, tmp
 
 
 def test_hpo_pick_with_a_root_runs_the_same_all_ok_check_as_with_a_batch(loaded, tmp_path):
-    plan = plan_for(loaded)
+    plan = plan_for(loaded, wide=True)
     root = tmp_path / "search"
     candidate_tree(root, loaded, plan, {n: 1.0 for n in plan.candidates.names()})
     pick = {"winner": winner("gru-crps_tail", "pooled"), "recipe": {"path": RECIPE_PATH, "sha256": file_sha256(RECIPE_PATH)}}
@@ -312,3 +319,182 @@ def test_hpo_pick_with_a_root_runs_the_same_all_ok_check_as_with_a_batch(loaded,
         lanes_main(argv)
     write_batch_status(str(root), lanes)
     assert lanes_main(argv) == 0
+
+
+# --- hpo.space: the seeded, bounded random draw -------------------------------------------------------------------------------------------
+
+SPEC_DOMAINS = {"width": [32, 64, 128], "num_layers": [1, 2], "trunk_hidden": [[16], [32, 16], [64, 32]],
+                "dropout": {"low": 0.0, "high": 0.3, "log": False}, "lr": {"low": 1e-4, "high": 3e-3, "log": True},
+                "weight_decay": {"low": 1e-4, "high": 1e-1, "log": True}, "batch_size": [512, 1024]}
+DRAW_NAMES = [f"s{i:02d}" for i in range(1, 17)]
+
+
+def test_the_shipped_space_is_the_owners_default_domains_and_the_code_defaults_agree(loaded):
+    space = loaded[0]["hpo"]["space"]
+    assert space["knobs"] == SPEC_DOMAINS and space["n_draws"] == 16 == DEFAULT_N_DRAWS and type(space["seed"]) is int
+    assert {name: knob.domain for name, knob in KNOBS.items()} == SPEC_DOMAINS
+    assert SearchSpace({"seed": space["seed"]}).draws == SearchSpace(space).draws
+
+
+def test_draws_are_reproducible_from_the_seed_and_a_longer_run_keeps_the_earlier_draws():
+    first, again = SearchSpace({"seed": 3}), SearchSpace({"seed": 3})
+    assert first.draws == again.draws and first.names() == DRAW_NAMES
+    assert SearchSpace({"seed": 4}).draws != first.draws
+    longer = SearchSpace({"seed": 3, "n_draws": 20})
+    assert all(longer.draws[n] == first.draws[n] for n in DRAW_NAMES) and len(longer.names()) == 20 and longer.names()[-1] == "s20"
+
+
+def test_a_knobs_draws_do_not_depend_on_another_knobs_domain():
+    base = SearchSpace({"seed": 3})
+    narrowed = SearchSpace({"seed": 3, "knobs": {"lr": {"low": 1e-3, "high": 2e-3, "log": True}}})
+    for name in DRAW_NAMES:
+        assert {k: v for k, v in narrowed.draws[name].items() if k != "lr"} == {k: v for k, v in base.draws[name].items() if k != "lr"}
+
+
+def test_every_draw_stays_inside_its_domain_and_log_ranges_are_log_uniform():
+    space = SearchSpace({"seed": 11, "n_draws": 600})
+    draws = list(space.draws.values())
+    for knob in ("width", "num_layers", "trunk_hidden", "batch_size"):
+        assert {json.dumps(d[knob]) for d in draws} == {json.dumps(v) for v in SPEC_DOMAINS[knob]}, knob
+    for knob in ("dropout", "lr", "weight_decay"):
+        low, high = SPEC_DOMAINS[knob]["low"], SPEC_DOMAINS[knob]["high"]
+        values = [d[knob] for d in draws]
+        assert low <= min(values) and max(values) <= high, knob
+    geometric_mid = (1e-4 * 3e-3) ** 0.5
+    below = sum(d["lr"] < geometric_mid for d in draws) / len(draws)
+    assert 0.4 < below < 0.6, "lr is drawn log-uniformly: half the draws sit below the geometric midpoint"
+    assert sum(d["dropout"] < 0.15 for d in draws) / len(draws) == pytest.approx(0.5, abs=0.1)
+
+
+@pytest.mark.parametrize("space, message", [
+    ({}, "seed must be an integer"),
+    ({"seed": True}, "seed must be an integer"),
+    ({"seed": 1, "n_draws": 0}, "n_draws must be an integer >= 1"),
+    ({"seed": 1, "extra": 1}, "unknown keys"),
+    ({"seed": 1, "knobs": {"momentum": [0.9]}}, "unknown knobs"),
+    ({"seed": 1, "knobs": {"lr": {"low": 0.0, "high": 1.0, "log": True}}}, "legal ends"),
+    ({"seed": 1, "knobs": {"lr": {"low": 1e-3, "high": 1e-3}}}, "low < high"),
+    ({"seed": 1, "knobs": {"lr": {"low": 1e-3, "high": 1e-2, "scale": "log"}}}, "a range is"),
+    ({"seed": 1, "knobs": {"width": {"low": 8, "high": 16}}}, "expected a list of values"),
+    ({"seed": 1, "knobs": {"width": []}}, "non-empty list"),
+    ({"seed": 1, "knobs": {"width": [32, 0]}}, "legal values"),
+    ({"seed": 1, "knobs": {"dropout": {"low": 0.0, "high": 1.0}}}, "legal ends"),
+    ({"seed": 1, "knobs": {"trunk_hidden": [[]]}}, "legal values"),
+])
+def test_an_illegal_space_refuses(space, message):
+    with pytest.raises(ValueError, match=message):
+        SearchSpace(space)
+
+
+def test_a_draw_named_like_a_bundle_or_the_default_refuses(loaded):
+    hpo = copy.deepcopy(loaded[0]["hpo"])
+    hpo["candidates"]["s01"] = hpo["candidates"].pop("a")
+    with pytest.raises(ValueError, match="named like the default or a bundle"):
+        Candidates(hpo)
+
+
+def fits(loaded, cell, draw="s02"):
+    plan = plan_for(loaded, cell, "pooled", wide=True)
+    cells, record = plan.cells([draw])
+    lane = plan.lane(draw, plan.lane_names[0])
+    return loaded[1].cells()[plan.lane_names[0]]["fit"], cells[lane]["fit"], record[draw], plan.candidates.draw(draw)
+
+
+def test_a_gru_draw_ties_the_width_and_sets_the_depth_and_nothing_else_moves(loaded):
+    zoo, fit, record, draw = fits(loaded, "gru-crps_tail")
+    expected = copy.deepcopy(zoo)
+    expected["encoder"].update(width=draw["width"])
+    expected["encoder"]["arch_params"].update(hidden_size=draw["width"], num_layers=draw["num_layers"])
+    expected["trunk"].update(hidden=draw["trunk_hidden"], dropout=draw["dropout"])
+    expected.update(lr=draw["lr"])
+    expected["optimizer_params"]["weight_decay"] = draw["weight_decay"]
+    expected["loader"]["batch_size"] = draw["batch_size"]
+    assert fit == expected and record["skipped"] == {} and record["draw"] == draw
+    assert set(record["applied"]) == {"encoder.width", "encoder.arch_params.hidden_size", "encoder.arch_params.num_layers", "trunk.hidden",
+                                      "trunk.dropout", "lr", "optimizer_params.weight_decay", "loader.batch_size"}
+    assert (draw["width"], draw["num_layers"]) == (32, 2), "s02 of seed 20261011 (a pin that the shipped seed still draws what the notes say)"
+
+
+def test_a_cnn1d_draw_ties_the_width_and_skips_the_depth_with_a_reason(loaded):
+    zoo, fit, record, draw = fits(loaded, "cnn1d-crps")
+    assert fit["encoder"]["width"] == fit["encoder"]["arch_params"]["hidden_size"] == draw["width"]
+    assert fit["encoder"]["arch_params"]["dilations"] == zoo["encoder"]["arch_params"]["dilations"]
+    assert "num_layers" not in fit["encoder"]["arch_params"] and "arch_params.num_layers" in record["skipped"]["num_layers"]
+    assert "encoder.arch_params.num_layers" not in record["applied"]
+
+
+def test_a_patchtst_draw_sets_the_hf_encoders_d_model_and_skips_the_depth(loaded):
+    zoo, fit, record, draw = fits(loaded, "patchtst-nll")
+    assert fit["encoder"]["params"]["config"]["d_model"] == draw["width"]
+    expected = copy.deepcopy(zoo["encoder"])
+    expected["params"]["config"]["d_model"] = draw["width"]
+    assert fit["encoder"] == expected and set(record["skipped"]) == {"num_layers"}
+    assert record["applied"]["encoder.params.config.d_model"] == draw["width"]
+
+
+def test_an_mlp_draw_skips_both_encoder_knobs_and_sets_the_trunk_and_optimizer_ones(loaded):
+    zoo, fit, record, draw = fits(loaded, "mlp-pinball")
+    assert "encoder" not in fit and set(record["skipped"]) == {"width", "num_layers"}
+    assert all("no sequence encoder" in why for why in record["skipped"].values())
+    assert fit["trunk"]["hidden"] == draw["trunk_hidden"] and fit["lr"] == draw["lr"] and fit["head"] == zoo["head"]
+
+
+def test_the_draws_do_not_depend_on_the_picked_architecture(loaded):
+    gru, mlp = (plan_for(loaded, cell, wide=True).candidates.draw("s05") for cell in ("gru-crps", "mlp-pinball"))
+    assert gru == mlp
+
+
+def test_the_wide_search_manifest_has_5_plus_n_candidates_and_records_every_draw(loaded):
+    plan = plan_for(loaded, wide=True)
+    n = loaded[0]["hpo"]["space"]["n_draws"]
+    assert plan.candidates.names() == ["default", "a", "b", "c", "d", *DRAW_NAMES] and len(plan.candidates.names()) == 5 + n
+    args = plan.search_manifest("zoo-template.json")["args"]
+    assert args["arms"] == [f"{c}-gru-crps_tail-pooled" for c in plan.candidates.names()] and set(args["hpo"]["candidates"]) == set(plan.candidates.names())
+    space = SearchSpace(loaded[0]["hpo"]["space"])
+    assert args["hpo"]["space"] == space.record()
+    for name in DRAW_NAMES:
+        assert args["hpo"]["candidates"][name]["draw"] == space.draws[name]
+        assert args["cell"][f"{name}-gru-crps_tail-pooled"]["fit"]["lr"] == space.draws[name]["lr"]
+    assert "draw" not in args["hpo"]["candidates"]["a"] and "draw" not in args["hpo"]["candidates"]["default"]
+    assert plan_for(loaded).search_manifest("zoo-template.json")["args"]["hpo"].get("space") is None
+
+
+def test_a_wide_unpooled_search_has_both_asset_lanes_per_candidate(loaded):
+    args = plan_for(loaded, "patchtst-nll", "unpooled", wide=True).search_manifest("zoo-template.json")["args"]
+    assert len(args["arms"]) == 2 * 21 and args["arms"][-2:] == ["s16-patchtst-nll-btc", "s16-patchtst-nll-eth"]
+
+
+def test_a_drawn_winner_is_frozen_with_its_draw_and_the_space_and_ties_still_go_to_the_default(loaded, tmp_path):
+    plan = plan_for(loaded, wide=True)
+    names = plan.candidates.names()
+    means = {n: 1.0 for n in names}
+    candidate_tree(tmp_path / "tie", loaded, plan, means)
+    results = {n: ZooResults(str(tmp_path / "tie"), loaded[0], loaded[2], f"{n}-") for n in names}
+    assert plan.freeze(results)["winner"] == "default"
+    means["s07"] = 0.5
+    candidate_tree(tmp_path / "win", loaded, plan, means)
+    results = {n: ZooResults(str(tmp_path / "win"), loaded[0], loaded[2], f"{n}-") for n in names}
+    frozen = plan.freeze(results)
+    draw = SearchSpace(loaded[0]["hpo"]["space"]).draws["s07"]
+    lane = plan.lane_names[0]
+    assert frozen["winner"] == "s07" and frozen["candidates"]["s07"]["draw"] == draw and frozen["space"] == plan.candidates.space.record()
+    assert frozen["params"][lane]["lr"] == draw["lr"] and frozen["params"][lane]["encoder"]["width"] == draw["width"]
+    assert frozen["default_params"][lane] == loaded[1].cells()[lane]["fit"]
+    assert frozen["hparams_sha256"][lane] == hparams_sha256(frozen["params"][lane])
+    evaluation = plan.evaluation_manifest({**frozen, "pick_winner": plan.winner, "recipe": {}}, "zoo-template.json")
+    assert evaluation["args"]["cell"]["frozen-gru-crps_tail-pooled"]["fit"]["lr"] == draw["lr"]
+
+
+@pytest.mark.parametrize("cell", ["gru-crps_tail", "patchtst-nll", "cnn1d-crps", "mlp-pinball", "transformer-nll"])
+def test_every_wide_lane_of_every_architecture_is_accepted_by_the_panel_kinds(loaded, cell):
+    import importlib
+
+    from dskit.pipeline.workflow import lane_flows
+
+    plan = plan_for(loaded, cell, wide=True)
+    flows = lane_flows(plan.search_manifest("zoo-template.json"), CONFIGS)
+    assert len(flows) == 21
+    for flow in flows:
+        fit = flow.expanded("fit", strict=False, rnd=0)["pipeline"]["fit"]
+        module, _, name = fit["uses"].partition(":")
+        assert getattr(importlib.import_module(module), name).validate_params(fit["params"]) == [], flow.lane

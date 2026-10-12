@@ -158,7 +158,7 @@ dskit/pipeline/
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
-│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260)
+│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260; PanelHorizonFairValue prices a binary from a forecaster's CDF, ADR-0262)
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date; underlying_close writes the moneyness denominator out, ADR-0259)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries + prior_index + the stream-manifests node, ADR-0243),

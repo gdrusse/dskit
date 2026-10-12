@@ -6,7 +6,9 @@ Three steps, each a CLI of ``zoo_lanes`` and each a function of the recipe's ``h
    the first ``warmup_folds`` folds of the zoo's own schedule. The candidates are the ``default`` (the cell exactly as
    the zoo ran it) and the options child's predeclared Gaussian bundles, mapped onto the PanelTrain fit params by the
    recipe's ``hpo.map``; a bundle knob with no counterpart is listed in ``hpo.unmapped`` (and a knob in neither
-   refuses), and a mapping restricted to a head kind is skipped, and recorded as skipped, on the other kind.
+   refuses), and a mapping restricted to a head kind is skipped, and recorded as skipped, on the other kind. When the
+   recipe has ``hpo.space``, ``n_draws`` more candidates ``s01``.. are a predeclared, seeded, bounded random draw over the
+   fit paths of the picked cell (:class:`SearchSpace`); a knob the picked architecture lacks is skipped and recorded.
 2. ``hpo-pick``: the lowest warmup mean objective wins (the ``default`` wins ties), and its FULL fit params are written
    to ``hpo-frozen.json`` with their hash.
 3. ``frozen-manifest`` / ``hpo-evaluate``: the default cell and the frozen winner over the REMAINING folds (the same
@@ -18,17 +20,301 @@ Import cost: stdlib + dskit core (no torch).
 
 import argparse
 import copy
+import math
 import os
+import random
+from abc import ABC, abstractmethod
+
+from dskit.pipeline.records import number_ok
 
 from .zoo_lanes import FoldSchedule
 from .zoo_pick import (
     ZooResults, batch_root, check_frozen, file_sha256, hparams_sha256, load_frozen, load_json, load_recipe, paired, resolve_recipe, template_path, write_json,
 )
 
-__all__ = ["Candidates", "HpoPlan", "evaluate_main", "frozen_manifest_main", "hpo_manifest_main", "hpo_pick_main"]
+__all__ = ["Candidates", "DEFAULT_N_DRAWS", "HpoPlan", "KNOBS", "SearchSpace", "evaluate_main", "frozen_manifest_main", "hpo_manifest_main", "hpo_pick_main"]
 
 _NOTES = "notes"
 _WINNER_KEYS = ("cell", "model", "loss", "scope", "lanes")
+DEFAULT_N_DRAWS = 16
+_DRAW_NAME = "s{:02d}"
+_SPACE_KEYS = ("n_draws", "seed", "knobs")
+_DOMAIN_KEYS = ("low", "high", "log")
+
+
+def _set_path(fit, path, value):
+    """Set the dotted ``path`` in ``fit``; its parents must exist (a ValueError names the path otherwise)."""
+    *parents, leaf = path.split(".")
+    node = fit
+    for part in parents:
+        if not isinstance(node.get(part), dict):
+            raise ValueError(f"hpo target {path!r}: {part!r} is not a dict in the cell's fit params")
+        node = node[part]
+    node[leaf] = value
+
+
+def _dig(fit, path):
+    """Return the dict at dotted ``path`` of ``fit``, or None when any part is missing or not a dict."""
+    node = fit
+    for part in path.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else None
+
+
+def _positive_int(value):
+    """Return the problem with ``value`` as a positive integer, or None."""
+    return None if type(value) is int and value >= 1 else f"{value!r} is not an integer >= 1"
+
+
+class Knob(ABC):
+    """One searchable hyperparameter: its default domain, its value rule and where it lands in a cell's fit params.
+
+    Subclasses set the class attributes ``name`` (str), ``domain`` (the default domain: a list, or a
+    ``{"low", "high", "log"}`` dict) and ``continuous`` (bool: whether a range is allowed), and implement
+    :meth:`problem` and :meth:`targets`; both are abstract, so an incomplete knob refuses at construction.
+
+    Examples
+    --------
+    A range knob lands on one path of a cell::
+
+        paths, reason = KNOBS["lr"].targets(cell["fit"])
+        # -> paths == ["lr"], reason is None
+    """
+
+    name = ""
+    domain = None
+    continuous = False
+
+    @abstractmethod
+    def problem(self, value):
+        """Return why ``value`` is not a legal value of this knob, or None."""
+
+    @abstractmethod
+    def targets(self, fit):
+        """Return ``(dotted paths this knob sets in fit, None)`` or ``([], why this cell has no such knob)``."""
+
+
+class PathKnob(Knob):
+    """A knob that sets one fixed path of every cell; subclasses name it in ``path``."""
+
+    path = ""
+
+    def targets(self, fit):
+        """Return ``([path], None)``."""
+        return [self.path], None
+
+
+class WidthKnob(Knob):
+    """The sequence encoder's width: ``encoder.width`` and ``arch_params.hidden_size`` tied, or an HF encoder's ``d_model``."""
+
+    name, domain = "width", [32, 64, 128]
+
+    def problem(self, value):
+        """Return the problem with ``value`` as a width, or None."""
+        return _positive_int(value)
+
+    def targets(self, fit):
+        """Return the encoder's width paths, or why the cell has no encoder width."""
+        encoder = fit.get("encoder")
+        if not isinstance(encoder, dict):
+            return [], "this cell has no sequence encoder"
+        if "arch" in encoder:
+            tied = ["encoder.width"]
+            if "hidden_size" in (encoder.get("arch_params") or {}):
+                tied.append("encoder.arch_params.hidden_size")
+            return tied, None
+        config = _dig(fit, "encoder.params.config")
+        if config is not None and "d_model" in config:
+            return ["encoder.params.config.d_model"], None
+        return [], "this encoder names neither an arch width nor a d_model"
+
+
+class NumLayersKnob(Knob):
+    """The recurrent encoder's depth: ``arch_params.num_layers``, only where the arch declares it."""
+
+    name, domain = "num_layers", [1, 2]
+
+    def problem(self, value):
+        """Return the problem with ``value`` as a layer count, or None."""
+        return _positive_int(value)
+
+    def targets(self, fit):
+        """Return ``arch_params.num_layers``, or why this cell's encoder has none."""
+        encoder = fit.get("encoder")
+        if not isinstance(encoder, dict):
+            return [], "this cell has no sequence encoder"
+        if "num_layers" not in (encoder.get("arch_params") or {}):
+            return [], "this encoder declares no arch_params.num_layers"
+        return ["encoder.arch_params.num_layers"], None
+
+
+class HiddenKnob(PathKnob):
+    """The trunk's MLP widths."""
+
+    name, path, domain = "trunk_hidden", "trunk.hidden", [[16], [32, 16], [64, 32]]
+
+    def problem(self, value):
+        """Return the problem with ``value`` as a non-empty list of widths, or None."""
+        ok = isinstance(value, list) and value and all(_positive_int(v) is None for v in value)
+        return None if ok else f"{value!r} is not a non-empty list of integers >= 1"
+
+
+class DropoutKnob(PathKnob):
+    """The trunk's dropout."""
+
+    name, path, continuous = "dropout", "trunk.dropout", True
+    domain = {"low": 0.0, "high": 0.3, "log": False}
+
+    def problem(self, value):
+        """Return the problem with ``value`` as a dropout probability, or None."""
+        return None if number_ok(value) and 0 <= value < 1 else f"{value!r} is not a number in [0, 1)"
+
+
+class LearningRateKnob(PathKnob):
+    """The optimizer's learning rate."""
+
+    name, path, continuous = "lr", "lr", True
+    domain = {"low": 1e-4, "high": 3e-3, "log": True}
+
+    def problem(self, value):
+        """Return the problem with ``value`` as a learning rate, or None."""
+        return None if number_ok(value) and value > 0 else f"{value!r} is not a number > 0"
+
+
+class WeightDecayKnob(PathKnob):
+    """The optimizer's weight decay."""
+
+    name, path, continuous = "weight_decay", "optimizer_params.weight_decay", True
+    domain = {"low": 1e-4, "high": 1e-1, "log": True}
+
+    def problem(self, value):
+        """Return the problem with ``value`` as a weight decay, or None."""
+        return None if number_ok(value) and value >= 0 else f"{value!r} is not a number >= 0"
+
+
+class BatchSizeKnob(PathKnob):
+    """The loader's batch size."""
+
+    name, path, domain = "batch_size", "loader.batch_size", [512, 1024]
+
+    def problem(self, value):
+        """Return the problem with ``value`` as a batch size, or None."""
+        return _positive_int(value)
+
+
+KNOBS = {k.name: k for k in (WidthKnob(), NumLayersKnob(), HiddenKnob(), DropoutKnob(), LearningRateKnob(), WeightDecayKnob(), BatchSizeKnob())}
+
+
+class SearchSpace:
+    """A predeclared, seeded, bounded random draw of fit-param candidates ``s01``.. over the picked cell's knobs.
+
+    Every draw is a function of ``(seed, draw number, knob name)`` alone (a string-seeded ``random.Random`` per knob),
+    so raising ``n_draws`` keeps the first draws, a knob's draws never depend on another knob's domain, and the draws
+    do not depend on the picked architecture: a knob the architecture lacks is drawn all the same and skipped, with a
+    reason, when the draw is applied.
+
+    Parameters
+    ----------
+    space : dict
+        ``recipe["hpo"]["space"]``: ``seed`` (int, required), ``n_draws`` (int >= 1, default
+        :data:`DEFAULT_N_DRAWS`), ``knobs`` (``{knob: domain}`` over :data:`KNOBS`, default each knob's own domain; a
+        list is a categorical domain, ``{"low", "high", "log"}`` a range) and ``notes``.
+
+    Raises
+    ------
+    ValueError
+        An unknown key or knob, a missing or non-integer seed, a bad ``n_draws`` or an illegal domain.
+
+    Examples
+    --------
+    Draw three candidates from the default domains::
+
+        space = SearchSpace({"seed": 7, "n_draws": 3})
+        space.names()
+        # -> ["s01", "s02", "s03"]
+        space.draws["s01"]["lr"]  # a float in [1e-4, 3e-3]
+    """
+
+    def __init__(self, space):
+        unknown = sorted(set(space) - set(_SPACE_KEYS) - {_NOTES})
+        if unknown:
+            raise ValueError(f"hpo.space: unknown keys {unknown}; allowed {list(_SPACE_KEYS)}")
+        if type(space.get("seed")) is not int:
+            raise ValueError("hpo.space.seed must be an integer (the draw is declared, never defaulted)")
+        self.seed = space["seed"]
+        self.n_draws = space.get("n_draws", DEFAULT_N_DRAWS)
+        if type(self.n_draws) is not int or self.n_draws < 1:
+            raise ValueError(f"hpo.space.n_draws must be an integer >= 1, got {self.n_draws!r}")
+        given = space.get("knobs", {})
+        loose = sorted(set(given) - set(KNOBS) - {_NOTES})
+        if loose:
+            raise ValueError(f"hpo.space.knobs: unknown knobs {loose}; allowed {list(KNOBS)}")
+        self.domains = {name: copy.deepcopy(given.get(name, knob.domain)) for name, knob in KNOBS.items()}
+        for name, domain in self.domains.items():
+            self._check(name, domain)
+        self.draws = {_DRAW_NAME.format(i): {name: self._draw(i, name) for name in KNOBS} for i in range(1, self.n_draws + 1)}
+
+    def _check(self, name, domain):
+        """Refuse an illegal domain of knob ``name``."""
+        knob = KNOBS[name]
+        if isinstance(domain, list):
+            problems = [p for p in map(knob.problem, domain) if p]
+            if not domain or problems:
+                raise ValueError(f"hpo.space.knobs.{name}: a categorical domain needs a non-empty list of legal values ({problems or 'empty'})")
+            return
+        if not isinstance(domain, dict) or not knob.continuous:
+            raise ValueError(f"hpo.space.knobs.{name}: expected a list of values" + (" or {low, high, log}" if knob.continuous else ""))
+        extra = sorted(set(domain) - set(_DOMAIN_KEYS))
+        if extra or "low" not in domain or "high" not in domain or not isinstance(domain.get("log", False), bool):
+            raise ValueError(f"hpo.space.knobs.{name}: a range is {{low, high, log (bool, optional)}}, got {domain!r}")
+        low, high = domain["low"], domain["high"]
+        problems = [p for p in (knob.problem(low), knob.problem(high)) if p]
+        if problems or not low < high or (domain.get("log", False) and low <= 0):
+            raise ValueError(f"hpo.space.knobs.{name}: needs legal ends with low < high (and low > 0 for log), got {domain!r} {problems}")
+
+    def _draw(self, number, name):
+        """Return draw ``number`` of knob ``name``: a list's element by an index, a range's point (clamped to its ends)."""
+        rng = random.Random(f"{self.seed}:{number}:{name}")
+        domain = self.domains[name]
+        if isinstance(domain, list):
+            return copy.deepcopy(domain[int(rng.random() * len(domain))])
+        low, high = domain["low"], domain["high"]
+        if domain.get("log", False):
+            return min(max(math.exp(rng.uniform(math.log(low), math.log(high))), low), high)
+        return min(max(rng.uniform(low, high), low), high)
+
+    def names(self):
+        """Return the draw names ``s01``.. in draw order."""
+        return list(self.draws)
+
+    def apply(self, name, fit):
+        """Return ``(fit params, applied, skipped)`` of draw ``name`` on a copy of ``fit``.
+
+        Parameters
+        ----------
+        name : str
+            A draw name.
+        fit : dict
+            The cell's PanelTrain params (not modified).
+
+        Returns
+        -------
+        tuple
+            The new params; ``{dotted path: value}`` set; ``{knob: reason}`` of the knobs this cell's architecture lacks.
+        """
+        out, applied, skipped = copy.deepcopy(fit), {}, {}
+        for knob_name, value in self.draws[name].items():
+            paths, reason = KNOBS[knob_name].targets(out)
+            if reason:
+                skipped[knob_name] = reason
+            for path in paths:
+                _set_path(out, path, copy.deepcopy(value))
+                applied[path] = value
+        return out, applied, skipped
+
+    def record(self):
+        """Return the declared space (seed, count, domains) for the manifests."""
+        return {"seed": self.seed, "n_draws": self.n_draws, "knobs": copy.deepcopy(self.domains)}
 
 
 class Candidates:
@@ -37,13 +323,14 @@ class Candidates:
     Parameters
     ----------
     hpo : dict
-        ``recipe["hpo"]``: ``default_candidate``, ``candidates``, ``map``, ``unmapped``.
+        ``recipe["hpo"]``: ``default_candidate``, ``candidates``, ``map``, ``unmapped`` and optionally ``space``
+        (:class:`SearchSpace`: ``n_draws`` more candidates, named after the bundles).
 
     Raises
     ------
     ValueError
-        A bundle param that is neither mapped nor listed as unmapped, a candidate named like the default, or a
-        mapping with no ``to``.
+        A bundle param that is neither mapped nor listed as unmapped, a candidate named like the default (or a draw named
+        like a bundle), a mapping with no ``to``, or an illegal ``space``.
 
     Examples
     --------
@@ -58,8 +345,12 @@ class Candidates:
         self.bundles = hpo["candidates"]
         self.map = {k: v for k, v in hpo["map"].items() if k != _NOTES}
         self.unmapped = {k: v for k, v in hpo["unmapped"].items() if k != _NOTES}
+        self.space = SearchSpace(hpo["space"]) if "space" in hpo else None
         if self.default in self.bundles:
             raise ValueError(f"hpo.candidates has a bundle named {self.default!r}, the default candidate's name")
+        clash = sorted(({self.default} | set(self.bundles)) & set(self.space.names() if self.space else ()))
+        if clash:
+            raise ValueError(f"hpo.space draws {clash} are named like the default or a bundle")
         for name, spec in self.map.items():
             if not isinstance(spec.get("to"), str):
                 raise ValueError(f"hpo.map.{name} needs a `to` path")
@@ -69,8 +360,12 @@ class Candidates:
                 raise ValueError(f"hpo.candidates.{name}: params {loose} are neither in hpo.map nor in hpo.unmapped")
 
     def names(self):
-        """Return the candidate names: the default first, then the bundles in recipe order."""
-        return [self.default, *self.bundles]
+        """Return the candidate names: the default first, then the bundles in recipe order, then the space's draws."""
+        return [self.default, *self.bundles, *(self.space.names() if self.space else ())]
+
+    def draw(self, name):
+        """Return the drawn ``{knob: value}`` of candidate ``name``, or None when it is not a draw."""
+        return copy.deepcopy(self.space.draws[name]) if self.space and name in self.space.draws else None
 
     def apply(self, name, fit):
         """Return ``(fit params, applied, skipped)`` of candidate ``name`` on a copy of ``fit``.
@@ -86,7 +381,7 @@ class Candidates:
         -------
         tuple
             The new params; ``{path: value}`` actually set; ``{param: reason}`` of the bundle knobs not set
-            (unmapped, or mapped to a head kind this cell does not have).
+            (unmapped, or mapped to a head kind this cell does not have; for a draw, a knob this architecture lacks).
 
         Raises
         ------
@@ -96,6 +391,8 @@ class Candidates:
         out = copy.deepcopy(fit)
         if name == self.default:
             return out, {}, {}
+        if self.space and name in self.space.draws:
+            return self.space.apply(name, fit)
         applied, skipped = {}, {}
         for param, value in self.bundles[name]["params"].items():
             if param in self.unmapped:
@@ -106,20 +403,9 @@ class Candidates:
             if head and out["head"]["kind"] != head:
                 skipped[param] = f"mapped to {spec['to']} for a {head} head; this cell's head is {out['head']['kind']}"
                 continue
-            self._set(out, spec["to"], copy.deepcopy(value))
+            _set_path(out, spec["to"], copy.deepcopy(value))
             applied[spec["to"]] = value
         return out, applied, skipped
-
-    @staticmethod
-    def _set(fit, path, value):
-        """Set the dotted ``path`` in ``fit``; its parents must exist."""
-        *parents, leaf = path.split(".")
-        node = fit
-        for part in parents:
-            if not isinstance(node.get(part), dict):
-                raise ValueError(f"hpo.map target {path!r}: {part!r} is not a dict in the cell's fit params")
-            node = node[part]
-        node[leaf] = value
 
 
 class HpoPlan:
@@ -183,6 +469,8 @@ class HpoPlan:
         cells, record = {}, {}
         for name in names:
             record[name] = {"applied": {}, "skipped": {}}
+            if self.candidates.draw(name):
+                record[name]["draw"] = self.candidates.draw(name)
             for lane in self.lane_names:
                 cell = copy.deepcopy(zoo[lane])
                 if params and name in params:
@@ -211,6 +499,8 @@ class HpoPlan:
         cells, record = self.cells(self.candidates.names())
         manifest = self._manifest(cells, self.search_schedule, self.hpo["work_dir"], template, self.hpo["search_notes"])
         manifest["args"]["hpo"] = {"pick": self.winner["cell"], "warmup_folds": self.warmup, "candidates": record}
+        if self.candidates.space:
+            manifest["args"]["hpo"]["space"] = self.candidates.space.record()
         return manifest
 
     def freeze(self, results):
@@ -224,7 +514,7 @@ class HpoPlan:
         Returns
         -------
         dict
-            ``candidates`` (warmup mean, per-fold scores, applied and skipped knobs), ``winner`` (lowest mean, the
+            ``candidates`` (warmup mean, per-fold scores, applied and skipped knobs, and a draw's drawn values), ``space`` (the declared draw, when the recipe has one), ``winner`` (lowest mean, the
             default on a tie), ``params`` (its full fit params per zoo lane) and the default's, for the drift check.
 
         Raises
@@ -247,7 +537,8 @@ class HpoPlan:
                 "warmup": {"cutoffs": expected, "objective": results[winner].spec.objective},
                 "tie_rule": f"lowest warmup mean; {self.candidates.default!r} wins ties, then recipe order",
                 "candidates": scored, "winner": winner, "params": params[winner], "default_params": params[self.candidates.default],
-                "hparams_sha256": {lane: hparams_sha256(fit) for lane, fit in params[winner].items()}}
+                "hparams_sha256": {lane: hparams_sha256(fit) for lane, fit in params[winner].items()},
+                **({"space": self.candidates.space.record()} if self.candidates.space else {})}
 
     def evaluation_lanes(self, frozen):
         """Return the candidate names the later folds run: the default, and the frozen winner unless it is the default."""

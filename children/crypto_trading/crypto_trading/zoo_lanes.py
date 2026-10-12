@@ -205,6 +205,25 @@ class ZooLanes:
         """Return the five band cuts: ``$splits`` references unless ``bounds`` fixes the three instants."""
         return {**(bounds or _SPLITS), "cal_days": self.zoo["cal_days"], "min_run": self.zoo["min_run"]}
 
+    def use_panel(self, source, relpath):
+        """Point every cell at another panel (an extended build, registered as its own source).
+
+        Parameters
+        ----------
+        source : str
+            The onboarding source that holds it.
+        relpath : str
+            The panel directory inside the source's stream.
+
+        Raises
+        ------
+        ValueError
+            Either half is not a non-empty string (an override names both or neither).
+        """
+        if not all(isinstance(v, str) and v for v in (source, relpath)):
+            raise ValueError(f"a panel override names both its source and its relpath, got {source!r} and {relpath!r}")
+        self.base = {**self.base, "panel": {**self.base["panel"], "source": source, "relpath": relpath}}
+
     def _panel(self):
         """Return the panel spec the dskit nodes take: the four store keys of ``args.panel``."""
         return {k: self.base["panel"][k] for k in ("root", "source", "stream", "relpath")}

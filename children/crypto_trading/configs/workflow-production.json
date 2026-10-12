@@ -1,7 +1,7 @@
 {
   "notes": "The production pipeline as ONE workflow manifest: blocks (one lane per retrain block) -> train (those lanes, in parallel) -> index (every retrain's model under a stable path, models.json, the forward report). Run: `python -m dskit.pipeline workflow configs/workflow-production.json --args production-args.json` with a FLAT overlay {\"pick\": \"<zoo-pick.json>\", \"frozen\": \"<hpo-frozen.json>\"} (do not wrap it in an \"args\" key; add forward_start, evaluate_through, retrain_days to override). The production retrain trains on every minute (production.row_stride 1), unlike the zoo. A window past W2 refuses unless the recipe's allow_past_w2 is true. Regenerate with `zoo_lanes ... --production-out configs/workflow-production.json`.",
   "args": {
-    "notes": "`pick` and `frozen` are unfilled until --args supplies them; forward_start, evaluate_through, retrain_days and allow_past_w2 are the recipe's production values; `parallel` is workflow-batch's lane parallelism.",
+    "notes": "`pick` and `frozen` are unfilled until --args supplies them; forward_start, evaluate_through, retrain_days and allow_past_w2 are the recipe's production values; `parallel` is workflow-batch's lane parallelism. `panel_source` and `panel_relpath` (empty = the base panel) repoint every lane at an extended build of the panel, for a window the zoo's panel does not reach (W4; configs/production-args-w4.json).",
     "work_dir": "./pipeline_runs/zoo-production",
     "recipe": "configs/zoo-lanes-recipe.json",
     "pick": "<zoo-pick.json: the zoo's pick, from `zoo_lanes pick`>",
@@ -10,6 +10,8 @@
     "evaluate_through": "2026-08-01",
     "retrain_days": 60,
     "allow_past_w2": false,
+    "panel_source": "",
+    "panel_relpath": "",
     "parallel": 2
   },
   "layout": {
@@ -32,7 +34,7 @@
       "notes": "Write one lane per retrain block (refuses a window past W2 unless allow_past_w2).",
       "template": "stage-template.json",
       "extends": null,
-      "command": "{python} -m crypto_trading.zoo_lanes production-manifest --pick {in.pick} --frozen {in.frozen} --recipe {in.recipe} --forward-start {in.forward_start} --evaluate-through {in.evaluate_through} --retrain-days {in.retrain_days} --allow-past-w2 {in.allow_past_w2} --out {out.lanes}"
+      "command": "{python} -m crypto_trading.zoo_lanes production-manifest --pick {in.pick} --frozen {in.frozen} --recipe {in.recipe} --forward-start {in.forward_start} --evaluate-through {in.evaluate_through} --retrain-days {in.retrain_days} --allow-past-w2 {in.allow_past_w2} --panel-source={in.panel_source} --panel-relpath={in.panel_relpath} --out {out.lanes}"
     },
     "train": {
       "notes": "Train and score every block; each lane is an independent expanding-window retrain.",
@@ -62,7 +64,9 @@
         "forward_start": "$args.forward_start",
         "evaluate_through": "$args.evaluate_through",
         "retrain_days": "$args.retrain_days",
-        "allow_past_w2": "$args.allow_past_w2"
+        "allow_past_w2": "$args.allow_past_w2",
+        "panel_source": "$args.panel_source",
+        "panel_relpath": "$args.panel_relpath"
       }
     },
     "train": {

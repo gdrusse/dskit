@@ -216,7 +216,8 @@ def hparams_sha256(fit, exclude=()):
     fit : dict
         A cell's ``fit`` params.
     exclude : tuple of str, default ()
-        Further keys left out (the production pipeline's declared overrides, e.g. ``row_stride``).
+        Further keys left out (the production pipeline's declared overrides, e.g. ``row_stride``); a dotted name
+        (``panel.relpath``) leaves out that one key of a nested block and nothing else in it.
 
     Returns
     -------
@@ -224,6 +225,10 @@ def hparams_sha256(fit, exclude=()):
         The hash of the canonical JSON; equal for a lane across folds and blocks exactly when no hyperparameter moved.
     """
     body = {k: v for k, v in fit.items() if k != "bounds" and k not in exclude}
+    for dotted in (name for name in exclude if "." in name):
+        block, _, key = dotted.partition(".")
+        if isinstance(body.get(block), dict):
+            body[block] = {k: v for k, v in body[block].items() if k != key}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 

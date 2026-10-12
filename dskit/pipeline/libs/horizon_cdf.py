@@ -364,6 +364,9 @@ class HorizonForecaster(ABC):
         The quantile levels its head emits; ``None`` for a parametric head.
     components : int
         Mixture components per row and horizon, which sizes the scoring chunk.
+    train_end_ms : int or None
+        The last instant its training used (epoch ms); ``None`` when it does not say, which a
+        node guarding against look-ahead (``PanelHorizonFairValue``) refuses.
 
     Examples
     --------
@@ -379,6 +382,24 @@ class HorizonForecaster(ABC):
     training_tail = None
     levels = None
     components = 1
+    train_end_ms = None
+
+    def usable(self, panel, rows):
+        """Say which of ``rows`` this forecaster can forecast, instead of refusing the whole call.
+
+        Parameters
+        ----------
+        panel : object
+            The data the forecaster reads (its own contract).
+        rows : sequence of int
+            Row indices.
+
+        Returns
+        -------
+        sequence of bool
+            One flag per row; the default says every row is usable.
+        """
+        return [True] * len(rows)
 
     @abstractmethod
     def forecast(self, panel, rows, chunk_rows):

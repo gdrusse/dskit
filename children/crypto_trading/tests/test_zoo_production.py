@@ -13,7 +13,7 @@ from zoo_fakes import write_batch_status, write_lane
 
 from crypto_trading.zoo_lanes import main as lanes_main
 from crypto_trading.zoo_pick import file_sha256, hparams_sha256, load_recipe
-from crypto_trading.zoo_production import ForwardWindow, ModelIndex, ProductionPlan, w5_start_ms
+from crypto_trading.zoo_production import PRODUCTION_OVERRIDES, ForwardWindow, ModelIndex, ProductionPlan, w5_start_ms
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
@@ -102,7 +102,7 @@ def test_the_block_lanes_are_the_frozen_model_and_the_scopes_baselines_one_set_p
     assert args["cell"]["b02-gru-crps_tail-pooled"]["fit"]["lr"] == 0.123, "the frozen hyperparameters, not the zoo's"
     assert args["block"]["b02-empirical-pooled"] == {"k": 2, "first": "2026-07-01", "val_days": 31, "embargo_days": 1}
     assert "folds" not in args and manifest["lanes"]["keyed"] == ["cell", "block"] and "folds" not in manifest["steps"]["fit"]["in"]
-    assert args["production"]["hparams_sha256"] == {"gru-crps_tail-pooled": hparams_sha256(frozen["params"]["gru-crps_tail-pooled"], ("row_stride",))}
+    assert args["production"]["hparams_sha256"] == {"gru-crps_tail-pooled": hparams_sha256(frozen["params"]["gru-crps_tail-pooled"], PRODUCTION_OVERRIDES)}
 
 
 def test_an_unpooled_pick_runs_both_asset_lanes_and_both_baselines_per_asset(loaded):
@@ -238,7 +238,7 @@ def test_every_retrain_is_saved_under_a_stable_block_path_and_listed_in_the_inde
     assert gru[1]["path"] == os.path.join("models", "gru-crps_tail-pooled", "block-1-2026-05-02")
     assert gru[2]["path"] == os.path.join("models", "gru-crps_tail-pooled", "block-2-2026-07-01")
     assert gru[1]["train_end"] == "2026-05-01" and gru[2]["train_end"] == "2026-06-30"
-    assert gru[1]["hparams_sha256"] == gru[2]["hparams_sha256"] == hparams_sha256(manifest["args"]["cell"]["b01-gru-crps_tail-pooled"]["fit"], ("row_stride",))
+    assert gru[1]["hparams_sha256"] == gru[2]["hparams_sha256"] == hparams_sha256(manifest["args"]["cell"]["b01-gru-crps_tail-pooled"]["fit"], PRODUCTION_OVERRIDES)
     assert gru[1]["row_stride"] == gru[2]["row_stride"] == 1
     assert set(gru[1]["files"]) == {"model.pt", "model.json", "training_curve.json"} and gru[1]["files"] != gru[2]["files"]
     for entry in gru.values():
@@ -542,3 +542,123 @@ def test_the_pipeline_notes_describe_a_flat_args_overlay():
     for name in ("workflow-hpo.json", "workflow-production.json"):
         notes = json.load(open(os.path.join(CONFIGS, name), encoding="utf-8"))["notes"]
         assert "FLAT overlay" in notes and '{"args"' not in notes, name
+
+
+# --- the W4 profile: one block over W4, trained on a panel that reaches W4 ---------------------------------------------
+
+W4_START, W4_END = date(2026, 8, 1), date(2026, 9, 15)   # plan: W4 is 2026-08-01 to 2026-09-15 (exclusive)
+W4_ARGS = os.path.join(CONFIGS, "production-args-w4.json")
+
+
+def w4_args():
+    return json.load(open(W4_ARGS, encoding="utf-8"))
+
+
+def test_the_w4_profile_is_one_block_over_exactly_w4_trained_to_the_embargo(loaded):
+    args = w4_args()
+    blocks = window(loaded, **{k: args[k] for k in ("forward_start", "evaluate_through", "allow_past_w2")}).blocks()
+    assert [(b["name"], b["first"], b["val_days"], b["val_end"], b["train_end"]) for b in blocks] == [
+        ("b01", "2026-08-01", 45, "2026-09-15", "2026-07-31")]
+    assert (W4_END - W4_START).days == 45
+    assert args["allow_past_w2"] is True and "retrain_days" not in args, "the cadence is the recipe's: 60 days clips to one block"
+
+
+def test_the_w4_profile_agrees_with_the_cuts_that_own_its_dates(loaded):
+    args = w4_args()
+    as_date = lambda ms: datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date()  # noqa: E731
+    assert date.fromisoformat(args["forward_start"]) == as_date(loaded[0]["w2"]["bounds"]["val_end_ms"] + 1) == W4_START
+    assert date.fromisoformat(args["evaluate_through"]) == as_date(w5_start_ms(loaded[0]["production"], CONFIGS)) == W4_END
+
+
+def test_the_w4_profile_cannot_open_w5_whatever_it_says(loaded):
+    for through in ("2026-09-16", "2026-10-08"):
+        with pytest.raises(ValueError, match="W5's start"):
+            window(loaded, **{**w4_args(), "evaluate_through": through})
+
+
+def test_the_w4_overlay_names_only_the_keys_the_workflow_takes():
+    workflow = json.load(open(os.path.join(CONFIGS, "workflow-production.json"), encoding="utf-8"))
+    assert set(w4_args()) - {"notes"} <= set(workflow["args"])
+    assert not any(isinstance(v, str) and v.startswith(("/", "~")) for v in w4_args().values()), "no machine path in a committed overlay"
+
+
+def test_a_panel_override_moves_every_lane_and_only_the_panel():
+    recipe, lanes, _, _ = load_recipe(RECIPE_PATH)
+    pick, frozen = records((recipe, lanes, None, None))
+    other = {"source": "panel-minute-w4", "relpath": "minute-w1w4"}
+    lanes.use_panel(**other)
+    plan = ProductionPlan(recipe, lanes, pick, frozen, ForwardWindow(recipe["production"], recipe["w2"]["bounds"], 1, w5_start_ms(recipe["production"], CONFIGS)))
+    manifest = plan.manifest("t.json")
+    assert {k: manifest["args"]["panel"][k] for k in other} == other and manifest["args"]["production"]["panel"] == other
+    for name, cell in manifest["args"]["cell"].items():
+        if name == "notes":
+            continue
+        for part in ("fit", "score"):
+            assert {k: cell[part]["panel"][k] for k in other} == other, (name, part)
+    model = manifest["args"]["cell"]["b01-gru-crps_tail-pooled"]["fit"]
+    original = frozen["params"]["gru-crps_tail-pooled"]
+    assert {k: v for k, v in model.items() if k not in ("panel", "row_stride")} == {k: v for k, v in original.items() if k not in ("panel", "row_stride")}
+    assert {k: v for k, v in model["panel"].items() if k not in other} == {k: v for k, v in original["panel"].items() if k not in other}
+    assert manifest["args"]["production"]["hparams_sha256"]["gru-crps_tail-pooled"] == hparams_sha256(original, PRODUCTION_OVERRIDES)
+
+
+def test_without_an_override_the_panel_is_the_bases(loaded):
+    pick, frozen = records(loaded)
+    manifest = ProductionPlan(loaded[0], loaded[1], pick, frozen, window(loaded)).manifest("t.json")
+    assert manifest["args"]["production"]["panel"] == {k: loaded[1].base["panel"][k] for k in ("source", "relpath")}
+
+
+def test_a_panel_override_must_name_both_halves():
+    _, lanes, _, _ = load_recipe(RECIPE_PATH)
+    for bad in ({"source": "", "relpath": "x"}, {"source": "x", "relpath": ""}, {"source": "x", "relpath": None}):
+        with pytest.raises(ValueError, match="panel"):
+            lanes.use_panel(**bad)
+
+
+def test_the_manifest_cli_takes_the_panel_override(loaded, tmp_path):
+    frozen_files(loaded, tmp_path)
+    argv = ["production-manifest", "--pick", str(tmp_path / "pick.json"), "--frozen", str(tmp_path / "frozen.json"), "--out", str(tmp_path / "m.json")]
+    w4 = ["--forward-start", "2026-08-01", "--evaluate-through", "2026-09-15", "--allow-past-w2", "true"]
+    assert lanes_main(argv + w4 + ["--panel-source", "panel-minute-w4", "--panel-relpath", "minute-w1w4"]) == 0
+    made = json.loads((tmp_path / "m.json").read_text(encoding="utf-8"))
+    assert made["args"]["production"]["panel"] == {"source": "panel-minute-w4", "relpath": "minute-w1w4"}
+    assert [b["first"] for b in made["args"]["production"]["blocks"]] == ["2026-08-01"]
+    assert lanes_main(argv + w4 + ["--panel-source=", "--panel-relpath="]) == 0, "empty means: the base panel"
+    again = json.loads((tmp_path / "m.json").read_text(encoding="utf-8"))
+    assert again["args"]["production"]["panel"]["relpath"] == loaded[1].base["panel"]["relpath"]
+    with pytest.raises(ValueError, match="panel"):
+        lanes_main(argv + w4 + ["--panel-source", "panel-minute-w4"])
+
+
+def test_a_retrain_on_another_panel_than_the_declared_one_is_refused(loaded, forward_run):
+    manifest = forward_run[0]
+    block = manifest["args"]["production"]["blocks"][0]
+    path = os.path.join(_run_dir(loaded, forward_run, block), "config.json")
+    config = json.load(open(path, encoding="utf-8"))
+    declared = manifest["args"]["production"]["panel"]
+    assert config["pipeline"]["fit"]["params"]["panel"]["relpath"] != "elsewhere"
+    manifest["args"]["production"]["panel"] = {**declared, "relpath": "elsewhere"}
+    with pytest.raises(ValueError, match="panel"):
+        _persist(loaded, forward_run)
+
+
+def test_dotted_exclusions_leave_out_one_key_of_a_nested_block():
+    fit = {"lr": 1, "panel": {"source": "s", "relpath": "a"}, "bounds": {"x": 1}}
+    assert hparams_sha256(fit, ("panel.relpath",)) == hparams_sha256({"lr": 1, "panel": {"source": "s", "relpath": "zzz"}}, ("panel.relpath",))
+    assert hparams_sha256(fit, ("panel.relpath",)) != hparams_sha256({"lr": 1, "panel": {"source": "t", "relpath": "a"}}, ("panel.relpath",))
+    assert hparams_sha256(fit) != hparams_sha256(fit, ("panel.relpath",))
+
+
+def test_the_w4_overlay_plans_the_production_pipeline_and_its_panel_flags_reach_the_command(tmp_path):
+    from dskit.pipeline.workflow import run_workflow
+
+    local = tmp_path / "local.json"
+    local.write_text(json.dumps({"pick": "pick.json", "frozen": "frozen.json"}), encoding="utf-8")
+    lines = []
+    assert run_workflow(os.path.join(CONFIGS, "workflow-production.json"), [W4_ARGS, str(local)], plan=True, out=lines.append) == 0
+    assert "zoo-production-w4" in "\n".join(lines) and not any(line.startswith("unfilled arg") for line in lines)
+    manifest = json.load(open(os.path.join(CONFIGS, "workflow-production.json"), encoding="utf-8"))
+    command = manifest["registry"]["blocks"]["command"]
+    assert "--panel-source={in.panel_source}" in command and "--panel-relpath={in.panel_relpath}" in command
+    assert manifest["steps"]["blocks"]["in"]["panel_source"] == "$args.panel_source"
+    assert manifest["args"]["panel_source"] == manifest["args"]["panel_relpath"] == "", "unset by default: the base panel"

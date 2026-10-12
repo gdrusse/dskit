@@ -1,0 +1,150 @@
+{
+  "name": "crypto-panel-build-w4",
+  "notes": "Stage C, W4 extension (owner 2026-10-11, the simple W4 profitability test): the SAME panel as run-panel-build.json, built to W4's end so the W3 refit can be scored on W4 and the take test can read W4 decision minutes. Only three things differ from that document, and tests/test_configs.py pins every other byte: the name, `tapes.params.end_ms` (1789430400000 = 2026-09-15T00:00:00Z, exclusive: W5 starts there, so no bar of W5 is read, hashed or computed on; the last 15 rows per asset carry NaN labels and the bands drop them) and the destination `panels/minute-w1w4`. The destination is a NEW directory; `minute-w1w2` is never overwritten and stays the panel every earlier result names. Rows before 2026-08-01 are the same rows as in minute-w1w2 (every feature is trailing; runbook B8 compares them). RUN. From the directory that holds `panels/` (the registration source-panel-minute-w4.json names it): python -m dskit.pipeline run configs/run-panel-build-w4.json --asof 2026-09-15; then register once and acquire as source `panel-minute-w4` (runbook B8). Consumers name {source: panel-minute-w4, stream: files, relpath: minute-w1w4}.",
+  "pipeline": {
+    "streams": {
+      "uses": "dskit.pipeline.libs.parquet_series:StreamManifests",
+      "params": {
+        "root": "/home/russell/data/crypto_trading/ob",
+        "streams": {
+          "BTC_klines": {
+            "source": "binance-btcusdt-1m",
+            "stream": "files"
+          },
+          "BTC_bvol": {
+            "source": "binance-btcbvol",
+            "stream": "files"
+          },
+          "ETH_klines": {
+            "source": "binance-ethusdt-1m",
+            "stream": "files"
+          },
+          "ETH_bvol": {
+            "source": "binance-ethbvol",
+            "stream": "files"
+          }
+        }
+      },
+      "notes": "Puts the four Binance streams into the run identity (ADR-0243): the tape reader reads the day files itself, which a transform's fingerprint would not cover, so this data node fingerprints each stream's snapshot hash and the reader refuses a store that moved since. Keys are <ASSET>_<tape> and must match tapes.assets (a test pins it)."
+    },
+    "tapes": {
+      "uses": "crypto_trading.tape_rows:TapeRows",
+      "inputs": {
+        "manifests": "$streams.manifests"
+      },
+      "params": {
+        "root": "/home/russell/data/crypto_trading/ob",
+        "day_relpath_template": "{day}.parquet",
+        "start_ms": 1687219200000,
+        "end_ms": 1789430400000,
+        "assets": {
+          "BTC": {
+            "klines": {
+              "source": "binance-btcusdt-1m",
+              "stream": "files"
+            },
+            "bvol": {
+              "source": "binance-btcbvol",
+              "stream": "files"
+            }
+          },
+          "ETH": {
+            "klines": {
+              "source": "binance-ethusdt-1m",
+              "stream": "files"
+            },
+            "bvol": {
+              "source": "binance-ethbvol",
+              "stream": "files"
+            }
+          }
+        },
+        "columns": {
+          "klines": {
+            "time": "open_time_ms",
+            "fields": [
+              "open_time_ms",
+              "open",
+              "high",
+              "low",
+              "close",
+              "volume",
+              "close_time_ms",
+              "trades",
+              "taker_buy_volume"
+            ]
+          },
+          "bvol": {
+            "time": "calc_time_ms",
+            "fields": [
+              "calc_time_ms",
+              "index_value"
+            ]
+          }
+        },
+        "bucket_last_ms": {
+          "bvol": 60000
+        },
+        "output": "arrays"
+      },
+      "notes": "Reads the day files of the four tapes that the window [start_ms, end_ms) touches into the row lists MinuteFeatures takes, and keeps only rows inside it. start_ms is W1's start (2023-06-20) and end_ms is W2's end (2026-08-01), both UTC midnight and end-exclusive: this is the ONE place the panel's bounds live. A test pins the kline fields to what MinuteFeatures requires and to the layouts in source-binance-*.json. The BVOL tape has 26 missing days per asset; MinuteFeatures treats BVOL as optional and never refuses a row for it. bucket_last_ms (bvol, 60000): the BVOL tape is second-resolution (about 5 million rows a month), and the BVol family only ever reads the newest reading strictly before a minute edge, so the reader keeps the last finite reading of each minute with its own timestamp (exact, pinned by a test; the unreduced build held about 1.9 GB per month as dicts and was OOM-killed at 16 GB). output arrays: the tapes leave as {asset: {field: array}} and MinuteFeatures reads them without one Python dict per row (measured: 12 months of rows as dicts cost 1.2 GB resident, so the 37-month window about 3.7 GB, before any feature was computed)."
+    },
+    "features": {
+      "uses": "crypto_trading.minute_features:MinuteFeatures",
+      "inputs": {
+        "klines": "$tapes.klines",
+        "bvol": "$tapes.bvol"
+      },
+      "params": {
+        "assets": [
+          "BTC",
+          "ETH"
+        ],
+        "emit": [
+          "columns"
+        ]
+      },
+      "notes": "Every knob but the asset pair and emit is MinuteFeatures' own default (scale grid 5, 15, 60, 240, 1440, 10080 minutes; all ten families; labels y_h1..y_h15 over the 60-minute RMS scale, emitted as meta__scale). emit=columns builds the array view only: a 3-million-row panel cannot hold one dict per row. The ablation arms (features-arms.json) are column selectors over this one panel, so every arm sees identical rows."
+    },
+    "panel": {
+      "uses": "dskit.pipeline.libs.array_panel:ArrayPanelWrite",
+      "inputs": {
+        "columns": "$features.columns"
+      },
+      "params": {
+        "time": "time_ms",
+        "group": "asset",
+        "reference": "meta__scale",
+        "label_prefix": "y_h",
+        "horizons": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "step_ms": 60000,
+        "path": "panels/minute-w1w4",
+        "nullable": [
+          "bvol__level",
+          "bvol__change"
+        ]
+      },
+      "notes": "The panel directory (manifest.json + features/labels/time/group/reference/run .npy, each hashed). path is RELATIVE to the invoking directory, which must hold `panels/` and not `panels/minute-w1w2` (the writer refuses an existing destination; a rebuild is a new name). Every column MinuteFeatures emits other than time_ms, asset, meta__scale and y_h* is a feature, in the node's order: the 88 family columns and the 3 raw seq__ channels. step_ms 60000 is the bar the panel's gap-safe windows are counted in. horizons 1..15 is max_horizon's default; a test pins the two equal."
+    }
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd. Placement is not identity (hash-excluded)."
+  }
+}

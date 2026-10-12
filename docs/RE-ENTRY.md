@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-11: repo cleanup landed; owner purges 8 remote branches |
-| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-10: T2 dispersion-IC run: FAILS (beyond-market IC 0.033, t 1.15 < 2.5); forecast leaves selection, premium program next (owner's call) |
+| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-12: no forecast edge found (T2, region, HAR-vs-implied all fail; shoulder did not replicate on 2nd 300); owner picks next |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-11: W1 selection + zoo done, W2 read -1.2% CRPS vs empirical; MIO/W4 owner-gated; ADR-0261 keep rule unapproved |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
