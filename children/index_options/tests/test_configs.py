@@ -61,6 +61,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         # ADR-0258 (PROPOSED): the executable-decision-clock variant and its contract memo; plus
         # the robust-replay memo and four report artifacts the previous wrap added unlisted.
         "configs/run-equity-condor-robust-backtest-v2.json",
+        "configs/run-equity-condor-2024-holdout.json",
         # ADR-0259 (PROPOSED): T2 of the edge-and-harvest note, the forecast-dispersion IC
         # on the v2 replay's saved inputs (built 2026-10-11 at the owner's instruction).
         "configs/run-forecast-dispersion-ic.json",
@@ -250,6 +251,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         # and the option-history pull whose symbols are read from that output).
         "configs/source-option-activity.json", "configs/run-option-universe-300-rank.json",
         "configs/option_universe_300.json", "configs/source-option-universe-300.json",
+        "configs/option_universe_300b.json", "configs/option_universe_pulled_417.json",
+        "configs/run-option-universe-300b-rank.json", "configs/source-option-universe-300b.json",
+        "configs/source-option-universe-300b-bars-raw.json", "configs/source-option-universe-300b-bars-split.json",
         # The 300 stocks' daily bars source and its daily-features args overlay.
         "configs/source-stock-daily-300.json", "configs/features-300.json",
         "tests/test_source_pins.py",
@@ -346,7 +350,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the seven performance-pilot overlays and their research note (merged 2026-10-10) = 495,
     # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497,
     # plus the ADR-0259 forecast-dispersion IC document = 498, plus its result memo = 499.
-    assert len(actual) == 499
+    assert len(actual) == 506
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

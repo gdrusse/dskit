@@ -1,0 +1,57 @@
+{
+  "name": "option-universe-300b-rank",
+  "notes": "ADR-0235 amendment (2026-10-12, owner request): the SECOND 300. Same ranking as run-option-universe-300-rank.json (20-session chain_volume sum, top 300) but excluding all 417 stocks already pulled (configs/option_universe_pulled_417.json = stock_universe.json + option_universe_300.json), writing configs/option_universe_300b.json. Reads the same stored activity (option-activity, sessions 2026-09-04..2026-10-02); no new acquisition. The 300th name trades about 36k option contracts in 20 sessions, so these chains will be thinner than the first 300's. Run from children/index_options: python -m dskit.pipeline run configs/run-option-universe-300b-rank.json --asof 2026-10-03.",
+  "pipeline": {
+    "chain_volume": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/stock_options/option-universe-300-ranking",
+        "source": "option-activity",
+        "stream": "chain_volume",
+        "key_fields": [
+          "symbol",
+          "session"
+        ]
+      },
+      "notes": "Per-underlying, per-session total option volume (and count of contracts that traded) from the activity pull. A symbol missing from a session did not trade that day. The root is the machine store root (the established convention for onboarding store paths in these configs); change it per machine."
+    },
+    "rank": {
+      "uses": "dskit.pipeline.kinds_rank:TrailingRank",
+      "inputs": {
+        "records": "$chain_volume.records"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "window_field": "session",
+        "value_field": "volume",
+        "window": 20,
+        "aggregate": "sum",
+        "top_n": 300,
+        "require_top_n": true,
+        "exclude_file": "configs/option_universe_pulled_417.json",
+        "exclude_key": "tickers",
+        "entities_key": "tickers",
+        "rows_key": "ranking",
+        "exclude": [
+          "DXYZ"
+        ]
+      },
+      "notes": "Exclusion: the 417 stocks already pulled, read from configs/option_universe_pulled_417.json. DXYZ stays excluded by name (closed-end fund)."
+    },
+    "universe_file": {
+      "uses": "table-write",
+      "inputs": {
+        "table": "$rank.table"
+      },
+      "params": {
+        "path": "configs/option_universe_300b.json",
+        "source": "TrailingRank over 20 sessions of chain_volume (option-activity), top 300 excluding option_universe_pulled_417.json",
+        "expect": 2
+      },
+      "notes": "expect counts the two top-level entries, tickers and ranking. The pull source config reads `tickers` from this file."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs/option-universe-300b-rank/runs"
+  }
+}
