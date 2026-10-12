@@ -336,7 +336,7 @@
           "relpath": "minute-w1w4"
         },
         "artifact": "pipeline_runs/zoo-production-w4/models/gru-crps_tail-pooled/block-1-2026-08-01/model.pt",
-        "state_hash": "<state_hash of block 1 of gru-crps_tail-pooled in pipeline_runs/zoo-production-w4/models.json>",
+        "state_hash": "541bff85e20638413f3f730af460c769fe5b3ddc9510e009d6ea9ed36d198189",
         "group_field": "series",
         "group_codes": {
           "KXBTC15M": 0,
