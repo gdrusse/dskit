@@ -30953,9 +30953,9 @@ The document `children/index_options/configs/run-forecast-dispersion-ic.json` co
 **Sweep (2026-10-11).** No collisions for `PanelHorizonFairValue`, `HorizonRule`, `HORIZON_RULES`; `CurveBinaryFairValue` is the nearest neighbour.
 **Test.** `tests/pipeline_libs/test_panel_fair_value.py`: the number against an independent restatement, the artifact route and its hash pin, the look-ahead guard, rule and status cases, default-deny params.
 
-## ADR-0263 — ThetaData daily option and underlying history through onboarding (PROPOSED)
+## ADR-0263 — ThetaData daily option and underlying history through onboarding
 
-**Status:** PROPOSED 2026-10-12. Waits on approval; no code, no subscription until then.
+**Status:** APPROVED 2026-10-12 (owner: "start building"); connector built the same day (`af69f94c`), skeptic round 1 applied. No subscription until the free-tier smoke passes.
 
 **Context.** The index_options research (A1136–A1152) is power-limited by about 95 dates and thin Alpaca chains; no region of the forecast shows an edge. The owner will subscribe to ThetaData Options **Standard** ($80/month: history from 2016-01, every OPRA NBBO quote, IV and first-order greeks, 4 concurrent requests, personal-use licence) for one month and wants every daily field for every ticker, pulled continuously. Scope answered 2026-10-12: "daily everything". Tick and 1-minute history are out (tens of TB; 589 GB free).
 
@@ -30973,6 +30973,8 @@ The document `children/index_options/configs/run-forecast-dispersion-ic.json` co
 **Consequences.** Daily chains for roughly the whole market from 2016, which lets the existing no-training tests (HAR-vs-implied, region, real-CDF CRPS) run over ten years with 2018, 2020 and 2022; model-based tests still need forecasts. Corporate-action fields from the vendor are checked against our own split inventory before any analysis. Vendor IV/greeks are recorded, not trusted: analyses use bid/ask marks and our `OptionPriceCDF`.
 
 **Unknowns, resolved before the paid month.** (a) The exact bulk endpoints and whether one call returns a whole chain per date, from the REST reference read in-session; (b) the free tier (EOD from 2023-06, 20 requests/minute) is the connector's integration test, with a fake transport for unit tests; (c) whether the licence permits keeping files after cancelling (ask the vendor in writing); (d) throughput: 4 concurrent requests × roots × ~2,500 days must fit one month, measured on the free tier first; if not, Pro ($160, 2012) is not needed but a second month may be.
+
+**Skeptic round 1 (2026-10-12), applied.** A fresh Opus reviewer found, by scenario, that 204/472 or a non-record 200 could mark a root done while recording nothing (now: a non-record body refuses; a root that never returned a chain refuses after `empty_guard` weekdays, default 20), that raising `end` later would leave `[old_end, new_end)` permanently unpulled (now refuses: the cursor keeps `newest`; this is also the 2026 held-out guard), that a malformed row raised a bare KeyError (now names root, date, endpoint), expiration spellings (`YYYY-MM-DD` vs `YYYYMMDD` int) failing to merge (normalized), duplicate contract keys (refused), underlying dates taken from `last_trade` (now `created` only, duplicates and zero-row symbols refuse), `_ordered` blocking on close (cancelled futures), 570 escaping as a raw exception and re-listing expirations per unit (cached per root, past expirations skipped), and a failing unit discarding a 5,000-unit batch (default `batch_units` now 500). Not applied: refusing a row whose own report date differs from the requested day (the report-date semantics are unverified until the live smoke).
 
 **Sweep** (`thetadata theta data,opra,historical option eod,bulk option,vendor option pull`, 2026-10-12): no matches. Closest owners: `alpaca.py` (transport and connector pattern), `localtables.py` (pinned archives), ADR-0235 (ranking).
 

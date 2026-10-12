@@ -51,6 +51,7 @@ __all__ = [
     "DEFAULT_BASE_URL",
     "DEFAULT_BATCH_UNITS",
     "DEFAULT_CONCURRENCY",
+    "DEFAULT_EMPTY_GUARD",
     "DEFAULT_RETRIES",
     "DEFAULT_TIMEOUT_S",
     "EMPTY_STATUSES",
@@ -87,10 +88,11 @@ UNDERLYING_FIELDS = (
 )
 
 DEFAULT_BASE_URL = "http://127.0.0.1:25503"
-DEFAULT_BATCH_UNITS = 5000
+DEFAULT_BATCH_UNITS = 500
 DEFAULT_CONCURRENCY = 1
 MAX_CONCURRENCY = 8
 DEFAULT_RETRIES = 5
+DEFAULT_EMPTY_GUARD = 20
 DEFAULT_RETRY_BASE_S = 1.0
 DEFAULT_TIMEOUT_S = 300
 #: A day with no data: 204 No Content, and the Terminal's 472 "no data".
@@ -161,13 +163,24 @@ def _weekdays_descending(first, last):
         day -= timedelta(days=1)
 
 
+def _iso_date(value):
+    """Return ``YYYY-MM-DD`` for an ISO string, a ``YYYYMMDD`` string or an int."""
+    text = str(value)
+    if len(text) == 8 and text.isdigit():
+        text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise AssetError([f"Theta Terminal returned an unusable date {value!r}"]) from exc
+
+
 def _rows(payload):
     """Return the record list of a JSON body: a bare list or ``{"response": [...]}``."""
-    if isinstance(payload, dict):
-        payload = payload.get("response", [])
-    if not isinstance(payload, list):
-        raise AssetError([f"Theta Terminal returned {type(payload).__name__}, "
-                          "expected a list of records"])
+    if isinstance(payload, dict) and "response" in payload:
+        payload = payload["response"]
+    if not isinstance(payload, list) or not all(isinstance(r, dict) for r in payload):
+        raise AssetError([f"Theta Terminal returned {type(payload).__name__} that is "
+                          "not a list of records (expected a list or {'response': [...]})"])
     return payload
 
 
@@ -178,14 +191,19 @@ def _ordered(work, items, workers):
             yield work(item)
         return
     window = workers * _WINDOW_FACTOR
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        pending = deque()
+    pool = ThreadPoolExecutor(max_workers=workers)
+    pending = deque()
+    try:
         for item in items:
             pending.append(pool.submit(work, item))
             if len(pending) >= window:
                 yield pending.popleft().result()
         while pending:
             yield pending.popleft().result()
+    finally:
+        # An error or a closed generator must not wait on up to ``window``
+        # in-flight units that can each retry for minutes.
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 class ThetaDataConnector(Connector):
@@ -211,6 +229,7 @@ class ThetaDataConnector(Connector):
     def __init__(self, getter=None, sleeper=None):
         self._getter = urllib_get if getter is None else getter
         self._sleeper = time.sleep if sleeper is None else sleeper
+        self._expirations_by_root = {}
 
     def spec(self):
         """Declare the default-deny configuration catalogue.
@@ -253,6 +272,12 @@ class ThetaDataConnector(Connector):
             "concurrency": {
                 "notes": f"Parallel requests, 1..{MAX_CONCURRENCY}; default "
                          f"{DEFAULT_CONCURRENCY}. Stay at or below the plan's limit.",
+            },
+            "empty_guard": {
+                "notes": "Refuse a root whose first N consecutive weekdays (newest "
+                         "first) return no chain and which has never returned one; "
+                         f"default {DEFAULT_EMPTY_GUARD}. Catches a misspelled root, an "
+                         "index, or a plan or session fault answering 'no data'.",
             },
             "retries": {
                 "notes": f"Attempts per request; default {DEFAULT_RETRIES}.",
@@ -310,6 +335,7 @@ class ThetaDataConnector(Connector):
             ("batch_units", DEFAULT_BATCH_UNITS, 1, None),
             ("concurrency", DEFAULT_CONCURRENCY, 1, MAX_CONCURRENCY),
             ("retries", DEFAULT_RETRIES, 1, None),
+            ("empty_guard", DEFAULT_EMPTY_GUARD, 1, None),
         ):
             value = config.get(name, default)
             ints[name] = value
@@ -373,7 +399,7 @@ class ThetaDataConnector(Connector):
                 return _rows(json.loads(body))
             except ValueError as exc:
                 raise AssetError([f"Theta Terminal {path} returned invalid JSON"]) from exc
-        return []
+        raise AssetError([f"Theta Terminal {path}: no attempt was made"])
 
     def _chain(self, knobs, path, symbol, day, ranged):
         """Every contract of ``symbol`` on ``day`` from one endpoint.
@@ -392,24 +418,40 @@ class ThetaDataConnector(Connector):
             return self._get_json(knobs, path, params("*"))
         except _TooLarge:
             pass
-        listed = self._get_json(knobs, _EXPIRATIONS_PATH,
-                                {"symbol": symbol, "format": "json"})
         rows = []
-        for item in listed:
-            expiration = str(item.get("expiration", ""))
-            if expiration >= day.isoformat():
+        for expiration in self._expirations(knobs, symbol):
+            if expiration < day.isoformat():
+                continue
+            try:
                 rows.extend(self._get_json(knobs, path, params(expiration)))
+            except _TooLarge as exc:
+                raise AssetError([f"Theta Terminal {path} {symbol} {day} expiration "
+                                  f"{expiration} is too large even alone"]) from exc
         return rows
+
+    def _expirations(self, knobs, symbol):
+        """Return the root's listed expirations as ISO dates, cached per root."""
+        if symbol not in self._expirations_by_root:
+            listed = self._get_json(knobs, _EXPIRATIONS_PATH,
+                                    {"symbol": symbol, "format": "json"})
+            self._expirations_by_root[symbol] = sorted(
+                {_iso_date(item.get("expiration")) for item in listed})
+        return self._expirations_by_root[symbol]
 
     # ------------------------------------------------------------------
     # normalization
 
     @staticmethod
-    def _contract(row):
+    def _contract(row, where):
         right = _RIGHTS.get(str(row.get("right", "")).upper())
         if right is None:
-            raise AssetError([f"Theta Terminal row has unknown right {row.get('right')!r}"])
-        return (str(row["expiration"]), float(row["strike"]), right)
+            raise AssetError([f"Theta Terminal {where} row has unknown right "
+                              f"{row.get('right')!r}"])
+        try:
+            return (_iso_date(row["expiration"]), float(row["strike"]), right)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AssetError([f"Theta Terminal {where} row lacks a usable expiration "
+                              f"or strike: {str(row)[:_EXCERPT_CHARS]}"]) from exc
 
     def _day(self, knobs, unit):
         """Return the merged, ordered rows of one (root, date) unit."""
@@ -417,11 +459,19 @@ class ThetaDataConnector(Connector):
         path = _GREEKS_PATH if knobs["greeks"] else _EOD_PATH
         merged = {}
         for row in self._chain(knobs, path, symbol, day, True):
-            merged[self._contract(row)] = dict(row)
+            key = self._contract(row, f"{symbol} {day} {path}")
+            if key in merged:
+                raise AssetError([f"Theta Terminal {path} {symbol} {day} repeats "
+                                  f"contract {key}"])
+            merged[key] = dict(row)
         interest = {}
         if knobs["open_interest"]:
             for row in self._chain(knobs, _OI_PATH, symbol, day, False):
-                interest[self._contract(row)] = row.get("open_interest")
+                key = self._contract(row, f"{symbol} {day} {_OI_PATH}")
+                if key in interest:
+                    raise AssetError([f"Theta Terminal {_OI_PATH} {symbol} {day} "
+                                      f"repeats contract {key}"])
+                interest[key] = row.get("open_interest")
         out = []
         for key in sorted(set(merged) | set(interest)):
             data = {name: None for name in OPTION_FIELDS}
@@ -434,24 +484,33 @@ class ThetaDataConnector(Connector):
         return unit, out
 
     def _underlying(self, knobs, symbol):
-        """Underlying daily rows of ``symbol`` over ``[start, end)``."""
+        """Return the underlying daily rows of ``symbol`` over ``[start, end)``."""
         last = knobs["end"] - timedelta(days=1)
-        rows = self._get_json(knobs, _STOCK_EOD_PATH, {
-            "symbol": symbol, "start_date": _compact(knobs["start"]),
-            "end_date": _compact(last), "format": "json"})
-        out = []
+        try:
+            rows = self._get_json(knobs, _STOCK_EOD_PATH, {
+                "symbol": symbol, "start_date": _compact(knobs["start"]),
+                "end_date": _compact(last), "format": "json"})
+        except _TooLarge as exc:
+            raise AssetError([f"Theta Terminal {_STOCK_EOD_PATH} {symbol} is too large; "
+                              "narrow start/end"]) from exc
+        if not rows:
+            raise AssetError([f"Theta Terminal returned no stock bars for {symbol}; an "
+                              "index or unsupported symbol, or a plan without stock data"])
+        out = {}
         for row in rows:
-            stamp = row.get("created") or row.get("timestamp") or row.get("last_trade")
-            if not stamp:
-                raise AssetError([f"Theta Terminal {symbol} stock row has no date"])
-            day = str(stamp)[:10]
+            if not row.get("created"):
+                raise AssetError([f"Theta Terminal {symbol} stock row has no `created` "
+                                  "report date"])
+            day = str(row["created"])[:10]
             if not knobs["start"].isoformat() <= day < knobs["end"].isoformat():
                 continue
+            if day in out:
+                raise AssetError([f"Theta Terminal repeats {symbol} stock bar {day}"])
             data = {name: None for name in UNDERLYING_FIELDS}
             data.update(row)
             data.update(symbol=symbol, date=day)
-            out.append(data)
-        return sorted(out, key=lambda d: d["date"])
+            out[day] = data
+        return [out[day] for day in sorted(out)]
 
     # ------------------------------------------------------------------
     # the four verbs
@@ -543,9 +602,14 @@ class ThetaDataConnector(Connector):
         count = 0
         for symbol in knobs["symbols"]:
             top = last
-            done = cursors.get(symbol, {}).get("oldest")
-            if done:
-                top = min(top, date.fromisoformat(done) - timedelta(days=1))
+            cursor = cursors.get(symbol, {})
+            if cursor.get("newest") and last.isoformat() > cursor["newest"]:
+                raise AssetError([
+                    f"{symbol}: end {knobs['end']} is later than this store's pulled "
+                    f"window (newest {cursor['newest']}); extending a store would leave "
+                    "a gap, so register a new store instead"])
+            if cursor.get("oldest"):
+                top = min(top, date.fromisoformat(cursor["oldest"]) - timedelta(days=1))
             for day in _weekdays_descending(knobs["start"], top):
                 if count >= knobs["batch_units"]:
                     return
@@ -554,11 +618,24 @@ class ThetaDataConnector(Connector):
 
     def _option_messages(self, knobs, stream, cursors):
         units = self._units(knobs, cursors)
+        newest = (knobs["end"] - timedelta(days=1)).isoformat()
+        empties = {}
         for (symbol, day), rows in _ordered(
                 lambda unit: self._day(knobs, unit), units, knobs["concurrency"]):
+            cursor = cursors.setdefault(symbol, {})
             for data in rows:
                 yield self._record(stream, data)
-            cursors[symbol] = {"oldest": day.isoformat()}
+            if rows:
+                cursor["seen"] = True
+            elif not cursor.get("seen"):
+                empties[symbol] = empties.get(symbol, 0) + 1
+                if empties[symbol] >= knobs["empty_guard"]:
+                    raise AssetError([
+                        f"{symbol}: {empties[symbol]} consecutive weekdays from "
+                        f"{day.isoformat()} upward returned no chain and none ever "
+                        "has; check the symbol, the plan and that it is an option root"])
+            cursor.setdefault("newest", newest)
+            cursor["oldest"] = day.isoformat()
 
     def _underlying_messages(self, knobs, stream, cursors):
         for symbol in knobs["symbols"]:

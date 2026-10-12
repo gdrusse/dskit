@@ -315,3 +315,141 @@ def test_urllib_getter_against_loopback_server():
         assert urllib_get(url + "empty", {}, 5)[0] == 472
     finally:
         server.shutdown()
+
+
+# ---- review round: silent-hole and wedge guards ----------------------------
+
+def test_non_record_body_refuses_instead_of_reading_empty():
+    def columnar(url, params, timeout):
+        return 200, {}, b'{"header": {}, "strike": [100]}'
+    with pytest.raises(AssetError):
+        pull(ThetaDataConnector(getter=columnar, sleeper=lambda s: None))
+
+    def scalars(url, params, timeout):
+        return 200, {}, b"[1, 2]"
+    with pytest.raises(AssetError):
+        pull(ThetaDataConnector(getter=scalars, sleeper=lambda s: None))
+
+
+def test_root_that_never_returns_a_chain_is_refused_not_marked_done():
+    t = Terminal()                     # every day answers 472
+    with pytest.raises(AssetError) as err:
+        pull(connector(t), {**CONFIG, "empty_guard": 2})
+    assert "AAA" in str(err.value)
+
+
+def test_empty_days_after_real_data_are_fine():
+    t = populated()                    # 01-02 is empty but older than real data
+    records, state = pull(connector(t), {**CONFIG, "empty_guard": 1})
+    assert records and state[OPTION_EOD_STREAM]["AAA"]["oldest"] == "2025-01-02"
+
+
+def test_extending_end_refuses_rather_than_leave_a_gap():
+    _, state = pull(connector(populated()))
+    with pytest.raises(AssetError) as err:
+        pull(connector(populated()), {**CONFIG, "end": "2025-01-09"}, state=state)
+    assert "gap" in str(err.value)
+
+
+def test_lowering_start_resumes_below_oldest():
+    t = populated()
+    _, state = pull(connector(t), {**CONFIG, "start": "2025-01-03"})
+    t.chain[(EOD, "20250102")] = [eod_row()]
+    records, _ = pull(connector(t), CONFIG, state=state)
+    assert {r["data"]["date"] for r in records} == {"2025-01-02"}
+
+
+def test_malformed_row_names_root_date_and_endpoint():
+    t = populated()
+    t.chain[(EOD, "20250106")] = [{"symbol": "AAA", "right": "CALL", "bid": 1.0}]
+    with pytest.raises(AssetError) as err:
+        pull(connector(t))
+    assert "AAA" in str(err.value) and "2025-01-06" in str(err.value)
+
+
+def test_expiration_spellings_merge_into_one_contract():
+    t = Terminal()
+    t.chain[(EOD, "20250106")] = [eod_row(expiration="2025-02-21")]
+    t.chain[(OI, "20250106")] = [oi_row(expiration=20250221)]
+    cfg = {**CONFIG, "start": "2025-01-06", "end": "2025-01-07"}
+    records, _ = pull(connector(t), cfg)
+    assert len(records) == 1
+    assert records[0]["data"]["open_interest"] == 7
+    assert records[0]["data"]["expiration"] == "2025-02-21"
+
+
+def test_duplicate_contract_in_one_response_refuses():
+    t = populated()
+    t.chain[(EOD, "20250106")] = [eod_row(), eod_row()]
+    with pytest.raises(AssetError) as err:
+        pull(connector(t))
+    assert "repeats" in str(err.value)
+
+
+def test_mid_batch_failure_emits_no_state():
+    t = populated()
+    t.status[(EOD, "20250103")] = [403]
+    seen = []
+    with pytest.raises(AssetError):
+        for message in connector(t).read(CONFIG, [OPTION_EOD_STREAM], {}, "backfill"):
+            seen.append(message["type"])
+    assert "RECORD" in seen and "STATE" not in seen
+
+
+def test_570_skips_past_expirations_merges_open_interest_and_refuses_alone():
+    t = Terminal()
+    t.expirations = ["2024-12-20", "2025-02-21"]
+    t.chain[(EOD, "20250106")] = [eod_row(), eod_row(expiration="2024-12-20")]
+    t.chain[(OI, "20250106")] = [oi_row(), oi_row(expiration="2024-12-20")]
+    real = t.__call__
+    def too_large(url, params, timeout):
+        if params.get("expiration") == "*" and url.endswith(("greeks/eod", "open_interest")):
+            return 570, {}, b"LARGE_REQUEST"
+        return real(url, params, timeout)
+    cfg = {**CONFIG, "start": "2025-01-06", "end": "2025-01-07"}
+    records, _ = pull(ThetaDataConnector(getter=too_large, sleeper=lambda s: None), cfg)
+    assert [r["data"]["expiration"] for r in records] == ["2025-02-21"]
+    assert records[0]["data"]["open_interest"] == 7
+
+    def always_large(url, params, timeout):
+        if url.endswith(("greeks/eod", "open_interest")):
+            return 570, {}, b"LARGE_REQUEST"
+        return real(url, params, timeout)
+    with pytest.raises(AssetError):
+        pull(ThetaDataConnector(getter=always_large, sleeper=lambda s: None), cfg)
+
+
+def test_underlying_bounds_duplicates_and_missing_report_date():
+    def stock(rows):
+        t = Terminal()
+        t.stock["AAA"] = rows
+        return t
+
+    inside = {"created": "2025-01-06T17:15:00", "close": 11}
+    outside = [{"created": "2025-01-01T17:15:00", "close": 1},
+               {"created": "2025-01-07T17:15:00", "close": 2}]
+    records, _ = pull(connector(stock(outside + [inside])), streams=(UNDERLYING_STREAM,))
+    assert [r["data"]["date"] for r in records] == ["2025-01-06"]
+    for bad in ([inside, dict(inside)], [{"close": 3, "last_trade": "2025-01-06"}], []):
+        with pytest.raises(AssetError):
+            pull(connector(stock(bad)), streams=(UNDERLYING_STREAM,))
+
+
+def test_concurrency_order_with_many_units_and_reversed_completion():
+    import time
+    t = populated()
+    for day in range(2, 32):
+        if day % 7 not in (0, 6):
+            t.chain[(EOD, f"202501{day:02d}")] = [eod_row()]
+    inner = t.__call__
+
+    def slow_for_newest(url, params, timeout):
+        day = int((params.get("date") or params.get("start_date"))[-2:])
+        time.sleep(0.0004 * day)
+        return inner(url, params, timeout)
+
+    cfg = {"symbols": ["AAA"], "start": "2025-01-02", "end": "2025-02-01"}
+    serial, s_state = pull(ThetaDataConnector(getter=slow_for_newest, sleeper=lambda s: None), cfg)
+    parallel, p_state = pull(ThetaDataConnector(getter=slow_for_newest, sleeper=lambda s: None),
+                             {**cfg, "concurrency": 4})
+    assert len(serial) > 15 and parallel == serial and p_state == s_state
