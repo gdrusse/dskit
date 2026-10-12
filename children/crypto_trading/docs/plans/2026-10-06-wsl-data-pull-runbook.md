@@ -380,6 +380,82 @@ python -m dskit.onboarding register-source panel-minute --root "$OB" --catalog-s
 python -m dskit.onboarding acquire --root "$OB" --source panel-minute --stream files --mode backfill
 ```
 
+## B8. The W4 take test (owner 2026-10-11)
+
+A simple profitability test: trade the 15-minute BTC/ETH binaries over W4 (2026-08-01 to 2026-09-15; W5 is never read) at the touch, one
+contract, with the frozen GRU's P(YES) beside the three closed-form fair values, at a margin grid fixed in the document. Steps 1 to 3
+use no GPU; step 4 is the W3 refit (GPU); 5 to 7 are cheap. Run each from section 0's shell.
+
+```bash
+# 1. Build the W4 panel to a NEW directory (minute-w1w2 is never touched). Needs the Binance days to 2026-09-14 in the store.
+cd ~/data/crypto_trading                         # the directory that holds panels/
+PYTHONPATH="$CRYPTO_TRADING_ROOT" python -m dskit.pipeline run "$CRYPTO_TRADING_ROOT/configs/run-panel-build-w4.json" --asof 2026-09-15
+cd "$CRYPTO_TRADING_ROOT"
+# 2. Publish it as its own source and acquire it (the W1/W2 source panel-minute is unchanged).
+python -m dskit.onboarding register-source panel-minute-w4 --root "$OB" --catalog-source panel-minute-w4 \
+    --connector localblobs --config @configs/source-panel-minute-w4.json --activate   # once
+python -m dskit.onboarding acquire --root "$OB" --source panel-minute-w4 --stream files --mode backfill
+# 3. The training rows must be the same rows: every row before 2026-07-31 23:40 (the last 15 labels of the old panel were NaN).
+python - <<'PY'
+import os
+import numpy as np
+from dskit.pipeline.libs.array_panel import ArrayPanel
+root = os.environ["OB"]
+old = ArrayPanel.from_source({"root": root, "source": "panel-minute", "stream": "files", "relpath": "minute-w1w2"})
+new = ArrayPanel.from_source({"root": root, "source": "panel-minute-w4", "stream": "files", "relpath": "minute-w1w4"})
+cut = 1785542400000 - 20 * 60000
+for g in old.groups:
+    a, b = (np.flatnonzero((np.asarray(p.group) == g) & (np.asarray(p.time) <= cut)) for p in (old, new))
+    assert len(a) == len(b), (g, len(a), len(b))
+    for name in ("time", "run", "reference", "features", "labels"):
+        assert np.array_equal(np.asarray(getattr(old, name))[a], np.asarray(getattr(new, name))[b], equal_nan=True), (g, name)
+print("the W4 panel reproduces every W1/W2 row")
+PY
+# 4. The W3 refit: one block, every minute, frozen hyperparameters, trained to 2026-07-30 (2026-07-31 is the embargo day), scored on W4.
+#    The local overlay names the pick, the freeze and the recipe copy they were written from (their sha256 must still match).
+python - <<'PY'
+import json, os
+data = os.path.expanduser("~/data/crypto_trading")
+json.dump({"pick": f"{data}/chain/pick/zoo-pick.json", "frozen": f"{data}/hpo/hpo-frozen.json",
+           "recipe": f"{data}/chain/configs/zoo-lanes-recipe.json"}, open(f"{data}/production-w4-local.json", "w"), indent=1)
+PY
+python -m dskit.pipeline workflow configs/workflow-production.json --args configs/production-args-w4.json \
+    --args ~/data/crypto_trading/production-w4-local.json
+# 5. Pin the refit model into the take document (a recorded edit: the document's hash then names this exact model).
+python - <<'PY'
+import json
+work = "pipeline_runs/zoo-production-w4"
+entry = next(m for m in json.load(open(f"{work}/models.json"))["models"] if m["lane"] == "gru-crps_tail-pooled" and m["block"] == 1)
+path = "configs/run-w4-take.json"
+doc = json.load(open(path))
+gru = doc["pipeline"]["fair_gru"]["params"]
+assert gru["artifact"] == f"{work}/{entry['path']}/model.pt", (gru["artifact"], entry["path"])
+gru["state_hash"] = entry["state_hash"]
+open(path, "w").write(json.dumps(doc, indent=2) + "\n")
+print("pinned", entry["state_hash"])
+PY
+# 6. Point the readers at your store if it is not the shipped root, make the table's directory, run.
+sed -i "s#/home/russell/data/crypto_trading/ob#$OB#g" configs/run-w4-take.json
+mkdir -p ~/data/crypto_trading/w4-take
+python -m dskit.pipeline run configs/run-w4-take.json --asof 2026-09-15 --adapter crypto_trading
+# 7. Read it: P&L after fees, trades, hit rate, day-block se and t = mean / se, per margin, model and lead (nothing else is decided here).
+python - <<'PY'
+import glob, json
+for path in sorted(glob.glob("pipeline_runs/crypto-w4-take-*/artifacts/take_m*/binary_score.json")):
+    margin = json.load(open(path))["summary"]["margin"]
+    for c in json.load(open(path))["scores"]:
+        if c["bucket"] == "all" and c["n_trades"]:
+            t = c["pnl_mean"] / c["pnl_se"] if c["pnl_se"] else float("nan")
+            print(f"margin {margin:.2f} {c['model']:9} {c['group']:16} trades {c['n_trades']:5} pnl {c['pnl_total']:9.2f} "
+                  f"mean {c['pnl_mean']:+.4f} se {c['pnl_se'] or float('nan'):.4f} t {t:+.2f} hit {c['hit_rate']:.3f}")
+PY
+```
+
+Caveats: taker only; quotes are 1-minute candle closes, not a book (no depth, no queue); today's fee schedule applied to history, for ONE
+contract (rounded up to the cent); the fair value ignores the few seconds to the fill and the 60-second settlement average; one model, one
+seed, 45 days. The readers scan the whole acquired Kalshi streams (as `run-features-15m.json` does) but every market, anchor and candle at or
+after 2026-09-15 is cut before any join. Step 4 and the take run each read W4 once; a change after seeing it is a new decision.
+
 ## Known issues
 
 - Size B6 before the full pull; the candle and trade pulls cost a chain per ARCHIVED market, with no date bound (7c, 7e).

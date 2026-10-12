@@ -120,7 +120,8 @@ class ProductionPipeline(_Pipeline):
         c, p = self.cfg, self.section
         args = {"work_dir": p["work_dir"], "recipe": c["recipe"], "pick": c["pick_unfilled"], "frozen": c["frozen_unfilled"],
                 "forward_start": p["forward_start"], "evaluate_through": p["evaluate_through"], "retrain_days": p["retrain_days"],
-                "allow_past_w2": p["allow_past_w2"], "parallel": c["parallel"]}
+                "allow_past_w2": p["allow_past_w2"], "panel_source": c["panel_source"], "panel_relpath": c["panel_relpath"],
+                "parallel": c["parallel"]}
         layout = {
             "blocks": {"dir": "{W}/blocks", "lanes": "{W}/blocks/production-lanes.json"},
             "train": {"dir": "{W}/train", "batch": "{W}/train/lanes/" + _BATCH},
@@ -128,7 +129,8 @@ class ProductionPipeline(_Pipeline):
         registry = {
             "blocks": self._entry(f"{self.cli} production-manifest --pick {{in.pick}} --frozen {{in.frozen}} --recipe {{in.recipe}} "
                                   "--forward-start {in.forward_start} --evaluate-through {in.evaluate_through} "
-                                  "--retrain-days {in.retrain_days} --allow-past-w2 {in.allow_past_w2} --out {out.lanes}",
+                                  "--retrain-days {in.retrain_days} --allow-past-w2 {in.allow_past_w2} --panel-source={in.panel_source} "
+                                  "--panel-relpath={in.panel_relpath} --out {out.lanes}",
                                   "Write one lane per retrain block (refuses a window past W2 unless allow_past_w2)."),
             "train": self._entry(f"{self.batch} {{in.lanes}} --root {{dir}}/lanes --parallel {{in.parallel}}",
                                  "Train and score every block; each lane is an independent expanding-window retrain."),
@@ -139,7 +141,8 @@ class ProductionPipeline(_Pipeline):
             "blocks": {"notes": "Needs the zoo pick and the HPO freeze (`--args` fills `pick` and `frozen`).", "registry": "blocks", "out": ["lanes"],
                        "in": {"W": "$args.work_dir", "pick": "$args.pick", "frozen": "$args.frozen", "recipe": "$args.recipe",
                               "forward_start": "$args.forward_start", "evaluate_through": "$args.evaluate_through",
-                              "retrain_days": "$args.retrain_days", "allow_past_w2": "$args.allow_past_w2"}},
+                              "retrain_days": "$args.retrain_days", "allow_past_w2": "$args.allow_past_w2",
+                              "panel_source": "$args.panel_source", "panel_relpath": "$args.panel_relpath"}},
             "train": {"notes": "Runs the generated lanes in parallel.", "registry": "train", "out": ["batch"],
                       "in": {"W": "$args.work_dir", "parallel": "$args.parallel", "lanes": "$blocks.out.lanes"}},
             "index": {"notes": "Refuses unless every lane is ok.", "registry": "index", "out": ["models", "report"],

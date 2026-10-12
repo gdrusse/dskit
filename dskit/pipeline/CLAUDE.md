@@ -162,7 +162,7 @@ dskit/pipeline/
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries + prior_index + the stream-manifests node, ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
-│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260)
+│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260; PanelHorizonFairValue prices a binary from a forecaster's CDF, ADR-0262)
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0256),
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
 ├── README.md          user-facing docs

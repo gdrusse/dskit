@@ -336,12 +336,14 @@
     },
     "pipeline": {
       "notes": "The production pipeline as ONE workflow manifest: blocks (one lane per retrain block) -> train (those lanes, in parallel) -> index (every retrain's model under a stable path, models.json, the forward report). Run: `python -m dskit.pipeline workflow configs/workflow-production.json --args production-args.json` with a FLAT overlay {\"pick\": \"<zoo-pick.json>\", \"frozen\": \"<hpo-frozen.json>\"} (do not wrap it in an \"args\" key; add forward_start, evaluate_through, retrain_days to override). The production retrain trains on every minute (production.row_stride 1), unlike the zoo. A window past W2 refuses unless the recipe's allow_past_w2 is true. Regenerate with `zoo_lanes ... --production-out configs/workflow-production.json`.",
-      "args_notes": "`pick` and `frozen` are unfilled until --args supplies them; forward_start, evaluate_through, retrain_days and allow_past_w2 are the recipe's production values; `parallel` is workflow-batch's lane parallelism.",
+      "args_notes": "`pick` and `frozen` are unfilled until --args supplies them; forward_start, evaluate_through, retrain_days and allow_past_w2 are the recipe's production values; `parallel` is workflow-batch's lane parallelism. `panel_source` and `panel_relpath` (empty = the base panel) repoint every lane at an extended build of the panel, for a window the zoo's panel does not reach (W4; configs/production-args-w4.json).",
       "cli": "crypto_trading.zoo_lanes",
       "recipe": "configs/zoo-lanes-recipe.json",
       "stage_template": "stage-template.json",
       "pick_unfilled": "<zoo-pick.json: the zoo's pick, from `zoo_lanes pick`>",
       "frozen_unfilled": "<hpo-frozen.json: the HPO's freeze, from the HPO pipeline>",
+      "panel_source": "",
+      "panel_relpath": "",
       "parallel": 2
     },
     "w5": {

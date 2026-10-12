@@ -14,6 +14,11 @@ only: an ``evaluate_through`` past W5's start (the held-out cut, read from the o
 ``production.w5``) is refused ALWAYS. A ``forward_start`` before W2's start is refused always (those days are W1's
 selection folds and the embargo).
 
+The panel. The frozen model was fitted on the zoo's panel, which stops at W2's end; a window past it (W4) needs a panel
+that reaches it. ``production-manifest --panel-source/--panel-relpath`` repoint every lane (the model, both baselines and
+every score) at such a build, and nothing else: the second declared override beside ``row_stride`` (``PRODUCTION_OVERRIDES``),
+so every other param must still hash to the freeze, and the realized panel of each retrain must equal the declared one.
+
 Models are saved at every retrain by the existing seam, not a new one: ``PanelTrain`` already writes ``model.pt`` (the
 weights), ``model.json`` (module parameters, window/stride/assets/columns, the scaler and band hash in
 ``adapter_state``, a content hash) and ``training_curve.json`` under the fold run's ``artifacts/<fit node>``; a
@@ -37,11 +42,16 @@ from .zoo_pick import (
     write_json,
 )
 
-__all__ = ["ForwardWindow", "ModelIndex", "ProductionPlan", "index_main", "manifest_main"]
+__all__ = ["ForwardWindow", "ModelIndex", "PRODUCTION_OVERRIDES", "ProductionPlan", "index_main", "manifest_main"]
 
 _MS = 1000
 #: The one fit param the production pipeline overrides (its value is the recipe's ``production.row_stride``).
 _STRIDE = "row_stride"
+#: The panel keys the production pipeline may repoint (an extended build of the same panel, registered as its own source).
+_PANEL_KEYS = ("source", "relpath")
+#: What the production pipeline overrides on the frozen model, as :func:`~crypto_trading.zoo_pick.hparams_sha256` exclusions:
+#: every other fit param must hash to the freeze.
+PRODUCTION_OVERRIDES = (_STRIDE, *(f"panel.{key}" for key in _PANEL_KEYS))
 _NOTES = "notes"
 _TRUE = ("true", "1", "yes")
 _FALSE = ("false", "0", "no")
@@ -208,6 +218,7 @@ class ProductionPlan:
         self.stride = self.production[_STRIDE]
         if isinstance(self.stride, bool) or not isinstance(self.stride, int) or self.stride < 1:
             raise ValueError(f"production.{_STRIDE} must be an integer >= 1, got {self.stride!r}")
+        self.panel = {key: lanes.base["panel"][key] for key in _PANEL_KEYS}
         self.model_lanes = list(pick["winner"]["lanes"])
         self.scope = pick["winner"]["scope"]
 
@@ -225,8 +236,9 @@ class ProductionPlan:
         for lane in model:
             fit = copy.deepcopy(self.frozen["params"][lane])
             fit[_STRIDE] = self.stride
-            if hparams_sha256(fit, (_STRIDE,)) != hparams_sha256(self.frozen["params"][lane], (_STRIDE,)):
-                raise ValueError(f"{lane}: the production fit differs from the frozen one beyond {_STRIDE}")
+            fit["panel"] = {**fit["panel"], **self.panel}
+            if hparams_sha256(fit, PRODUCTION_OVERRIDES) != hparams_sha256(self.frozen["params"][lane], PRODUCTION_OVERRIDES):
+                raise ValueError(f"{lane}: the production fit differs from the frozen one beyond {PRODUCTION_OVERRIDES}")
             cells[lane] = {**zoo[lane], "fit": fit}
         return cells
 
@@ -253,8 +265,8 @@ class ProductionPlan:
             "pick": self.pick["winner"]["cell"], "model_lanes": self.model_lanes, "blocks": blocks,
             "forward_start": self.window.start.isoformat(), "evaluate_through": self.window.through.isoformat(),
             "retrain_days": self.window.retrain_days, "allow_past_w2": self.window.allow,
-            _STRIDE: self.stride,
-            "hparams_sha256": {lane: hparams_sha256(self.frozen["params"][lane], (_STRIDE,)) for lane in self.model_lanes},
+            _STRIDE: self.stride, "panel": dict(self.panel),
+            "hparams_sha256": {lane: hparams_sha256(self.frozen["params"][lane], PRODUCTION_OVERRIDES) for lane in self.model_lanes},
             "frozen_winner": self.frozen["winner"]}
         return manifest
 
@@ -291,6 +303,7 @@ class ModelIndex:
         self.stride = recipe["production"][_STRIDE]
         if self.info.get(_STRIDE) != self.stride:
             raise ValueError(f"the manifest was built with {_STRIDE} {self.info.get(_STRIDE)!r}, the recipe declares {self.stride!r}")
+        self.panel = self.info.get("panel")
         self.blocks = {b["name"]: b for b in self.info["blocks"]}
         self.results = {name: ZooResults(root, recipe, template, f"{name}-") for name in self.blocks}
         self.fit_node = self.results[next(iter(self.blocks))].spec.model_node
@@ -381,17 +394,19 @@ class ModelIndex:
         if model and realized.get(_STRIDE) != self.stride:
             raise ValueError(f"{lane} block {block['k']}: realized {_STRIDE} {realized.get(_STRIDE)!r} is not the declared "
                              f"production.{_STRIDE} {self.stride!r}")
-        hashed = hparams_sha256(realized, (_STRIDE,) if model else ())
+        if model and self.panel is not None and {k: realized["panel"].get(k) for k in _PANEL_KEYS} != self.panel:
+            raise ValueError(f"{lane} block {block['k']}: the retrain read panel {realized['panel']!r}, not the declared {self.panel!r}")
+        hashed = hparams_sha256(realized, PRODUCTION_OVERRIDES if model else ())
         wanted = self.info["hparams_sha256"].get(lane)
         if wanted is not None and hashed != wanted:
             raise ValueError(f"{lane} block {block['k']}: the run's hyperparameters differ from the frozen ones")
-        if model and hashed != hparams_sha256(self.frozen["params"][lane], (_STRIDE,)):
+        if model and hashed != hparams_sha256(self.frozen["params"][lane], PRODUCTION_OVERRIDES):
             raise ValueError(f"{lane} block {block['k']}: the run's hyperparameters differ from hpo-frozen.json's")
         sidecar = os.path.join(target, self.files["sidecar"])
         state = load_json(sidecar)["state_hash"] if os.path.isfile(sidecar) else None
         listing = "".join(f"{name}:{digest}\n" for name, digest in digests.items())
         return {"lane": lane, "block": block["k"], "cutoff": block["first"], "train_end": block["train_end"],
-                "hparams_sha256": hashed, _STRIDE: realized.get(_STRIDE), "path": relative, "files": digests, "state_hash": state,
+                "hparams_sha256": hashed, _STRIDE: realized.get(_STRIDE), "panel": {k: realized["panel"].get(k) for k in _PANEL_KEYS}, "path": relative, "files": digests, "state_hash": state,
                 "sha256": hashlib.sha256(listing.encode("utf-8")).hexdigest()}
 
     def report(self):
@@ -450,7 +465,8 @@ def manifest_main(argv=None):
     ----------
     argv : list of str, optional
         ``--pick``, ``--frozen``, ``--out``, optional ``--recipe``, ``--forward-start``, ``--evaluate-through``,
-        ``--retrain-days`` and ``--allow-past-w2 true|false`` (each replacing the recipe's ``production`` value).
+        ``--retrain-days`` and ``--allow-past-w2 true|false`` (each replacing the recipe's ``production`` value), and
+        ``--panel-source`` with ``--panel-relpath`` (both or neither; empty means the base manifest's panel).
 
     Returns
     -------
@@ -466,9 +482,13 @@ def manifest_main(argv=None):
     parser.add_argument("--evaluate-through")
     parser.add_argument("--retrain-days", type=int)
     parser.add_argument("--allow-past-w2", type=_flag)
+    parser.add_argument("--panel-source")
+    parser.add_argument("--panel-relpath")
     args = parser.parse_args(argv)
     pick, frozen = load_json(args.pick), load_frozen(args.frozen, args.pick)
     recipe, lanes, _, here = _recipe_for(pick, frozen, args.recipe)
+    if args.panel_source or args.panel_relpath:
+        lanes.use_panel(args.panel_source, args.panel_relpath)
     window = ForwardWindow(recipe["production"], recipe["w2"]["bounds"], lanes.base["folds"]["embargo_days"],
                            w5_start_ms(recipe["production"], here),
                            {"forward_start": args.forward_start, "evaluate_through": args.evaluate_through,

@@ -31,8 +31,14 @@ empty. torch is imported only inside methods.
 """
 
 import importlib
+import json
+import math
+import os
 from abc import ABC, abstractmethod
+from types import MappingProxyType
 
+from dskit.pipeline.binary_curve import STATUS_OK, STATUS_SUFFIX, name_ok, named_payoff, output_collision_problems
+from dskit.pipeline.binary_pricing import PAYOFFS
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.libs.array_panel import (
     DEFAULT_MISSING,
@@ -52,10 +58,11 @@ from dskit.pipeline.libs.predictive_cdf import (
 )
 from dskit.pipeline.libs.torch import TorchAdapter, TorchBatches, TorchTrain
 from dskit.pipeline.libs.torch_ts import SequenceEncoderAdapter, quantile_pinball_loss
-from dskit.pipeline.node import check_int_param, reject_unknown_params
-from dskit.pipeline.records import number_ok
+from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = [
+    "CDF_SLACK",
     "DEFAULT_ASSET_INDICATOR",
     "DEFAULT_DEVICE",
     "DEFAULT_DROPOUT",
@@ -63,10 +70,13 @@ __all__ = [
     "DEFAULT_STRIDE_OFFSET",
     "DEFAULT_STRIDE",
     "HEADS",
+    "HORIZON_RULES",
     "HorizonHead",
+    "HorizonRule",
     "MixtureHead",
     "NODE_KINDS",
     "PanelAdapter",
+    "PanelHorizonFairValue",
     "PanelTrain",
     "QuantileHead",
     "TorchHorizonForecaster",
@@ -794,6 +804,80 @@ class TorchHorizonForecaster(HorizonForecaster):
         if adapter.bands is not None:
             self._bands[adapter.bands.panel.directory] = adapter.bands
 
+    #: The sidecar's content hash when this forecaster was restored from an artifact, else ``None``.
+    state_hash = None
+
+    @property
+    def train_end_ms(self):
+        """The last instant the fit used: the ``bounds.train_end_ms`` its params recorded."""
+        return self._adapter.params["bounds"]["train_end_ms"]
+
+    @classmethod
+    def restore(cls, artifact, device=None):
+        """Restore a saved forecaster from its ``model.pt`` alone, its params read from the sidecar beside it.
+
+        Parameters
+        ----------
+        artifact : str
+            The path of a ``model.pt`` that :class:`PanelTrain` wrote (its ``model.json`` sits beside it).
+        device : str, optional
+            Replaces the device the fit recorded (a fit on ``cuda`` can be served on ``cpu``).
+
+        Returns
+        -------
+        TorchHorizonForecaster
+            With :attr:`state_hash` set to the sidecar's content hash.
+
+        Raises
+        ------
+        ValueError
+            The artifact is missing, its sidecar is unreadable, or the state does not restore (the loader's
+            own refusals, which name the artifact).
+
+        Examples
+        --------
+        Serve a fit on the CPU::
+
+            forecaster = TorchHorizonForecaster.restore("models/gru/block-1/model.pt", device="cpu")
+            forecaster.state_hash
+            # -> the sha256 the sidecar recorded
+        """
+        sidecar_path = os.path.splitext(artifact)[0] + ".json"
+        try:
+            with open(sidecar_path, "r", encoding="utf-8") as handle:
+                sidecar = json.load(handle)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"cannot read the sidecar {sidecar_path!r} of artifact {artifact!r}: {exc}") from exc
+        params = dict(sidecar["params"])
+        if device is not None:
+            params["device"] = device
+        forecaster = PanelTrain("model", params, mode="load", artifact=artifact).run_load(None, {})["model"]
+        forecaster.state_hash = sidecar["state_hash"]
+        return forecaster
+
+    def usable(self, panel, rows):
+        """Say which ``rows`` it can forecast: a trained asset whose run covers the window.
+
+        Parameters
+        ----------
+        panel : ArrayPanel
+            The panel the rows index.
+        rows : sequence of int
+            Global row indices.
+
+        Returns
+        -------
+        numpy.ndarray
+            One bool per row; False for an untrained asset or a window that would bridge a gap
+            (the two cases :meth:`forecast` refuses).
+        """
+        import numpy as np
+
+        rows = np.asarray(rows, dtype=np.int64)
+        window, stride = self._adapter.window_stride(self._adapter.params)
+        trained = np.isin(np.asarray(panel.group)[rows], self._adapter.params["assets"])
+        return trained & (np.asarray(panel.run)[rows] >= (window - 1) * stride + 1)
+
     def _bands_for(self, panel):
         """Return the bands cut on ``panel``, memoized per panel directory (the scan is not cheap)."""
         if panel.directory not in self._bands:
@@ -1132,3 +1216,428 @@ class PanelTrain(TorchTrain):
         out = super().run_load(ctx, inputs)
         out["model"] = self._forecaster(out["signal"])
         return out
+
+
+#: How far outside ``[0, 1]`` a computed CDF may stray, in machine epsilons of its dtype, and be read as rounding
+#: (it is then clipped into ``[0, 1]``); anything further is a defect and refuses.
+CDF_SLACK = 16
+
+#: The statuses :class:`PanelHorizonFairValue` writes, in the order its checks run.
+_STATUSES = (STATUS_OK, "bad_input", "unknown_group", "horizon_out_of_range", "no_panel_row", "bad_scale",
+             "window_gap")
+_SOURCE_PARAMS = ("artifact", "state_hash", "device")
+_NAME_PARAMS = ("group_field", "time_field", "horizon_field", "reference_field", "payoff_field", "lower_field",
+                "upper_field", "fair_field")
+_INT_PARAMS = (("horizon_unit_ms", 1), ("chunk_rows", 1))
+_HORIZON_SUFFIX, _SCALE_SUFFIX = "_horizon", "_scale"
+
+
+class HorizonRule(ABC):
+    """How a requested horizon, in bars, picks one of a panel's label horizons.
+
+    Abstract: a subclass names itself and supplies :meth:`pick`. The registry is :data:`HORIZON_RULES`, so a new
+    rule is a subclass listed there, never a branch.
+
+    Examples
+    --------
+    A rule that takes the next horizon up::
+
+        class Ceiling(HorizonRule):
+            name = "ceiling"
+            def pick(self, target, horizons):
+                above = [h for h in horizons if h >= target]
+                return above[0] if above else None
+    """
+
+    #: The value a document's ``horizon_rule`` carries.
+    name = ""
+
+    @abstractmethod
+    def pick(self, target, horizons):
+        """Return the chosen horizon in bars, or None when the rule places ``target`` nowhere.
+
+        Parameters
+        ----------
+        target : float
+            The requested horizon in bars (positive, possibly fractional).
+        horizons : list of int
+            The panel's label horizons, ascending.
+
+        Returns
+        -------
+        int or None
+            One of ``horizons``, or None to refuse (never a clamp to the nearest end).
+        """
+
+
+class _Nearest(HorizonRule):
+    """The horizon closest to the target (the shorter on a tie); a target outside the label range is refused."""
+
+    name = "nearest"
+
+    def pick(self, target, horizons):
+        """See :meth:`HorizonRule.pick`."""
+        if not horizons[0] <= target <= horizons[-1]:
+            return None
+        return min(horizons, key=lambda h: (abs(h - target), h))
+
+
+class _Floor(HorizonRule):
+    """The longest horizon not past the target; a target outside the label range is refused."""
+
+    name = "floor"
+
+    def pick(self, target, horizons):
+        """See :meth:`HorizonRule.pick`."""
+        if not horizons[0] <= target <= horizons[-1]:
+            return None
+        return max(h for h in horizons if h <= target)
+
+
+class _Exact(HorizonRule):
+    """The target itself, only when it is one of the label horizons."""
+
+    name = "exact"
+
+    def pick(self, target, horizons):
+        """See :meth:`HorizonRule.pick`."""
+        return int(target) if target in horizons else None
+
+
+#: The horizon rules by name.
+HORIZON_RULES = MappingProxyType({cls.name: cls() for cls in (_Nearest, _Floor, _Exact)})
+
+
+class _Slot:
+    """What the node worked out for one decision row: a status, and when ``ok`` what to evaluate."""
+
+    __slots__ = ("status", "panel_row", "bars", "column", "scale", "reference", "levels", "geometry", "bounds", "fair")
+
+    def __init__(self, status=STATUS_OK):
+        self.status, self.panel_row, self.bars, self.column = status, None, None, None
+        self.scale, self.reference, self.levels, self.geometry, self.bounds, self.fair = None, None, (), None, (), None
+
+
+class _PanelIndex:
+    """Finds the global row of a ``(group code, instant)`` in a panel stored sorted by time within each group."""
+
+    def __init__(self, panel, codes):
+        import numpy as np
+
+        group, time = np.asarray(panel.group), np.asarray(panel.time)
+        self._by_code = {}
+        for code in sorted(set(codes)):
+            rows = np.flatnonzero(group == code)
+            if len(rows) > 1 and not bool((np.diff(time[rows]) > 0).all()):
+                raise ValueError(f"panel group {code} is not sorted by strictly increasing time")
+            self._by_code[code] = (rows, time[rows])
+
+    def find(self, code, instant):
+        """Return the global row of ``code`` at ``instant``, or None when the panel has no such row."""
+        import numpy as np
+
+        rows, times = self._by_code.get(code, (None, None))
+        if rows is None or not len(rows):
+            return None
+        at = int(np.searchsorted(times, instant))
+        return int(rows[at]) if at < len(rows) and int(times[at]) == instant else None
+
+
+class PanelHorizonFairValue(Node):
+    """P(YES) of a binary contract from a horizon forecaster's CDF at each decision instant (role ``transform``).
+
+    For every decision row the node (1) takes the panel row of the row's asset at the decision instant, (2) picks the
+    label horizon of the row's lead by the declared ``horizon_rule``, (3) asks the forecaster for that row's
+    distribution, (4) reads the contract's strikes in the model's own unit,
+    ``z = ln(strike / reference) / scale`` where ``scale`` is the panel's per-row ``reference`` (the divisor its labels
+    were standardised by) and ``reference`` the row's current level, and (5) prices the contract through the payoff
+    geometries of :data:`~dskit.pipeline.binary_pricing.PAYOFFS` from the survival ``P(S >= K) = 1 - F(z)`` at the
+    chosen horizon. The CDF is evaluated AT the strike (exact for a parametric head, piecewise linear for a quantile
+    head), so no knot grid is built or interpolated; ``CurveBinaryFairValue`` is the sibling for a curve that arrives
+    as rows.
+
+    Timing and approximations. The panel row for a decision instant ``I`` is the bar that closed just before it, so
+    ``row_offset_ms`` (``-1`` for bars stamped by their last millisecond) maps ``I`` to the row's stamp. The horizon is
+    the lead from ``I``, taken as a whole number of bars by the rule: it ignores the execution lag between the
+    information instant and the fill (a few seconds), and it prices the level at the settlement instant, whereas an
+    index that settles on the average of its last 60 seconds is centred about 30 seconds earlier and has less variance
+    (about a third of that minute's point variance): the CDF is slightly too wide, most at short leads. Both are
+    stated so a reader does not credit the model with precision it does not have.
+
+    Look-ahead guard. A forecaster must state ``train_end_ms``; a decision whose panel stamp is not strictly after
+    ``train_end_ms + panel.label_span_ms`` (the last training label reaches that far) refuses the whole run, and so does
+    a forecaster that states none. Rows that cannot be priced for lack of data are NOT refusals: they are rows
+    with ``<fair_field>`` None and a status in the census (an unknown group, a missing panel row, a window that would
+    bridge a gap, a lead the rule cannot place, a non-positive scale or bad contract columns). A forecast that comes
+    back non-finite, or a CDF outside ``[0, 1]`` beyond rounding, is a defect of the model and refuses.
+
+    Inputs: ``records`` (decision rows) and, unless ``artifact`` is declared, ``model`` (a
+    :class:`~dskit.pipeline.libs.horizon_cdf.HorizonForecaster`). Outputs: ``records`` (copies with ``<fair_field>``,
+    ``<fair_field>_status``, ``<fair_field>_horizon`` (bars used) and ``<fair_field>_scale``) and ``census``.
+
+    Parameters
+    ----------
+    params : dict
+        All REQUIRED unless marked. ``panel`` (the :meth:`ArrayPanel.from_source` spec of the panel that holds the
+        decision instants); ``group_field`` and ``group_codes`` (a row's cell there -> the panel's integer group
+        code); ``time_field`` (the decision instant, epoch ms) and ``row_offset_ms`` (added to it to get the panel
+        row's stamp); ``horizon_field`` (the lead, a positive number) and ``horizon_unit_ms`` (what one unit of it
+        is, in ms); ``horizon_rule`` (a key of :data:`HORIZON_RULES`); ``reference_field`` (the level the strikes
+        are measured against); ``payoff_field``, ``lower_field``, ``upper_field`` (as ``BinaryFairValue``);
+        ``fair_field`` (the output column); ``chunk_rows`` (rows per forecast pass). OPTIONAL: ``artifact`` (a
+        ``model.pt`` path to restore the forecaster from, instead of the ``model`` port) with ``state_hash`` (its
+        sidecar's content hash, REQUIRED with ``artifact`` and refused without it, so the model is part of the
+        document's identity) and ``device`` (replaces the fit's recorded device).
+
+    Examples
+    --------
+    Price 15-minute up/down contracts from a saved forecaster, decisions two, five and ten minutes out::
+
+        node = PanelHorizonFairValue("fair_gru", {
+            "panel": {"root": store, "source": "panel-minute", "stream": "files", "relpath": "minute-w1w4"},
+            "artifact": "models/gru/model.pt", "state_hash": "<sha256 from model.json>",
+            "group_field": "series", "group_codes": {"KXBTC15M": 0, "KXETH15M": 1},
+            "time_field": "decision_ms", "row_offset_ms": -1,
+            "horizon_field": "lead_minutes", "horizon_unit_ms": 60000, "horizon_rule": "nearest",
+            "reference_field": "spot_brti", "payoff_field": "payoff", "lower_field": "floor_strike",
+            "upper_field": "cap_strike", "fair_field": "fair_gru", "chunk_rows": 512})
+        out = node.run(ctx, {"records": decision_rows})
+        # -> out["records"][0]["fair_gru"] is P(YES), or None with fair_gru_status saying why
+    """
+
+    role = "transform"
+    outputs = ("records", "census")
+    _PARAMS = ("panel", "group_codes", "row_offset_ms", "horizon_rule", *_NAME_PARAMS, *_SOURCE_PARAMS,
+               *(name for name, _ in _INT_PARAMS))
+
+    @classmethod
+    def validate_params(cls, params):
+        """List problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per unknown, missing or unusable knob.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        problems += [f"{name} is required: a non-empty column name, got {params.get(name)!r}"
+                     for name in _NAME_PARAMS if not name_ok(params.get(name))]
+        if not isinstance(params.get("panel"), dict):
+            problems.append(f"panel is required: an ArrayPanel.from_source spec dict, got {params.get('panel')!r}")
+        codes = params.get("group_codes")
+        if not (isinstance(codes, dict) and codes and all(isinstance(v, int) and not isinstance(v, bool)
+                                                          for v in codes.values())):
+            problems.append(f"group_codes is required: a non-empty map cell -> integer group code, got {codes!r}")
+        offset = params.get("row_offset_ms")
+        if isinstance(offset, bool) or not isinstance(offset, int):
+            problems.append(f"row_offset_ms is required: an integer number of ms, got {offset!r}")
+        for name, floor in _INT_PARAMS:
+            check_int_param(problems, name, params.get(name), ge=floor)
+        if params.get("horizon_rule") not in HORIZON_RULES:
+            problems.append(f"horizon_rule is required: one of {sorted(HORIZON_RULES)}, got {params.get('horizon_rule')!r}")
+        return problems + cls._source_problems(params) + cls._collision_problems(params)
+
+    @classmethod
+    def _source_problems(cls, params):
+        """Problems with the artifact source: ``state_hash`` goes with ``artifact`` and nowhere else."""
+        problems = []
+        if "artifact" in params:
+            if not name_ok(params["artifact"]):
+                problems.append(f"artifact must be a non-empty path, got {params['artifact']!r}")
+            if not name_ok(params.get("state_hash")):
+                problems.append("state_hash is required with artifact: the sidecar's content hash that pins the model")
+            if "device" in params and not name_ok(params["device"]):
+                problems.append(f"device must be a non-empty device string, got {params['device']!r}")
+        else:
+            problems += [f"{name} is refused without artifact: a model from the `model` port has no sidecar to check"
+                         for name in ("state_hash", "device") if name in params]
+        return problems
+
+    @classmethod
+    def _collision_problems(cls, params):
+        """Problems with an output column that would overwrite an input column."""
+        name = params.get("fair_field")
+        if not name_ok(name):
+            return []
+        written = (name, name + STATUS_SUFFIX, name + _HORIZON_SUFFIX, name + _SCALE_SUFFIX)
+        named = [params.get(k) for k in _NAME_PARAMS if k != "fair_field"]
+        return output_collision_problems("fair_field", name, written, named)
+
+    def validate_inputs(self, inputs):
+        """Refuse a ``records`` port that is not a list, and a model source that is not exactly one.
+
+        Parameters
+        ----------
+        inputs : dict
+            The wired ports.
+
+        Returns
+        -------
+        list of str
+            One problem per unusable port.
+        """
+        problems = []
+        if not isinstance(inputs.get("records"), list):
+            problems.append(f"records must be a list of rows, got {type(inputs.get('records')).__name__}")
+        wired = inputs.get("model") is not None
+        if wired == ("artifact" in self.params):
+            problems.append("exactly one model source is required: wire the `model` port or declare `artifact`")
+        return problems
+
+    def _forecaster(self, inputs):
+        """Return the forecaster: the wired one, or the one restored from ``artifact`` and checked against ``state_hash``."""
+        problems = [p for p in self.validate_inputs(inputs) if "model source" in p]
+        if problems:
+            raise ValueError(f"{self.key}: {problems[0]}")
+        if "artifact" not in self.params:
+            return inputs["model"]
+        forecaster = TorchHorizonForecaster.restore(self.params["artifact"], self.params.get("device"))
+        if forecaster.state_hash != self.params["state_hash"]:
+            raise ValueError(f"{self.key}: the artifact's state_hash is {forecaster.state_hash!r}, the document pins "
+                             f"{self.params['state_hash']!r}: it is not the model the document names")
+        return forecaster
+
+    def _guard(self, forecaster, panel, records):
+        """Refuse a forecaster with no stated train end, and any decision the training could have seen."""
+        end = getattr(forecaster, "train_end_ms", None)
+        if isinstance(end, bool) or not isinstance(end, int):
+            raise ValueError(f"{self.key}: the forecaster does not state train_end_ms, so look-ahead cannot be ruled out")
+        p, reach = self.params, end + panel.label_span_ms
+        stamps = [row[p["time_field"]] + p["row_offset_ms"] for row in records
+                  if number_ok(row.get(p["time_field"]))]
+        inside = sorted(stamp for stamp in stamps if stamp <= reach)
+        if inside:
+            raise ValueError(f"{self.key}: {len(inside)} decision(s) are not after train_end_ms {end} plus the label span "
+                             f"{panel.label_span_ms} ms (the last training label reaches {reach}); the earliest is at "
+                             f"{inside[0]}: the model could have seen them")
+
+    def _slot(self, row, panel, index):
+        """Work out one decision row: its status and, when priceable so far, its panel row, horizon and strikes."""
+        p = self.params
+        instant, lead, reference = row.get(p["time_field"]), row.get(p["horizon_field"]), row.get(p["reference_field"])
+        geometry = named_payoff(row.get(p["payoff_field"]))
+        given = {"lower": row.get(p["lower_field"]), "upper": row.get(p["upper_field"])}
+        if (not number_ok(instant) or not number_ok(lead) or lead <= 0 or not price_ok(reference) or geometry is None
+                or geometry.bounds_problem(given["lower"], given["upper"]) is not None
+                or not all(price_ok(given[b]) for b in geometry.bounds)):
+            return _Slot("bad_input")
+        try:
+            code = p["group_codes"].get(row.get(p["group_field"]))
+        except TypeError:
+            code = None
+        if code is None:
+            return _Slot("unknown_group")
+        bars = HORIZON_RULES[p["horizon_rule"]].pick(lead * p["horizon_unit_ms"] / panel.step_ms, panel.horizons)
+        if bars is None:
+            return _Slot("horizon_out_of_range")
+        found = index.find(code, int(instant) + p["row_offset_ms"])
+        if found is None:
+            return _Slot("no_panel_row")
+        scale = float(panel.reference[found])
+        if not (math.isfinite(scale) and scale > 0):
+            return _Slot("bad_scale")
+        slot = _Slot()
+        slot.panel_row, slot.bars, slot.column, slot.scale = found, bars, panel.horizons.index(bars), scale
+        slot.geometry, slot.bounds = geometry, geometry.bounds
+        slot.levels, slot.reference = tuple(float(given[b]) for b in geometry.bounds), float(reference)
+        return slot
+
+    @staticmethod
+    def _windowed(forecaster, panel, slots):
+        """Mark the slots whose rows the forecaster cannot forecast (``window_gap``); return those that remain."""
+        import numpy as np
+
+        live = [s for s in slots if s.status == STATUS_OK]
+        if live:
+            ok = np.asarray(forecaster.usable(panel, np.array([s.panel_row for s in live], dtype=np.int64)), dtype=bool)
+            for slot, usable in zip(live, ok):
+                if not usable:
+                    slot.status = "window_gap"
+        return [s for s in live if s.status == STATUS_OK]
+
+    def _survivals(self, forecaster, panel, chunk):
+        """Return the survival ``P(S >= K)`` at each strike of each slot in ``chunk``: a list of ``{level: s}``."""
+        import numpy as np
+        import torch
+
+        rows = np.array([s.panel_row for s in chunk], dtype=np.int64)
+        dist = forecaster.forecast(panel, rows, self.params["chunk_rows"])
+        if dist.shape != (len(chunk), len(panel.horizons)) and not (dist.n_rows == 1 and dist.shape[1] == len(panel.horizons)):
+            raise ValueError(f"{self.key}: the forecaster returned {dist.shape} for {len(chunk)} rows and "
+                             f"{len(panel.horizons)} panel horizons")
+        width = max(len(s.levels) for s in chunk)
+        z = torch.zeros((len(chunk), 1, width), dtype=torch.float64)
+        for i, slot in enumerate(chunk):
+            for k, level in enumerate(slot.levels):
+                z[i, 0, k] = math.log(level / slot.reference) / slot.scale
+        z = z.to(device=dist.device, dtype=dist.dtype).expand(-1, len(panel.horizons), -1)
+        cdf = dist.cdf(z)
+        pick = torch.as_tensor([s.column for s in chunk], device=cdf.device)
+        cdf = cdf[torch.arange(len(chunk), device=cdf.device), pick].double().cpu()
+        slack = CDF_SLACK * torch.finfo(dist.dtype).eps
+        if not bool(torch.isfinite(cdf).all()):
+            bad = [i for i in range(len(chunk)) if not bool(torch.isfinite(cdf[i]).all())]
+            raise ValueError(f"{self.key}: the forecaster's CDF is not finite for {len(bad)} row(s), first at panel row "
+                             f"{chunk[bad[0]].panel_row}")
+        if bool((cdf < -slack).any()) or bool((cdf > 1 + slack).any()):
+            raise ValueError(f"{self.key}: the forecaster's CDF leaves [0, 1] by more than rounding ({slack:.2e})")
+        cdf = cdf.clamp(0.0, 1.0)
+        return [{level: 1.0 - float(cdf[i, k]) for k, level in enumerate(slot.levels)} for i, slot in enumerate(chunk)]
+
+    def _price(self, forecaster, panel, slots):
+        """Write ``fair`` on every slot still ``ok``, in row order chunks of ``chunk_rows``."""
+        live = sorted(self._windowed(forecaster, panel, slots), key=lambda s: s.panel_row)
+        size = self.params["chunk_rows"]
+        for start in range(0, len(live), size):
+            chunk = live[start:start + size]
+            for slot, survival in zip(chunk, self._survivals(forecaster, panel, chunk)):
+                given = dict(zip(slot.bounds, slot.levels))
+                slot.fair = min(1.0, max(0.0, PAYOFFS[slot.geometry.name].yes_probability(
+                    survival.__getitem__, given.get("lower"), given.get("upper"))))
+
+    def run(self, ctx, inputs):
+        """Price every decision row; rows that cannot be priced say why.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused.
+        inputs : dict
+            ``records``: the decision rows; ``model``: the forecaster (unless ``artifact`` is declared).
+
+        Returns
+        -------
+        dict
+            ``{"records": [...], "census": {...}}``: new row dicts in input order, and the counts by status
+            with the train end and the model hash the run used.
+
+        Raises
+        ------
+        ValueError
+            No model source or two; a model with a different ``state_hash``; a forecaster that states no
+            ``train_end_ms``; a decision not after the training range; a non-finite or out-of-range CDF.
+        """
+        forecaster = self._forecaster(inputs)
+        panel = ArrayPanel.from_source(self.params["panel"])
+        records = [dict(row) for row in inputs["records"]]
+        self._guard(forecaster, panel, records)
+        index = _PanelIndex(panel, self.params["group_codes"].values())
+        slots = [self._slot(row, panel, index) for row in records]
+        self._price(forecaster, panel, slots)
+        name = self.params["fair_field"]
+        for row, slot in zip(records, slots):
+            row.update({name: slot.fair, name + STATUS_SUFFIX: slot.status, name + _HORIZON_SUFFIX: slot.bars,
+                        name + _SCALE_SUFFIX: slot.scale})
+        statuses = [slot.status for slot in slots]
+        census = {"rows": len(records), "priced": statuses.count(STATUS_OK),
+                  "by_status": {status: statuses.count(status) for status in _STATUSES},
+                  "train_end_ms": forecaster.train_end_ms, "state_hash": getattr(forecaster, "state_hash", None),
+                  "horizon_rule": self.params["horizon_rule"]}
+        self.log.info("priced %d of %d decision row(s)", census["priced"], census["rows"])
+        return {"records": records, "census": census}

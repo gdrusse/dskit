@@ -185,6 +185,8 @@ configs/               # asset-model / source-sample / suite-sample /
                        #   source-features-{15m,hourly}; predictor selection:
                        #   features-arms / select-template-* / workflow-select-* /
                        #   select-features (README, "Feature selection")
+                       #   W4 take test: run-w4-take / run-panel-build-w4 / source-panel-minute-w4 /
+                       #   production-args-w4 (README, "Stage C"; runbook B8)
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
