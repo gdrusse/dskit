@@ -555,3 +555,55 @@ def test_open_interest_resent_through_the_morning_keeps_the_latest_report():
     cfg = {**CONFIG, "start": "2025-01-06", "end": "2025-01-07"}
     records, _ = pull(connector(t), cfg)
     assert len(records) == 1 and records[0]["data"]["open_interest"] == 5
+
+
+def test_open_interest_window_one_request_per_window_same_rows():
+    t = populated()
+    for day in ("20250106", "20250103"):
+        t.chain[(OI, day)] = [{**r, "timestamp": f"{day[:4]}-{day[4:6]}-{day[6:]}T07:01:23.000"}
+                              for r in t.chain[(OI, day)]]
+    calls = []
+    inner = t.__call__
+
+    def window_aware(url, params, timeout):
+        path = url[len(BASE):]
+        if path == OI and "start_date" in params:
+            calls.append((params["start_date"], params["end_date"]))
+            rows = []
+            for day in sorted(d for (p, d) in t.chain if p == OI):
+                if params["start_date"] <= day <= params["end_date"]:
+                    rows.extend(t.chain[(OI, day)])
+            return 200, {}, json.dumps(rows).encode()
+        return inner(url, params, timeout)
+
+    plain, _ = pull(connector(t))
+    windowed, _ = pull(ThetaDataConnector(getter=window_aware, sleeper=lambda s: None),
+                       {**CONFIG, "oi_window_days": 20})
+    assert [r["data"] for r in windowed] == [r["data"] for r in plain]
+    assert 1 <= len(calls) <= 2                      # 3 units, one or two aligned windows
+
+
+
+
+def test_open_interest_window_too_large_falls_back_per_day():
+    t = populated()
+    for day in ("20250106", "20250103"):
+        t.chain[(OI, day)] = [{**r, "timestamp": f"{day[:4]}-{day[4:6]}-{day[6:]}T07:01:23.000"}
+                              for r in t.chain[(OI, day)]]
+    inner = t.__call__
+
+    def too_large_window(url, params, timeout):
+        if url.endswith("open_interest") and "start_date" in params:
+            return 570, {}, b"LARGE_REQUEST"
+        return inner(url, params, timeout)
+
+    windowed, _ = pull(ThetaDataConnector(getter=too_large_window, sleeper=lambda s: None),
+                       {**CONFIG, "oi_window_days": 20})
+    plain, _ = pull(connector(t))
+    assert [r["data"] for r in windowed] == [r["data"] for r in plain]
+
+
+def test_open_interest_window_validates():
+    for bad in (0, 400, True, "20"):
+        with pytest.raises(AssetError):
+            ThetaDataConnector().resolve_knobs({**CONFIG, "oi_window_days": bad})

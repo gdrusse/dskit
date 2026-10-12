@@ -40,7 +40,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import deque
+import threading
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
@@ -52,6 +53,7 @@ __all__ = [
     "DEFAULT_BATCH_UNITS",
     "DEFAULT_CONCURRENCY",
     "DEFAULT_EMPTY_GUARD",
+    "DEFAULT_OI_WINDOW_DAYS",
     "DEFAULT_RETRIES",
     "DEFAULT_TIMEOUT_S",
     "EMPTY_STATUSES",
@@ -103,6 +105,8 @@ DEFAULT_CONCURRENCY = 1
 MAX_CONCURRENCY = 8
 DEFAULT_RETRIES = 5
 DEFAULT_EMPTY_GUARD = 20
+DEFAULT_OI_WINDOW_DAYS = 1
+_OI_CACHE_BLOCKS = 6
 DEFAULT_RETRY_BASE_S = 1.0
 DEFAULT_TIMEOUT_S = 300
 #: A day with no data: 204 No Content, and the Terminal's 472 "no data".
@@ -254,6 +258,8 @@ class ThetaDataConnector(Connector):
         self._getter = urllib_get if getter is None else getter
         self._sleeper = time.sleep if sleeper is None else sleeper
         self._expirations_by_root = {}
+        self._oi_blocks = OrderedDict()
+        self._oi_lock = threading.Lock()
 
     def spec(self):
         """Declare the default-deny configuration catalogue.
@@ -296,6 +302,13 @@ class ThetaDataConnector(Connector):
             "concurrency": {
                 "notes": f"Parallel requests, 1..{MAX_CONCURRENCY}; default "
                          f"{DEFAULT_CONCURRENCY}. Stay at or below the plan's limit.",
+            },
+            "oi_window_days": {
+                "notes": "Calendar days of open interest fetched per request (one range "
+                         "request answers every unit in its aligned window); default "
+                         f"{DEFAULT_OI_WINDOW_DAYS} = one request per unit. 20 roughly halves "
+                         "the request count of a pull. A window the Terminal calls too "
+                         "large falls back to one request per day for that window.",
             },
             "empty_guard": {
                 "notes": "Refuse a root whose first N consecutive weekdays (newest "
@@ -370,6 +383,7 @@ class ThetaDataConnector(Connector):
             ("concurrency", DEFAULT_CONCURRENCY, 1, MAX_CONCURRENCY),
             ("retries", DEFAULT_RETRIES, 1, None),
             ("empty_guard", DEFAULT_EMPTY_GUARD, 1, None),
+            ("oi_window_days", DEFAULT_OI_WINDOW_DAYS, 1, 366),
         ):
             value = config.get(name, default)
             ints[name] = value
@@ -500,6 +514,55 @@ class ThetaDataConnector(Connector):
             raise AssetError([f"Theta Terminal {where} row lacks a usable expiration "
                               f"or strike: {str(row)[:_EXCERPT_CHARS]}"]) from exc
 
+    @staticmethod
+    def _latest_interest(rows, where):
+        """Return {contract: (stamp, open_interest)}: OPRA re-sends, the latest stamp wins."""
+        found = {}
+        for row in rows:
+            key = ThetaDataConnector._contract(row, where)
+            stamp = str(row.get("timestamp") or "")
+            if key not in found or stamp >= found[key][0]:
+                found[key] = (stamp, row.get("open_interest"))
+        return found
+
+    def _interest(self, knobs, symbol, day):
+        """Return one day's open interest, from a window request when the knob asks."""
+        where = f"{symbol} {day} {_OI_PATH}"
+        window = knobs["oi_window_days"]
+        if window == 1:
+            return self._latest_interest(self._chain(knobs, _OI_PATH, symbol, day, False), where)
+        first = date.fromordinal(day.toordinal() // window * window)
+        start = max(first, knobs["start"])
+        stop = min(first + timedelta(days=window - 1), knobs["end"] - timedelta(days=1))
+        with self._oi_lock:
+            if (symbol, start) not in self._oi_blocks:
+                self._oi_blocks[(symbol, start)] = self._interest_block(
+                    knobs, symbol, start, stop)
+                while len(self._oi_blocks) > _OI_CACHE_BLOCKS:
+                    self._oi_blocks.popitem(last=False)
+            block = self._oi_blocks[(symbol, start)]
+        if block is None:                     # the Terminal refused the window as too large
+            return self._latest_interest(self._chain(knobs, _OI_PATH, symbol, day, False), where)
+        return block.get(day.isoformat(), {})
+
+    def _interest_block(self, knobs, symbol, start, stop):
+        """Return {date: {contract: (stamp, oi)}} for a window, or None when too large."""
+        try:
+            rows = self._get_json(knobs, _OI_PATH, {
+                "symbol": symbol, "expiration": "*", "start_date": _compact(start),
+                "end_date": _compact(stop), "format": _FORMAT})
+        except _TooLarge:
+            return None
+        by_day = {}
+        for row in rows:
+            stamp = str(row.get("timestamp") or "")
+            if len(stamp) < 10:
+                raise AssetError([f"Theta Terminal {_OI_PATH} {symbol} {start}..{stop} row "
+                                  "has no timestamp to date it"])
+            by_day.setdefault(stamp[:10], []).append(row)
+        return {day: self._latest_interest(group, f"{symbol} {day} {_OI_PATH}")
+                for day, group in by_day.items()}
+
     def _day(self, knobs, unit):
         """Return the merged, ordered rows of one (root, date) unit."""
         symbol, day = unit
@@ -511,15 +574,7 @@ class ThetaDataConnector(Connector):
                 raise AssetError([f"Theta Terminal {path} {symbol} {day} repeats "
                                   f"contract {key}"])
             merged[key] = dict(row)
-        interest = {}
-        if knobs["open_interest"]:
-            for row in self._chain(knobs, _OI_PATH, symbol, day, False):
-                key = self._contract(row, f"{symbol} {day} {_OI_PATH}")
-                # OPRA re-sends open interest through the morning (same contract, several
-                # timestamps, usually the same value): the latest report wins.
-                stamp = str(row.get("timestamp") or "")
-                if key not in interest or stamp >= interest[key][0]:
-                    interest[key] = (stamp, row.get("open_interest"))
+        interest = self._interest(knobs, symbol, day) if knobs["open_interest"] else {}
         out = []
         for key in sorted(set(merged) | set(interest)):
             data = {name: None for name in OPTION_FIELDS}
