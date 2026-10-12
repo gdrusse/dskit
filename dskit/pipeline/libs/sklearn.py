@@ -1,6 +1,6 @@
 """The scikit-learn library pack — the generic estimator doorway (D-146 tier 2).
 
-Three Nodes and one signal object, docs/25 §2 row 2:
+Four Nodes and one signal object, docs/25 §2 row 2:
 
 * :class:`SklearnFit` (role ``train``) — imports ANY estimator class by
   dotted path (``"sklearn.linear_model.Ridge"``), fits it on feature
@@ -16,6 +16,10 @@ Three Nodes and one signal object, docs/25 §2 row 2:
 * :class:`SklearnSelect` (role ``fitted_transform``) — ADR-0042 doorway:
   a :class:`~dskit.pipeline.fitted.FeatureSelector` whose rule is a
   dotted selector path (and optional inner ``estimator``).
+
+* :class:`SklearnExpandingRefit` (role ``transform``, ADR-0264) — a fresh
+  fit per time block on the rows whose label was already known, predicting
+  that block into a row field; see its docstring.
 
 Plus one plain estimator wrapper, not a Node: :class:`ColumnSubsetEstimator`
 (ADR-0108) fits any estimator — named the same dotted way — on a declared
@@ -204,11 +208,16 @@ import math
 import os
 import re
 import sys
+from abc import ABC, abstractmethod
+from bisect import bisect_left
+from collections import Counter
 from collections.abc import Mapping
 
 from dskit.pipeline.fitted import FeatureSelector, FittedTransform
+from dskit.pipeline.kinds_flow import _mapping_row
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
+    Node,
     TrainableNode,
     atomic_write,
     reject_unknown_params,
@@ -217,9 +226,20 @@ from dskit.pipeline.records import number_ok
 
 __all__ = [
     "ColumnSubsetEstimator",
+    "DEFAULT_LOGIT_CLIP",
+    "DEFAULT_REFIT_ESTIMATOR_PARAMS",
+    "DEFAULT_REFIT_PREDICT_METHOD",
     "EstimatorBundle",
+    "FEATURE_TRANSFORMS",
+    "FeatureTransform",
+    "IdentityTransform",
+    "LogitTransform",
     "NODE_KINDS",
+    "REFIT_FITS_FILE",
+    "REFIT_STATUSES",
+    "REFIT_STATUS_SUFFIX",
     "SEGMENT_SCHEMA",
+    "SklearnExpandingRefit",
     "SklearnFit",
     "SklearnPredict",
     "SklearnReduction",
@@ -974,6 +994,24 @@ def _construct(cls_, kwargs, path, where, kwargs_name):
             "nested knob is caught here, by the constructor, not at plan "
             "(I-227)"
         ) from exc
+
+
+def _apply_seed(estimator, seed, path, where):
+    """Thread ``seed`` into ``random_state`` — or refuse by name when the
+    estimator would never read it (a knob nothing consumes is a config
+    lie). A ``seed`` of ``None`` is a no-op. Shared by every node here that
+    fits an estimator from a document."""
+    if seed is None:
+        return
+    get_params = getattr(estimator, "get_params", None)
+    if callable(get_params) and "random_state" in get_params():
+        estimator.set_params(random_state=seed)
+        return
+    raise ValueError(
+        f"{where}: seed={seed} but {path} accepts no random_state — "
+        "drop the seed, or choose an estimator that takes one (a seed "
+        "the estimator never reads is a config lie)"
+    )
 
 
 def _library_version(path):
@@ -2286,21 +2324,611 @@ class SklearnFit(TrainableNode):
         }
 
     def _apply_seed(self, estimator, path):
-        """Thread ``seed`` into ``random_state`` — or refuse by name when
-        the estimator would never read it (a knob nothing consumes is a
-        config lie)."""
-        seed = self.params.get("seed")
-        if seed is None:
-            return
-        get_params = getattr(estimator, "get_params", None)
-        if callable(get_params) and "random_state" in get_params():
-            estimator.set_params(random_state=seed)
-            return
-        raise ValueError(
-            f"{self.key}: seed={seed} but {path} accepts no random_state — "
-            "drop the seed, or choose an estimator that takes one (a seed "
-            "the estimator never reads is a config lie)"
+        """Thread ``seed`` into ``random_state`` (see :func:`_apply_seed`)."""
+        _apply_seed(estimator, self.params.get("seed"), path, self.key)
+
+
+# ---------------------------------------------------------------------------
+# Expanding, block-wise refit (ADR-0264)
+# ---------------------------------------------------------------------------
+
+#: ``predict_method`` when the document omits it — the probability of the
+#: positive class, which is what a refit that feeds a scorer wants.
+DEFAULT_REFIT_PREDICT_METHOD = "predict_proba"
+
+#: ``estimator_params`` when the document omits it; copied per use.
+DEFAULT_REFIT_ESTIMATOR_PARAMS = {}
+
+#: The ``logit`` transform's clip when a feature does not declare one: the
+#: value is held to ``[clip, 1 - clip]`` before ``log(p / (1 - p))``.
+DEFAULT_LOGIT_CLIP = 1e-6
+
+#: Suffix of the per-row status field written beside ``output_field``.
+REFIT_STATUS_SUFFIX = "_status"
+
+#: Every status a row can leave this node with, in one place.
+REFIT_STATUSES = ("ok", "warmup", "no_train_rows", "one_class", "bad_feature")
+
+_STATUS_OK, _STATUS_WARMUP, _STATUS_NO_TRAIN, _STATUS_ONE_CLASS, _STATUS_BAD = (
+    REFIT_STATUSES
+)
+
+#: The file of per-block, per-group fit records under the artifact dir.
+REFIT_FITS_FILE = "fits.json"
+
+#: One feature object's keys.
+_FEATURE_SPEC_KEYS = ("field", "transform", "clip")
+
+
+class FeatureTransform(ABC):
+    """One named, per-value feature rule used by :class:`SklearnExpandingRefit`.
+
+    A new rule is a subclass registered in :data:`FEATURE_TRANSFORMS`, never
+    a new branch in the node. Construction takes the feature object (already
+    validated) and :meth:`apply` maps one finite number to the feature, or
+    ``None`` when the value is outside the rule's domain.
+
+    Parameters
+    ----------
+    spec : dict
+        The feature object: ``field``, ``transform`` and any knob the rule
+        declares (``clip`` for ``logit``).
+
+    Examples
+    --------
+    Take the logit of a probability held to ``[1e-4, 1 - 1e-4]``::
+
+        rule = LogitTransform({"field": "mid", "transform": "logit", "clip": 1e-4})
+        rule.apply(0.5)
+        # -> 0.0
+    """
+
+    #: The registry name a feature object's ``transform`` selects.
+    name = ""
+
+    def __init__(self, spec):
+        self.spec = dict(spec)
+
+    @classmethod
+    def spec_problems(cls, where, spec):
+        """Problems with the knobs this rule reads from a feature object.
+
+        Parameters
+        ----------
+        where : str
+            Prefix for messages, such as ``features[0]``.
+        spec : dict
+            The feature object.
+
+        Returns
+        -------
+        list of str
+            One message per problem; the default refuses a ``clip`` the rule
+            never reads.
+        """
+        if "clip" in spec:
+            return [f"{where}: transform {cls.name!r} takes no clip"]
+        return []
+
+    @abstractmethod
+    def apply(self, value):
+        """Map one finite number to the feature.
+
+        Parameters
+        ----------
+        value : float
+            A finite input value.
+
+        Returns
+        -------
+        float or None
+            The feature, or ``None`` when ``value`` is outside the domain.
+        """
+
+
+class IdentityTransform(FeatureTransform):
+    """The value itself.
+
+    Examples
+    --------
+    Pass a field through::
+
+        IdentityTransform({"field": "x", "transform": "identity"}).apply(2.0)
+        # -> 2.0
+    """
+
+    name = "identity"
+
+    def apply(self, value):
+        """Return ``value`` unchanged (see :meth:`FeatureTransform.apply`)."""
+        return value
+
+
+class LogitTransform(FeatureTransform):
+    """``log(p / (1 - p))`` of a probability held to ``[clip, 1 - clip]``.
+
+    A value outside ``[0, 1]`` is not a probability and yields ``None``;
+    ``0`` and ``1`` are held to the clip rather than refused.
+
+    Examples
+    --------
+    Clip a 0/1 market price before the logit::
+
+        rule = LogitTransform({"field": "mid", "transform": "logit", "clip": 0.01})
+        rule.apply(1.0)
+        # -> 4.59511985013459
+    """
+
+    name = "logit"
+
+    @classmethod
+    def spec_problems(cls, where, spec):
+        """Require ``clip``, when given, to lie in ``(0, 0.5)``.
+
+        Parameters
+        ----------
+        where : str
+            Prefix for messages.
+        spec : dict
+            The feature object.
+
+        Returns
+        -------
+        list of str
+            One message per problem.
+        """
+        clip = spec.get("clip", DEFAULT_LOGIT_CLIP)
+        if isinstance(clip, bool) or not isinstance(clip, (int, float)) or not (
+            0 < clip < 0.5
+        ):
+            return [f"{where}: clip must be a number in (0, 0.5), got {clip!r}"]
+        return []
+
+    def apply(self, value):
+        """Return the clipped logit, or ``None`` outside ``[0, 1]``."""
+        if not 0.0 <= value <= 1.0:
+            return None
+        clip = float(self.spec.get("clip", DEFAULT_LOGIT_CLIP))
+        held = min(max(value, clip), 1.0 - clip)
+        return math.log(held / (1.0 - held))
+
+
+#: Transform name -> rule class. Add a rule by registering a subclass.
+FEATURE_TRANSFORMS = {
+    cls_.name: cls_ for cls_ in (IdentityTransform, LogitTransform)
+}
+
+
+def _feature_object_problems(index, spec):
+    """Problems with one ``features`` entry; shape, then the rule's own knobs."""
+    where = f"features[{index}]"
+    if not isinstance(spec, dict):
+        return [f"{where} must be an object with field and transform, got {spec!r}"]
+    problems = []
+    _reject_unknown(problems, spec, _FEATURE_SPEC_KEYS)
+    field = spec.get("field")
+    if not isinstance(field, str) or not field:
+        problems.append(f"{where}: field must be a non-empty row key, got {field!r}")
+    name = spec.get("transform")
+    rule = FEATURE_TRANSFORMS.get(name) if isinstance(name, str) else None
+    if rule is None:
+        problems.append(
+            f"{where}: transform must be one of {sorted(FEATURE_TRANSFORMS)}, "
+            f"got {name!r}"
         )
+    else:
+        problems += rule.spec_problems(where, spec)
+    return problems
+
+
+def _int_problem(name, value, *, minimum=None):
+    """One message when ``value`` is not an int (>= ``minimum`` if given); else none."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return [f"{name} must be an int, got {value!r}"]
+    if minimum is not None and value < minimum:
+        return [f"{name} must be an int >= {minimum}, got {value!r}"]
+    return []
+
+
+def _field_name_problem(name, value):
+    """One message when ``value`` is not a non-empty row key; else none."""
+    if not isinstance(value, str) or not value:
+        return [f"{name} must be a non-empty row key, got {value!r}"]
+    return []
+
+
+class _RefitCell:
+    """One input row's parsed facts for the refit loop."""
+
+    __slots__ = ("block", "group", "index", "known", "label", "vector")
+
+    def __init__(self, index, block, group, vector, label, known):
+        self.index = index
+        self.block = block
+        self.group = group
+        self.vector = vector
+        self.label = label
+        self.known = known
+
+
+class SklearnExpandingRefit(Node):
+    """Out-of-sample predictions from an expanding, block-wise refit (role ``transform``).
+
+    Rows are cut into blocks of ``block_ms`` on ``time_field``, counted from
+    ``block_origin_ms``. For each block from the ``min_train_blocks``-th on
+    (block 0 starts at the origin; earlier rows are ``warmup``), a fresh
+    estimator is fitted on every row whose ``known_field`` is strictly before
+    the block start, with finite features and a present label, and predicts
+    that block's rows into ``output_field``. Training on the instant the label
+    became known, not the decision time, keeps a row from training on an
+    outcome that had not happened yet. A row with a missing or non-finite
+    feature is ``bad_feature``: not trained on, not predicted.
+
+    Every row leaves with ``<output_field>_status``: ``ok``, ``warmup``,
+    ``no_train_rows`` (nothing known yet), ``one_class`` (a probability
+    estimator with a single training label) or ``bad_feature``; a row that is
+    not ``ok`` carries ``None`` in ``output_field``. Nothing is pickled.
+
+    Outputs: ``records`` (input order, each a copy) and ``fits`` (one dict per
+    block and group: ``block_start_ms``, ``group``, ``n_train``,
+    ``cutoff_ms``, ``n_predicted``, ``status``, and ``coef`` / ``intercept``
+    when the estimator has ``coef_``), also written as ``fits.json``.
+
+    Parameters
+    ----------
+    params : dict
+        ``estimator`` (dotted path), ``features`` (list of ``{field,
+        transform, clip}``), ``label``, ``time_field``, ``known_field``,
+        ``block_ms`` (int >= 1), ``block_origin_ms`` (int),
+        ``min_train_blocks`` (int >= 1) and ``output_field`` are required.
+        ``estimator_params`` (dict), ``seed`` (int), ``predict_method``
+        (default :data:`DEFAULT_REFIT_PREDICT_METHOD`; ``predict_proba`` is
+        binary and reads column 1) and ``group_field`` (one fit per value)
+        are optional.
+
+    Examples
+    --------
+    Refit a logistic blend of two logit features each day::
+
+        node = SklearnExpandingRefit(
+            "blend",
+            {
+                "estimator": "sklearn.linear_model.LogisticRegression",
+                "features": [
+                    {"field": "mid", "transform": "logit", "clip": 1e-4},
+                    {"field": "model", "transform": "logit", "clip": 1e-4},
+                ],
+                "label": "label",
+                "time_field": "decision_ms",
+                "known_field": "close_ms",
+                "block_ms": 86400000,
+                "block_origin_ms": 1785542400000,
+                "min_train_blocks": 15,
+                "output_field": "fair_blend",
+            },
+        )
+        out = node.run(ctx, {"records": rows})
+    """
+
+    role = "transform"
+    outputs = ("records", "fits")
+
+    _PARAMS = (
+        "block_ms",
+        "block_origin_ms",
+        "estimator",
+        "estimator_params",
+        "features",
+        "group_field",
+        "known_field",
+        "label",
+        "min_train_blocks",
+        "output_field",
+        "predict_method",
+        "seed",
+        "time_field",
+    )
+
+    _REQUIRED = (
+        "block_ms",
+        "block_origin_ms",
+        "estimator",
+        "features",
+        "known_field",
+        "label",
+        "min_train_blocks",
+        "output_field",
+        "time_field",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Default-deny: refuse unknown, missing and malformed knobs.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal.
+        """
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        for name in cls._REQUIRED:
+            if name not in params:
+                problems.append(f"{name} is required")
+        for name in ("time_field", "known_field", "label", "output_field", "group_field"):
+            if name in params:
+                problems += _field_name_problem(name, params[name])
+        if "block_ms" in params:
+            problems += _int_problem("block_ms", params["block_ms"], minimum=1)
+        if "block_origin_ms" in params:
+            problems += _int_problem("block_origin_ms", params["block_origin_ms"])
+        if "min_train_blocks" in params:
+            problems += _int_problem(
+                "min_train_blocks", params["min_train_blocks"], minimum=1
+            )
+        if "features" in params:
+            problems += cls._features_problems(params["features"])
+        if "estimator" in params:
+            problems += _import_path_problems(
+                "estimator", params["estimator"], example="sklearn.linear_model.LogisticRegression"
+            )
+        problems += cls._estimator_knob_problems(params)
+        return problems
+
+    @staticmethod
+    def _features_problems(features):
+        """Problems with the ``features`` list: non-empty, each entry legal, no repeats."""
+        if not isinstance(features, list) or not features:
+            return [f"features must be a non-empty list of objects, got {features!r}"]
+        problems = []
+        for i, spec in enumerate(features):
+            problems += _feature_object_problems(i, spec)
+        if not problems:
+            keys = [json.dumps(spec, sort_keys=True) for spec in features]
+            if len(set(keys)) != len(keys):
+                problems.append("features repeats an identical entry")
+        return problems
+
+    @staticmethod
+    def _estimator_knob_problems(params):
+        """Problems with ``estimator_params``, ``seed`` and ``predict_method``."""
+        estimator_params = params.get("estimator_params", DEFAULT_REFIT_ESTIMATOR_PARAMS)
+        problems = _kwargs_problems("estimator_params", estimator_params)
+        if "seed" in params:
+            problems += _seed_problems(params["seed"])
+            if isinstance(estimator_params, dict) and "random_state" in estimator_params:
+                problems.append(
+                    "seed and estimator_params.random_state are both set — one "
+                    "source of truth; drop one"
+                )
+        if "predict_method" in params:
+            problems += _predict_method_problems(params["predict_method"])
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Problems with the wired ``records`` (a materialized list).
+
+        Parameters
+        ----------
+        inputs : dict
+            The materialized input ports.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when usable.
+        """
+        records = inputs.get("records")
+        if not isinstance(records, list):
+            return [f"records must be a list of rows, got {type(records).__name__}"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Refit per block and write the predictions back as a field.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; ``run_dir`` locates ``fits.json``.
+        inputs : dict
+            ``records``: a list of mapping rows.
+
+        Returns
+        -------
+        dict
+            ``records`` (copies with ``output_field`` and its status) and
+            ``fits`` (the per-block, per-group records).
+
+        Raises
+        ------
+        ValueError
+            On a row that is not a mapping, lacks ``time_field`` or the
+            group, already carries an output field, or whose estimator
+            cannot be imported, constructed or seeded; the message names
+            this node.
+        """
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError(f"{self.key}: {problems[0]}")
+        records = inputs["records"]
+        est_cls = _import_estimator(self.params["estimator"], self.key)
+        rules = [FEATURE_TRANSFORMS[s["transform"]](s) for s in self.params["features"]]
+        cells = [self._read_cell(i, row, rules) for i, row in enumerate(records)]
+        out_rows, statuses = self._seed_outputs(records)
+        fits = self._refit_blocks(est_cls, cells, out_rows, statuses)
+        self._stamp_statuses(out_rows, statuses)
+        self.write_artifact(ctx, REFIT_FITS_FILE, fits)
+        self.log.info("status counts: %s", dict(Counter(statuses)))
+        return {"records": out_rows, "fits": fits}
+
+    def _read_cell(self, index, row, rules):
+        """Parse one row into a :class:`_RefitCell`, refusing a row with no usable time."""
+        _mapping_row(self.key, "sklearn-expanding-refit", row, index)
+        params = self.params
+        time = _finite_number(row.get(params["time_field"]))
+        if time is None:
+            raise ValueError(
+                f"{self.key}: row {index} has no finite {params['time_field']!r} — "
+                "a row with no time cannot be placed in a block"
+            )
+        group = None
+        if "group_field" in params:
+            if params["group_field"] not in row:
+                raise ValueError(
+                    f"{self.key}: row {index} carries no {params['group_field']!r} "
+                    "group field"
+                )
+            group = row[params["group_field"]]
+        block = int((time - params["block_origin_ms"]) // params["block_ms"])
+        return _RefitCell(
+            index,
+            block,
+            group,
+            self._feature_vector(row, rules),
+            _finite_number(row.get(params["label"])),
+            _finite_number(row.get(params["known_field"])),
+        )
+
+    def _feature_vector(self, row, rules):
+        """The transformed features of a row, or ``None`` if any is missing or out of domain."""
+        vector = []
+        for spec, rule in zip(self.params["features"], rules):
+            value = _finite_number(row.get(spec["field"]))
+            feature = None if value is None else rule.apply(value)
+            if feature is None:
+                return None
+            vector.append(feature)
+        return vector
+
+    def _seed_outputs(self, records):
+        """Row copies carrying empty output fields, plus a status list; refuses clashes."""
+        output = self.params["output_field"]
+        status_field = output + REFIT_STATUS_SUFFIX
+        out_rows = []
+        for i, row in enumerate(records):
+            clash = [name for name in (output, status_field) if name in row]
+            if clash:
+                raise ValueError(
+                    f"{self.key}: row {i} already carries {clash} — the node "
+                    "adds these fields and will not overwrite them"
+                )
+            out_rows.append(dict(row))
+        return out_rows, [None] * len(records)
+
+    def _stamp_statuses(self, out_rows, statuses):
+        """Write each row's status, and ``None`` where no prediction was made."""
+        output = self.params["output_field"]
+        for row, status in zip(out_rows, statuses):
+            row.setdefault(output, None)
+            row[output + REFIT_STATUS_SUFFIX] = status
+
+    def _refit_blocks(self, est_cls, cells, out_rows, statuses):
+        """Walk blocks and groups in time order; fit, predict, return the fit records."""
+        groups = {}
+        for cell in cells:
+            if cell.vector is None:
+                statuses[cell.index] = _STATUS_BAD
+            elif cell.block < self.params["min_train_blocks"]:
+                statuses[cell.index] = _STATUS_WARMUP
+            else:
+                groups.setdefault((cell.block, cell.group), []).append(cell)
+        pool = self._training_pools(cells)
+        fits = []
+        for (block, group), members in sorted(groups.items(), key=lambda kv: kv[0][0]):
+            start = self.params["block_origin_ms"] + block * self.params["block_ms"]
+            fits.append(
+                self._fit_block(est_cls, start, group, members, pool.get(group), out_rows, statuses)
+            )
+        return fits
+
+    @staticmethod
+    def _training_pools(cells):
+        """Per group, the trainable cells sorted by the instant their label became known."""
+        pool = {}
+        for cell in cells:
+            if cell.vector is not None and cell.label is not None and cell.known is not None:
+                pool.setdefault(cell.group, []).append(cell)
+        for members in pool.values():
+            members.sort(key=lambda c: c.known)
+        return pool
+
+    def _fit_block(self, est_cls, start, group, members, pool, out_rows, statuses):
+        """Fit one block and group on the rows known before ``start``; return its fit record."""
+        known = [c.known for c in (pool or [])]
+        train = (pool or [])[: bisect_left(known, start)]
+        record = {
+            "block_start_ms": start,
+            "group": group,
+            "n_train": len(train),
+            "cutoff_ms": start,
+            "n_predicted": 0,
+            "status": _STATUS_OK,
+        }
+        refusal = self._cannot_fit(train)
+        if refusal is not None:
+            record["status"] = refusal
+            for cell in members:
+                statuses[cell.index] = refusal
+            return record
+        estimator = self._fresh_estimator(est_cls)
+        estimator.fit([c.vector for c in train], [c.label for c in train])
+        scores = self._predict(estimator, [c.vector for c in members])
+        for cell, score in zip(members, scores):
+            out_rows[cell.index][self.params["output_field"]] = score
+            statuses[cell.index] = _STATUS_OK
+        record["n_predicted"] = len(members)
+        record.update(self._coefficients(estimator))
+        return record
+
+    def _cannot_fit(self, train):
+        """The status explaining why ``train`` cannot be fitted, or ``None``."""
+        if not train:
+            return _STATUS_NO_TRAIN
+        method = self.params.get("predict_method", DEFAULT_REFIT_PREDICT_METHOD)
+        if method == "predict_proba" and len({c.label for c in train}) < 2:
+            return _STATUS_ONE_CLASS
+        return None
+
+    def _fresh_estimator(self, est_cls):
+        """A newly constructed, seeded estimator — never reused across blocks."""
+        path = self.params["estimator"]
+        kwargs = dict(self.params.get("estimator_params", DEFAULT_REFIT_ESTIMATOR_PARAMS))
+        estimator = _construct(est_cls, kwargs, path, self.key, "estimator_params")
+        _apply_seed(estimator, self.params.get("seed"), path, self.key)
+        return estimator
+
+    def _predict(self, estimator, matrix):
+        """One float per row: the positive-class probability, or the plain prediction."""
+        method = self.params.get("predict_method", DEFAULT_REFIT_PREDICT_METHOD)
+        if method == "predict_proba":
+            proba = estimator.predict_proba(matrix)
+            if len(proba[0]) != 2:
+                raise ValueError(
+                    f"{self.key}: predict_proba returned {len(proba[0])} classes — "
+                    "this node is binary-only (the belief is P(classes_[1])); use "
+                    "predict_method='predict' for other estimators"
+                )
+            return [float(row[1]) for row in proba]
+        return [float(value) for value in estimator.predict(matrix)]
+
+    @staticmethod
+    def _coefficients(estimator):
+        """``coef`` and ``intercept`` as plain lists when the estimator has ``coef_``."""
+        if not hasattr(estimator, "coef_"):
+            return {}
+        import numpy
+
+        out = {"coef": numpy.asarray(estimator.coef_, dtype=float).ravel().tolist()}
+        intercept = numpy.asarray(getattr(estimator, "intercept_", []), dtype=float)
+        flat = intercept.ravel().tolist()
+        out["intercept"] = flat[0] if len(flat) == 1 else flat
+        return out
+
 
 class SklearnPredict(TrainableNode):
     """Inference-only: the signal behind a pinned artifact (role ``signal``).

@@ -579,7 +579,10 @@ JSON manifest for a caller-named, ORDERED mapping of many fitted estimators
 but over the whole manifest, plus a deterministic prediction-fixture
 checksum replayed at load so a restored head that does not reproduce
 write-time beliefs refuses even when the on-disk bytes are untouched;
-`sklearn-segment` (ADR-0160) is the pack's one CLOSED catalog —
+`SklearnExpandingRefit` (ADR-0264, a `transform` by import path, no kind name) refits a
+fresh estimator per `block_ms` block on rows whose `known_field` precedes the block and
+writes the out-of-sample prediction back as `output_field` plus `<output_field>_status`;
+`fits.json` records each fit; `sklearn-segment` (ADR-0160) is the pack's one CLOSED catalog —
 `kmeans`/`minibatch_kmeans`/`birch`, not an arbitrary import path — because
 it persists EXTRACTED centers and labels as JSON rather than a pickled
 model, fits on `train` alone behind two literal-`"train"` gates, labels every

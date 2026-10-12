@@ -30986,7 +30986,7 @@ The document `children/index_options/configs/run-forecast-dispersion-ic.json` co
 
 ## ADR-0264 — `SklearnExpandingRefit`: out-of-sample predictions from an expanding, block-wise refit
 
-**Status:** PROPOSED 2026-10-12. Implementation waits for owner approval.
+**Status:** APPROVED 2026-10-12 (owner: "i approve. go ahead an build").
 **Context.** The crypto_trading W4 study found that a logistic blend of the market mid and the GRU's P(YES) beats the market out of sample (memo `children/crypto_trading/docs/memos/2026-10-12-seed-check-wide-hpo-and-w4-take-test.md`, addendum). The blend was computed by scratchpad scripts and cannot be rerun from the repo. Inventory: `SklearnFit` fits once on its wired rows and outputs a signal, not a column; `walkforward` runs one document per fold and aggregates metrics, not rows; `Derive` cannot compute; `BucketedBinaryScore` already scores any probability column (taker P&L, `by`, `segments`). What is missing is one fit per time block, using only past rows, with its predictions written back as a field.
 **Decision.** One tier-2 node in `dskit/pipeline/libs/sklearn.py` (by import path; `NODE_KINDS` unchanged):
 1. Rows are cut into blocks of `block_ms` on `time_field`, aligned to `block_origin_ms`. For each block from the `min_train_blocks`-th on, the node fits a fresh estimator on every row whose `known_field` (the instant its label became known, such as settlement) is strictly before the block start, and predicts that block's rows into `output_field`. Using the label's known time, not the decision time, stops a row from training on an outcome that had not happened yet.

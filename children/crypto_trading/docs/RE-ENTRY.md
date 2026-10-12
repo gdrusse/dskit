@@ -27,7 +27,8 @@ this replaced is at the top of `docs/archive/re-entry/crypto_trading.md` (dskit 
   best of the four fair values at every margin. W5 not read.
 - **Market vs model (W4 only):** a logistic blend of mid + GRU, refit daily, out of sample at
   leads 8-14 (`run-w4-leads.json`), 2c margin: +5.2c x 2,939 trades (t 4.7); leads 2-7 weak.
-  Exploratory (lead range chosen on W4); memo addendum has the checks.
+  Exploratory (lead range chosen on W4); memo addendum has the checks. Rerunnable:
+  `run-w4-blend.json` (ADR-0264 `SklearnExpandingRefit`): leads 8-14, 2c, +4.2c x 4,209 (t 3.8).
 - Memos: `docs/memos/2026-10-11-zoo-w1-selection-and-model-pick.md`,
   `docs/memos/2026-10-11-w2-predictor-check.md`,
   `docs/memos/2026-10-12-seed-check-wide-hpo-and-w4-take-test.md`.
@@ -38,8 +39,7 @@ this replaced is at the top of `docs/archive/re-entry/crypto_trading.md` (dskit 
 
 ## Next
 
-Write the leads 8-14 blended take rule down (ADR + pipeline node for the blend), then one
-W5 read when the owner approves. Book/trade data for maker quoting is the parallel track.
+Fix the rule (blend, leads 8-14, 2c) and read W5 once when the owner approves. Book/trade data for maker quoting is the parallel track.
 
 ## Blocked / owner decisions
 

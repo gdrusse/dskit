@@ -496,3 +496,52 @@ def test_the_lead_map_covers_every_admissible_lead_and_no_other():
     strike_lag_s = max(params["markets"]["params"]["strike_known_lag_s"].values())
     admissible = [m for m in range(1, 15) if m * 60 - lag_s >= window_s and m * 60 < 15 * 60 - strike_lag_s]
     assert params["decisions"]["params"]["leads_minutes"] == admissible
+
+
+# --- the W4 blend ---------------------------------------------------------------------------------------------------------
+
+
+def test_the_blend_run_is_the_lead_map_up_to_fees_and_declares_the_blend():
+    leads, blend = load("run-w4-leads.json")["pipeline"], load("run-w4-blend.json")["pipeline"]
+    upto = list(leads)[: list(leads).index("fees") + 1]
+    assert list(blend)[: len(upto)] == upto
+    for key in upto:
+        assert blend[key] == leads[key], key
+    node = blend["blend"]
+    assert node["uses"] == "dskit.pipeline.libs.sklearn:SklearnExpandingRefit"
+    assert node["inputs"] == {"records": "$fees.records"}
+    assert node["params"] == {
+        "estimator": "sklearn.linear_model.LogisticRegression",
+        "estimator_params": {"C": 1.0, "max_iter": 2000},
+        "features": [
+            {"field": "mid", "transform": "logit", "clip": 1e-4},
+            {"field": "fair_gru", "transform": "logit", "clip": 1e-4},
+        ],
+        "label": "label",
+        "time_field": "decision_ms",
+        "known_field": "close_ms",
+        "block_ms": 86_400_000,
+        "block_origin_ms": W4_START_MS,
+        "min_train_blocks": 15,
+        "output_field": "fair_blend",
+    }, "pooled: no group_field"
+
+
+def test_the_blend_scores_only_predicted_rows_at_the_declared_margins_and_stays_in_w4():
+    blend = load("run-w4-blend.json")["pipeline"]
+    keep = blend["blend_ok"]
+    assert keep["inputs"] == {"records": "$blend.records"}
+    assert keep["params"]["where"] == [{"field": "fair_blend_status", "op": "==", "value": "ok"}]
+    takes = sorted(key for key in blend if key.startswith("take_m"))
+    assert takes == ["take_m01", "take_m02", "take_m03"]
+    first = blend["take_m01"]["params"]
+    for key, cents in zip(takes, (1, 2, 3)):
+        params = blend[key]["params"]
+        assert params["margin"] == pytest.approx(cents / 100)
+        assert params["model_fields"] == ["fair_blend", "fair_gru"]
+        assert {k: v for k, v in params.items() if k != "margin"} == {k: v for k, v in first.items() if k != "margin"}
+        assert params["segments"] == {"w4": {"start_ms": W4_START_MS, "end_ms": W4_END_MS}}
+        assert params["report_segments"] == ["w4"] and "lead_band" in params["by"]
+    bands = blend["lead_band"]["params"]["cases"]
+    assert bands[0]["when"] == [{"field": "lead_minutes", "op": ">=", "value": 8}] and bands[1]["when"] == []
+    assert load("run-w4-blend.json")["pipeline"]["write"]["params"]["path"].startswith("~/data/crypto_trading/w4-blend/")
