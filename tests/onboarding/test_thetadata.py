@@ -544,3 +544,14 @@ def test_index_underlying_uses_index_endpoint():
     assert paths == ["/v3/index/history/eod"] and records[0]["data"]["close"] == 5900.0
     with pytest.raises(AssetError):
         ThetaDataConnector().resolve_knobs({**CONFIG, "underlying_kind": "future"})
+
+
+def test_open_interest_resent_through_the_morning_keeps_the_latest_report():
+    t = Terminal()
+    t.chain[(EOD, "20250106")] = [eod_row()]
+    first = {**oi_row(oi=4), "timestamp": "2025-01-06T07:01:23.000"}
+    later = {**oi_row(oi=5), "timestamp": "2025-01-06T09:11:47.000"}
+    t.chain[(OI, "20250106")] = [later, first]          # arrival order must not matter
+    cfg = {**CONFIG, "start": "2025-01-06", "end": "2025-01-07"}
+    records, _ = pull(connector(t), cfg)
+    assert len(records) == 1 and records[0]["data"]["open_interest"] == 5
