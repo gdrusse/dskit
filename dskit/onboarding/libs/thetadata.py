@@ -44,9 +44,11 @@ import threading
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from statistics import median
 
 from ..base import AssetError, MODES, parse_utc
 from ..connector import PROTOCOL, Connector, backoff, retry_after
+from .parquet_export import SnapshotParquetExport
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -69,6 +71,7 @@ __all__ = [
     "UNDERLYING_KEY_FIELDS",
     "UNDERLYING_STREAM",
     "ThetaDataConnector",
+    "ThetaOptionEodExport",
     "urllib_get",
 ]
 
@@ -776,3 +779,194 @@ class ThetaDataConnector(Connector):
             for data in self._underlying(knobs, symbol):
                 yield self._record(stream, data)
             cursors[symbol] = {"end": knobs["end"].isoformat()}
+
+
+def _weekdays_between(first, last) -> int:
+    """Weekdays from ``first`` to ``last``, both included."""
+    full, extra = divmod((last - first).days + 1, 7)
+    day = first + timedelta(days=7 * full)
+    return 5 * full + sum((day + timedelta(days=i)).weekday() < 5 for i in range(extra))
+
+
+class ThetaOptionEodExport(SnapshotParquetExport):
+    """Parquet export of ``option_eod`` snapshots, with the ThetaData quality checks.
+
+    The schema follows :data:`OPTION_FIELDS`: dates ``date32``, report
+    timestamps ``timestamp[ms]``, sizes ``int32``, exchange and condition codes
+    ``int16``, ``created`` and ``last_trade`` strings (null today, kept), every
+    other field ``float64``. All columns are kept.
+
+    Checks (alarm name: rule). Defaults were chosen from the owner's census of
+    seven landed roots (2026-10-12), so a normal root passes with margin and a
+    broken pull does not; every one is a ``_PARAMS`` entry that ``--params``
+    overrides. The record-count rule is the base class's.
+
+    - ``row_count_mismatch``: parquet rows differ from the raw payload's records.
+    - ``duplicate_keys``: rows beyond one per (symbol, expiration, strike, right,
+      date) key, more than ``max_duplicate_keys`` (0).
+    - ``crossed_quotes``: share of rows with bid > ask and ask > 0 above 1e-4.
+    - ``locked_quotes``: share with bid == ask > 0 above 1e-3.
+    - ``null_quotes``: share with bid AND ask null above 0.20.
+    - ``zero_bid``: share with bid == 0 above 0.60.
+    - ``iv_error_100``: share with ``iv_error`` == 100 above 0.15.
+    - ``future_dates``: any row dated on or after ``sealed_from`` (2026-01-01,
+      the sealed year; a hard alarm).
+    - ``date_coverage``: within a symbol holding at least
+      ``min_coverage_span_weekdays`` (20) weekdays between its first and last
+      date, the share of those weekdays with no row above 0.08 (holidays are
+      about 0.04).
+    - ``rows_per_date_jump``: a symbol whose median rows per date differs from
+      its previous snapshot's by more than a factor of 6, only when both medians
+      exceed 50 rows; smaller chains are logged, not alarmed.
+    """
+
+    _PARAMS = (
+        ("max_duplicate_keys", 0),
+        ("max_crossed_share", 1e-4),
+        ("max_locked_share", 1e-3),
+        ("max_null_quote_share", 0.20),
+        ("max_zero_bid_share", 0.60),
+        ("max_iv_error_100_share", 0.15),
+        ("sealed_from", "2026-01-01"),
+        ("max_missing_weekday_share", 0.08),
+        ("min_coverage_span_weekdays", 20),
+        ("max_rows_per_date_ratio", 6),
+        ("min_rows_per_date_for_ratio", 50),
+    )
+    _INT32 = ("volume", "count", "bid_size", "ask_size", "open_interest")
+    _INT16 = ("bid_exchange", "ask_exchange", "bid_condition", "ask_condition")
+    _STRINGS = ("symbol", "right", "created", "last_trade")
+    _DATES = ("expiration", "date")
+    _MILLIS = ("timestamp", "underlying_timestamp")
+    _CARRY = "median_rows_per_date:"
+
+    def schema(self):
+        """Return the ordered Arrow types of ``OPTION_FIELDS``."""
+        import pyarrow as pa
+        fixed = {**dict.fromkeys(self._INT32, pa.int32()), **dict.fromkeys(self._INT16, pa.int16()),
+                 **dict.fromkeys(self._STRINGS, pa.string()), **dict.fromkeys(self._DATES, pa.date32()),
+                 **dict.fromkeys(self._MILLIS, pa.timestamp("ms"))}
+        return OrderedDict((name, fixed.get(name, pa.float64())) for name in OPTION_FIELDS)
+
+    def check_columns(self):
+        """Return the columns the checks read back."""
+        return ["symbol", "expiration", "strike", "right", "date", "bid", "ask", "iv_error"]
+
+    def checks(self, batches, report):
+        """Run the ThetaData quality checks over the written file; return alarm names."""
+        import numpy as np
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        p, q, detail = report["thresholds"], report["quality"], report["detail"]
+        sealed = pa.scalar(date.fromisoformat(p["sealed_from"]), pa.date32())
+        keys = ["symbol", "expiration", "strike", "right", "date"]
+        total = dict.fromkeys(("rows", "crossed", "locked", "null_quotes", "zero_bid", "iv100", "future"), 0)
+        per_unit, duplicates, reappeared = {}, 0, []
+
+        def hits(mask):
+            return int(pc.sum(pc.cast(pc.fill_null(mask, False), pa.int64())).as_py() or 0)
+
+        def absorb(table):
+            """Count one run of COMPLETE (symbol, date) units."""
+            nonlocal duplicates
+            bid, ask = table["bid"], table["ask"]
+            total["rows"] += table.num_rows
+            total["crossed"] += hits(pc.and_kleene(pc.greater(bid, ask), pc.greater(ask, 0)))
+            total["locked"] += hits(pc.and_kleene(pc.equal(bid, ask), pc.greater(ask, 0)))
+            total["null_quotes"] += hits(pc.and_kleene(pc.is_null(bid), pc.is_null(ask)))
+            total["zero_bid"] += hits(pc.equal(bid, 0))
+            total["iv100"] += hits(pc.equal(table["iv_error"], 100))
+            total["future"] += hits(pc.greater_equal(table["date"], sealed))
+            duplicates += table.num_rows - table.select(keys).group_by(keys, use_threads=False).aggregate([]).num_rows
+            units = table.group_by(["symbol", "date"], use_threads=False).aggregate([([], "count_all")])
+            for symbol, day, count in zip(units["symbol"].to_pylist(), units["date"].to_pylist(),
+                                          units["count_all"].to_pylist()):
+                if (symbol, day) in per_unit:  # a unit is written contiguously: coming back is a repeat
+                    reappeared.append((symbol, day))
+                    duplicates += count
+                per_unit[(symbol, day)] = per_unit.get((symbol, day), 0) + count
+
+        pending = None
+        for batch in batches:
+            work = batch if pending is None else pa.concat_tables([pending, batch])
+            last = work.slice(work.num_rows - 1, 1)
+            same = pc.and_kleene(pc.equal(work["symbol"], last["symbol"][0]),
+                                 pc.equal(work["date"], last["date"][0]))
+            other = np.flatnonzero(~pc.fill_null(same, False).to_numpy(zero_copy_only=False))
+            start = int(other[-1]) + 1 if len(other) else 0  # the last unit may continue in the next row group
+            if start:
+                absorb(work.slice(0, start))
+            pending = work.slice(start)
+        if pending is not None and pending.num_rows:
+            absorb(pending)
+
+        rows = total["rows"]
+        share = lambda hit: hit / rows if rows else 0.0  # noqa: E731
+        q.update(rows=rows, duplicate_keys=duplicates, crossed_share=share(total["crossed"]),
+                 locked_share=share(total["locked"]), null_quote_share=share(total["null_quotes"]),
+                 zero_bid_share=share(total["zero_bid"]), iv_error_100_share=share(total["iv100"]),
+                 future_date_rows=total["future"], reappeared_units=len(reappeared))
+        rules = (
+            ("duplicate_keys", duplicates > p["max_duplicate_keys"],
+             f"{duplicates} rows repeat a (symbol, expiration, strike, right, date) key"
+             + (f" ({len(reappeared)} unit(s) reappear apart, first {reappeared[0]})" if reappeared else "")),
+            ("crossed_quotes", q["crossed_share"] > p["max_crossed_share"],
+             f"crossed share {q['crossed_share']:.2e} > {p['max_crossed_share']}"),
+            ("locked_quotes", q["locked_share"] > p["max_locked_share"],
+             f"locked share {q['locked_share']:.2e} > {p['max_locked_share']}"),
+            ("null_quotes", q["null_quote_share"] > p["max_null_quote_share"],
+             f"null bid and ask share {q['null_quote_share']:.3f} > {p['max_null_quote_share']}"),
+            ("zero_bid", q["zero_bid_share"] > p["max_zero_bid_share"],
+             f"zero bid share {q['zero_bid_share']:.3f} > {p['max_zero_bid_share']}"),
+            ("iv_error_100", q["iv_error_100_share"] > p["max_iv_error_100_share"],
+             f"iv_error == 100 share {q['iv_error_100_share']:.3f} > {p['max_iv_error_100_share']}"),
+            ("future_dates", total["future"] > 0,
+             f"{total['future']} rows dated on or after {p['sealed_from']}"),
+        )
+        return self._fire(detail, rules) + self._per_symbol(per_unit, report)
+
+    @staticmethod
+    def _fire(detail, rules):
+        fired = []
+        for name, tripped, text in rules:
+            if tripped:
+                detail[name] = text
+                fired.append(name)
+        return fired
+
+    def _per_symbol(self, per_unit, report):
+        """Date coverage and the rows-per-date jump, from the (symbol, date) -> rows table."""
+        p, q, detail = report["thresholds"], report["quality"], report["detail"]
+        by_symbol = {}
+        for (symbol, day), count in per_unit.items():
+            by_symbol.setdefault(symbol, []).append((day, count))
+        worst, worst_symbol, over, jumped, ratio_seen = 0.0, None, [], [], 0.0
+        for symbol, days in sorted(by_symbol.items()):
+            dates = [d for d, _ in days]
+            span = _weekdays_between(min(dates), max(dates))
+            if span >= p["min_coverage_span_weekdays"]:
+                missing = (span - sum(d.weekday() < 5 for d in dates)) / span
+                if missing > p["max_missing_weekday_share"]:
+                    over.append(symbol)
+                if missing > worst:
+                    worst, worst_symbol = missing, symbol
+            current = float(median(c for _, c in days))
+            before = report["carried"].get(self._CARRY + symbol)
+            report["carry"][self._CARRY + symbol] = current
+            if before:
+                ratio = max(before, current) / max(min(before, current), 1e-9)
+                ratio_seen = max(ratio_seen, ratio)
+                floor = p["min_rows_per_date_for_ratio"]
+                if ratio > p["max_rows_per_date_ratio"] and before > floor and current > floor:
+                    jumped.append(symbol)
+        q.update(worst_missing_weekday_share=worst, worst_missing_symbol=worst_symbol,
+                 coverage_symbols_over=over[:20], symbols=len(by_symbol),
+                 max_rows_per_date_ratio_seen=ratio_seen, jumped_symbols=jumped[:20])
+        return self._fire(detail, (
+            ("date_coverage", bool(over),
+             f"{len(over)} symbol(s) miss more than {p['max_missing_weekday_share']} of their "
+             f"weekdays (worst {worst_symbol}: {worst:.3f})"),
+            ("rows_per_date_jump", bool(jumped),
+             f"median rows per date moved more than {p['max_rows_per_date_ratio']}x since the "
+             f"previous snapshot for {jumped[:5]}"),
+        ))
