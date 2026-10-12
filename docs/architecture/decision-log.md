@@ -30983,3 +30983,23 @@ The document `children/index_options/configs/run-forecast-dispersion-ic.json` co
 
 **Amendment 2 (2026-10-12, owner: prioritize the names we test, then everything else useful).** (a) Order: tier 1a the 414 tested names (stock universe 117 + option universe 300) first, then 1b the 12 index-option roots (SPX, SPXW, NDX, NDXP, RUT, RUTW, VIX, VIXW, XSP, DJX, OEX, XEO; index options work on Standard), then 1c the other 303 core names, then tier 2 (next 1,000 roots by chain size). The first core pull's finished roots (A, AA, AAA, ...) stay in `options-core`. (b) Furthest back: Standard refuses 2015-12-31 as Professional, so 2016-01-04 is the floor; every source starts there. (c) Two streams added: `option_quote_at` (the whole chain's NBBO at declared clock times, `quote_times`, one request per root, date and time; this is the executable-clock evidence ADR-0258 lacked) and `underlying_kind: index` (index prices work on the free Index plan; stock bars need a Stock plan). Neither is pulled yet; they follow the daily tiers. (d) The running pull uses a pinned worktree (`wt/theta-pull`), so connector edits cannot break it.
 
+
+## ADR-0264 — `SklearnExpandingRefit`: out-of-sample predictions from an expanding, block-wise refit
+
+**Status:** PROPOSED 2026-10-12. Implementation waits for owner approval.
+**Context.** The crypto_trading W4 study found that a logistic blend of the market mid and the GRU's P(YES) beats the market out of sample (memo `children/crypto_trading/docs/memos/2026-10-12-seed-check-wide-hpo-and-w4-take-test.md`, addendum). The blend was computed by scratchpad scripts and cannot be rerun from the repo. Inventory: `SklearnFit` fits once on its wired rows and outputs a signal, not a column; `walkforward` runs one document per fold and aggregates metrics, not rows; `Derive` cannot compute; `BucketedBinaryScore` already scores any probability column (taker P&L, `by`, `segments`). What is missing is one fit per time block, using only past rows, with its predictions written back as a field.
+**Decision.** One tier-2 node in `dskit/pipeline/libs/sklearn.py` (by import path; `NODE_KINDS` unchanged):
+1. Rows are cut into blocks of `block_ms` on `time_field`, aligned to `block_origin_ms`. For each block from the `min_train_blocks`-th on, the node fits a fresh estimator on every row whose `known_field` (the instant its label became known, such as settlement) is strictly before the block start, and predicts that block's rows into `output_field`. Using the label's known time, not the decision time, stops a row from training on an outcome that had not happened yet.
+2. Estimator by dotted path plus `estimator_params`, as in `SklearnFit`, reusing its import, seed and predict-method rules. `predict_method` defaults to `predict_proba` (column 1, binary only).
+3. `features`: a list of `{field, transform}` objects. Transforms come from a registry of `FeatureTransform` objects (`identity`; `logit`, with a declared `clip`), so a new one is a subclass, not a branch.
+4. Optional `group_field`: one fit per group value (for example a per-lead fit). Absent means one pooled fit.
+5. Rows the node cannot predict are named, not dropped: `warmup`, `no_train_rows`, `one_class`, `bad_feature`. Each gets a `<output_field>_status` field, and the counts are logged.
+6. Output `fits`: a per-block, per-group record of the training row count, the cutoff, and the coefficients when the estimator has `coef_`, also written as `fits.json` in the node's artifact dir. Nothing is pickled; each refit is reproducible from the document and its inputs.
+**Child use.** `crypto_trading/configs/run-w4-blend.json`: the lead-map decision table, then `SklearnExpandingRefit` (logistic on logit mid and logit fair_gru, `block_ms` one day, `known_field` close_ms, `min_train_blocks` 15), then `BucketedBinaryScore` on `fair_blend`, with leads 8–14 as a declared segment and margins 1, 2 and 3c. W4 only. W5 stays unread until the owner approves the one confirmation read.
+**Sweep (2026-10-12).** No matches for `SklearnExpandingRefit`, `ExpandingRefit`, `expanding_refit`, `walk_forward_predict`. Nearest neighbours: `SklearnFit` (one fit), `walkforward` (per-fold documents) and `pmquant.Ensemble` (averages members, does not fit).
+**Test.** `tests/pipeline_libs/test_sklearn_expanding_refit.py`:
+- predictions equal an independent per-block refit;
+- the known-time guard (a row whose label became known after the block start never trains that block);
+- warmup and status cases, group fits, transform registry and clip, default-deny params.
+
+The child test pins `run-w4-blend.json` to the lead map's nodes.
