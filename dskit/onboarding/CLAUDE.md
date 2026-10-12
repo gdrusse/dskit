@@ -173,7 +173,8 @@ dskit/onboarding/
 │   ├── restwindow.py  declarative time-window REST (ADR-0240): window/cursor pagination, positional rows, epoch instants; standalone, no `restapi` underscore names
 │   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
 │   ├── zipcsv.py      httpblobs transform: vendor zip of one CSV -> typed parquet under a JSON layout (ADR-0242)
-│   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
+│   ├── schwab.py      Schwab closed-minute REST bars + OAuth refresh
+│   └── thetadata.py   ThetaData daily option chains + underlying bars from a local Theta Terminal: per-root newest-first cursor, batch_units, ordered concurrency (stdlib urllib, ADR-0263)
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        CLI
 ├── README.md          user-facing docs
