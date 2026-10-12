@@ -572,7 +572,9 @@ def test_the_w5_blend_is_the_w4_blend_with_only_the_cut_panel_segments_and_outpu
     mapped = _strip_notes(_as_w4(w5, "w5-blend/", "w4-blend/"))
     for key in ("take_m01", "take_m02", "take_m03"):
         assert w5["pipeline"][key]["params"]["segments"]["w5"] == {"start_ms": W4_END_MS, "end_ms": W5_END_MS}
+        assert w5["pipeline"][key]["params"]["report_segments"] == ["w4", "w5"], "the pre-registered test reads segment w5"
         mapped[key]["params"]["segments"] = w4["pipeline"][key]["params"]["segments"]
+        mapped[key]["params"]["report_segments"] = w4["pipeline"][key]["params"]["report_segments"]
     assert mapped == _strip_notes(w4["pipeline"])
 
 

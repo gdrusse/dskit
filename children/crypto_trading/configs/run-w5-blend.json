@@ -508,7 +508,8 @@
         ],
         "cluster_field": "event_ticker",
         "report_segments": [
-          "w4"
+          "w4",
+          "w5"
         ],
         "cluster_block_s": 86400
       },
@@ -558,7 +559,8 @@
         ],
         "cluster_field": "event_ticker",
         "report_segments": [
-          "w4"
+          "w4",
+          "w5"
         ],
         "cluster_block_s": 86400
       },
@@ -608,7 +610,8 @@
         ],
         "cluster_field": "event_ticker",
         "report_segments": [
-          "w4"
+          "w4",
+          "w5"
         ],
         "cluster_block_s": 86400
       },
