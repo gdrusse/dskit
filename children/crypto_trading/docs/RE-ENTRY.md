@@ -25,6 +25,9 @@ this replaced is at the top of `docs/archive/re-entry/crypto_trading.md` (dskit 
   predictor -1.4% weighted CRPS vs empirical on W4; take-at-the-touch P&L is not
   significant (best: 5c margin, +$53 on 5,638 one-contract trades, t = 1.22). GRU is the
   best of the four fair values at every margin. W5 not read.
+- **Market vs model (W4 only):** a logistic blend of mid + GRU, refit daily, out of sample at
+  leads 8-14 (`run-w4-leads.json`), 2c margin: +5.2c x 2,939 trades (t 4.7); leads 2-7 weak.
+  Exploratory (lead range chosen on W4); memo addendum has the checks.
 - Memos: `docs/memos/2026-10-11-zoo-w1-selection-and-model-pick.md`,
   `docs/memos/2026-10-11-w2-predictor-check.md`,
   `docs/memos/2026-10-12-seed-check-wide-hpo-and-w4-take-test.md`.
@@ -35,8 +38,8 @@ this replaced is at the top of `docs/archive/re-entry/crypto_trading.md` (dskit 
 
 ## Next
 
-Owner's choice: confirm the 5c take rule once on W5; or acquire book/trade data to test
-maker quoting; or improve the 2-minute-lead forecast. A Kelly MIO waits for a take-rule edge.
+Write the leads 8-14 blended take rule down (ADR + pipeline node for the blend), then one
+W5 read when the owner approves. Book/trade data for maker quoting is the parallel track.
 
 ## Blocked / owner decisions
 
@@ -54,4 +57,4 @@ maker quoting; or improve the 2-minute-lead forecast. A Kelly MIO waits for a ta
 - `docs/decisioning/README.md` and `actions.csv` are hook-generated; merge through
   `tools/merge/` drivers.
 - No GPU job is running. The W4 refit model is under this child's git-ignored
-  `pipeline_runs/zoo-production-w4` in the W4 worktree (pinned by `state_hash` in `run-w4-take.json`). Check `docs/decisioning/actions.csv` for the latest rows.
+  `pipeline_runs/zoo-production-w4` in the W4 worktree, copied to `/home/russell/data/crypto_trading/production-w4` (pinned by `state_hash` in `run-w4-take.json`). Check `docs/decisioning/actions.csv` for the latest rows.

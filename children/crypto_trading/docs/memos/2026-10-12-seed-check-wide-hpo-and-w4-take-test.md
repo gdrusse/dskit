@@ -55,3 +55,20 @@ Reading: profit per trade rises with the margin, which is what a real but thin e
 ## Handoff
 
 Not profitable enough to act on. Options: confirm the 5c rule once on W5 (the holdout, owner's call); test maker quoting, which needs book or trade data (`kalshi-crypto-books-15m`, `kalshi-history-trades-15m` are not acquired); or improve the forecast at the 2-minute lead where the edge looks largest. A Kelly MIO is not worth building until a take rule shows an edge.
+
+## Addendum: market vs our distribution, lead map (2026-10-12, W4 only)
+
+- Market beats the GRU on its own (Brier/log loss, every segment), but a logistic blend of mid and GRU (full-W4 weights 0.75 mid, 0.35 GRU, in logits) adds information. Not a stale-quote effect: the quote reprices about 95% of the last minute's spot move, and the GRU weight is unchanged controlling for it. It concentrates after large early moves (the market prices YES too close to 50c).
+- `configs/run-w4-leads.json` (run `crypto-w4-leads-2026-09-15-96caf482`, 110,864 rows) rebuilds the decision table at every admissible lead, 2 to 14; on leads 2, 5 and 10 its rows match the take run's (25,270 rows, max |fair_gru| difference 2.4e-7, mid identical). The config scores fair_gru alone; the blend below is computed from its table by the research scripts (refit daily on all earlier days, scored out of sample on days 16 to 46, taker after fee):
+
+| Leads | Margin | Trades | P&L | Per trade | t |
+|---|---|---|---|---|---|
+| 8–14 | 1c | 6,612 | +$249 | +3.8c | 3.9 |
+| 8–14 | 2c | 2,939 | +$153 | +5.2c | 4.7 |
+| 8–14 | 3c | 1,221 | +$77 | +6.3c | 3.7 |
+| 2–7 | 2c | 2,509 | +$43 | +1.7c | 1.5 |
+
+- At 2c, leads 8–14: both OOS halves positive (+6.6c, t 5.1; +4.3c, t 2.6); BTC +5.5c (t 4.4), ETH +4.2c (t 1.8); YES and NO both positive; one trade per market (earliest lead) +4.4c (t 3.9). Leads 7–12 are each t > 2 at 2c; the gain rises with the lead and fades after 12.
+- Per-lead fits and adding momentum features do not beat the pooled two-input blend. The model-free momentum rule is weak once out of sample.
+- Caveats: about 590 cells searched over these studies, and the lead range was chosen after looking at W4. The halves decline. Candle quotes; the fill is at the decision-time quote (the 5 s execution lag moves the fair value's horizon, not the price); one contract; today's fees. The blend scripts are exploratory and outside the repo (session scratchpad `research/leads/`); a rerunnable blend needs a pipeline node, which comes after an ADR.
+- Next: write down the rule (pooled mid+GRU logistic, refit expanding, leads 8–14, taker, 2c margin), then the one W5 read when the owner approves.

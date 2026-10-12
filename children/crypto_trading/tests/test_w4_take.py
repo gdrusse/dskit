@@ -470,3 +470,29 @@ def test_runbook_step_8_compares_models_on_common_trades_and_selects_on_the_exec
             r["fair_gru"] - r["yes_ask"] - r["fee_buy_yes"] > margin or r["yes_bid"] - r["fair_gru"] - r["fee_buy_no"] > margin))
         got = cells.get(("exec", "own", f"{margin:.2f}", "fair_gru"))
         assert (int(got.group(5)) if got else 0) == want
+
+
+# --- the W4 lead map ----------------------------------------------------------------------------------------------------
+
+
+def test_the_lead_map_is_the_take_run_with_only_its_leads_and_output_changed():
+    leads = load("run-w4-leads.json")
+    lead_nodes = leads["pipeline"]
+    assert set(lead_nodes) == set(NODES)
+    for key, node in NODES.items():
+        mine = copy.deepcopy(lead_nodes[key])
+        if key == "decisions":
+            mine["params"]["leads_minutes"] = node["params"]["leads_minutes"]
+        if key == "write":
+            assert mine["params"]["path"] != node["params"]["path"], "the lead map must not overwrite the take run's table"
+            mine["params"]["path"], mine["params"]["source"] = node["params"]["path"], node["params"]["source"]
+        assert mine == node, key
+
+
+def test_the_lead_map_covers_every_admissible_lead_and_no_other():
+    params = load("run-w4-leads.json")["pipeline"]
+    lag_s = params["decisions"]["params"]["exec_lag_s"]
+    window_s = params["fair_rms"]["params"]["averaging_window_s"]
+    strike_lag_s = max(params["markets"]["params"]["strike_known_lag_s"].values())
+    admissible = [m for m in range(1, 15) if m * 60 - lag_s >= window_s and m * 60 < 15 * 60 - strike_lag_s]
+    assert params["decisions"]["params"]["leads_minutes"] == admissible
