@@ -1367,3 +1367,33 @@ class TestEdgePaddedCalendarBlockBootstrap:
         sampler = EdgePaddedCalendarBlockBootstrap(
             [date(9999, 12, 1), date.max], 3)
         assert sampler.evidence["eligible_starts"][-1] == "9999-12-31"
+
+
+# --- sample_quantile: the public face of the interpolated quantile (ADR-0265) ------------------
+
+def test_sample_quantile_interpolates_linearly_between_order_statistics():
+    from dskit.pipeline.stats import sample_quantile
+
+    data = [4.0, 1.0, 3.0, 10.0]          # sorted: 1, 3, 4, 10
+    assert sample_quantile(data, 0.0) == 1.0
+    assert sample_quantile(data, 1.0) == 10.0
+    assert sample_quantile(data, 0.5) == 3.5
+    assert sample_quantile(data, 1 / 3) == 3.0
+    assert sample_quantile([7.0], 0.9) == 7.0
+    assert data == [4.0, 1.0, 3.0, 10.0]  # the input is not reordered
+
+
+def test_sample_quantile_agrees_with_expanding_quantile():
+    from dskit.pipeline.stats import expanding_quantile, sample_quantile
+
+    data = [4.0, 1.0, 3.0, 10.0, 2.0]
+    assert expanding_quantile(data + [0.0], 0.25, 5)[-1] == sample_quantile(data, 0.25)
+
+
+@pytest.mark.parametrize("values,q", [([], 0.5), ([1.0, float("nan")], 0.5), ([1.0, 2.0], 1.5),
+                                      ([1.0, 2.0], True), ("ab", 0.5), ([1.0, None], 0.5)])
+def test_sample_quantile_refuses_bad_input(values, q):
+    from dskit.pipeline.stats import sample_quantile
+
+    with pytest.raises(ValueError):
+        sample_quantile(values, q)

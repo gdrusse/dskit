@@ -24,6 +24,7 @@ from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unkn
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.libs.pyomo import BINDING_TOLERANCE, DEFAULT_SOLVER, PyomoSolve, WassersteinDual
 from dskit.pipeline.option_pricing import VolIndexSmileQuotes, black76_delta
+from dskit.pipeline.option_structures import payoff_total
 from dskit.pipeline.records import number_ok, price_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
 from dskit.pipeline.stats import (
@@ -47,7 +48,6 @@ from .contracts import (
     _IndexSettlement,
     _day,
     _decimal,
-    _payoff_total,
     _instant,
     _integer,
     _text,
@@ -1473,7 +1473,7 @@ class CondorQuoteBacktest(_CondorBacktestBase):
             if levels is None or levels[0] is not facts:
                 levels = cache[levels_key] = (facts, [facts.forward * math.exp(scale * z)
                                                       for z in samples])
-            hit = cache[key] = (facts, _payoff_total(legs, levels[1], strikes))
+            hit = cache[key] = (facts, payoff_total(legs, levels[1], strikes))
         return credit + self.params["multiplier"] * hit[1] / len(samples)
 
     def _book(self, book, strikes, reason, scale, facts, legs=None):

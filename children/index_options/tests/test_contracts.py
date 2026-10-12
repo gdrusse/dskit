@@ -981,3 +981,24 @@ def test_non_float_inputs_keep_the_owners_path():
         got = contracts.structure_payoff(contracts.CONDOR_LEGS, level, mixed)
         want = _generator_payoff(contracts.CONDOR_LEGS, level, mixed)
         assert repr(got) == repr(want) and type(got) is type(want)
+
+
+def test_the_leg_algebra_is_owned_by_dskit_and_contracts_re_exports_it():
+    """ADR-0265 graduated the venue-neutral leg algebra into the core; the child holds one owner, not a copy."""
+    from dskit.pipeline import option_structures
+
+    for name in ("leg_intrinsic", "structure_credit", "structure_max_loss", "structure_payoff"):
+        assert getattr(contracts, name) is getattr(option_structures, name)
+        assert name in contracts.__all__
+
+
+def test_quote_problems_is_the_core_quote_defects_in_words():
+    """The child owns the message text only; which defects exist is the core's (ADR-0265 review)."""
+    from dskit.pipeline.option_structures import quote_defects
+
+    quotes = [(1.0, 1.2), (None, 1.2), (-1.0, 1.2), (1.3, 1.2), (0.0, 0.0), (0.0, 0.4), (1.2, 1.2)]
+    for bid, ask in quotes:
+        for side in (None, "sell", "buy"):
+            words = contracts.quote_problems(bid, ask, 10, 10, 1, side)
+            codes = quote_defects(bid, ask, side, locked_ok=True)
+            assert len(words) == len(codes), (bid, ask, side, words, codes)

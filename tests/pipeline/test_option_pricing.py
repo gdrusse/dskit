@@ -242,3 +242,53 @@ def test_the_calibrated_smile_stays_positive():
 def test_knobs_list_the_constructor_order():
     quotes = VolIndexSmileQuotes(*CALIBRATED)
     assert tuple(getattr(quotes, k) for k in VolIndexSmileQuotes.KNOBS) == CALIBRATED
+
+
+# -- black76_implied_vol (ADR-0265 node 2) -----------------------------------------------
+
+
+@pytest.mark.parametrize("right", RIGHTS)
+@pytest.mark.parametrize("strike", [70.0, 95.0, 100.0, 105.0, 140.0])
+@pytest.mark.parametrize("vol, years, rate", [(0.05, 0.5, 0.0), (0.3, 1 / 12, 0.0),
+                                              (0.8, 2.0, 0.03), (2.5, 1 / 52, 0.0)])
+def test_implied_vol_inverts_black76(right, strike, vol, years, rate):
+    price = black76(right, 100.0, strike, vol, years, rate)
+    intrinsic = max(0.0, (100.0 - strike) if right == "call" else (strike - 100.0)) * math.exp(-rate * years)
+    if price - intrinsic < 1e-4:
+        pytest.skip("a price with no time value carries no vol information")
+    got = option_pricing.black76_implied_vol(right, price, 100.0, strike, years, rate)
+    assert got == pytest.approx(vol, rel=1e-5)
+
+
+@pytest.mark.parametrize("right, price", [
+    ("call", 0.0), ("put", 0.0),          # no time value: no vol reproduces it
+    ("call", 100.0), ("put", 110.0),      # at the upper bound (F for a call, K for a put)
+    ("call", 5.0), ("put", 5.0),          # below intrinsic for the in-the-money side (strike 90 / 110)
+])
+def test_implied_vol_is_none_where_no_vol_prices_it(right, price):
+    strike = 90.0 if right == "call" else 110.0
+    assert option_pricing.black76_implied_vol(right, price, 100.0, strike, 0.25) is None
+
+
+def test_implied_vol_is_none_outside_the_declared_bracket():
+    price = black76("call", 100.0, 100.0, 0.5, 0.25)
+    assert option_pricing.black76_implied_vol("call", price, 100.0, 100.0, 0.25,
+                                              vol_max=0.4) is None
+    assert option_pricing.black76_implied_vol("call", price, 100.0, 100.0, 0.25,
+                                              vol_min=0.6, vol_max=2.0) is None
+
+
+@pytest.mark.parametrize("bad", [
+    {"right": "straddle"}, {"price": float("nan")}, {"price": -1.0}, {"forward": 0.0},
+    {"strike": -1.0}, {"years": 0.0}, {"vol_min": 0.0}, {"vol_max": 1e-5},
+])
+def test_implied_vol_refuses_a_malformed_input(bad):
+    args = {"right": "call", "price": 5.0, "forward": 100.0, "strike": 100.0, "years": 0.25,
+            "vol_min": 1e-4, "vol_max": 5.0}
+    args.update(bad)
+    with pytest.raises(ValueError):
+        option_pricing.black76_implied_vol(**args)
+
+
+def test_implied_vol_is_exported():
+    assert "black76_implied_vol" in option_pricing.__all__

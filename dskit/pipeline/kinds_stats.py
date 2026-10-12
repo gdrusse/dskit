@@ -24,6 +24,12 @@ document swaps a synthetic registry for the toolkit one without rewiring.
   stream: :func:`~dskit.pipeline.ordering.per_timestamp_ic` as a node,
   with a benchmark partialled out per measure, split and monthly
   summaries, and the drop census.
+* :class:`QuantileSortBook` (role ``transform``, by import path, ADR-0265) —
+  the per-instant quantile long-short book of one or more signals: names
+  sorted into quantiles by a signal at each stamp, the declared-direction
+  spread of an outcome net of a per-side cost, then the series' Newey–West
+  statistics, a calendar-block bootstrap interval and one BH / Bonferroni
+  family across the signals.
 
 Registration is deliberate, never an import side effect: the orchestrator
 calls :func:`register` to claim the owned kind names in a registry
@@ -36,7 +42,9 @@ Import cost: stdlib only.
 from __future__ import annotations
 
 import math
+import sys
 from collections.abc import Mapping
+from datetime import date
 from types import SimpleNamespace
 
 from dskit.pipeline.document import is_node_ref
@@ -53,11 +61,18 @@ from dskit.pipeline.split_policy import SPLIT_NAMES
 from dskit.pipeline.stats import (
     CORRECTIONS,
     METHODS,
+    CalendarBlockBootstrap,
     cluster_bootstrap_pvalue,
     cluster_bootstrap_t,
+    correction,
+    dm_lags,
+    newey_west_mean,
+    quantile_bin,
+    quantile_edges,
+    sample_quantile,
 )
 
-__all__ = ["MIN_CLUSTERS", "CrossSectionIC", "StatTest", "Validate", "register"]
+__all__ = ["MIN_CLUSTERS", "CrossSectionIC", "QuantileSortBook", "StatTest", "Validate", "register"]
 
 #: The bootstrap's honesty floor: below this many clusters an instrument's
 #: resampling distribution is degenerate (one cluster resamples to itself
@@ -1091,6 +1106,508 @@ class CrossSectionIC(Node):
         }
         self.log.info("%s: %d row(s) in, %d measure(s), %d split summar(ies)",
                       self.key, rows_in, len(measures), len(splits))
+        return {"summary": summary, "records": records}
+
+
+class QuantileSortBook(Node):
+    """Per-instant quantile long-short book of several signals, with series statistics — by import path.
+
+    Role ``transform``. ``uses: "dskit.pipeline.kinds_stats:QuantileSortBook"``;
+    never registered (ADR-0265). At each ``stamp_field`` value the names
+    (``series_field``) are cut into ``quantiles`` equal-count buckets by a
+    signal (:func:`~dskit.pipeline.stats.quantile_edges` /
+    :func:`~dskit.pipeline.stats.quantile_bin`, a tie going to the higher
+    bucket) and the book is long one extreme bucket and short the other. The
+    declared ``sign`` fixes which: ``1`` longs the highest-signal bucket,
+    ``-1`` the lowest, so the spread is positive when the declared direction
+    pays. The gross spread is the long bucket's mean outcome less the short
+    bucket's; the cost is ``sides_per_leg`` sides on each of the two legs, at
+    ``cost_per_side`` (one number) or at the mean of each leg's names'
+    ``cost_field`` (a per-name per-side cost, such as a half-spread over
+    premium, in the outcome's units); net = gross - cost.
+
+    The series of net spreads, in stamp order, is tested one-sided against
+    ``E <= 0`` with :func:`~dskit.pipeline.stats.newey_west_mean`
+    (``lags``, or :func:`~dskit.pipeline.stats.dm_lags` over ``h_steps``);
+    the gross series gets the same. A series whose Bartlett band spans it
+    (``lags >= n - 1``, or fewer than two stamps) keeps its mean and
+    withholds the HAC statistics, saying so in ``hac_withheld``; a series with no
+    variance (``t`` undefined) reports no ``p_value`` and ``hac_withheld`` of
+    ``"no_variance"``. With
+    ``bootstrap`` the net series also gets a
+    :class:`~dskit.pipeline.stats.CalendarBlockBootstrap` percentile interval
+    of its mean (stamps must be ISO dates). The signals are ONE family: the
+    corrections (:data:`~dskit.pipeline.stats.CORRECTIONS`, default BH and
+    Bonferroni) run over their net p-values at ``alpha``; a signal with no HAC
+    statistic stays in the family at ``p = 1`` and is listed in
+    ``family.withheld``, so the family size is the declared signal count.
+
+    **Caller contract: ``outcome_field`` is measured strictly AFTER the stamp**
+    that its signal was known at; the node cannot see when an outcome began. To
+    have it checked, name a timestamp column of the outcome's start in
+    ``outcome_after_field``: a row whose value is not strictly later than its
+    stamp (or is missing, or not comparable) refuses by index.
+
+    A row whose signal, outcome or cost value is null or not a finite number
+    is DROPPED from that signal and counted under ``dropped`` by field. A
+    stamp with fewer than ``min_names`` usable names is ``thin``, and one whose
+    long or short bucket is empty (ties) is ``empty_bucket``: both counted and
+    withheld, never filled. A row missing the stamp, the series or a split
+    field, or a second row for one (stamp, name), refuses by index.
+
+    Outputs
+    -------
+    ``summary``
+        ``stage``, ``rows_in``, ``quantiles``, ``signals`` (per signal its
+        fields, ``sign``, ``rows_scored``, ``dropped``, ``n_stamps``,
+        ``thin_stamps``, ``empty_bucket_stamps``, ``quantile_means`` (mean over
+        stamps of each bucket's mean outcome), ``gross`` and ``net`` (the
+        series statistics: ``n``, ``mean``, ``se``, ``t``, ``p_value``,
+        ``lags``, ``frac_pos``, ``hac_withheld``) and, with ``bootstrap``,
+        ``ci``), ``family`` (``alpha``, ``p``, ``withheld``, ``decisions`` by
+        correction) and ``splits`` (the series statistics per
+        ``"<signal>|<field>=<value>"``).
+    ``records``
+        One row per signal and scored stamp: ``signal``, ``stamp``,
+        ``n_names``, ``quantile_means``, ``gross``, ``cost``, ``net``.
+
+    Parameters
+    ----------
+    params : dict
+        ``stamp_field``, ``series_field`` (non-empty str), ``quantiles`` (int
+        >= 2), ``min_names`` (int >= ``quantiles``), ``alpha`` (in (0, 1)) and
+        ``signals`` (non-empty ``{name: {"signal_field", "outcome_field",
+        optional "sign" (1 or -1, default 1), optional "cost_field"}}``, names
+        without ``|``) are REQUIRED. Optional: ``cost_per_side`` (number >= 0;
+        not beside a ``cost_field``), ``sides_per_leg`` (int >= 1, default 2:
+        in and out), ``lags`` (int >= 0 or null), ``h_steps`` (int >= 1,
+        default 1), ``corrections`` (non-empty list from
+        :data:`~dskit.pipeline.stats.CORRECTIONS` without a weighted one),
+        ``bootstrap`` (``{"block_days", "replicates", "seed", "level"}``, all
+        required), ``splits`` (non-empty list of distinct row fields) and
+        ``outcome_after_field`` (a column naming when the outcome began; see above).
+
+    Examples
+    --------
+    A quintile book on one signal, a half-spread cost, a block-bootstrap interval::
+
+        node = QuantileSortBook("book", {
+            "stamp_field": "date", "series_field": "symbol", "quantiles": 5,
+            "min_names": 50, "alpha": 0.05, "cost_per_side": 0.0005,
+            "signals": {"rv_iv_gap": {"signal_field": "gap", "outcome_field": "ret"}},
+            "bootstrap": {"block_days": 21, "replicates": 2000, "seed": 7, "level": 0.9}})
+        out = node.run(ctx, {"records": rows})
+        out["summary"]["signals"]["rv_iv_gap"]["net"]["t"]
+    """
+
+    role = "transform"
+    outputs = ("summary", "records")
+    _PARAMS = ("stamp_field", "series_field", "quantiles", "min_names", "alpha", "signals",
+               "cost_per_side", "sides_per_leg", "lags", "h_steps", "corrections", "bootstrap",
+               "splits", "outcome_after_field")
+    _REQUIRED = ("stamp_field", "series_field", "quantiles", "min_names", "alpha", "signals")
+    _SIGNAL_KEYS = ("signal_field", "outcome_field", "sign", "cost_field")
+    _BOOTSTRAP_KEYS = ("block_days", "replicates", "seed", "level")
+    #: The corrections run when ``corrections`` is not declared.
+    DEFAULT_CORRECTIONS = ("bh", "bonferroni")
+    #: The smallest p-value the family accepts (a correction refuses 0).
+    _P_FLOOR = sys.float_info.min
+
+    @classmethod
+    def _signal_problems(cls, name, spec):
+        """Problems with one signal's declaration."""
+        where = f"signals[{name!r}]"
+        if not isinstance(name, str) or not name or "|" in name:
+            return [f"{where}: a signal name is a non-empty string without '|'"]
+        if not isinstance(spec, dict):
+            return [f"{where} must be a dict, got {spec!r}"]
+        problems = []
+        unknown = sorted(set(spec) - set(cls._SIGNAL_KEYS))
+        if unknown:
+            problems.append(f"{where}: unknown key(s) {unknown} — allowed: {list(cls._SIGNAL_KEYS)}")
+        for key in ("signal_field", "outcome_field", "cost_field"):
+            value = spec.get(key)
+            if (key in spec or key != "cost_field") and not is_node_ref(value) and (
+                    not isinstance(value, str) or not value):
+                problems.append(f"{where}.{key} must be a non-empty string, got {value!r}")
+        sign = spec.get("sign", 1)
+        if not is_node_ref(sign) and (isinstance(sign, bool) or sign not in (1, -1)):
+            problems.append(f"{where}.sign must be 1 or -1, got {sign!r}")
+        return problems
+
+    @classmethod
+    def _bootstrap_problems(cls, spec):
+        """Problems with the ``bootstrap`` block."""
+        if not isinstance(spec, dict):
+            return [f"bootstrap must be a dict, got {spec!r}"]
+        problems = []
+        unknown = sorted(set(spec) - set(cls._BOOTSTRAP_KEYS))
+        if unknown:
+            problems.append(f"bootstrap: unknown key(s) {unknown} — allowed: {list(cls._BOOTSTRAP_KEYS)}")
+        for key in ("block_days", "replicates"):
+            if key not in spec:
+                problems.append(f"bootstrap.{key} is required")
+            elif not is_node_ref(spec[key]):
+                check_int_param(problems, f"bootstrap.{key}", spec[key], ge=1)
+        if "seed" not in spec:
+            problems.append("bootstrap.seed is required")
+        elif not is_node_ref(spec["seed"]):
+            check_int_param(problems, "bootstrap.seed", spec["seed"], ge=0)
+        level = spec.get("level")
+        if "level" not in spec:
+            problems.append("bootstrap.level is required")
+        elif not is_node_ref(level) and not (number_ok(level) and 0 < level < 1):
+            problems.append(f"bootstrap.level must be a number in (0, 1), got {level!r}")
+        return problems
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with the declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying ``$`` references.
+
+        Returns
+        -------
+        list of str
+            One message per problem.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for name in cls._REQUIRED:
+            if name not in params:
+                problems.append(f"{name} is required")
+        for name in ("stamp_field", "series_field"):
+            value = params.get(name)
+            if name in params and not is_node_ref(value) and (not isinstance(value, str) or not value):
+                problems.append(f"{name} must be a non-empty string, got {value!r}")
+        quantiles = params.get("quantiles")
+        if "quantiles" in params and not is_node_ref(quantiles):
+            check_int_param(problems, "quantiles", quantiles, ge=2)
+        min_names = params.get("min_names")
+        if "min_names" in params and not is_node_ref(min_names):
+            floor = quantiles if isinstance(quantiles, int) and not isinstance(quantiles, bool) else 2
+            check_int_param(problems, "min_names", min_names, ge=max(2, floor))
+        alpha = params.get("alpha")
+        if "alpha" in params and not is_node_ref(alpha) and not (number_ok(alpha) and 0 < alpha < 1):
+            problems.append(f"alpha must be a number in (0, 1), got {alpha!r}")
+        problems.extend(cls._signals_problems(params))
+        after = params.get("outcome_after_field")
+        if "outcome_after_field" in params and not is_node_ref(after) and (
+                not isinstance(after, str) or not after):
+            problems.append(f"outcome_after_field must be a non-empty column name, got {after!r}")
+        cost = params.get("cost_per_side")
+        if "cost_per_side" in params and not is_node_ref(cost) and not (number_ok(cost) and cost >= 0):
+            problems.append(f"cost_per_side must be a number >= 0, got {cost!r}")
+        for name, floor in (("sides_per_leg", 1), ("h_steps", 1), ("lags", 0)):
+            value = params.get(name)
+            if name in params and not (name == "lags" and value is None) and not is_node_ref(value):
+                check_int_param(problems, name, value, ge=floor)
+        problems.extend(cls._list_problems(params))
+        if "bootstrap" in params and not is_node_ref(params["bootstrap"]):
+            problems.extend(cls._bootstrap_problems(params["bootstrap"]))
+        return problems
+
+    @classmethod
+    def _signals_problems(cls, params):
+        """Problems with ``signals`` and with a cost declared twice."""
+        signals = params.get("signals")
+        if "signals" not in params or is_node_ref(signals):
+            return []
+        if not isinstance(signals, dict) or not signals:
+            return [f"signals must be a non-empty dict of name -> signal, got {signals!r}"]
+        problems = []
+        for name, spec in signals.items():
+            problems.extend(cls._signal_problems(name, spec))
+        if params.get("cost_per_side") is not None and any(
+                isinstance(spec, dict) and spec.get("cost_field") for spec in signals.values()):
+            problems.append("cost_per_side and a signal's cost_field are two costs for one book: declare one")
+        return problems
+
+    @classmethod
+    def _list_problems(cls, params):
+        """Problems with ``corrections`` and ``splits``."""
+        problems = []
+        corrections = params.get("corrections")
+        if "corrections" in params and not is_node_ref(corrections):
+            if not isinstance(corrections, list) or not corrections:
+                problems.append(f"corrections must be a non-empty list of names, got {corrections!r}")
+            else:
+                for name in corrections:
+                    entry = CORRECTIONS.get(name) if isinstance(name, str) else None
+                    if entry is None or entry["needs_weights"]:
+                        problems.append(f"corrections names {name!r}: must be one of "
+                                        f"{sorted(n for n, e in CORRECTIONS.items() if not e['needs_weights'])}")
+        splits = params.get("splits")
+        if "splits" in params and not is_node_ref(splits):
+            if (not isinstance(splits, list) or not splits
+                    or not all(isinstance(v, str) and v for v in splits)):
+                problems.append(f"splits must be a non-empty list of field names, got {splits!r}")
+            elif len(set(splits)) < len(splits):
+                problems.append("splits names must be distinct")
+        return problems
+
+    @staticmethod
+    def _required(where, row, field, null_ok=False):
+        """Return the row's value of a field it must carry, refusing by row otherwise."""
+        if field not in row or (row[field] is None and not null_ok):
+            raise ValueError(f"{where} lacks the field {field!r}")
+        return row[field]
+
+    @staticmethod
+    def _usable(spec, row):
+        """``((signal, outcome, cost), None)`` for a usable row, else ``(None, the field that failed)``."""
+        values = []
+        for key in ("signal_field", "outcome_field", "cost_field"):
+            field = spec.get(key)
+            if field is None:
+                values.append(None)
+                continue
+            value = row.get(field)
+            if not number_ok(value):
+                return None, field
+            values.append(float(value))
+        return tuple(values), None
+
+    def _check_outcome_after(self, where, row, stamp):
+        """Refuse a row whose outcome did not start strictly after its stamp (``outcome_after_field``)."""
+        field = self.params.get("outcome_after_field")
+        if field is None:
+            return
+        start = self._required(where, row, field)
+        try:
+            later = start > stamp
+        except TypeError:
+            later = False
+        if not later:
+            raise ValueError(f"{where}: outcome_after_field {field!r} = {start!r} is not strictly after "
+                             f"the stamp {stamp!r}: the outcome would overlap the signal")
+
+    def _collect(self, rows):
+        """Read the stream once: per signal its usable columns, labels and drop census."""
+        p = self.params
+        splits = list(p.get("splits") or [])
+        if not isinstance(rows, (list, tuple)) or not rows:
+            raise ValueError(f"{self.key}: no records to sort")
+        panels = {name: {"stamps": [], "names": [], "sig": [], "out": [], "cost": [],
+                         "labels": [], "dropped": {}} for name in p["signals"]}
+        seen = set()
+        for index, row in enumerate(rows):
+            where = f"{self.key}: row {index}"
+            if not isinstance(row, Mapping):
+                raise ValueError(f"{where} must be a mapping, got {type(row).__name__}")
+            stamp = self._required(where, row, p["stamp_field"])
+            name = self._required(where, row, p["series_field"])
+            self._check_outcome_after(where, row, stamp)
+            try:
+                repeated = (stamp, name) in seen
+                seen.add((stamp, name))
+            except TypeError:
+                raise ValueError(f"{where}: the stamp and the name must be hashable, got "
+                                 f"{stamp!r} and {name!r}") from None
+            if repeated:
+                raise ValueError(f"{where} repeats {p['series_field']}={name!r} at "
+                                 f"{p['stamp_field']}={stamp!r}: a name counts once per stamp")
+            labels = [(field, self._required(where, row, field, null_ok=True)) for field in splits]
+            for signal, spec in p["signals"].items():
+                values, failed = self._usable(spec, row)
+                panel = panels[signal]
+                if values is None:
+                    panel["dropped"][failed] = panel["dropped"].get(failed, 0) + 1
+                    continue
+                panel["stamps"].append(stamp)
+                panel["names"].append(name)
+                panel["sig"].append(values[0])
+                panel["out"].append(values[1])
+                panel["cost"].append(values[2])
+                panel["labels"].append(labels)
+        return len(rows), panels
+
+    @staticmethod
+    def _mean(values):
+        """The exactly rounded mean, whatever the input order."""
+        return math.fsum(values) / len(values)
+
+    def _book(self, signal, panel, positions):
+        """The scored stamps of one signal over ``positions``: ``(records, thin, empty)``."""
+        p, spec = self.params, self.params["signals"][signal]
+        n_buckets, sides = int(p["quantiles"]), int(p.get("sides_per_leg", 2))
+        sign, flat = spec.get("sign", 1), float(p.get("cost_per_side") or 0.0)
+        long_at, short_at = (n_buckets - 1, 0) if sign > 0 else (0, n_buckets - 1)
+        by_stamp = {}
+        for position in positions:
+            by_stamp.setdefault(panel["stamps"][position], []).append(position)
+        try:
+            stamps = sorted(by_stamp)
+        except TypeError as exc:
+            raise ValueError(f"{self.key}: the stamps of {signal!r} cannot be ordered: {exc}") from exc
+        records, thin, empty = [], 0, 0
+        for stamp in stamps:
+            members = by_stamp[stamp]
+            if len(members) < p["min_names"]:
+                thin += 1
+                continue
+            edges = quantile_edges([panel["sig"][i] for i in members], n_buckets)
+            buckets = [[] for _ in range(n_buckets)]
+            for i in members:
+                buckets[quantile_bin(panel["sig"][i], edges)].append(i)
+            if not buckets[long_at] or not buckets[short_at]:
+                empty += 1
+                continue
+            means = [self._mean([panel["out"][i] for i in b]) if b else None for b in buckets]
+            leg_cost = [sides * (self._mean([panel["cost"][i] for i in buckets[at]])
+                                 if spec.get("cost_field") else flat) for at in (long_at, short_at)]
+            gross, cost = means[long_at] - means[short_at], leg_cost[0] + leg_cost[1]
+            records.append({"signal": signal, "stamp": stamp, "n_names": len(members),
+                            "quantile_means": means, "gross": gross, "cost": cost,
+                            "net": gross - cost})
+        return records, thin, empty
+
+    def _series(self, values):
+        """The one-sided Newey–West statistics of a stamp-ordered series, with the HAC guard."""
+        n = len(values)
+        out = {"n": n, "mean": self._mean(values) if n else None, "se": None, "t": None,
+               "p_value": None, "lags": None, "frac_pos": None, "hac_withheld": ""}
+        if n == 0:
+            out["hac_withheld"] = "no stamp was scored"
+            return out
+        out["frac_pos"] = sum(1 for v in values if v > 0.0) / n
+        if n < 2:
+            out["hac_withheld"] = "fewer than 2 scored stamps: no HAC statistic is reported"
+            return out
+        lags = self.params.get("lags")
+        lags = dm_lags(n, self.params.get("h_steps", 1)) if lags is None else int(lags)
+        out["lags"] = lags
+        if lags >= n - 1:
+            out["hac_withheld"] = (f"the Bartlett band ({lags} lag(s)) spans the {n}-stamp "
+                                   "series: no HAC statistic is reported")
+            return out
+        hac = newey_west_mean(values, lags=lags)
+        out.update(mean=hac["mean"], se=hac["se"], t=hac["t"], p_value=hac["p_value"])
+        if hac["t"] is None:         # no variance: the owner's p of 0.0 or 1.0 is a sign rule, not evidence
+            out.update(se=None, p_value=None, hac_withheld="no_variance")
+        return out
+
+    @staticmethod
+    def _as_date(stamp):
+        """The calendar date of an ISO-date stamp, refusing anything else."""
+        if type(stamp) is date:
+            return stamp
+        try:
+            return date.fromisoformat(stamp)
+        except (TypeError, ValueError):
+            raise ValueError(f"the bootstrap needs ISO-date stamps, got {stamp!r}") from None
+
+    def _interval(self, stamps, values):
+        """The block-bootstrap percentile interval of the mean of ``values`` (one per stamp)."""
+        spec = self.params["bootstrap"]
+        level, replicates, seed = spec["level"], int(spec["replicates"]), int(spec["seed"])
+        out = {"level": level, "block_days": int(spec["block_days"]), "replicates": replicates,
+               "seed": seed, "supported": False, "lo": None, "hi": None, "lower_one_sided": None}
+        if not values:
+            return out
+        sampler = CalendarBlockBootstrap([self._as_date(s) for s in stamps], out["block_days"])
+        out["supported"] = sampler.supported
+        if sampler.supported:
+            n = len(values)
+            means = sorted(math.fsum(values[i] for i in draw) / n
+                           for draw in sampler.sample_indices(replicates, seed))
+            tail = (1.0 - level) / 2.0
+            out.update(lo=sample_quantile(means, tail), hi=sample_quantile(means, 1.0 - tail),
+                       lower_one_sided=sample_quantile(means, 1.0 - level))
+        return out
+
+    def _signal_summary(self, signal, panel):
+        """One signal's records and its summary block."""
+        spec = self.params["signals"][signal]
+        records, thin, empty = self._book(signal, panel, range(len(panel["sig"])))
+        net = [r["net"] for r in records]
+        columns = [r["quantile_means"] for r in records]
+        block = {
+            "signal_field": spec["signal_field"], "outcome_field": spec["outcome_field"],
+            "sign": spec.get("sign", 1), "rows_scored": len(panel["sig"]),
+            "dropped": panel["dropped"], "n_stamps": len(records), "thin_stamps": thin,
+            "empty_bucket_stamps": empty,
+            "quantile_means": [self._mean(v) if v else None for v in (
+                [col[b] for col in columns if col[b] is not None]
+                for b in range(int(self.params["quantiles"])))],
+            "gross": self._series([r["gross"] for r in records]), "net": self._series(net),
+        }
+        if "bootstrap" in self.params:
+            block["ci"] = self._interval([r["stamp"] for r in records], net)
+        return records, block
+
+    def _split_summaries(self, signal, panel):
+        """The series statistics of one signal per split label."""
+        groups = {}
+        for position, labels in enumerate(panel["labels"]):
+            for field, value in labels:
+                groups.setdefault((field, value), []).append(position)
+        out = {}
+        for (field, value), positions in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+            records, thin, empty = self._book(signal, panel, positions)
+            out[f"{signal}|{field}={value}"] = {
+                **self._series([r["net"] for r in records]), "n_stamps": len(records),
+                "thin_stamps": thin, "empty_bucket_stamps": empty, "rows_scored": len(positions)}
+        return out
+
+    def _family(self, signals):
+        """The corrections over the signals' net p-values; a signal without one stays in at p = 1."""
+        alpha = self.params["alpha"]
+        p, withheld = {}, []
+        for name, block in signals.items():
+            net = block["net"]
+            if net["t"] is None or net["p_value"] is None:
+                p[name] = 1.0
+                withheld.append(name)
+            else:
+                p[name] = min(max(net["p_value"], self._P_FLOOR), 1.0)
+        names = self.params.get("corrections") or list(self.DEFAULT_CORRECTIONS)
+        return {"alpha": alpha, "p": p, "withheld": withheld,
+                "decisions": {name: correction(name)["fn"](p, alpha) for name in names}}
+
+    def run(self, ctx, inputs):
+        """Sort every signal's cross-sections, then test the spread series and the family.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused.
+        inputs : dict
+            ``records`` (REQUIRED, non-empty): mapping rows carrying the stamp,
+            series and signal fields.
+
+        Returns
+        -------
+        dict
+            ``summary`` and ``records`` as the class docstring states.
+
+        Raises
+        ------
+        ValueError
+            No records; a row that is not a mapping, lacks the stamp, series
+            or a split field, or repeats a (stamp, name); stamps that cannot
+            be ordered, or are not ISO dates under ``bootstrap``.
+        """
+        p = self.params
+        rows_in, panels = self._collect(inputs["records"])
+        signals, splits, records = {}, {}, []
+        for name, panel in panels.items():
+            scored, signals[name] = self._signal_summary(name, panel)
+            records.extend(scored)
+            if p.get("splits"):
+                splits.update(self._split_summaries(name, panel))
+        summary = {
+            "stage": f"per-{p['stamp_field']} {p['quantiles']}-quantile long-short across "
+                     f"{p['series_field']} — " + "; ".join(
+                         f"{n}: {s['signal_field']} vs {s['outcome_field']}" for n, s in p["signals"].items()),
+            "rows_in": rows_in, "quantiles": p["quantiles"], "signals": signals,
+            "family": self._family(signals), "splits": splits,
+        }
+        self.log.info("%s: %d row(s) in, %d signal(s), %d scored stamp record(s)",
+                      self.key, rows_in, len(signals), len(records))
         return {"summary": summary, "records": records}
 
 
