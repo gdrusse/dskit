@@ -3,7 +3,7 @@
   "url_template": "https://data.binance.vision/data/spot/daily/klines/ETHUSDT/1m/ETHUSDT-1m-{entity}.zip",
   "entities_file": "$CRYPTO_TRADING_ROOT/configs/binance_vision_dates.json",
   "entities_key": "dates",
-  "entities_sha256": "3cb5c067df690c6b532962732428fbce21035f85adf14da251d61fdf365a841e",
+  "entities_sha256": "5dd91f9d0d39c44db991a6e0334f6962ca4d70fceb8a702166be462f9ad1ef58",
   "relpath_template": "{entity}.parquet",
   "raw_relpath_template": "_raw/{entity}.zip",
   "transform": "dskit.onboarding.libs.zipcsv:ZipCsvToParquet",
@@ -80,6 +80,6 @@
   "max_retries": 4,
   "max_refused": 3,
   "max_bytes": 50000000,
-  "as_of": "2026-10-09T02:55:00+00:00",
+  "as_of": "2026-10-12T19:00:00+00:00",
   "stream": "files"
 }

@@ -126,7 +126,7 @@ BINANCE_SOURCES = {
 DATES_FILE = "binance_vision_dates.json"
 #: registration configs for tables a run of this child derives and a later run reads (localtables)
 DERIVED_SOURCES = ("source-features-15m.json", "source-features-hourly.json", "source-panel-minute.json",
-                   "source-panel-minute-w4.json")
+                   "source-panel-minute-w4.json", "source-panel-minute-w5.json")
 #: kalshi_history sources (ADR-0239): markets with the realised settlement value, hourly event-level candles, trades
 HISTORY_SOURCES = (
     "source-kalshi-history-crypto.json",
