@@ -792,45 +792,62 @@ class ThetaOptionEodExport(SnapshotParquetExport):
     """Parquet export of ``option_eod`` snapshots, with the ThetaData quality checks.
 
     The schema follows :data:`OPTION_FIELDS`: dates ``date32``, report
-    timestamps ``timestamp[ms]``, sizes ``int32``, exchange and condition codes
-    ``int16``, ``created`` and ``last_trade`` strings (null today, kept), every
-    other field ``float64``. All columns are kept.
+    timestamps ``timestamp[ms]`` (naive: the vendor's US/Eastern wall clock, declared in
+    the footer), sizes ``int32``, exchange and condition codes ``int16``, ``created`` and
+    ``last_trade`` strings (null today, kept), every other field ``float64``. All columns
+    are kept and NO value is changed. Vendor ``implied_vol``, ``d1`` and ``d2`` carry the
+    sentinel 214748.36 (an int32 overflow) on some rows; features must not read vendor
+    ``implied_vol``.
 
-    Checks (alarm name: rule). Defaults were chosen from the owner's census of
-    seven landed roots (2026-10-12), so a normal root passes with margin and a
-    broken pull does not; every one is a ``_PARAMS`` entry that ``--params``
-    overrides. The record-count rule is the base class's.
+    Checks (alarm name: rule). Defaults were chosen from the owner's census of seven
+    landed roots (2026-10-12) and the first 24 snapshots of ``options-tested``, so a
+    normal root passes with margin and a broken pull does not; each is a ``_PARAMS`` entry
+    that ``--params`` overrides. The base class adds ``row_count_mismatch``,
+    ``expected_rows_unavailable`` and ``overlapping_symbol_window``.
 
-    - ``row_count_mismatch``: parquet rows differ from the raw payload's records.
-    - ``duplicate_keys``: rows beyond one per (symbol, expiration, strike, right,
-      date) key, more than ``max_duplicate_keys`` (0).
+    - ``duplicate_keys``: rows repeating a (symbol, expiration, strike, right, date) key,
+      more than ``max_duplicate_keys`` (0). A (symbol, date) unit is written contiguously;
+      one that reappears apart is counted in ``reappeared_units`` and its keys compared
+      exactly in a second pass.
     - ``crossed_quotes``: share of rows with bid > ask and ask > 0 above 1e-4.
     - ``locked_quotes``: share with bid == ask > 0 above 1e-3.
-    - ``null_quotes``: share with bid AND ask null above 0.20.
+    - ``null_quotes``: share of rows with bid AND ask null above 0.10, measured ONLY on or
+      after each symbol's first quoted date (the earliest date with bid > 0 in any
+      converted snapshot, kept in ``first_quote.json``; the vendor has no quotes before a
+      symbol's first quoted date). Landing is newest first, so quoted-era snapshots arrive
+      before the pre-quote ones; a symbol with no known first quote counts every row.
+      ``pre_quote_rows`` is recorded. In the first 24 snapshots the quoted-era maximum was
+      0.022.
     - ``zero_bid``: share with bid == 0 above 0.60.
     - ``iv_error_100``: share with ``iv_error`` == 100 above 0.15.
-    - ``future_dates``: any row dated on or after ``sealed_from`` (2026-01-01,
-      the sealed year; a hard alarm).
-    - ``date_coverage``: within a symbol holding at least
-      ``min_coverage_span_weekdays`` (20) weekdays between its first and last
-      date, the share of those weekdays with no row above 0.08 (holidays are
-      about 0.04).
-    - ``rows_per_date_jump``: a symbol whose median rows per date differs from
-      its previous snapshot's by more than a factor of 6, only when both medians
-      exceed 50 rows; smaller chains are logged, not alarmed.
+    - ``sentinel_values``: share of rows where |implied_vol|, |d1| or |d2| >= 1e5 above 0.10
+      (the count is always recorded as ``sentinel_rows`` and ``sentinel_share``).
+    - ``future_dates``: any row dated on or after ``sealed_from`` (2026-01-01, the sealed
+      year; a hard alarm).
+    - ``date_coverage``: within a symbol holding at least ``min_coverage_span_weekdays``
+      (20) weekdays between its first and last date, the share of those weekdays with no
+      row above 0.08 (holidays are about 0.04).
+    - ``rows_per_date_jump``: a symbol whose median rows per date differs from its previous
+      snapshot's by more than a factor of 10, only when both medians exceed 50 rows. A gross
+      liquidity-regime guard: it cannot see a 2x loss of rows (the largest ratio seen so far
+      is 6.37, a chain growing after a listing).
     """
 
+    SCHEMA_VERSION = 2
+    STATE_FILE = "first_quote.json"
     _PARAMS = (
         ("max_duplicate_keys", 0),
         ("max_crossed_share", 1e-4),
         ("max_locked_share", 1e-3),
-        ("max_null_quote_share", 0.20),
+        ("max_null_quote_share", 0.10),
         ("max_zero_bid_share", 0.60),
         ("max_iv_error_100_share", 0.15),
+        ("sentinel_abs", 1e5),
+        ("max_sentinel_share", 0.10),
         ("sealed_from", "2026-01-01"),
         ("max_missing_weekday_share", 0.08),
         ("min_coverage_span_weekdays", 20),
-        ("max_rows_per_date_ratio", 6),
+        ("max_rows_per_date_ratio", 10),
         ("min_rows_per_date_for_ratio", 50),
     )
     _INT32 = ("volume", "count", "bid_size", "ask_size", "open_interest")
@@ -838,7 +855,18 @@ class ThetaOptionEodExport(SnapshotParquetExport):
     _STRINGS = ("symbol", "right", "created", "last_trade")
     _DATES = ("expiration", "date")
     _MILLIS = ("timestamp", "underlying_timestamp")
+    _SENTINELS = ("implied_vol", "d1", "d2")
     _CARRY = "median_rows_per_date:"
+
+    def param_problems(self):
+        """Return the base problems plus an unparseable ``sealed_from``."""
+        problems = super().param_problems()
+        if isinstance(self.params["sealed_from"], str):
+            try:
+                date.fromisoformat(self.params["sealed_from"])
+            except ValueError:
+                problems.append(f"param 'sealed_from' must be an ISO date, got {self.params['sealed_from']!r}")
+        return problems
 
     def schema(self):
         """Return the ordered Arrow types of ``OPTION_FIELDS``."""
@@ -848,9 +876,23 @@ class ThetaOptionEodExport(SnapshotParquetExport):
                  **dict.fromkeys(self._MILLIS, pa.timestamp("ms"))}
         return OrderedDict((name, fixed.get(name, pa.float64())) for name in OPTION_FIELDS)
 
+    def key_fields(self):
+        """Return the contract key; a row without one refuses the conversion."""
+        return OPTION_KEY_FIELDS
+
+    def window_fields(self):
+        """Return the group and date fields whose windows must not overlap between files."""
+        return ("symbol", "date")
+
+    def timezone_notes(self):
+        """Declare how to read each instant."""
+        wall = "America/New_York wall clock as the vendor reports it (naive)"
+        return {**dict.fromkeys(self._MILLIS, wall), "acquired_at": "UTC"}
+
     def check_columns(self):
         """Return the columns the checks read back."""
-        return ["symbol", "expiration", "strike", "right", "date", "bid", "ask", "iv_error"]
+        return ["symbol", "expiration", "strike", "right", "date", "bid", "ask", "iv_error",
+                *self._SENTINELS]
 
     def checks(self, batches, report):
         """Run the ThetaData quality checks over the written file; return alarm names."""
@@ -860,31 +902,44 @@ class ThetaOptionEodExport(SnapshotParquetExport):
         p, q, detail = report["thresholds"], report["quality"], report["detail"]
         sealed = pa.scalar(date.fromisoformat(p["sealed_from"]), pa.date32())
         keys = ["symbol", "expiration", "strike", "right", "date"]
-        total = dict.fromkeys(("rows", "crossed", "locked", "null_quotes", "zero_bid", "iv100", "future"), 0)
-        per_unit, duplicates, reappeared = {}, 0, []
+        total = dict.fromkeys(("rows", "crossed", "locked", "zero_bid", "iv100", "future", "sentinel"), 0)
+        per_unit, unit_dups = {}, {}   # (symbol, date) -> [rows, null quotes, quoted rows]; -> repeated keys
 
         def hits(mask):
             return int(pc.sum(pc.cast(pc.fill_null(mask, False), pa.int64())).as_py() or 0)
 
         def absorb(table):
             """Count one run of COMPLETE (symbol, date) units."""
-            nonlocal duplicates
             bid, ask = table["bid"], table["ask"]
             total["rows"] += table.num_rows
             total["crossed"] += hits(pc.and_kleene(pc.greater(bid, ask), pc.greater(ask, 0)))
             total["locked"] += hits(pc.and_kleene(pc.equal(bid, ask), pc.greater(ask, 0)))
-            total["null_quotes"] += hits(pc.and_kleene(pc.is_null(bid), pc.is_null(ask)))
             total["zero_bid"] += hits(pc.equal(bid, 0))
             total["iv100"] += hits(pc.equal(table["iv_error"], 100))
             total["future"] += hits(pc.greater_equal(table["date"], sealed))
-            duplicates += table.num_rows - table.select(keys).group_by(keys, use_threads=False).aggregate([]).num_rows
-            units = table.group_by(["symbol", "date"], use_threads=False).aggregate([([], "count_all")])
-            for symbol, day, count in zip(units["symbol"].to_pylist(), units["date"].to_pylist(),
-                                          units["count_all"].to_pylist()):
-                if (symbol, day) in per_unit:  # a unit is written contiguously: coming back is a repeat
-                    reappeared.append((symbol, day))
-                    duplicates += count
-                per_unit[(symbol, day)] = per_unit.get((symbol, day), 0) + count
+            odd = None
+            for name in self._SENTINELS:
+                big = pc.fill_null(pc.greater_equal(pc.abs(table[name]), p["sentinel_abs"]), False)
+                odd = big if odd is None else pc.or_(odd, big)
+            total["sentinel"] += hits(odd)
+            pairs = table.select(keys).group_by(keys, use_threads=False).aggregate([([], "count_all")])
+            repeated = pairs.filter(pc.greater(pairs["count_all"], 1))
+            for symbol, day, count in zip(repeated["symbol"].to_pylist(), repeated["date"].to_pylist(),
+                                          repeated["count_all"].to_pylist()):
+                unit_dups[(symbol, day)] = unit_dups.get((symbol, day), 0) + count - 1
+            frame = table.select(["symbol", "date"])
+            frame = frame.append_column("n", pc.cast(pc.and_kleene(pc.is_null(bid), pc.is_null(ask)), pa.int64()))
+            frame = frame.append_column("q", pc.cast(pc.fill_null(pc.greater(bid, 0), False), pa.int64()))
+            units = frame.group_by(["symbol", "date"], use_threads=False).aggregate(
+                [([], "count_all"), ("n", "sum"), ("q", "sum")])
+            for symbol, day, count, null, quoted in zip(
+                    units["symbol"].to_pylist(), units["date"].to_pylist(), units["count_all"].to_pylist(),
+                    units["n_sum"].to_pylist(), units["q_sum"].to_pylist()):
+                seen = per_unit.setdefault((symbol, day), [0, 0, 0, 0])
+                seen[0] += count
+                seen[1] += null
+                seen[2] += quoted
+                seen[3] += 1   # runs the unit appeared in
 
         pending = None
         for batch in batches:
@@ -900,26 +955,66 @@ class ThetaOptionEodExport(SnapshotParquetExport):
         if pending is not None and pending.num_rows:
             absorb(pending)
 
+        reappeared = sorted(unit for unit, seen in per_unit.items() if seen[3] > 1)
+        if reappeared:   # a unit written apart: its keys are compared across the pieces, exactly
+            wanted = set(reappeared)
+            pieces = []
+            for batch in report["reread"]():
+                inside = pc.and_(pc.is_in(batch["symbol"], pa.array(sorted({u[0] for u in wanted}))),
+                                 pc.is_in(batch["date"], pa.array(sorted({u[1] for u in wanted}), pa.date32())))
+                pieces.append(batch.select(keys).filter(inside))
+            joined = pa.concat_tables(pieces)
+            pairs = joined.group_by(keys, use_threads=False).aggregate([([], "count_all")])
+            exact = {unit: 0 for unit in wanted}
+            for symbol, day, count in zip(pairs["symbol"].to_pylist(), pairs["date"].to_pylist(),
+                                          pairs["count_all"].to_pylist()):
+                if (symbol, day) in wanted:
+                    exact[(symbol, day)] += count - 1
+            unit_dups.update(exact)
+            for unit in wanted - set(exact):
+                unit_dups.pop(unit, None)
+        duplicates = sum(unit_dups.values())
+
+        state = report["state"]
+        eligible = nulls = pre_quote = 0
+        for symbol in {unit[0] for unit in per_unit}:
+            quoted = [str(day) for (sym, day), seen in per_unit.items() if sym == symbol and seen[2] > 0]
+            known = state.get(symbol)
+            first = min(quoted + ([known] if known else [])) if (quoted or known) else None
+            if first is not None:
+                state[symbol] = first
+        for (symbol, day), (count, null, _quoted, _runs) in per_unit.items():
+            first = state.get(symbol)
+            if first is not None and str(day) < first:
+                pre_quote += count
+            else:
+                eligible += count
+                nulls += null
         rows = total["rows"]
-        share = lambda hit: hit / rows if rows else 0.0  # noqa: E731
-        q.update(rows=rows, duplicate_keys=duplicates, crossed_share=share(total["crossed"]),
-                 locked_share=share(total["locked"]), null_quote_share=share(total["null_quotes"]),
-                 zero_bid_share=share(total["zero_bid"]), iv_error_100_share=share(total["iv100"]),
-                 future_date_rows=total["future"], reappeared_units=len(reappeared))
+        share = lambda hit, whole=rows: hit / whole if whole else 0.0  # noqa: E731
+        q.update(rows=rows, duplicate_keys=duplicates, reappeared_units=len(reappeared),
+                 crossed_share=share(total["crossed"]), locked_share=share(total["locked"]),
+                 null_quote_share=share(nulls, eligible), null_quote_eligible_rows=eligible,
+                 pre_quote_rows=pre_quote, zero_bid_share=share(total["zero_bid"]),
+                 iv_error_100_share=share(total["iv100"]), sentinel_rows=total["sentinel"],
+                 sentinel_share=share(total["sentinel"]), future_date_rows=total["future"])
         rules = (
             ("duplicate_keys", duplicates > p["max_duplicate_keys"],
-             f"{duplicates} rows repeat a (symbol, expiration, strike, right, date) key"
-             + (f" ({len(reappeared)} unit(s) reappear apart, first {reappeared[0]})" if reappeared else "")),
+             f"{duplicates} rows repeat a (symbol, expiration, strike, right, date) key"),
             ("crossed_quotes", q["crossed_share"] > p["max_crossed_share"],
              f"crossed share {q['crossed_share']:.2e} > {p['max_crossed_share']}"),
             ("locked_quotes", q["locked_share"] > p["max_locked_share"],
              f"locked share {q['locked_share']:.2e} > {p['max_locked_share']}"),
             ("null_quotes", q["null_quote_share"] > p["max_null_quote_share"],
-             f"null bid and ask share {q['null_quote_share']:.3f} > {p['max_null_quote_share']}"),
+             f"null bid and ask share {q['null_quote_share']:.3f} of {eligible} quoted-era rows "
+             f"> {p['max_null_quote_share']}"),
             ("zero_bid", q["zero_bid_share"] > p["max_zero_bid_share"],
              f"zero bid share {q['zero_bid_share']:.3f} > {p['max_zero_bid_share']}"),
             ("iv_error_100", q["iv_error_100_share"] > p["max_iv_error_100_share"],
              f"iv_error == 100 share {q['iv_error_100_share']:.3f} > {p['max_iv_error_100_share']}"),
+            ("sentinel_values", q["sentinel_share"] > p["max_sentinel_share"],
+             f"|implied_vol|, |d1| or |d2| >= {p['sentinel_abs']:g} on {q['sentinel_share']:.3f} of rows "
+             f"> {p['max_sentinel_share']}"),
             ("future_dates", total["future"] > 0,
              f"{total['future']} rows dated on or after {p['sealed_from']}"),
         )
@@ -938,8 +1033,8 @@ class ThetaOptionEodExport(SnapshotParquetExport):
         """Date coverage and the rows-per-date jump, from the (symbol, date) -> rows table."""
         p, q, detail = report["thresholds"], report["quality"], report["detail"]
         by_symbol = {}
-        for (symbol, day), count in per_unit.items():
-            by_symbol.setdefault(symbol, []).append((day, count))
+        for (symbol, day), seen in per_unit.items():
+            by_symbol.setdefault(symbol, []).append((day, seen[0]))
         worst, worst_symbol, over, jumped, ratio_seen = 0.0, None, [], [], 0.0
         for symbol, days in sorted(by_symbol.items()):
             dates = [d for d, _ in days]

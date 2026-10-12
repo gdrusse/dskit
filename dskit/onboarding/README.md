@@ -311,7 +311,7 @@ present) into one immutable `<out>/<source>/<acq_id>.parquet`, then checks it an
 `<out>/verify.jsonl`. `python -m dskit.onboarding.libs.parquet_export --export-class pkg.mod:Class --root R
 --source S --stream T --out DIR [--max-snapshots N] [--params F.json]` exits 0 clean, 3 when a check alarmed
 (after recording that snapshot), 1 on an error or a refusal (schema drift, an unsafe cast, an existing file made
-from other content); `... verify --out DIR` re-counts the footers and summarises each source. A subclass supplies
+from other content); `... verify --out DIR [--root R --stream T]` re-counts the footers, re-checks every file for date-window overlaps, lists `raw_only` snapshots and summarises each source. A subclass supplies
 `schema()` and `checks()`; `libs/thetadata.ThetaOptionEodExport` is the ThetaData one. The store is only read.
 
 ## OAuth authorization

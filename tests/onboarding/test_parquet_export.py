@@ -78,7 +78,7 @@ def chain(symbols=("AAA", "BBB"), days=30, per_date=60, start=START, skip=()):
 _clock = [0]
 
 
-def land(root, rows, *, payload_rows=None, source=SOURCE, stream=STREAM, observations=True):
+def land(root, rows, *, payload_rows=None, source=SOURCE, stream=STREAM, observations=True, payload_name=None):
     """Commit one snapshot the way acquire does; returns its acq_id."""
     _clock[0] += 60
     stamp = (datetime.datetime(2026, 10, 12, 16, 0, 0, tzinfo=datetime.timezone.utc)
@@ -88,12 +88,12 @@ def land(root, rows, *, payload_rows=None, source=SOURCE, stream=STREAM, observa
     staged = tempfile.mkdtemp(dir=root.raw_dir(source), prefix=".stage-")
     payload = os.path.join(staged, "payload")
     os.makedirs(payload)
-    with open_text_writer(os.path.join(payload, f"{stream}.jsonl.gz"), "gzip") as fh:
+    with open_text_writer(os.path.join(payload, f"{payload_name or stream}.jsonl.gz"), "gzip") as fh:
         fh.write(json.dumps({"protocol": 1, "type": "SCHEMA", "stream": stream,
                              "schema": {"fields": list(OPTION_FIELDS)}}, sort_keys=True) + "\n")
         for row in payload_rows:
             fh.write(json.dumps({"protocol": 1, "type": "RECORD", "stream": stream,
-                                 "effective_date": row["date"], "kind": "observation",
+                                 "effective_date": row.get("date", "2025-06-02"), "kind": "observation",
                                  "data": row}, sort_keys=True) + "\n")
     manifest = build_manifest(payload, source=source, mode="backfill", acquired_at=stamp)
     acq_id, _ = write_snapshot(root, staged, manifest)
@@ -102,7 +102,7 @@ def land(root, rows, *, payload_rows=None, source=SOURCE, stream=STREAM, observa
         os.makedirs(target)
         with open_text_writer(os.path.join(target, f"{stream}.jsonl.gz"), "gzip") as fh:
             for row in rows:
-                fh.write(json.dumps({"acquired_at": stamp, "data": row, "effective_date": row["date"],
+                fh.write(json.dumps({"acquired_at": stamp, "data": row, "effective_date": row.get("date", "2025-06-02"),
                                      "kind": "observation", "mode": "backfill", "stream": stream},
                                     sort_keys=True) + "\n")
     return acq_id
@@ -241,7 +241,7 @@ def test_a_schema_version_bump_is_a_metadata_mismatch(ob, out):
     assert cli(ob, out) == 0
 
     class V2(SmallExport):
-        SCHEMA_VERSION = 2
+        SCHEMA_VERSION = 99
 
     export = V2(ob.root, SOURCE, STREAM, out)
     with pytest.raises(AssetError, match="schema_version"):
@@ -285,7 +285,7 @@ def test_unexpected_envelope_key_refuses_naming_it(ob, out):
     with open_text_writer(os.path.join(target, f"{STREAM}.jsonl.gz"), "gzip") as fh:
         for row in rows:
             fh.write(json.dumps({"acquired_at": "2026-10-12T16:00:00+00:00", "data": row, "stowaway": 1,
-                                 "effective_date": row["date"], "kind": "observation",
+                                 "effective_date": row.get("date", "2025-06-02"), "kind": "observation",
                                  "mode": "backfill", "stream": STREAM}) + "\n")
     with pytest.raises(AssetError, match="stowaway"):
         SmallExport(ob.root, SOURCE, STREAM, out).run()
@@ -331,9 +331,9 @@ def test_clean_snapshot_is_quiet_and_records_numbers_and_thresholds(ob, out):
         assert name in q
     assert q["duplicate_keys"] == 0 and q["crossed_share"] == 0.0
     assert t["max_crossed_share"] == 1e-4 and t["max_locked_share"] == 1e-3
-    assert t["max_null_quote_share"] == 0.20 and t["max_zero_bid_share"] == 0.60
+    assert t["max_null_quote_share"] == 0.10 and t["max_zero_bid_share"] == 0.60
     assert t["max_iv_error_100_share"] == 0.15 and t["max_missing_weekday_share"] == 0.08
-    assert t["sealed_from"] == "2026-01-01" and t["max_rows_per_date_ratio"] == 6
+    assert t["sealed_from"] == "2026-01-01" and t["max_rows_per_date_ratio"] == 10
 
 
 def mutate(rows, every, change):
@@ -387,7 +387,7 @@ def test_rows_per_date_jump_against_the_previous_snapshot_of_the_symbol(ob, out)
     land(ob, chain(symbols=("AAA", "BBB"), per_date=60))
     land(ob, chain(symbols=("AAA",), per_date=70, start=datetime.date(2025, 4, 1)))  # ratio 1.17: quiet
     assert cli(ob, out) == 0
-    land(ob, chain(symbols=("AAA", "BBB"), per_date=600, start=datetime.date(2025, 1, 1), days=10))
+    land(ob, chain(symbols=("AAA", "BBB"), per_date=800, start=datetime.date(2025, 1, 1), days=10))
     assert cli(ob, out) == 3
     last = lines(out)[-1]
     assert "rows_per_date_jump" in last["alarms"]
@@ -507,3 +507,196 @@ def test_module_cli_runs_as_a_subprocess_and_exits_with_the_code(ob, out):
         capture_output=True, text=True, env=env)
     assert done.returncode == 3, done.stderr
     assert "crossed_quotes" in done.stdout + done.stderr
+
+
+# -- review round: null quotes by quoted era, overlap, sentinel, torn log, missing fields ---------
+
+
+def pre_quote(rows, n_dates):
+    """Blank the quotes of the first ``n_dates`` dates per symbol (the vendor has none before listing)."""
+    firsts = {}
+    for row in rows:
+        firsts.setdefault(row["symbol"], sorted({r["date"] for r in rows if r["symbol"] == row["symbol"]})[:n_dates])
+        if row["date"] in firsts[row["symbol"]]:
+            row.update(bid=None, ask=None)
+    return rows
+
+
+def test_null_quotes_are_measured_only_from_each_symbols_first_quoted_date(ob, out):
+    land(ob, pre_quote(chain(symbols=("AAA",), days=30), 10))
+    assert cli(ob, out) == 0
+    (line,) = lines(out)
+    assert line["quality"]["pre_quote_rows"] == 600 and line["quality"]["null_quote_share"] == 0.0
+    state = json.load(open(os.path.join(out, "first_quote.json")))
+    assert state == {"AAA": weekdays(30)[10].isoformat()}
+
+
+def test_an_older_all_null_snapshot_after_the_quoted_era_is_pre_quote_not_an_alarm(ob, out):
+    land(ob, chain(symbols=("AAA",), days=30))
+    older = chain(symbols=("AAA",), days=30, start=datetime.date(2025, 1, 2))
+    land(ob, mutate(older, 1, lambda r: r.update(bid=None, ask=None)))
+    assert cli(ob, out) == 0
+    assert lines(out)[1]["quality"]["pre_quote_rows"] == 1800 and lines(out)[1]["alarms"] == []
+
+
+def test_an_all_null_snapshot_of_a_symbol_never_quoted_still_alarms(ob, out):
+    land(ob, mutate(chain(symbols=("AAA",), days=30), 1, lambda r: r.update(bid=None, ask=None)))
+    assert cli(ob, out) == 3
+    assert "null_quotes" in lines(out)[0]["alarms"] and lines(out)[0]["quality"]["pre_quote_rows"] == 0
+
+
+def test_null_quotes_inside_the_quoted_era_alarm_at_the_new_default(ob, out):
+    rows = chain(symbols=("AAA",), days=30)
+    land(ob, mutate(rows, 8, lambda r: r.update(bid=None, ask=None)))  # 12.5% > 10%
+    assert cli(ob, out) == 3
+    assert lines(out)[0]["alarms"] == ["null_quotes"]
+
+
+def test_a_new_snapshot_overlapping_an_earlier_window_of_the_same_symbol_alarms_naming_both(ob, out):
+    first = land(ob, chain(symbols=("AAA",), days=30))
+    second = land(ob, chain(symbols=("AAA",), days=30, start=weekdays(30)[20]))  # re-pull of the last 10 dates
+    assert cli(ob, out) == 3
+    last = lines(out)[-1]
+    assert last["alarms"] == ["overlapping_symbol_window"]
+    assert first in last["detail"]["overlapping_symbol_window"] and second in last["detail"]["overlapping_symbol_window"]
+    meta = pq.read_metadata(parquet_path(out, first)).metadata
+    assert json.loads(meta[b"dskit.export.windows"]) == {"AAA": [weekdays(30)[0].isoformat(), weekdays(30)[-1].isoformat()]}
+    assert lines(out)[0]["windows"] == {"AAA": [weekdays(30)[0].isoformat(), weekdays(30)[-1].isoformat()]}
+
+
+def test_adjacent_windows_of_one_symbol_are_quiet_and_verify_rechecks_overlaps(ob, out, capsys):
+    land(ob, chain(symbols=("AAA",), days=30))
+    land(ob, chain(symbols=("AAA",), days=30, start=datetime.date(2025, 1, 2)))
+    assert cli(ob, out) == 0
+    capsys.readouterr()
+    assert pe.main(["verify", "--out", out]) == 0
+    land(ob, chain(symbols=("AAA",), days=5, start=weekdays(30)[10]))
+    assert cli(ob, out) == 3
+    capsys.readouterr()
+    assert pe.main(["verify", "--out", out]) == 1
+    assert "overlap" in capsys.readouterr().out
+
+
+def test_vendor_sentinel_values_are_counted_not_modified_and_alarm_above_the_share(ob, out):
+    rows = chain(symbols=("AAA",), days=10)
+    mutate(rows, 50, lambda r: r.update(implied_vol=214748.36))  # 2%
+    acq_id = land(ob, rows)
+    assert cli(ob, out) == 0
+    q = lines(out)[0]["quality"]
+    assert q["sentinel_rows"] == 12 and q["sentinel_share"] == pytest.approx(0.02)
+    values = pq.read_table(parquet_path(out, acq_id), columns=["implied_vol"]).column(0).to_pylist()
+    assert max(values) == 214748.36
+    land(ob, mutate(chain(symbols=("BBB",), days=10), 5, lambda r: r.update(d1=-214748.36)))  # 20%
+    assert cli(ob, out) == 3
+    assert lines(out)[-1]["alarms"] == ["sentinel_values"]
+
+
+def test_unknown_expected_row_count_alarms(ob, out):
+    land(ob, chain(symbols=("AAA",), days=5), payload_name="other")
+    assert cli(ob, out) == 3
+    assert lines(out)[0]["alarms"] == ["expected_rows_unavailable"]
+
+
+def test_raw_only_snapshots_are_listed_by_verify_and_the_run(ob, out, capsys):
+    land(ob, chain(symbols=("AAA",), days=5))
+    half = land(ob, chain(symbols=("BBB",), days=5), observations=False)
+    assert cli(ob, out) == 0
+    ran = capsys.readouterr().out
+    assert "raw_only" in ran and half in ran
+    assert pe.main(["verify", "--out", out, "--root", ob.root, "--source", SOURCE, "--stream", STREAM]) == 0
+    text = capsys.readouterr().out
+    assert "raw_only" in text and half in text
+
+
+def test_rows_missing_fields_are_counted_and_explicit_nulls_are_not(ob, out):
+    rows = chain(symbols=("AAA",), days=5, per_date=10)
+    del rows[3]["gamma"]
+    del rows[4]["gamma"]
+    rows[5]["delta"] = None
+    acq_id = land(ob, rows)
+    assert cli(ob, out) == 0
+    assert lines(out)[0]["missing_fields"] == {"gamma": 2}
+    assert pq.read_table(parquet_path(out, acq_id)).num_rows == len(rows)
+
+
+@pytest.mark.parametrize("key", ["symbol", "expiration", "strike", "right", "date"])
+def test_a_row_missing_a_key_field_refuses_the_conversion(ob, out, key):
+    rows = chain(symbols=("AAA",), days=3, per_date=5)
+    del rows[2][key]
+    acq_id = land(ob, rows)
+    assert cli(ob, out) == 1
+    assert not os.path.exists(parquet_path(out, acq_id))
+
+
+def test_a_torn_last_line_in_the_log_is_reported_and_repaired(ob, out, capsys):
+    land(ob, chain(symbols=("AAA",), days=5))
+    assert cli(ob, out) == 0
+    with open(os.path.join(out, "verify.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write('{"snapshot": "20260101T000000Z-backfill-tornnnnn", "sou')
+    land(ob, chain(symbols=("BBB",), days=5))
+    capsys.readouterr()
+    assert cli(ob, out) == 0
+    assert "torn" in capsys.readouterr().out
+    assert len(lines(out)) == 2  # every line parses again
+
+
+def test_a_corrupt_line_in_the_middle_of_the_log_is_an_error(ob, out):
+    land(ob, chain(symbols=("AAA",), days=5))
+    assert cli(ob, out) == 0
+    log = os.path.join(out, "verify.jsonl")
+    body = open(log, encoding="utf-8").read()
+    open(log, "w", encoding="utf-8").write("garbage\n" + body)
+    assert cli(ob, out) == 1
+
+
+def test_a_unit_that_reappears_without_repeating_a_key_is_not_a_duplicate(ob, out):
+    rows = chain(symbols=("AAA",), days=3)
+    day1 = [r for r in rows if r["date"] == rows[0]["date"]]
+    rest = [r for r in rows if r["date"] != rows[0]["date"]]
+    land(ob, day1[:30] + rest + day1[30:])
+    assert cli(ob, out) == 0
+    q = lines(out)[0]["quality"]
+    assert q["duplicate_keys"] == 0 and q["reappeared_units"] == 1
+
+
+def test_a_repeated_key_in_a_reappearing_unit_counts_once(ob, out):
+    rows = chain(symbols=("AAA",), days=3)
+    land(ob, rows + [dict(rows[0])])
+    assert cli(ob, out) == 3
+    assert lines(out)[0]["quality"]["duplicate_keys"] == 1
+
+
+def test_footer_declares_timezones_and_acquired_at_is_utc_ms(ob, out):
+    acq_id = land(ob, chain(symbols=("AAA",), days=2))
+    assert cli(ob, out) == 0
+    meta = pq.read_metadata(parquet_path(out, acq_id)).metadata
+    zones = json.loads(meta[b"dskit.export.timezones"])
+    assert zones["timestamp"].startswith("America/New_York") and zones["acquired_at"] == "UTC"
+
+
+def test_a_stale_temp_file_from_a_crash_is_ignored_and_cleaned(ob, out):
+    acq_id = land(ob, chain(symbols=("AAA",), days=5))
+    os.makedirs(os.path.join(out, SOURCE))
+    stale = os.path.join(out, SOURCE, f".{acq_id}.parquet.tmp")
+    open(stale, "wb").write(b"half a footer")
+    assert cli(ob, out) == 0
+    assert not os.path.exists(stale) and pq.read_metadata(parquet_path(out, acq_id)).num_rows == 300
+
+
+def test_a_temp_file_never_counts_as_an_unlisted_output_in_verify(ob, out, capsys):
+    land(ob, chain(symbols=("AAA",), days=5))
+    assert cli(ob, out) == 0
+    open(os.path.join(out, SOURCE, ".leftover.parquet.tmp"), "wb").write(b"x")
+    capsys.readouterr()
+    assert pe.main(["verify", "--out", out]) == 0
+
+
+def test_params_of_the_wrong_type_are_one_clean_error_line(ob, out, tmp_path, capsys):
+    land(ob, chain(symbols=("AAA",), days=5))
+    for body in ('{"max_crossed_share": "high"}', '{"sealed_from": "not a date"}', '[1, 2]', "{not json"):
+        params = tmp_path / "p.json"
+        params.write_text(body)
+        capsys.readouterr()
+        assert cli(ob, out, "--params", str(params)) == 1
+        err = capsys.readouterr().err.strip()
+        assert err.startswith("error:") and "\n" not in err and "Traceback" not in err
