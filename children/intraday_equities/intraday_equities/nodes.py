@@ -136,7 +136,15 @@ LABEL_PARAMS = (
     "label_residual_self",
     "beta_window_minutes",
     "vol_floor",
+    "label_entry_offset_bars",
 )
+#: Bars between the decision bar ``t`` and the bar the label's return
+#: starts from. ``0`` is the ADR-0059 label (``close[t] -> close[t+h]``);
+#: ``1`` starts at the NEXT bar, the earliest a decision made after bar
+#: ``t`` closes can fill, so the label is ``close[t+1] -> close[t+1+h]``.
+#: ``sigma`` and ``beta`` stay at ``t``: the offset moves the window the
+#: label measures, never the information the decision had.
+DEFAULT_LABEL_ENTRY_OFFSET_BARS = 0
 #: The tier-2 scramble knob (ADR-0074), named ONCE. Declared, it
 #: breaks the link between the features at t and the return over
 #: [t, t+h] by making whole trading sessions donate each other's
@@ -4278,6 +4286,13 @@ def _label_problems(params):
         isinstance(floor, bool) or not isinstance(floor, (int, float)) or floor <= 0.0
     ):
         problems.append(f"vol_floor must be a number > 0, got {floor!r}")
+    if params.get("label_entry_offset_bars") is not None:
+        check_int_param(
+            problems,
+            "label_entry_offset_bars",
+            params.get("label_entry_offset_bars"),
+            ge=0,
+        )
     return problems
 
 
@@ -4328,6 +4343,9 @@ def _label_from_params(params, arrays, period_ms):
             params.get("beta_window_minutes") or DEFAULT_BETA_WINDOW_MINUTES
         ),
         vol_floor=float(params.get("vol_floor") or DEFAULT_VOL_FLOOR),
+        entry_offset=int(
+            params.get("label_entry_offset_bars") or DEFAULT_LABEL_ENTRY_OFFSET_BARS
+        ),
     )
 
 
@@ -4386,10 +4404,19 @@ class _LeadLabel:
         vol_window=DEFAULT_VOL_WINDOW_MINUTES,
         beta_window=DEFAULT_BETA_WINDOW_MINUTES,
         vol_floor=DEFAULT_VOL_FLOOR,
+        entry_offset=DEFAULT_LABEL_ENTRY_OFFSET_BARS,
     ):
         if scale not in LABEL_SCALES:
             raise ValueError(
                 f"label_scale must be one of {LABEL_SCALES}, got {scale!r}"
+            )
+        if isinstance(entry_offset, bool) or not isinstance(entry_offset, int):
+            raise ValueError(
+                f"label_entry_offset_bars must be an int >= 0, got {entry_offset!r}"
+            )
+        if entry_offset < 0:
+            raise ValueError(
+                f"label_entry_offset_bars must be an int >= 0, got {entry_offset!r}"
             )
         if residual_self not in (None, "raw"):
             raise ValueError("label_residual_self must be 'raw' when declared")
@@ -4411,12 +4438,17 @@ class _LeadLabel:
         self.vol_window = int(vol_window)
         self.beta_window = int(beta_window)
         self.vol_floor = float(vol_floor)
+        self.entry_offset = int(entry_offset)
         self._prepared_by_symbol = {}
 
     @property
     def transformed(self):
-        """Whether this label is anything but the raw log return."""
-        return self.scale != "raw" or self.residual is not None
+        """Whether this label is anything but the raw ``t -> t+h`` log return."""
+        return (
+            self.scale != "raw"
+            or self.residual is not None
+            or self.entry_offset != 0
+        )
 
     def describe(self):
         """Name this label for a run record, as a short string."""
@@ -4425,7 +4457,32 @@ class _LeadLabel:
             parts.append(f"residual:{self.residual}")
         if self.residual_self is not None:
             parts.append(f"self:{self.residual_self}")
+        if self.entry_offset:
+            parts.append(f"entry+{self.entry_offset}")
         return "+".join(parts)
+
+    def _window(self, stamps, loc, future):
+        """Shift ``(loc, future)`` by the entry offset; NaN-mask the invalid.
+
+        Returns ``(entry, exit, ok)``: the bar pair the label measures and
+        which pairs are measurable. A pair is refused when the shifted exit
+        runs off the tape, or when a session gap sits between the decision
+        bar and the entry bar — the same ``2 * period_ms`` rule
+        :func:`_bar_returns` uses, because a fill across a halt or an
+        overnight is not the next bar's fill.
+        """
+        import numpy as np
+
+        if self.entry_offset == 0:
+            return loc, future, np.ones(loc.shape, dtype=bool)
+        entry = loc + self.entry_offset
+        exit_ = future + self.entry_offset
+        ok = exit_ < stamps.size
+        safe_entry = np.minimum(entry, stamps.size - 1)
+        ok &= (stamps[safe_entry] - stamps[loc]) <= self.entry_offset * 2 * self.period_ms
+        entry = np.where(ok, entry, loc)
+        exit_ = np.where(ok, exit_, future)
+        return entry, exit_, ok
 
     def _prepare(self, symbol):
         """Per-bar ``(beta, sigma)`` for one symbol, computed once."""
@@ -4480,20 +4537,22 @@ class _LeadLabel:
         import numpy as np
 
         stamps, prices = self.arrays[symbol]
-        y = _raw_lead_return(prices, loc, future)
         if not self.transformed:
-            return y
+            return _raw_lead_return(prices, loc, future)
+        entry, exit_, measurable = self._window(stamps, loc, future)
+        y = _raw_lead_return(prices, entry, exit_)
+        y[~measurable] = np.nan
         beta, sigma = self._prepare(symbol)
         if beta is not None:
             ref_stamps, ref_prices = self.arrays[self.residual]
             size = ref_stamps.size
-            j0 = np.searchsorted(ref_stamps, stamps[loc])
-            j1 = np.searchsorted(ref_stamps, stamps[future])
+            j0 = np.searchsorted(ref_stamps, stamps[entry])
+            j1 = np.searchsorted(ref_stamps, stamps[exit_])
             ok = (
                 (j0 < size)
                 & (j1 < size)
-                & (ref_stamps[np.minimum(j0, size - 1)] == stamps[loc])
-                & (ref_stamps[np.minimum(j1, size - 1)] == stamps[future])
+                & (ref_stamps[np.minimum(j0, size - 1)] == stamps[entry])
+                & (ref_stamps[np.minimum(j1, size - 1)] == stamps[exit_])
             )
             y_ref = np.full(y.shape, np.nan)
             if np.any(ok):

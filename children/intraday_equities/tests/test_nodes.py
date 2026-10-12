@@ -3013,3 +3013,100 @@ def test_scan_refuses_trade_frames_missing_a_feature_column(tmp_path):
     ctx = NodeContext(name="t", asof="2026-01-06", run_dir=str(tmp_path))
     with pytest.raises(ValueError, match="lack feature column"):
         NoInformationScan("scan_h02", cuts).run(ctx, {**inputs, "trade_records": trade})
+
+
+def test_entry_offset_label_starts_at_the_fill_bar_and_keeps_the_horizon():
+    """entry+1: close[t+1] -> close[t+1+h], the window a next-bar fill can earn."""
+    import numpy as np
+
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape()
+    label = _LeadLabel(arrays, 60_000, entry_offset=1)
+    loc = np.array([10, 20, 30])
+    future = loc + 5
+    _stamps, prices = arrays["JPM"]
+    expected = np.log(prices[future + 1] / prices[loc + 1])
+    assert label.transformed
+    assert label.describe() == "raw+entry+1"
+    assert np.allclose(label.values("JPM", loc, future), expected)
+
+
+def test_entry_offset_keeps_sigma_and_beta_at_the_decision_bar():
+    """The offset moves the measured window, never the information at t."""
+    import numpy as np
+
+    from dskit.pipeline.libs.numpy import log_return, rolling_std
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape()
+    label = _LeadLabel(arrays, 60_000, scale="vol", vol_window=100, entry_offset=1)
+    loc = np.array([300, 400])
+    future = loc + 9
+    _stamps, prices = arrays["JPM"]
+    sigma = rolling_std(log_return(prices, 1), 100)
+    expected = np.log(prices[future + 1] / prices[loc + 1]) / (
+        sigma[loc] * math.sqrt(9)
+    )
+    assert np.allclose(label.values("JPM", loc, future), expected)
+    # Market residual: beta is read at t, the reference return over the
+    # shifted window.
+    residual = _LeadLabel(arrays, 60_000, residual="SPY", beta_window=200, entry_offset=1)
+    plain = _LeadLabel(arrays, 60_000, residual="SPY", beta_window=200)
+    beta, _sigma = plain._prepare("JPM")
+    ref_stamps, ref_prices = arrays["SPY"]
+    ref_move = np.log(ref_prices[future + 1] / ref_prices[loc + 1])
+    expected_residual = np.log(prices[future + 1] / prices[loc + 1]) - beta[loc] * ref_move
+    assert np.allclose(residual.values("JPM", loc, future), expected_residual)
+
+
+def test_entry_offset_refuses_a_window_off_the_tape_or_across_a_gap():
+    import numpy as np
+
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape(n=50)
+    stamps, prices = arrays["JPM"]
+    gapped = stamps.copy()
+    gapped[21:] += 30 * 60_000  # a 30-minute hole after bar 20
+    arrays = dict(arrays, JPM=(gapped, prices))
+    label = _LeadLabel(arrays, 60_000, entry_offset=1)
+    loc = np.array([20, 44, 10])
+    future = loc + 5
+    out = label.values("JPM", loc, future)
+    assert np.isnan(out[0])  # the fill bar is across the gap
+    assert np.isnan(out[1])  # 44 + 5 + 1 = 50 runs off the tape
+    assert np.isfinite(out[2])
+
+
+def test_entry_offset_is_validated_as_a_non_negative_int():
+    import pytest
+
+    from intraday_equities.nodes import _LeadLabel, _label_problems
+
+    assert _label_problems({"label_entry_offset_bars": 0}) == []
+    assert _label_problems({"label_entry_offset_bars": 1}) == []
+    assert _label_problems({"label_entry_offset_bars": -1})
+    assert _label_problems({"label_entry_offset_bars": 1.5})
+    assert _label_problems({"label_entry_offset_bars": True})
+    with pytest.raises(ValueError, match="label_entry_offset_bars"):
+        _LeadLabel(_label_tape(), 60_000, entry_offset=-1)
+    with pytest.raises(ValueError, match="label_entry_offset_bars"):
+        _LeadLabel(_label_tape(), 60_000, entry_offset=True)
+
+
+def test_entry_offset_zero_is_the_adr_0059_label_unchanged():
+    import numpy as np
+
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape()
+    loc = np.array([300, 400])
+    future = loc + 9
+    a = _LeadLabel(arrays, 60_000, scale="vol", residual="SPY", vol_window=100, beta_window=200)
+    b = _LeadLabel(
+        arrays, 60_000, scale="vol", residual="SPY", vol_window=100, beta_window=200,
+        entry_offset=0,
+    )
+    assert np.allclose(a.values("JPM", loc, future), b.values("JPM", loc, future))
+    assert b.describe() == a.describe()
