@@ -277,7 +277,6 @@ crypto_trading/
 │   ├── source-kalshi-history-trades-{15m,hourly}.json # history: every trade
 │   ├── source-coinbase-{btcusd,ethusd}-1m.json # restwindow: Coinbase Exchange 1-minute candles
 │   ├── source-deribit-{btc,eth}-dvol.json # restwindow: Deribit DVOL index, 1 minute
-│   ├── binance_vision_dates.json         # the pinned day list the Binance sources pull
 │   ├── suite-kalshi-crypto-{markets,candles,fees,books}.json # one suite per stream
 │   ├── suite-binance-files.json          # the httpblobs inventory gate
 │   ├── suite-kalshi-history-{markets,candles,trades}.json # gates for the history streams (new fields included)

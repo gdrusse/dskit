@@ -192,12 +192,11 @@ def test_a_kline_file_that_does_not_fit_the_vendor_layout_refuses_by_line(body, 
 def acquire_inventory(tmp_path, monkeypatch, config_name, answers):
     """Acquire the shipped source over three dates with ``_fetch`` scripted.
 
-    ``answers`` maps a date to ``(status, body)``. The universe file is the
+    ``answers`` maps a date to ``(status, body)``. The day window is the
     one knob swapped (three dates, not 1,200); every other knob is shipped.
     """
     config = shipped(config_name)
-    for knob in ("entities_file", "entities_key", "entities_sha256"):
-        del config[knob]
+    del config["entities_dates"]
     config["entities"] = list(answers)
     config["throttle_s"] = 0
     seen = []

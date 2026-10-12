@@ -279,8 +279,10 @@ the stream; `verify=True` re-hashes it first and lists every drift;
 `libs/localblobs.py` and `artifacts.py` are the references.
 
 The `httpblobs` kind (ADR-0233) is the network twin: one HTTP GET per entity
-(`url_template` with `{entity}`, entities inline or from `entities_file` +
-`entities_key`), each response a hashed `FILE` at `relpath_template` plus an
+(`url_template` with `{entity}`, entities inline, from `entities_file` +
+`entities_key`, or `entities_dates` `{start, lag_days}`: the UTC days from `start`, which
+`backfill` pulls through `as_of - lag_days` and `live` advances through today `- lag_days`
+from its own checkpoint, retrying a refused day until it is older than `give_up_days`, then recording it `absent`; ADR-0266), each response a hashed `FILE` at `relpath_template` plus an
 inventory RECORD `{entity, status, http_status, relpath, size, sha256,
 raw_sha256, origin, reason}`. `throttle_s`, `timeout`, `max_retries` and static
 `headers` are knobs; a 4xx or a failed `transform` is a recorded `refused` row,
@@ -417,7 +419,7 @@ dskit/onboarding/
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── kalshi_history.py Kalshi history: /historical routing, event-level candles, trades, settlement fields, per-book observed_at; standalone (stdlib urllib, ADR-0239)
-│   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache (stdlib, ADR-0233)
+│   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache, advancing `entities_dates` (stdlib, ADR-0233/0266)
 │   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file, fingerprint cursor (stdlib, ADR-0225)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
 │   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)

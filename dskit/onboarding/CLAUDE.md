@@ -162,7 +162,7 @@ dskit/onboarding/
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── kalshi_history.py Kalshi history (ADR-0239): /historical routing, event-level candles, trades, settlement fields; standalone, public `kalshi` names only
-│   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache (stdlib, ADR-0233)
+│   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache, advancing `entities_dates` (stdlib, ADR-0233/0266)
 │   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file (ADR-0225)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON tables, PinnedArchiveConnector, JsonSQLProjection

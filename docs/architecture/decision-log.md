@@ -31044,7 +31044,7 @@ The child test pins `run-w4-blend.json` to the lead map's nodes.
 
 ## ADR-0266 — `httpblobs` date entities that advance in `live` mode
 
-**Status:** PROPOSED 2026-10-12. Implementation waits for owner approval.
+**Status:** APPROVED 2026-10-12 (owner: "i approve. build whatever you need").
 
 **Context.** crypto_trading's four Binance Vision sources pull one daily zip per UTC day, using an `entities_file` of dates pinned by `entities_sha256`. A forward pull therefore means editing that file, re-pinning the hash in four configs, re-registering and retiring the old declarations, every day. This was done by hand on 2026-10-12 (commit 434434b9). `live` mode in `httpblobs` is currently identical to `backfill` (`httpblobs.py:511`).
 
@@ -31052,7 +31052,7 @@ The child test pins `run-w4-blend.json` to the lead map's nodes.
 - `backfill` pulls through `as_of − lag_days`, inclusive. The declaration still fixes the set, so a backfill is reproducible.
 - `live` pulls from the day after the stream's live checkpoint (initialised at the backfill's last day) through `now − lag_days`. The declaration does not change.
 
-A day the vendor has not published yet (404) counts against the existing `max_refused` and is retried on the next `live` pull; the checkpoint never passes a refused day. Everything else is as today: `url_template`, transforms, cache and relpaths.
+A day the vendor has not published yet (404) counts against the existing `max_refused` and is retried on the next `live` pull; the checkpoint never passes a refused day. Amendment 2026-10-12: a day the vendor never publishes must not block the feed, so `entities_dates.give_up_days` (int >= 1, default 7) gives up on a day still refused once it is older than that at the pull's clock: it is logged by name, recorded in the live checkpoint's `absent` list and passed, and is never refetched or counted toward `max_refused` again. Only days younger than `give_up_days` count toward `max_refused` in any pull, and a live pull with no checkpoint starts `give_up_days` before the backfill end so a backfill refusal is retried (or, if old, simply not blocking). Everything else is as today: `url_template`, transforms, cache and relpaths.
 
 **Child use.** The four `source-binance-*.json` move to `entities_dates {start: "2023-06-20", lag_days: 1}`, and `binance_vision_dates.json` retires. The daily `forward-pull` uses `--mode live` for them.
 
