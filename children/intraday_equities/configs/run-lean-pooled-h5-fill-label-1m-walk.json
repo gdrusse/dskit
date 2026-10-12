@@ -1,0 +1,1117 @@
+{
+  "name": "lean-pooled-h5-fill-label-1m",
+  "notes": "One-minute fill-label walk: the lean pooled LightGBM recipe TRAINED and SCORED on rows every minute (full-window 1-minute caches built by cache_build_document with row_window [2020-05-01, 2026-02-28)), label close[t+1] -> close[t+1+h] (label_entry_offset_bars=1, SPY-residual, vol-scaled at t). Frozen per-lead estimator params from the ADR-0185 warmup HPO winners (no inner HPO: a 1-minute inner search is ~5x the 5-minute cost); leads 1..5 only (h6-h10 cover LRCX+MSTR alone). Development evidence only, same development_validation folds. Path heads are clipped to lead 5 (LRCX and MSTR were certified at 10) because this document runs scans h01-h05 only; the path score here is a 1-minute-row diagnostic, not the locked P16 score.",
+  "outputs": {
+    "notes": "",
+    "run_root": "./pipeline_runs"
+  },
+  "pipeline": {
+    "features_a": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {},
+      "mode": null,
+      "notes": "",
+      "params": {
+        "manifest_sha256": "c17d15162eeb611a0b57680d39c703729525fa7ad080bc132a9ab2f60698ab7e",
+        "path": "./pipeline_cache/p13-features-f32-kronos-v1-full-1m-5862b7f0/a-fab8f7bf"
+      },
+      "role": null,
+      "uses": "intraday_equities-session-feature-cache"
+    },
+    "features_c": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {},
+      "mode": null,
+      "notes": "",
+      "params": {
+        "manifest_sha256": "735d8d8441b88f29b8f451539d1cd18ec404d3063e5022137aae702ebef9755d",
+        "path": "./pipeline_cache/p13-features-f32-kronos-v1-full-1m-5862b7f0/c-aeb11cd2"
+      },
+      "role": null,
+      "uses": "intraday_equities-session-feature-cache"
+    },
+    "features_d": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {},
+      "mode": null,
+      "notes": "",
+      "params": {
+        "manifest_sha256": "cc185b7acf4df4778bb46f9e304c0eb26f93fe9d77d93fac385f8ecb8b6da006",
+        "path": "./pipeline_cache/p13-features-f32-kronos-v1-full-1m-5862b7f0/d-f6f3718a"
+      },
+      "role": null,
+      "uses": "intraday_equities-session-feature-cache"
+    },
+    "features_e": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {},
+      "mode": null,
+      "notes": "",
+      "params": {
+        "manifest_sha256": "d6ad6759fcd0349c03d6d80565eca468655e42537f0bbdd0d4ff3f87bed1614c",
+        "path": "./pipeline_cache/p13-features-f32-kronos-v1-full-1m-5862b7f0/e-d89f452c"
+      },
+      "role": null,
+      "uses": "intraday_equities-session-feature-cache"
+    },
+    "path": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "metrics_h01": "$scan_h01.metrics",
+        "metrics_h02": "$scan_h02.metrics",
+        "metrics_h03": "$scan_h03.metrics",
+        "metrics_h04": "$scan_h04.metrics",
+        "metrics_h05": "$scan_h05.metrics",
+        "records_h01": "$scan_h01.records",
+        "records_h02": "$scan_h02.records",
+        "records_h03": "$scan_h03.records",
+        "records_h04": "$scan_h04.records",
+        "records_h05": "$scan_h05.records"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "asset_horizons": [
+          {
+            "asset": "ADBE",
+            "horizon": 5
+          },
+          {
+            "asset": "ANET",
+            "horizon": 3
+          },
+          {
+            "asset": "BAC",
+            "horizon": 1
+          },
+          {
+            "asset": "BIDU",
+            "horizon": 2
+          },
+          {
+            "asset": "CIEN",
+            "horizon": 5
+          },
+          {
+            "asset": "DAL",
+            "horizon": 1
+          },
+          {
+            "asset": "FCX",
+            "horizon": 1
+          },
+          {
+            "asset": "INTC",
+            "horizon": 1
+          },
+          {
+            "asset": "IWM",
+            "horizon": 5
+          },
+          {
+            "asset": "LITE",
+            "horizon": 5
+          },
+          {
+            "asset": "LLY",
+            "horizon": 3
+          },
+          {
+            "asset": "LRCX",
+            "horizon": 5
+          },
+          {
+            "asset": "LULU",
+            "horizon": 5
+          },
+          {
+            "asset": "MET",
+            "horizon": 1
+          },
+          {
+            "asset": "MSTR",
+            "horizon": 5
+          },
+          {
+            "asset": "NOW",
+            "horizon": 5
+          },
+          {
+            "asset": "NRG",
+            "horizon": 1
+          },
+          {
+            "asset": "PANW",
+            "horizon": 5
+          },
+          {
+            "asset": "QQQ",
+            "horizon": 1
+          },
+          {
+            "asset": "SMH",
+            "horizon": 5
+          },
+          {
+            "asset": "TER",
+            "horizon": 5
+          },
+          {
+            "asset": "XBI",
+            "horizon": 1
+          },
+          {
+            "asset": "XLE",
+            "horizon": 1
+          },
+          {
+            "asset": "XLF",
+            "horizon": 3
+          },
+          {
+            "asset": "XLK",
+            "horizon": 5
+          }
+        ],
+        "horizon_weighting": "equal_asset_equal_within_asset",
+        "score": "train_scaled_improvement",
+        "split": "val"
+      },
+      "role": null,
+      "uses": "intraday_equities.model_zoo:PooledDirectPathScore"
+    },
+    "pooled_features": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "a": "$pooled_features_a.records",
+        "c": "$pooled_features_c.records",
+        "d": "$pooled_features_d.records",
+        "e": "$pooled_features_e.records"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "consume_inputs": true,
+        "key": "symbol",
+        "provenance_waiver": "Immutable cache rows retain symbol identity; selected group symbol namespaces are disjoint.",
+        "shape": "records"
+      },
+      "role": null,
+      "uses": "concat"
+    },
+    "pooled_features_a": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "records": "$features_a.records"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "LLY",
+              "QQQ",
+              "XLE",
+              "XLF",
+              "XLK"
+            ]
+          }
+        ]
+      },
+      "role": null,
+      "uses": "filter"
+    },
+    "pooled_features_c": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "records": "$features_c.records"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "BAC",
+              "IWM",
+              "SMH"
+            ]
+          }
+        ]
+      },
+      "role": null,
+      "uses": "filter"
+    },
+    "pooled_features_d": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "records": "$features_d.records"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "DAL",
+              "FCX",
+              "MET",
+              "NRG",
+              "XBI"
+            ]
+          }
+        ]
+      },
+      "role": null,
+      "uses": "filter"
+    },
+    "pooled_features_e": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "records": "$features_e.records"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "ADBE",
+              "ANET",
+              "BIDU",
+              "CIEN",
+              "INTC",
+              "LITE",
+              "LRCX",
+              "LULU",
+              "MSTR",
+              "NOW",
+              "PANW",
+              "TER"
+            ]
+          }
+        ]
+      },
+      "role": null,
+      "uses": "filter"
+    },
+    "pooled_tape_a": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "records": "$features_a.tape"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "LLY",
+              "QQQ",
+              "XLE",
+              "XLF",
+              "XLK",
+              "SPY"
+            ]
+          }
+        ]
+      },
+      "role": null,
+      "uses": "filter"
+    },
+    "pooled_tape_c": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "records": "$features_c.tape"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "BAC",
+              "IWM",
+              "SMH"
+            ]
+          }
+        ]
+      },
+      "role": null,
+      "uses": "filter"
+    },
+    "pooled_tape_d": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "records": "$features_d.tape"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "DAL",
+              "FCX",
+              "MET",
+              "NRG",
+              "XBI"
+            ]
+          }
+        ]
+      },
+      "role": null,
+      "uses": "filter"
+    },
+    "pooled_tape_e": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "records": "$features_e.tape"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "ADBE",
+              "ANET",
+              "BIDU",
+              "CIEN",
+              "INTC",
+              "LITE",
+              "LRCX",
+              "LULU",
+              "MSTR",
+              "NOW",
+              "PANW",
+              "TER"
+            ]
+          }
+        ]
+      },
+      "role": null,
+      "uses": "filter"
+    },
+    "reference_tape": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "a": "$pooled_tape_a.records",
+        "c": "$pooled_tape_c.records",
+        "d": "$pooled_tape_d.records",
+        "e": "$pooled_tape_e.records"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "consume_inputs": true,
+        "key": "symbol",
+        "provenance_waiver": "Immutable cache rows retain symbol identity; selected group symbol namespaces are disjoint.",
+        "shape": "records"
+      },
+      "role": null,
+      "uses": "concat"
+    },
+    "scan_h01": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "bars": "$reference_tape.merged",
+        "records": "$pooled_features.merged",
+        "spec": "$universe.spec"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "common_lead_stop": 5,
+        "common_origin_policy": "all_head_labels_finite",
+        "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+        "estimator_params": {
+          "colsample_bytree": 0.5,
+          "drop": [
+            "after_holiday",
+            "amihud_3s",
+            "dow_cos",
+            "dow_sin",
+            "mom_1w",
+            "mom_2s",
+            "mom_3s",
+            "month_cos",
+            "month_sin",
+            "range_3s",
+            "ret_1w",
+            "ret_2s",
+            "ret_3s",
+            "ret_lag_10",
+            "ret_lag_11",
+            "ret_lag_12",
+            "ret_lag_13",
+            "ret_lag_14",
+            "ret_lag_15",
+            "ret_lag_16",
+            "ret_lag_17",
+            "ret_lag_18",
+            "ret_lag_19",
+            "ret_lag_5",
+            "ret_lag_6",
+            "ret_lag_7",
+            "ret_lag_8",
+            "ret_lag_9",
+            "rv_1w",
+            "rv_2s",
+            "rv_3s",
+            "session_gap_days",
+            "vol_3s"
+          ],
+          "estimator": "lightgbm.LGBMRegressor",
+          "learning_rate": 0.03,
+          "max_depth": 3,
+          "min_child_samples": 4000,
+          "n_estimators": 600,
+          "n_jobs": 8,
+          "num_leaves": 4,
+          "random_state": 0,
+          "reg_alpha": 1.0,
+          "reg_lambda": 1000.0,
+          "subsample": 0.7,
+          "subsample_freq": 1,
+          "verbosity": -1
+        },
+        "fit_symbols": [
+          "ADBE",
+          "ANET",
+          "BAC",
+          "BIDU",
+          "CIEN",
+          "DAL",
+          "FCX",
+          "INTC",
+          "IWM",
+          "LITE",
+          "LLY",
+          "LRCX",
+          "LULU",
+          "MET",
+          "MSTR",
+          "NOW",
+          "NRG",
+          "PANW",
+          "QQQ",
+          "SMH",
+          "TER",
+          "XBI",
+          "XLE",
+          "XLF",
+          "XLK"
+        ],
+        "label_entry_offset_bars": 1,
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "label_scale": "vol",
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_symbols": [
+          "ADBE",
+          "ANET",
+          "BAC",
+          "BIDU",
+          "CIEN",
+          "DAL",
+          "FCX",
+          "INTC",
+          "IWM",
+          "LITE",
+          "LLY",
+          "LRCX",
+          "LULU",
+          "MET",
+          "MSTR",
+          "NOW",
+          "NRG",
+          "PANW",
+          "QQQ",
+          "SMH",
+          "TER",
+          "XBI",
+          "XLE",
+          "XLF",
+          "XLK"
+        ],
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "val_start_ms": "$splits.val_start_ms"
+      },
+      "role": null,
+      "uses": "intraday_equities-no-information-scan"
+    },
+    "scan_h02": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "bars": "$reference_tape.merged",
+        "records": "$pooled_features.merged",
+        "spec": "$universe.spec"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "common_lead_stop": 5,
+        "common_origin_policy": "all_head_labels_finite",
+        "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+        "estimator_params": {
+          "colsample_bytree": 0.5,
+          "drop": [
+            "after_holiday",
+            "amihud_3s",
+            "dow_cos",
+            "dow_sin",
+            "mom_1w",
+            "mom_2s",
+            "mom_3s",
+            "month_cos",
+            "month_sin",
+            "range_3s",
+            "ret_1w",
+            "ret_2s",
+            "ret_3s",
+            "ret_lag_10",
+            "ret_lag_11",
+            "ret_lag_12",
+            "ret_lag_13",
+            "ret_lag_14",
+            "ret_lag_15",
+            "ret_lag_16",
+            "ret_lag_17",
+            "ret_lag_18",
+            "ret_lag_19",
+            "ret_lag_5",
+            "ret_lag_6",
+            "ret_lag_7",
+            "ret_lag_8",
+            "ret_lag_9",
+            "rv_1w",
+            "rv_2s",
+            "rv_3s",
+            "session_gap_days",
+            "vol_3s"
+          ],
+          "estimator": "lightgbm.LGBMRegressor",
+          "learning_rate": 0.01,
+          "max_depth": 3,
+          "min_child_samples": 1000,
+          "n_estimators": 600,
+          "n_jobs": 8,
+          "num_leaves": 4,
+          "random_state": 0,
+          "reg_alpha": 1.0,
+          "reg_lambda": 100.0,
+          "subsample": 0.7,
+          "subsample_freq": 1,
+          "verbosity": -1
+        },
+        "fit_symbols": [
+          "ADBE",
+          "ANET",
+          "BAC",
+          "BIDU",
+          "CIEN",
+          "DAL",
+          "FCX",
+          "INTC",
+          "IWM",
+          "LITE",
+          "LLY",
+          "LRCX",
+          "LULU",
+          "MET",
+          "MSTR",
+          "NOW",
+          "NRG",
+          "PANW",
+          "QQQ",
+          "SMH",
+          "TER",
+          "XBI",
+          "XLE",
+          "XLF",
+          "XLK"
+        ],
+        "label_entry_offset_bars": 1,
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "label_scale": "vol",
+        "lead_start": 2,
+        "lead_step": 2,
+        "lead_stop": 2,
+        "score_symbols": [
+          "ADBE",
+          "ANET",
+          "BIDU",
+          "CIEN",
+          "IWM",
+          "LITE",
+          "LLY",
+          "LRCX",
+          "LULU",
+          "MSTR",
+          "NOW",
+          "PANW",
+          "SMH",
+          "TER",
+          "XLF",
+          "XLK"
+        ],
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "val_start_ms": "$splits.val_start_ms"
+      },
+      "role": null,
+      "uses": "intraday_equities-no-information-scan"
+    },
+    "scan_h03": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "bars": "$reference_tape.merged",
+        "records": "$pooled_features.merged",
+        "spec": "$universe.spec"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "common_lead_stop": 5,
+        "common_origin_policy": "all_head_labels_finite",
+        "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+        "estimator_params": {
+          "colsample_bytree": 0.5,
+          "drop": [
+            "after_holiday",
+            "amihud_3s",
+            "dow_cos",
+            "dow_sin",
+            "mom_1w",
+            "mom_2s",
+            "mom_3s",
+            "month_cos",
+            "month_sin",
+            "range_3s",
+            "ret_1w",
+            "ret_2s",
+            "ret_3s",
+            "ret_lag_10",
+            "ret_lag_11",
+            "ret_lag_12",
+            "ret_lag_13",
+            "ret_lag_14",
+            "ret_lag_15",
+            "ret_lag_16",
+            "ret_lag_17",
+            "ret_lag_18",
+            "ret_lag_19",
+            "ret_lag_5",
+            "ret_lag_6",
+            "ret_lag_7",
+            "ret_lag_8",
+            "ret_lag_9",
+            "rv_1w",
+            "rv_2s",
+            "rv_3s",
+            "session_gap_days",
+            "vol_3s"
+          ],
+          "estimator": "lightgbm.LGBMRegressor",
+          "learning_rate": 0.003,
+          "max_depth": 3,
+          "min_child_samples": 2000,
+          "n_estimators": 600,
+          "n_jobs": 8,
+          "num_leaves": 4,
+          "random_state": 0,
+          "reg_alpha": 0.1,
+          "reg_lambda": 100.0,
+          "subsample": 0.7,
+          "subsample_freq": 1,
+          "verbosity": -1
+        },
+        "fit_symbols": [
+          "ADBE",
+          "ANET",
+          "BAC",
+          "BIDU",
+          "CIEN",
+          "DAL",
+          "FCX",
+          "INTC",
+          "IWM",
+          "LITE",
+          "LLY",
+          "LRCX",
+          "LULU",
+          "MET",
+          "MSTR",
+          "NOW",
+          "NRG",
+          "PANW",
+          "QQQ",
+          "SMH",
+          "TER",
+          "XBI",
+          "XLE",
+          "XLF",
+          "XLK"
+        ],
+        "label_entry_offset_bars": 1,
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "label_scale": "vol",
+        "lead_start": 3,
+        "lead_step": 3,
+        "lead_stop": 3,
+        "score_symbols": [
+          "ADBE",
+          "ANET",
+          "CIEN",
+          "IWM",
+          "LITE",
+          "LLY",
+          "LRCX",
+          "LULU",
+          "MSTR",
+          "NOW",
+          "PANW",
+          "SMH",
+          "TER",
+          "XLF",
+          "XLK"
+        ],
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "val_start_ms": "$splits.val_start_ms"
+      },
+      "role": null,
+      "uses": "intraday_equities-no-information-scan"
+    },
+    "scan_h04": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "bars": "$reference_tape.merged",
+        "records": "$pooled_features.merged",
+        "spec": "$universe.spec"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "common_lead_stop": 5,
+        "common_origin_policy": "all_head_labels_finite",
+        "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+        "estimator_params": {
+          "colsample_bytree": 0.5,
+          "drop": [
+            "after_holiday",
+            "amihud_3s",
+            "dow_cos",
+            "dow_sin",
+            "mom_1w",
+            "mom_2s",
+            "mom_3s",
+            "month_cos",
+            "month_sin",
+            "range_3s",
+            "ret_1w",
+            "ret_2s",
+            "ret_3s",
+            "ret_lag_10",
+            "ret_lag_11",
+            "ret_lag_12",
+            "ret_lag_13",
+            "ret_lag_14",
+            "ret_lag_15",
+            "ret_lag_16",
+            "ret_lag_17",
+            "ret_lag_18",
+            "ret_lag_19",
+            "ret_lag_5",
+            "ret_lag_6",
+            "ret_lag_7",
+            "ret_lag_8",
+            "ret_lag_9",
+            "rv_1w",
+            "rv_2s",
+            "rv_3s",
+            "session_gap_days",
+            "vol_3s"
+          ],
+          "estimator": "lightgbm.LGBMRegressor",
+          "learning_rate": 0.003,
+          "max_depth": 3,
+          "min_child_samples": 2000,
+          "n_estimators": 600,
+          "n_jobs": 8,
+          "num_leaves": 4,
+          "random_state": 0,
+          "reg_alpha": 0.1,
+          "reg_lambda": 100.0,
+          "subsample": 0.7,
+          "subsample_freq": 1,
+          "verbosity": -1
+        },
+        "fit_symbols": [
+          "ADBE",
+          "ANET",
+          "BAC",
+          "BIDU",
+          "CIEN",
+          "DAL",
+          "FCX",
+          "INTC",
+          "IWM",
+          "LITE",
+          "LLY",
+          "LRCX",
+          "LULU",
+          "MET",
+          "MSTR",
+          "NOW",
+          "NRG",
+          "PANW",
+          "QQQ",
+          "SMH",
+          "TER",
+          "XBI",
+          "XLE",
+          "XLF",
+          "XLK"
+        ],
+        "label_entry_offset_bars": 1,
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "label_scale": "vol",
+        "lead_start": 4,
+        "lead_step": 4,
+        "lead_stop": 4,
+        "score_symbols": [
+          "ADBE",
+          "CIEN",
+          "IWM",
+          "LITE",
+          "LRCX",
+          "LULU",
+          "MSTR",
+          "NOW",
+          "PANW",
+          "SMH",
+          "TER",
+          "XLK"
+        ],
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "val_start_ms": "$splits.val_start_ms"
+      },
+      "role": null,
+      "uses": "intraday_equities-no-information-scan"
+    },
+    "scan_h05": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {
+        "bars": "$reference_tape.merged",
+        "records": "$pooled_features.merged",
+        "spec": "$universe.spec"
+      },
+      "mode": null,
+      "notes": "",
+      "params": {
+        "common_lead_stop": 5,
+        "common_origin_policy": "all_head_labels_finite",
+        "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+        "estimator_params": {
+          "colsample_bytree": 0.5,
+          "drop": [
+            "after_holiday",
+            "amihud_3s",
+            "dow_cos",
+            "dow_sin",
+            "mom_1w",
+            "mom_2s",
+            "mom_3s",
+            "month_cos",
+            "month_sin",
+            "range_3s",
+            "ret_1w",
+            "ret_2s",
+            "ret_3s",
+            "ret_lag_10",
+            "ret_lag_11",
+            "ret_lag_12",
+            "ret_lag_13",
+            "ret_lag_14",
+            "ret_lag_15",
+            "ret_lag_16",
+            "ret_lag_17",
+            "ret_lag_18",
+            "ret_lag_19",
+            "ret_lag_5",
+            "ret_lag_6",
+            "ret_lag_7",
+            "ret_lag_8",
+            "ret_lag_9",
+            "rv_1w",
+            "rv_2s",
+            "rv_3s",
+            "session_gap_days",
+            "vol_3s"
+          ],
+          "estimator": "lightgbm.LGBMRegressor",
+          "learning_rate": 0.003,
+          "max_depth": 3,
+          "min_child_samples": 2000,
+          "n_estimators": 600,
+          "n_jobs": 8,
+          "num_leaves": 4,
+          "random_state": 0,
+          "reg_alpha": 0.1,
+          "reg_lambda": 100.0,
+          "subsample": 0.7,
+          "subsample_freq": 1,
+          "verbosity": -1
+        },
+        "fit_symbols": [
+          "ADBE",
+          "ANET",
+          "BAC",
+          "BIDU",
+          "CIEN",
+          "DAL",
+          "FCX",
+          "INTC",
+          "IWM",
+          "LITE",
+          "LLY",
+          "LRCX",
+          "LULU",
+          "MET",
+          "MSTR",
+          "NOW",
+          "NRG",
+          "PANW",
+          "QQQ",
+          "SMH",
+          "TER",
+          "XBI",
+          "XLE",
+          "XLF",
+          "XLK"
+        ],
+        "label_entry_offset_bars": 1,
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "label_scale": "vol",
+        "lead_start": 5,
+        "lead_step": 5,
+        "lead_stop": 5,
+        "score_symbols": [
+          "ADBE",
+          "CIEN",
+          "IWM",
+          "LITE",
+          "LRCX",
+          "LULU",
+          "MSTR",
+          "NOW",
+          "PANW",
+          "SMH",
+          "TER",
+          "XLK"
+        ],
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "val_start_ms": "$splits.val_start_ms"
+      },
+      "role": null,
+      "uses": "intraday_equities-no-information-scan"
+    },
+    "universe": {
+      "artifact": "",
+      "every": "once",
+      "inputs": {},
+      "mode": null,
+      "notes": "",
+      "params": {
+        "overrides": {
+          "period_ms": 60000
+        },
+        "path": "configs/universe-p13-pooled.json"
+      },
+      "role": null,
+      "uses": "intraday_equities-universe"
+    }
+  },
+  "tracking": {
+    "notes": "Excluded from identity - where metrics land is not what it computes.",
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "notes": "Local sqlite beside the invoking cwd.",
+        "params": {
+          "experiment": "intraday_equities",
+          "tracking_uri": "sqlite:///mlruns.db"
+        }
+      }
+    ]
+  },
+  "walkforward": {
+    "count": 20,
+    "embargo_days": 5,
+    "first": "2022-05-06",
+    "notes": "The locked development_outer schedule (ADR-0098), restated inline because the walk grammar needs it.",
+    "objective": "$path.metrics.path_score",
+    "select": "max",
+    "step_days": 63,
+    "train_days": 730,
+    "val_days": 63
+  }
+}

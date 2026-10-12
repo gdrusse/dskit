@@ -11,7 +11,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-11: W1 selection + zoo done, W2 read -1.2% CRPS vs empirical; MIO/W4 owner-gated; ADR-0261 keep rule unapproved |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
-| intraday_equities | `children/intraday_equities/docs/RE-ENTRY.md` | 2026-09-29: joint-MIO speedups landed; folds 2-19 run waits on owner rulings |
+| intraday_equities | `children/intraday_equities/docs/RE-ENTRY.md` | 2026-10-12: fill-window relabel landed; next-bar-fill IC 0.01-0.02, path score 0.00015 vs 0.0049 (33x drop); 1-minute twin running |
 | pmquant | `children/pmquant/docs/RE-ENTRY.md` | 2026-09-04: child landed; waits on PREDEXON_API_KEY and the real-data twin |
 | intraday_poc | `children/intraday_poc/docs/RE-ENTRY.md` | legacy worked example; no active lane |
 

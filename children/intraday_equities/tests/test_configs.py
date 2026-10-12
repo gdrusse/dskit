@@ -88,6 +88,10 @@ MODELABILITY_DOCS = {
     ),
     # ADR-0185: the staged retrain run reads P16's pooled cohort from the study start.
     "run-retrain-simulation.json": ("configs/universe-p13-pooled.json", 26),
+    # The fill-window relabel walks (label_entry_offset_bars=1) measure P16's
+    # pooled cohort at the next-bar fill; the 1m twin reads 1-minute rows.
+    "run-lean-pooled-h10-fill-label-walk.json": ("configs/universe-p13-pooled.json", 26),
+    "run-lean-pooled-h5-fill-label-1m-walk.json": ("configs/universe-p13-pooled.json", 26),
 }
 MODELABILITY_SOURCES = {
     "alpaca-sip-split",
