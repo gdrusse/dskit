@@ -545,3 +545,49 @@ def test_the_blend_scores_only_predicted_rows_at_the_declared_margins_and_stays_
     bands = blend["lead_band"]["params"]["cases"]
     assert bands[0]["when"] == [{"field": "lead_minutes", "op": ">=", "value": 8}] and bands[1]["when"] == []
     assert load("run-w4-blend.json")["pipeline"]["write"]["params"]["path"].startswith("~/data/crypto_trading/w4-blend/")
+
+
+# --- the W5 read (pre-registered, docs/memos/2026-10-12-w5-preregistration.md) ----------------------------------------
+
+W5_END_MS = 1791417600000
+
+
+def _as_w4(doc, out_w5, out_w4):
+    """Map a W5 document back to its W4 twin: the cut, the panel, the outputs and the documentation."""
+    text = json.dumps(doc["pipeline"]).replace(str(W5_END_MS), str(W4_END_MS))
+    text = text.replace("panel-minute-w5", "panel-minute-w4").replace("minute-w1w5", "minute-w1w4").replace(out_w5, out_w4)
+    return json.loads(text)
+
+
+def _strip_notes(value):
+    if isinstance(value, dict):
+        return {k: _strip_notes(v) for k, v in value.items() if k != "notes"}
+    if isinstance(value, list):
+        return [_strip_notes(v) for v in value]
+    return value
+
+
+def test_the_w5_blend_is_the_w4_blend_with_only_the_cut_panel_segments_and_output_moved():
+    w5, w4 = load("run-w5-blend.json"), load("run-w4-blend.json")
+    mapped = _strip_notes(_as_w4(w5, "w5-blend/", "w4-blend/"))
+    for key in ("take_m01", "take_m02", "take_m03"):
+        assert w5["pipeline"][key]["params"]["segments"]["w5"] == {"start_ms": W4_END_MS, "end_ms": W5_END_MS}
+        mapped[key]["params"]["segments"] = w4["pipeline"][key]["params"]["segments"]
+    assert mapped == _strip_notes(w4["pipeline"])
+
+
+def test_the_w5_kelly_is_the_w4_kelly_sized_on_w5_decisions_only():
+    w5, w4 = load("run-w5-kelly.json"), load("run-w4-kelly.json")
+    mapped = _strip_notes(_as_w4(w5, "w5-kelly/", "w4-kelly/"))
+    gate = mapped.pop("w5_only")
+    assert gate["inputs"] == {"records": "$blend_ok.records"}
+    assert gate["params"]["where"] == [{"field": "decision_ms", "op": ">=", "value": W4_END_MS}]
+    for key in ("kelly_g2", "kelly_g4"):
+        assert mapped[key]["inputs"]["records"] == "$w5_only.records"
+        mapped[key]["inputs"]["records"] = "$blend_ok.records"
+    assert mapped == _strip_notes(w4["pipeline"])
+
+
+def test_the_w5_panel_build_is_the_w4_build_with_only_the_end_and_directory_moved():
+    w5 = _strip_notes(_as_w4(load("run-panel-build-w5.json"), "minute-w1w5", "minute-w1w4"))
+    assert w5 == _strip_notes(BUILD_W4["pipeline"])

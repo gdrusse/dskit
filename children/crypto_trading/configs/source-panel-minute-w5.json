@@ -1,0 +1,9 @@
+{
+  "notes": "Registration input for the W5 minute panel (run-panel-build-w5.json) as its own source, panel-minute-w5; the W4 source is untouched. Registration input, not a run input: publishes the W4 minute panel (run-panel-build-w4.json) back through onboarding as its OWN source, `panel-minute-w4`, so the earlier source `panel-minute` and its snapshot, which every W1/W2 result names, are untouched. A BLOB source (localblobs, ADR-0225), same shape as source-panel-minute.json: `path` is the one place the directory is named (the parent of `panels/minute-w1w5`; a test pins it equal to the build's destination), `include` takes only the one panel directory. Register once, then acquire after the build: runbook B8. Consumers name {panel-minute-w4, files, minute-w1w5}.",
+  "path": "~/data/crypto_trading/panels",
+  "as_of": "2026-10-12T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "minute-w1w5/*"
+  ]
+}
