@@ -981,3 +981,12 @@ def test_non_float_inputs_keep_the_owners_path():
         got = contracts.structure_payoff(contracts.CONDOR_LEGS, level, mixed)
         want = _generator_payoff(contracts.CONDOR_LEGS, level, mixed)
         assert repr(got) == repr(want) and type(got) is type(want)
+
+
+def test_the_leg_algebra_is_owned_by_dskit_and_contracts_re_exports_it():
+    """ADR-0265 graduated the venue-neutral leg algebra into the core; the child holds one owner, not a copy."""
+    from dskit.pipeline import option_structures
+
+    for name in ("leg_intrinsic", "structure_credit", "structure_max_loss", "structure_payoff"):
+        assert getattr(contracts, name) is getattr(option_structures, name)
+        assert name in contracts.__all__

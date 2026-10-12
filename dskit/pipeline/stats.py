@@ -104,6 +104,7 @@ __all__ = [
     "quantile_edges",
     "register_correction",
     "regularized_incomplete_beta",
+    "sample_quantile",
     "sharpe_ratio",
     "skill_vs_mean",
     "student_t_sf",
@@ -1872,6 +1873,43 @@ def _interpolated(ordered, q):
     if fraction == 0.0:
         return float(ordered[low])
     return float(ordered[low] + fraction * (ordered[low + 1] - ordered[low]))
+
+
+def sample_quantile(values, q):
+    """Return the ``q``-quantile of a sample, linearly interpolated between order statistics.
+
+    The same rule :func:`expanding_quantile` applies to its running history
+    (``p = q (n - 1)``), for a whole sample at once: a bootstrap interval's
+    percentile, say.
+
+    Parameters
+    ----------
+    values : list or tuple of float
+        A non-empty sample of finite numbers; not reordered.
+    q : float
+        The quantile level in ``[0, 1]`` (a bool is not a number).
+
+    Returns
+    -------
+    float
+
+    Raises
+    ------
+    ValueError
+        When ``q`` is not a number in ``[0, 1]``, or ``values`` is not a
+        non-empty list or tuple of finite numbers.
+
+    Examples
+    --------
+    The median of four values::
+
+        sample_quantile([4.0, 1.0, 3.0, 10.0], 0.5)  # -> 3.5
+    """
+    if not number_ok(q) or not 0 <= q <= 1:
+        raise ValueError(f"q must be a number in [0, 1], got {q!r}")
+    if not isinstance(values, (list, tuple)) or not values or not all(number_ok(v) for v in values):
+        raise ValueError("values must be a non-empty list or tuple of finite numbers")
+    return _interpolated(sorted(values), q)
 
 
 def expanding_quantile(values, q, min_history):

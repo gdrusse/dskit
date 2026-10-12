@@ -894,7 +894,9 @@ dskit/pipeline/
 │                      one per `symbol_field`, ADR-0259)
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections);
 │                      CrossSectionIC (by import path, ADR-0259): per-instant rank IC of named
-│                      measures across names, a benchmark partialled out, split/month summaries, drop census
+│                      measures across names, a benchmark partialled out, split/month summaries, drop census;
+│                      QuantileSortBook (by import path, ADR-0265): per-stamp quantile long-short book of
+│                      several signals, cost per side, Newey-West + block-bootstrap + one BH/Bonferroni family
 ├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
 │                      are generic search values (ADR-0113).
@@ -928,7 +930,8 @@ dskit/pipeline/
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 │                      CalendarBlockBootstrap + EdgePaddedCalendarBlockBootstrap:
-│                      calendar-day block resampling, one `_blocks_for` hook (ADR-0258)
+│                      calendar-day block resampling, one `_blocks_for` hook (ADR-0258);
+│                      sample_quantile (interpolated quantile of a whole sample, ADR-0265)
 ├── binary_pricing.py  fair value of a binary contract that settles on an average: AveragedLognormal law,
 │                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
 ├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)
@@ -944,7 +947,11 @@ dskit/pipeline/
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
 │                      to [floor, ceiling], a smile that dips below zero refused
-│                      (ADR-0182 tier placement)
+│                      (ADR-0182 tier placement); black76_implied_vol: the vol that
+│                      reprices a price, None outside the model's range (ADR-0265)
+├── option_structures.py leg-set algebra graduated from the index_options child (ADR-0265):
+│                      structure_credit (shorts at the bid, longs at the ask), structure_payoff,
+│                      structure_max_loss, leg_intrinsic, quote_defect (coded quote refusals); names no structure
 ├── false_signal.py    per-signal false-signal probability (ADR-0152):
 │                      SignalEvidence + FalseSignalEstimator ->
 │                      pi_hat and a widened pi_widened (NOT a bound);
@@ -997,6 +1004,7 @@ dskit/pipeline/
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
+│                      option_ledger (OptionStructureLedger: open a leg set at NBBO sides, mark at the mid, settle or exit by a declared rule, optional Black-76 delta hedge; refusals counted; by import path, ADR-0265),
 │                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260)
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows over the observations seam, every
 │                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0256),

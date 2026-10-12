@@ -4,7 +4,8 @@ Two pieces, both venue-neutral:
 
 * :func:`black76` — Black (1976) on a forward: the one closed form every
   cash-settled index option, future option or FX forward option shares —
-  and :func:`black76_delta`, its forward delta.
+  :func:`black76_delta`, its forward delta, and :func:`black76_implied_vol`,
+  its inverse in the volatility (ADR-0265).
 * :class:`VolIndexSmileQuotes` — a PROXY bid/ask for one option leg when
   no historical option quote exists, built from a volatility-index close
   (quoted in percent: VIX for SPX, VXN for NDX, RVX for RUT, ...). The
@@ -49,7 +50,7 @@ from statistics import NormalDist
 
 from dskit.pipeline.records import number_ok, price_ok
 
-__all__ = ["RIGHTS", "VolIndexSmileQuotes", "black76", "black76_delta"]
+__all__ = ["RIGHTS", "VolIndexSmileQuotes", "black76", "black76_delta", "black76_implied_vol"]
 
 #: The two option rights.
 RIGHTS = ("put", "call")
@@ -153,6 +154,81 @@ def black76_delta(right, forward, strike, vol, years, rate=0.0):
     if right == "call":
         return discount * cdf(d1)
     return -discount * cdf(-d1)
+
+
+#: Newton / bisection steps :func:`black76_implied_vol` takes before it gives up.
+_IMPLIED_VOL_STEPS = 100
+
+
+def black76_implied_vol(right, price, forward, strike, years, rate=0.0, vol_min=1e-4,
+                        vol_max=10.0, tolerance=1e-10):
+    """Invert :func:`black76` in the volatility (ADR-0265).
+
+    The price is monotone increasing in ``vol``, so the root inside
+    ``[vol_min, vol_max]`` is unique when it exists. Newton steps on the
+    vega are safeguarded by the shrinking bracket, so a flat wing falls back
+    to bisection rather than diverging.
+
+    Parameters
+    ----------
+    right : str
+        ``"put"`` or ``"call"``.
+    price : float
+        The option price to reproduce; finite and nonnegative.
+    forward, strike : float
+        Positive levels.
+    years : float
+        Positive time to expiry in years.
+    rate : float
+        Continuously compounded discount rate; default 0.
+    vol_min, vol_max : float
+        The bracket the answer must lie in, ``0 < vol_min < vol_max``.
+    tolerance : float
+        Stop when the model price is within this of ``price`` (price units).
+
+    Returns
+    -------
+    float or None
+        The volatility, or ``None`` when no volatility in the bracket
+        prices the option: at or below its intrinsic value, at or above its
+        upper bound, or outside ``[vol_min, vol_max]``.
+
+    Raises
+    ------
+    ValueError
+        On an unknown right, a negative / non-finite price, a non-positive
+        or non-finite level, or a malformed bracket.
+
+    Examples
+    --------
+    Recover a 25% vol from its own price::
+
+        p = black76("call", 100.0, 105.0, 0.25, 0.5)
+        black76_implied_vol("call", p, 100.0, 105.0, 0.5)  # ~0.25
+    """
+    _black76_terms(right, forward, strike, vol_min, years, rate)
+    if not number_ok(price) or price < 0:
+        raise ValueError(f"price must be a finite number >= 0, got {price!r}")
+    if not price_ok(vol_max) or vol_max <= vol_min:
+        raise ValueError(f"vol_max must be a finite number > vol_min, got {vol_max!r}")
+    if black76(right, forward, strike, vol_min, years, rate) > price:
+        return None
+    if black76(right, forward, strike, vol_max, years, rate) < price:
+        return None
+    low, high = vol_min, vol_max
+    vol = 0.5 * (low + high)
+    root_years = math.sqrt(years)
+    discount = math.exp(-rate * years)
+    for _ in range(_IMPLIED_VOL_STEPS):
+        gap = black76(right, forward, strike, vol, years, rate) - price
+        if abs(gap) <= tolerance:
+            return vol
+        low, high = (low, vol) if gap > 0 else (vol, high)
+        d1 = (math.log(forward / strike) + vol * vol * years / 2) / (vol * root_years)
+        vega = discount * forward * _STANDARD_NORMAL.pdf(d1) * root_years
+        step = vol - gap / vega if vega > 0 else None
+        vol = step if step is not None and low < step < high else 0.5 * (low + high)
+    return None
 
 
 def _wing_minimum(atm_ratio, slope, curvature):
