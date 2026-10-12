@@ -453,3 +453,25 @@ def test_concurrency_order_with_many_units_and_reversed_completion():
     parallel, p_state = pull(ThetaDataConnector(getter=slow_for_newest, sleeper=lambda s: None),
                              {**cfg, "concurrency": 4})
     assert len(serial) > 15 and parallel == serial and p_state == s_state
+
+
+def test_ndjson_body_and_unknown_symbol_472():
+    lines = "\n".join(json.dumps(eod_row(strike=k)) for k in (100.0, 105.0)).encode()
+
+    def ndjson(url, params, timeout):
+        assert params["format"] == "ndjson"
+        return 200, {}, lines
+    cfg = {**CONFIG, "start": "2025-01-06", "end": "2025-01-07", "open_interest": False}
+    records, _ = pull(ThetaDataConnector(getter=ndjson, sleeper=lambda s: None), cfg)
+    assert [r["data"]["strike"] for r in records] == [100.0, 105.0]
+
+    def single(url, params, timeout):
+        return 200, {}, json.dumps(eod_row()).encode()
+    records, _ = pull(ThetaDataConnector(getter=single, sleeper=lambda s: None), cfg)
+    assert len(records) == 1
+
+    def unknown(url, params, timeout):
+        return 472, {}, b"Unknown symbol: AAA. Use /v3/option/list/symbols"
+    with pytest.raises(AssetError) as err:
+        pull(ThetaDataConnector(getter=unknown, sleeper=lambda s: None), cfg)
+    assert "Unknown symbol" in str(err.value)

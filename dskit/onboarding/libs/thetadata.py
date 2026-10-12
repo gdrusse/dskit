@@ -105,6 +105,9 @@ _OI_PATH = "/v3/option/history/open_interest"
 _EXPIRATIONS_PATH = "/v3/option/list/expirations"
 _STOCK_EOD_PATH = "/v3/stock/history/eod"
 _PROBE_PATH = "/v3/stock/list/symbols"
+#: Flat one-record-per-line output; the default JSON nests rows under contracts.
+_FORMAT = "ndjson"
+_UNKNOWN_SYMBOL = b"Unknown symbol"
 _STREAMS = (OPTION_EOD_STREAM, UNDERLYING_STREAM)
 _RIGHTS = {"C": "call", "CALL": "call", "P": "put", "PUT": "put"}
 _EXCERPT_CHARS = 200
@@ -172,6 +175,14 @@ def _iso_date(value):
         return date.fromisoformat(text).isoformat()
     except ValueError as exc:
         raise AssetError([f"Theta Terminal returned an unusable date {value!r}"]) from exc
+
+
+def _parse(body):
+    """Parse a body: a JSON array, ``{"response": [...]}``, or one record per line."""
+    text = body.decode("utf-8").strip()
+    if text.startswith("[") or text.startswith('{"response"'):
+        return json.loads(text)
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
 def _rows(payload):
@@ -379,6 +390,9 @@ class ThetaDataConnector(Connector):
                 self._sleeper(backoff(attempt, knobs["retry_base_s"]))
                 continue
             if status in EMPTY_STATUSES:
+                if _UNKNOWN_SYMBOL in body:
+                    raise AssetError([f"Theta Terminal {path}: "
+                                      f"{body[:_EXCERPT_CHARS].decode('utf-8', 'replace')}"])
                 return []
             if status == LARGE_REQUEST_STATUS:
                 raise _TooLarge(path)
@@ -396,7 +410,7 @@ class ThetaDataConnector(Connector):
             if not body.strip():
                 return []
             try:
-                return _rows(json.loads(body))
+                return _rows(_parse(body))
             except ValueError as exc:
                 raise AssetError([f"Theta Terminal {path} returned invalid JSON"]) from exc
         raise AssetError([f"Theta Terminal {path}: no attempt was made"])
@@ -407,7 +421,7 @@ class ThetaDataConnector(Connector):
         ``ranged`` endpoints take start/end dates; open interest takes ``date``.
         """
         def params(expiration):
-            base = {"symbol": symbol, "expiration": expiration, "format": "json"}
+            base = {"symbol": symbol, "expiration": expiration, "format": _FORMAT}
             if ranged:
                 base.update(start_date=_compact(day), end_date=_compact(day))
             else:
@@ -433,7 +447,7 @@ class ThetaDataConnector(Connector):
         """Return the root's listed expirations as ISO dates, cached per root."""
         if symbol not in self._expirations_by_root:
             listed = self._get_json(knobs, _EXPIRATIONS_PATH,
-                                    {"symbol": symbol, "format": "json"})
+                                    {"symbol": symbol, "format": _FORMAT})
             self._expirations_by_root[symbol] = sorted(
                 {_iso_date(item.get("expiration")) for item in listed})
         return self._expirations_by_root[symbol]
@@ -489,7 +503,7 @@ class ThetaDataConnector(Connector):
         try:
             rows = self._get_json(knobs, _STOCK_EOD_PATH, {
                 "symbol": symbol, "start_date": _compact(knobs["start"]),
-                "end_date": _compact(last), "format": "json"})
+                "end_date": _compact(last), "format": _FORMAT})
         except _TooLarge as exc:
             raise AssetError([f"Theta Terminal {_STOCK_EOD_PATH} {symbol} is too large; "
                               "narrow start/end"]) from exc
@@ -524,7 +538,7 @@ class ThetaDataConnector(Connector):
             If config is invalid or the Terminal does not answer.
         """
         knobs = self.resolve_knobs(config)
-        self._get_json({**knobs, "retries": 1}, _PROBE_PATH, {"format": "json"})
+        self._get_json({**knobs, "retries": 1}, _PROBE_PATH, {"format": _FORMAT})
 
     def discover(self, config):
         """Describe the two streams without touching the Terminal.
