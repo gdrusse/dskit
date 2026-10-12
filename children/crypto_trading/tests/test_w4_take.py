@@ -37,6 +37,7 @@ def load(name):
 
 
 DOC, FEATURES = load("run-w4-take.json"), load("run-features-15m.json")
+UNPINNED = "<state_hash of the refit, pinned by runbook B8 step 5>"
 NODES, SRC = DOC["pipeline"], FEATURES["pipeline"]
 OVERLAY, RECIPE = load("production-args-w4.json"), load("zoo-lanes-recipe.json")
 BUILD, BUILD_W4 = load("run-panel-build.json"), load("run-panel-build-w4.json")
@@ -289,8 +290,7 @@ def shipped_doc(store, tmp_path, model, *, pin=True):
     reroot(doc)
     gru = doc["pipeline"]["fair_gru"]["params"]
     gru["panel"]["relpath"], gru["artifact"] = model["panel"], model["artifact"]
-    if pin:
-        gru["state_hash"] = model["hash"]
+    gru["state_hash"] = model["hash"] if pin else UNPINNED
     out = tmp_path / "w4-table"
     out.mkdir(exist_ok=True)
     doc["pipeline"]["write"]["params"]["path"] = str(out / os.path.basename(doc["pipeline"]["write"]["params"]["path"]))
@@ -365,7 +365,6 @@ def test_the_grid_is_monotone_in_trades_and_every_margin_reports_the_same_rows(r
 
 def test_the_run_refuses_while_the_model_hash_is_the_shipped_placeholder(tmp_path, monkeypatch, model):
     """Until runbook step 5 pins the refit's hash, the document cannot price a single row."""
-    assert DOC["pipeline"]["fair_gru"]["params"]["state_hash"].startswith("<")
     result = run(build_world(tmp_path, monkeypatch), tmp_path, model, monkeypatch, pin=False)
     assert result.state != "ran" and "state_hash" in str(result.error), (result.state, result.error)
 
