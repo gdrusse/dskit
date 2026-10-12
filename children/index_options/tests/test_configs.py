@@ -251,6 +251,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         # and the option-history pull whose symbols are read from that output).
         "configs/source-option-activity.json", "configs/run-option-universe-300-rank.json",
         "configs/option_universe_300.json", "configs/source-option-universe-300.json",
+        "configs/option_universe_300b.json", "configs/option_universe_pulled_417.json",
+        "configs/run-option-universe-300b-rank.json", "configs/source-option-universe-300b.json",
+        "configs/source-option-universe-300b-bars-raw.json", "configs/source-option-universe-300b-bars-split.json",
         # The 300 stocks' daily bars source and its daily-features args overlay.
         "configs/source-stock-daily-300.json", "configs/features-300.json",
         "tests/test_source_pins.py",
@@ -347,7 +350,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the seven performance-pilot overlays and their research note (merged 2026-10-10) = 495,
     # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497,
     # plus the ADR-0259 forecast-dispersion IC document = 498, plus its result memo = 499.
-    assert len(actual) == 500
+    assert len(actual) == 506
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
