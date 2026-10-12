@@ -7503,6 +7503,33 @@ class OptionPriceCDF:
                         or not np.isfinite(value) or value < 0))):
                 raise ValueError(name+" must be finite and nonnegative")
             setattr(self, name, value)
+    @staticmethod
+    def parity_forwards(rows):
+        """Return the per-strike parity forwards ``strike + call - put`` (ADR-0213).
+
+        The ONE forward step: ``estimate`` takes its median, and the option-chain
+        features (ADR-0265) take theirs, so the two can never disagree.
+
+        Parameters
+        ----------
+        rows : pandas.DataFrame
+            ``strike``, ``type`` (``"call"`` / ``"put"``) and ``mark`` columns of
+            validated, positive, finite numbers; duplicates are medians per side.
+
+        Returns
+        -------
+        numpy.ndarray or None
+            The finite positive forwards, one per strike quoted on both sides
+            (possibly empty); ``None`` when no strike has both sides.
+        """
+        import numpy as np
+        paired = rows.pivot_table(index="strike", columns="type", values="mark",
+                                  aggfunc="median").dropna()
+        if paired.empty or not {"call", "put"}.issubset(paired.columns):
+            return None
+        forwards = paired.index.to_numpy()+paired.call.to_numpy()-paired.put.to_numpy()
+        return forwards[np.isfinite(forwards) & (forwards > 0)]
+
     def estimate(self, rows, spot):
         """Return an eligible curve and diagnostics, or explicit rejection reasons."""
         import numpy as np
@@ -7526,12 +7553,9 @@ class OptionPriceCDF:
         if np.max(numeric[:, 0]) > np.finfo(float).max*min(float(spot), 1.):
             return {"eligible": False, "reasons": ["nonfinite_return_coordinates"]}
         clean[["strike", "mark"]] = numeric
-        paired = clean.pivot_table(index="strike", columns="type", values="mark",
-                                   aggfunc="median").dropna()
-        if paired.empty or not {"call", "put"}.issubset(paired.columns):
+        forwards = self.parity_forwards(clean)
+        if forwards is None:
             return {"eligible": False, "reasons": ["missing_forward_pairs"]}
-        forwards = paired.index.to_numpy()+paired.call.to_numpy()-paired.put.to_numpy()
-        forwards = forwards[np.isfinite(forwards) & (forwards > 0)]
         if len(forwards) < self.min_forward_pairs:
             return {"eligible": False, "reasons": ["insufficient_forward_pairs"]}
         forward = float(np.median(forwards))

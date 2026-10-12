@@ -1,0 +1,139 @@
+{
+  "name": "theta-chain-features",
+  "notes": "Node 2 of ADR-0265 on a sample: per (symbol, date, target DTE) option-chain features from the NBBO mid and the put-call-parity forward, never the vendor's greeks or implied_vol (ADR-0265 item 3): the 30- and 90-day ATM implied vol (our Black-76 inversion of the mid on the parity forward, zero rate), the 25-delta put and call wing vols and their risk reversal (put minus call), the same-strike put-minus-call IV spread, the 30/90 term slope, the ATM straddle over spot, half-spread over premium, open interest and volume by side over the target's expiry, the put/call open-interest ratio and the 5-session change in open interest and in that ratio. SAMPLE ONLY: keep_values names three roots whose pull is complete (AAPL, ABBV, ABNB); the real universe is the census output (run-theta-chain-census.json), frozen before any hypothesis runs, and replaces this list then. READ-ONLY on /home/russell/data/thetadata/options-tested (onboarding root, source theta, stream option_eod). SEALED PERIOD: end_before 2026-01-01 on the features node, which refuses any row on or after it. MEMORY: the node is not presorted, so it holds a compact tuple per row until the stream ends (about 2 GB for one complete root); run a root or two at a time, or sort first. EXCLUSIONS (counted in the node's summary): quotes with a missing, zero or crossed side, and every row of a root dated before its first day with a bid above zero. A day whose parity forward cannot be formed keeps its row with every quote feature null. Run from children/index_options: python -m dskit.pipeline run configs/run-theta-chain-features.json --asof 2025-12-31.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/chain-features",
+    "notes": "A new directory beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.observations:ObservationStreamRows",
+      "params": {
+        "root": "/home/russell/data/thetadata/options-tested",
+        "source": "theta",
+        "stream": "option_eod",
+        "key_fields": [
+          "symbol",
+          "expiration",
+          "strike",
+          "right",
+          "date"
+        ],
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "open_interest",
+          "volume",
+          "underlying_price"
+        ],
+        "keep_values": {
+          "symbol": [
+            "AAPL",
+            "ABBV",
+            "ABNB"
+          ]
+        }
+      },
+      "notes": "The ThetaData daily chain through the onboarding read seam, deduplicated on the connector's contract key, restricted at intake to the sample roots and projected to the ten fields the features read. Lazy. Read-only."
+    },
+    "features": {
+      "uses": "dskit.pipeline.libs.chain_features:ChainDayFeatures",
+      "inputs": {
+        "records": "$chain.records"
+      },
+      "params": {
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "expiration_field": "expiration",
+        "strike_field": "strike",
+        "right_field": "right",
+        "bid_field": "bid",
+        "ask_field": "ask",
+        "open_interest_field": "open_interest",
+        "volume_field": "volume",
+        "underlying_price_field": "underlying_price",
+        "call_values": [
+          "call"
+        ],
+        "put_values": [
+          "put"
+        ],
+        "end_before": "2026-01-01",
+        "targets": [
+          {
+            "dte": 30,
+            "tolerance": 7
+          },
+          {
+            "dte": 90,
+            "tolerance": 14
+          }
+        ],
+        "target_field": "target_dte",
+        "atm_band": 0.05,
+        "wing_delta": 0.25,
+        "min_forward_pairs": 5,
+        "term_pair": [
+          30,
+          90
+        ],
+        "oi_scope": "expiry",
+        "oi_lag_sessions": 5,
+        "oi_lag_max_days": 10,
+        "fields": {
+          "expiration": "expiration",
+          "dte": "dte",
+          "spot": "spot",
+          "forward": "forward",
+          "atm_strike": "atm_strike",
+          "atm_iv": "atm_iv",
+          "put_wing_iv": "put25_iv",
+          "call_wing_iv": "call25_iv",
+          "risk_reversal": "risk_reversal",
+          "put_call_iv_spread": "put_call_iv_spread",
+          "term_slope": "term_slope",
+          "straddle_ratio": "straddle_ratio",
+          "half_spread_over_premium": "half_spread_over_premium",
+          "oi_call": "oi_call",
+          "oi_put": "oi_put",
+          "volume_call": "volume_call",
+          "volume_put": "volume_put",
+          "oi_put_call_ratio": "oi_put_call_ratio",
+          "oi_change": "oi_change_5d",
+          "oi_put_call_ratio_change": "oi_put_call_ratio_change_5d"
+        }
+      },
+      "notes": "Targets are 30 days (plus or minus 7) and 90 days (plus or minus 14), the nearest listed expiry each; a day with none inside the tolerance emits no row for that target and is counted. min_forward_pairs 5 strikes quoted on both sides are needed for the parity forward. ATM is the strike nearest the forward in log terms among those with both sides usable inside a 5% band. The wing vols are at forward delta 0.25 in magnitude, linear in delta between the two bracketing strikes, null without a bracket. Open interest and volume are summed over the target's own expiry; the 5-session change looks back five sessions of the same root and is null past ten calendar days or when that expiry did not yet exist."
+    },
+    "table": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$features.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/chain-features/chain-day-features.jsonl",
+        "overwrite": true,
+        "source": "one row per root, date and target DTE: ATM and 25-delta implied vols from NBBO mids on the parity forward, risk reversal, put-call IV spread, 30/90 term slope, straddle ratio, half-spread over premium, open interest and volume by side and the 5-session open-interest changes"
+      },
+      "notes": "The feature table the H1 documents attach by (symbol, date, target_dte)."
+    },
+    "counts": {
+      "uses": "run-report",
+      "inputs": {
+        "edge": "$features.summary"
+      },
+      "params": {
+        "title": "ThetaData chain day features (ADR-0265 node 2)",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the exclusion counts (null, zero and crossed quotes, rows before each root's first bid) and the per-target emitted / no-expiry / no-forward counts."
+    }
+  }
+}

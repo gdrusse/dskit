@@ -721,6 +721,12 @@ they register only into private registries, never the default one.
   and answers `prior(instants_ms, max_age_ms)` (the last row STRICTLY before each instant, with its age). The
   `stream-manifests` data node (opt-in `register()`) fingerprints streams a transform reads by hand. A file whose
   instants are not integer epoch ms, ascending, and inside its own UTC day refuses by name.
+- `libs/chain_census.py` and `libs/chain_features.py` (ADR-0265, by import path): `ChainCensus` counts a daily option-chain
+  stream per root (first/last bid date, null/zero/crossed/locked shares, `iv_error` placeholder share, rows per date by year,
+  non-standard strikes by month, median usable quotes, an `underlying_price` check against an optional `closes` input; an
+  unrun check is listed under `summary.skipped`); `ChainDayFeatures` builds ATM and 25-delta IV, risk reversal, put-call IV
+  spread, term slope, straddle ratio, half-spread over premium and OI/volume features per (symbol, date, target DTE) from NBBO
+  mids on the parity forward (`OptionPriceCDF.parity_forwards`, `black76_implied_vol`); vendor greeks are not read.
 - `libs/vol_estimators.py` (ADR-0244): `VolEstimatorFeatures` emits per-bar VARIANCE (`var_rms_60`, `var_ewma_30`,
   `var_hl_60`; `column_prefix`, `bar_ms`, `close_field` / `high_field` / `low_field`), and a window holding a
   missing bar is None, never shortened.
@@ -1008,7 +1014,9 @@ dskit/pipeline/
 │                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260)
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows over the observations seam, every
 │                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0256),
-│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
+│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257),
+│                      chain_census (ChainCensus + quote_state: per-root coverage and quote quality of a daily option-chain stream, by import path, ADR-0265),
+│                      chain_features (ChainDayFeatures: ATM/wing IV, skew, term, straddle, spread, OI/volume per symbol-date-DTE from NBBO mids, by import path, ADR-0265)
 ├── README.md          this file
 ├── EXTENDING.md       extension points + gotchas (the seams, and what bites)
 └── CLAUDE.md          agent orientation
@@ -1021,6 +1029,7 @@ ADR-0243..0247 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binar
 ADR-0260: `tests/pipeline_libs/test_{array_panel,horizon_cdf,panel_score,panel_torch,panel_zoo_e2e}.py`; ADR-0262: `tests/pipeline_libs/test_panel_fair_value.py`.
 (the `*_golden` file holds the former child's output, frozen in `golden/`).
 ADR-0256: `tests/pipeline/test_binary_decisions.py`, `tests/pipeline_libs/test_binary_market_rows.py`.
+ADR-0265: `tests/pipeline_libs/test_{chain_census,chain_features}.py`, `tests/pipeline/test_option_pricing.py`.
 ADR-0257: `tests/pipeline/test_{digital_bounds,binary_curve}.py`, `tests/pipeline_libs/test_binary_coherence.py`.
 
 ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.

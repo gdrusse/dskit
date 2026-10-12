@@ -173,6 +173,9 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # condor replay with fill_session next, a fills stream, exercise flags)
                            # run-forecast-dispersion-ic.json (ADR-0259: T2 of the edge-and-harvest
                            # note, the forecast-dispersion IC on the v2 saved inputs; run 2026-10-10, T2 failed)
+                           # run-theta-chain-census.json, run-theta-chain-features.json (ADR-0265: the
+                           # H-census and the NBBO chain-day features over the ThetaData sample at
+                           # /home/russell/data/thetadata/options-tested, read-only, end_before 2026-01-01)
                            # pilot-*.json: quick args overlays for workflow.json (base + crps-student,
                            # regularize, window-250/750, horizon-14/28; docs/research performance-pilots)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json

@@ -1,0 +1,112 @@
+{
+  "name": "theta-chain-census",
+  "notes": "H-census of ADR-0265, the gate before any ThetaData hypothesis runs: for each root of the landed option_eod stream (ADR-0263), the first and last date with a bid above zero, the share of null / zero / crossed / locked quotes, the share of vendor iv_error placeholders (100), rows per date by year, non-standard strikes by month (a corporate-action marker), the median usable quotes per date and the development-years liquidity terciles. READ-ONLY: the store at /home/russell/data/thetadata/options-tested (onboarding root, source theta, stream option_eod) is only read; a pull may be landing new acquisitions underneath, and the reader pins the members it fingerprinted, so a run describes exactly the acquisitions present when it started (the fingerprint names them). SEALED PERIOD: end_before 2026-01-01 on the census node, which REFUSES any row dated on or after it. TERCILES use dates before 2021-01-01 only (ADR-0265 item 2: fixed on development years). STRIKE GRID: half-dollar steps below 200 and whole dollars above are a first-pass listed-grid approximation, not an exchange table; an adjusted strike (a third of a dollar, say) falls off it, which is the marker. The count by month is read against the split inventory by hand. NOT DONE HERE: the underlying_price versus Alpaca close check (the census node takes an optional second input 'closes' of daily close rows; none is wired, so the node lists the check under summary.skipped and the run report says so) and the overlap with the Alpaca chains. Nothing is fitted, tested or ranked; the output freezes the universe. Run from children/index_options: python -m dskit.pipeline run configs/run-theta-chain-census.json --asof 2025-12-31.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/chain-census",
+    "notes": "A new directory beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.observations:ObservationStreamRows",
+      "params": {
+        "root": "/home/russell/data/thetadata/options-tested",
+        "source": "theta",
+        "stream": "option_eod",
+        "key_fields": [
+          "symbol",
+          "expiration",
+          "strike",
+          "right",
+          "date"
+        ],
+        "fields": [
+          "symbol",
+          "date",
+          "strike",
+          "bid",
+          "ask",
+          "iv_error",
+          "underlying_price"
+        ]
+      },
+      "notes": "The ThetaData daily chain through the onboarding read seam, deduplicated on the connector's contract key (OPTION_KEY_FIELDS) and projected to the seven fields the census reads. Lazy: no row list is built, the census tallies as it streams. Read-only."
+    },
+    "census": {
+      "uses": "dskit.pipeline.libs.chain_census:ChainCensus",
+      "inputs": {
+        "records": "$chain.records"
+      },
+      "params": {
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "strike_field": "strike",
+        "bid_field": "bid",
+        "ask_field": "ask",
+        "iv_error_field": "iv_error",
+        "iv_error_flag": 100,
+        "underlying_price_field": "underlying_price",
+        "strike_grid": [
+          {
+            "below": 200.0,
+            "step": 0.5
+          },
+          {
+            "step": 1.0
+          }
+        ],
+        "end_before": "2026-01-01",
+        "liquidity_end_before": "2021-01-01"
+      },
+      "notes": "One pass over the stream. A quote is null (a missing side), zero (a side at or below zero), crossed (ask below bid), locked (ask equal to bid) or quoted; usable = locked or quoted. first_bid_date is the first date any contract has a bid above zero: the universe gate of ADR-0265 item 2. iv_error_flag 100 is the vendor's placeholder code (4.3% of rows per ADR-0265). An empty stream, or a row on or after end_before, refuses."
+    },
+    "coverage": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$census.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/chain-census/census-roots.jsonl",
+        "overwrite": true,
+        "source": "one row per root: first and last bid date, quote-state shares over all rows and from the first bid date, iv_error placeholder share, median usable quotes per date (all dates and development years), liquidity tercile, non-standard strike rows"
+      },
+      "notes": "The per-root coverage and quality table; the frozen universe is read from it."
+    },
+    "by_year": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$census.rows_by_year"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/chain-census/census-rows-by-year.jsonl",
+        "overwrite": true,
+        "source": "one row per root and calendar year: rows, dates and rows per date"
+      },
+      "notes": "Rows per date by year, the thinning of a chain over time."
+    },
+    "by_month": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$census.strikes_by_month"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/chain-census/census-strikes-by-month.jsonl",
+        "overwrite": true,
+        "source": "one row per root and month: rows, rows at a strike off the listed grid and the distinct such strikes"
+      },
+      "notes": "Non-standard strikes by month: the corporate-action marker."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "edge": "$census.summary"
+      },
+      "params": {
+        "title": "ThetaData option_eod chain census (H-census)",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the run totals, the quote-state counts and the list of checks that did not run (summary.skipped); evidence.json holds every value."
+    }
+  }
+}

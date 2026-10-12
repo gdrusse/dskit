@@ -2919,6 +2919,22 @@ def test_option_price_cdf_exports_exact_inverse_grid_and_known_distribution():
     assert proxy["quantiles"][4] == pytest.approx(-.02, abs=.004)
 
 
+def test_option_price_cdf_parity_forwards_are_the_step_the_estimate_uses():
+    frame = _priced_options()
+    forwards = predictive_cdf.OptionPriceCDF.parity_forwards(frame)
+    np.testing.assert_allclose(forwards, 100.0)
+    assert len(forwards) == frame.strike.nunique()
+    # one strike with a put worth more than strike + call gives a non-positive forward: dropped
+    broken = frame.copy()
+    broken.loc[(broken.strike == 70.) & (broken.type == "put"), "mark"] = 500.
+    assert len(predictive_cdf.OptionPriceCDF.parity_forwards(broken)) == len(forwards) - 1
+    # no strike with both sides: no pairs at all, said as None (not an empty array)
+    assert predictive_cdf.OptionPriceCDF.parity_forwards(frame[frame.type == "call"]) is None
+    only = pd.concat([frame[(frame.type == "call") & (frame.strike < 100)],
+                      frame[(frame.type == "put") & (frame.strike >= 100)]])
+    assert predictive_cdf.OptionPriceCDF.parity_forwards(only) is None
+
+
 def test_option_price_cdf_admission_and_optional_guards():
     frame = _priced_options()
     helper = predictive_cdf.OptionPriceCDF(**_option_curve_params())

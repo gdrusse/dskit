@@ -65,6 +65,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         # ADR-0259 (PROPOSED): T2 of the edge-and-harvest note, the forecast-dispersion IC
         # on the v2 replay's saved inputs (built 2026-10-11 at the owner's instruction).
         "configs/run-forecast-dispersion-ic.json",
+        # ADR-0265: the H-census and the chain-day features on the landed ThetaData sample.
+        "configs/run-theta-chain-census.json", "configs/run-theta-chain-features.json",
         "docs/memos/2026-10-09-condor-executable-clock-contract.md",
         "docs/memos/2026-10-09-condor-executable-clock-result.md",
         "docs/research/distribution-modeling/2026-10-09-condor-selection-intuition.md",
@@ -353,8 +355,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # run config = 485; the executable-clock result memo = 486; the selection-intuition research note = 487.
     # Plus the seven performance-pilot overlays and their research note (merged 2026-10-10) = 495,
     # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497,
-    # plus the ADR-0259 forecast-dispersion IC document = 498, plus its result memo = 499.
-    assert len(actual) == 511
+    # plus the ADR-0259 forecast-dispersion IC document = 498, plus its result memo = 499;
+    # plus ADR-0265's chain census and chain features documents = 513.
+    assert len(actual) == 513
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -3889,3 +3892,56 @@ def test_executable_clock_config_identity_is_pinned_and_differs_from_the_legacy_
         "8580a1796a87c6322c5b4a98a3fc81951a295aec3ac02b7d3292ba4051f62d55")
     assert PipelineDocument.from_obj(clock).hash == (
         "0135e9ff8494fd4a03c5297c5f97abc3c3fa88f6de331a1c9a447856179863e9")
+
+
+# -- ADR-0265: the ThetaData census and chain-feature documents ---------------------------------
+
+THETA_DOCS = ("run-theta-chain-census.json", "run-theta-chain-features.json")
+THETA_STORE = "/home/russell/data/thetadata/options-tested"
+
+
+def _theta_doc(child_root, name):
+    return json.loads((child_root / "configs" / name).read_text())
+
+
+@pytest.mark.parametrize("name", THETA_DOCS)
+def test_theta_documents_plan_and_every_node_param_validates(child_root, name):
+    from dskit.pipeline.libs.chain_census import ChainCensus
+    from dskit.pipeline.libs.chain_features import ChainDayFeatures
+    from dskit.pipeline.libs.observations import ObservationStreamRows
+    planned = plan(load_document(str(child_root / "configs" / name)))
+    classes = {item.cls for item in planned.resolved.values()}
+    assert ObservationStreamRows in classes and classes & {ChainCensus, ChainDayFeatures}
+    for node in _theta_doc(child_root, name)["pipeline"].values():
+        if node["uses"].endswith(("ChainCensus", "ChainDayFeatures")):
+            cls = ChainCensus if node["uses"].endswith("ChainCensus") else ChainDayFeatures
+            assert cls.validate_params(node["params"]) == []
+
+
+@pytest.mark.parametrize("name", THETA_DOCS)
+def test_theta_documents_seal_2026_and_only_read_the_store(child_root, name):
+    nodes = _theta_doc(child_root, name)["pipeline"]
+    sealed = [n for n in nodes.values() if n["uses"].endswith(("ChainCensus", "ChainDayFeatures"))]
+    assert sealed and all(n["params"]["end_before"] == "2026-01-01" for n in sealed)
+    readers = [n for n in nodes.values() if n["uses"].endswith("ObservationStreamRows")]
+    assert [r["params"]["root"] for r in readers] == [THETA_STORE]
+    assert [r["params"]["source"] for r in readers] == ["theta"]
+    assert [r["params"]["stream"] for r in readers] == ["option_eod"]
+    written = [n["params"]["path"] for n in nodes.values() if n["uses"] == "records-write"]
+    written.append(_theta_doc(child_root, name)["outputs"]["run_root"])
+    assert written and not any(path.startswith("/home/russell/data/thetadata") for path in written)
+
+
+def test_the_census_document_wires_no_closes_input_and_says_so(child_root):
+    doc = _theta_doc(child_root, "run-theta-chain-census.json")
+    census = doc["pipeline"]["census"]
+    assert set(census["inputs"]) == {"records"}
+    assert "closes" in doc["notes"] and "skipped" in doc["notes"]
+    assert census["params"]["iv_error_flag"] == 100 and census["params"]["liquidity_end_before"] == "2021-01-01"
+
+
+def test_the_features_document_names_the_sample_roots_and_reads_no_vendor_greeks(child_root):
+    doc = _theta_doc(child_root, "run-theta-chain-features.json")
+    reader = doc["pipeline"]["chain"]["params"]
+    assert reader["keep_values"] == {"symbol": ["AAPL", "ABBV", "ABNB"]}
+    assert not {"implied_vol", "delta", "gamma", "vega", "theta", "iv_error"} & set(reader["fields"])
