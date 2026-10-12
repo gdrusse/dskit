@@ -41,7 +41,16 @@ this replaced is at the top of `docs/archive/re-entry/crypto_trading.md` (dskit 
 
 W5 read once (pre-registered, `docs/memos/2026-10-12-w5-preregistration.md`): the blend rule FAILED
 (leads 8-14, 2c: -0.15c x 1,874 trades, t -0.10); half-Kelly lost 45%. Rule closed; W5 is now
-development data. New rules are tested on forward data (markets closing from 2026-10-12). Book/trade data for maker quoting is the parallel track.
+development data. W5 audit: no bug (`docs/memos/2026-10-12-w5-audit-and-forward-setup.md`).
+- Forward test pre-registered (`2026-10-12-forward-preregistration.md`): overnight blend, leads 9-14,
+  markets closing 2026-10-12..11-11; read once on 2026-11-11 (W5 configs with the cut moved; the
+  holdout guard is `configs/holdout-forward.json`).
+- Maker simulation on W5 trade prints once `kalshi-history-trades-15m-w5` lands (pull started
+  2026-10-12 ~16:17 EDT, ~13 h; `data/crypto_trading/logs/trades-w5.out`); scripts in the session
+  scratchpad `research/maker/`.
+- Running ops (outside the repo, `data/crypto_trading/logs/`): `books-recorder.sh` (15 s books,
+  @reboot cron), `forward-pull.sh` (daily 02:15 cron, pinned worktree `wt/crypto-pull`).
+  Forward GRU refit (B9) saved to `data/crypto_trading/production-fwd`.
 
 ## Blocked / owner decisions
 
