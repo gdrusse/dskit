@@ -14,21 +14,19 @@ this replaced is at the top of `docs/archive/re-entry/intraday_equities.md` (dsk
   +0.009..+0.018 at leads 1-5 (t 2.5-4.3), zero at 6-10; top decile gross
   under 1 bp vs 1.8-7.2 bp cost. Memo:
   `docs/memos/fill-window-label-walk-results.md`.
-- In flight at wrap: the 1-minute-row twin
-  `configs/run-lean-pooled-h5-fill-label-1m-walk.json` (hash 67c51411…),
-  relaunched 2026-10-12 01:25 ET in worktree `/home/russell/wt/fill-label-20261011`,
-  log `pipeline_runs/fill-label-1m-walk.log`, ~5 min per fold, 20 folds. Its
-  full-window 1-minute caches live under
+- The 1-minute-row twin `configs/run-lean-pooled-h5-fill-label-1m-walk.json`
+  (hash 67c51411…) ran 20/20: IC 0.002-0.005 at leads 1-5, path score
+  -0.00043, nine of 25 names negative. No fill-reachable edge at either row
+  cadence. Its full-window 1-minute caches live under
   `pipeline_cache/p13-features-f32-kronos-v1-full-1m-5862b7f0/` (gitignored).
 - The joint-MIO state of 2026-09-29 (speed-ups landed, folds 2-19 run waiting
   on rulings F1-F5) is unchanged; see the archive.
 
 ## Next
 
-Read the 1-minute walk's report and `artifacts/scan_hXX/predictions.parquet`
-(Spearman IC per lead and name, fold t), append to the memo, and bring the
-owner a go/no-go on the forecast layer: the signal that survives a next-bar
-fill is an order of magnitude below cost on every name at every lead.
+Bring the owner a go/no-go on the forecast layer: the signal that survives a
+next-bar fill is an order of magnitude below cost on every name at every
+lead, on 5-minute and 1-minute rows alike.
 
 ## Blocked / owner decisions
 
@@ -49,4 +47,3 @@ fill is an order of magnitude below cost on every name at every lead.
 - Do not read a label IC at offset 0 as tradeable edge; measure at offset 1.
 - Any simulation shortcut against the plan is raised with the owner explicitly,
   never only disclosed in an ADR (owner ruling 2026-09-26).
-- Do not delete the worktree while the 1-minute walk runs in it.

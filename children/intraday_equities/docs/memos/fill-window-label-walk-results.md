@@ -8,8 +8,8 @@ trade) cuts the 20-fold mean path score from `0.00493` to `0.000151`, a 33x
 drop. The remaining rank IC is real but tiny: `+0.009` to `+0.018` at leads 1-5
 (fold t 2.5-4.3), zero at leads 6-10. The top yhat decile earns about
 0.03-0.06 sigma gross, well under 1 bp against 1.8-7.2 bp round-trip costs.
-Largest caveat: these rows are the 5-minute lattice; the 1-minute-row twin was
-still running at wrap (see "Deliberately unrun / in flight").
+The 1-minute-row twin is weaker still: IC 0.002-0.005, path score negative
+(see "1-minute-row result").
 
 ## Execution contract
 
@@ -91,6 +91,34 @@ statistically real but economically negligible signal at leads 1-5.
   Fold 0 trains on 4.39 M rows; a fold takes about 5 minutes.
 - Not run: any trading simulation on the new label, any cost-aware cell
   search on the 1-minute rows, and the 1-minute offset-0 baseline.
+
+## 1-minute-row result (added 2026-10-12 11:30 ET)
+
+`configs/run-lean-pooled-h5-fill-label-1m-walk.json` (hash `67c51411dbccefe2...`)
+ran 20/20 folds with no errors (summary
+`pipeline_runs/lean-pooled-h5-fill-label-1m-walkforward-2026-02-28-67c51411/`,
+log `pipeline_runs/fill-label-1m-walk.log`). Every 1-minute row is scored
+(24,527,741 rows; fold 0 trained on 4.39 M rows), frozen lean estimator
+params, no inner HPO. Mean path score `-0.000434337`, std `0.00130555`.
+
+| lead | rows | pooled IC | fold mean | t | folds > 0 |
+|---|---:|---:|---:|---:|---:|
+| 1 | 7,749,005 | +0.0016 | +0.0019 | 3.8 | 16/20 |
+| 2 | 4,901,430 | +0.0015 | +0.0028 | 2.6 | 15/20 |
+| 3 | 4,587,216 | +0.0006 | +0.0034 | 3.0 | 15/20 |
+| 4 | 3,645,045 | +0.0013 | +0.0046 | 3.1 | 14/20 |
+| 5 | 3,645,045 | +0.0013 | +0.0049 | 2.8 | 16/20 |
+
+Per name (mean IC over its leads): IWM +0.0075, MSTR +0.0057, XBI +0.0052;
+nine names are negative (LRCX -0.0056, BIDU -0.0043, SMH -0.0034, ADBE
+-0.0033, XLK -0.0027, TER -0.0017). Top-decile mean label: h1 +0.007 sigma
+to h4 +0.018 sigma, under 0.1 bp gross.
+
+Conclusion: at the 1-minute row the next-bar-fill signal is a tenth of the
+5-minute lattice's (IC 0.002-0.005 versus 0.01-0.02), the same sign-mixed
+per-name picture, and the path score turns negative. The forecast layer has
+no edge a fill can reach at either row cadence. Not run: a 1-minute offset-0
+baseline and any cost-aware search on these rows.
 
 ## Reproducibility and handoff
 
