@@ -128,6 +128,7 @@ DEFAULT_CONNECTORS = {
     "predexon": "dskit.onboarding.libs.predexon:PredexonConnector",
     "restapi": "dskit.onboarding.libs.restapi:RestApiConnector",
     "schwab": "dskit.onboarding.libs.schwab:SchwabBarsConnector",
+    "thetadata": "dskit.onboarding.libs.thetadata:ThetaDataConnector",
 }
 
 #: ``pkg.module:ClassName`` — the pipeline's class-reference shape.
