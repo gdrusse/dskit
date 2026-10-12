@@ -49,3 +49,20 @@ All reviewed by Haiku, no Critical or Major issues left, and merged.
 - **Forward test** (pre-registered, `2026-10-12-forward-preregistration.md`): markets closing 2026-10-12 to 2026-11-11, read once on 2026-11-11.
 - **Maker simulation** on the W5 trade prints, once the pull lands. A rule that works there gets its own forward pre-registration, scored on the recorded books.
 - **Optional:** widen the trades window back to 2025-12-16 for the pre-W4 window, about 4 days of pulling.
+
+## Maker simulation, first pass (research `research/maker/`, candle proxy over all of W5)
+
+Maker fee is 0: the fee schedule is quadratic and "makers pay nothing" (`fees.py`). One contract rests at the touch until the next decision (60 s), leads 8–14. Fills are counted two ways: conservative (the next candle trades through our price) and optimistic (it touches our price).
+
+| Rule | Fills/day | Conservative | Optimistic |
+|---|---|---|---|
+| Touch, no signal (adverse-selection baseline) | about 2,400 | −1.47c (t −17) | +0.14c |
+| Bid the favourite when mid ≥ .80 (sell the long shot) | about 240 | −0.09c (t −0.1) | +1.21c (t 1.3) |
+| Quote with the early move (abs(ropen_z) > 1) | about 390 | −0.63c (t −0.7) | +1.05c (t 1.3) |
+| Blend-skewed, ±1–3c | about 2,000 | −0.8 to −1.0c (t −5 to −10) | ≤ 0 |
+
+- Resting 60 s at the touch costs about 1.8c in adverse selection against the 0.5c half-spread earned.
+- The two biases turn positive only under optimistic fills and are nowhere near significant.
+- On one real-tape day (33 markets, 2026-10-07) the fill rates match the proxy.
+- **The verdict waits for the real tape.** The W5 trade pull runs at about 23 s a market, so it lands in about 24–28 h, not 13. `logs/maker-when-ready.sh` runs `research/maker/run.sh` on it automatically and writes `research/maker/report.out`.
+- Only if the move-with rule is positive under a queue-aware fill model on the real tape does it get a forward pre-registration, scored on the recorded books.
