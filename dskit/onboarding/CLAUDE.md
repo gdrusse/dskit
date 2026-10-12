@@ -74,6 +74,11 @@ on it without breaking its rulings (ADR-0012…0016).
   dedup, and the single-copy memory contract. A FILE tree is read back
   through `observations.verified_payload_dir(root, manifest_hash,
   stream)` (ADR-0083): located by hash, re-hashed, refused on drift.
+- **Converting snapshots to Parquet** — subclass `libs/parquet_export.SnapshotParquetExport`
+  (ADR-0265 Amendment 2): `schema()` and the `checks(batches, report)` hook, thresholds in
+  `_PARAMS`; `libs/thetadata.ThetaOptionEodExport` is the shape. It only READS the store;
+  output files are immutable (a metadata mismatch refuses), `verify.jsonl` is append-only,
+  exit 3 means an alarm.
 - **Validation rules** — add to `_RULES` in `validate.py`:
   `(allowed_kwargs, required_kwargs, evaluator)`; the evaluator returns
   a failing COUNT, nothing else. Structure-level only — semantics stay
@@ -167,6 +172,7 @@ dskit/onboarding/
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON tables, PinnedArchiveConnector, JsonSQLProjection
 │   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain + index_daily (ADR-0187), sha256-pinned (pyarrow inside verbs, ADR-0182)
+│   ├── parquet_export.py SnapshotParquetExport: one immutable Parquet file per committed snapshot, quality hooks, verify.jsonl, `verify` (pyarrow inside verbs, ADR-0265 Amendment 2)
 │   ├── polymarket.py  Polymarket Gamma/CLOB REST + pmxt HF hour archive (stdlib urllib; hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
 │   ├── restapi.py     declarative REST connector (stdlib urllib)
@@ -174,7 +180,7 @@ dskit/onboarding/
 │   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
 │   ├── zipcsv.py      httpblobs transform: vendor zip of one CSV -> typed parquet under a JSON layout (ADR-0242)
 │   ├── schwab.py      Schwab closed-minute REST bars + OAuth refresh
-│   └── thetadata.py   ThetaData daily option chains + underlying bars from a local Theta Terminal: per-root newest-first cursor, batch_units, ordered concurrency (stdlib urllib, ADR-0263)
+│   └── thetadata.py   ThetaData daily option chains + underlying bars from a local Theta Terminal: per-root newest-first cursor, batch_units, ordered concurrency (stdlib urllib, ADR-0263); ThetaOptionEodExport (Parquet schema + quality checks)
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        CLI
 ├── README.md          user-facing docs

@@ -306,6 +306,16 @@ asked for. No credential. Worked configs:
 `unit`; `header`, `unique_instants`, `instant`, `max_member_bytes`). Epochs are written in milliseconds; the
 block takes no `notes` (it feeds the declaration digest). Nothing registers it.
 
+## Parquet export of committed snapshots (ADR-0265 Amendment 2)
+
+`libs/parquet_export.py` turns every COMMITTED snapshot (no leading dot, raw manifest and observations file both
+present) into one immutable `<out>/<source>/<acq_id>.parquet`, then checks it and appends a line to
+`<out>/verify.jsonl`. `python -m dskit.onboarding.libs.parquet_export --export-class pkg.mod:Class --root R
+--source S --stream T --out DIR [--max-snapshots N] [--params F.json]` exits 0 clean, 3 when a check alarmed
+(after recording that snapshot), 1 on an error or a refusal (schema drift, an unsafe cast, an existing file made
+from other content); `... verify --out DIR [--root R --stream T]` re-counts the footers, re-checks every file for date-window overlaps, lists `raw_only` snapshots and summarises each source. A subclass supplies
+`schema()` and `checks()`; `libs/thetadata.ThetaOptionEodExport` is the ThetaData one. The store is only read.
+
 ## OAuth authorization
 
 OAuth config stores environment-variable names only. For Schwab, export
@@ -424,6 +434,7 @@ dskit/onboarding/
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
 │   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)
 │   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain + index_daily (closes with dividends/splits, ADR-0187), sha256-pinned (pyarrow inside verbs, ADR-0182)
+│   ├── parquet_export.py SnapshotParquetExport: one immutable Parquet file per committed snapshot, quality hooks, verify.jsonl, `verify` (pyarrow inside verbs, ADR-0265 Amendment 2)
 │   ├── polymarket.py  Polymarket Gamma events/fee_schedules, CLOB books, pmxt hour archive (hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
@@ -431,7 +442,7 @@ dskit/onboarding/
 │   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
 │   ├── zipcsv.py      httpblobs transform: a vendor zip of one CSV -> typed parquet under a JSON layout (pyarrow inside transform, ADR-0242)
 │   ├── schwab.py      Schwab closed-minute REST bars + OAuth refresh
-│   └── thetadata.py   ThetaData daily option chains + underlying bars from a local Theta Terminal: per-root newest-first cursor, batch_units, ordered concurrency (stdlib urllib, ADR-0263)
+│   └── thetadata.py   ThetaData daily option chains + underlying bars from a local Theta Terminal: per-root newest-first cursor, batch_units, ordered concurrency (stdlib urllib, ADR-0263); ThetaOptionEodExport (Parquet schema + quality checks)
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        the CLI: python -m dskit.onboarding
 ├── README.md          this file
