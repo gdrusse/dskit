@@ -15,6 +15,7 @@ from dskit.assets.base import AssetError
 from dskit.onboarding import check_config, check_message, resolve_connector
 from dskit.onboarding.libs.thetadata import (
     OPTION_EOD_STREAM,
+    OPTION_QUOTE_AT_STREAM,
     OPTION_FIELDS,
     OPTION_KEY_FIELDS,
     UNDERLYING_STREAM,
@@ -136,7 +137,7 @@ def test_bad_knobs_refuse(bad):
 
 def test_discover_names_streams_and_keys():
     found = {s["stream"]: s for s in ThetaDataConnector().discover(CONFIG)}
-    assert set(found) == {OPTION_EOD_STREAM, UNDERLYING_STREAM}
+    assert set(found) == {OPTION_EOD_STREAM, UNDERLYING_STREAM, OPTION_QUOTE_AT_STREAM}
     assert found[OPTION_EOD_STREAM]["primary_key"] == list(OPTION_KEY_FIELDS)
 
 
@@ -475,3 +476,71 @@ def test_ndjson_body_and_unknown_symbol_472():
     with pytest.raises(AssetError) as err:
         pull(ThetaDataConnector(getter=unknown, sleeper=lambda s: None), cfg)
     assert "Unknown symbol" in str(err.value)
+
+
+# ---- at-time quotes and index underlyings ----------------------------------
+
+AT_TIME = "/v3/option/at_time/quote"
+
+
+def quote_row(strike=100.0, right="CALL", **extra):
+    row = {"symbol": "AAA", "expiration": "2025-02-21", "strike": strike, "right": right,
+           "bid": 1.0, "ask": 1.2, "bid_size": 5, "ask_size": 6,
+           "timestamp": "2025-01-06T15:44:59.647"}
+    row.update(extra)
+    return row
+
+
+def test_quote_at_stream_one_request_per_time_and_own_cursor():
+    t = Terminal()
+    seen = []
+
+    def getter(url, params, timeout):
+        path = url[len(BASE):]
+        if path == AT_TIME:
+            seen.append((params["time_of_day"], params["start_date"]))
+            return 200, {}, json.dumps([quote_row(), quote_row(105.0, "PUT")]).encode()
+        return t(url, params, timeout)
+
+    cfg = {**CONFIG, "start": "2025-01-06", "end": "2025-01-07",
+           "quote_times": ["09:45:00", "15:45:00"]}
+    records, state = pull(ThetaDataConnector(getter=getter, sleeper=lambda s: None),
+                          cfg, streams=("option_quote_at",))
+    assert seen == [("09:45:00", "20250106"), ("15:45:00", "20250106")]
+    assert [(r["data"]["time_of_day"], r["data"]["right"]) for r in records] == [
+        ("09:45:00", "call"), ("09:45:00", "put"), ("15:45:00", "call"), ("15:45:00", "put")]
+    assert records[0]["data"]["date"] == "2025-01-06" and records[0]["data"]["bid"] == 1.0
+    assert state["option_quote_at"]["AAA"]["oldest"] == "2025-01-06"
+    assert "option_eod" not in state
+
+
+def test_quote_at_needs_times_and_validates_them():
+    with pytest.raises(AssetError):
+        pull(connector(Terminal()), CONFIG, streams=("option_quote_at",))
+    for bad in (["9:45"], ["15:45:00", "15:45:00"], "15:45:00"):
+        with pytest.raises(AssetError):
+            ThetaDataConnector().resolve_knobs({**CONFIG, "quote_times": bad})
+
+
+def test_quote_at_duplicate_contract_refuses():
+    def getter(url, params, timeout):
+        return 200, {}, json.dumps([quote_row(), quote_row()]).encode()
+    cfg = {**CONFIG, "start": "2025-01-06", "end": "2025-01-07", "quote_times": ["15:45:00"]}
+    with pytest.raises(AssetError):
+        pull(ThetaDataConnector(getter=getter, sleeper=lambda s: None), cfg,
+             streams=("option_quote_at",))
+
+
+def test_index_underlying_uses_index_endpoint():
+    paths = []
+
+    def getter(url, params, timeout):
+        paths.append(url[len(BASE):])
+        return 200, {}, json.dumps([{"created": "2025-01-06T17:19:49", "close": 5900.0}]).encode()
+
+    cfg = {**CONFIG, "symbols": ["SPX"], "underlying_kind": "index"}
+    records, _ = pull(ThetaDataConnector(getter=getter, sleeper=lambda s: None), cfg,
+                      streams=(UNDERLYING_STREAM,))
+    assert paths == ["/v3/index/history/eod"] and records[0]["data"]["close"] == 5900.0
+    with pytest.raises(AssetError):
+        ThetaDataConnector().resolve_knobs({**CONFIG, "underlying_kind": "future"})

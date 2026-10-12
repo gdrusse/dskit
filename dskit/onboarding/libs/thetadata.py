@@ -58,6 +58,9 @@ __all__ = [
     "LARGE_REQUEST_STATUS",
     "MAX_CONCURRENCY",
     "OPTION_EOD_STREAM",
+    "OPTION_QUOTE_AT_STREAM",
+    "QUOTE_AT_FIELDS",
+    "QUOTE_AT_KEY_FIELDS",
     "OPTION_FIELDS",
     "OPTION_KEY_FIELDS",
     "UNDERLYING_FIELDS",
@@ -69,6 +72,13 @@ __all__ = [
 
 OPTION_EOD_STREAM = "option_eod"
 UNDERLYING_STREAM = "underlying_eod"
+OPTION_QUOTE_AT_STREAM = "option_quote_at"
+QUOTE_AT_KEY_FIELDS = ("symbol", "expiration", "strike", "right", "date", "time_of_day")
+QUOTE_AT_FIELDS = (
+    "symbol", "expiration", "strike", "right", "date", "time_of_day", "timestamp",
+    "bid_size", "bid_exchange", "bid", "bid_condition",
+    "ask_size", "ask_exchange", "ask", "ask_condition",
+)
 OPTION_KEY_FIELDS = ("symbol", "expiration", "strike", "right", "date")
 UNDERLYING_KEY_FIELDS = ("symbol", "date")
 OPTION_FIELDS = (
@@ -104,11 +114,14 @@ _GREEKS_PATH = "/v3/option/history/greeks/eod"
 _OI_PATH = "/v3/option/history/open_interest"
 _EXPIRATIONS_PATH = "/v3/option/list/expirations"
 _STOCK_EOD_PATH = "/v3/stock/history/eod"
+_INDEX_EOD_PATH = "/v3/index/history/eod"
+_AT_TIME_PATH = "/v3/option/at_time/quote"
+_UNDERLYING_PATHS = {"stock": _STOCK_EOD_PATH, "index": _INDEX_EOD_PATH}
 _PROBE_PATH = "/v3/stock/list/symbols"
 #: Flat one-record-per-line output; the default JSON nests rows under contracts.
 _FORMAT = "ndjson"
 _UNKNOWN_SYMBOL = b"Unknown symbol"
-_STREAMS = (OPTION_EOD_STREAM, UNDERLYING_STREAM)
+_STREAMS = (OPTION_EOD_STREAM, UNDERLYING_STREAM, OPTION_QUOTE_AT_STREAM)
 _RIGHTS = {"C": "call", "CALL": "call", "P": "put", "PUT": "put"}
 _EXCERPT_CHARS = 200
 _THROTTLED = 429
@@ -290,6 +303,16 @@ class ThetaDataConnector(Connector):
                          f"default {DEFAULT_EMPTY_GUARD}. Catches a misspelled root, an "
                          "index, or a plan or session fault answering 'no data'.",
             },
+            "quote_times": {
+                "notes": "Clock times HH:MM:SS (US Eastern, as the Terminal reads them) "
+                         "for the option_quote_at stream: the whole chain's last NBBO at "
+                         "or before each time, one request per (root, date, time).",
+            },
+            "underlying_kind": {
+                "notes": "stock (default) or index: which history endpoint the "
+                         "underlying_eod stream reads. Stock bars need a Stock plan; "
+                         "index prices work on the free Index plan.",
+            },
             "retries": {
                 "notes": f"Attempts per request; default {DEFAULT_RETRIES}.",
             },
@@ -361,6 +384,14 @@ class ThetaDataConnector(Connector):
             floats[name] = value
             if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
                 problems.append(f"config.{name} must be a positive number, got {value!r}")
+        times = config.get("quote_times", [])
+        if (not isinstance(times, list) or len(set(map(str, times))) != len(times)
+                or not all(isinstance(t, str) and len(t) == 8 and t[2] == ":" and t[5] == ":"
+                           and t.replace(":", "").isdigit() for t in times)):
+            problems.append(f"config.quote_times must be a list of unique HH:MM:SS, got {times!r}")
+        kind = config.get("underlying_kind", "stock")
+        if kind not in _UNDERLYING_PATHS:
+            problems.append(f"config.underlying_kind must be one of {sorted(_UNDERLYING_PATHS)}")
         base_url = config.get("base_url", DEFAULT_BASE_URL)
         if not isinstance(base_url, str) or not base_url.startswith("http"):
             problems.append(f"config.base_url must be an http URL, got {base_url!r}")
@@ -368,7 +399,8 @@ class ThetaDataConnector(Connector):
             raise AssetError(problems)
         return {
             "symbols": list(symbols), "start": dates["start"], "end": dates["end"],
-            "base_url": base_url.rstrip("/"), **flags, **ints, **floats,
+            "base_url": base_url.rstrip("/"), "quote_times": list(times),
+            "underlying_kind": kind, **flags, **ints, **floats,
         }
 
     # ------------------------------------------------------------------
@@ -415,7 +447,7 @@ class ThetaDataConnector(Connector):
                 raise AssetError([f"Theta Terminal {path} returned invalid JSON"]) from exc
         raise AssetError([f"Theta Terminal {path}: no attempt was made"])
 
-    def _chain(self, knobs, path, symbol, day, ranged):
+    def _chain(self, knobs, path, symbol, day, ranged, extra=None):
         """Every contract of ``symbol`` on ``day`` from one endpoint.
 
         ``ranged`` endpoints take start/end dates; open interest takes ``date``.
@@ -426,6 +458,7 @@ class ThetaDataConnector(Connector):
                 base.update(start_date=_compact(day), end_date=_compact(day))
             else:
                 base["date"] = _compact(day)
+            base.update(extra or {})
             return base
 
         try:
@@ -497,15 +530,38 @@ class ThetaDataConnector(Connector):
             out.append(data)
         return unit, out
 
+    def _quote_day(self, knobs, unit):
+        """Return the NBBO snapshots of one (root, date) unit at every declared time."""
+        symbol, day = unit
+        out = []
+        for moment in knobs["quote_times"]:
+            seen = set()
+            batch = []
+            for row in self._chain(knobs, _AT_TIME_PATH, symbol, day, True,
+                                   {"time_of_day": moment}):
+                key = self._contract(row, f"{symbol} {day} {moment} {_AT_TIME_PATH}")
+                if key in seen:
+                    raise AssetError([f"Theta Terminal {_AT_TIME_PATH} {symbol} {day} "
+                                      f"{moment} repeats contract {key}"])
+                seen.add(key)
+                data = {name: None for name in QUOTE_AT_FIELDS}
+                data.update(row)
+                data.update(symbol=symbol, expiration=key[0], strike=key[1], right=key[2],
+                            date=day.isoformat(), time_of_day=moment)
+                batch.append((key, data))
+            out.extend(data for _key, data in sorted(batch, key=lambda item: item[0]))
+        return unit, out
+
     def _underlying(self, knobs, symbol):
         """Return the underlying daily rows of ``symbol`` over ``[start, end)``."""
         last = knobs["end"] - timedelta(days=1)
         try:
-            rows = self._get_json(knobs, _STOCK_EOD_PATH, {
+            path = _UNDERLYING_PATHS[knobs["underlying_kind"]]
+            rows = self._get_json(knobs, path, {
                 "symbol": symbol, "start_date": _compact(knobs["start"]),
                 "end_date": _compact(last), "format": _FORMAT})
         except _TooLarge as exc:
-            raise AssetError([f"Theta Terminal {_STOCK_EOD_PATH} {symbol} is too large; "
+            raise AssetError([f"Theta Terminal {path} {symbol} is too large; "
                               "narrow start/end"]) from exc
         if not rows:
             raise AssetError([f"Theta Terminal returned no stock bars for {symbol}; an "
@@ -554,6 +610,8 @@ class ThetaDataConnector(Connector):
              "primary_key": list(OPTION_KEY_FIELDS)},
             {"stream": UNDERLYING_STREAM, "schema": {"fields": list(UNDERLYING_FIELDS)},
              "primary_key": list(UNDERLYING_KEY_FIELDS)},
+            {"stream": OPTION_QUOTE_AT_STREAM, "schema": {"fields": list(QUOTE_AT_FIELDS)},
+             "primary_key": list(QUOTE_AT_KEY_FIELDS)},
         ]
 
     def read(self, config, streams, state, mode):
@@ -597,11 +655,12 @@ class ThetaDataConnector(Connector):
         new_state = {key: {sym: dict(cur) for sym, cur in value.items()}
                      for key, value in state.items()}
         for stream in streams:
-            fields = OPTION_FIELDS if stream == OPTION_EOD_STREAM else UNDERLYING_FIELDS
+            fields = {OPTION_EOD_STREAM: OPTION_FIELDS, OPTION_QUOTE_AT_STREAM: QUOTE_AT_FIELDS,
+                      UNDERLYING_STREAM: UNDERLYING_FIELDS}[stream]
             yield {"protocol": PROTOCOL, "type": "SCHEMA", "stream": stream,
                    "schema": {"fields": list(fields)}}
-            emit = (self._option_messages if stream == OPTION_EOD_STREAM
-                    else self._underlying_messages)
+            emit = (self._underlying_messages if stream == UNDERLYING_STREAM
+                    else self._option_messages)
             yield from emit(knobs, stream, new_state.setdefault(stream, {}))
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
 
@@ -634,8 +693,11 @@ class ThetaDataConnector(Connector):
         units = self._units(knobs, cursors)
         newest = (knobs["end"] - timedelta(days=1)).isoformat()
         empties = {}
+        day_rows = self._day if stream == OPTION_EOD_STREAM else self._quote_day
+        if stream == OPTION_QUOTE_AT_STREAM and not knobs["quote_times"]:
+            raise AssetError(["option_quote_at needs config.quote_times"])
         for (symbol, day), rows in _ordered(
-                lambda unit: self._day(knobs, unit), units, knobs["concurrency"]):
+                lambda unit: day_rows(knobs, unit), units, knobs["concurrency"]):
             cursor = cursors.setdefault(symbol, {})
             for data in rows:
                 yield self._record(stream, data)
