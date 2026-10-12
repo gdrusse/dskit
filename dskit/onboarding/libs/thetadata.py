@@ -515,10 +515,11 @@ class ThetaDataConnector(Connector):
         if knobs["open_interest"]:
             for row in self._chain(knobs, _OI_PATH, symbol, day, False):
                 key = self._contract(row, f"{symbol} {day} {_OI_PATH}")
-                if key in interest:
-                    raise AssetError([f"Theta Terminal {_OI_PATH} {symbol} {day} "
-                                      f"repeats contract {key}"])
-                interest[key] = row.get("open_interest")
+                # OPRA re-sends open interest through the morning (same contract, several
+                # timestamps, usually the same value): the latest report wins.
+                stamp = str(row.get("timestamp") or "")
+                if key not in interest or stamp >= interest[key][0]:
+                    interest[key] = (stamp, row.get("open_interest"))
         out = []
         for key in sorted(set(merged) | set(interest)):
             data = {name: None for name in OPTION_FIELDS}
@@ -526,7 +527,7 @@ class ThetaDataConnector(Connector):
             data.update(symbol=symbol, expiration=key[0], strike=key[1],
                         right=key[2], date=day.isoformat())
             if key in interest:
-                data["open_interest"] = interest[key]
+                data["open_interest"] = interest[key][1]
             out.append(data)
         return unit, out
 
