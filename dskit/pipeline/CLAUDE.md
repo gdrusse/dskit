@@ -160,7 +160,7 @@ dskit/pipeline/
 │                      pyomo, sb3, matplotlib, lightgbm (a fitted volatility-
 │                      scale rung, ADR-0181),
 │                      mlflow (tracking SINK pack, no nodes),
-│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
+│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077; ObservationUnitRows: member-order stream deduplicated by unit only, memory O(units), ADR-0265),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date; underlying_close writes the moneyness denominator out, ADR-0259)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment),

@@ -14,6 +14,7 @@ from dskit.assets.base import AssetError
 from dskit.onboarding.codec import open_text_writer
 from dskit.onboarding.observations import (
     iter_stream,
+    iter_stream_units,
     scan_stream,
     stream_digest,
     stream_dir,
@@ -1208,3 +1209,79 @@ def test_member_digest_moves_with_content_and_honors_members(tmp_path):
     with open(path, "a", encoding="utf-8") as fh:
         fh.write("\n")
     assert member_digest(root, "alpaca", "bars", ["acq-0001"]) != first
+
+
+class TestIterStreamUnits:
+    """iter_stream_units (ADR-0265 scale): members in acquisition order, no per-row key table."""
+
+    def _units(self, root, **over):
+        kwargs = dict(source="alpaca", stream="bars", unit_fields=("symbol",),
+                      fields=("symbol", "ts", "close"))
+        kwargs.update(over)
+        return iter_stream_units(root, **kwargs)
+
+    def _two_members(self, root):
+        _write(root, "acq-0001", [_row("AAA", "2026-01-05", 1.0), _row("AAA", "2026-01-04", 2.0),
+                                   _row("BBB", "2026-01-05", 3.0)])
+        _write(root, "acq-0002", [_row("CCC", "2026-01-05", 4.0), _row("AAA", "2026-01-05", 99.0),
+                                   _row("AAA", "2026-01-04", 98.0)], codec="gzip")
+
+    def test_rows_arrive_in_member_order_and_a_unit_seen_earlier_is_skipped(self, tmp_path):
+        root = str(tmp_path)
+        self._two_members(root)
+        units = self._units(root)
+        got = [(r["symbol"], r["close"]) for r in units]
+        assert got == [("AAA", 1.0), ("AAA", 2.0), ("BBB", 3.0), ("CCC", 4.0)]
+        assert (units.rows, units.units, units.skipped_rows, units.skipped_units, units.members) == (4, 3, 2, 1, 2)
+
+    def test_rows_of_one_unit_inside_one_member_are_all_kept_whatever_their_key(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "acq-0001", [_row("AAA", "t", 1.0), _row("AAA", "t", 2.0)])
+        assert [r["close"] for r in self._units(root)] == [1.0, 2.0]
+
+    def test_a_unit_may_be_a_pair_of_fields(self, tmp_path):
+        root = str(tmp_path)
+        self._two_members(root)
+        units = self._units(root, unit_fields=("symbol", "ts"))
+        assert [(r["symbol"], r["ts"]) for r in units] == [
+            ("AAA", "2026-01-05"), ("AAA", "2026-01-04"), ("BBB", "2026-01-05"), ("CCC", "2026-01-05")]
+        assert units.skipped_rows == 2
+
+    def test_the_counters_describe_the_last_full_pass(self, tmp_path):
+        root = str(tmp_path)
+        self._two_members(root)
+        units = self._units(root)
+        assert len(list(units)) == len(list(units)) == 4
+        assert units.rows == 4 and units.skipped_rows == 2
+
+    def test_keep_values_members_and_vintage_are_honoured(self, tmp_path):
+        root = str(tmp_path)
+        self._two_members(root)
+        assert {r["symbol"] for r in self._units(root, keep_values={"symbol": ["BBB", "CCC"]})} == {"BBB", "CCC"}
+        assert [r["close"] for r in self._units(root, members=["acq-0002"])] == [4.0, 99.0, 98.0]
+        early = _instant_ms("2026-01-05T00:00:00+00:00")
+        late = _write(root, "acq-0003", [_row("ZZZ", "t", 5.0, acquired="2026-01-08T00:00:00+00:00")])
+        assert "ZZZ" not in {r["symbol"] for r in self._units(root, as_of_acquisition_ms=_instant_ms(ACQUIRED))}
+        assert os.path.exists(late) and early < _instant_ms(ACQUIRED)
+
+    def test_loud_refusals_and_no_global_key_table(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "acq-0001", [_row("AAA", "t", 1.0)])
+        with pytest.raises(AssetError, match="unit_fields"):
+            self._units(root, unit_fields=())
+        with pytest.raises(AssetError, match="projected"):
+            list(self._units(root, fields=("symbol", "nope")))
+        with pytest.raises(AssetError, match="key field"):
+            list(self._units(root, unit_fields=("absent",)))
+        with pytest.raises(AssetError, match="no observations directory"):
+            list(self._units(str(tmp_path / "elsewhere")))
+
+    def test_memory_is_the_units_not_the_rows(self, tmp_path):
+        root = str(tmp_path)
+        rows = [_row("AAA", f"t{i:05d}", float(i)) for i in range(20000)]
+        _write(root, "acq-0001", rows)
+        tracemalloc.start()
+        count = sum(1 for _ in self._units(root))
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert count == 20000 and peak < 2_000_000     # a key table of 20k rows would hold several MB

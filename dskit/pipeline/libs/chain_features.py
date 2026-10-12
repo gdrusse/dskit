@@ -5,8 +5,10 @@ are placeholders). :class:`ChainDayFeatures` rebuilds what a test needs from the
 forward from put-call parity at the target expiry (``OptionPriceCDF.parity_forwards``, the one
 forward step the option-price CDF already owns), implied vols from the quote MIDS by
 :func:`~dskit.pipeline.option_pricing.black76_implied_vol` on that forward, and the features below.
-The rate is zero throughout, so the forward is the undiscounted parity forward and the Black-76
-inversion is consistent with it.
+The rate comes from ``rate`` (a constant, default 0.0, the undiscounted parity), ``rate_field`` (a per-row
+annual rate) or a ``rates`` input table joined as of the last date strictly BEFORE the day; the forward is
+``K + e^(rT) * (call - put)`` and the Black-76 inversion discounts at the same rate. A zero rate against a
+real 4.5% rate biases a 30/90 term slope by about a quarter of a vol point, so a test should supply one.
 
 **Quotes.** A quote is usable when :func:`~dskit.pipeline.libs.chain_census.quote_state` says
 ``locked`` or ``quoted`` (a bid above zero, an ask not below it). Null, zero and crossed quotes are
@@ -37,14 +39,33 @@ filled):
   ``oi_put_call_ratio_change`` against the same scope ``oi_lag_sessions`` sessions of that symbol
   earlier (``None`` past ``oi_lag_max_days`` calendar days, or when that expiry did not exist then).
 
-**Memory.** The input is read once. Unsorted, the node holds a compact tuple per row until it has them
-all; ``presorted`` true (rows grouped by symbol, dates ascending within a symbol, refused otherwise)
-holds one symbol-date at a time. Wiring is by import path; :data:`NODE_KINDS` is empty.
+**Memory.** The input is read once and rows are held as packed arrays (about 50 bytes a row, one block per
+symbol-date). Three modes: the default holds every row until the input ends (a sample only);
+``symbol_contiguous`` true (members arrive grouped by symbol, any date order within one) holds ONE symbol and
+flushes it when the symbol changes, processing its dates in true date order so the open-interest change is
+right, and refuses a symbol that reappears after its flush; ``presorted`` true (grouped by symbol, dates
+ascending) holds one symbol-date. Pair it with a unit-deduplicating reader
+(:class:`~dskit.pipeline.libs.observations.ObservationUnitRows`) for a store too large for a per-row key.
+
+**Rows and statuses.** Every requested target of every symbol-date emits a row; ``status_field`` says what
+it holds: ``ok``, ``no_expiry`` (no listed expiry inside the tolerance), ``no_forward`` (too few parity pairs),
+``no_rate`` (a rates source is declared and has no value for the day). A non-``ok`` row has every
+expiry-dependent and quote-dependent feature ``None``. The ``summary`` counts each status per target, the
+quote exclusions, the vol solves that returned ``None`` (``iv_unsolved``), the open-interest changes left
+``None`` for a lag past ``oi_lag_max_days`` (``oi_lag_too_old``), and the reader's own counters when the input
+answers ``report()``.
+
+**Defaults are chosen, not derived**: ``days_per_year`` (365), the vol bracket ``iv_min`` / ``iv_max`` and the
+numbers a document supplies (band, delta, lags) are conventions; each is a param. The node refuses a row
+dated at or after ``end_before`` once it has parsed it (the registered stores end 2025-12-31, so none exist);
+the guard is a refusal, not a promise that no sealed row was read.
 
 Import cost: stdlib and the pipeline core; pandas is imported inside the forward step.
 """
 
 import math
+from array import array
+from bisect import bisect_left
 from collections import deque
 from datetime import date
 from statistics import median
@@ -127,10 +148,11 @@ class _Totals:
 class _Book:
     """The usable quotes of one expiration on one day, and the vols solved from their mids."""
 
-    def __init__(self, years, iv_min, iv_max):
-        self.years, self.iv_min, self.iv_max = years, iv_min, iv_max
+    def __init__(self, years, iv_min, iv_max, rate=0.0):
+        self.years, self.iv_min, self.iv_max, self.rate = years, iv_min, iv_max, rate
         self.quotes = {side: {} for side in _SIDES}       # side -> strike -> (bid, ask)
         self.forward = None
+        self.iv_solved = self.iv_unsolved = 0
         self._iv = {}
 
     def add(self, side, strike, bid, ask):
@@ -150,7 +172,8 @@ class _Book:
 
         frame = pd.DataFrame([(k, side, self.mid(side, k)) for side in _SIDES for k in self.quotes[side]],
                              columns=["strike", "type", "mark"])
-        forwards = OptionPriceCDF.parity_forwards(frame) if len(frame) else None
+        growth = math.exp(self.rate * self.years)
+        forwards = OptionPriceCDF.parity_forwards(frame, growth) if len(frame) else None
         if forwards is None or len(forwards) < min_pairs:
             return None
         self.forward = float(median(forwards.tolist()))
@@ -161,7 +184,11 @@ class _Book:
         key = (side, strike)
         if key not in self._iv:
             self._iv[key] = black76_implied_vol(side, self.mid(side, strike), self.forward, strike,
-                                                self.years, vol_min=self.iv_min, vol_max=self.iv_max)
+                                                self.years, self.rate, vol_min=self.iv_min, vol_max=self.iv_max)
+            if self._iv[key] is None:
+                self.iv_unsolved += 1
+            else:
+                self.iv_solved += 1
         return self._iv[key]
 
     def both(self, band):
@@ -178,7 +205,7 @@ class _Book:
             vol = self.iv(side, strike)
             if vol is None:
                 continue
-            here = abs(black76_delta(side, self.forward, strike, vol, self.years))
+            here = abs(black76_delta(side, self.forward, strike, vol, self.years, self.rate))
             if here <= delta:
                 if previous is None:
                     return None
@@ -195,6 +222,73 @@ class _Book:
             if call is not None and put is not None:
                 gaps.append(put - call)
         return sum(gaps) / len(gaps) if gaps else None
+
+
+_NAN = float("nan")
+
+
+class _DayCells:
+    """The rows of one (symbol, date), packed in arrays (about 50 bytes a row instead of ~450 for tuples)."""
+
+    __slots__ = ("symbol", "day", "_expirations", "_codes", "_exp", "_side", "_num")
+
+    def __init__(self, symbol, day):
+        self.symbol, self.day = symbol, day
+        self._expirations, self._codes = [], {}
+        self._exp, self._side = array("i"), array("b")
+        self._num = tuple(array("d") for _ in range(7))   # strike, bid, ask, oi, volume, underlying, rate
+
+    def __len__(self):
+        return len(self._exp)
+
+    def add(self, cell):
+        """Append one cell tuple ``(symbol, day, expiration, strike, side, bid, ask, oi, volume, underlying, rate)``."""
+        expiration = cell[2]
+        code = self._codes.get(expiration)
+        if code is None:
+            code = self._codes[expiration] = len(self._expirations)
+            self._expirations.append(expiration)
+        self._exp.append(code)
+        self._side.append(0 if cell[4] == "call" else 1)
+        for column, value in zip(self._num, (cell[3], *cell[5:])):
+            column.append(_NAN if value is None else value)
+
+    def rates(self):
+        """Return the day's non-missing per-row rates."""
+        return [v for v in self._num[6] if v == v]
+
+    def __iter__(self):
+        for i in range(len(self._exp)):
+            values = [None if v != v else v for v in (column[i] for column in self._num)]
+            yield (self.symbol, self.day, self._expirations[self._exp[i]], values[0], _SIDES[self._side[i]],
+                   *values[1:])
+
+
+class _Rates:
+    """The annual rate for a day: a constant, a per-row field, or a dated table read as of strictly before."""
+
+    def __init__(self, constant, table, max_age):
+        self.constant, self.max_age = constant, max_age
+        self._dates = sorted(table) if table is not None else None
+        self._table = table
+
+    def at(self, day, cells):
+        """Return the rate for ``day`` (ISO text) given its cells, or ``None`` when the source has no value."""
+        if self._table is not None:
+            index = bisect_left(self._dates, day) - 1
+            if index < 0:
+                return None
+            then = self._dates[index]
+            if (date.fromisoformat(day) - date.fromisoformat(then)).days > self.max_age:
+                return None
+            return self._table[then]
+        return self.constant if self.constant is not None else self._row_rate(cells)
+
+    @staticmethod
+    def _row_rate(cells):
+        """Median of the day's per-row rates, or ``None`` when no row has one."""
+        rates = cells.rates()
+        return median(rates) if rates else None
 
 
 class _Symbol:
@@ -254,9 +348,11 @@ class ChainDayFeatures(Node):
     _ROWS = ("symbol_field", "date_field", "expiration_field", "strike_field", "right_field",
              "bid_field", "ask_field")
     _OPTIONAL_ROWS = ("open_interest_field", "volume_field", "underlying_price_field")
+    _RATES = ("rate_date_field", "rate_value_field", "rate_max_age_days")
     _PARAMS = (*_ROWS, *_OPTIONAL_ROWS, "call_values", "put_values", "end_before", "targets", "target_field",
-               "atm_band", "wing_delta", "min_forward_pairs", "fields", "term_pair", "oi_scope",
-               "oi_lag_sessions", "oi_lag_max_days", "days_per_year", "iv_min", "iv_max", "presorted")
+               "status_field", "atm_band", "wing_delta", "min_forward_pairs", "fields", "term_pair", "oi_scope",
+               "oi_lag_sessions", "oi_lag_max_days", "days_per_year", "iv_min", "iv_max", "presorted",
+               "symbol_contiguous", "rate", "rate_field", "rate_scale", *_RATES)
 
     # -- validation ------------------------------------------------------------------------
 
@@ -276,7 +372,8 @@ class ChainDayFeatures(Node):
         """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
-        for name in (*cls._ROWS, "target_field", *(n for n in cls._OPTIONAL_ROWS if n in params)):
+        for name in (*cls._ROWS, "target_field", "status_field",
+                     *(n for n in (*cls._OPTIONAL_ROWS, "rate_field") if n in params)):
             if not isinstance(params.get(name), str) or not params.get(name):
                 problems.append(f"{name} must be a non-empty string, got {params.get(name)!r}")
         cls._rights_problems(problems, params)
@@ -289,10 +386,34 @@ class ChainDayFeatures(Node):
                 problems.append(f"{name} must be {bound}, got {value!r}")
         check_int_param(problems, "min_forward_pairs", params.get("min_forward_pairs"), ge=1)
         cls._solver_problems(problems, params)
-        if "presorted" in params and not isinstance(params["presorted"], bool):
-            problems.append(f"presorted must be a boolean, got {params['presorted']!r}")
+        for name in ("presorted", "symbol_contiguous"):
+            if name in params and not isinstance(params[name], bool):
+                problems.append(f"{name} must be a boolean, got {params[name]!r}")
+        if params.get("presorted") is True and params.get("symbol_contiguous") is True:
+            problems.append("symbol_contiguous and presorted are alternatives: presorted already implies "
+                            "symbol-contiguous, date-ascending rows")
+        cls._rate_problems(problems, params)
         cls._fields_problems(problems, params)
         return problems
+
+    @classmethod
+    def _rate_problems(cls, problems, params):
+        """Check the rate source declarations: one constant OR a row field OR a table, a positive scale."""
+        if "rate" in params and not number_ok(params["rate"]):
+            problems.append(f"rate must be a finite number, got {params['rate']!r}")
+        if "rate" in params and "rate_field" in params:
+            problems.append("rate and rate_field are alternatives: a constant rate or a per-row rate, not both")
+        scale = params.get("rate_scale", 1.0)
+        if not number_ok(scale) or scale <= 0:
+            problems.append(f"rate_scale must be a number > 0, got {scale!r}")
+        given = [n for n in cls._RATES if n in params]
+        if given and len(given) < len(cls._RATES):
+            problems.append(f"declare all of the rates-table params {list(cls._RATES)} or none; got {given}")
+        if "rate_max_age_days" in params:
+            check_int_param(problems, "rate_max_age_days", params["rate_max_age_days"], ge=0)
+        for name in ("rate_date_field", "rate_value_field"):
+            if name in params and (not isinstance(params[name], str) or not params[name]):
+                problems.append(f"{name} must be a non-empty string, got {params[name]!r}")
 
     @staticmethod
     def _date_problem(problems, value):
@@ -362,9 +483,12 @@ class ChainDayFeatures(Node):
         if not all(isinstance(v, str) and v for v in names):
             problems.append("fields values must be non-empty strings")
             return
-        taken = [params.get(n) for n in ("symbol_field", "date_field", "target_field")]
+        taken = [params.get(n) for n in ("symbol_field", "date_field", "target_field", "status_field")]
         if len(set(names)) < len(names) or set(names) & set(taken):
-            problems.append("fields values must be distinct output names, none of the symbol, date or target fields")
+            problems.append("fields values must be distinct output names, none of the symbol, date, target "
+                            "or status fields")
+        if len(set(taken)) < len(taken):
+            problems.append("symbol_field, date_field, target_field and status_field must be distinct")
         wanted = set(fields) & set(FEATURES)
         needs = (
             (wanted & {"spot", "straddle_ratio"}, "underlying_price_field", "underlying_price_field" in params),
@@ -424,7 +548,8 @@ class ChainDayFeatures(Node):
                            for name, label in (("date_field", "date"), ("expiration_field", "expiration")))
         if day >= p["end_before"]:
             raise ValueError(f"{where}: date {day} is at or after end_before {p['end_before']} "
-                             "- the sealed period is never read")
+                             "- the node refuses rows on or after end_before (the registered stores end "
+                             "2025-12-31, so none are expected)")
         strike = number("strike", get("strike_field"), missing_ok=False)
         if strike <= 0:
             raise ValueError(f"{where}: strike must be > 0, got {strike!r}")
@@ -433,10 +558,12 @@ class ChainDayFeatures(Node):
         if side is None:
             raise ValueError(f"{where}: right {right!r} is in neither call_values nor put_values")
         optional = {name: number(name, get(f"{name}_field")) if f"{name}_field" in p else None
-                    for name in ("open_interest", "volume", "underlying_price")}
+                    for name in ("open_interest", "volume", "underlying_price", "rate")}
+        if optional["rate"] is not None:
+            optional["rate"] *= p.get("rate_scale", 1.0)
         return (symbol, day, expiration, strike, side, number("bid", get("bid_field")),
                 number("ask", get("ask_field")), optional["open_interest"], optional["volume"],
-                optional["underlying_price"])
+                optional["underlying_price"], optional["rate"])
 
     @staticmethod
     def _iso(value, where, memo):
@@ -447,38 +574,45 @@ class ChainDayFeatures(Node):
         return text
 
     def _groups(self, rows):
-        """Yield ``(symbol, day, cells)`` ascending by symbol then day: lazily if presorted, else after all rows."""
-        memo, held, current, group = {}, {}, None, []
-        presorted = self.params.get("presorted", False)
-        closed = set()
-        seen = 0
+        """Yield ``(symbol, day, cells)`` ascending by symbol then day.
+
+        Three read modes (see the module docstring): everything held, one symbol held and flushed when the
+        symbol changes (``symbol_contiguous``), or one symbol-date held (``presorted``).
+        """
+        p = self.params
+        flush_symbols, streaming = p.get("symbol_contiguous", False), p.get("presorted", False)
+        memo, held, closed, seen = {}, {}, set(), 0
+        current_symbol = current_day = None
         for index, record in enumerate(rows):
             seen += 1
             cell = self._cell(record, index, memo)
-            key = (cell[0], cell[1])
-            if not presorted:
-                held.setdefault(key, []).append(cell)
-                continue
-            if key != current:
-                self._check_order(closed, current, key)
-                if group:
-                    yield (*current, group)
-                    if current[0] != key[0]:
-                        closed.add(current[0])
-                current, group = key, []
-            group.append(cell)
+            symbol, day = cell[0], cell[1]
+            if flush_symbols or streaming:
+                if symbol != current_symbol:
+                    yield from self._flush(held)
+                    if current_symbol is not None:
+                        closed.add(current_symbol)
+                    if symbol in closed:
+                        raise ValueError(f"{self.key}: symbol {symbol!r} reappeared after it was flushed - "
+                                         "symbol_contiguous / presorted need every symbol's rows together")
+                    current_symbol, current_day = symbol, None
+                if streaming:
+                    if current_day is not None and day < current_day:
+                        raise ValueError(f"{self.key}: presorted input out of order at ({symbol!r}, {day!r})")
+                    if current_day is not None and day != current_day:
+                        yield from self._flush(held)
+                    current_day = day
+            held.setdefault((symbol, day), _DayCells(symbol, day)).add(cell)
         if not seen:
             raise ValueError(f"{self.key}: the records input is empty - features of nothing are refused, not passed")
-        if presorted:
-            yield (*current, group)
-        else:
-            for key in sorted(held):
-                yield (*key, held[key])
+        yield from self._flush(held)
 
-    def _check_order(self, closed, current, key):
-        """Refuse a symbol that returns after another, or a date that goes backwards within a symbol."""
-        if key[0] in closed or (current is not None and key[0] == current[0] and key[1] < current[1]):
-            raise ValueError(f"{self.key}: presorted input out of order at group {key!r}")
+    @staticmethod
+    def _flush(held):
+        """Yield the held groups in (symbol, day) order and empty ``held``."""
+        for key in sorted(held):
+            yield (*key, held[key])
+        held.clear()
 
     # -- one symbol-date -------------------------------------------------------------------
 
@@ -497,7 +631,7 @@ class ChainDayFeatures(Node):
         """Group a day's cells by expiration; count quote states; return ``(by_expiration, totals, spot)``."""
         by_exp, seen, totals, prices = {}, set(), {_CHAIN: _Totals()}, []
         for cell in cells:
-            _, _, expiration, strike, side, bid, ask, oi, volume, underlying = cell
+            _, _, expiration, strike, side, bid, ask, oi, volume, underlying, _rate = cell
             key = (expiration, strike, side)
             if key in seen:
                 raise ValueError(f"{self.key}: duplicate contract {key!r} on {cell[1]} for {cell[0]!r}")
@@ -514,10 +648,10 @@ class ChainDayFeatures(Node):
                 prices.append(underlying)
         return by_exp, totals, (median(prices) if prices else None)
 
-    def _book(self, cells, years):
+    def _book(self, cells, years, rate):
         """Build the usable-quote book of one expiration's cells."""
         p = self.params
-        book = _Book(years, p.get("iv_min", DEFAULT_IV_MIN), p.get("iv_max", DEFAULT_IV_MAX))
+        book = _Book(years, p.get("iv_min", DEFAULT_IV_MIN), p.get("iv_max", DEFAULT_IV_MAX), rate)
         for cell in cells:
             if quote_state(cell[5], cell[6]) in USABLE_STATES:
                 book.add(cell[4], cell[3], cell[5], cell[6])
@@ -543,7 +677,7 @@ class ChainDayFeatures(Node):
             feats["risk_reversal"] = feats["put_wing_iv"] - feats["call_wing_iv"]
         feats["put_call_iv_spread"] = book.spread(p["atm_band"])
 
-    def _positioning(self, feats, key, totals, symbol, day):
+    def _positioning(self, feats, key, totals, symbol, day, counts):
         """Write the open-interest and volume features of scope ``key`` onto ``feats``."""
         now = totals.get(key)
         if now is None:
@@ -557,6 +691,7 @@ class ChainDayFeatures(Node):
             return
         then_day, then_totals = history[0]
         if (date.fromisoformat(day) - then_day).days > self.params["oi_lag_max_days"]:
+            counts["oi_lag_too_old"] += 1
             return
         then = then_totals.get(key)
         if then is None:
@@ -567,33 +702,43 @@ class ChainDayFeatures(Node):
         if then.ratio() is not None and now.ratio() is not None:
             feats["oi_put_call_ratio_change"] = now.ratio() - then.ratio()
 
-    def _day(self, symbol_name, day, cells, state, counts):
+    def _day(self, symbol_name, day, cells, state, counts, rates):
         """Return the feature rows of one symbol-date, updating the run state and counts."""
         p = self.params
         by_exp, totals, spot = self._scan_day(cells, counts)
+        rate = rates.at(day, cells)
         built = []
         for target in p["targets"]:
             counted = counts["targets"][str(target["dte"])]
-            picked = self._pick(by_exp, day, target)
-            if picked is None:
-                counted["no_expiry"] += 1
-                continue
-            expiration, dte = picked
-            years = dte / p.get("days_per_year", DEFAULT_DAYS_PER_YEAR)
             feats = dict.fromkeys(FEATURES)
-            feats.update(expiration=expiration, dte=dte, years=years, spot=spot)
-            book = self._book(by_exp[expiration], years)
-            if book.solve_forward(p["min_forward_pairs"]) is None:
-                counted["no_forward"] += 1
-            else:
-                self._smile(book, spot, feats)
-            self._positioning(feats, expiration if p.get("oi_scope") == "expiry" else _CHAIN, totals, state, day)
-            counted["emitted"] += 1
+            feats["status"] = "no_expiry"
+            picked = self._pick(by_exp, day, target)
+            if picked is not None:
+                expiration, dte = picked
+                years = dte / p.get("days_per_year", DEFAULT_DAYS_PER_YEAR)
+                feats.update(expiration=expiration, dte=dte, years=years, spot=spot)
+                feats["status"] = self._quote_features(by_exp[expiration], years, rate, spot, feats, counts)
+                self._positioning(feats, expiration if p.get("oi_scope") == "expiry" else _CHAIN, totals, state,
+                                  day, counts)
+            counted["emitted" if feats["status"] == "ok" else feats["status"]] += 1
             built.append((target["dte"], feats))
         self._term(built)
         state.history.append((date.fromisoformat(day), totals))
         return [{p["symbol_field"]: symbol_name, p["date_field"]: day, p["target_field"]: dte,
+                 p["status_field"]: feats["status"],
                  **{out: feats[name] for name, out in p["fields"].items()}} for dte, feats in built]
+
+    def _quote_features(self, cells, years, rate, spot, feats, counts):
+        """Write the quote-based features of one expiry onto ``feats``; return the row's status."""
+        if rate is None:
+            return "no_rate"
+        book = self._book(cells, years, rate)
+        if book.solve_forward(self.params["min_forward_pairs"]) is None:
+            return "no_forward"
+        self._smile(book, spot, feats)
+        counts["iv_solved"] += book.iv_solved
+        counts["iv_unsolved"] += book.iv_unsolved
+        return "ok"
 
     def _term(self, built):
         """Write ``term_slope`` onto every built row of the day when both term-pair targets resolved an ATM vol."""
@@ -631,9 +776,11 @@ class ChainDayFeatures(Node):
             resolves to any row.
         """
         p = self.params
+        rates = self._rates_source(inputs.get("rates"))
         counts = {"rows": 0, "groups": 0, "groups_before_first_bid": 0, "rows_before_first_bid": 0,
-                  "usable_quotes": 0, "excluded_quotes": dict.fromkeys(_EXCLUDED, 0),
-                  "targets": {str(t["dte"]): {"emitted": 0, "no_expiry": 0, "no_forward": 0}
+                  "usable_quotes": 0, "excluded_quotes": dict.fromkeys(_EXCLUDED, 0), "iv_solved": 0,
+                  "iv_unsolved": 0, "oi_lag_too_old": 0,
+                  "targets": {str(t["dte"]): dict.fromkeys(("emitted", "no_expiry", "no_forward", "no_rate"), 0)
                               for t in p["targets"]}}
         symbols, out = {}, []
         for symbol, day, cells in self._groups(inputs["records"]):
@@ -645,13 +792,59 @@ class ChainDayFeatures(Node):
                 counts["groups_before_first_bid"] += 1
                 counts["rows_before_first_bid"] += len(cells)
                 continue
-            out.extend(self._day(symbol, day, cells, state, counts))
+            out.extend(self._day(symbol, day, cells, state, counts, rates))
         if not any(s.started for s in symbols.values()):
             raise ValueError(f"{self.key}: no root has a bid above zero in the input - nothing to compute features on")
-        if not out:
-            raise ValueError(f"{self.key}: no feature row: no target resolved to an expiry on any date "
-                             f"(targets {p['targets']!r})")
+        if not any(t["emitted"] for t in counts["targets"].values()):
+            raise ValueError(f"{self.key}: no feature row with status ok: every target was no_expiry, no_forward "
+                             f"or no_rate (targets {p['targets']!r})")
         counts["symbols"] = len(symbols)
         counts["end_before"] = p["end_before"]
+        report = getattr(inputs["records"], "report", None)
+        if callable(report):
+            counts["reader"] = report()
         self.log.info("features: %d row(s) from %d group(s), %d symbol(s)", len(out), counts["groups"], len(symbols))
         return {"records": out, "summary": counts}
+
+    def _rates_source(self, table):
+        """Build the day-rate resolver from the declared constant / row field / ``rates`` input."""
+        p = self.params
+        if table is None:
+            if "rate_date_field" in p:
+                raise ValueError(f"{self.key}: the rates-table params are declared but no rates input is wired")
+            return _Rates(None if "rate_field" in p else p.get("rate", 0.0), None, 0)
+        if "rate_date_field" not in p:
+            raise ValueError(f"{self.key}: a rates input is wired but the rate_date_field / rate_value_field / "
+                             "rate_max_age_days params are not declared")
+        if "rate_field" in p or "rate" in p:
+            raise ValueError(f"{self.key}: a rates input, rate and rate_field are alternatives - declare one source")
+        parsed, memo = {}, {}
+        for index, record in enumerate(table):
+            where = f"{self.key}: rates row {index}"
+            try:
+                text, value = record[p["rate_date_field"]], record[p["rate_value_field"]]
+            except (KeyError, TypeError) as err:
+                raise ValueError(f"{where}: missing field {err}") from None
+            day = self._iso(text, f"{where} date", memo)
+            if day >= p["end_before"]:
+                raise ValueError(f"{where}: date {day} is at or after end_before {p['end_before']} - filter the "
+                                 "rates table upstream")
+            if day in parsed:
+                raise ValueError(f"{where}: duplicate rate for {day}")
+            number = self._rate_number(value, where)
+            if number is not None:
+                parsed[day] = number * p.get("rate_scale", 1.0)
+        return _Rates(None, parsed, p["rate_max_age_days"])
+
+    @staticmethod
+    def _rate_number(value, where):
+        """Return a rate cell as a float; ``None`` for a missing marker (null, NaN, ``"."`` or empty text)."""
+        if value is None or (isinstance(value, float) and math.isnan(value)) or value in (".", ""):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{where}: rate {value!r} is not a number") from None
+        if not number_ok(number):
+            raise ValueError(f"{where}: rate {value!r} is not finite")
+        return number

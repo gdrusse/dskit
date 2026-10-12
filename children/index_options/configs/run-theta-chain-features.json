@@ -1,22 +1,19 @@
 {
   "name": "theta-chain-features",
-  "notes": "Node 2 of ADR-0265 on a sample: per (symbol, date, target DTE) option-chain features from the NBBO mid and the put-call-parity forward, never the vendor's greeks or implied_vol (ADR-0265 item 3): the 30- and 90-day ATM implied vol (our Black-76 inversion of the mid on the parity forward, zero rate), the 25-delta put and call wing vols and their risk reversal (put minus call), the same-strike put-minus-call IV spread, the 30/90 term slope, the ATM straddle over spot, half-spread over premium, open interest and volume by side over the target's expiry, the put/call open-interest ratio and the 5-session change in open interest and in that ratio. SAMPLE ONLY: keep_values names three roots whose pull is complete (AAPL, ABBV, ABNB); the real universe is the census output (run-theta-chain-census.json), frozen before any hypothesis runs, and replaces this list then. READ-ONLY on /home/russell/data/thetadata/options-tested (onboarding root, source theta, stream option_eod). SEALED PERIOD: end_before 2026-01-01 on the features node, which refuses any row on or after it. MEMORY: the node is not presorted, so it holds a compact tuple per row until the stream ends (about 2 GB for one complete root); run a root or two at a time, or sort first. EXCLUSIONS (counted in the node's summary): quotes with a missing, zero or crossed side, and every row of a root dated before its first day with a bid above zero. A day whose parity forward cannot be formed keeps its row with every quote feature null. Run from children/index_options: python -m dskit.pipeline run configs/run-theta-chain-features.json --asof 2025-12-31.",
+  "notes": "Node 2 of ADR-0265 on a sample: per (symbol, date, target DTE) option-chain features from the NBBO mid and the put-call-parity forward, never the vendor's greeks or implied_vol (ADR-0265 item 3): the 30- and 90-day ATM implied vol (our Black-76 inversion of the mid on the parity forward, zero rate), the 25-delta put and call wing vols and their risk reversal (put minus call), the same-strike put-minus-call IV spread, the 30/90 term slope, the ATM straddle over spot, half-spread over premium, open interest and volume by side over the target's expiry, the put/call open-interest ratio and the 5-session change in open interest and in that ratio. SAMPLE ONLY: keep_values names three roots whose pull is complete (AAPL, ABBV, ABNB); the real universe is the census output (run-theta-chain-census.json), frozen before any hypothesis runs, and replaces this list then. READ-ONLY on /home/russell/data/thetadata/options-tested (onboarding root, source theta, stream option_eod). SEALED PERIOD: end_before 2026-01-01 on the features node, which refuses any row on or after it (the stores end 2025-12-31, so none is expected; a row is parsed before it can be refused). MEMORY: symbol_contiguous holds one root at a time as packed arrays (about 50 bytes a row), flushing it when the next root's rows arrive and refusing a root that reappears; the output rows (about 2 per root-date) are held until the end, so a full universe runs in batches of roots. EXCLUSIONS (counted in the node's summary): quotes with a missing, zero or crossed side, and every row of a root dated before its first day with a bid above zero. A day whose parity forward cannot be formed keeps its row with every quote feature null. Run from children/index_options: python -m dskit.pipeline run configs/run-theta-chain-features.json --asof 2025-12-31.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-research-20261012/chain-features",
     "notes": "A new directory beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
   },
   "pipeline": {
     "chain": {
-      "uses": "dskit.pipeline.libs.observations:ObservationStreamRows",
+      "uses": "dskit.pipeline.libs.observations:ObservationUnitRows",
       "params": {
         "root": "/home/russell/data/thetadata/options-tested",
         "source": "theta",
         "stream": "option_eod",
-        "key_fields": [
+        "unit_fields": [
           "symbol",
-          "expiration",
-          "strike",
-          "right",
           "date"
         ],
         "fields": [
@@ -39,12 +36,13 @@
           ]
         }
       },
-      "notes": "The ThetaData daily chain through the onboarding read seam, deduplicated on the connector's contract key, restricted at intake to the sample roots and projected to the ten fields the features read. Lazy. Read-only."
+      "notes": "The ThetaData daily chain through the onboarding read seam, member by member, deduplicated by UNIT (symbol, date) only (see the census document), restricted at intake to the sample roots and projected to the ten fields the features read. A pull lands one root at a time, so rows arrive grouped by root with dates newest first, which is what symbol_contiguous reads. Lazy. Read-only."
     },
     "features": {
       "uses": "dskit.pipeline.libs.chain_features:ChainDayFeatures",
       "inputs": {
-        "records": "$chain.records"
+        "records": "$chain.records",
+        "rates": "$rates.records"
       },
       "params": {
         "symbol_field": "symbol",
@@ -82,7 +80,6 @@
           30,
           90
         ],
-        "oi_scope": "expiry",
         "oi_lag_sessions": 5,
         "oi_lag_max_days": 10,
         "fields": {
@@ -106,9 +103,16 @@
           "oi_put_call_ratio": "oi_put_call_ratio",
           "oi_change": "oi_change_5d",
           "oi_put_call_ratio_change": "oi_put_call_ratio_change_5d"
-        }
+        },
+        "status_field": "status",
+        "symbol_contiguous": true,
+        "rate_date_field": "observation_date",
+        "rate_value_field": "DGS3MO",
+        "rate_max_age_days": 5,
+        "rate_scale": 0.01,
+        "oi_scope": "expiry"
       },
-      "notes": "Targets are 30 days (plus or minus 7) and 90 days (plus or minus 14), the nearest listed expiry each; a day with none inside the tolerance emits no row for that target and is counted. min_forward_pairs 5 strikes quoted on both sides are needed for the parity forward. ATM is the strike nearest the forward in log terms among those with both sides usable inside a 5% band. The wing vols are at forward delta 0.25 in magnitude, linear in delta between the two bracketing strikes, null without a bracket. Open interest and volume are summed over the target's own expiry; the 5-session change looks back five sessions of the same root and is null past ten calendar days or when that expiry did not yet exist."
+      "notes": "Targets are 30 days (plus or minus 7) and 90 days (plus or minus 14), the nearest listed expiry each; a day with none inside the tolerance emits no row for that target and is counted. min_forward_pairs 5 strikes quoted on both sides are needed for the parity forward. ATM is the strike nearest the forward in log terms among those with both sides usable inside a 5% band. The wing vols are at forward delta 0.25 in magnitude, linear in delta between the two bracketing strikes, null without a bracket. Open interest and volume are summed over the target's own expiry; the 5-session change looks back five sessions of the same root and is null past ten calendar days or when that expiry did not yet exist. RATE: the 3-month T-bill yield (percent, scaled by 0.01) of the last observation strictly BEFORE the quote date and at most 5 days earlier, used as a continuously compounded rate in the parity forward K + e^(rT)(C - P) and in Black-76; a day with no such observation is a no_rate row, never a zero rate. The bond-equivalent yield stands in for a continuous rate (a small approximation). STATUS: every requested target of every root-date leaves a row; status says ok, no_expiry, no_forward or no_rate."
     },
     "table": {
       "uses": "records-write",
@@ -134,6 +138,39 @@
         ]
       },
       "notes": "evidence.md renders the exclusion counts (null, zero and crossed quotes, rows before each root's first bid) and the per-target emitted / no-expiry / no-forward counts."
+    },
+    "rates_raw": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "fred-market-features",
+        "stream": "dgs3mo",
+        "key_fields": [
+          "observation_date"
+        ]
+      },
+      "notes": "The FRED 3-month constant-maturity Treasury yield (DGS3MO, percent, dated by the observation date, '.' on a holiday) from the index_options onboarding root, read-only. The series runs to 2026-09, so the node below drops 2026 before anything joins it."
+    },
+    "rates": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$rates_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "observation_date",
+            "op": "<",
+            "value": "2026-01-01"
+          },
+          {
+            "field": "DGS3MO",
+            "op": "!=",
+            "value": "."
+          }
+        ]
+      },
+      "notes": "Sealed period and holidays: a 2026 observation never reaches the features node (which also refuses one), and a '.' (no print) is not a rate. The 2026 rows are parsed by the reader above and dropped here; the series is a macro rate, not option data."
     }
   }
 }

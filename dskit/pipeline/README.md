@@ -1003,7 +1003,7 @@ dskit/pipeline/
 │                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077;
-│                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187),
+│                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187; ObservationUnitRows: member-order stream deduplicated by unit only, memory O(units), ADR-0265),
 │                      + ObservationStreamRows (lazy projected read, by import path, for multi-million-row streams),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date; underlying_close writes the moneyness denominator out, ADR-0259)

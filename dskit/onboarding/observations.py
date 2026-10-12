@@ -59,7 +59,7 @@ from .codec import iter_text_lines, resolve_stream_file
 from .layout import OnboardingRoot
 from .snapshot import find_snapshot_dir, verify_snapshot
 
-__all__ = ["iter_stream", "member_digest", "scan_stream", "stream_dir", "stream_digest", "stream_members",
+__all__ = ["StreamUnits", "iter_stream", "iter_stream_units", "member_digest", "scan_stream", "stream_dir", "stream_digest", "stream_members",
            "verified_payload_dir"]
 
 #: The spelling of a snapshot's identity — the 64-hex sha256 of its
@@ -846,6 +846,127 @@ def _winning_rows(args, key_fields, fields, ts_field, ts_out):
         if stamp is not None:
             row[ts_out] = stamp
         yield row
+
+
+class StreamUnits:
+    """Rows of a stream read member by member, deduplicated by UNIT only (ADR-0265 scale).
+
+    :func:`iter_stream` holds a key for every row, which a stream of billions of rows cannot
+    afford. This reader holds one key per UNIT (the ``unit_fields`` tuple, e.g. a root and a
+    date), so its memory is the number of units, not rows. Members are read in acquisition order;
+    every row of a unit is kept from the FIRST member that holds the unit and the unit's rows in
+    any later member are skipped and counted (a batch re-pulled after a crash lands twice; the
+    earlier copy stands). Within one member nothing is deduplicated, so a unit's rows must be
+    distinct there, which the writer guarantees per request. This is NOT the bitemporal
+    latest-wins rule: a deliberately revised row in a later member is skipped, so use
+    :func:`iter_stream` when revisions matter and the stream fits.
+
+    Re-iterable; the counters describe the most recent pass (reset when a pass starts).
+
+    Attributes
+    ----------
+    members, rows, units : int
+        Members read, rows yielded and distinct units yielded in the last pass.
+    skipped_rows, skipped_units : int
+        Rows (and distinct units) dropped because an earlier member held the unit.
+    """
+
+    def __init__(self, args, unit_fields, fields, ts_out):
+        self._args, self._units, self._fields, self._ts_out = args, unit_fields, fields, ts_out
+        self._reset()
+
+    def _reset(self):
+        self.members = self.rows = self.units = self.skipped_rows = self.skipped_units = 0
+
+    def report(self):
+        """Return the last pass's counters as a plain dict."""
+        return {"members": self.members, "rows": self.rows, "units": self.units,
+                "skipped_rows": self.skipped_rows, "skipped_units": self.skipped_units}
+
+    def __iter__(self):
+        self._reset()
+        seen, fresh, skipped, current = set(), set(), set(), None
+        for path, n, data, _when, _acquired, stamp in _intake(*self._args):
+            if path != current:
+                seen |= fresh
+                fresh, current = set(), path
+                self.members += 1
+            unit = _winner_key(path, n, data, self._units)
+            if unit in seen:
+                self.skipped_rows += 1
+                if unit not in skipped:
+                    skipped.add(unit)
+                    self.skipped_units += 1
+                continue
+            missing = [f for f in self._fields if f not in data]
+            if missing:
+                raise AssetError([f"{path}:{n}: data is missing projected field(s) {missing}"])
+            if unit not in fresh:
+                fresh.add(unit)
+                self.units += 1
+            self.rows += 1
+            row = {f: data[f] for f in self._fields}
+            if stamp is not None:
+                row[self._ts_out] = stamp
+            yield row
+
+
+def iter_stream_units(root, source, stream, unit_fields, fields, keep_values=None,
+                      as_of_acquisition_ms=None, members=None):
+    """Read a stream member by member, deduplicating only whole units (memory O(units)).
+
+    See :class:`StreamUnits` for the rule. The intake gates are :func:`iter_stream`'s own
+    (corrupt members, bad JSON, missing or NaN unit fields, ``keep_values``, the acquisition
+    vintage); there is no ``ts_field`` here.
+
+    Parameters
+    ----------
+    root, source, stream : str
+        The onboarding root, source and stream.
+    unit_fields : sequence of str
+        Non-empty ``data`` fields naming a unit (an entity and a date, say).
+    fields : sequence of str
+        Non-empty ``data`` fields each yielded row keeps; a row lacking one refuses.
+    keep_values : dict, optional
+        ``{field: [allowed values]}``, an intake allow-list.
+    as_of_acquisition_ms : int, optional
+        Keep only rows acquired at or before this instant.
+    members : sequence of str, optional
+        Acquisition directory names to read (default all), in name order.
+
+    Returns
+    -------
+    StreamUnits
+        A re-iterable of row dicts with the unit counters.
+
+    Raises
+    ------
+    AssetError
+        On a malformed request (accumulated) or a store-side refusal naming ``path:line``.
+
+    Examples
+    --------
+    Rows of each (root, date) unit once, whatever the member count::
+
+        rows = iter_stream_units("./ob", "theta", "option_eod", ("symbol", "date"),
+                                 ("symbol", "date", "bid"))
+        for row in rows: ...
+        rows.skipped_rows    # re-pulled copies dropped
+    """
+    unit_fields, fields = tuple(unit_fields), tuple(fields)
+    problems = _scan_problems(root, source, stream, unit_fields, None, "asof_ms", (),
+                              None, keep_values, None, as_of_acquisition_ms)
+    if not unit_fields or not all(isinstance(f, str) and f for f in unit_fields):
+        problems.append(f"unit_fields must be a non-empty list of field names, got {unit_fields!r}")
+    if not fields or not all(isinstance(f, str) and f for f in fields):
+        problems.append(f"fields must be a non-empty list of field names, got {fields!r}")
+    _raise_if(problems)
+    base, entries, allow = _read_plan(root, source, keep_values)
+    if members is not None:
+        wanted = set(members)
+        entries = [e for e in entries if e in wanted]
+    args = (base, entries, stream, unit_fields, None, "asof_ms", None, allow, None, as_of_acquisition_ms)
+    return StreamUnits(args, unit_fields, fields, "asof_ms")
 
 
 def stream_digest(records) -> str:

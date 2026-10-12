@@ -250,8 +250,43 @@ def test_a_non_positive_underlying_price_is_counted_not_compared():
     rows = [row("AAA", "2020-01-02", 100.0, 1.0, 1.1, underlying=0.0),
             row("AAA", "2020-01-03", 100.0, 1.0, 1.1, underlying=50.0)]
     out = by_symbol(census(rows, closes=CLOSES))["AAA"]
-    assert out["price_nonpositive_rows"] == 1 and out["price_compared"] == 1
+    assert out["underlying_price_nonpositive_rows"] == 1 and out["price_compared"] == 1
     assert out["price_missing_close"] == 0
+
+
+def test_a_null_underlying_price_is_counted():
+    rows = [row("AAA", "2020-01-02", 100.0, 1.0, 1.1, underlying=None),
+            row("AAA", "2020-01-02", 101.0, 1.0, 1.1, underlying=float("nan")),
+            row("AAA", "2020-01-02", 102.0, 1.0, 1.1, underlying=50.0)]
+    out = by_symbol(census(rows))["AAA"]
+    assert out["underlying_price_null_rows"] == 2 and out["underlying_price_nonpositive_rows"] == 0
+
+
+def test_a_closes_row_on_or_after_end_before_refuses():
+    late = CLOSES + [{"sym": "AAA", "day": "2026-01-05", "px": 60.0}]
+    with pytest.raises(ValueError, match="end_before"):
+        census(AAA, closes=late)
+
+
+def test_the_reader_counters_are_copied_into_the_summary():
+    class Reporting(list):
+        def report(self):
+            return {"skipped_rows": 3}
+
+    assert census(Reporting(AAA))["summary"]["reader"] == {"skipped_rows": 3}
+    assert "reader" not in census(AAA)["summary"]
+
+
+def test_memory_is_roots_times_dates_not_rows():
+    import tracemalloc
+    rows = [row("AAA", f"2020-01-{1 + d % 28:02d}", 100.0 + k, 1.0, 1.1) for d in range(28) for k in range(400)]
+    tracemalloc.start()
+    out = census(iter(rows))
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert out["summary"]["rows"] == 11200
+    held = rows                                                          # the input itself is the test's, not the node's
+    assert held and peak < 3_000_000
 
 
 def test_a_closes_input_with_a_duplicate_day_refuses():

@@ -3908,10 +3908,10 @@ def _theta_doc(child_root, name):
 def test_theta_documents_plan_and_every_node_param_validates(child_root, name):
     from dskit.pipeline.libs.chain_census import ChainCensus
     from dskit.pipeline.libs.chain_features import ChainDayFeatures
-    from dskit.pipeline.libs.observations import ObservationStreamRows
+    from dskit.pipeline.libs.observations import ObservationUnitRows
     planned = plan(load_document(str(child_root / "configs" / name)))
     classes = {item.cls for item in planned.resolved.values()}
-    assert ObservationStreamRows in classes and classes & {ChainCensus, ChainDayFeatures}
+    assert ObservationUnitRows in classes and classes & {ChainCensus, ChainDayFeatures}
     for node in _theta_doc(child_root, name)["pipeline"].values():
         if node["uses"].endswith(("ChainCensus", "ChainDayFeatures")):
             cls = ChainCensus if node["uses"].endswith("ChainCensus") else ChainDayFeatures
@@ -3923,10 +3923,11 @@ def test_theta_documents_seal_2026_and_only_read_the_store(child_root, name):
     nodes = _theta_doc(child_root, name)["pipeline"]
     sealed = [n for n in nodes.values() if n["uses"].endswith(("ChainCensus", "ChainDayFeatures"))]
     assert sealed and all(n["params"]["end_before"] == "2026-01-01" for n in sealed)
-    readers = [n for n in nodes.values() if n["uses"].endswith("ObservationStreamRows")]
+    readers = [n for n in nodes.values() if n["uses"].endswith("ObservationUnitRows")]
     assert [r["params"]["root"] for r in readers] == [THETA_STORE]
     assert [r["params"]["source"] for r in readers] == ["theta"]
     assert [r["params"]["stream"] for r in readers] == ["option_eod"]
+    assert [r["params"]["unit_fields"] for r in readers] == [["symbol", "date"]]
     written = [n["params"]["path"] for n in nodes.values() if n["uses"] == "records-write"]
     written.append(_theta_doc(child_root, name)["outputs"]["run_root"])
     assert written and not any(path.startswith("/home/russell/data/thetadata") for path in written)
@@ -3945,3 +3946,17 @@ def test_the_features_document_names_the_sample_roots_and_reads_no_vendor_greeks
     reader = doc["pipeline"]["chain"]["params"]
     assert reader["keep_values"] == {"symbol": ["AAPL", "ABBV", "ABNB"]}
     assert not {"implied_vol", "delta", "gamma", "vega", "theta", "iv_error"} & set(reader["fields"])
+
+
+def test_the_features_document_joins_the_t_bill_rate_dated_by_observation_and_sealed(child_root):
+    doc = _theta_doc(child_root, "run-theta-chain-features.json")
+    pipeline = doc["pipeline"]
+    raw = pipeline["rates_raw"]["params"]
+    assert (raw["source"], raw["stream"], raw["key_fields"]) == ("fred-market-features", "dgs3mo", ["observation_date"])
+    sealed = {(w["field"], w["op"], w["value"]) for w in pipeline["rates"]["params"]["where"]}
+    assert ("observation_date", "<", "2026-01-01") in sealed
+    params = pipeline["features"]["params"]
+    assert pipeline["features"]["inputs"]["rates"] == "$rates.records"
+    assert (params["rate_date_field"], params["rate_value_field"], params["rate_scale"]) == (
+        "observation_date", "DGS3MO", 0.01)
+    assert params["symbol_contiguous"] is True and "presorted" not in params and "rate" not in params

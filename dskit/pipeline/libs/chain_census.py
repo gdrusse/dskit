@@ -9,6 +9,18 @@ marker) and whether the underlying price the vendor reports agrees with an indep
 :class:`ChainCensus` is that count, one pass over the rows, and it freezes the universe a later
 test may use. It tests nothing and fits nothing.
 
+**Process caveat.** ``first_bid_date`` and every share here are WHOLE-SAMPLE statistics. A universe gate built
+from them admits a root using information from after a test window's start (look-ahead inside a validation
+window). A gate for a test must be recomputed from dates up to that test's start only, or be a property that
+cannot change (a listing date proved independently).
+
+**Memory.** O(roots x dates): one small tally per (root, date), plus one strike set per (root, month) when a
+strike grid is declared. Pair it with a unit-deduplicating reader
+(:class:`~dskit.pipeline.libs.observations.ObservationUnitRows`) for a stream with billions of rows; the reader's
+own counters (``summary.reader``) are copied in when the input answers ``report()``. The defaults and conventions
+here (the usable-quote definition, three terciles, the strike tolerance) are chosen, not derived; the ones that
+are knobs are params.
+
 **One pass, nothing held but tallies.** The input is any iterable of row mappings, read exactly
 once (a lazy :class:`~dskit.pipeline.libs.observations.ObservationStreamRows` output is the
 intended source). The node keeps one small tally per (root, date), never the rows.
@@ -182,7 +194,7 @@ class StrikeGrid:
 class _Day:
     """The tally of one (root, date): row and quote-state counts, flags, and the reported price range."""
 
-    __slots__ = ("rows", "states", "bid_positive", "flagged", "bad_price", "price_low", "price_high")
+    __slots__ = ("rows", "states", "bid_positive", "flagged", "bad_price", "null_price", "price_low", "price_high")
 
     def __init__(self):
         self.rows = 0
@@ -190,6 +202,7 @@ class _Day:
         self.bid_positive = 0
         self.flagged = 0
         self.bad_price = 0
+        self.null_price = 0
         self.price_low = None
         self.price_high = None
 
@@ -230,7 +243,7 @@ class ChainCensus(Node):
     params : dict
         Row vocabulary, REQUIRED: ``symbol_field``, ``date_field``, ``strike_field``,
         ``bid_field``, ``ask_field``. ``end_before`` (REQUIRED ISO date): a row dated at or after
-        it refuses - the sealed period is never read. Optional checks (skipped when absent):
+        it refuses (the registered stores end 2025-12-31, so none are expected; the node cannot promise a sealed row was not parsed first). Optional checks (skipped when absent):
         ``iv_error_field`` with ``iv_error_flag`` (the placeholder value, compared as a number);
         ``strike_grid`` (list of tiers, see :class:`StrikeGrid`) and ``strike_tolerance``;
         ``liquidity_end_before`` (ISO date; the development median and terciles use dates before
@@ -340,7 +353,8 @@ class ChainCensus(Node):
             day = dates[text] = iso_day(text, f"{where} date").isoformat()
         if day >= self.params["end_before"]:
             raise ValueError(f"{where}: date {day} is at or after end_before {self.params['end_before']} "
-                             "- the sealed period is never read")
+                             "- the node refuses rows on or after end_before (the registered stores end "
+                             "2025-12-31, so none are expected)")
         strike = values["strike"]
         if not number_ok(strike) or strike <= 0:
             raise ValueError(f"{where}: strike must be a number > 0, got {strike!r}")
@@ -389,6 +403,8 @@ class ChainCensus(Node):
                 tally.see_price(price)
             elif price is not None:
                 tally.bad_price += 1
+            elif "price" in fields:
+                tally.null_price += 1
             if grid is not None:
                 cell = months.setdefault((symbol, day[:7]), [0, 0, set()])
                 cell[0] += 1
@@ -417,6 +433,9 @@ class ChainCensus(Node):
             day = dates.get(text)
             if day is None:
                 day = dates[text] = iso_day(text, f"{where} date").isoformat()
+            if day >= p["end_before"]:
+                raise ValueError(f"{where}: date {day} is at or after end_before {p['end_before']} - filter the "
+                                 "closes upstream")
             if not number_ok(close) or close <= 0:
                 raise ValueError(f"{where}: close must be a number > 0, got {close!r}")
             if (symbol, day) in out:
@@ -463,6 +482,9 @@ class ChainCensus(Node):
             development = [t.usable() for d, t in tail if d < cut]
             row["median_quoted_development"] = median(development) if development else None
             row["liquidity_tercile"] = None
+        if "underlying_price_field" in self.params:
+            row["underlying_price_null_rows"] = sum(t.null_price for _, t in series)
+            row["underlying_price_nonpositive_rows"] = sum(t.bad_price for _, t in series)
         if "strike_grid" in self.params:
             row["nonstandard_strike_rows"] = odd_strikes.get(symbol, 0)
             row["nonstandard_strike_share"] = odd_strikes.get(symbol, 0) / total
@@ -508,7 +530,7 @@ class ChainCensus(Node):
                 missing += 1
                 continue
             diffs.append(abs((tally.price_low + tally.price_high) / 2 - close) / close)
-        row.update(price_nonpositive_rows=sum(t.bad_price for _, t in series), price_compared=len(diffs), price_missing_close=missing, price_spread_dates=spread,
+        row.update(price_compared=len(diffs), price_missing_close=missing, price_spread_dates=spread,
                    price_median_abs_rel_diff=median(diffs) if diffs else None,
                    price_max_abs_rel_diff=max(diffs) if diffs else None,
                    price_share_beyond_tolerance=sum(d > tol for d in diffs) / len(diffs) if diffs else None)
@@ -566,6 +588,9 @@ class ChainCensus(Node):
         by_month = [{"symbol": symbol, "month": month, "rows": cell[0], "nonstandard_rows": cell[1],
                      "nonstandard_strikes": len(cell[2])} for (symbol, month), cell in cells]
         summary = self._summary(days, rows, closes is not None)
+        report = getattr(inputs["records"], "report", None)
+        if callable(report):
+            summary["reader"] = report()
         self.log.info("census: %d root(s), %d row(s), %d never quoted", summary["roots"],
                       summary["rows"], summary["never_quoted_roots"])
         return {"records": rows, "rows_by_year": self._by_year(roots), "strikes_by_month": by_month,

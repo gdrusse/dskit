@@ -32,6 +32,7 @@ from dskit.pipeline.libs.observations import (
     TS_UNITS,
     ObservationRows,
     ObservationStreamRows,
+    ObservationUnitRows,
     register,
 )
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext, NodeKindRegistry
@@ -847,3 +848,74 @@ TestObservationsConformance = conformance_suite(
     expected_roles={"observations": "data"},
     name="TestObservationsConformance",
 )
+
+
+# ---------------------------------------------------------------------------
+# ObservationUnitRows (ADR-0265 scale): member order, unit-level dedup only
+# ---------------------------------------------------------------------------
+
+
+class TestObservationUnitRows:
+    def _node(self, root, **over):
+        params = {k: v for k, v in _params(root.root, fields=["sym", "value"], ts_field=..., key_fields=...,
+                                           unit_fields=["sym"]).items() if v is not ...}
+        params.update(over)
+        return ObservationUnitRows("u", params)
+
+    def test_it_streams_the_rows_of_each_unit_once_with_counters(self, tmp_path):
+        root = _root(tmp_path)
+        _write_rows(_data_file(tmp_path), [GROWTH], mode="a")
+        assert _acquire(root)["records"] == 1                      # a second member, unit A again
+        node = self._node(root)
+        node.fingerprint()
+        rows = node.run(_ctx(tmp_path), {})["records"]
+        got = list(rows)
+        report = rows.report()
+        assert {r["sym"] for r in got} == {"A", "B"}
+        assert report["members"] == 2 and report["units"] == 2
+        assert len(got) + report["skipped_rows"] == len(ROWS) + 1        # the second member's copy is dropped
+        assert report["skipped_rows"] >= 1 and report["skipped_units"] == 1
+
+    def test_it_is_lazy_and_replayable(self, tmp_path):
+        root = _root(tmp_path)
+        rows = self._node(root).run(_ctx(tmp_path), {})["records"]
+        assert iter(rows) is not rows and len(list(rows)) == len(list(rows)) == len(ROWS)
+
+    def test_unit_fields_replace_key_fields(self, tmp_path):
+        assert ObservationUnitRows.validate_params(_params("/ob", fields=["sym"], ts_field=..., key_fields=...,
+                                                           unit_fields=["sym"])) == []
+        both = ObservationUnitRows.validate_params(_params("/ob", fields=["sym"], ts_field=..., unit_fields=["sym"]))
+        assert any("key_fields" in p for p in both)
+        for bad in (None, [], "sym", ["sym", ""]):
+            problems = ObservationUnitRows.validate_params(
+                _params("/ob", fields=["sym"], ts_field=..., key_fields=..., unit_fields=bad))
+            assert any("unit_fields" in p for p in problems), bad
+        with pytest.raises(ConfigError, match="unit_fields"):
+            ObservationUnitRows("u", _params("/ob", fields=["sym"], ts_field=..., key_fields=...))
+
+    def test_a_pinned_member_list_and_a_moved_stream(self, tmp_path):
+        root = _root(tmp_path)
+        node = self._node(root)
+        node.fingerprint()
+        _write_rows(_data_file(tmp_path), [GROWTH], mode="a")
+        assert _acquire(root)["records"] == 1
+        assert sum(1 for _ in node.run(_ctx(tmp_path), {})["records"]) == len(ROWS)   # the new member is not read
+        moved = self._node(root)
+        moved.fingerprint()
+        _rewrite_first_value(_members(root)[0])
+        with pytest.raises(ValueError, match="changed between"):
+            moved.run(_ctx(tmp_path), {})
+
+    def test_it_cannot_be_served_and_refuses_unhonored_hooks(self, tmp_path):
+        with pytest.raises(ValueError, match="cannot be served"):
+            ObservationUnitRows.serving_contract({}, {})
+
+        class Hooked(ObservationUnitRows):
+            def project(self, records):
+                return records
+
+        root = _root(tmp_path)
+        params = {k: v for k, v in _params(root.root, fields=["sym"], ts_field=..., key_fields=...,
+                                           unit_fields=["sym"]).items() if v is not ...}
+        with pytest.raises(ValueError, match="cannot honor"):
+            Hooked("u", params).run(_ctx(tmp_path), {})

@@ -377,6 +377,7 @@ building the whole-snapshot string, byte-identical to
 `sha256(json.dumps(records, sort_keys=True))`.
 
 `iter_stream(root, source, stream, key_fields, fields, ...)` is the lazy sibling for a stream too large to hold: the same winner rule and intake gates, two passes, one compact entry per KEY (not per record), yields only the winners cut to `fields` (unsorted; `members=` pins the acquisitions read). Pipeline wrapper: `dskit.pipeline.libs.observations:ObservationStreamRows` (by import path).
+`iter_stream_units(root, source, stream, unit_fields, fields, ...)` (ADR-0265) is for a stream whose ROW count cannot afford even a key per row: members are read in acquisition order, rows are never deduplicated, and a whole UNIT (`unit_fields`, e.g. a root and a date) already read from an earlier member is skipped and counted (a batch re-pulled after a crash; the earlier copy stands, which is not the latest-wins rule). One pass, memory O(units); the returned `StreamUnits` is re-iterable and reports `members`, `rows`, `units`, `skipped_rows`, `skipped_units`. Pipeline wrapper: `dskit.pipeline.libs.observations:ObservationUnitRows`.
 
 An acquired FILE tree (a model, ADR-0082) is read back by CONTENT:
 

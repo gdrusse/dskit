@@ -7504,8 +7504,8 @@ class OptionPriceCDF:
                 raise ValueError(name+" must be finite and nonnegative")
             setattr(self, name, value)
     @staticmethod
-    def parity_forwards(rows):
-        """Return the per-strike parity forwards ``strike + call - put`` (ADR-0213).
+    def parity_forwards(rows, growth=1.0):
+        """Return the per-strike parity forwards ``strike + growth * (call - put)`` (ADR-0213).
 
         The ONE forward step: ``estimate`` takes its median, and the option-chain
         features (ADR-0265) take theirs, so the two can never disagree.
@@ -7515,6 +7515,9 @@ class OptionPriceCDF:
         rows : pandas.DataFrame
             ``strike``, ``type`` (``"call"`` / ``"put"``) and ``mark`` columns of
             validated, positive, finite numbers; duplicates are medians per side.
+        growth : float
+            ``exp(rate * years)``, the factor that undoes discounting in the call-put difference
+            (ADR-0265); the default 1.0 is the undiscounted parity this class has always used.
 
         Returns
         -------
@@ -7527,7 +7530,7 @@ class OptionPriceCDF:
                                   aggfunc="median").dropna()
         if paired.empty or not {"call", "put"}.issubset(paired.columns):
             return None
-        forwards = paired.index.to_numpy()+paired.call.to_numpy()-paired.put.to_numpy()
+        forwards = paired.index.to_numpy()+growth*(paired.call.to_numpy()-paired.put.to_numpy())
         return forwards[np.isfinite(forwards) & (forwards > 0)]
 
     def estimate(self, rows, spot):

@@ -27,7 +27,7 @@ PARAMS = {
     "strike_field": "strike", "right_field": "right", "bid_field": "bid", "ask_field": "ask",
     "open_interest_field": "open_interest", "volume_field": "volume",
     "underlying_price_field": "underlying_price", "call_values": ["call"], "put_values": ["put"],
-    "end_before": "2026-01-01", "target_field": "target_dte",
+    "end_before": "2026-01-01", "target_field": "target_dte", "status_field": "status",
     "targets": [{"dte": 30, "tolerance": 5}], "atm_band": 0.05, "wing_delta": 0.25,
     "min_forward_pairs": 3, "oi_scope": "expiry", "oi_lag_sessions": 2, "oi_lag_max_days": 7,
     "fields": FIELDS,
@@ -168,8 +168,9 @@ def test_the_term_slope_is_the_long_atm_iv_minus_the_short_one_on_every_row_of_t
 def test_a_target_with_no_expiry_in_tolerance_emits_no_row_and_is_counted():
     out = run(chain(dte=28), targets=[{"dte": 30, "tolerance": 5}, {"dte": 90, "tolerance": 5}],
               term_pair=[30, 90], fields=ALL_FIELDS)
-    assert [r["target_dte"] for r in out["records"]] == [30]
-    assert out["records"][0]["term_slope"] is None
+    assert [(r["target_dte"], r["status"]) for r in out["records"]] == [(30, "ok"), (90, "no_expiry")]
+    assert out["records"][0]["term_slope"] is None and out["records"][1]["atm_iv"] is None
+    assert out["records"][1]["expiration"] is None and out["records"][1]["dte"] is None
     assert out["summary"]["targets"]["90"]["no_expiry"] == 1
     assert out["summary"]["targets"]["30"]["emitted"] == 1
 
@@ -226,9 +227,11 @@ def test_first_bid_date_is_per_symbol():
 
 
 def test_a_day_with_too_few_parity_pairs_keeps_its_row_with_nothing_filled():
-    out = run(chain(strikes=[99, 100]), min_forward_pairs=3)
-    row = only(out)
+    out = run(chain(strikes=[99, 100]) + chain(symbol="BBB"), min_forward_pairs=3)
+    row = out["records"][0]
+    assert row["symbol"] == "AAA" and out["records"][1]["status"] == "ok"
     assert row["forward"] is None and row["atm_iv"] is None and row["straddle_ratio"] is None
+    assert row["status"] == "no_forward"
     assert row["oi_call"] == 20                                    # aggregates do not need a forward
     assert out["summary"]["targets"]["30"]["no_forward"] == 1
 
@@ -328,7 +331,7 @@ def test_symbols_do_not_share_history_or_forward():
 
 def test_fields_selects_and_renames_the_outputs():
     row = only(run(chain(), fields={"atm_iv": "iv30", "forward": "fwd"}))
-    assert set(row) == {"symbol", "date", "target_dte", "iv30", "fwd"}
+    assert set(row) == {"symbol", "date", "target_dte", "status", "iv30", "fwd"}
 
 
 def test_the_input_is_read_once():
@@ -388,6 +391,16 @@ def test_a_malformed_row_refuses_by_row():
 @pytest.mark.parametrize("over, fragment", [
     ({"surprise": 1}, "surprise"),
     ({"symbol_field": ...}, "symbol_field"),
+    ({"status_field": ...}, "status_field"),
+    ({"status_field": "atm_iv"}, "distinct"),
+    ({"symbol_contiguous": "yes"}, "symbol_contiguous"),
+    ({"symbol_contiguous": True, "presorted": True}, "symbol_contiguous"),
+    ({"rate": "high"}, "rate"),
+    ({"rate": 0.04, "rate_field": "r"}, "rate"),
+    ({"rate_field": ""}, "rate_field"),
+    ({"rate_scale": 0}, "rate_scale"),
+    ({"rate_date_field": "date"}, "rate_date_field"),
+    ({"rate_max_age_days": -1, "rate_date_field": "d", "rate_value_field": "v"}, "rate_max_age_days"),
     ({"targets": []}, "targets"),
     ({"targets": [{"dte": 30}]}, "targets"),
     ({"targets": [{"dte": 30, "tolerance": 5}, {"dte": 30, "tolerance": 2}]}, "targets"),
@@ -427,6 +440,10 @@ def test_the_reference_params_validate_clean():
     assert ChainDayFeatures.validate_params(PARAMS) == []
     assert ChainDayFeatures.validate_params(dict(PARAMS, presorted=True, iv_min=0.01, iv_max=4.0,
                                                  days_per_year=365.0)) == []
+    assert ChainDayFeatures.validate_params(dict(PARAMS, symbol_contiguous=True, rate=0.04)) == []
+    assert ChainDayFeatures.validate_params(dict(PARAMS, rate_field="r", rate_scale=0.01)) == []
+    assert ChainDayFeatures.validate_params(dict(PARAMS, rate_date_field="d", rate_value_field="v",
+                                                 rate_max_age_days=5, rate_scale=0.01)) == []
 
 
 def test_the_pack_surface():
@@ -436,3 +453,189 @@ def test_the_pack_surface():
     for name in ("ChainDayFeatures", "FEATURES", "NODE_KINDS"):
         assert name in chain_features.__all__
     assert "atm_iv" in FEATURES and "oi_change" in FEATURES
+
+
+# -- scale: symbol-contiguous reading, rates, counts, the real reader ---------------------------
+
+
+def run_with(rows, rates=None, **over):
+    params = {k: v for k, v in dict(PARAMS, **over).items() if v is not ...}
+    ctx = NodeContext(name="t", asof="2025-12-31", run_dir="/nonexistent")
+    inputs = {"records": rows}
+    if rates is not None:
+        inputs["rates"] = rates
+    return ChainDayFeatures("features", params).run(ctx, inputs)
+
+
+def newest_first_members():
+    """Two roots, one member each, each member newest date first (the pull's order)."""
+    members = []
+    for symbol, oi_scale in (("AAA", 1), ("ZZZ", 3)):
+        rows = []
+        for day, call_oi, put_oi in reversed([("2020-03-02", 10, 20), ("2020-03-03", 11, 21),
+                                              ("2020-03-04", 12, 24), ("2020-03-05", 15, 30)]):
+            for r in chain(symbol=symbol, day=day, expiration="2020-03-30", strikes=[99, 100, 101, 102, 103]):
+                r["open_interest"] = (call_oi if r["right"] == "call" else put_oi) * oi_scale
+                rows.append(r)
+        members.append(rows)
+    return members
+
+
+def test_symbol_contiguous_flushes_per_symbol_and_computes_oi_change_in_true_date_order():
+    members = newest_first_members()
+    rows = [r for member in members for r in member]
+    reference = run_with(list(reversed(rows)))["records"]            # all-in-memory mode, any order
+    out = run_with(rows, symbol_contiguous=True)["records"]
+    assert out == reference
+    by = {(r["symbol"], r["date"]): r for r in out}
+    assert by[("AAA", "2020-03-04")]["oi_change"] == pytest.approx(180 / 150 - 1)
+    assert by[("ZZZ", "2020-03-05")]["oi_change"] == pytest.approx(225 * 3 / (160 * 3) - 1)
+    assert [r["date"] for r in out if r["symbol"] == "AAA"] == sorted(r["date"] for r in out if r["symbol"] == "AAA")
+
+
+def test_symbol_contiguous_refuses_a_symbol_that_reappears():
+    a, z = newest_first_members()
+    with pytest.raises(ValueError, match="reappear"):
+        run_with(a[:10] + z + a[10:], symbol_contiguous=True)
+
+
+def test_symbol_contiguous_flushes_a_symbol_before_the_next_one_is_read_past():
+    a, z = newest_first_members()
+    seen = []
+
+    def stream():
+        for r in a + z:
+            seen.append(r["symbol"])
+            yield r
+
+    node = ChainDayFeatures("f", dict(PARAMS, symbol_contiguous=True))
+    first = next(node._groups(stream()))
+    assert first[0] == "AAA" and first[1] == "2020-03-02"            # the oldest date first, whatever the arrival order
+    assert len(seen) == len(a) + 1                                    # released on the first ZZZ row, not at the end
+
+
+RATE = 0.045
+
+
+def rated_chain(**over):
+    rows = chain(**over)
+    years = 28 / 365
+    for r in rows:
+        mid = black76(r["right"], 100.0, r["strike"], 0.30, years, RATE)
+        r["bid"], r["ask"] = mid - 0.005, mid + 0.005
+    return rows
+
+
+def test_a_constant_rate_recovers_the_vol_the_zero_rate_misses():
+    rows = rated_chain()
+    zero = only(run_with(rows))
+    rated = only(run_with(rows, rate=RATE))
+    assert rated["atm_iv"] == pytest.approx(0.30, abs=1e-4)
+    assert rated["forward"] == pytest.approx(100.0, abs=1e-6)
+    assert abs(zero["atm_iv"] - 0.30) > 5e-4 or abs(zero["forward"] - 100.0) > 1e-3
+
+
+def test_the_rate_field_is_a_per_row_rate_scaled_to_a_decimal():
+    rows = [dict(r, r=RATE * 100) for r in rated_chain()]
+    row = only(run_with(rows, rate_field="r", rate_scale=0.01))
+    assert row["atm_iv"] == pytest.approx(0.30, abs=1e-4)
+
+
+def test_a_rates_table_is_joined_as_of_strictly_before_the_day():
+    rows = rated_chain()
+    table = [{"d": "2020-02-28", "v": "4.5"}, {"d": DAY, "v": "9.9"}, {"d": "2020-03-03", "v": "."}]
+    row = only(run_with(rows, rates=table, rate_date_field="d", rate_value_field="v", rate_scale=0.01,
+                        rate_max_age_days=5))
+    assert row["atm_iv"] == pytest.approx(0.30, abs=1e-4)            # the 4.5 of 2020-02-28, not same-day 9.9
+
+
+def test_a_day_with_no_rate_inside_the_age_is_a_no_rate_row_not_a_zero_rate():
+    rows = rated_chain() + rated_chain(day="2020-03-09")
+    table = [{"d": "2020-02-28", "v": "4.5"}]
+    out = run_with(rows, rates=table, rate_date_field="d", rate_value_field="v", rate_scale=0.01, rate_max_age_days=5)
+    assert [r["status"] for r in out["records"]] == ["ok", "no_rate"] and out["records"][1]["atm_iv"] is None
+    assert out["summary"]["targets"]["30"]["no_rate"] == 1
+
+
+def test_rates_input_refusals():
+    rows = rated_chain()
+    common = dict(rate_date_field="d", rate_value_field="v", rate_max_age_days=5)
+    with pytest.raises(ValueError, match="end_before"):
+        run_with(rows, rates=[{"d": "2026-02-03", "v": "4"}], **common)
+    with pytest.raises(ValueError, match="duplicate"):
+        run_with(rows, rates=[{"d": "2020-02-28", "v": "4"}, {"d": "2020-02-28", "v": "4"}], **common)
+    with pytest.raises(ValueError, match="rates"):
+        run_with(rows, rates=[{"d": "2020-02-28", "v": "4"}])                 # no rate_* params declared
+    with pytest.raises(ValueError, match="rate"):
+        run_with(rows, rates=[{"d": "2020-02-28", "v": "x"}], **common)
+    with pytest.raises(ValueError, match="rates"):
+        run_with(rows, rates=[{"d": "2020-02-28", "v": "4"}], rate_field="r", **common)
+
+
+def test_no_expiry_and_no_forward_are_counted_the_same_way_and_both_leave_a_row():
+    thin = chain(strikes=[99, 100]) + chain(symbol="BBB", dte=91)
+    out = run_with(thin, targets=[{"dte": 30, "tolerance": 5}, {"dte": 90, "tolerance": 5}], min_forward_pairs=3)
+    statuses = {(r["symbol"], r["target_dte"]): r["status"] for r in out["records"]}
+    assert statuses == {("AAA", 30): "no_forward", ("AAA", 90): "no_expiry", ("BBB", 30): "no_expiry",
+                        ("BBB", 90): "ok"}
+    counts = out["summary"]["targets"]
+    assert counts["30"]["no_forward"] == 1 and counts["90"]["no_expiry"] == 1 and counts["30"]["emitted"] == 0
+    assert counts["90"]["emitted"] == 1 and counts["30"]["no_expiry"] == 1
+
+
+def test_unsolved_implied_vols_are_counted():
+    rows = chain(strikes=range(95, 106))
+    for r in rows:
+        if r["strike"] == 100.0:
+            r["bid"], r["ask"] = 1e-9, 2e-9                          # a mid no vol prices at the money
+    out = run_with(rows, iv_max=0.5)
+    assert out["summary"]["iv_unsolved"] >= 2 and out["summary"]["iv_solved"] > 0
+
+
+def test_an_oi_lag_past_the_calendar_guard_is_counted():
+    out = run_with(days_of_oi(), oi_lag_max_days=1)
+    assert out["summary"]["oi_lag_too_old"] >= 1
+
+
+def test_the_reader_counters_are_copied_into_the_summary():
+    class Reporting(list):
+        def report(self):
+            return {"skipped_rows": 7}
+
+    assert run_with(Reporting(chain()))["summary"]["reader"] == {"skipped_rows": 7}
+    assert "reader" not in run_with(chain())["summary"]
+
+
+def test_features_through_the_real_unit_reader_over_newest_first_members(tmp_path):
+    import json
+    from dskit.onboarding import OnboardingRoot, run_acquisition
+    from dskit.pipeline.libs.observations import ObservationUnitRows
+    members = newest_first_members()
+    for r in members[1]:                         # the second root lands later in time, as a pull would
+        r["date"] = (date.fromisoformat(r["date"]) + timedelta(days=31)).isoformat()
+        r["expiration"] = expiry_of("2020-03-30", 31)
+    data = tmp_path / "data"
+    data.mkdir()
+    ob = OnboardingRoot.create(str(tmp_path / "ob"))
+    registry = ob.registry()
+    vid = registry.register("source_config", {
+        "name": "theta", "catalog_source": "theta-src", "connector": "localfiles",
+        "config": {"path": str(data), "effective_field": "date"}}, origin="test")
+    registry.transition(vid, "active", origin="test")
+    for member in members:                                   # one acquisition per root, as the pull lands them
+        with open(data / "option_eod.jsonl", "w", encoding="utf-8") as fh:
+            for r in member:
+                fh.write(json.dumps({k: v for k, v in r.items()}, sort_keys=True) + "\n")
+        run_acquisition(ob, registry, "theta", "option_eod", "backfill")
+    reader = ObservationUnitRows("chain", {
+        "root": ob.root, "source": "theta", "stream": "option_eod", "unit_fields": ["symbol", "date"],
+        "fields": ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "open_interest", "volume",
+                   "underlying_price"]})
+    ctx = NodeContext(name="t", asof="2025-12-31", run_dir=str(tmp_path / "run"))
+    reader.fingerprint()
+    rows = reader.run(ctx, {})["records"]
+    out = ChainDayFeatures("features", dict(PARAMS, symbol_contiguous=True)).run(ctx, {"records": rows})
+    reference = run_with([r for member in members for r in member])["records"]
+    ordered = lambda rows: sorted(rows, key=lambda r: (r["symbol"], r["date"], r["target_dte"]))
+    assert ordered(out["records"]) == ordered(reference) and len(reference) == 8
+    assert out["summary"]["reader"]["units"] == 8 and out["summary"]["reader"]["skipped_rows"] == 0

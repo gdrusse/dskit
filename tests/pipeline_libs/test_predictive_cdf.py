@@ -2928,6 +2928,13 @@ def test_option_price_cdf_parity_forwards_are_the_step_the_estimate_uses():
     broken = frame.copy()
     broken.loc[(broken.strike == 70.) & (broken.type == "put"), "mark"] = 500.
     assert len(predictive_cdf.OptionPriceCDF.parity_forwards(broken)) == len(forwards) - 1
+    # discounted parity: marks of an option pair priced at rate r on forward 100 give 100 once grown by e^(rT)
+    growth = float(np.exp(0.05 * 0.5))
+    calls = frame[frame.type == "call"].set_index("strike").mark
+    puts = (calls - (100.0 - calls.index.to_numpy()) / growth).rename("mark").reset_index().assign(type="put")
+    pair = pd.concat([frame[frame.type == "call"], puts[["strike", "type", "mark"]]])
+    np.testing.assert_allclose(predictive_cdf.OptionPriceCDF.parity_forwards(pair, growth), 100.0)
+    assert not np.allclose(predictive_cdf.OptionPriceCDF.parity_forwards(pair), 100.0)
     # no strike with both sides: no pairs at all, said as None (not an empty array)
     assert predictive_cdf.OptionPriceCDF.parity_forwards(frame[frame.type == "call"]) is None
     only = pd.concat([frame[(frame.type == "call") & (frame.strike < 100)],

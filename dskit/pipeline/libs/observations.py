@@ -49,6 +49,7 @@ __all__ = [
     "TS_UNITS",
     "ObservationRows",
     "ObservationStreamRows",
+    "ObservationUnitRows",
     "register",
 ]
 
@@ -770,6 +771,97 @@ class ObservationStreamRows(ObservationRows):
                 as_of_acquisition_ms=self.as_of_acquisition_ms(), members=members)
 
         return {"records": _Replayable(rows)}
+
+
+class ObservationUnitRows(ObservationStreamRows):
+    """Stream an observation stream member by member, deduplicated by UNIT only (ADR-0265 scale).
+
+    :class:`ObservationStreamRows` keeps a key per row, about 200 bytes each, which a store of
+    billions of rows cannot hold. This sibling reads the acquisition members in order through
+    :func:`dskit.onboarding.observations.iter_stream_units` and keeps a key per UNIT
+    (``unit_fields``, e.g. a root and a date), so memory is the number of units. A unit already
+    read from an earlier member is skipped and counted (a batch re-pulled after a crash lands
+    twice and the earlier copy stands); this is NOT the bitemporal latest-wins rule. Rows arrive
+    in member order, so an acquisition that pulled one root at a time yields root-contiguous rows.
+    The output ``records`` re-iterates the store and answers ``report()`` with the last pass's
+    counters (``members``, ``rows``, ``units``, ``skipped_rows``, ``skipped_units``), which the
+    chain nodes copy into their summaries.
+
+    Parameters
+    ----------
+    params : dict
+        As :class:`ObservationStreamRows` with ``unit_fields`` (non-empty list of str, REQUIRED) in
+        place of ``key_fields``.
+
+    Examples
+    --------
+    Rows of each (symbol, date) unit once::
+
+        node = ObservationUnitRows("chain", {
+            "root": "./ob", "source": "theta", "stream": "option_eod",
+            "unit_fields": ["symbol", "date"], "fields": ["symbol", "date", "bid", "ask"]})
+        rows = node.run(ctx, {})["records"]
+    """
+
+    _PARAMS = tuple(n for n in ObservationStreamRows._PARAMS if n != "key_fields") + ("unit_fields",)
+
+    @classmethod
+    def validate_params(cls, params):
+        """List problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The stream problems plus a bad ``unit_fields``.
+        """
+        problems = super().validate_params(params)
+        units = params.get("unit_fields")
+        if not isinstance(units, (list, tuple)) or not units or any(not _ok_name(f) for f in units):
+            problems.append(f"unit_fields is required: a non-empty list of field names, got {units!r}")
+        return problems
+
+    def key_fields(self):
+        """Name the unit fields (the only key this reader keeps)."""
+        return tuple(self.params["unit_fields"])
+
+    def run(self, ctx, inputs):
+        """Return the lazy unit-deduplicated stream.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused.
+        inputs : dict
+            Empty: role ``data`` takes no inputs.
+
+        Returns
+        -------
+        dict
+            ``{"records": rows}``, a re-iterable with ``report()``.
+
+        Raises
+        ------
+        ValueError
+            A subclass overrides a hook this read cannot honor, or the stream moved since
+            ``fingerprint()``.
+        """
+        from dskit.onboarding.observations import iter_stream_units
+
+        self._refuse_unhonored()
+        if getattr(self, "_fp", None) is not None:
+            self._verify_unchanged()
+        members = getattr(self, "_members", None)
+        if members is None:
+            members = tuple(m[0] for m in self._store_token())
+        return {"records": iter_stream_units(
+            self.root(), self.source(), self.stream(), unit_fields=self.key_fields(),
+            fields=tuple(self.params["fields"]), keep_values=self.keep_values(),
+            as_of_acquisition_ms=self.as_of_acquisition_ms(), members=members)}
 
 
 #: The pack's kinds.
