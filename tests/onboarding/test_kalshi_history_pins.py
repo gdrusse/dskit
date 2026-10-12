@@ -160,4 +160,5 @@ def test_a_trade_at_exactly_the_checkpoint_instant_leaves_the_checkpoint_text_al
         "/markets": by_status(settled=[NEW]),
         "/markets/trades": {"trades": [trade("t1", "2026-10-07T00:30:00Z", NEW["ticker"])], "cursor": ""}})
     msgs = read(conn, ["trades"], state={"trades": {"cursor": cursor}})
-    assert msgs[-1]["state"] == {"trades": {"cursor": cursor}}
+    assert msgs[-1]["state"]["trades"]["cursor"] == cursor
+    assert "coverage" not in msgs[-1]["state"]["trades"], "a pull of a record-less checkpoint records no coverage"

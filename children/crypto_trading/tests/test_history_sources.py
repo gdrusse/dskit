@@ -266,5 +266,19 @@ def test_a_trade_after_the_pulls_capture_instant_is_not_emitted(tmp_path, monkey
     assert "future" not in ids and out["records"] == 12, "the next pull asks for it again: nothing is future-dated"
 
 
+def test_the_w5_source_asks_only_for_markets_closing_in_its_window_and_the_suite_passes(tmp_path, monkeypatch):
+    # ADR-0267: the shipped window is [2026-09-15, 2026-10-08); a market closing the minute before its start or exactly at its end
+    # is never requested, so the pull is bounded by the declared dates and not by what the venue lists.
+    inside = [market("KXBTC15M", utc(2026, 9, 15, 0, 0), strike=60000.0), market("KXBTC15M", utc(2026, 10, 5, 12, 0), strike=60000.0)]
+    outside = [market("KXBTC15M", utc(2026, 9, 14, 23, 59), strike=60000.0), market("KXBTC15M", utc(2026, 10, 8, 0, 0), strike=60000.0)]
+    trades = {m["ticker"]: [trade(f"{m['ticker']}-{k}", m["ticker"], utc(2026, 9, 14, 0, 0) + timedelta(minutes=k)) for k in range(1, 4)]
+              for m in inside + outside}
+    api = ScriptedHistory(live=inside + outside, archived=[], trades=trades)
+    store, out = pull(tmp_path, monkeypatch, "kalshi-history-trades-15m-w5", "source-kalshi-history-trades-15m-w5.json", "trades", api)
+    asked = {q["ticker"] for pth, q in api.calls if pth in ("/historical/trades", "/markets/trades")}
+    assert asked == {m["ticker"] for m in inside}, "the two outside markets are not requested"
+    assert out["records"] == 6 and verdict(store, "suite-kalshi-history-trades.json", out)["gating"] == "pass"
+
+
 def test_the_fixtures_sit_before_the_clock_every_pull_runs_at():
     assert ms(NEW) + 3_600_000 < ms(NOW), "a candle or trade after the capture would be dropped, hiding a defect"

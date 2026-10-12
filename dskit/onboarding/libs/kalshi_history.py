@@ -63,6 +63,26 @@ the capture instant is not emitted: the next pull asks for it again. So
 nothing a pull emits is dated after its capture, and a venue clock ahead of
 this host's cannot make acquisition refuse a future-dated row.
 
+**A close window bounds the trades pull (ADR-0267).** ``close_window``
+``{start, end}`` (ISO date or datetime, read as UTC; ``start`` inclusive, ``end``
+exclusive) asks ``trades`` only for markets whose ``close_time`` falls in it; a
+market with no close time is outside any window, and one whose close time is
+present but not an ISO instant refuses the pull. The ``trades`` checkpoint also
+records every pull per series and status set walked (``coverage``: the close
+span asked for, null bounds when there was no window, and the capture instant).
+A market is COMPLETE when some recorded pull of its key covered its close and
+was captured after it: trades cannot change once a market has closed, so it is
+never asked for again, whatever other windows or series were pulled since. Any
+other market (uncovered, or covered only by pulls captured while it was still
+open) is asked for whole, so a widened or shifted window, a new series or
+status set fetches exactly what no earlier pull completed. A checkpoint with a
+cursor and no ``coverage`` (from before it existed) stays on the cursor rule:
+an unwindowed pull records no coverage, and a ``close_window`` pull refuses
+(register a fresh source name). A market no scan listed at a capture, yet
+closing inside a span that pull recorded, counts as complete. The other streams
+ignore the knob. A pull is still all-or-nothing, so a big range
+is pulled as successive widened windows.
+
 **Candle budgets.** The event endpoint cuts a response off at
 ``adjusted_end_ts``; the pack follows it and refuses a response that does not
 advance. The batch and archive endpoints refuse a request whose window is over
@@ -180,6 +200,11 @@ _USER_AGENT = "dskit-onboarding"
 #: Candle window when a market's ``open_time`` is missing or unparseable:
 #: this much history before its end.
 _FALLBACK_WINDOW = timedelta(days=14)
+
+#: The ``close_window`` knob's keys; the ``trades`` checkpoint key that records
+#: the close spans already pulled (module docs, "A close window").
+_WINDOW_KEYS = ("start", "end")
+_COVERAGE_KEY = "coverage"
 
 _CUTOFF_PATH = "/historical/cutoff"
 #: Which key of the cutoff body bounds which archive.
@@ -837,6 +862,224 @@ _GROUPINGS = {GROUPING_BATCH: _BatchCandles, GROUPING_EVENT: _EventCandles}
 CANDLE_GROUPINGS = tuple(sorted(_GROUPINGS))
 
 
+class _CloseWindow(namedtuple("_CloseWindow", ("start", "end"))):
+    """The ``close_window`` knob: aware UTC ``[start, end)`` bounds on a market's close time.
+
+    Examples
+    --------
+    Declare one day, then ask whether a market closing at its start is inside::
+
+        window = _CloseWindow.declared({"start": "2026-10-03", "end": "2026-10-04"})
+        window.holds(window.start)  # True
+    """
+
+    __slots__ = ()
+
+    @classmethod
+    def declared(cls, value):
+        """Parse a ``close_window`` knob.
+
+        Parameters
+        ----------
+        value : object
+            ``{"start": ISO, "end": ISO}``, exactly those keys.
+
+        Returns
+        -------
+        _CloseWindow
+            Both bounds aware UTC, ``start < end``.
+
+        Raises
+        ------
+        ValueError
+            Naming what is wrong with ``value``.
+        """
+        if not isinstance(value, dict) or set(value) != set(_WINDOW_KEYS):
+            raise ValueError(f"must be a dict with exactly the keys {list(_WINDOW_KEYS)}, got {value!r}")
+        bounds = [_instant(value[key]) for key in _WINDOW_KEYS]
+        if None in bounds:
+            raise ValueError(f"start and end must be ISO date or datetime strings, got {value!r}")
+        if not bounds[0] < bounds[1]:
+            raise ValueError(f"start must be before end, got {value!r}")
+        return cls(*bounds)
+
+    def holds(self, close):
+        """Report whether a market closing at ``close`` (an instant or None) is inside."""
+        return close is not None and self.start <= close < self.end
+
+
+class _Pulled(namedtuple("_Pulled", ("start", "end", "captured"))):
+    """One pull of a key: the close span it asked for (None bounds: every market) and its capture instant.
+
+    Examples
+    --------
+    A market that closed before the capture is complete; one still open at it is not::
+
+        pulled = _Pulled(None, None, noon)
+        pulled.completes(eleven)  # True
+        pulled.completes(one_pm)  # False
+    """
+
+    __slots__ = ()
+
+    def completes(self, close):
+        """Report whether this pull saw all of a market's trades: it was in the span and had closed by the capture."""
+        if close is None or not close < self.captured:
+            return False
+        return (self.start is None or self.start <= close) and (self.end is None or close < self.end)
+
+    def dominates(self, other):
+        """Report whether this pull completes everything ``other`` does (a wider span, captured no earlier)."""
+        wider = (self.start is None or (other.start is not None and self.start <= other.start)) and (
+            self.end is None or (other.end is not None and other.end <= self.end))
+        return wider and other.captured <= self.captured
+
+    def recorded(self):
+        """Return the checkpoint form: ISO texts, ``null`` for an unbounded side."""
+        return {"start": None if self.start is None else self.start.isoformat(),
+                "end": None if self.end is None else self.end.isoformat(),
+                "captured_at": self.captured.isoformat()}
+
+    @classmethod
+    def parsed(cls, raw, where):
+        """Parse a recorded pull.
+
+        Parameters
+        ----------
+        raw : object
+            ``{"start", "end", "captured_at"}``; ``start`` and ``end`` ISO or both null.
+        where : str
+            What to call it in a refusal.
+
+        Returns
+        -------
+        _Pulled
+            The pull.
+
+        Raises
+        ------
+        AssetError
+            If ``raw`` is malformed.
+        """
+        bad = f"{where} must be {{start, end, captured_at}} with ISO instants (start and end both null or start before end)"
+        if not isinstance(raw, dict) or set(raw) != {"start", "end", "captured_at"}:
+            raise AssetError([f"{bad}, got {raw!r}"])
+        start, end, captured = (None if raw[k] is None else _instant(raw[k]) for k in ("start", "end", "captured_at"))
+        if captured is None or (raw["start"] is None) != (raw["end"] is None) or (
+                raw["start"] is not None and (start is None or end is None or not start < end)):
+            raise AssetError([f"{bad}, got {raw!r}"])
+        return cls(start, end, captured)
+
+
+class _Coverage:
+    """What earlier trades pulls asked for, per ``(series, statuses)`` key, each with its capture instant.
+
+    A market is COMPLETE when some recorded pull of its key covered its close
+    time and had captured after it: its trades cannot change once it has
+    closed, so it is never requested again. Any other market (uncovered, or
+    covered only by pulls captured while it was still open) is read whole.
+    Completeness is judged per market from its own close, so nothing a pull of
+    another window or key does can hide a trade. It assumes, as the cursor
+    always did, that a market was listed whenever a pull covered its close.
+
+    A checkpoint with a cursor and no record (from before this record) cannot
+    say which series it covered, so it stays on the old cursor rule: an
+    unwindowed pull resumes by the cursor and records NO coverage (it could
+    not say for which series it was complete), and a windowed pull refuses.
+
+    A market that no scan listed at a pull's capture, yet closes inside a
+    span that pull recorded, counts as complete: the pack cannot see a market
+    the venue did not list, the same assumption the cursor always made.
+
+    Parameters
+    ----------
+    pulled : dict or None
+        ``{key: tuple of _Pulled}``; ``None`` for a record-less checkpoint.
+
+    Examples
+    --------
+    Record one pull of one series, then ask about two markets::
+
+        covered = _Coverage({}).after(["KXA|open"], None, noon)
+        covered.complete("KXA|open", eleven)  # True
+        covered.complete("KXB|open", eleven)  # False: never walked
+    """
+
+    def __init__(self, pulled):
+        self._pulled = pulled
+
+    @staticmethod
+    def key(series, statuses):
+        """Return the key a series walked under a status set is recorded by."""
+        return f"{series}|{','.join(sorted(statuses))}"
+
+    @property
+    def legacy(self):
+        """Report whether the checkpoint predates the record (so the cursor rule applies)."""
+        return self._pulled is None
+
+    @classmethod
+    def recorded(cls, prior):
+        """Return the coverage a stream's prior checkpoint entry says.
+
+        Parameters
+        ----------
+        prior : dict
+            The stream's prior checkpoint entry.
+
+        Returns
+        -------
+        _Coverage
+            The recorded coverage, or the record-less one when ``prior`` has a
+            cursor and no record; empty when it has neither.
+
+        Raises
+        ------
+        AssetError
+            If the record is malformed.
+        """
+        if _COVERAGE_KEY not in prior:
+            return cls(None if prior.get("cursor") else {})
+        raw, where = prior[_COVERAGE_KEY], f"state.trades.{_COVERAGE_KEY}"
+        if not isinstance(raw, dict) or not all(isinstance(value, list) for value in raw.values()):
+            raise AssetError([f"{where} must be a dict of key to a list of pulls, got {raw!r}"])
+        return cls({key: tuple(_Pulled.parsed(pull, f"{where}[{key!r}][{n}]") for n, pull in enumerate(value))
+                    for key, value in raw.items()})
+
+    def complete(self, key, close):
+        """Report whether a market of ``key`` closing at ``close`` was fully pulled."""
+        return any(pull.completes(close) for pull in (self._pulled or {}).get(key, ()))
+
+    def after(self, keys, window, captured):
+        """Return the coverage once ``keys`` were pulled for ``window`` (None: every market) at ``captured``.
+
+        Parameters
+        ----------
+        keys : list
+            The keys the pull walked.
+        window : _CloseWindow or None
+            Its close window.
+        captured : datetime
+            Its capture instant.
+
+        Returns
+        -------
+        _Coverage
+            The prior coverage plus this pull, without the pulls it makes redundant (or itself, if a wider one holds it).
+        """
+        pulled = dict(self._pulled or {})
+        new = _Pulled(*(window or (None, None)), captured)
+        for key in keys:
+            olds = pulled.get(key, ())
+            if not any(old.dominates(new) for old in olds):
+                pulled[key] = (*(old for old in olds if not new.dominates(old)), new)
+        return _Coverage(pulled)
+
+    def entry(self):
+        """Return the checkpoint entry that records this coverage."""
+        return {_COVERAGE_KEY: {key: [pull.recorded() for pull in self._pulled[key]] for key in sorted(self._pulled)}}
+
+
 class _Pull:
     """What one ``read`` shares across its streams: knobs, the venue, the market walk, the clocks."""
 
@@ -863,16 +1106,24 @@ class _Stream(abc.ABC):
     NAME = ""
     FIELDS = ()
     KEY_FIELDS = ()
+    #: Checkpoint keys, besides ``cursor``, this stream owns: dropped from the
+    #: prior entry and rewritten from :meth:`extras` at the end of the pull.
+    STATE_KEYS = ()
 
-    def __init__(self, pull):
+    def __init__(self, pull, prior=None):
         self._pull = pull
         self._venue = pull.venue
         self._walk = pull.walk
         self._knobs = pull.knobs
+        self._prior = {} if prior is None else prior
 
     @abc.abstractmethod
     def rows(self, cursor_dt):
         """Yield ``(effective_date, row)`` for the pull; ``cursor_dt`` is the prior checkpoint or None."""
+
+    def extras(self):
+        """Return the ``STATE_KEYS`` entries to checkpoint once :meth:`rows` is exhausted; none by default."""
+        return {}
 
 
 class _MarketsStream(_Stream):
@@ -926,22 +1177,60 @@ class _CandlesStream(_Stream):
 
 
 class _TradesStream(_Stream):
-    """Trades of every market, each period asked of the archive that owns it."""
+    """Trades of every market (or every market closing in the ``close_window``), each period asked of the archive that owns it."""
 
     NAME, FIELDS, KEY_FIELDS = TRADE_STREAM, TRADE_FIELDS, TRADE_KEY_FIELDS
+    STATE_KEYS = (_COVERAGE_KEY,)
+
+    def __init__(self, pull, prior=None):
+        super().__init__(pull, prior)
+        self._covered = _Coverage.recorded(self._prior)
+        self._keys = []
 
     def rows(self, cursor_dt):
-        """Yield each trade dated at its ``created_time``."""
+        """Yield each trade dated at its ``created_time``; a market not yet complete is read whole (a record-less checkpoint: from its cursor).
+
+        Raises
+        ------
+        AssetError
+            If ``close_window`` is set against a checkpoint with a cursor and no ``coverage``.
+        """
+        if self._covered.legacy and self._knobs["close_window"] is not None:
+            raise AssetError(
+                ["config.close_window cannot be applied to a trades checkpoint written before ADR-0267 (it has a "
+                 "cursor and no coverage record, so which series it covered is unknown): register a fresh source "
+                 "name for the windowed pull"])
         capture = self._pull.capture
         boundary = self._venue.cutoff("trades")
+        window = self._knobs["close_window"]
         for series in self._knobs["series"]:
+            key = _Coverage.key(series, self._knobs["statuses"])
+            self._keys.append(key)
             for listed in self._walk.listed(series):
                 span = _Span(listed.row, capture)
-                if span.closed_by(cursor_dt):
+                if window is not None and not self._in_window(window, listed.row, span):
+                    continue
+                since = cursor_dt if self._covered.legacy else None
+                if span.closed_by(since) or self._covered.complete(key, span.close):
                     continue
                 seen = set()
-                for path, extra in self._legs(span, boundary, cursor_dt):
+                for path, extra in self._legs(span, boundary, since):
                     yield from self._trades(span.ticker, path, extra, seen)
+
+    @staticmethod
+    def _in_window(window, row, span):
+        """Report whether a market closes inside ``window``; refuse a close_time that is present but not an ISO instant."""
+        if span.close is None and row["close_time"]:
+            raise AssetError(
+                [f"market {row['ticker']!r} has close_time {row['close_time']!r}, which is not an ISO "
+                 "instant, so config.close_window cannot place it"])
+        return window.holds(span.close)
+
+    def extras(self):
+        """Return the per-key coverage every pull so far has recorded, counting this one; none for a record-less checkpoint, which stays as it was."""
+        if self._covered.legacy:
+            return {}
+        return self._covered.after(self._keys, self._knobs["close_window"], self._pull.capture).entry()
 
     @staticmethod
     def _legs(span, boundary, cursor_dt):
@@ -1126,6 +1415,14 @@ class KalshiHistoryConnector(Connector):
                          "answers HTTP 400 above its own ceiling); "
                          f"default {DEFAULT_ARCHIVE_MAX_CANDLES}. At least 2.",
             },
+            "close_window": {
+                "notes": "Optional {start, end} (ISO date or datetime, read as UTC; "
+                         "start inclusive, end exclusive): the trades stream asks only "
+                         "for markets whose close_time is in it, and a market with no "
+                         "close time is outside. The checkpoint records the spans "
+                         "pulled, so widening the window later fetches only the new "
+                         "markets. The other streams ignore it; default none (every market).",
+            },
             "pace_s": {
                 "notes": "Seconds slept between requests; default "
                          f"{DEFAULT_PACE_S}. The public API is throttled per IP "
@@ -1211,6 +1508,12 @@ class KalshiHistoryConnector(Connector):
                 f"config.candle_grouping must be one of {list(CANDLE_GROUPINGS)}, "
                 f"got {grouping!r}"
             )
+        window = None
+        if "close_window" in config:
+            try:
+                window = _CloseWindow.declared(config["close_window"])
+            except ValueError as exc:
+                problems.append(f"config.close_window {exc}")
         retries = config.get("retries", DEFAULT_RETRIES)
         if not _int_at_least(retries, 0):
             problems.append(f"config.retries must be an int >= 0, got {retries!r}")
@@ -1232,6 +1535,7 @@ class KalshiHistoryConnector(Connector):
             "statuses": list(statuses),
             **{name: value for name, (value, _floor) in counts.items()},
             "candle_grouping": grouping,
+            "close_window": window,
             "retries": retries,
             "pace_s": pace_s,
             "timeout_s": timeout_s,
@@ -1334,7 +1638,7 @@ class KalshiHistoryConnector(Connector):
         pull = _Pull(knobs, self._getter, self._sleeper, self._clock)
         new_state = {key: dict(value) for key, value in state.items()}
         for name in streams:
-            stream = _STREAM_CLASSES[name](pull)
+            stream = _STREAM_CLASSES[name](pull, state.get(name, {}))
             cursor = state.get(name, {}).get("cursor", "")
             cursor_dt = parse_utc(cursor) if cursor else None
             yield {
@@ -1356,5 +1660,6 @@ class KalshiHistoryConnector(Connector):
                 }
                 if emitted_dt is None or effective_dt > emitted_dt:
                     emitted, emitted_dt = effective, effective_dt
-            new_state.setdefault(name, {})["cursor"] = emitted
+            entry = {k: v for k, v in new_state.get(name, {}).items() if k not in stream.STATE_KEYS}
+            new_state[name] = {**entry, "cursor": emitted, **stream.extras()}
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}

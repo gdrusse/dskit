@@ -133,6 +133,7 @@ HISTORY_SOURCES = (
     "source-kalshi-history-candles-hourly-btc.json",
     "source-kalshi-history-candles-hourly-eth.json",
     "source-kalshi-history-trades-15m.json",
+    "source-kalshi-history-trades-15m-w5.json",
     "source-kalshi-history-trades-hourly.json",
 )
 #: restwindow sources (ADR-0240): the live-safe spot candles and the Deribit implied-vol index
@@ -218,6 +219,7 @@ HISTORY_SERIES = {
     "source-kalshi-history-candles-hourly-btc.json": ("KXBTC", "KXBTCD"),
     "source-kalshi-history-candles-hourly-eth.json": ("KXETH", "KXETHD"),
     "source-kalshi-history-trades-15m.json": KALSHI_15M,
+    "source-kalshi-history-trades-15m-w5.json": KALSHI_15M,
     "source-kalshi-history-trades-hourly.json": KALSHI_HOURLY,
 }
 
@@ -244,11 +246,27 @@ def test_the_history_sources_split_the_universe_the_way_their_notes_say():
         "the history markets are the six series the kalshi source pulls")
     candles = series["source-kalshi-history-candles-hourly-btc.json"] + series["source-kalshi-history-candles-hourly-eth.json"]
     assert sorted(candles) == sorted(KALSHI_HOURLY), "the two candle sources partition the four hourly series"
+    assert series["source-kalshi-history-trades-15m-w5.json"] == series["source-kalshi-history-trades-15m.json"], (
+        "the windowed copy asks the same two series as the full source, not a different universe")
     trades = series["source-kalshi-history-trades-15m.json"] + series["source-kalshi-history-trades-hourly.json"]
     assert sorted(trades) == sorted(KALSHI_SERIES), "the two trade sources partition the six series"
     hourly_doc = _load("run-features-hourly.json")["pipeline"]["spot"]["params"]["assets"]
     assert series["source-kalshi-history-candles-hourly-btc.json"] == [s for s in hourly_doc["BTC"]["series"] if not s.endswith("15M")]
     assert series["source-kalshi-history-candles-hourly-eth.json"] == [s for s in hourly_doc["ETH"]["series"] if not s.endswith("15M")]
+
+
+def test_the_w5_trades_source_is_the_full_one_bounded_to_a_close_window_and_nothing_else():
+    """ADR-0267: same pack knobs as the HELD full source, plus the window; the full source stays unbounded."""
+    full, bounded = _load("source-kalshi-history-trades-15m.json"), _load("source-kalshi-history-trades-15m-w5.json")
+    assert "close_window" not in full, "the HELD full source is untouched"
+    assert bounded["close_window"] == {"start": "2026-09-15", "end": "2026-10-08"}
+    assert {k: v for k, v in bounded.items() if k not in ("notes", "close_window")} == {
+        k: v for k, v in full.items() if k != "notes"}
+    knobs = KalshiHistoryConnector().resolve_knobs(_strip_platform(bounded))
+    start, end = knobs["close_window"]
+    assert (end - start).days == 23 and knobs["statuses"] == ["settled", "closed", "open"]
+    for needed in ("close_window", "CANNOT gate it", "4,416", "66 million", "never the pull helper"):
+        assert needed in bounded["notes"], needed
 
 
 @pytest.mark.parametrize("name", HISTORY_SOURCES)

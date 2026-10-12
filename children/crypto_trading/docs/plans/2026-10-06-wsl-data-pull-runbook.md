@@ -209,6 +209,20 @@ python -m dskit.onboarding acquire --root "$OB" --source kalshi-history-trades-1
 python -m dskit.onboarding verify --root "$OB"
 ```
 
+**7f. The 15-minute trades of the W5 window: `trades-15m-w5` (ADR-0267), the pull that fits.** The pack's `close_window` asks only for markets
+closing in 2026-09-15 up to (not including) 2026-10-08: 23 days x 96 x 2 series = 4,416 markets, at 14,955 trades and 9.5 to 12.3 s a market
+(7c) about 12 to 15 hours in ONE all-or-nothing acquire, about 66 million rows, about 4 GB staged beside the store. It is a separate source,
+so 7e is untouched. **`validate` still cannot gate it:** 66 million rows x 2.0 to 2.8 KB is about 130 to 185 GB against a box of about 17 GB (about
+9 GB if another job holds 8), and a gate holds only about 3 million rows, about a day of markets. Run acquire alone, as 7e does; to gate, register a copy
+with a one-day `close_window` under another name and `pull` that. **Widen it later to W4** (from 2026-08-01): retire this declaration, register the
+same name with `close_window` start 2026-08-01, and the widened-window resume fetches only the markets W5 did not cover.
+
+```bash
+python -m dskit.onboarding register-source kalshi-history-trades-15m-w5 --root "$OB" --catalog-source kalshi-history-trades-15m-w5 --connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector --config @configs/source-kalshi-history-trades-15m-w5.json --activate
+python -m dskit.onboarding acquire --root "$OB" --source kalshi-history-trades-15m-w5 --stream trades --mode backfill   # about 12 to 15 hours, about 4 GB, all or nothing, NO validate
+python -m dskit.onboarding verify --root "$OB"
+```
+
 ## 8. Coinbase and Deribit (`restwindow`)
 
 Coinbase BTC-USD, ETH-USD and Deribit BTC, ETH DVOL at 1 minute (dskit's `restwindow`, ADR-0240). **Coinbase is the live-safe

@@ -8,6 +8,7 @@ repeatable; the section 1 gate and the B4 ``publish`` helper run under a stubbed
 ``tmux`` are the parts a test cannot run.
 """
 
+import datetime
 import glob
 import json
 import os
@@ -60,8 +61,8 @@ def test_every_shipped_source_is_registered_by_the_runbook_with_a_connector_that
 def test_every_pull_names_the_stream_its_suite_gates_and_a_stream_the_source_declares(monkeypatch):
     monkeypatch.setenv("CRYPTO_TRADING_ROOT", CHILD_ROOT)
     registered, pulls = registrations(), PULL.findall(TEXT)
-    assert len(pulls) == 18 and len(ACQUIRE_ONLY.findall(TEXT)) == 4, (
-        "the eighteen pulls of sections 3, 4, 7 and 8 and the four ungated acquires (7e, and B7, B8 and B9 whose blob panels have no row suite)")
+    assert len(pulls) == 18 and len(ACQUIRE_ONLY.findall(TEXT)) == 5, (
+        "the eighteen pulls of sections 3, 4, 7 and 8 and the five ungated acquires (7e, 7f, and B7, B8 and B9 whose blob panels have no row suite)")
     for source, stream, mode in ACQUIRE_ONLY.findall(TEXT):
         config = {k: v for k, v in shipped(f"source-{source}.json").items() if k != "storage"}
         assert source in registered and stream in {d["stream"] for d in resolve_connector(registered[source])().discover(config)}
@@ -101,7 +102,7 @@ def section(start, stop):
 
 def test_the_15_minute_trades_pull_is_gated_on_its_measured_cost_not_called_cheap():
     """B-1: a 15-minute market's trade chain is about 15 requests, so the pull is days: behind the count gate, in its own step."""
-    gate = section("**7e.", "## 8.")
+    gate = section("**7e.", "**7f.")
     assert len(ACQUIRE_ONLY.findall(gate)) == 1 and ACQUIRE_ONLY.findall(gate)[0][0] == "kalshi-history-trades-15m", "its own step"
     assert not PULL.findall(gate), "B1-01: never through pull, whose validate cannot hold 0.84 billion rows"
     for needed in ("days", "all or nothing", "52 GB", "14,955", "9.5 to 12.3 s", "28,037", "7c", "HELD", "ADR"):
@@ -117,6 +118,19 @@ def test_the_15_minute_trades_pull_is_gated_on_its_measured_cost_not_called_chea
     assert "cheaper family" not in TEXT and "cheaper family" not in shipped("source-kalshi-history-trades-15m.json")["notes"]
     assert "days" in shipped("source-kalshi-history-trades-15m.json")["notes"] and "runbook section 7" in shipped(
         "source-kalshi-history-trades-15m.json")["notes"]
+
+
+def test_the_windowed_15_minute_trades_pull_says_its_size_and_that_validate_cannot_gate_it():
+    """ADR-0267: 7f is the bounded pull; its figures are the runbook's per-market ones times the window's market count."""
+    text = section("**7f.", "## 8.")
+    assert len(ACQUIRE_ONLY.findall(text)) == 1 and ACQUIRE_ONLY.findall(text)[0][0] == "kalshi-history-trades-15m-w5"
+    assert not PULL.findall(text), "never through pull: validate holds every row"
+    for needed in ("4,416", "12 to 15 hours", "66 million", "4 GB", "130 to 185 GB", "cannot gate", "ADR-0267", "one-day", "W4"):
+        assert needed in text, f"7f must say {needed!r}"
+    window = shipped("source-kalshi-history-trades-15m-w5.json")["close_window"]
+    days = (datetime.date.fromisoformat(window["end"]) - datetime.date.fromisoformat(window["start"])).days
+    assert days * 96 * 2 == 4416, "the market count is the window's days x 96 x two series"
+    assert "kalshi-history-trades-15m-w5" in registrations()
 
 
 def test_the_done_when_line_excepts_the_held_pull_that_cannot_be_gated():

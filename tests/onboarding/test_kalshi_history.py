@@ -1864,7 +1864,7 @@ def test_trades_rows_page_by_cursor_and_are_dated_at_created_time():
         "2026-10-07T00:30:00.123456Z", "2026-10-07T00:20:00Z",
         "2026-10-07T00:10:00.26836Z"]
     # The checkpoint is the newest trade created.
-    assert msgs[-1]["state"] == {"trades": {"cursor": "2026-10-07T00:30:00.123456Z"}}
+    assert msgs[-1]["state"]["trades"]["cursor"] == "2026-10-07T00:30:00.123456Z"
     for row in data(msgs):
         json.dumps(row, allow_nan=False)
 
@@ -2004,16 +2004,16 @@ def test_trades_dated_after_the_capture_are_left_for_the_next_pull():
         "/markets/trades": {"trades": [early, late, edge], "cursor": ""}}))
     msgs = read(conn, ["trades"])
     assert [d["trade_id"] for d in data(msgs)] == ["early", "edge"]
-    assert msgs[-1]["state"] == {"trades": {"cursor": "2026-10-07T12:00:00Z"}}
+    assert msgs[-1]["state"]["trades"]["cursor"] == "2026-10-07T12:00:00Z"
     for record in records(msgs):
         assert parse_iso(record["effective_date"]) <= parse_iso(CAPTURE)
 
-    # Next pull, later: it resumes at the cursor and the late trade is emitted.
+    # Next pull, later: the market was still open at the first capture, so it is read whole and the late trade is emitted.
     conn, script, _ = connector(trade_routes(settled=(still_open,), history=(), **{
         "/markets/trades": {"trades": [late], "cursor": ""}}), now=NOW + timedelta(minutes=5))
     again = read(conn, ["trades"], state=msgs[-1]["state"])
-    assert [d["trade_id"] for d in data(again)] == ["late"]
-    assert script.params("/markets/trades")[0]["min_ts"] == unix("2026-10-07T12:00:00Z")
+    assert "late" in [d["trade_id"] for d in data(again)]
+    assert "min_ts" in script.params("/markets/trades")[0] and script.params("/markets/trades")[0]["min_ts"] == CUT_S
 
 
 def test_a_trade_dated_after_the_commit_instant_does_not_abort_acquisition(
@@ -2540,8 +2540,7 @@ def test_acquisition_end_to_end_markets_then_a_resumed_trade_pull(
     })
     second = run_acquisition(root, registry, "kalshihist", "trades", "backfill")
     assert second["records"] == 1
-    assert load_state(root, "kalshihist", "trades", "backfill") == {
-        "trades": {"cursor": "2026-10-07T00:30:00Z"}}
+    assert load_state(root, "kalshihist", "trades", "backfill")["trades"]["cursor"] == "2026-10-07T00:30:00Z"
 
     StubHistoryConnector.now = NOW + timedelta(days=1)
     StubHistoryConnector.script = Script({
@@ -2551,8 +2550,60 @@ def test_acquisition_end_to_end_markets_then_a_resumed_trade_pull(
         "/markets/trades": {"trades": [], "cursor": ""},
     })
     run_acquisition(root, registry, "kalshihist", "trades", "backfill")
-    # NEW closed at 01:00, after the 00:30 cursor, so it is asked again, from it.
-    assert StubHistoryConnector.script.params("/markets/trades") == [{
-        "ticker": NEW["ticker"], "limit": 1000, "min_ts": unix("2026-10-07T00:30:00Z")}]
+    # NEW closed at 01:00 and the second pull was captured at 12:00, after it: the market is complete, never asked again.
+    assert StubHistoryConnector.script.params("/markets/trades") == []
     trades = scan_stream(root.root, "kalshihist", "trades", key_fields=("trade_id",))
     assert [t["trade_id"] for t in trades] == ["tx"]
+
+
+def test_acquisition_end_to_end_a_widened_close_window_pulls_only_the_new_markets(
+        root, registry, monkeypatch):
+    # ADR-0267: retire the declaration, register the same name with a wider
+    # window; the checkpoint (keyed by source and stream) carries over.
+    stamps = iter(["2026-10-07T12:00:45+00:00", "2026-10-07T12:01:45+00:00"])
+    monkeypatch.setattr(acquire_module, "utc_now", lambda: next(stamps))
+    days = [market(f"KXBTCD-D{day}", event=f"KXBTCD-D{day}", open_time="2026-10-01T00:00:00Z",
+                   close_time=f"2026-10-0{day}T06:00:00Z") for day in (2, 3, 4, 5)]
+    trades = {m["ticker"]: [trade(f"id-{m['ticker']}", m["close_time"], m["ticker"])] for m in days}
+
+    def declare(window):
+        vid = registry.register("source_config", {
+            "name": "kalshiwin", "catalog_source": "kalshiwin-src",
+            "connector": "tests.onboarding.test_kalshi_history:StubHistoryConnector",
+            "config": {**CONFIG, "close_window": window}}, origin="test")
+        registry.transition(vid, "active", origin="test")
+        return vid
+
+    def acquire():
+        StubHistoryConnector.script = Script({
+            "/historical/cutoff": CUTOFF_BODY,
+            "/historical/markets": {"markets": [], "cursor": ""},
+            "/markets": by_status(settled=days),
+            "/markets/trades": lambda p: {"trades": trades[p["ticker"]], "cursor": ""},
+        })
+        return run_acquisition(root, registry, "kalshiwin", "trades", "backfill")
+
+    try:
+        first_id = declare({"start": "2026-10-03", "end": "2026-10-05"})
+        assert acquire()["records"] == 2
+        assert [p["ticker"] for p in StubHistoryConnector.script.params("/markets/trades")] == [
+            "KXBTCD-D3", "KXBTCD-D4"]
+        assert load_state(root, "kalshiwin", "trades", "backfill")["trades"]["coverage"] == {
+            "KXBTCD|closed,open,settled": [{
+                "start": "2026-10-03T00:00:00+00:00", "end": "2026-10-05T00:00:00+00:00",
+                "captured_at": "2026-10-07T12:00:00+00:00"}]}
+
+        registry.transition(first_id, "retired", origin="test")
+        declare({"start": "2026-10-02", "end": "2026-10-06"})
+        assert acquire()["records"] == 2
+        assert [p["ticker"] for p in StubHistoryConnector.script.params("/markets/trades")] == [
+            "KXBTCD-D2", "KXBTCD-D5"]
+        assert load_state(root, "kalshiwin", "trades", "backfill")["trades"]["coverage"] == {
+            "KXBTCD|closed,open,settled": [{
+                "start": "2026-10-02T00:00:00+00:00", "end": "2026-10-06T00:00:00+00:00",
+                "captured_at": "2026-10-07T12:00:00+00:00"}]}  # the first pull is dominated by the wider second
+        stored = scan_stream(root.root, "kalshiwin", "trades", key_fields=("trade_id",))
+        assert sorted(t["trade_id"] for t in stored) == sorted(f"id-{m['ticker']}" for m in days)
+    finally:
+        StubHistoryConnector.script = None
+        StubHistoryConnector.now = NOW

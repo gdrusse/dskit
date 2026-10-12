@@ -1,0 +1,17 @@
+{
+  "notes": "Registration input, not a run input: the 15-minute BTC/ETH trades (KXBTC15M, KXETH15M) of ONLY the markets that close in 2026-09-15 up to (not including) 2026-10-08 UTC, 23 days (W5), for the maker-quote fill simulation. Same pack, fields, series, statuses and storage as source-kalshi-history-trades-15m.json (read its notes for the routing and the trade rules); the one difference is close_window (ADR-0267), which asks the venue only for markets whose close_time is in the window. The HELD full source keeps its own name and its own checkpoint, so nothing here touches it. Size, from the runbook's per-market figures (14,955 trades and 9.5 to 12.3 s a market): 23 days x 96 markets x 2 series = about 4,416 markets, so about 12 to 15 hours in ONE all-or-nothing acquire, about 66 million rows and about 4 GB staged beside the store. validate CANNOT gate it: about 2.0 to 2.8 KB a row is about 130 to 185 GB, against a box of about 17 GB (a gate fits only about 3 million rows, about a day of markets), so run acquire alone (runbook 7f, never the pull helper) and if a gate is wanted, gate a copy of this config registered under another name with a one-day close_window. A later pull with a wider window (W4 starts 2026-08-01) fetches only the markets the earlier windows did not cover (retire this declaration and register the wider one under the SAME source name so the checkpoint carries over). A trade is an event of the market's life, not a quote: a feature at decision time I may use only trades with created_time before I. Register: python -m dskit.onboarding register-source kalshi-history-trades-15m-w5 --catalog-source kalshi-history-trades-15m-w5 --connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector --config @configs/source-kalshi-history-trades-15m-w5.json --activate --root <store root>; then acquire --source kalshi-history-trades-15m-w5 --stream trades --mode backfill.",
+  "series": [
+    "KXBTC15M",
+    "KXETH15M"
+  ],
+  "close_window": {
+    "start": "2026-09-15",
+    "end": "2026-10-08"
+  },
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}
