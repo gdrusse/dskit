@@ -30952,3 +30952,28 @@ The document `children/index_options/configs/run-forecast-dispersion-ic.json` co
 **Approximations (stated, not fixed).** The horizon is the lead from the information instant, a whole number of bars; the few seconds to the fill and the 60-second settlement average (centred about 30 s earlier, about a third of that minute's variance) are ignored, so the CDF is slightly too wide, most at short leads.
 **Sweep (2026-10-11).** No collisions for `PanelHorizonFairValue`, `HorizonRule`, `HORIZON_RULES`; `CurveBinaryFairValue` is the nearest neighbour.
 **Test.** `tests/pipeline_libs/test_panel_fair_value.py`: the number against an independent restatement, the artifact route and its hash pin, the look-ahead guard, rule and status cases, default-deny params.
+
+## ADR-0263 — ThetaData daily option and underlying history through onboarding (PROPOSED)
+
+**Status:** PROPOSED 2026-10-12. Waits on approval; no code, no subscription until then.
+
+**Context.** The index_options research (A1136–A1152) is power-limited by about 95 dates and thin Alpaca chains; no region of the forecast shows an edge. The owner will subscribe to ThetaData Options **Standard** ($80/month: history from 2016-01, every OPRA NBBO quote, IV and first-order greeks, 4 concurrent requests, personal-use licence) for one month and wants every daily field for every ticker, pulled continuously. Scope answered 2026-10-12: "daily everything". Tick and 1-minute history are out (tens of TB; 589 GB free).
+
+**Decision.** One tier-2 module `dskit/onboarding/libs/thetadata.py`, following `alpaca.py` (Connector contract, `backoff`, credentials by env-var name only, vendor transport inside methods):
+
+1. `ThetaDataOptionEodConnector`: per (root, trade date) the full chain's end-of-day row: OHLCV, trade count, closing bid/ask and sizes, open interest, implied volatility and first-order greeks, with the contract (root, expiration, strike, right). Streams `contracts` and `eod`; key (`symbol`, `expiration`, `strike`, `right`, `date`).
+2. `ThetaDataBarsConnector`: the underlying's daily OHLCV, plus split and dividend events for the same roots.
+3. Both read the local Theta Terminal REST endpoint (loopback, one address spelling), with credentials `THETA_USERNAME` / `THETA_PASSWORD` read from `~/.config/dskit/` and never printed or written to a config.
+4. **Resumable and continuous:** the checkpoint is (root, date) done; on 429 / `OS_LIMIT` retry with backoff, on 570 `LARGE_REQUEST` split the request by expiration; one writer, 4 concurrent requests at most; the run is a plain `acquire backfill` loop that can be killed and restarted.
+5. **Order:** our 417 names first, then the vendor's remaining roots by option-volume rank (ADR-0235 TrailingRank), so a month that ends early still holds the useful names. Dates newest to oldest within a root.
+6. Config only otherwise: `register-source` JSON per store (`symbols_file` hash-pinned, `start`, `end`, parameters). Storage Parquet via the existing onboarding writers; estimate 150–300 GB.
+
+**Ruling needed (2026 data).** The owner's directive is "up until current day". The standing rule is that 2026 data stays untouched until the owner decides ("once we touch it, we can't go back"). Proposed: the registered stores end **2025-12-31**; the 2026 slice is pulled LAST into a separate, unregistered, sealed directory that nothing reads, and is deleted if the owner says so. Alternative: skip 2026 entirely. The owner rules before the 2026 pull starts.
+
+**Consequences.** Daily chains for roughly the whole market from 2016, which lets the existing no-training tests (HAR-vs-implied, region, real-CDF CRPS) run over ten years with 2018, 2020 and 2022; model-based tests still need forecasts. Corporate-action fields from the vendor are checked against our own split inventory before any analysis. Vendor IV/greeks are recorded, not trusted: analyses use bid/ask marks and our `OptionPriceCDF`.
+
+**Unknowns, resolved before the paid month.** (a) The exact bulk endpoints and whether one call returns a whole chain per date, from the REST reference read in-session; (b) the free tier (EOD from 2023-06, 20 requests/minute) is the connector's integration test, with a fake transport for unit tests; (c) whether the licence permits keeping files after cancelling (ask the vendor in writing); (d) throughput: 4 concurrent requests × roots × ~2,500 days must fit one month, measured on the free tier first; if not, Pro ($160, 2012) is not needed but a second month may be.
+
+**Sweep** (`thetadata theta data,opra,historical option eod,bulk option,vendor option pull`, 2026-10-12): no matches. Closest owners: `alpaca.py` (transport and connector pattern), `localtables.py` (pinned archives), ADR-0235 (ranking).
+
+**Test.** `tests/onboarding/test_thetadata.py` against a recorded-response fake transport (chains, split event, 429 retry, 570 split, resume after kill, credentials never in output); a free-tier smoke on one root and one week; a contract check against the Alpaca chains on overlapping dates (bid/ask, open interest, strike set).
