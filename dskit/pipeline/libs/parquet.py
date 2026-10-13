@@ -20,6 +20,7 @@ builds an expensive panel once and every later stage reuses it.
 from __future__ import annotations
 
 import datetime
+import fnmatch
 
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
@@ -421,13 +422,16 @@ class ParquetStreamRows(Node):
     in lexical manifest order; their records are concatenated in that order.
     This node has no cross-source deduplication or latest-vintage claim: roots
     are independent snapshots and a caller that needs a winner must name that
-    authority upstream.
+    authority upstream. An optional per-source ``include`` (a non-empty list of glob patterns on the member
+    path inside the stream, e.g. ``"*/underlying_prices.parquet"``) reads only the matching members, for a
+    snapshot that also holds non-Parquet files such as raw API responses; it must match at least one member
+    (ADR-0265 Amendment 5).
     """
 
     role = "data"
     outputs = ("records",)
     _PARAMS = ("sources",)
-    _SOURCE_KEYS = ("root", "source", "stream", "snapshot", "columns", "read_bounds")
+    _SOURCE_KEYS = ("root", "source", "stream", "snapshot", "columns", "read_bounds", "include")
 
     @classmethod
     def validate_params(cls, params):
@@ -459,6 +463,10 @@ class ParquetStreamRows(Node):
                 problems.append(f"{prefix}.columns must map unique output names from non-empty source names")
             problems += [f"{prefix}.{problem}" for problem in
                          DateBoundedParquet.problems(source.get("read_bounds"))]
+            include = source.get("include")
+            if "include" in source and (not isinstance(include, list) or not include or not all(
+                    isinstance(pattern, str) and pattern for pattern in include)):
+                problems.append(f"{prefix}.include must be a non-empty list of glob patterns on the member path")
         return problems
 
     def _snapshots(self):
@@ -479,13 +487,17 @@ class ParquetStreamRows(Node):
             if manifest["source"] != source["source"]:
                 raise ValueError(f"{self.key}: snapshot belongs to another source")
             prefix = f"{source['stream']}/"
+            patterns = source.get("include")
             files = sorted(
                 (entry["relpath"][len(prefix):],
                  payload / entry["relpath"][len(prefix):], entry["sha256"])
                 for entry in manifest["files"]
-                if entry["relpath"].startswith(prefix))
+                if entry["relpath"].startswith(prefix)
+                and (patterns is None or any(fnmatch.fnmatchcase(entry["relpath"][len(prefix):], pattern)
+                                             for pattern in patterns)))
             if not files:
-                raise ValueError(f"{self.key}: pinned stream has no manifest members")
+                raise ValueError(f"{self.key}: pinned stream has no manifest members"
+                                 + (f" matching include {patterns}" if patterns else ""))
             snapshots.append({
                 "source": source["source"], "stream": source["stream"],
                 "snapshot": snapshot_dir.name, "manifest_sha256": source["snapshot"],

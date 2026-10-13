@@ -1,5 +1,7 @@
 """The toolkit-owned kinds: the real ``stat_test`` and ``validate``."""
 
+import sys
+
 import pytest
 
 from dskit.pipeline.base import ConfigError, OutputsConfig, TimeSplitConfig
@@ -1147,3 +1149,73 @@ def test_cross_section_ic_default_denies_and_checks_each_knob():
     m = _ic(_ic_rows(), h_steps=1.0, lags=1.0, min_names=3.0, usable_names=5.0)["summary"]["measures"]["plain"]
     assert m["h_steps"] == 1 and m["lags"] == 1 and m["n_stamps"] == 3
     assert "CrossSectionIC" in __import__("dskit.pipeline.kinds_stats", fromlist=["x"]).__all__
+
+
+# -- CrossSectionIC: a declared sign and one BH / Bonferroni family across the measures (ADR-0265 Amendment 5) ----
+
+def _signed_rows(n_stamps=14, names=8):
+    """Per stamp: ``up`` orders the outcome (IC +1 with noise), ``down`` reverses it, ``junk`` is a fixed shuffle."""
+    import random
+    rng = random.Random(4)
+    rows = []
+    for k in range(n_stamps):
+        stamp = f"2024-{1 + k // 28:02d}-{1 + k % 28:02d}"
+        for i in range(names):
+            y = float(i) + rng.gauss(0, 0.3)
+            rows.append({"d": stamp, "s": f"n{i}", "y": y, "up": float(i), "down": float(-i),
+                         "junk": float((i * 5) % 7 + (k % 3))})
+    return rows
+
+
+SIGNED = {"stamp_field": "d", "series_field": "s", "h_steps": 1, "measures": {
+    "up": {"forecast_field": "up", "outcome_field": "y", "sign": 1},
+    "down": {"forecast_field": "down", "outcome_field": "y", "sign": -1},
+    "wrong": {"forecast_field": "up", "outcome_field": "y", "sign": -1},
+    "junk": {"forecast_field": "junk", "outcome_field": "y", "sign": 1}},
+    "family": {"alpha": 0.05}}
+
+
+def test_a_declared_sign_flips_the_tested_direction_and_leaves_the_raw_ic_alone():
+    m = _ic(_signed_rows(), **{k: v for k, v in SIGNED.items() if k != "family"})["summary"]["measures"]
+    assert m["down"]["ic"] < -0.9 and m["down"]["signed"]["ic"] == pytest.approx(-m["down"]["ic"])
+    assert m["down"]["signed"]["ic_p"] < 0.01 and m["wrong"]["signed"]["ic_p"] > 0.99
+    assert m["up"]["signed"]["ic"] == pytest.approx(m["up"]["ic"]) and m["up"]["sign"] == 1
+
+
+def test_a_measure_without_a_sign_has_no_signed_block():
+    m = _ic(_ic_rows())["summary"]["measures"]["plain"]
+    assert "signed" not in m and "sign" not in m
+
+
+def test_the_family_corrects_the_signed_one_sided_p_values_across_the_measures():
+    from dskit.pipeline.stats import benjamini_hochberg, bonferroni
+    out = _ic(_signed_rows(), **SIGNED)["summary"]
+    p = {name: m["signed"]["ic_p"] for name, m in out["measures"].items()}
+    fam = out["family"]
+    floored = {k: max(v, sys.float_info.min) for k, v in p.items()}      # a correction refuses p == 0
+    assert fam["alpha"] == 0.05 and fam["p"] == pytest.approx(floored) and fam["withheld"] == []
+    assert fam["decisions"]["bh"] == benjamini_hochberg(floored, 0.05)
+    assert fam["decisions"]["bonferroni"] == bonferroni(floored, 0.05)
+    assert fam["decisions"]["bh"]["up"] is True and fam["decisions"]["bh"]["down"] is True
+    assert fam["decisions"]["bh"]["wrong"] is False
+
+
+def test_a_withheld_measure_stays_in_the_family_at_p_one_and_is_named():
+    rows = _signed_rows(n_stamps=3)
+    out = _ic(rows, **{**SIGNED, "lags": 2})["summary"]            # the band spans 3 stamps: no HAC for anyone
+    assert sorted(out["family"]["withheld"]) == sorted(SIGNED["measures"])
+    assert set(out["family"]["p"].values()) == {1.0}
+
+
+def test_the_family_needs_a_sign_on_every_measure_and_a_valid_alpha_and_corrections():
+    base = {"stamp_field": "d", "series_field": "s"}
+    problems = CrossSectionIC.validate_params({**base, "measures": {
+        "a": {"forecast_field": "f", "outcome_field": "y", "sign": 1}, "b": {"forecast_field": "f", "outcome_field": "y"}},
+        "family": {"alpha": 0.05}})
+    assert any("every measure" in p for p in problems)
+    ok = {"a": {"forecast_field": "f", "outcome_field": "y", "sign": -1}}
+    assert CrossSectionIC.validate_params({**base, "measures": ok, "family": {"alpha": 0.05, "corrections": ["bh"]}}) == []
+    for bad in ({"alpha": 0}, {"alpha": 0.05, "corrections": []}, {"alpha": 0.05, "corrections": ["nope"]},
+                {"alpha": 0.05, "x": 1}, {}):
+        assert CrossSectionIC.validate_params({**base, "measures": ok, "family": bad}), bad
+    assert CrossSectionIC.validate_params({**base, "measures": {"a": {"forecast_field": "f", "outcome_field": "y", "sign": 2}}})
