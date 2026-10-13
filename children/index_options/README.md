@@ -569,6 +569,9 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # run-theta-chain-census.json, run-theta-chain-features.json (ADR-0265: the
                            # H-census and the NBBO chain-day features over the ThetaData sample at
                            # /home/russell/data/thetadata/options-tested, read-only, end_before 2026-01-01)
+                           # run-theta-chain-events.json (ADR-0265 node 5: the earnings-like events of
+                           # the sample root from the front-IV crush, retrospective labels) with
+                           # theta-earnings-labels-2016-2020.json (dev-period announcement dates)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner

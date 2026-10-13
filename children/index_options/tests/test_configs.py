@@ -67,6 +67,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-forecast-dispersion-ic.json",
         # ADR-0265: the H-census and the chain-day features on the landed ThetaData sample.
         "configs/run-theta-chain-census.json", "configs/run-theta-chain-features.json",
+        # ADR-0265 node 5: the chain-event document and its dev-period labelled announcement dates.
+        "configs/run-theta-chain-events.json", "configs/theta-earnings-labels-2016-2020.json",
         "docs/memos/2026-10-09-condor-executable-clock-contract.md",
         "docs/memos/2026-10-09-condor-executable-clock-result.md",
         "docs/research/distribution-modeling/2026-10-09-condor-selection-intuition.md",
@@ -356,8 +358,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the seven performance-pilot overlays and their research note (merged 2026-10-10) = 495,
     # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497,
     # plus the ADR-0259 forecast-dispersion IC document = 498, plus its result memo = 499;
-    # plus ADR-0265's chain census and chain features documents = 513.
-    assert len(actual) == 513
+    # plus ADR-0265's chain census and chain features documents = 513, plus the chain-events document and
+    # its labelled dates = 515.
+    assert len(actual) == 515
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -3960,3 +3963,59 @@ def test_the_features_document_joins_the_t_bill_rate_dated_by_observation_and_se
     assert (params["rate_date_field"], params["rate_value_field"], params["rate_scale"]) == (
         "observation_date", "DGS3MO", 0.01)
     assert params["symbol_contiguous"] is True and "presorted" not in params and "rate" not in params
+
+
+# -- ADR-0265 node 5: the chain-event document and its labelled dates --------------------------------------
+
+FROZEN_EVENT_RULES = {
+    "window": 60, "min_history": 20, "crush_min": 0.12, "crush_z_min": 3.0, "spread_drop_min": 0.01,
+    "refractory": 50, "max_market_share": 0.4, "min_symbols_for_guard": 10, "max_gap_days": 5, "entry_lead": 3,
+    "exit_lag": 1, "scale_floor": 0.01}
+
+
+def test_the_events_document_plans_validates_its_nodes_and_reads_development_years_only(child_root):
+    from dskit.pipeline.libs.chain_events import ChainEventCalibrator, ChainEventDetector
+    planned = plan(load_document(str(child_root / "configs" / "run-theta-chain-events.json")))
+    classes = {item.cls for item in planned.resolved.values()}
+    assert {ChainEventDetector, ChainEventCalibrator} <= classes
+    nodes = _theta_doc(child_root, "run-theta-chain-events.json")["pipeline"]
+    for node in nodes.values():
+        if node["uses"].endswith(("ChainEventDetector", "ChainEventCalibrator", "ChainDayFeatures")):
+            if node["uses"].endswith("ChainEventCalibrator"):
+                assert ChainEventCalibrator.validate_params(node["params"]) == []
+            elif node["uses"].endswith("ChainEventDetector"):
+                assert ChainEventDetector.validate_params(node["params"]) == []
+            assert node["params"]["end_before"] == "2021-01-01"    # development years only until the validation run
+    reader = nodes["chain"]["params"]
+    assert (reader["root"], reader["source"], reader["stream"]) == (THETA_STORE, "theta", "option_eod")
+    dates = reader["keep_values"]["date"]
+    assert dates[0] == "2016-01-04" and dates[-1] == "2020-12-31" and len(dates) == len(set(dates))
+    sealed = {(w["field"], w["op"], w["value"]) for w in nodes["rates"]["params"]["where"]}
+    assert ("observation_date", "<", "2021-01-01") in sealed
+    written = [n["params"]["path"] for n in nodes.values() if n["uses"] == "records-write"]
+    assert written and not any(path.startswith("/home/russell/data/thetadata") for path in written)
+
+
+def test_the_events_document_carries_every_frozen_rule_value_and_dskit_none(child_root):
+    from dskit.pipeline.libs import chain_events
+    nodes = _theta_doc(child_root, "run-theta-chain-events.json")["pipeline"]
+    detector, labelled = nodes["events"]["params"], nodes["events_labelled"]["params"]
+    assert {k: detector[k] for k in chain_events.RULE_NAMES} == FROZEN_EVENT_RULES
+    assert {k: labelled[k] for k in chain_events.RULE_NAMES} == FROZEN_EVENT_RULES
+    assert nodes["calibrate"]["params"]["base"] == FROZEN_EVENT_RULES
+    assert (detector["front_target"], detector["back_target"]) == (30, 90)
+    assert labelled["labelled_only"] is True and not hasattr(chain_events, "DEFAULT_RULES")
+    assert "move_mult" not in detector      # the realized move is an output, never a detection criterion
+
+
+def test_the_labelled_dates_are_dev_period_only_pinned_and_each_carries_a_confidence(child_root):
+    import hashlib
+    path = child_root / "configs" / "theta-earnings-labels-2016-2020.json"
+    doc = json.loads(path.read_text())
+    assert doc["labels"] and all(r["confidence"] in {"high", "medium"} for r in doc["labels"])
+    assert all("2016-01-01" <= r["earnings_date"] <= "2020-12-31" for r in doc["labels"])
+    assert len({(r["symbol"], r["earnings_date"]) for r in doc["labels"]}) == len(doc["labels"])
+    dropped = {("GOOGL", "2016-07-28"), ("NVDA", "2017-05-09")}          # disputed on review
+    assert not dropped & {(r["symbol"], r["earnings_date"]) for r in doc["labels"]}
+    pinned = _theta_doc(child_root, "run-theta-chain-events.json")["pipeline"]["labels"]["params"]
+    assert pinned["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest() and pinned["expect"] == len(doc)

@@ -1,0 +1,490 @@
+{
+ "notes": "Announcement dates (after the close for all five names; NVDA, AMZN, GOOGL, MSFT, AAPL all report after the US close) of quarterly results, 2016-01-01..2020-12-31 only, compiled from memory of the public releases by the implementer (Claude Sonnet 5.5, 2026-10-12) and NOT cross-checked against a source in this repository. confidence: high = certain; medium = recalled with good confidence but unverified. Dates the implementer or the reviewer was not sure of were dropped (GOOGL 2017-07, GOOGL 2016-07-28 and NVDA 2017-05-09 are absent). A date after 2020-12-31 is never listed. Intended use: ChainEventCalibrator labels for ADR-0265 H2; only AAPL has a landed feature table at the time of writing.",
+ "labels": [
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2016-01-26",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2016-04-26",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2016-07-26",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2016-10-25",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2017-01-31",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2017-05-02",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2017-08-01",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2017-11-02",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2018-02-01",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2018-05-01",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2018-07-31",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2018-11-01",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2019-01-29",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2019-04-30",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2019-07-30",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2019-10-30",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2020-01-28",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2020-04-30",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2020-07-30",
+   "confidence": "high"
+  },
+  {
+   "symbol": "AAPL",
+   "earnings_date": "2020-10-29",
+   "confidence": "high"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2016-01-28",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2016-04-21",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2016-07-19",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2016-10-20",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2017-01-26",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2017-04-27",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2017-07-20",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2017-10-26",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2018-01-31",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2018-04-26",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2018-07-19",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2018-10-24",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2019-01-30",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2019-04-24",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2019-07-18",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2019-10-23",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2020-01-29",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2020-04-29",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2020-07-22",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "MSFT",
+   "earnings_date": "2020-10-27",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2016-01-28",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2016-04-28",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2016-07-28",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2016-10-27",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2017-02-02",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2017-04-27",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2017-07-27",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2017-10-26",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2018-02-01",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2018-04-26",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2018-07-26",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2018-10-25",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2019-01-31",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2019-04-25",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2019-07-25",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2019-10-24",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2020-01-30",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2020-04-30",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2020-07-30",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "AMZN",
+   "earnings_date": "2020-10-29",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2016-02-01",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2016-04-21",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2016-10-27",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2017-02-02",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2017-04-27",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2017-10-26",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2018-02-01",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2018-04-23",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2018-07-23",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2018-10-25",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2019-02-04",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2019-04-29",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2019-07-25",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2019-10-28",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2020-02-03",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2020-04-28",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2020-07-30",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "GOOGL",
+   "earnings_date": "2020-10-29",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2016-02-17",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2016-05-10",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2016-08-11",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2016-11-10",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2017-02-09",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2017-08-10",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2017-11-09",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2018-02-08",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2018-05-10",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2018-08-16",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2018-11-15",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2019-02-14",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2019-05-16",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2019-08-15",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2019-11-14",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2020-02-13",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2020-05-21",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2020-08-19",
+   "confidence": "medium"
+  },
+  {
+   "symbol": "NVDA",
+   "earnings_date": "2020-11-18",
+   "confidence": "medium"
+  }
+ ]
+}
