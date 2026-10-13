@@ -10,7 +10,12 @@ It decides nothing: a candidate is read by a person, and a confirmed break is de
 **Two signals**, either of which makes a candidate:
 
 * ``price_jump`` - the reported underlying price moves by more than ``price_factor`` (up or down) between two
-  consecutive priced dates of the root;
+  consecutive priced dates of the root, and (when ``persistence`` is declared) the shift PERSISTS: each of the
+  ``persistence`` priced dates before the jump is within ``price_factor`` of the pre-jump price, and each of the
+  ``persistence`` dates from the jump on is at least ``price_factor`` away from it. A spike that reverts (a
+  halt, a bad print, a takeover rumour) fails the second test, and the way back from it fails the first: neither
+  is a new company, both are counted as ``reverted``. Near the ends of the series the dates available are
+  judged;
 * ``rows_shift`` - the median rows per date over the ``window`` dates after a date differs from the median over the
   ``window`` before it by more than ``rows_factor`` (up or down), AND the strikes near the money are discontinuous
   there: between consecutive dates inside the shifted run, the near-spot strike intervals (strikes within ``band``
@@ -72,18 +77,21 @@ class ReuseDetector:
         The near-spot interval overlap, in ``[0, 1]``, at or below which strikes count as discontinuous.
     split_share : float
         The rise in the off-grid row share, in ``[0, 1]``, that signals a split.
+    persistence : int, optional
+        Priced dates on each side a price jump must hold for (see the module docstring); absent switches the
+        persistence test off.
 
     Examples
     --------
     One root whose price goes from 3 to 100 and whose chain grows sevenfold on new strikes::
 
-        found, explained = ReuseDetector(2.0, rows_factor=4.0).scan("AI", days)
+        found, explained, reverted = ReuseDetector(2.0, rows_factor=4.0).scan("AI", days)
         found[0]["date"]        # the first date of the new regime
     """
 
-    def __init__(self, price_factor, rows_factor=None, window=5, overlap_max=0.1, split_share=0.05):
+    def __init__(self, price_factor, rows_factor=None, window=5, overlap_max=0.1, split_share=0.05, persistence=None):
         self.price_factor, self.rows_factor, self.window = price_factor, rows_factor, window
-        self.overlap_max, self.split_share = overlap_max, split_share
+        self.overlap_max, self.split_share, self.persistence = overlap_max, split_share, persistence
 
     # -- the two signals -----------------------------------------------------------------------
 
@@ -91,6 +99,16 @@ class ReuseDetector:
         """Return the indices whose price differs from the previous priced date's by more than the factor."""
         return [i for i in range(1, len(days))
                 if _factor(_ratio(days[i]["price"], days[i - 1]["price"])) >= self.price_factor]
+
+    def _persists(self, days, i):
+        """Say whether the price jump into index ``i`` holds on both sides for ``persistence`` dates (None if off)."""
+        if self.persistence is None:
+            return None
+        n, level = self.persistence, days[i - 1]["price"]
+        before = days[max(0, i - 1 - n):i - 1]
+        after = days[i:i + n]
+        return (all(_factor(_ratio(d["price"], level)) < self.price_factor for d in before)
+                and all(_factor(_ratio(d["price"], level)) >= self.price_factor for d in after))
 
     def _medians(self, days, i):
         """Return the median rows over the ``window`` dates before and from index ``i`` (``None`` if short)."""
@@ -139,6 +157,7 @@ class ReuseDetector:
         w = self.window
         before_rows, after_rows, _ = self._medians(days, i)
         share_before, share_after = self._share(days, i - w, i), self._share(days, i, i + w)
+        persists = self._persists(days, i)
         signature = None if share_before is None or share_after is None \
             else share_after - share_before >= self.split_share
         return {"symbol": symbol, "date": days[i]["date"], "previous_date": days[i - 1]["date"],
@@ -148,11 +167,11 @@ class ReuseDetector:
                 "rows_median_before": before_rows, "rows_median_after": after_rows,
                 "rows_ratio": _ratio(after_rows, before_rows),
                 "near_spot_overlap": _overlap(days[i - 1]["near"], days[i]["near"]),
-                "split_signature": signature, "nonstandard_share_before": share_before,
+                "split_signature": signature, "price_persists": persists, "nonstandard_share_before": share_before,
                 "nonstandard_share_after": share_after}
 
     def scan(self, symbol, days):
-        """Return ``(candidates, split_explained)`` for one root.
+        """Return ``(candidates, split_explained, reverted)`` for one root.
 
         Parameters
         ----------
@@ -166,9 +185,13 @@ class ReuseDetector:
         Returns
         -------
         tuple
-            The candidate rows (see the module docstring) and the count of jumps a split explains.
+            The candidate rows (see the module docstring), the count of jumps a split explains and the count of
+            price jumps dropped for not persisting.
         """
-        hits = {i: {"price_jump"} for i in self._jumps(days)}
+        jumps = self._jumps(days)
+        kept = [i for i in jumps if self._persists(days, i) is not False]
+        reverted = len(jumps) - len(kept)
+        hits = {i: {"price_jump"} for i in kept}
         for i in self._shifts(days):
             hits.setdefault(i, set()).add("rows_shift")
         found, explained, group = [], 0, []
@@ -187,4 +210,4 @@ class ReuseDetector:
                 explained += 1
             else:
                 out.append(row)
-        return out, explained
+        return out, explained, reverted

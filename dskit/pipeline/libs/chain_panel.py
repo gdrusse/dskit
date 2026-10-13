@@ -14,17 +14,20 @@ it, a gate value moved, a param changed) is rebuilt; a torn temp file is never t
 (never quoted, or no target resolved) leaves a zero-row file so it is skipped next time too, and is counted.
 
 **Phase 2, by date.** All the roots' files are read back a few months at a time, sorted by date, symbol and target,
-and cut into ``<path>/panel/<YYYY-MM-DD>.parquet``, written atomically. The whole panel carries one digest of every
-root's identity; when it equals the manifest's and every listed file is present, phase 2 is skipped. The
-``manifest.json`` (every file's sha256, rows and bytes, and each root's rows) is written LAST, so the directory
-registers as a ``localblobs`` stream like an array panel does.
+and cut into ``<path>/panel/<YYYY-MM-DD>.parquet`` beside ``panel/manifest.json`` (every file's sha256, rows and
+bytes, and each root's rows). The whole directory is built in ``<path>/.panel-next`` (date files first, manifest last)
+and swapped in by two renames, so a reader sees one panel or the other and a crash leaves the previous one (a cut
+swap is restored by the next run). The whole panel carries one digest of every root's identity; when it equals the
+manifest's and every listed file is present, phase 2 is skipped. Dates of roots no longer in the input disappear
+with the old directory. ``panel/`` registers as a ``localblobs`` stream like an array panel does.
 
 **Universe gate hooks.** ``first_quote_file`` (a JSON ``{root: ISO date}``, the export's ``first_quote.json``) adds
 ``first_quote_field`` (the date, the earliest over a stitched series' raw roots) and ``gate_field`` (true from that
 date); ``census_file`` (a census records JSON-lines file) adds the declared ``census_columns`` (output column ->
-[census field, arrow type]), for example the liquidity tercile. A root the files do not name gets nulls and is
-counted. The columns are carried, never applied: a test chooses its universe, and a census statistic is a
-whole-sample number (see ``ChainCensus``).
+[census field, arrow type]), for example the liquidity tercile, and ``census_asof`` is the date those statistics
+were computed up to (the census's ``liquidity_end_before``): the columns are written ONLY on rows dated on or
+after it and are null before, so a row can never carry a number computed from its own future. A root the files do not name gets nulls and is
+counted. The columns are carried, never applied: a test chooses its universe.
 
 **Counters** (``summary``): roots, built, skipped, empty; rows and dates; dates written; roots without a first
 quote or census row; the feature node's own counts summed over roots (status counts per target, quote exclusions,
@@ -37,6 +40,7 @@ numpy-free; pyarrow is imported inside the methods that need it.
 import hashlib
 import json
 import os
+import shutil
 import time
 import urllib.parse
 from datetime import date
@@ -51,7 +55,7 @@ __all__ = ["CENSUS_TYPES", "NODE_KINDS", "PANEL_VERSION", "ChainPanelBuild"]
 NODE_KINDS = ()
 
 #: Bumped when the files' layout or the identity recipe changes; it is part of every root's identity.
-PANEL_VERSION = 1
+PANEL_VERSION = 3
 #: The Arrow types a census column may declare.
 CENSUS_TYPES = ("int32", "int64", "float64", "string", "bool")
 
@@ -59,6 +63,10 @@ _META = "dskit.panel.meta"
 _COUNTS = "dskit.panel.counts"
 _RANGE = "dskit.panel.range"
 _ROWS = "dskit.panel.rows"
+_READER = "dskit.panel.reader"
+_STALE = "dskit.panel.stale"
+#: The reader counters that add up across the per-root reads.
+_READER_SUMS = ("members", "rows", "units", "skipped_rows", "skipped_units", "unit_row_mismatch")
 _DIGEST = "dskit.panel.digest"
 _ROOTS, _DATES = "roots", "panel"
 
@@ -95,9 +103,9 @@ class ChainPanelBuild(Node):
     """
 
     role = "transform"
-    outputs = ("summary", "manifest")
+    outputs = ("summary", "manifest", "stale_spot_days")
     _PARAMS = ("features", "path", "first_quote_file", "first_quote_field", "gate_field", "census_file",
-               "census_columns", "census_symbol_field", "chunk_months", "repartition")
+               "census_columns", "census_asof", "census_symbol_field", "chunk_months", "repartition")
     _FIRST = ("first_quote_file", "first_quote_field", "gate_field")
 
     # -- validation ----------------------------------------------------------------------------------
@@ -145,6 +153,17 @@ class ChainPanelBuild(Node):
         if ("census_file" in params) != ("census_columns" in params):
             problems.append("declare census_file and census_columns together (census_columns maps an output "
                             "column to [census field, arrow type])")
+        if ("census_file" in params) != ("census_asof" in params):
+            problems.append("declare census_asof with census_file: the ISO date the census statistics were computed "
+                            "up to (a whole-sample number is visible only on rows from that date on)")
+        if "census_asof" in params:
+            try:
+                ok = (isinstance(params["census_asof"], str)
+                      and date.fromisoformat(params["census_asof"]).isoformat() == params["census_asof"])
+            except ValueError:
+                ok = False
+            if not ok:
+                problems.append(f"census_asof must be an ISO date text YYYY-MM-DD, got {params['census_asof']!r}")
         if "census_file" in params and (not isinstance(params["census_file"], str) or not params["census_file"]):
             problems.append(f"census_file must be a non-empty string, got {params['census_file']!r}")
         columns = params.get("census_columns")
@@ -167,7 +186,9 @@ class ChainPanelBuild(Node):
 
         kinds = {"expiration": pa.date32(), "dte": pa.int32()}
         fields = self.params["features"]["fields"]
-        return [(out, kinds.get(name, pa.float64())) for name, out in fields.items() if name in FEATURES]
+        columns = [(out, kinds.get(name, pa.float64())) for name, out in fields.items() if name in FEATURES]
+        stale = self.params["features"].get("stale_spot_field")
+        return columns + ([(stale, pa.bool_())] if stale else [])
 
     def _gate_columns(self):
         """Return the ordered ``(name, arrow type)`` of the universe-gate columns."""
@@ -238,9 +259,11 @@ class ChainPanelBuild(Node):
 
     def _identity(self, source, symbol, first, census_values, rates_digest):
         """Return the identity dict of one root: everything its file's rows depend on."""
-        return {"panel_version": PANEL_VERSION, "features": value_hash(self.params["features"]),
+        return {"panel_version": PANEL_VERSION, "schema": value_hash([[n, str(t)] for n, t in zip(
+                    self._schema().names, self._schema().types)]),
+                "features": value_hash(self.params["features"]),
                 "rates": rates_digest, "reader": source.identity(), "files": source.contributing(symbol),
-                "first_quote": first, "census": census_values,
+                "first_quote": first, "census": census_values, "census_asof": self.params.get("census_asof"),
                 "gate": [self.params.get(n) for n in ("first_quote_field", "gate_field")],
                 "columns": {k: v for k, v in sorted(self.params.get("census_columns", {}).items())}}
 
@@ -275,8 +298,11 @@ class ChainPanelBuild(Node):
             fq = date.fromisoformat(first) if first else None
             data[p["first_quote_field"]] = [fq] * len(rows)
             data[p["gate_field"]] = [None if fq is None else d >= fq for d in data[f["date_field"]]]
+        asof = p.get("census_asof")
         for name in p.get("census_columns", {}):
-            data[name] = [census_values[name]] * len(rows)
+            # a statistic computed from dates before census_asof says nothing known about earlier rows: null there
+            data[name] = [census_values[name] if asof is not None and d >= date.fromisoformat(asof) else None
+                          for d in data[f["date_field"]]]
         return pa.table({name: pa.array(data[name], type=schema.field(name).type) for name in schema.names},
                         schema=schema)
 
@@ -311,11 +337,14 @@ class ChainPanelBuild(Node):
         except NoFeatureRows as nothing:
             rows, counts = [], nothing.counts
         counts = {k: v for k, v in counts.items() if k not in ("reader",)}
+        reader = {k: sub.report()[k] for k in _READER_SUMS}
         table = self._rows_table(rows, first, census_values)
         days = [r[p["features"]["date_field"]] for r in rows]
         footer = {_META: json.dumps(meta, sort_keys=True), _COUNTS: json.dumps(counts, sort_keys=True),
                   _RANGE: json.dumps([min(days), max(days)] if days else None),
-                  _ROWS: json.dumps(len(rows))}
+                  _ROWS: json.dumps(len(rows)), _READER: json.dumps(reader, sort_keys=True),
+                  _STALE: json.dumps(sorted({r[p["features"]["date_field"]] for r in rows
+                                             if r.get(p["features"].get("stale_spot_field"))}))}
         self._write(os.path.join(p["path"], _ROOTS), _quoted(symbol) + ".parquet", table, footer)
         counters["roots_built"] += 1
         counters["seconds_features"] += time.time() - started
@@ -333,8 +362,8 @@ class ChainPanelBuild(Node):
             yield date(year, month, 1), date(nyear, nmonth, 1)
             year, month = nyear, nmonth
 
-    def _repartition(self, files, panel_digest, counters):
-        """Cut the roots' rows into one file per date; return ``{relative path: manifest entry}``."""
+    def _repartition(self, files, panel_digest, counters, stage):
+        """Cut the roots' rows into one file per date inside ``stage``; return ``{file name: manifest entry}``."""
         import numpy as np
         import pyarrow as pa
         import pyarrow.dataset as ds
@@ -359,20 +388,47 @@ class ChainPanelBuild(Node):
                 piece = table.slice(lo, hi - lo)
                 text = piece.column(d)[0].as_py().isoformat()
                 name = f"{text}.parquet"
-                self._write(os.path.join(self.params["path"], _DATES), name, piece,
-                            {_DIGEST: panel_digest, "dskit.panel.date": text})
-                raw = open(os.path.join(self.params["path"], _DATES, name), "rb").read()
-                entries[f"{_DATES}/{name}"] = {"sha256": hashlib.sha256(raw).hexdigest(), "rows": piece.num_rows,
+                self._write(stage, name, piece, {_DIGEST: panel_digest, "dskit.panel.date": text})
+                with open(os.path.join(stage, name), "rb") as handle:
+                    raw = handle.read()
+                entries[name] = {"sha256": hashlib.sha256(raw).hexdigest(), "rows": piece.num_rows,
                                                "bytes": len(raw)}
                 counters["dates_written"] += 1
         return entries
 
-    def _manifest_path(self):
-        return os.path.join(self.params["path"], "manifest.json")
+    def _final(self):
+        return os.path.join(self.params["path"], _DATES)
+
+    def _stage(self):
+        return os.path.join(self.params["path"], ".panel-next")
+
+    def _old(self):
+        return os.path.join(self.params["path"], ".panel-old")
+
+    def _recover(self):
+        """Clean up after a crash: drop a half-built stage, and restore the previous panel if the swap was cut."""
+        shutil.rmtree(self._stage(), ignore_errors=True)
+        if os.path.isdir(self._old()):
+            if os.path.isdir(self._final()):
+                shutil.rmtree(self._old())
+            else:
+                os.replace(self._old(), self._final())
+
+    def _publish(self):
+        """Swap the staged panel in: the previous one is renamed aside, the stage renamed into place, then dropped.
+
+        The date files and the manifest live in ONE directory, so what a reader opens is always one panel: the
+        old one until the second rename, the new one after it. A crash between the two renames leaves the old one
+        under ``.panel-old``, which the next run restores. Dates of dropped roots go with the old directory.
+        """
+        if os.path.isdir(self._final()):
+            os.replace(self._final(), self._old())
+        os.replace(self._stage(), self._final())
+        shutil.rmtree(self._old(), ignore_errors=True)
 
     def _current(self, panel_digest):
         """Return the manifest on disk when it is this panel and every listed file is present, else ``None``."""
-        path = self._manifest_path()
+        path = os.path.join(self._final(), "manifest.json")
         if not os.path.isfile(path):
             return None
         try:
@@ -382,7 +438,7 @@ class ChainPanelBuild(Node):
             return None
         listed = manifest.get("files", {})
         ok = (manifest.get("panel_digest") == panel_digest
-              and all(os.path.isfile(os.path.join(self.params["path"], n)) for n in listed))
+              and all(os.path.isfile(os.path.join(self._final(), n)) for n in listed))
         return manifest if ok else None
 
     # -- the node ------------------------------------------------------------------------------------
@@ -419,6 +475,8 @@ class ChainPanelBuild(Node):
         rates_digest = None if rates is None else value_hash(list(rates))
         counters = {"roots_built": 0, "roots_skipped": 0, "dates_written": 0, "seconds_features": 0.0}
         first_quotes, census = self._first_quotes(), self._census()
+        os.makedirs(p["path"], exist_ok=True)
+        self._recover()
         symbols = source.symbols()
         footers = {}
         for symbol in symbols:
@@ -429,33 +487,48 @@ class ChainPanelBuild(Node):
         manifest = self._current(panel_digest)
         if manifest is None and p.get("repartition", True):
             started = time.time()
-            entries = self._repartition(files, panel_digest, counters)
-            counters["seconds_repartition"] = time.time() - started
+            entries = self._repartition(files, panel_digest, counters, self._stage())
             manifest = self._write_manifest(symbols, footers, entries, panel_digest, source)
+            self._publish()
+            counters["seconds_repartition"] = time.time() - started
         elif manifest is None:
             manifest = {"panel_digest": panel_digest, "files": {}, "rows": 0, "partial": True}
+        stale = self._write_stale(symbols, footers)
         summary = self._summary(symbols, footers, manifest, counters, source, first_quotes, census)
         self.log.info("panel: %d root(s) (%d built, %d skipped, %d empty), %d date file(s)", len(symbols),
                       counters["roots_built"], counters["roots_skipped"], summary["roots_empty"], summary["dates"])
-        return {"summary": summary, "manifest": manifest}
+        return {"summary": summary, "manifest": manifest, "stale_spot_days": stale}
+
+    def _write_stale(self, symbols, footers):
+        """Write ``stale_spot_days.jsonl`` (every root-day the feature node flagged) beside the panel; return the rows."""
+        if "stale_spot_field" not in self.params["features"]:
+            return []
+        days = [{"symbol": s, "date": d} for s in symbols for d in json.loads(footers[s][1][_STALE])]
+        raw = "".join(json.dumps(r, sort_keys=True) + "\n" for r in days).encode("utf-8")
+        final = os.path.join(self.params["path"], "stale_spot_days.jsonl")
+        tmp = final + ".tmp"
+        with open(tmp, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, final)
+        return days
 
     def _write_manifest(self, symbols, footers, entries, panel_digest, source):
-        """Write ``manifest.json`` (last) and return it."""
+        """Write ``manifest.json`` into the stage, after every date file, and return it."""
         p, f = self.params, self.params["features"]
-        manifest = {"panel_version": PANEL_VERSION, "panel_digest": panel_digest, "layout": "panel/<date>.parquet",
+        manifest = {"panel_version": PANEL_VERSION, "panel_digest": panel_digest, "layout": "<date>.parquet beside this manifest",
                     "columns": [[n, str(t)] for n, t in zip(self._schema().names, self._schema().types)],
                     "keys": [f["date_field"], f["symbol_field"], f["target_field"]], "end_before": f["end_before"],
                     "reader": source.identity(), "files": dict(sorted(entries.items())),
                     "rows": sum(e["rows"] for e in entries.values()),
                     "roots": {s: {"rows": json.loads(footers[s][1][_ROWS])} for s in symbols}}
         raw = json.dumps(manifest, sort_keys=True, indent=1).encode("utf-8")
-        os.makedirs(p["path"], exist_ok=True)
-        tmp = self._manifest_path() + ".tmp"
-        with open(tmp, "wb") as handle:
+        os.makedirs(self._stage(), exist_ok=True)
+        with open(os.path.join(self._stage(), "manifest.json"), "wb") as handle:
             handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, self._manifest_path())
         return manifest
 
     @staticmethod
@@ -466,6 +539,16 @@ class ChainPanelBuild(Node):
                 ChainPanelBuild._add(total.setdefault(key, {}), value)
             elif isinstance(value, (int, float)) and not isinstance(value, bool):
                 total[key] = total.get(key, 0) + value
+
+    @staticmethod
+    def _reader(symbols, footers, source):
+        """Sum the per-root reads' counters (fresh or resumed: they ride in each root's footer) and add the plan's."""
+        total = dict.fromkeys(_READER_SUMS, 0)
+        for symbol in symbols:
+            for key, value in json.loads(footers[symbol][1][_READER]).items():
+                total[key] += value
+        plan = source.report()
+        return {**total, **{k: plan[k] for k in ("files", "symbols", "symbols_missing", "stitch")}}
 
     def _summary(self, symbols, footers, manifest, counters, source, first_quotes, census):
         """Assemble the run summary from the counters and every root's footer."""
@@ -479,7 +562,7 @@ class ChainPanelBuild(Node):
                 "rows": manifest.get("rows", 0), "dates": len(manifest.get("files", {})),
                 "roots_without_first_quote": len(unnamed) if "first_quote_file" in p else None,
                 "roots_without_census": sum(1 for s in symbols if s not in census) if "census_file" in p else None,
-                "features": features, "reader": source.report(), "path": p["path"],
+                "features": features, "reader": self._reader(symbols, footers, source), "path": p["path"],
                 "first_date": min((json.loads(footers[s][1][_RANGE])[0] for s in symbols
                                    if json.loads(footers[s][1][_RANGE])), default=None),
                 "last_date": max((json.loads(footers[s][1][_RANGE])[1] for s in symbols

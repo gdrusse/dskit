@@ -138,3 +138,53 @@ def test_breaks_load_from_the_same_pinned_file(tmp_path):
     assert RootStitch.from_file(str(path), "renames", digest).breaks() == []
     with pytest.raises(ValueError, match="nope"):
         RootStitch.from_file(str(path), "renames", digest, breaks_key="nope")
+
+
+# -- breaks are proven against the data too ---------------------------------------------------------------
+
+
+def dates_of(**by_root):
+    return lambda root: by_root[root]
+
+
+AI_DATES = ["2020-10-23", "2020-10-26", "2020-12-15", "2020-12-16"]
+
+
+def test_a_break_on_the_first_row_of_the_later_company_is_proven():
+    stitch = RootStitch(None, BREAKS)
+    stitch.check_windows({"AI": ("2020-10-23", "2020-12-16")}, dates_of(AI=AI_DATES))
+
+
+def test_a_break_date_inside_a_run_of_rows_refuses_naming_the_neighbouring_rows():
+    with pytest.raises(ValueError, match=r"AI.*2020-10-26.*2020-12-15.*2020-12-01"):
+        RootStitch(None, [dict(BREAKS[0], effective="2020-12-01")]).check_windows(
+            {"AI": ("2020-10-23", "2020-12-16")}, dates_of(AI=AI_DATES))
+
+
+def test_a_break_root_with_rows_on_one_side_only_is_not_contradicted():
+    stitch = RootStitch(None, BREAKS)
+    stitch.check_windows({"AI": ("2020-12-15", "2020-12-16")}, dates_of(AI=AI_DATES))      # footer on one side: no read
+    stitch.check_windows({"AI": ("2020-12-16", "2021-01-04")})                              # dates not even asked for
+    stitch.check_windows({})
+
+
+def test_the_dates_are_only_requested_for_a_break_root_whose_window_straddles():
+    asked = []
+    RootStitch(None, BREAKS).check_windows({"AI": ("2021-01-04", "2021-02-01")}, lambda r: asked.append(r) or [])
+    assert asked == []
+    RootStitch(None, BREAKS).check_windows({"AI": ("2020-10-23", "2020-12-16")}, lambda r: asked.append(r) or AI_DATES)
+    assert asked == ["AI"]
+
+
+def test_pending_entries_are_kept_for_the_report_and_never_applied(tmp_path):
+    path = tmp_path / "map.json"
+    pending = [{"old": "OLD", "new": "NEW", "note": "unverified"}]
+    path.write_text(json.dumps({"renames": [], "pending_verification": pending}))
+    digest = RootStitch.file_digest(str(path))
+    stitch = RootStitch.from_file(str(path), "renames", digest, pending_key="pending_verification")
+    assert stitch.pending() == pending and stitch.name("OLD") == "OLD"
+    assert stitch.digest() == RootStitch([]).digest()
+    assert RootStitch(MAP, BREAKS).declared_roots() == {"FB", "META", "SQ", "XYZ", "AI"}
+    assert stitch.pending_roots() == {"OLD", "NEW"}
+    with pytest.raises(ValueError, match="nope"):
+        RootStitch.from_file(str(path), "renames", digest, pending_key="nope")

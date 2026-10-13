@@ -36,7 +36,7 @@ def chain_row(symbol, date, strike=100.0, right="call", bid=1.0, ask=1.2, expira
             "date": day(date), "bid": bid, "ask": ask, "volume": volume, "note": "x"}
 
 
-def write_snapshot(directory, acq_id, rows, row_group_size=4, windows=None):
+def write_snapshot(directory, acq_id, rows, row_group_size=4, windows=None, text_dates=False, manifest=True):
     """Write one export-shaped file: sorted by symbol then date, windows in the footer."""
     rows = sorted(rows, key=lambda r: (r["symbol"], r["date"], r["strike"], r["right"]))
     found = {}
@@ -44,8 +44,12 @@ def write_snapshot(directory, acq_id, rows, row_group_size=4, windows=None):
         lo, hi = found.get(r["symbol"], (r["date"], r["date"]))
         found[r["symbol"]] = (min(lo, r["date"]), max(hi, r["date"]))
     windows = windows if windows is not None else {s: [a.isoformat(), b.isoformat()] for s, (a, b) in found.items()}
-    table = pa.Table.from_pylist(rows, schema=SCHEMA).replace_schema_metadata({
-        "dskit.export.acq_id": acq_id, "dskit.export.manifest_sha256": "m" * 63 + acq_id[-1],
+    schema = SCHEMA
+    if text_dates:
+        schema = pa.schema([pa.field(f.name, pa.string()) if f.name in ("date", "expiration") else f for f in SCHEMA])
+        rows = [dict(r, date=r["date"].isoformat(), expiration=r["expiration"].isoformat()) for r in rows]
+    table = pa.Table.from_pylist(rows, schema=schema).replace_schema_metadata({
+        "dskit.export.acq_id": acq_id, "dskit.export.manifest_sha256": ("m" * 63 + acq_id[-1]) if manifest else "",
         "dskit.export.snapshot_hash": "s" * 63 + acq_id[-1], "dskit.export.windows": json.dumps(windows),
         "dskit.export.missing_fields": "{}"})
     directory.mkdir(parents=True, exist_ok=True)
@@ -102,7 +106,8 @@ def test_the_source_is_re_iterable_and_reports_its_counters(tree):
     rows = source(tree)
     assert len(list(rows)) == len(list(rows)) == 12
     assert rows.report() == {"members": 2, "rows": 12, "units": 7, "skipped_rows": 0, "skipped_units": 0,
-                             "unit_row_mismatch": 0, "files": 2, "symbols": 2, "symbols_missing": 0}
+                             "unit_row_mismatch": 0, "files": 2, "symbols": 2, "symbols_missing": 0,
+                             "stitch": {"renames": 0, "breaks": 0, "absent": [], "pending": 0, "pending_landed": []}}
 
 
 def test_symbols_filter_reads_only_those_symbols_and_their_files(tree):
@@ -158,6 +163,18 @@ def test_an_older_copy_of_a_unit_is_skipped_and_the_newest_acquired_copy_wins(tm
     assert got == {"2020-03-02": 1.0, "2020-03-03": 9.0, "2020-03-04": 9.0}
     assert rows.report()["skipped_rows"] == 1 and rows.report()["skipped_units"] == 1
     assert rows.report()["unit_row_mismatch"] == 0 and rows.report()["units"] == 3
+
+
+def test_overlapping_files_still_yield_each_symbols_dates_ascending(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa",
+                   [chain_row("AAA", f"2020-03-0{n}", bid=1.0) for n in (2, 3, 4, 5, 6)] + [chain_row("ZZZ", "2020-03-02")])
+    write_snapshot(directory, "20260101T000002Z-backfill-bbbbbbbb",
+                   [chain_row("AAA", f"2020-03-0{n}", bid=9.0) for n in (3, 5, 6)])
+    rows = source(directory, symbols=["AAA"])
+    assert [(r["date"], r["bid"]) for r in rows] == [("2020-03-02", 1.0), ("2020-03-03", 9.0), ("2020-03-04", 1.0),
+                                                     ("2020-03-05", 9.0), ("2020-03-06", 9.0)]
+    assert rows.report()["skipped_rows"] == 3 and rows.report()["units"] == 5
 
 
 def test_an_older_copy_with_a_different_row_count_is_a_counted_split_unit(tmp_path):
@@ -489,3 +506,91 @@ def test_breaks_key_without_the_renames_file_refuses(reused):
     directory, stitch = reused
     with pytest.raises(ConfigError, match="breaks_key"):
         ParquetChainRows("chain", params(directory, breaks_key="breaks"))
+
+
+# -- review fixes: footer proof, text dates, identity, fingerprint ---------------------------------------
+
+
+def test_a_footer_window_the_data_contradicts_refuses_naming_the_file_and_root(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa",
+                   [chain_row("AAA", d) for d in ("2020-03-02", "2020-03-03", "2020-03-04")],
+                   windows={"AAA": ["2020-03-03", "2020-03-04"]})
+    with pytest.raises(ValueError, match=r"aaaaaaaa.*AAA.*window|AAA.*aaaaaaaa.*window"):
+        source(directory)
+
+
+def test_a_footer_window_for_a_root_the_data_does_not_hold_refuses(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", [chain_row("AAA", "2020-03-03")],
+                   windows={"AAA": ["2020-03-03", "2020-03-03"], "GHOST": ["2020-03-03", "2020-03-04"]})
+    with pytest.raises(ValueError, match="GHOST"):
+        source(directory)
+
+
+def test_a_window_wider_than_the_data_in_pure_row_groups_is_a_mismatch_too(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", [chain_row("AAA", "2020-03-03")],
+                   windows={"AAA": ["2020-01-01", "2020-12-31"]})
+    with pytest.raises(ValueError, match="window"):
+        source(directory)
+
+
+def test_a_text_date_column_is_read_like_a_date32_one_including_overlap_ordering(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa",
+                   [chain_row("AAA", f"2020-03-0{n}", bid=1.0) for n in (2, 3, 4)], text_dates=True)
+    write_snapshot(directory, "20260101T000002Z-backfill-bbbbbbbb",
+                   [chain_row("AAA", "2020-03-03", bid=9.0)], text_dates=True)
+    rows = source(directory)
+    assert [(r["date"], r["bid"]) for r in rows] == [("2020-03-02", 1.0), ("2020-03-03", 9.0), ("2020-03-04", 1.0)]
+    assert rows.report()["units"] == 3
+    assert len(list(source(directory, start="2020-03-03", end_before="2020-03-04"))) == 1
+
+
+def test_a_file_without_a_manifest_identity_refuses(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", [chain_row("AAA", "2020-03-03")], manifest=False)
+    with pytest.raises(ValueError, match="manifest_sha256"):
+        source(directory)
+
+
+def test_run_pins_the_file_set_itself_so_two_readers_of_one_node_agree(tree):
+    node = ParquetChainRows("chain", params(tree))
+    first = node.run(CTX, {})["records"]
+    write_snapshot(tree, "20260101T000009Z-backfill-99999999", [chain_row("CCC", "2020-03-03")])
+    second = node.run(CTX, {})["records"]
+    assert first.symbols() == second.symbols() == ["AAA", "BBB"]
+    assert ParquetChainRows("chain", params(tree)).run(CTX, {})["records"].symbols() == ["AAA", "BBB", "CCC"]
+
+
+# -- stitch bookkeeping and the break proof on the real reader -----------------------------------------------
+
+
+def stitch_file(tmp_path, **document):
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(document))
+    return {"renames_file": str(path), "renames_key": "renames", "renames_sha256": RootStitch.file_digest(str(path)),
+            **({"breaks_key": "breaks"} if "breaks" in document else {}),
+            **({"pending_key": "pending_verification"} if "pending_verification" in document else {})}
+
+
+def test_a_break_inside_a_run_of_observed_dates_refuses_from_the_data(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa",
+                   [chain_row("AI", d) for d in ("2020-12-10", "2020-12-14", "2020-12-15", "2020-12-16")])
+    stitch = stitch_file(tmp_path, renames=[], breaks=[{"root": "AI", "effective": "2020-12-15", "earlier_as": "AI.b"}])
+    assert source(directory, **{**stitch, "symbols": ["AI"]}).report()["stitch"]["breaks"] == 1
+    bad = stitch_file(tmp_path, renames=[], breaks=[{"root": "AI", "effective": "2020-12-12", "earlier_as": "AI.b"}])
+    with pytest.raises(ValueError, match=r"AI.*2020-12-10.*2020-12-14"):
+        source(directory, **bad)
+
+
+def test_the_report_names_declared_roots_absent_from_the_data_and_pending_entries_now_landed(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", [chain_row("AAA", "2020-03-03"), chain_row("OLD2", "2020-03-03")])
+    stitch = stitch_file(tmp_path, renames=[{"old": "OLD1", "new": "NEW1", "effective": "2020-06-01"}],
+                         pending_verification=[{"old": "OLD2", "new": "NEW2", "note": "x"},
+                                               {"old": "OLD3", "new": "NEW3", "note": "y"}])
+    report = source(directory, **stitch).report()["stitch"]
+    assert report == {"renames": 1, "breaks": 0, "absent": ["NEW1", "OLD1"], "pending": 2, "pending_landed": ["OLD2"]}

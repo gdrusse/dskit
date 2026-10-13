@@ -1,6 +1,6 @@
 {
   "name": "theta-chain-panel",
-  "notes": "The date-partitioned cross-section panel of ADR-0265 (Amendment 3), the input of the H1 and H3 documents: for every landed root, ChainDayFeatures run on that root ALONE (memory is one root, symbol_contiguous, max_symbol_rows refuses a root too big to hold), written as /home/russell/data/index_options/theta-research-20261012/chain-panel/roots/<root>.parquet (resumable per root: a root whose contributing snapshot files, feature params, rates table, bounds, rename map and gate values are unchanged is skipped) and then cut into panel/<YYYY-MM-DD>.parquet, one small file per date holding one row per (symbol, target DTE), sorted by symbol and target, with manifest.json (sha256 of every file) written last so the directory registers as a localblobs stream. The features are those of run-theta-chain-features-parquet.json (30- and 90-day targets, our Black-76 vols from NBBO mids on the parity forward, FRED DGS3MO as of strictly before the quote date; vendor greeks and implied_vol are never read). UNIVERSE GATE HOOKS: first_quote_date and after_first_quote come from the export's first_quote.json (first date a symbol has a real quote), liquidity_tercile from the census (run-theta-chain-census-parquet.json, development years only); they are carried as columns, never applied - a test chooses its universe, and both are whole-sample numbers a test must recompute up to its own start. READ-ONLY on /home/russell/data/thetadata/parquet-v2/options-tested/theta; nothing is written under /home/russell/data/thetadata. SEALED PERIOD: end_before and sealed_from 2026-01-01 on the reader, end_before on the features node. Run from children/index_options, roots then dates: nice -n 10 python -m dskit.pipeline run configs/run-theta-chain-panel.json --asof 2025-12-31; rerun after more snapshots land (only the changed roots are rebuilt).",
+  "notes": "The date-partitioned cross-section panel of ADR-0265 (Amendment 3), the input of the H1 and H3 documents: for every landed root, ChainDayFeatures run on that root ALONE (memory is one root, symbol_contiguous, max_symbol_rows refuses a root too big to hold), written as /home/russell/data/index_options/theta-research-20261012/chain-panel/roots/<root>.parquet (resumable per root: a root whose contributing snapshot files, feature params, rates table, bounds, rename map and gate values are unchanged is skipped) and then cut into panel/<YYYY-MM-DD>.parquet, one small file per date holding one row per (symbol, target DTE), sorted by symbol and target, with manifest.json (sha256 of every file) written last so the directory registers as a localblobs stream. The features are those of run-theta-chain-features-parquet.json (30- and 90-day targets, our Black-76 vols from NBBO mids on the parity forward, FRED DGS3MO as of strictly before the quote date; vendor greeks and implied_vol are never read). UNIVERSE GATE HOOKS: first_quote_date and after_first_quote come from the export's first_quote.json (first date a symbol has a real quote), liquidity_tercile from the census (run-theta-chain-census-parquet.json, development years only); they are carried as columns, never applied - a test chooses its universe, and both are whole-sample numbers a test must recompute up to its own start. READ-ONLY on /home/russell/data/thetadata/parquet-v2/options-tested/theta; nothing is written under /home/russell/data/thetadata. SEALED PERIOD: end_before and sealed_from 2026-01-01 on the reader, end_before on the features node. Run from children/index_options, roots then dates: nice -n 10 python -m dskit.pipeline run configs/run-theta-chain-panel.json --asof 2025-12-31; rerun after more snapshots land (only the changed roots are rebuilt). The panel directory is panel/ (date files and manifest.json together, swapped in whole by two renames, so a crash leaves the previous panel).",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-research-20261012/chain-panel-run",
     "notes": "A new directory beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
@@ -31,7 +31,8 @@
         "renames_file": "configs/root-renames.json",
         "renames_key": "renames",
         "renames_sha256": "ddb611ae2675fcd083c74bfd0ef7c81f74c94828b5457782717116ccbbfe27c3",
-        "breaks_key": "breaks"
+        "breaks_key": "breaks",
+        "pending_key": "pending_verification"
       },
       "notes": "The ThetaData daily chain from the Parquet export tree, every root, symbol by symbol with dates ascending, projected to the ten fields the features read; the newest-acquired copy of a (symbol, date) unit wins. Lazy, re-iterable, read-only. The panel node asks it for one root at a time (select), so a root's files are read when that root is built and not before."
     },
@@ -109,7 +110,9 @@
           "rate_max_age_days": 5,
           "rate_scale": 0.01,
           "oi_scope": "expiry",
-          "max_symbol_rows": 40000000
+          "max_symbol_rows": 40000000,
+          "stale_spot_tolerance": 0.05,
+          "stale_spot_field": "stale_spot"
         },
         "path": "/home/russell/data/index_options/theta-research-20261012/chain-panel",
         "first_quote_file": "/home/russell/data/thetadata/parquet-v2/options-tested/first_quote.json",
@@ -126,9 +129,10 @@
             "float64"
           ]
         },
-        "chunk_months": 3
+        "chunk_months": 3,
+        "census_asof": "2021-01-01"
       },
-      "notes": "One feature run per root (the root's rows alone), one footer-checked file per root, then the per-date cut. max_symbol_rows 40,000,000 holds a root of up to about 2.4 GB packed (about 61 B a row) and refuses a bigger one (an index weekly root is about 75 M rows: run those in a lighter-target document). The census columns are the development-years liquidity tercile and median, carried as given; the census run must have finished before this one (a missing census file refuses). Rerun to pick up newly landed snapshots: unchanged roots are skipped."
+      "notes": "One feature run per root (the root's rows alone), one footer-checked file per root, then the per-date cut. max_symbol_rows 40,000,000 holds a root of up to about 2.4 GB packed (about 61 B a row) and refuses a bigger one (an index weekly root is about 75 M rows: run those in a lighter-target document). The census columns are the development-years liquidity tercile and median, carried as given; the census run must have finished before this one (a missing census file refuses). Rerun to pick up newly landed snapshots: unchanged roots are skipped. census_asof 2021-01-01 is the census's liquidity_end_before: the tercile and development median are written only on rows dated from it on and are null before (a number computed from 2016-2020 must not sit on a 2016 row). The stale_spot column flags days whose vendor price disagrees with the parity forward (spot and straddle_ratio are then null)."
     },
     "summary": {
       "uses": "run-report",

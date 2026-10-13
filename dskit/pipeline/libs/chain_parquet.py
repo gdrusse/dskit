@@ -94,8 +94,9 @@ class _Part:
 class _Plan:
     """The pinned file list and, per output symbol, the parts that hold it."""
 
-    def __init__(self, files, stitch):
+    def __init__(self, files, stitch, symbol_field=None, date_field=None):
         self.files, self.stitch = files, stitch
+        self.symbol_field, self.date_field = symbol_field, date_field
         self.names = tuple(f.name for f in files)
         self.widest = {}
         for file in files:
@@ -176,7 +177,16 @@ class ChainRowSource:
         return {"members": len(self._members), "rows": self.rows, "units": self.units,
                 "skipped_rows": self.skipped_rows, "skipped_units": self.skipped_units,
                 "unit_row_mismatch": self.unit_row_mismatch, "files": len(self._plan.files),
-                "symbols": len(self._symbols), "symbols_missing": self._params["missing"]}
+                "symbols": len(self._symbols), "symbols_missing": self._params["missing"],
+                "stitch": self._stitch_report()}
+
+    def _stitch_report(self):
+        """Count the declared renames and breaks, name declared roots the data lacks, and the pending entries."""
+        stitch, seen = self._plan.stitch, self._plan.widest
+        pending = stitch.pending_roots()
+        return {"renames": len(stitch.renames()), "breaks": len(stitch.breaks()),
+                "absent": sorted(stitch.declared_roots() - set(seen)), "pending": len(stitch.pending()),
+                "pending_landed": sorted(pending & set(seen))}
 
     def _reset(self):
         self.rows = self.units = self.skipped_rows = self.skipped_units = self.unit_row_mismatch = 0
@@ -229,55 +239,72 @@ class ChainRowSource:
         return counts
 
     def _analysis(self, symbol, parts):
-        """Decide, for a symbol with overlapping parts, which dates each part must skip (memoized).
+        """Decide, for a symbol with overlapping parts, which part owns each date (memoized).
 
-        Returns ``(skip, skipped_rows, skipped_unit_dates, mismatched_dates)`` where ``skip`` maps a part to the
-        set of ISO dates it must not yield: the newest-acquired part holding a date keeps it.
+        The newest-acquired part holding a date owns it. Returns ``(segments, rows, units, mismatched)``:
+        ``segments`` is the date-ordered list of ``(part, first date, last date)`` runs over which one part owns
+        every date of the union, so reading the runs in order yields the symbol's dates ascending; ``rows``,
+        ``units`` and ``mismatched`` are the older copies skipped, as rows, as distinct dates, and as dates whose
+        older copy had another row count.
         """
         if symbol in self._dedup:
             return self._dedup[symbol]
         counts = {id(p): self._unit_counts(p) for p in parts}
-        kept, skip, rows, units, mismatched = {}, {}, 0, set(), set()
+        kept, owner, rows, units, mismatched = {}, {}, 0, set(), set()
         for part in sorted(parts, key=lambda p: p.file.name, reverse=True):
             mine = counts[id(part)]
-            skip[id(part)] = {d for d in mine if d in kept}
-            for date in skip[id(part)]:
-                rows += mine[date]
-                units.add(date)
-                if mine[date] != kept[date]:
-                    mismatched.add(date)
-            kept.update({d: n for d, n in mine.items() if d not in kept})
-        self._dedup[symbol] = (skip, rows, units, mismatched)
+            for date in mine:
+                if date in kept:
+                    rows += mine[date]
+                    units.add(date)
+                    if mine[date] != kept[date]:
+                        mismatched.add(date)
+                else:
+                    kept[date], owner[date] = mine[date], part
+        segments = []
+        for date in sorted(owner):
+            if segments and segments[-1][0] is owner[date]:
+                segments[-1][2] = date
+            else:
+                segments.append([owner[date], date, date])
+        self._dedup[symbol] = ([tuple(x) for x in segments], rows, units, mismatched)
         return self._dedup[symbol]
 
     # -- reading -------------------------------------------------------------------------------
 
-    def _tables(self, symbol, seen_dates):
-        """Yield the symbol's Arrow tables (dates as ISO text, the symbol renamed), counting as it goes."""
-        import numpy as np
+    def _runs(self, symbol):
+        """Yield ``(part, extra predicate)`` for each stretch of the symbol to read, dates ascending overall."""
         import pyarrow as pa
-        import pyarrow.compute as pc
         import pyarrow.dataset as ds
 
         p, parts = self._params, self._parts(symbol)
-        skip = {}
-        if self._overlap(parts):
-            skip, rows, units, mismatched = self._analysis(symbol, parts)
-            self.skipped_rows += rows
-            self.skipped_units += len(units)
-            self.unit_row_mismatch += len(mismatched)
-        for part in parts:
-            where = ds.field(p["symbol_field"]) == part.raw
-            dropped = skip.get(id(part))
-            if dropped:
-                days = pa.array([datetime.date.fromisoformat(d) for d in sorted(dropped)], pa.date32())
-                where = where & ~ds.field(p["date_field"]).isin(days)
+        if not self._overlap(parts):
+            for part in parts:
+                yield part, ds.field(p["symbol_field"]) == part.raw
+            return
+        segments, rows, units, mismatched = self._analysis(symbol, parts)
+        self.skipped_rows += rows
+        self.skipped_units += len(units)
+        self.unit_row_mismatch += len(mismatched)
+        for part, first, last in segments:
+            field = ds.field(p["date_field"]).cast(pa.date32())
+            low, high = (datetime.date.fromisoformat(d) for d in (first, last))
+            yield part, (ds.field(p["symbol_field"]) == part.raw) & (field >= pa.scalar(low, pa.date32())) \
+                & (field <= pa.scalar(high, pa.date32()))
+
+    def _tables(self, symbol, seen_dates):
+        """Yield the symbol's Arrow tables (dates as ISO text, the symbol renamed), counting as it goes."""
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        p = self._params
+        for part, where in self._runs(symbol):
             self._members.add(part.file.name)
             for batch in self._bounded(part).batches(where=where, batch_size=p["batch_size"]):
                 if not batch.num_rows:
                     continue
                 dates = batch.column(batch.schema.get_field_index(p["date_field"]))
-                seen_dates.update(np.unique(dates.cast(pa.int32()).to_numpy(zero_copy_only=False)).tolist())
+                seen_dates.update(pc.unique(dates).to_pylist())
                 columns = []
                 for name in p["fields"]:
                     column = batch.column(batch.schema.get_field_index(name))
@@ -319,12 +346,13 @@ class ParquetChainRows(Node):
         ``directories`` (non-empty list of str, REQUIRED): directories of ``<acquisition id>.parquet`` files
         (hidden names and other files are ignored); every directory is one stream, ordered together by
         acquisition id. ``fields`` (non-empty list of column names, REQUIRED): the columns each row keeps, named
-        as in the file. ``symbol_field`` and ``date_field`` (REQUIRED): the root and date columns (a date32 or
-        ISO text column). ``end_before`` (REQUIRED ISO date): exclusive upper bound, pushed into the scan.
+        as in the file. ``symbol_field`` and ``date_field`` (REQUIRED): the root and date columns (a date32 or an
+        ISO ``YYYY-MM-DD`` text column; either way rows carry ISO text, and the footer windows must match the data). ``end_before`` (REQUIRED ISO date): exclusive upper bound, pushed into the scan.
         ``start`` (ISO, optional): inclusive lower bound. ``sealed_from`` (ISO, optional, at or after
         ``end_before``): a file whose footer window reaches it refuses. ``symbols`` (non-empty list, optional):
         the OUTPUT symbols to read; a name with no data is counted in ``report()['symbols_missing']``.
-        ``renames_file``, ``renames_key`` and ``renames_sha256`` (all or none): the stitch map; ``breaks_key``
+        ``renames_file``, ``renames_key`` and ``renames_sha256`` (all or none): the stitch map; ``pending_key`` (optional): the
+        member of entries awaiting proof, only reported (never applied); ``breaks_key``
         (optional): the member of the same file holding the reuse breaks (a root cut into an earlier and a later series). ``batch_size``
         (int >= 1, default 65536).
 
@@ -343,7 +371,8 @@ class ParquetChainRows(Node):
     role = "data"
     outputs = ("records",)
     _PARAMS = ("directories", "fields", "symbol_field", "date_field", "end_before", "start", "sealed_from",
-               "symbols", "batch_size", "renames_file", "renames_key", "renames_sha256", "breaks_key")
+               "symbols", "batch_size", "renames_file", "renames_key", "renames_sha256", "breaks_key",
+               "pending_key")
     _RENAMES = ("renames_file", "renames_key", "renames_sha256")
 
     @classmethod
@@ -379,11 +408,11 @@ class ParquetChainRows(Node):
         given = [n for n in cls._RENAMES if n in params]
         if given and len(given) < len(cls._RENAMES):
             problems.append(f"declare all of the renames params {list(cls._RENAMES)} or none; got {given}")
-        for name in (*given, *(n for n in ("breaks_key",) if n in params)):
+        for name in (*given, *(n for n in ("breaks_key", "pending_key") if n in params)):
             if not isinstance(params[name], str) or not params[name]:
                 problems.append(f"{name} must be a non-empty string, got {params[name]!r}")
-        if "breaks_key" in params and not given:
-            problems.append("breaks_key needs the renames params (the breaks live in the same pinned file)")
+        if ("breaks_key" in params or "pending_key" in params) and not given:
+            problems.append("breaks_key and pending_key need the renames params (they live in the same pinned file)")
         return problems
 
     @staticmethod
@@ -414,11 +443,46 @@ class ParquetChainRows(Node):
         if _PREFIX + "windows" not in have:
             raise ValueError(f"{name}: no {_PREFIX}windows in the footer - not a snapshot export, or one from before "
                              "windows were recorded; this reader plans by windows and refuses to guess")
+        if not have.get(_PREFIX + "manifest_sha256"):
+            raise ValueError(f"{name}: no {_PREFIX}manifest_sha256 in the footer - a file with no source identity "
+                             "cannot be pinned or told apart from another copy")
         windows = {s: (w[0], w[1]) for s, w in json.loads(have[_PREFIX + "windows"]).items()}
+        self._prove_windows(name, meta, windows)
         return _File(name=name, path=path, size=stat.st_size, mtime_ns=stat.st_mtime_ns,
                      manifest_sha256=have.get(_PREFIX + "manifest_sha256", ""),
                      snapshot_hash=have.get(_PREFIX + "snapshot_hash", ""), windows=windows,
                      columns=tuple(meta.schema.names))
+
+    def _prove_windows(self, name, meta, windows):
+        """Check the footer's symbol windows against the row-group statistics; refuse a mismatch.
+
+        The reader plans and prunes by the windows but reads by predicates, so a window the data contradicts
+        would silently drop or admit rows. A row group whose symbol statistics are a single root bounds that
+        root's dates exactly; a group that spans roots only bounds them. Per root: every pure group must lie
+        inside the window; the window must lie inside the union of the groups that can hold the root; when every
+        such group is pure the window must EQUAL their union. Groups without statistics are not checked.
+        """
+        p = self.params
+        names = list(meta.schema.names)
+        si, di = names.index(p["symbol_field"]), names.index(p["date_field"])
+        groups = []
+        for g in range(meta.num_row_groups):
+            sym, day = meta.row_group(g).column(si).statistics, meta.row_group(g).column(di).statistics
+            if sym is None or day is None or not sym.has_min_max or not day.has_min_max:
+                return
+            groups.append((str(sym.min), str(sym.max), str(day.min), str(day.max)))
+        for root, (first, last) in sorted(windows.items()):
+            holders = [g for g in groups if g[0] <= root <= g[1]]
+            if not holders:
+                raise ValueError(f"{self.key}: {name}: the footer window names root {root!r} but no row group "
+                                 "can hold it")
+            lo, hi = min(g[2] for g in holders), max(g[3] for g in holders)
+            pure = [g for g in holders if g[0] == g[1] == root]
+            bad = [g for g in pure if g[2] < first or g[3] > last]
+            if bad or first < lo or last > hi or (len(pure) == len(holders) and (first, last) != (lo, hi)):
+                raise ValueError(f"{self.key}: {name}: the footer window of {root!r} ({first}..{last}) contradicts "
+                                 f"the data's row-group statistics ({lo}..{hi}) - the window decides which files "
+                                 "are read, so a wrong one drops or admits rows")
 
     def _list_files(self):
         """Return the tree's Parquet paths in acquisition-id order across every directory."""
@@ -437,7 +501,8 @@ class ParquetChainRows(Node):
         p = self.params
         if "renames_file" not in p:
             return RootStitch([])
-        return RootStitch.from_file(p["renames_file"], p["renames_key"], p["renames_sha256"], p.get("breaks_key"))
+        return RootStitch.from_file(p["renames_file"], p["renames_key"], p["renames_sha256"], p.get("breaks_key"),
+                                   p.get("pending_key"))
 
     def _plan_files(self):
         """Plan the tree: read every footer, refuse a sealed window, a missing column or a bad hand-over."""
@@ -453,12 +518,28 @@ class ParquetChainRows(Node):
                 if late:
                     raise ValueError(f"{self.key}: {file.name} holds dates on or after the sealed date "
                                      f"{p['sealed_from']} (symbols {late[:5]}) - a sealed file is refused whole")
-        plan = _Plan(files, self._stitch())
+        plan = _Plan(files, self._stitch(), p["symbol_field"], p["date_field"])
         try:
-            plan.stitch.check_windows(plan.widest)
+            plan.stitch.check_windows(plan.widest, lambda root: self._root_dates(plan, root))
         except ValueError as err:
             raise ValueError(f"{self.key}: {err}") from None
         return plan
+
+    @staticmethod
+    def _root_dates(plan, root):
+        """Return the sorted observed ISO dates of one raw root over every planned file that holds it."""
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        import pyarrow.dataset as ds
+
+        seen = set()
+        for file in plan.files:
+            if root in file.windows:
+                table = ds.dataset(file.path, format="parquet").to_table(
+                    columns=[plan.date_field], filter=ds.field(plan.symbol_field) == root)
+                column = table.column(0)
+                seen.update(pc.unique(pc.cast(column, pa.string())).to_pylist())
+        return sorted(seen)
 
     def fingerprint(self):
         """Pin the file list and answer its identity.
@@ -494,7 +575,8 @@ class ParquetChainRows(Node):
             The tree is empty, a file lacks windows or a declared column, a file reaches ``sealed_from``, a
             rename is contradicted by the data, or the rename file's hash differs.
         """
-        plan = getattr(self, "_pinned", None) or self._plan_files()
+        self.fingerprint()                  # pin the file set before anything is read, so every consumer agrees
+        plan = self._pinned
         p = self.params
         read = list(dict.fromkeys([*p["fields"], p["symbol_field"], p["date_field"]]))
         params = {"fields": p["fields"], "symbol_field": p["symbol_field"], "date_field": p["date_field"],

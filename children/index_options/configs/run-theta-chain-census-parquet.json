@@ -28,7 +28,8 @@
         "renames_file": "configs/root-renames.json",
         "renames_key": "renames",
         "renames_sha256": "ddb611ae2675fcd083c74bfd0ef7c81f74c94828b5457782717116ccbbfe27c3",
-        "breaks_key": "breaks"
+        "breaks_key": "breaks",
+        "pending_key": "pending_verification"
       },
       "notes": "The ThetaData daily chain from the Parquet export tree, symbol by symbol, projected to the seven fields the census reads (column pruning), the sealed period excluded by predicate pushdown and by refusing a whole file whose footer window reaches 2026-01-01. A (symbol, date) unit held by two files comes from the newest-acquired file (footer windows decide; the counters match the gzip reader's). Lazy, re-iterable, read-only. Add a tier directory to directories when its Parquet tree exists."
     },
@@ -67,9 +68,11 @@
         "reuse_window": 10,
         "reuse_band": 0.25,
         "reuse_overlap_max": 0.1,
-        "reuse_split_share": 0.05
+        "reuse_split_share": 0.05,
+        "reuse_persistence": 5,
+        "stale_spots_file": "/home/russell/data/index_options/theta-research-20261012/chain-panel/stale_spot_days.jsonl"
       },
-      "notes": "One pass over the stream. A quote is null (a missing side), zero (a side at or below zero), crossed (ask below bid), locked (ask equal to bid) or quoted; usable = locked or quoted. first_bid_date is the first date any contract has a bid above zero: the universe gate of ADR-0265 item 2. iv_error_flag 100 is the vendor's placeholder code (4.3% of rows per ADR-0265). An empty stream, or a row on or after end_before, refuses. CLOSE CHECK: the vendor's underlying_price (one value a day, taken at the chain report time) is compared with the Alpaca as-traded daily close of the same date; price_tolerance 0.01 is a chosen relative tolerance (the report time is not the 16:00 close), so read price_median_abs_rel_diff and price_max_abs_rel_diff, not only the share beyond the tolerance. A split day appears as a large difference on the dates where the vendor and the bars disagree on the split date. SYMBOL REUSE (ADR-0265 Amendment 3): a root can be two companies (a delisted issuer's ticker taken later by another). The detector lists a date as a candidate when the reported price moves by more than a factor of 2 between consecutive priced dates (price_jump) or when the median rows per date over the 10 dates after it differs from the 10 before by more than a factor of 4 AND the near-the-money strikes (within 25% of the price) do not overlap between consecutive dates (rows_shift). A jump whose off-grid strike share rises by 5 points (the split signature of the strike grid below) is counted as split-explained, not listed. These thresholds are chosen conventions; the table is evidence for a person, and a confirmed break is declared in configs/root-renames.json under breaks."
+      "notes": "One pass over the stream. A quote is null (a missing side), zero (a side at or below zero), crossed (ask below bid), locked (ask equal to bid) or quoted; usable = locked or quoted. first_bid_date is the first date any contract has a bid above zero: the universe gate of ADR-0265 item 2. iv_error_flag 100 is the vendor's placeholder code (4.3% of rows per ADR-0265). An empty stream, or a row on or after end_before, refuses. CLOSE CHECK: the vendor's underlying_price (one value a day, taken at the chain report time) is compared with the Alpaca as-traded daily close of the same date; price_tolerance 0.01 is a chosen relative tolerance (the report time is not the 16:00 close), so read price_median_abs_rel_diff and price_max_abs_rel_diff, not only the share beyond the tolerance. A split day appears as a large difference on the dates where the vendor and the bars disagree on the split date. SYMBOL REUSE (ADR-0265 Amendment 3): a root can be two companies (a delisted issuer's ticker taken later by another). The detector lists a date as a candidate when the reported price moves by more than a factor of 2 between consecutive priced dates (price_jump) or when the median rows per date over the 10 dates after it differs from the 10 before by more than a factor of 4 AND the near-the-money strikes (within 25% of the price) do not overlap between consecutive dates (rows_shift). A jump whose off-grid strike share rises by 5 points (the split signature of the strike grid below) is counted as split-explained, not listed. These thresholds are chosen conventions; the table is evidence for a person, and a confirmed break is declared in configs/root-renames.json under breaks. PERSISTENCE: a price jump counts only when each of the 5 priced dates before it stays within the factor of the pre-jump price and each of the 5 dates from it on stays at least the factor away (a spike that reverts, and the way back from it, are counted as reverted, not listed). STALE SPOT: the vendor's underlying_price is not always that day's price (AAPL 2019-09-11 repeats its 2019-06-25 value, 14% off). A price-only rule cannot find it (a repeat of an older value between two different neighbours flagged 776 root-days of which 5 were stale), so the witness is the feature node's parity-forward check: the panel writes stale_spot_days.jsonl beside itself and this census counts those days per root (stale_spot_days) and lists them. Order: census (file absent: counted skip), panel, census again. ChainDayFeatures nulls the spot features on those days."
     },
     "coverage": {
       "uses": "records-write",
@@ -149,6 +152,18 @@
         "source": "one row per suspected symbol-reuse break: root, first date of the new regime, previous date, price and rows-per-date before and after, near-the-money strike overlap, split signature and off-grid shares"
       },
       "notes": "The suspected symbol-reuse candidates, read by a person before any series is used as one business."
+    },
+    "stale": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$census.stale_spot_days"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/chain-census-parquet/census-stale-spot-days.jsonl",
+        "overwrite": true,
+        "source": "one row per root-day whose vendor underlying_price disagrees with the put-call-parity forward beyond the feature node's tolerance"
+      },
+      "notes": "The root-days the feature node flagged as stale vendor spots, from the panel's stale_spot_days.jsonl; empty and listed under summary.skipped until the panel has run."
     }
   }
 }

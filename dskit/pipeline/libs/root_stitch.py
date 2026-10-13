@@ -57,7 +57,7 @@ class RootStitch:
         stitch.raws("NEWCO")        # ["OLDCO", "NEWCO"]
     """
 
-    def __init__(self, entries=None, breaks=None):
+    def __init__(self, entries=None, breaks=None, pending=None):
         entries = [] if entries is None else entries
         breaks = [] if breaks is None else breaks
         problems = self.problems(entries) + self.break_problems(breaks, entries)
@@ -72,6 +72,7 @@ class RootStitch:
         self._breaks = sorted(({k: b[k] for k in _BREAK_KEYS} for b in breaks), key=lambda b: b["root"])
         self._break = {b["root"]: b for b in self._breaks}
         self._earlier = {b["earlier_as"]: b["root"] for b in self._breaks}
+        self._pending = [dict(x) for x in (pending or []) if isinstance(x, dict)]
 
     @staticmethod
     def problems(entries):
@@ -149,6 +150,18 @@ class RootStitch:
         """Return the first date of a series cut off by a break (the later company), else ``None``."""
         return self._break[series]["effective"] if series in self._break else None
 
+    def pending(self):
+        """Return the entries still awaiting proof (kept for the report, never applied)."""
+        return [dict(x) for x in self._pending]
+
+    def declared_roots(self):
+        """Return every raw root the applied map names (old, new and break roots)."""
+        return {*self._rename, *self._rename.values(), *self._break}
+
+    def pending_roots(self):
+        """Return every root the pending entries name."""
+        return {r for x in self._pending for r in (x.get("old"), x.get("new"), x.get("root")) if isinstance(r, str)}
+
     def breaks(self):
         """Return the validated break entries, sorted by root."""
         return [dict(b) for b in self._breaks]
@@ -171,14 +184,20 @@ class RootStitch:
         """Return an identity of the map that does not depend on its order."""
         return value_hash({"renames": self._entries, "breaks": self._breaks})
 
-    def check_windows(self, windows):
-        """Prove the declared effective dates against the data.
+    def check_windows(self, windows, dates=None):
+        """Prove the declared effective dates (renames and breaks) against the data.
 
         Parameters
         ----------
         windows : dict
             ``{raw root: (first date, last date)}`` as ISO text, for the roots present in the data. A root of
             the map that is absent is not checked against the other side.
+        dates : callable, optional
+            ``dates(root)`` returns the sorted observed dates of a raw root. It is asked only for a break root
+            whose window straddles its ``effective`` date. There the later company's first row must be the
+            ``effective`` date itself (the last earlier row is then before it by construction): a break that
+            falls inside a run of observed dates, or in a gap whose far side starts later, is refused naming
+            both neighbouring rows. A root with rows on one side only cannot be contradicted.
 
         Raises
         ------
@@ -197,8 +216,23 @@ class RootStitch:
             if old in windows and new in windows and windows[old][1] >= windows[new][0]:
                 problems.append(f"{old!r} ({windows[old][0]}..{windows[old][1]}) and {new!r} "
                                 f"({windows[new][0]}..{windows[new][1]}) overlap")
+        problems += self._break_problems(windows, dates)
         if problems:
             raise ValueError("; ".join(problems))
+
+    def _break_problems(self, windows, dates):
+        """List the breaks the observed dates of a straddled root contradict."""
+        problems = []
+        for root, b in sorted(self._break.items()):
+            effective = b["effective"]
+            if dates is None or root not in windows or not windows[root][0] < effective <= windows[root][1]:
+                continue
+            seen = sorted(dates(root))
+            before, after = [d for d in seen if d < effective], [d for d in seen if d >= effective]
+            if before and after and after[0] != effective:
+                problems.append(f"break of {root!r} at {effective}: its last earlier row is {before[-1]} and its next "
+                                f"row is {after[0]}, so the later company's first row is {after[0]}, not {effective}")
+        return problems
 
     @staticmethod
     def file_digest(path):
@@ -207,7 +241,7 @@ class RootStitch:
             return hashlib.sha256(handle.read()).hexdigest()
 
     @classmethod
-    def from_file(cls, path, key, sha256, breaks_key=None):
+    def from_file(cls, path, key, sha256, breaks_key=None, pending_key=None):
         """Load the map from ``path`` (a JSON object whose ``key`` holds the list), refusing a changed file.
 
         Parameters
@@ -220,6 +254,8 @@ class RootStitch:
             The expected sha256 of the file's bytes; any other content refuses.
         breaks_key : str, optional
             The member holding the list of reuse breaks; absent means none.
+        pending_key : str, optional
+            The member holding entries awaiting proof; they are only reported, never applied.
 
         Raises
         ------
@@ -236,4 +272,7 @@ class RootStitch:
             raise ValueError(f"{path}: no key {key!r} holding the rename list")
         if breaks_key is not None and breaks_key not in document:
             raise ValueError(f"{path}: no key {breaks_key!r} holding the break list")
-        return cls(document[key], None if breaks_key is None else document[breaks_key])
+        if pending_key is not None and pending_key not in document:
+            raise ValueError(f"{path}: no key {pending_key!r} holding the pending list")
+        return cls(document[key], None if breaks_key is None else document[breaks_key],
+                   None if pending_key is None else document[pending_key])

@@ -399,7 +399,7 @@ def test_the_reference_params_validate_clean():
 
 def test_the_pack_surface():
     assert ChainCensus.role == "transform"
-    assert ChainCensus.outputs == ("records", "rows_by_year", "strikes_by_month", "reuse_candidates", "summary")
+    assert ChainCensus.outputs == ("records", "rows_by_year", "strikes_by_month", "reuse_candidates", "stale_spot_days", "summary")
     assert chain_census.NODE_KINDS == ()
     for name in ("ChainCensus", "quote_state", "USABLE_STATES", "NODE_KINDS"):
         assert name in chain_census.__all__
@@ -449,7 +449,7 @@ def test_the_census_reads_an_onboarded_stream_through_the_lazy_reader(tmp_path):
 from datetime import date, timedelta  # noqa: E402
 
 REUSE = {"reuse_price_factor": 2.0, "reuse_rows_factor": 4.0, "reuse_window": 5, "reuse_band": 0.25,
-         "reuse_overlap_max": 0.1, "reuse_split_share": 0.05}
+         "reuse_overlap_max": 0.1, "reuse_split_share": 0.05, "reuse_persistence": 5}
 
 
 def regime(symbol, start, days, price, strikes, odd=()):
@@ -481,6 +481,9 @@ JUMP = (regime("JUMP", "2020-01-01", 10, 50.0, range(40, 61))
 #: liquidity grows eightfold on the SAME strikes and price: continuous, not a reuse.
 GROWS = (regime("GROWS", "2020-01-01", 10, 50.0, [49, 50, 51]) + regime("GROWS", "2020-01-11", 10, 50.0, range(38, 63)))
 CALM = regime("CALM", "2020-01-01", 20, 50.0, range(45, 56))
+#: a price spike that reverts after three dates: a move, not a new company.
+SPIKE = (regime("SPIKE", "2020-01-01", 10, 50.0, range(40, 61)) + regime("SPIKE", "2020-01-11", 3, 150.0, range(140, 161))
+         + regime("SPIKE", "2020-01-14", 10, 50.0, range(40, 61)))
 
 
 def test_a_new_issuer_on_a_reused_symbol_is_a_candidate_with_its_evidence():
@@ -499,7 +502,7 @@ def test_a_new_issuer_on_a_reused_symbol_is_a_candidate_with_its_evidence():
 def test_a_real_split_with_off_grid_strikes_is_explained_and_counted_not_flagged():
     out = reuse(SPLIT + CALM)
     assert out["reuse_candidates"] == []
-    assert out["summary"]["reuse"] == {"candidates": 0, "split_explained": 1}
+    assert out["summary"]["reuse"] == {"candidates": 0, "split_explained": 1, "reverted": 0}
 
 
 def test_a_price_jump_alone_is_flagged_without_the_rows_reason():
@@ -549,3 +552,65 @@ def test_the_detector_is_skipped_and_said_so_when_not_declared():
 def test_bad_reuse_params_refuse_by_name(over, fragment):
     params = {k: v for k, v in {**PARAMS, **REUSE, **over}.items() if v is not ...}
     assert any(fragment in p for p in ChainCensus.validate_params(params)), ChainCensus.validate_params(params)
+
+
+def test_a_price_spike_that_reverts_inside_the_persistence_window_is_not_a_candidate_and_is_counted():
+    out = reuse(SPIKE + JUMP)
+    assert [(c["symbol"], c["date"]) for c in out["reuse_candidates"]] == [("JUMP", "2020-01-11")]
+    assert out["summary"]["reuse"]["reverted"] == 2                      # the way up and the way back
+    assert candidates(out)[("JUMP", "2020-01-11")]["price_persists"] is True
+
+
+def test_without_a_persistence_param_a_reverting_spike_is_still_listed():
+    out = reuse(SPIKE, reuse_persistence=...)
+    assert ("SPIKE", "2020-01-11") in candidates(out)
+    assert candidates(out)[("SPIKE", "2020-01-11")]["price_persists"] is None
+
+
+def test_a_jump_at_the_end_of_the_series_with_fewer_later_dates_is_judged_on_those():
+    short = regime("TAIL", "2020-01-01", 10, 50.0, range(40, 61)) + regime("TAIL", "2020-01-11", 2, 150.0, range(140, 161))
+    assert ("TAIL", "2020-01-11") in candidates(reuse(short))
+
+
+def test_a_bad_persistence_refuses():
+    params = {**PARAMS, **REUSE, "reuse_persistence": 0}
+    assert any("reuse_persistence" in p for p in ChainCensus.validate_params(params))
+
+
+# -- stale vendor spots (flagged by the feature node, counted per root here) -------------------------------
+
+
+def stale_file(tmp_path, *entries):
+    path = tmp_path / "stale.jsonl"
+    path.write_text("\n".join(json.dumps({"symbol": s, "date": d}) for s, d in entries) + "\n")
+    return {"stale_spots_file": str(path)}
+
+
+def test_flagged_stale_days_are_counted_per_root_and_listed(tmp_path):
+    cfg = stale_file(tmp_path, ("AAA", "2020-01-03"), ("AAA", "2020-01-03"), ("BBB", "2020-01-02"), ("ZZZ", "2020-01-02"))
+    out = census(AAA + BBB + CCC, **cfg)
+    roots = by_symbol(out)
+    assert (roots["AAA"]["stale_spot_days"], roots["BBB"]["stale_spot_days"], roots["CCC"]["stale_spot_days"]) == (1, 1, 0)
+    assert out["stale_spot_days"] == [{"symbol": "AAA", "date": "2020-01-03"}, {"symbol": "BBB", "date": "2020-01-02"},
+                                      {"symbol": "ZZZ", "date": "2020-01-02"}]
+    assert out["summary"]["stale_spot_days"] == 3 and out["summary"]["stale_spot_unknown_roots"] == 1
+
+
+def test_a_missing_stale_file_is_a_counted_skip_not_a_refusal(tmp_path):
+    out = census(AAA, stale_spots_file=str(tmp_path / "nope.jsonl"))
+    assert "not found" in out["summary"]["skipped"]["stale_spot"] and out["stale_spot_days"] == []
+    assert "stale_spot_days" not in out["records"][0]
+    assert "no stale_spots_file" in census(AAA)["summary"]["skipped"]["stale_spot"]
+
+
+def test_a_stale_row_on_or_after_end_before_or_without_a_date_refuses(tmp_path):
+    with pytest.raises(ValueError, match="end_before"):
+        census(AAA, **stale_file(tmp_path, ("AAA", "2026-01-02")))
+    path = tmp_path / "bad.jsonl"
+    path.write_text('{"symbol": "AAA"}\n')
+    with pytest.raises(ValueError, match="date"):
+        census(AAA, stale_spots_file=str(path))
+
+
+def test_a_bad_stale_file_param_refuses():
+    assert any("stale_spots_file" in p for p in ChainCensus.validate_params({**PARAMS, "stale_spots_file": ""}))

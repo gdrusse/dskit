@@ -762,3 +762,43 @@ def test_a_split_unit_refuses_and_is_allowed_by_a_param(tmp_path):
         read_through(tmp_path, root)
     out = read_through(tmp_path, root, allow_unit_mismatch=True)
     assert out["summary"]["reader"]["unit_row_mismatch"] == 1
+
+
+# -- a stale vendor spot: the parity forward is the witness ---------------------------------------------
+
+STALE = {"stale_spot_tolerance": 0.05, "stale_spot_field": "stale_spot"}
+SPOT_FIELDS = {**FIELDS, "spot": "spot", "straddle_ratio": "straddle_ratio", "forward": "forward"}
+
+
+def test_a_spot_far_from_the_parity_forward_is_flagged_and_only_the_spot_features_are_dropped():
+    stale = [dict(r, underlying_price=114.0) for r in chain()]
+    row = only(run_with(stale, fields=SPOT_FIELDS, **STALE))
+    assert row["stale_spot"] is True and row["spot"] is None and row["straddle_ratio"] is None
+    assert row["forward"] == pytest.approx(100.0, abs=1e-6) and row["atm_iv"] == pytest.approx(0.30, abs=1e-4)
+    assert row["status"] == "ok" and row["half_spread_over_premium"] is not None
+
+
+def test_a_consistent_spot_passes_with_its_features_kept():
+    row = only(run_with(chain(), fields=SPOT_FIELDS, **STALE))
+    assert row["stale_spot"] is False and row["spot"] == 100.0 and row["straddle_ratio"] > 0
+
+
+def test_the_check_uses_the_rate_not_a_zero_rate():
+    rows = [dict(r, underlying_price=100.0 * math.exp(-RATE * 28 / 365)) for r in rated_chain()]
+    assert only(run_with(rows, fields=SPOT_FIELDS, rate=RATE, **STALE))["stale_spot"] is False
+
+
+def test_the_flag_is_not_a_column_unless_declared_and_needs_a_price_field():
+    assert "stale_spot" not in only(run_with([dict(r, underlying_price=114.0) for r in chain()]))
+    problems = ChainDayFeatures.validate_params({**PARAMS, "stale_spot_tolerance": 0.05})
+    assert any("stale_spot_field" in p for p in problems)
+    no_price = {k: v for k, v in {**PARAMS, **STALE}.items() if k != "underlying_price_field"}
+    assert any("underlying_price_field" in p for p in ChainDayFeatures.validate_params({**no_price, "fields": {"atm_iv": "atm_iv"}}))
+    assert any("stale_spot_tolerance" in p for p in ChainDayFeatures.validate_params({**PARAMS, **STALE, "stale_spot_tolerance": 0}))
+
+
+def test_the_summary_counts_stale_rows_and_days_with_examples():
+    rows = [dict(r, underlying_price=114.0) for r in chain(day="2020-03-03")] + chain()
+    out = run_with(rows, fields=SPOT_FIELDS, **STALE)
+    assert out["summary"]["stale_spot_rows"] == 1 and out["summary"]["stale_spot_days"] == 1
+    assert out["summary"]["stale_spot_examples"] == [["AAA", "2020-03-03"]]

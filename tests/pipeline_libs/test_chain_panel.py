@@ -72,7 +72,7 @@ def build(tree, path, rows=None, **over):
 
 
 def date_files(path):
-    return sorted(n for n in os.listdir(os.path.join(path, "panel")) if not n.startswith("."))
+    return sorted(n for n in os.listdir(os.path.join(path, "panel")) if not n.startswith(".") and n != "manifest.json")
 
 
 def read_date(path, text):
@@ -126,12 +126,15 @@ def test_the_universe_gate_columns_come_from_first_quote_and_the_census(tree, tm
         {"symbol": "AAA", "liquidity_tercile": 3, "first_bid_date": "2020-03-04"},
         {"symbol": "BBB", "liquidity_tercile": 1, "first_bid_date": "2020-03-04"})) + "\n")
     build(tree, tmp_path / "panel", first_quote_file=str(first), first_quote_field="first_quote_date",
-          gate_field="after_first_quote", census_file=str(census), census_columns={"tercile": ["liquidity_tercile", "int32"]})
+          gate_field="after_first_quote", census_file=str(census), census_asof="2020-03-05",
+          census_columns={"tercile": ["liquidity_tercile", "int32"]})
     rows = {(r["symbol"], r["date"].isoformat()): r for d in DAYS for r in read_date(tmp_path / "panel", d)}
     assert rows[("AAA", "2020-03-04")]["after_first_quote"] is False
     assert rows[("AAA", "2020-03-05")]["after_first_quote"] is True
     assert rows[("AAA", "2020-03-05")]["first_quote_date"].isoformat() == "2020-03-05"
     assert rows[("BBB", "2020-03-05")]["tercile"] == 1 and rows[("AAA", "2020-03-06")]["tercile"] == 3
+    # a whole-sample statistic is never visible before its as-of date: no look-ahead by construction
+    assert rows[("AAA", "2020-03-04")]["tercile"] is None and rows[("BBB", "2020-03-04")]["tercile"] is None
     schema = pq.read_schema(os.path.join(tmp_path / "panel", "panel", f"{DAYS[1]}.parquet"))
     assert schema.field("tercile").type == pa.int32() and schema.field("after_first_quote").type == pa.bool_()
 
@@ -142,7 +145,8 @@ def test_a_root_missing_from_the_gate_files_gets_nulls_and_is_counted(tree, tmp_
     census = tmp_path / "census.jsonl"
     census.write_text(json.dumps({"symbol": "AAA", "liquidity_tercile": 2}) + "\n")
     out = build(tree, tmp_path / "panel", first_quote_file=str(first), first_quote_field="fq", gate_field="gate",
-                census_file=str(census), census_columns={"tercile": ["liquidity_tercile", "int32"]})
+                census_file=str(census), census_asof="2020-03-01",
+                census_columns={"tercile": ["liquidity_tercile", "int32"]})
     row = next(r for r in read_date(tmp_path / "panel", DAYS[1]) if r["symbol"] == "BBB")
     assert row["fq"] is None and row["gate"] is None and row["tercile"] is None
     assert out["summary"]["roots_without_first_quote"] == 2 and out["summary"]["roots_without_census"] == 2
@@ -157,11 +161,11 @@ def test_a_date_file_reads_back_through_the_date_bounded_reader(tree, tmp_path):
 
 def test_the_manifest_lists_every_file_with_its_sha256(tree, tmp_path):
     out = build(tree, tmp_path / "panel")
-    manifest = json.load(open(tmp_path / "panel" / "manifest.json"))
+    manifest = json.load(open(tmp_path / "panel" / "panel" / "manifest.json"))
     assert manifest == out["manifest"] and manifest["rows"] == 6
-    assert sorted(manifest["files"]) == [f"panel/{d}.parquet" for d in DAYS]
+    assert sorted(manifest["files"]) == [f"{d}.parquet" for d in DAYS]
     for name, entry in manifest["files"].items():
-        raw = (tmp_path / "panel" / name).read_bytes()
+        raw = (tmp_path / "panel" / "panel" / name).read_bytes()
         assert entry["sha256"] == hashlib.sha256(raw).hexdigest() and entry["bytes"] == len(raw)
     assert manifest["roots"]["AAA"]["rows"] == 3
 
@@ -267,7 +271,10 @@ def test_a_stitched_series_is_one_root_in_the_panel(tmp_path):
     ({"repartition": "yes"}, "repartition"),
     ({"first_quote_file": "/x"}, "first_quote_field"),
     ({"census_file": "/x"}, "census_columns"),
-    ({"census_file": "/x", "census_columns": {"c": ["f", "complex"]}}, "census_columns"),
+    ({"census_file": "/x", "census_columns": {"c": ["f", "int32"]}}, "census_asof"),
+    ({"census_file": "/x", "census_asof": "soon", "census_columns": {"c": ["f", "int32"]}}, "census_asof"),
+    ({"census_asof": "2021-01-01"}, "census_asof"),
+    ({"census_file": "/x", "census_asof": "2021-01-01", "census_columns": {"c": ["f", "complex"]}}, "census_columns"),
 ])
 def test_bad_params_refuse_by_name(tmp_path, over, fragment):
     params = {k: v for k, v in {**panel_params(tmp_path / "panel"), **over}.items() if v is not ...}
@@ -309,3 +316,120 @@ def test_a_reuse_break_makes_two_roots_and_the_later_company_cannot_borrow_the_e
     earlier = read_date(tmp_path / "panel", DAYS[0])[0]
     assert earlier["symbol"] == "AI.before" and earlier["fq"].isoformat() == "2020-01-02"
     assert later["fq"].isoformat() == DAYS[1] and later["gate"] is True
+
+
+def test_a_changed_census_asof_rebuilds_every_root(tree, tmp_path):
+    census = tmp_path / "census.jsonl"
+    census.write_text(json.dumps({"symbol": "AAA", "liquidity_tercile": 3}) + "\n")
+    kw = {"census_file": str(census), "census_columns": {"tercile": ["liquidity_tercile", "int32"]}}
+    build(tree, tmp_path / "panel", census_asof="2020-03-01", **kw)
+    assert build(tree, tmp_path / "panel", census_asof="2020-03-01", **kw)["summary"]["roots_skipped"] == 3
+    assert build(tree, tmp_path / "panel", census_asof="2020-03-06", **kw)["summary"]["roots_built"] == 3
+
+
+def test_the_summary_reader_counters_sum_the_per_root_reads_fresh_and_resumed(tree, tmp_path):
+    fresh = build(tree, tmp_path / "panel")["summary"]["reader"]
+    assert fresh["rows"] == 7 * 82 and fresh["units"] == 7 and fresh["members"] == 4
+    assert fresh["skipped_rows"] == 0 and fresh["unit_row_mismatch"] == 0 and fresh["files"] == 2
+    resumed = build(tree, tmp_path / "panel")["summary"]
+    assert resumed["roots_built"] == 0 and resumed["reader"] == fresh
+
+
+def test_the_per_root_overlap_counters_reach_the_panel_summary(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", chains("AAA"))
+    write_snapshot(directory, "20260101T000002Z-backfill-bbbbbbbb", chains("AAA", days=DAYS[:1], vol=0.28))
+    out = build(directory, tmp_path / "panel")["summary"]["reader"]
+    assert out["skipped_rows"] == 82 and out["skipped_units"] == 1
+
+
+# -- crash safety and dropped roots ------------------------------------------------------------------------
+
+
+def test_a_crash_while_staging_leaves_the_previous_panel_whole_and_the_next_run_completes(tree, tmp_path, monkeypatch):
+    path = tmp_path / "panel"
+    build(tree, path)
+    before = (path / "panel" / "manifest.json").read_bytes()
+    write_snapshot(tree, "20260101T000003Z-backfill-cccccccc", chains("BBB", days=("2020-03-02",)))
+    original, calls = ChainPanelBuild._write, []
+
+    def dying(self, directory, name, table, meta):
+        calls.append(name)
+        if len(calls) > 4 and directory.endswith(".panel-next"):
+            raise OSError("disk gone")
+        return original(self, directory, name, table, meta)
+
+    monkeypatch.setattr(ChainPanelBuild, "_write", dying)
+    with pytest.raises(OSError, match="disk gone"):
+        build(tree, path)
+    assert (path / "panel" / "manifest.json").read_bytes() == before            # readers still see the old panel
+    assert date_files(path) == [f"{d}.parquet" for d in DAYS]
+    monkeypatch.undo()
+    again = build(tree, path)["summary"]
+    assert again["roots_built"] == 0 and again["dates_written"] == 4
+    assert not (path / ".panel-next").exists() and date_files(path)[0] == "2020-03-02.parquet"
+
+
+def test_a_crash_between_the_two_renames_is_restored_then_rebuilt(tree, tmp_path, monkeypatch):
+    path = tmp_path / "panel"
+    build(tree, path)
+    write_snapshot(tree, "20260101T000003Z-backfill-cccccccc", chains("BBB", days=("2020-03-02",)))
+    real, seen = os.replace, []
+
+    def cut(src, dst):
+        seen.append((os.path.basename(src), os.path.basename(dst)))
+        if os.path.basename(dst) == "panel" and os.path.basename(src) == ".panel-next":
+            raise OSError("power cut")
+        return real(src, dst)
+
+    monkeypatch.setattr("dskit.pipeline.libs.chain_panel.os.replace", cut)
+    with pytest.raises(OSError, match="power cut"):
+        build(tree, path)
+    assert (path / ".panel-old").is_dir() and not (path / "panel").exists()
+    monkeypatch.undo()
+    out = build(tree, path)["summary"]
+    assert out["dates_written"] == 4 and date_files(path)[0] == "2020-03-02.parquet"
+    assert not (path / ".panel-old").exists()
+
+
+def test_dates_of_a_root_that_left_the_input_leave_the_panel(tree, tmp_path):
+    path = tmp_path / "panel"
+    build(tree, path)
+    only_aaa = reader(tree, symbols=["AAA"])
+    build(tree, path, rows=only_aaa)
+    assert all(r["symbol"] == "AAA" for d in DAYS for r in read_date(path, d))
+    assert json.load(open(path / "panel" / "manifest.json"))["rows"] == 3
+
+
+def test_the_schema_and_a_code_version_are_part_of_every_roots_identity(tree, tmp_path, monkeypatch):
+    path = tmp_path / "panel"
+    build(tree, path)
+    monkeypatch.setattr("dskit.pipeline.libs.chain_panel.PANEL_VERSION", 99)
+    assert build(tree, path)["summary"]["roots_built"] == 3
+
+
+def test_the_stale_spot_flag_is_a_panel_column_and_spot_features_are_null_on_a_stale_day(tmp_path):
+    directory = tmp_path / "theta"
+    rows = chains("AAA", days=DAYS[:2]) + [dict(r, underlying_price=114.0) for r in chains("AAA", days=DAYS[2:])]
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", rows)
+    features = {**FEATURES, "stale_spot_tolerance": 0.05, "stale_spot_field": "stale_spot",
+                "fields": {**FEATURES["fields"], "spot": "spot"}}
+    out = ChainPanelBuild("panel", {"features": features, "path": str(tmp_path / "panel")}).run(
+        CTX, {"records": reader(directory)})
+    assert out["summary"]["features"]["stale_spot_days"] == 1 and out["summary"]["features"]["stale_spot_rows"] == 1
+    fresh, stale = read_date(tmp_path / "panel", DAYS[0])[0], read_date(tmp_path / "panel", DAYS[2])[0]
+    assert fresh["stale_spot"] is False and fresh["spot"] == 100.0
+    assert stale["stale_spot"] is True and stale["spot"] is None and stale["atm_iv"] is not None
+
+
+def test_the_panel_lists_the_stale_days_in_a_jsonl_beside_it_for_the_census(tmp_path):
+    directory = tmp_path / "theta"
+    rows = chains("AAA", days=DAYS[:2]) + [dict(r, underlying_price=114.0) for r in chains("AAA", days=DAYS[2:])]
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", rows)
+    features = {**FEATURES, "stale_spot_tolerance": 0.05, "stale_spot_field": "stale_spot"}
+    node = ChainPanelBuild("panel", {"features": features, "path": str(tmp_path / "panel")})
+    out = node.run(CTX, {"records": reader(directory)})
+    listed = [json.loads(line) for line in (tmp_path / "panel" / "stale_spot_days.jsonl").read_text().splitlines()]
+    assert listed == [{"symbol": "AAA", "date": DAYS[2]}] and out["stale_spot_days"] == listed
+    again = node.run(CTX, {"records": reader(directory)})                         # resumed: same list from the footers
+    assert again["stale_spot_days"] == listed and again["summary"]["roots_built"] == 0

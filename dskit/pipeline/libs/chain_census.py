@@ -40,7 +40,9 @@ passed. Wiring is by import path; :data:`NODE_KINDS` is empty.
 Import cost: stdlib and the pipeline core.
 """
 
+import json
 import math
+import os
 from statistics import median
 
 from dskit.pipeline.libs.chain_reuse import ReuseDetector
@@ -276,14 +278,14 @@ class ChainCensus(Node):
     """
 
     role = "transform"
-    outputs = ("records", "rows_by_year", "strikes_by_month", "reuse_candidates", "summary")
+    outputs = ("records", "rows_by_year", "strikes_by_month", "reuse_candidates", "stale_spot_days", "summary")
 
     _REQUIRED = ("symbol_field", "date_field", "strike_field", "bid_field", "ask_field", "end_before")
     _CLOSE = ("close_symbol_field", "close_date_field", "close_field", "price_tolerance")
     _REUSE = ("reuse_price_factor", "reuse_rows_factor", "reuse_window", "reuse_band", "reuse_overlap_max",
-              "reuse_split_share")
+              "reuse_split_share", "reuse_persistence")
     _PARAMS = (*_REQUIRED, "iv_error_field", "iv_error_flag", "strike_grid", "strike_tolerance",
-               "liquidity_end_before", "underlying_price_field", "allow_unit_mismatch", *_CLOSE, *_REUSE)
+               "liquidity_end_before", "underlying_price_field", "allow_unit_mismatch", "stale_spots_file", *_CLOSE, *_REUSE)
 
     @classmethod
     def validate_params(cls, params):
@@ -320,6 +322,9 @@ class ChainCensus(Node):
             problems.append("strike_tolerance needs strike_grid")
         cls._close_problems(problems, params)
         cls._reuse_problems(problems, params)
+        if "stale_spots_file" in params and (not isinstance(params["stale_spots_file"], str)
+                                             or not params["stale_spots_file"]):
+            problems.append(f"stale_spots_file must be a non-empty path, got {params['stale_spots_file']!r}")
         return problems
 
     @classmethod
@@ -335,8 +340,9 @@ class ChainCensus(Node):
         for name in ("reuse_price_factor", "reuse_rows_factor"):
             if name in params and (not number_ok(params[name]) or params[name] <= 1):
                 problems.append(f"{name} must be a number > 1, got {params[name]!r}")
-        if "reuse_window" in params:
-            check_int_param(problems, "reuse_window", params["reuse_window"], ge=1)
+        for name in ("reuse_window", "reuse_persistence"):
+            if name in params:
+                check_int_param(problems, name, params[name], ge=1)
         if "reuse_band" in params and (not number_ok(params["reuse_band"]) or params["reuse_band"] <= 0):
             problems.append(f"reuse_band must be a number > 0, got {params['reuse_band']!r}")
         for name in ("reuse_overlap_max", "reuse_split_share"):
@@ -579,7 +585,7 @@ class ChainCensus(Node):
                    price_max_abs_rel_diff=max(diffs) if diffs else None,
                    price_share_beyond_tolerance=sum(d > tol for d in diffs) / len(diffs) if diffs else None)
 
-    def _skipped(self, closes_wired):
+    def _skipped(self, closes_wired, stale_found=True):
         """Say which optional checks did not run, and why."""
         p, skipped = self.params, {}
         if "strike_grid" not in p:
@@ -588,6 +594,10 @@ class ChainCensus(Node):
             skipped["iv_error"] = "no iv_error_field declared: the placeholder share not computed"
         if "liquidity_end_before" not in p:
             skipped["liquidity_development"] = "no liquidity_end_before declared: development median and terciles not computed"
+        if "stale_spots_file" not in p:
+            skipped["stale_spot"] = "no stale_spots_file declared: stale vendor prices (flagged by the feature node) not counted"
+        elif not stale_found:
+            skipped["stale_spot"] = f"stale_spots_file {p['stale_spots_file']} not found: run the panel, then rerun the census"
         if "reuse_price_factor" not in p:
             skipped["reuse"] = "no reuse_price_factor declared: suspected symbol reuse not looked for"
         if "underlying_price_field" not in p:
@@ -631,12 +641,22 @@ class ChainCensus(Node):
         if closes is not None:
             for row in rows:
                 self._price_check(row, roots[row["symbol"]], closes)
-        reuse, explained = self._reuse(roots)
+        reuse, explained, reverted = self._reuse(roots)
+        stale, stale_found = self._stale_spots(roots)
+        if stale_found:
+            counts = {}
+            for entry in stale:
+                counts[entry["symbol"]] = counts.get(entry["symbol"], 0) + 1
+            for row in rows:
+                row["stale_spot_days"] = counts.get(row["symbol"], 0)
         by_month = [{"symbol": symbol, "month": month, "rows": cell[0], "nonstandard_rows": cell[1],
                      "nonstandard_strikes": len(cell[2])} for (symbol, month), cell in cells]
-        summary = self._summary(days, rows, closes is not None)
+        summary = self._summary(days, rows, closes is not None, stale_found)
+        if stale_found:
+            summary["stale_spot_days"] = len(stale)
+            summary["stale_spot_unknown_roots"] = len({e["symbol"] for e in stale} - {r["symbol"] for r in rows})
         if "reuse_price_factor" in self.params:
-            summary["reuse"] = {"candidates": len(reuse), "split_explained": explained}
+            summary["reuse"] = {"candidates": len(reuse), "split_explained": explained, "reverted": reverted}
         report = getattr(inputs["records"], "report", None)
         if callable(report):
             summary["reader"] = report()
@@ -647,31 +667,66 @@ class ChainCensus(Node):
         self.log.info("census: %d root(s), %d row(s), %d never quoted", summary["roots"],
                       summary["rows"], summary["never_quoted_roots"])
         return {"records": rows, "rows_by_year": self._by_year(roots), "strikes_by_month": by_month,
-                "reuse_candidates": reuse, "summary": summary}
+                "reuse_candidates": reuse, "stale_spot_days": stale, "summary": summary}
+
+    def _stale_spots(self, roots):
+        """Read ``stale_spots_file`` (JSON lines of ``{symbol, date}`` the feature node flagged) and validate it.
+
+        The census cannot tell a stale vendor price by itself: a price-only rule (a value repeated from an older
+        date between two different neighbours) flagged 776 root-days of which 5 were stale on the landed tree,
+        because volatile days produce exact repeats. The witness is the parity forward, which the feature node
+        computes and the panel records; this table brings those flagged days next to the census so a root's
+        count sits with its other statistics. Returns ``(rows, found)``: the validated sorted rows and whether
+        the file was there (an absent file is a counted skip, not a refusal, so the first census can run before
+        the panel exists).
+        """
+        path = self.params.get("stale_spots_file")
+        if path is None:
+            return [], False
+        if not os.path.isfile(path):
+            return [], False
+        p, rows, seen = self.params, [], set()
+        with open(path, encoding="utf-8") as handle:
+            for number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                where = f"{self.key}: {path}:{number}"
+                record = json.loads(line)
+                if not isinstance(record, dict) or p["symbol_field"] not in record or p["date_field"] not in record:
+                    raise ValueError(f"{where}: not an object with {p['symbol_field']!r} and {p['date_field']!r}")
+                day = iso_day(record[p["date_field"]], f"{where} date").isoformat()
+                if day >= p["end_before"]:
+                    raise ValueError(f"{where}: date {day} is at or after end_before {p['end_before']}")
+                key = (record[p["symbol_field"]], day)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append({"symbol": key[0], "date": day})
+        return sorted(rows, key=lambda r: (r["symbol"], r["date"])), True
 
     def _reuse(self, roots):
         """Run the symbol-reuse detector over every root; return ``(candidates, split_explained)`` (empty if off)."""
         p = self.params
         if "reuse_price_factor" not in p:
-            return [], 0
+            return [], 0, 0
         detector = ReuseDetector(p["reuse_price_factor"], p.get("reuse_rows_factor"),
                                  p.get("reuse_window", DEFAULT_REUSE_WINDOW),
                                  p.get("reuse_overlap_max", DEFAULT_REUSE_OVERLAP),
-                                 p.get("reuse_split_share", DEFAULT_REUSE_SPLIT))
-        gridded, found, explained = "strike_grid" in p, [], 0
+                                 p.get("reuse_split_share", DEFAULT_REUSE_SPLIT), p.get("reuse_persistence"))
+        gridded, found, explained, reverted = "strike_grid" in p, [], 0, 0
         for symbol, series in roots.items():
             days = [{"date": day, "rows": t.rows, "price": (t.price_low + t.price_high) / 2,
                      "near": None if t.near_low is None else (t.near_low, t.near_high),
                      "odd": t.odd if gridded else None} for day, t in series if t.price_low is not None]
-            hits, split = detector.scan(symbol, days)
+            hits, split, gone = detector.scan(symbol, days)
             found += hits
             explained += split
-        return sorted(found, key=lambda c: (c["symbol"], c["date"])), explained
+            reverted += gone
+        return sorted(found, key=lambda c: (c["symbol"], c["date"])), explained, reverted
 
-    def _summary(self, days, rows, closes_wired):
+    def _summary(self, days, rows, closes_wired, stale_found=True):
         """Build the run-level counts."""
         dates = [day for _, day in days]
         return {"roots": len(rows), "rows": sum(t.rows for t in days.values()), "first_date": min(dates),
                 "last_date": max(dates), "never_quoted_roots": sum(r["never_quoted"] for r in rows),
                 "states": {s: sum(t.states[i] for t in days.values()) for i, s in enumerate(STATES)},
-                "end_before": self.params["end_before"], "skipped": self._skipped(closes_wired)}
+                "end_before": self.params["end_before"], "skipped": self._skipped(closes_wired, stale_found)}

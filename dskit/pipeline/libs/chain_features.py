@@ -41,6 +41,15 @@ filled):
   ``oi_put_call_ratio_change`` against the same scope ``oi_lag_sessions`` sessions of that symbol
   earlier (``None`` past ``oi_lag_max_days`` calendar days, or when that expiry did not exist then).
 
+**A stale vendor spot.** The vendor's ``underlying_price`` is not always that day's price: on some days every row
+carries a value copied from an earlier date (AAPL on 2019-09-11 repeats its 2019-06-25 price, 14% off, with a same-day
+timestamp). With ``stale_spot_tolerance`` and ``stale_spot_field`` declared, each ``ok`` row checks the spot against
+the parity forward, ``|log(spot) - (log(forward) - r T)|``, and a row beyond the tolerance is flagged ``True`` in the
+``stale_spot_field`` column with ``spot`` and the features that divide by it (``straddle_ratio``) set to ``None``; the
+forward, vols, skew, term and positioning features stand, because they use the quotes alone. The summary counts
+``stale_spot_rows``, ``stale_spot_days`` and lists the first examples. The tolerance is a chosen convention that must
+exceed a dividend yield times the expiry.
+
 **Memory.** The input is read once and rows are held as packed arrays (about 50 bytes a row, one block per
 symbol-date). Three modes: the default holds every row until the input ends (a sample only);
 ``symbol_contiguous`` true (members arrive grouped by symbol, any date order within one) holds ONE symbol and
@@ -112,6 +121,8 @@ DEFAULT_IV_MAX = 5.0
 #: No node kind is registered: a document names ``dskit.pipeline.libs.chain_features:ChainDayFeatures``.
 NODE_KINDS = ()
 
+#: How many (symbol, date) examples of stale spots the summary lists.
+STALE_EXAMPLES = 20
 _CHAIN = None          # the totals key of the whole chain, beside the per-expiration keys
 _AGGREGATES = ("oi_call", "oi_put", "volume_call", "volume_put", "oi_put_call_ratio")
 _CHANGES = ("oi_change", "oi_put_call_ratio_change")
@@ -374,7 +385,8 @@ class ChainDayFeatures(Node):
     _PARAMS = (*_ROWS, *_OPTIONAL_ROWS, "call_values", "put_values", "end_before", "targets", "target_field",
                "status_field", "atm_band", "wing_delta", "min_forward_pairs", "fields", "term_pair", "oi_scope",
                "oi_lag_sessions", "oi_lag_max_days", "days_per_year", "iv_min", "iv_max", "presorted",
-               "symbol_contiguous", "rate", "rate_field", "rate_scale", "max_symbol_rows", "allow_unit_mismatch", *_RATES)
+               "symbol_contiguous", "rate", "rate_field", "rate_scale", "max_symbol_rows", "allow_unit_mismatch",
+               "stale_spot_tolerance", "stale_spot_field", *_RATES)
 
     # -- validation ------------------------------------------------------------------------
 
@@ -418,7 +430,25 @@ class ChainDayFeatures(Node):
                             "symbol-contiguous, date-ascending rows")
         cls._rate_problems(problems, params)
         cls._fields_problems(problems, params)
+        cls._stale_problems(problems, params)
         return problems
+
+    @staticmethod
+    def _stale_problems(problems, params):
+        """Check the stale-spot guard: tolerance and output field together, and a price field to guard."""
+        if ("stale_spot_tolerance" in params) != ("stale_spot_field" in params):
+            problems.append("declare stale_spot_tolerance and stale_spot_field together")
+        if "stale_spot_tolerance" in params:
+            tol = params["stale_spot_tolerance"]
+            if not number_ok(tol) or tol <= 0:
+                problems.append(f"stale_spot_tolerance must be a number > 0, got {tol!r}")
+            if "underlying_price_field" not in params:
+                problems.append("the stale-spot guard compares the underlying price: declare underlying_price_field")
+        if "stale_spot_field" in params:
+            name = params["stale_spot_field"]
+            taken = [params.get(n) for n in ("symbol_field", "date_field", "target_field", "status_field")]
+            if not isinstance(name, str) or not name or name in taken or name in (params.get("fields") or {}).values():
+                problems.append(f"stale_spot_field must be a non-empty name distinct from every other output, got {name!r}")
 
     @classmethod
     def _rate_problems(cls, problems, params):
@@ -739,10 +769,11 @@ class ChainDayFeatures(Node):
         p = self.params
         by_exp, totals, spot = self._scan_day(cells, counts)
         rate = rates.at(day, cells)
-        built = []
+        built, stale_today = [], False
         for target in p["targets"]:
             counted = counts["targets"][str(target["dte"])]
             feats = dict.fromkeys(FEATURES)
+            feats["stale_spot"] = None
             feats["status"] = "no_expiry"
             picked = self._pick(by_exp, day, target)
             if picked is not None:
@@ -753,14 +784,24 @@ class ChainDayFeatures(Node):
                 self._positioning(feats, expiration if p.get("oi_scope") == "expiry" else _CHAIN, totals, state,
                                   day, counts)
                 if feats["status"] != "ok":
-                    feats = dict.fromkeys(FEATURES, None) | {"status": feats["status"]}
+                    feats = dict.fromkeys(FEATURES, None) | {"status": feats["status"], "stale_spot": None}
             counted["emitted" if feats["status"] == "ok" else feats["status"]] += 1
+            if feats["stale_spot"]:
+                counted["stale_spot"] += 1
+                counts["stale_spot_rows"] += 1
+                stale_today = True
             built.append((target["dte"], feats))
         self._term(built)
         state.history.append((date.fromisoformat(day), totals))
+        if stale_today:
+            counts["stale_spot_days"] += 1
+            if len(counts["stale_spot_examples"]) < STALE_EXAMPLES:
+                counts["stale_spot_examples"].append([symbol_name, day])
+        extra = {p["stale_spot_field"]: None} if "stale_spot_field" in p else {}
         return [{p["symbol_field"]: symbol_name, p["date_field"]: day, p["target_field"]: dte,
                  p["status_field"]: feats["status"],
-                 **{out: feats[name] for name, out in p["fields"].items()}} for dte, feats in built]
+                 **{out: feats[name] for name, out in p["fields"].items()},
+                 **({p["stale_spot_field"]: feats["stale_spot"]} if extra else {})} for dte, feats in built]
 
     def _quote_features(self, cells, years, rate, spot, feats, counts):
         """Write the quote-based features of one expiry onto ``feats``; return the row's status."""
@@ -769,10 +810,26 @@ class ChainDayFeatures(Node):
         book = self._book(cells, years, rate)
         if book.solve_forward(self.params["min_forward_pairs"]) is None:
             return "no_forward"
+        feats["stale_spot"] = self._stale(spot, book)
+        if feats["stale_spot"]:
+            spot = feats["spot"] = None             # the forward, vols and quotes stand; what rests on the spot is dropped
         self._smile(book, spot, feats)
         counts["iv_solved"] += book.iv_solved
         counts["iv_unsolved"] += book.iv_unsolved
         return "ok"
+
+    def _stale(self, spot, book):
+        """Say whether the vendor spot disagrees with the parity forward beyond the tolerance (None if not checked).
+
+        The forward carries ``spot * exp((r - q) T)``; with ``q`` unknown, ``log(spot)`` should sit within a
+        dividend-sized distance of ``log(forward) - r T``. A vendor price carried over from an earlier day does
+        not, whatever its timestamp says.
+        """
+        tol = self.params.get("stale_spot_tolerance")
+        if tol is None or spot is None or not spot > 0:
+            return None
+        gap = abs(math.log(spot) - (math.log(book.forward) - book.rate * book.years))
+        return gap > tol
 
     def _term(self, built):
         """Write ``term_slope`` onto every built row of the day when both term-pair targets resolved an ATM vol."""
@@ -815,7 +872,10 @@ class ChainDayFeatures(Node):
         counts = {"rows": 0, "groups": 0, "groups_before_first_bid": 0, "rows_before_first_bid": 0,
                   "usable_quotes": 0, "excluded_quotes": dict.fromkeys(_EXCLUDED, 0), "iv_solved": 0,
                   "iv_unsolved": 0, "oi_lag_too_old": 0,
-                  "targets": {str(t["dte"]): dict.fromkeys(("emitted", "no_expiry", "no_forward", "no_rate"), 0)
+                  **({"stale_spot_rows": 0, "stale_spot_days": 0, "stale_spot_examples": []}
+                     if "stale_spot_field" in p else {}),
+                  "targets": {str(t["dte"]): dict.fromkeys(("emitted", "no_expiry", "no_forward", "no_rate")
+                                                           + (("stale_spot",) if "stale_spot_field" in p else ()), 0)
                               for t in p["targets"]}}
         symbols, out = {}, []
         for symbol, day, cells in self._groups(inputs["records"]):
