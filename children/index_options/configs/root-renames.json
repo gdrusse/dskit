@@ -1,0 +1,33 @@
+{
+  "notes": "Root stitching map for the ThetaData chain readers (ADR-0265 Amendment 3). An entry {old, new, effective} joins the old root's series to the new root's: effective is the FIRST date the new name is in use. Entries are applied by dskit.pipeline.libs.chain_parquet:ParquetChainRows (census, features and panel all read through it) and are PROVEN against the landed Parquet footers at every run: an old root with data on or after effective, a new root with data before it, or any overlap of the two ranges refuses the run. BREAKS: a root can be two companies (a delisted issuer's ticker taken later by another); a break {root, effective, earlier_as} files the rows before effective under earlier_as and keeps the root's own name for the later company, so each series is one business; it is added only after the census reuse table (census-reuse-candidates.jsonl) listed the root and a person read the evidence. An entry is added to renames here only after the last date of the old root and the first date of the new root were read from the landed data (never from memory); entries awaiting that proof sit in pending_verification, which no reader loads. As of 2026-10-12 the landed roots are the tested names A..AG, so none of the rename pairs below has landed on either side. The one break below, AI, is from the 2026-10-12 census over the landed tested roots: the root's price goes from 2.73 (2020-10-23, the last date before a 53-day gap in the vendor's data) to 102.0 on 2020-12-15 (the first date of the second company, a thirty-seven-fold jump with no off-grid strikes) and its median rows per date from 28 to 246.",
+  "renames": [],
+  "pending_verification": [
+    {
+      "old": "FB",
+      "new": "META",
+      "note": "Meta Platforms; expected change on 2022-06-09. Neither root landed yet; META is in the pulled-417 list, FB is not, so the vendor's own META history may already include the FB years - read both windows first."
+    },
+    {
+      "old": "SQ",
+      "new": "XYZ",
+      "note": "Block; expected change on 2025-01-20. Neither root landed yet; XYZ is in the pulled-417 list, SQ is not."
+    },
+    {
+      "old": "UTX",
+      "new": "RTX",
+      "note": "United Technologies renamed Raytheon Technologies; expected 2020-04-03. A rename: the series continues. Neither landed yet."
+    },
+    {
+      "old": "RTN",
+      "new": "RTX",
+      "note": "Raytheon Co was ACQUIRED by United Technologies on 2020-04-03, it did not change name: before that date UTX and RTN are two businesses that both existed, so a RTN->RTX stitch overlaps UTX->RTX in time and the reader would refuse the second entry. Do not add it unless the data shows RTN ending where a separate series is wanted."
+    }
+  ],
+  "breaks": [
+    {
+      "root": "AI",
+      "effective": "2020-12-15",
+      "earlier_as": "AI.before-2020-12-15"
+    }
+  ]
+}

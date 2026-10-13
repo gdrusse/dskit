@@ -364,6 +364,17 @@ def test_nothing_usable_at_all_refuses_rather_than_emit_an_empty_table():
         run(dead)
 
 
+def test_the_empty_result_refusals_are_one_catchable_class_carrying_the_counts():
+    from dskit.pipeline.libs.chain_features import NoFeatureRows
+    dead = [dict(r, bid=0.0, ask=0.05) for r in chain()]
+    with pytest.raises(NoFeatureRows) as quiet:
+        run(dead)
+    assert quiet.value.counts["rows"] == len(dead) and quiet.value.counts["groups_before_first_bid"] == 1
+    with pytest.raises(NoFeatureRows) as nothing:
+        run(chain(dte=28), targets=[{"dte": 200, "tolerance": 5}])
+    assert nothing.value.counts["targets"]["200"]["no_expiry"] == 1 and issubclass(NoFeatureRows, ValueError)
+
+
 def test_no_target_matching_any_expiry_refuses():
     with pytest.raises(ValueError, match="no feature row"):
         run(chain(dte=28), targets=[{"dte": 200, "tolerance": 5}])

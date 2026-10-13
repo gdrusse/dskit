@@ -43,8 +43,9 @@ Import cost: stdlib and the pipeline core.
 import math
 from statistics import median
 
+from dskit.pipeline.libs.chain_reuse import ReuseDetector
 from dskit.pipeline.libs.observation_tables import iso_day
-from dskit.pipeline.node import Node, reject_unknown_params
+from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
 from dskit.pipeline.option_structures import quote_defects
 from dskit.pipeline.records import number_ok
 
@@ -70,6 +71,8 @@ USABLE_STATES = (LOCKED, QUOTED)
 
 #: Absolute slack, in strike units, when asking whether a strike is a multiple of its grid step.
 DEFAULT_STRIKE_TOLERANCE = 1e-6
+#: The reuse detector's chosen defaults (conventions, not derived): see :class:`~dskit.pipeline.libs.chain_reuse.ReuseDetector`.
+DEFAULT_REUSE_WINDOW, DEFAULT_REUSE_BAND, DEFAULT_REUSE_OVERLAP, DEFAULT_REUSE_SPLIT = 5, 0.25, 0.1, 0.05
 
 #: No node kind is registered: a document names ``dskit.pipeline.libs.chain_census:ChainCensus``.
 NODE_KINDS = ()
@@ -194,7 +197,8 @@ class StrikeGrid:
 class _Day:
     """The tally of one (root, date): row and quote-state counts, flags, and the reported price range."""
 
-    __slots__ = ("rows", "states", "bid_positive", "flagged", "bad_price", "null_price", "price_low", "price_high")
+    __slots__ = ("rows", "states", "bid_positive", "flagged", "bad_price", "null_price", "price_low", "price_high",
+                 "odd", "near_low", "near_high")
 
     def __init__(self):
         self.rows = 0
@@ -205,6 +209,14 @@ class _Day:
         self.null_price = 0
         self.price_low = None
         self.price_high = None
+        self.odd = 0
+        self.near_low = None
+        self.near_high = None
+
+    def see_near(self, strike):
+        """Widen the interval of near-the-money strikes to hold ``strike``."""
+        self.near_low = strike if self.near_low is None else min(self.near_low, strike)
+        self.near_high = strike if self.near_high is None else max(self.near_high, strike)
 
     def usable(self):
         """Count the day's usable quotes."""
@@ -264,12 +276,14 @@ class ChainCensus(Node):
     """
 
     role = "transform"
-    outputs = ("records", "rows_by_year", "strikes_by_month", "summary")
+    outputs = ("records", "rows_by_year", "strikes_by_month", "reuse_candidates", "summary")
 
     _REQUIRED = ("symbol_field", "date_field", "strike_field", "bid_field", "ask_field", "end_before")
     _CLOSE = ("close_symbol_field", "close_date_field", "close_field", "price_tolerance")
+    _REUSE = ("reuse_price_factor", "reuse_rows_factor", "reuse_window", "reuse_band", "reuse_overlap_max",
+              "reuse_split_share")
     _PARAMS = (*_REQUIRED, "iv_error_field", "iv_error_flag", "strike_grid", "strike_tolerance",
-               "liquidity_end_before", "underlying_price_field", "allow_unit_mismatch", *_CLOSE)
+               "liquidity_end_before", "underlying_price_field", "allow_unit_mismatch", *_CLOSE, *_REUSE)
 
     @classmethod
     def validate_params(cls, params):
@@ -305,7 +319,29 @@ class ChainCensus(Node):
         if "strike_tolerance" in params and "strike_grid" not in params:
             problems.append("strike_tolerance needs strike_grid")
         cls._close_problems(problems, params)
+        cls._reuse_problems(problems, params)
         return problems
+
+    @classmethod
+    def _reuse_problems(cls, problems, params):
+        """Check the symbol-reuse detector's knobs: a price factor is required by every other, and a price field."""
+        given = [n for n in cls._REUSE if n in params]
+        if not given:
+            return
+        if "reuse_price_factor" not in params:
+            problems.append(f"{given} need reuse_price_factor (the detector's one required knob)")
+        if "underlying_price_field" not in params:
+            problems.append("the reuse detector reads prices: declare underlying_price_field")
+        for name in ("reuse_price_factor", "reuse_rows_factor"):
+            if name in params and (not number_ok(params[name]) or params[name] <= 1):
+                problems.append(f"{name} must be a number > 1, got {params[name]!r}")
+        if "reuse_window" in params:
+            check_int_param(problems, "reuse_window", params["reuse_window"], ge=1)
+        if "reuse_band" in params and (not number_ok(params["reuse_band"]) or params["reuse_band"] <= 0):
+            problems.append(f"reuse_band must be a number > 0, got {params['reuse_band']!r}")
+        for name in ("reuse_overlap_max", "reuse_split_share"):
+            if name in params and (not number_ok(params[name]) or not 0 <= params[name] <= 1):
+                problems.append(f"{name} must be a number in [0, 1], got {params[name]!r}")
 
     @staticmethod
     def _date_problem(problems, name, value):
@@ -393,6 +429,7 @@ class ChainCensus(Node):
         grid = StrikeGrid(self.params["strike_grid"], self.params.get("strike_tolerance", DEFAULT_STRIKE_TOLERANCE)) \
             if "strike_grid" in self.params else None
         days, months, seen = {}, {}, 0
+        band = self.params.get("reuse_band", DEFAULT_REUSE_BAND) if "reuse_price_factor" in self.params else None
         for index, record in enumerate(rows):
             seen += 1
             symbol, day, strike, bid, ask, flag, price = self._cells(record, index, fields, dates)
@@ -405,6 +442,8 @@ class ChainCensus(Node):
             tally.flagged += "flag" in fields and self._is_flag(flag)
             if price is not None and price > 0:
                 tally.see_price(price)
+                if band is not None and abs(strike / price - 1) <= band:
+                    tally.see_near(strike)
             elif price is not None:
                 tally.bad_price += 1
             elif "price" in fields:
@@ -413,6 +452,7 @@ class ChainCensus(Node):
                 cell = months.setdefault((symbol, day[:7]), [0, 0, set()])
                 cell[0] += 1
                 if not grid.is_standard(strike):
+                    tally.odd += 1
                     cell[1] += 1
                     cell[2].add(strike)
         if not seen:
@@ -548,6 +588,8 @@ class ChainCensus(Node):
             skipped["iv_error"] = "no iv_error_field declared: the placeholder share not computed"
         if "liquidity_end_before" not in p:
             skipped["liquidity_development"] = "no liquidity_end_before declared: development median and terciles not computed"
+        if "reuse_price_factor" not in p:
+            skipped["reuse"] = "no reuse_price_factor declared: suspected symbol reuse not looked for"
         if "underlying_price_field" not in p:
             skipped["price_check"] = "no underlying_price_field declared: the price check did not run"
         elif not closes_wired:
@@ -589,9 +631,12 @@ class ChainCensus(Node):
         if closes is not None:
             for row in rows:
                 self._price_check(row, roots[row["symbol"]], closes)
+        reuse, explained = self._reuse(roots)
         by_month = [{"symbol": symbol, "month": month, "rows": cell[0], "nonstandard_rows": cell[1],
                      "nonstandard_strikes": len(cell[2])} for (symbol, month), cell in cells]
         summary = self._summary(days, rows, closes is not None)
+        if "reuse_price_factor" in self.params:
+            summary["reuse"] = {"candidates": len(reuse), "split_explained": explained}
         report = getattr(inputs["records"], "report", None)
         if callable(report):
             summary["reader"] = report()
@@ -602,7 +647,26 @@ class ChainCensus(Node):
         self.log.info("census: %d root(s), %d row(s), %d never quoted", summary["roots"],
                       summary["rows"], summary["never_quoted_roots"])
         return {"records": rows, "rows_by_year": self._by_year(roots), "strikes_by_month": by_month,
-                "summary": summary}
+                "reuse_candidates": reuse, "summary": summary}
+
+    def _reuse(self, roots):
+        """Run the symbol-reuse detector over every root; return ``(candidates, split_explained)`` (empty if off)."""
+        p = self.params
+        if "reuse_price_factor" not in p:
+            return [], 0
+        detector = ReuseDetector(p["reuse_price_factor"], p.get("reuse_rows_factor"),
+                                 p.get("reuse_window", DEFAULT_REUSE_WINDOW),
+                                 p.get("reuse_overlap_max", DEFAULT_REUSE_OVERLAP),
+                                 p.get("reuse_split_share", DEFAULT_REUSE_SPLIT))
+        gridded, found, explained = "strike_grid" in p, [], 0
+        for symbol, series in roots.items():
+            days = [{"date": day, "rows": t.rows, "price": (t.price_low + t.price_high) / 2,
+                     "near": None if t.near_low is None else (t.near_low, t.near_high),
+                     "odd": t.odd if gridded else None} for day, t in series if t.price_low is not None]
+            hits, split = detector.scan(symbol, days)
+            found += hits
+            explained += split
+        return sorted(found, key=lambda c: (c["symbol"], c["date"])), explained
 
     def _summary(self, days, rows, closes_wired):
         """Build the run-level counts."""

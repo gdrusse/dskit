@@ -557,3 +557,24 @@ def test_multi_file_pinned_snapshot_survives_newer_partial_inventory(blob_store,
 
 def test_multi_file_reader_registered_kind():
     assert ("parquet-stream-rows", ParquetStreamRows) in pack.NODE_KINDS
+
+
+def test_bounded_batches_stream_the_same_rows_under_an_extra_predicate(tmp_path):
+    import datetime as dt
+    import pyarrow.dataset as ds
+    days = [dt.date(2025, 12, 30), dt.date(2025, 12, 31), dt.date(2026, 1, 2)] * 2
+    path = tmp_path / "rows.parquet"
+    pq.write_table(pa.table({"sym": ["A"] * 3 + ["B"] * 3, "d": pa.array(days, pa.date32()),
+                             "value": [1, 2, 3, 4, 5, 6]}), path, row_group_size=3)
+    bounded = pack.DateBoundedParquet(path, ["value"], {"d": {"end_before": "2026-01-01"}})
+    both = [row for batch in bounded.batches(batch_size=2) for row in batch.to_pylist()]
+    assert both == bounded.read().to_pylist() == [{"value": v} for v in (1, 2, 4, 5)]
+    only_b = [row for batch in bounded.batches(where=ds.field("sym") == "B") for row in batch.to_pylist()]
+    assert only_b == [{"value": 4}, {"value": 5}]
+
+
+def test_bounded_batches_refuse_unverified_dates_before_scanning(tmp_path):
+    path = tmp_path / "source.parquet"
+    pq.write_table(pa.table({"d": pa.array([None], type=pa.string()), "value": [7]}), path)
+    with pytest.raises(ValueError, match="temporal predicate"):
+        list(pack.DateBoundedParquet(path, ["value"], {"d": {"end_before": "2026-01-01"}}).batches())

@@ -1,0 +1,180 @@
+{
+  "name": "theta-chain-panel",
+  "notes": "The date-partitioned cross-section panel of ADR-0265 (Amendment 3), the input of the H1 and H3 documents: for every landed root, ChainDayFeatures run on that root ALONE (memory is one root, symbol_contiguous, max_symbol_rows refuses a root too big to hold), written as /home/russell/data/index_options/theta-research-20261012/chain-panel/roots/<root>.parquet (resumable per root: a root whose contributing snapshot files, feature params, rates table, bounds, rename map and gate values are unchanged is skipped) and then cut into panel/<YYYY-MM-DD>.parquet, one small file per date holding one row per (symbol, target DTE), sorted by symbol and target, with manifest.json (sha256 of every file) written last so the directory registers as a localblobs stream. The features are those of run-theta-chain-features-parquet.json (30- and 90-day targets, our Black-76 vols from NBBO mids on the parity forward, FRED DGS3MO as of strictly before the quote date; vendor greeks and implied_vol are never read). UNIVERSE GATE HOOKS: first_quote_date and after_first_quote come from the export's first_quote.json (first date a symbol has a real quote), liquidity_tercile from the census (run-theta-chain-census-parquet.json, development years only); they are carried as columns, never applied - a test chooses its universe, and both are whole-sample numbers a test must recompute up to its own start. READ-ONLY on /home/russell/data/thetadata/parquet-v2/options-tested/theta; nothing is written under /home/russell/data/thetadata. SEALED PERIOD: end_before and sealed_from 2026-01-01 on the reader, end_before on the features node. Run from children/index_options, roots then dates: nice -n 10 python -m dskit.pipeline run configs/run-theta-chain-panel.json --asof 2025-12-31; rerun after more snapshots land (only the changed roots are rebuilt).",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/chain-panel-run",
+    "notes": "A new directory beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/thetadata/parquet-v2/options-tested/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "open_interest",
+          "volume",
+          "underlying_price"
+        ],
+        "end_before": "2026-01-01",
+        "sealed_from": "2026-01-01",
+        "renames_file": "configs/root-renames.json",
+        "renames_key": "renames",
+        "renames_sha256": "ddb611ae2675fcd083c74bfd0ef7c81f74c94828b5457782717116ccbbfe27c3",
+        "breaks_key": "breaks"
+      },
+      "notes": "The ThetaData daily chain from the Parquet export tree, every root, symbol by symbol with dates ascending, projected to the ten fields the features read; the newest-acquired copy of a (symbol, date) unit wins. Lazy, re-iterable, read-only. The panel node asks it for one root at a time (select), so a root's files are read when that root is built and not before."
+    },
+    "panel": {
+      "uses": "dskit.pipeline.libs.chain_panel:ChainPanelBuild",
+      "inputs": {
+        "records": "$chain.records",
+        "rates": "$rates.records"
+      },
+      "params": {
+        "features": {
+          "symbol_field": "symbol",
+          "date_field": "date",
+          "expiration_field": "expiration",
+          "strike_field": "strike",
+          "right_field": "right",
+          "bid_field": "bid",
+          "ask_field": "ask",
+          "open_interest_field": "open_interest",
+          "volume_field": "volume",
+          "underlying_price_field": "underlying_price",
+          "call_values": [
+            "call"
+          ],
+          "put_values": [
+            "put"
+          ],
+          "end_before": "2026-01-01",
+          "targets": [
+            {
+              "dte": 30,
+              "tolerance": 7
+            },
+            {
+              "dte": 90,
+              "tolerance": 14
+            }
+          ],
+          "target_field": "target_dte",
+          "atm_band": 0.05,
+          "wing_delta": 0.25,
+          "min_forward_pairs": 5,
+          "term_pair": [
+            30,
+            90
+          ],
+          "oi_lag_sessions": 5,
+          "oi_lag_max_days": 10,
+          "fields": {
+            "expiration": "expiration",
+            "dte": "dte",
+            "spot": "spot",
+            "forward": "forward",
+            "atm_strike": "atm_strike",
+            "atm_iv": "atm_iv",
+            "put_wing_iv": "put25_iv",
+            "call_wing_iv": "call25_iv",
+            "risk_reversal": "risk_reversal",
+            "put_call_iv_spread": "put_call_iv_spread",
+            "term_slope": "term_slope",
+            "straddle_ratio": "straddle_ratio",
+            "half_spread_over_premium": "half_spread_over_premium",
+            "oi_call": "oi_call",
+            "oi_put": "oi_put",
+            "volume_call": "volume_call",
+            "volume_put": "volume_put",
+            "oi_put_call_ratio": "oi_put_call_ratio",
+            "oi_change": "oi_change_5d",
+            "oi_put_call_ratio_change": "oi_put_call_ratio_change_5d"
+          },
+          "status_field": "status",
+          "symbol_contiguous": true,
+          "rate_date_field": "observation_date",
+          "rate_value_field": "DGS3MO",
+          "rate_max_age_days": 5,
+          "rate_scale": 0.01,
+          "oi_scope": "expiry",
+          "max_symbol_rows": 40000000
+        },
+        "path": "/home/russell/data/index_options/theta-research-20261012/chain-panel",
+        "first_quote_file": "/home/russell/data/thetadata/parquet-v2/options-tested/first_quote.json",
+        "first_quote_field": "first_quote_date",
+        "gate_field": "after_first_quote",
+        "census_file": "/home/russell/data/index_options/theta-research-20261012/chain-census-parquet/census-roots.jsonl",
+        "census_columns": {
+          "liquidity_tercile": [
+            "liquidity_tercile",
+            "int32"
+          ],
+          "median_quoted_development": [
+            "median_quoted_development",
+            "float64"
+          ]
+        },
+        "chunk_months": 3
+      },
+      "notes": "One feature run per root (the root's rows alone), one footer-checked file per root, then the per-date cut. max_symbol_rows 40,000,000 holds a root of up to about 2.4 GB packed (about 61 B a row) and refuses a bigger one (an index weekly root is about 75 M rows: run those in a lighter-target document). The census columns are the development-years liquidity tercile and median, carried as given; the census run must have finished before this one (a missing census file refuses). Rerun to pick up newly landed snapshots: unchanged roots are skipped."
+    },
+    "summary": {
+      "uses": "run-report",
+      "inputs": {
+        "edge": "$panel.summary"
+      },
+      "params": {
+        "title": "ThetaData chain-day panel (ADR-0265 Amendment 3)",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the roots built / skipped / empty, the rows and dates, the status counts per target, the quote exclusions and the reader counters."
+    },
+    "rates_raw": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "fred-market-features",
+        "stream": "dgs3mo",
+        "key_fields": [
+          "observation_date"
+        ]
+      },
+      "notes": "The FRED 3-month constant-maturity Treasury yield (DGS3MO, percent, dated by the observation date, '.' on a holiday) from the index_options onboarding root, read-only. The series runs to 2026-09, so the node below drops 2026 before anything joins it."
+    },
+    "rates": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$rates_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "observation_date",
+            "op": "<",
+            "value": "2026-01-01"
+          },
+          {
+            "field": "DGS3MO",
+            "op": "!=",
+            "value": "."
+          }
+        ]
+      },
+      "notes": "Sealed period and holidays: a 2026 observation never reaches the features node (which also refuses one), and a '.' (no print) is not a rate. The 2026 rows are parsed by the reader above and dropped here; the series is a macro rate, not option data."
+    }
+  }
+}

@@ -399,7 +399,7 @@ def test_the_reference_params_validate_clean():
 
 def test_the_pack_surface():
     assert ChainCensus.role == "transform"
-    assert ChainCensus.outputs == ("records", "rows_by_year", "strikes_by_month", "summary")
+    assert ChainCensus.outputs == ("records", "rows_by_year", "strikes_by_month", "reuse_candidates", "summary")
     assert chain_census.NODE_KINDS == ()
     for name in ("ChainCensus", "quote_state", "USABLE_STATES", "NODE_KINDS"):
         assert name in chain_census.__all__
@@ -442,3 +442,110 @@ def test_the_census_reads_an_onboarded_stream_through_the_lazy_reader(tmp_path):
     out = ChainCensus("census", dict(PARAMS)).run(ctx, {"records": rows})
     assert by_symbol(out)["AAA"]["rows"] == 15 and by_symbol(out)["AAA"]["first_bid_date"] == "2020-01-02"
     assert out["summary"]["rows"] == len(keyed) and os.path.isdir(root.root)
+
+
+# -- suspected symbol reuse -------------------------------------------------------------------------
+
+from datetime import date, timedelta  # noqa: E402
+
+REUSE = {"reuse_price_factor": 2.0, "reuse_rows_factor": 4.0, "reuse_window": 5, "reuse_band": 0.25,
+         "reuse_overlap_max": 0.1, "reuse_split_share": 0.05}
+
+
+def regime(symbol, start, days, price, strikes, odd=()):
+    """``days`` consecutive calendar dates from ``start``, one row per strike (plus ``odd`` strikes) each date."""
+    out = []
+    for i in range(days):
+        day = (date.fromisoformat(start) + timedelta(days=i)).isoformat()
+        out += [row(symbol, day, float(k), 1.0, 1.2, underlying=price) for k in (*strikes, *odd)]
+    return out
+
+
+def reuse(rows, **over):
+    return census(rows, **{**REUSE, **over})
+
+
+def candidates(out):
+    return {(c["symbol"], c["date"]): c for c in out["reuse_candidates"]}
+
+
+#: a different issuer takes the symbol on 2020-01-11: price 3 -> 100, 3 strikes a date -> 21, strikes disjoint.
+TAKEN = (regime("TAKEN", "2020-01-01", 10, 3.0, [2.5, 3.0, 3.5])
+         + regime("TAKEN", "2020-01-11", 10, 100.0, range(90, 111)))
+#: a real 2:1 split on 2020-01-11 with adjusted (off-grid) strikes appearing after it.
+SPLIT = (regime("SPLIT", "2020-01-01", 10, 100.0, range(90, 111))
+         + regime("SPLIT", "2020-01-11", 10, 50.0, range(45, 56), odd=(41.667, 33.333, 66.667)))
+#: a price that triples with the same chain size, no off-grid strikes.
+JUMP = (regime("JUMP", "2020-01-01", 10, 50.0, range(40, 61))
+        + regime("JUMP", "2020-01-11", 10, 150.0, range(140, 161)))
+#: liquidity grows eightfold on the SAME strikes and price: continuous, not a reuse.
+GROWS = (regime("GROWS", "2020-01-01", 10, 50.0, [49, 50, 51]) + regime("GROWS", "2020-01-11", 10, 50.0, range(38, 63)))
+CALM = regime("CALM", "2020-01-01", 20, 50.0, range(45, 56))
+
+
+def test_a_new_issuer_on_a_reused_symbol_is_a_candidate_with_its_evidence():
+    out = reuse(TAKEN + CALM)
+    found = candidates(out)
+    assert list(found) == [("TAKEN", "2020-01-11")]
+    c = found[("TAKEN", "2020-01-11")]
+    assert c["previous_date"] == "2020-01-10" and c["gap_days"] == 1
+    assert c["reasons"] == ["price_jump", "rows_shift"]
+    assert (c["price_before"], c["price_after"]) == (3.0, 100.0) and c["price_ratio"] == pytest.approx(100 / 3)
+    assert (c["rows_median_before"], c["rows_median_after"]) == (3, 21) and c["rows_ratio"] == pytest.approx(7.0)
+    assert c["near_spot_overlap"] == 0.0 and c["split_signature"] is False
+    assert c["nonstandard_share_before"] == 0.0 and c["nonstandard_share_after"] == 0.0
+
+
+def test_a_real_split_with_off_grid_strikes_is_explained_and_counted_not_flagged():
+    out = reuse(SPLIT + CALM)
+    assert out["reuse_candidates"] == []
+    assert out["summary"]["reuse"] == {"candidates": 0, "split_explained": 1}
+
+
+def test_a_price_jump_alone_is_flagged_without_the_rows_reason():
+    c = candidates(reuse(JUMP))[("JUMP", "2020-01-11")]
+    assert c["reasons"] == ["price_jump"] and c["rows_ratio"] == pytest.approx(1.0)
+
+
+def test_growing_liquidity_on_continuous_strikes_is_not_a_reuse():
+    assert reuse(GROWS)["reuse_candidates"] == []
+
+
+def test_without_a_strike_grid_the_split_signature_cannot_be_checked_and_the_jump_is_flagged():
+    out = reuse(SPLIT, strike_grid=...)
+    c = candidates(out)[("SPLIT", "2020-01-11")]
+    assert c["split_signature"] is None and c["reasons"] == ["price_jump"]
+
+
+def test_a_root_with_one_regime_and_the_input_order_change_nothing():
+    rows = TAKEN + SPLIT + JUMP + GROWS + CALM
+    forward = reuse(rows)["reuse_candidates"]
+    assert forward == reuse(list(reversed(rows)))["reuse_candidates"]
+    assert [(c["symbol"], c["date"]) for c in forward] == [("JUMP", "2020-01-11"), ("TAKEN", "2020-01-11")]
+
+
+def test_a_missing_price_day_is_bridged_by_the_previous_priced_day():
+    rows = [r for r in TAKEN if r["date"] != "2020-01-11"]
+    c = candidates(reuse(rows))[("TAKEN", "2020-01-12")]
+    assert c["previous_date"] == "2020-01-10" and c["gap_days"] == 2
+
+
+def test_the_detector_is_skipped_and_said_so_when_not_declared():
+    out = census(TAKEN)
+    assert out["reuse_candidates"] == [] and "reuse" in out["summary"]["skipped"]
+    assert "reuse" not in reuse(TAKEN)["summary"]["skipped"]
+
+
+@pytest.mark.parametrize("over, fragment", [
+    ({"reuse_price_factor": 1.0}, "reuse_price_factor"),
+    ({"reuse_rows_factor": 0.5}, "reuse_rows_factor"),
+    ({"reuse_window": 0}, "reuse_window"),
+    ({"reuse_band": 0}, "reuse_band"),
+    ({"reuse_overlap_max": 1.5}, "reuse_overlap_max"),
+    ({"reuse_split_share": -0.1}, "reuse_split_share"),
+    ({"reuse_price_factor": ...}, "reuse"),                    # the rest declared without the price factor
+    ({"underlying_price_field": ...}, "underlying_price_field"),
+])
+def test_bad_reuse_params_refuse_by_name(over, fragment):
+    params = {k: v for k, v in {**PARAMS, **REUSE, **over}.items() if v is not ...}
+    assert any(fragment in p for p in ChainCensus.validate_params(params)), ChainCensus.validate_params(params)

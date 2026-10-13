@@ -90,8 +90,8 @@ class DateBoundedParquet:
             raise ValueError("; ".join(problems))
         self.path, self.columns, self.bounds = path, list(columns), copy.deepcopy(bounds)
 
-    def read(self):
-        """Return the bounded Arrow table, refusing unverified temporal data."""
+    def _predicate(self):
+        """Verify the temporal columns and return ``(path, columns, predicate)`` for the Arrow scan."""
         import pyarrow as pa
         import pyarrow.dataset as ds
         import pyarrow.parquet as pq
@@ -122,8 +122,44 @@ class DateBoundedParquet:
                 day = datetime.date.fromisoformat(value)
                 part = field >= day if key == "start" else field < day
                 predicate = part if predicate is None else predicate & part
+        return columns, predicate
+
+    def read(self):
+        """Return the bounded Arrow table, refusing unverified temporal data."""
+        import pyarrow.dataset as ds
+
+        columns, predicate = self._predicate()
         return ds.dataset(self.path, format="parquet").to_table(
             columns=columns, filter=predicate)
+
+    def batches(self, where=None, batch_size=65536):
+        """Yield the bounded rows as Arrow record batches, optionally narrowed by one more predicate.
+
+        The same temporal verification and bounds as :meth:`read`, but the table is never held whole:
+        batches stream out of the scan, and ``where`` (a ``pyarrow.dataset`` expression, for example an
+        entity equality or ``isin``) is ANDed with the bounds so Arrow prunes row groups by their statistics
+        before decoding them.
+
+        Parameters
+        ----------
+        where : pyarrow.dataset.Expression, optional
+            An extra predicate; its columns need not be in ``columns``.
+        batch_size : int
+            Rows per batch (the last of a row group may be shorter).
+
+        Yields
+        ------
+        pyarrow.RecordBatch
+            Batches with exactly ``columns``.
+        """
+        import pyarrow.dataset as ds
+
+        columns, predicate = self._predicate()
+        if where is not None:
+            predicate = where if predicate is None else predicate & where
+        scanner = ds.dataset(self.path, format="parquet").scanner(
+            columns=columns, filter=predicate, batch_size=batch_size)
+        yield from scanner.to_batches()
 
 
 class ParquetRows(Node):

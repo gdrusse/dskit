@@ -90,6 +90,7 @@ __all__ = [
     "NODE_KINDS",
     "OI_SCOPES",
     "ChainDayFeatures",
+    "NoFeatureRows",
 ]
 
 #: Every feature a document may name in ``fields``.
@@ -116,6 +117,19 @@ _AGGREGATES = ("oi_call", "oi_put", "volume_call", "volume_put", "oi_put_call_ra
 _CHANGES = ("oi_change", "oi_put_call_ratio_change")
 _EXCLUDED = tuple(s for s in STATES if s not in USABLE_STATES)
 _SIDES = ("call", "put")
+
+
+class NoFeatureRows(ValueError):
+    """The input held no root with a bid, or no target resolved to a status ``ok`` row.
+
+    A ``ValueError`` (so every caller that refused before still does), but a distinct class so a driver that
+    runs the node root by root can tell "this root has nothing to emit" from a malformed row. ``counts`` is the
+    run's summary dictionary at the point of refusal.
+    """
+
+    def __init__(self, message, counts):
+        super().__init__(message)
+        self.counts = counts
 
 
 class _Totals:
@@ -792,8 +806,9 @@ class ChainDayFeatures(Node):
         ------
         ValueError
             The input is empty, a row is malformed, dated at or after ``end_before``, or repeats a
-            contract; presorted input is out of order; no symbol has a bid above zero; or no target
-            resolves to any row.
+            contract; presorted input is out of order.
+        NoFeatureRows
+            (a ``ValueError``) No symbol has a bid above zero, or no target resolves to any ``ok`` row.
         """
         p = self.params
         rates = self._rates_source(inputs.get("rates"))
@@ -813,13 +828,14 @@ class ChainDayFeatures(Node):
                 counts["rows_before_first_bid"] += len(cells)
                 continue
             out.extend(self._day(symbol, day, cells, state, counts, rates))
-        if not any(s.started for s in symbols.values()):
-            raise ValueError(f"{self.key}: no root has a bid above zero in the input - nothing to compute features on")
-        if not any(t["emitted"] for t in counts["targets"].values()):
-            raise ValueError(f"{self.key}: no feature row with status ok: every target was no_expiry, no_forward "
-                             f"or no_rate (targets {p['targets']!r})")
         counts["symbols"] = len(symbols)
         counts["end_before"] = p["end_before"]
+        if not any(s.started for s in symbols.values()):
+            raise NoFeatureRows(f"{self.key}: no root has a bid above zero in the input - nothing to compute "
+                                "features on", counts)
+        if not any(t["emitted"] for t in counts["targets"].values()):
+            raise NoFeatureRows(f"{self.key}: no feature row with status ok: every target was no_expiry, "
+                                f"no_forward or no_rate (targets {p['targets']!r})", counts)
         report = getattr(inputs["records"], "report", None)
         if callable(report):
             counts["reader"] = report()

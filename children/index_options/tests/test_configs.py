@@ -69,6 +69,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-theta-chain-census.json", "configs/run-theta-chain-features.json",
         # ADR-0265 node 5: the chain-event document and its dev-period labelled announcement dates.
         "configs/run-theta-chain-events.json", "configs/theta-earnings-labels-2016-2020.json",
+        # ADR-0265 Amendment 3: the same documents on the Parquet tree, the panel, and the root stitch map.
+        "configs/run-theta-chain-census-parquet.json", "configs/run-theta-chain-features-parquet.json",
+        "configs/run-theta-chain-panel.json", "configs/root-renames.json",
         "docs/memos/2026-10-09-condor-executable-clock-contract.md",
         "docs/memos/2026-10-09-condor-executable-clock-result.md",
         "docs/research/distribution-modeling/2026-10-09-condor-selection-intuition.md",
@@ -359,8 +362,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the lane re-entry note docs/RE-ENTRY.md = 496, plus the edge-and-harvest research note = 497,
     # plus the ADR-0259 forecast-dispersion IC document = 498, plus its result memo = 499;
     # plus ADR-0265's chain census and chain features documents = 513, plus the chain-events document and
-    # its labelled dates = 515.
-    assert len(actual) == 515
+    # its labelled dates = 515, plus Amendment 3's Parquet census, features and panel documents and the
+    # root stitch map = 519.
+    assert len(actual) == 519
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

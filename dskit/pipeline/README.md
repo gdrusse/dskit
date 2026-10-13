@@ -738,6 +738,12 @@ they register only into private registries, never the default one.
   all labelled, and the difference). `ChainEventCalibrator` reports precision/recall of a rule grid against labelled dates,
   dropping rows and labels from `fit_end_before` on; it never selects. Every rule value is a required param: the frozen
   values live in the child's run document.
+- `libs/chain_parquet.py`, `libs/chain_panel.py`, `libs/chain_reuse.py`, `libs/root_stitch.py` (ADR-0265 Amendment 3, by import path):
+  `ParquetChainRows` reads a snapshot-export Parquet tree as the same row dicts as the gzip unit reader (column pruning, symbol
+  and date predicates pushed to row groups, newest-acquired copy of a unit wins by footer windows, symbol-by-symbol order);
+  `ChainPanelBuild` runs `ChainDayFeatures` root by root and writes one Parquet file per date (resumable per root, manifest last);
+  `RootStitch` is the config-driven rename map (`renames`) and reuse-break map (`breaks`); `ReuseDetector` is `ChainCensus`'s
+  suspected symbol-reuse table (`reuse_candidates`).
 - `libs/vol_estimators.py` (ADR-0244): `VolEstimatorFeatures` emits per-bar VARIANCE (`var_rms_60`, `var_ewma_30`,
   `var_hl_60`; `column_prefix`, `bar_ms`, `close_field` / `high_field` / `low_field`), and a window holding a
   missing bar is None, never shortened.
@@ -1029,6 +1035,7 @@ dskit/pipeline/
 │                      chain_census (ChainCensus + quote_state: per-root coverage and quote quality of a daily option-chain stream, by import path, ADR-0265),
 │                      chain_features (ChainDayFeatures: ATM/wing IV, skew, term, straddle, spread, OI/volume per symbol-date-DTE from NBBO mids, by import path, ADR-0265),
 │                      chain_events (ChainEventDetector + ChainEventCalibrator: earnings-like events from the front-IV crush in the chain-day features, no calendar; a retrospective labeller, by import path, ADR-0265)
+│                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3
 ├── README.md          this file
 ├── EXTENDING.md       extension points + gotchas (the seams, and what bites)
 └── CLAUDE.md          agent orientation
@@ -1042,6 +1049,7 @@ ADR-0260: `tests/pipeline_libs/test_{array_panel,horizon_cdf,panel_score,panel_t
 (the `*_golden` file holds the former child's output, frozen in `golden/`).
 ADR-0256: `tests/pipeline/test_binary_decisions.py`, `tests/pipeline_libs/test_binary_market_rows.py`.
 ADR-0265: `tests/pipeline_libs/test_{chain_census,chain_features,chain_events}.py`, `tests/pipeline/test_option_pricing.py`.
+ADR-0265: `tests/pipeline_libs/test_{chain_census,chain_features,chain_parquet,chain_panel,root_stitch}.py`, `tests/pipeline/test_option_pricing.py`.
 ADR-0257: `tests/pipeline/test_{digital_bounds,binary_curve}.py`, `tests/pipeline_libs/test_binary_coherence.py`.
 
 ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
