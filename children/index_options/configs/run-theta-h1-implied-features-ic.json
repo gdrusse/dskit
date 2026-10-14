@@ -1,0 +1,676 @@
+{
+  "name": "theta-h1-implied-features-ic",
+  "notes": "PRE-REGISTERED H1 (ADR-0265, Amendment 5), development period 2016-01-04 .. 2021-01-01 (end_before; nothing on or after 2026-01-01 is read). ADR RULE, verbatim: **H1** option-implied features → next 5- and 21-day stock return: 25-delta put-call IV spread, risk-reversal skew, 30/90-day term slope, open-interest put/call ratio and its 5-day change, volume/OI. Per-stamp Spearman IC, sign declared per feature before the run, NW t >= 2.5; decile spread > 10 bp round trip; BH across the 6 features. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. This is the development run. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h1-implied-features-ic.json --asof 2025-12-31",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h1-implied-features-ic",
+    "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "liquidity_tercile": "liquidity_tercile",
+              "expiration": "expiration",
+              "dte": "dte",
+              "spot": "spot",
+              "forward": "forward",
+              "atm_strike": "atm_strike",
+              "atm_iv": "atm_iv",
+              "put25_iv": "put25_iv",
+              "call25_iv": "call25_iv",
+              "risk_reversal": "risk_reversal",
+              "put_call_iv_spread": "put_call_iv_spread",
+              "term_slope": "term_slope",
+              "straddle_ratio": "straddle_ratio",
+              "half_spread_over_premium": "half_spread_over_premium",
+              "oi_call": "oi_call",
+              "oi_put": "oi_put",
+              "volume_call": "volume_call",
+              "volume_put": "volume_put",
+              "oi_put_call_ratio": "oi_put_call_ratio",
+              "oi_change_5d": "oi_change_5d",
+              "oi_put_call_ratio_change_5d": "oi_put_call_ratio_change_5d"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date",
+              "expiration"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, both targets, one file a date, read through its registered snapshot pin; `date` and `expiration` as ISO text. Bounded to the period's dates by predicate pushdown."
+    },
+    "panel_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "after_first_quote",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "status",
+            "op": "==",
+            "value": "ok"
+          }
+        ]
+      },
+      "notes": "Rows from each name's first quoted date (after_first_quote) whose forward and vols resolved."
+    },
+    "p30": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel_ok.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "target_dte",
+            "op": "==",
+            "value": 30
+          }
+        ]
+      },
+      "notes": "The 30-DTE target (the nearest listed expiry within 7 days of 30)."
+    },
+    "bars_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            },
+            "source": "stock-daily-bars",
+            "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          },
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            },
+            "source": "stock-daily-bars-300",
+            "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "Yahoo daily bars of the tested names (pinned snapshots); the forward returns use the ADJUSTED close (split + dividend adjusted: total return)."
+    },
+    "bars_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bars_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "adjusted_close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Bars with a price."
+    },
+    "fwd5": {
+      "uses": "horizon-pairs",
+      "inputs": {
+        "records": "$bars_ok.records"
+      },
+      "params": {
+        "horizon_days": 7,
+        "fallback": "previous",
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "close_field": "adjusted_close",
+        "fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "settlement_date": "settle_fwd5",
+          "entry_close": "c0_fwd5",
+          "settle_close": "c1_fwd5",
+          "terminal_return": "fwd5",
+          "period": "year_fwd5"
+        }
+      },
+      "notes": "The next 5 sessions: the log return from the close to the close 7 calendar days later (or the latest earlier close). An entry whose target lies past the period's last close is dropped, so no outcome crosses the period's end."
+    },
+    "fwd21": {
+      "uses": "horizon-pairs",
+      "inputs": {
+        "records": "$bars_ok.records"
+      },
+      "params": {
+        "horizon_days": 30,
+        "fallback": "previous",
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "close_field": "adjusted_close",
+        "fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "settlement_date": "settle_fwd21",
+          "entry_close": "c0_fwd21",
+          "settle_close": "c1_fwd21",
+          "terminal_return": "fwd21",
+          "period": "year_fwd21"
+        }
+      },
+      "notes": "The next 21 sessions: 30 calendar days. Dropped past the period's last close like fwd5."
+    },
+    "features": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$p30.records"
+      },
+      "params": {
+        "fields": {
+          "volume_over_oi": {
+            "op": "div",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "field": "volume_call"
+                  },
+                  {
+                    "field": "volume_put"
+                  }
+                ]
+              },
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "field": "oi_call"
+                  },
+                  {
+                    "field": "oi_put"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "notes": "volume / open interest = (call + put volume) / (call + put open interest) of the target expiry; null when open interest is zero."
+    },
+    "features_agree": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$features.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "ret5_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$fwd5.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "fwd5"
+        ]
+      },
+      "notes": "The columns of ret5 the attachment demands: ['symbol', 'date'] + the agreed constant + ['fwd5'], nothing else."
+    },
+    "ret5": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$features_agree.records",
+        "table": "$ret5_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.3,
+        "column_prefix": "ret5_",
+        "families": {
+          "ret5": {
+            "fields": [
+              "fwd5"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The 5-session forward return, known after the date."
+          }
+        }
+      },
+      "notes": "The 5-session forward return, known after the date."
+    },
+    "ret21_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$fwd21.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "fwd21"
+        ]
+      },
+      "notes": "The columns of ret21 the attachment demands: ['symbol', 'date'] + the agreed constant + ['fwd21'], nothing else."
+    },
+    "ret21": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$ret5.records",
+        "table": "$ret21_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.3,
+        "column_prefix": "ret21_",
+        "families": {
+          "ret21": {
+            "fields": [
+              "fwd21"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The 21-session forward return, known after the date."
+          }
+        }
+      },
+      "notes": "The 21-session forward return, known after the date."
+    },
+    "rows": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$ret21.records"
+      },
+      "params": {
+        "field": "half",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "date",
+                "op": "<",
+                "value": "2018-07-01"
+              }
+            ],
+            "value": "first"
+          },
+          {
+            "when": [],
+            "value": "second"
+          }
+        ]
+      },
+      "notes": "The two halves of the period, split at 2018-07-01 (the same-sign-in-both-halves check)."
+    },
+    "ic5": {
+      "uses": "dskit.pipeline.kinds_stats:CrossSectionIC",
+      "inputs": {
+        "records": "$rows.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "series_field": "symbol",
+        "measures": {
+          "put_call_iv_spread": {
+            "forecast_field": "put_call_iv_spread",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "risk_reversal": {
+            "forecast_field": "risk_reversal",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "term_slope": {
+            "forecast_field": "term_slope",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "oi_put_call_ratio": {
+            "forecast_field": "oi_put_call_ratio",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "oi_put_call_ratio_change": {
+            "forecast_field": "oi_put_call_ratio_change_5d",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "volume_over_oi": {
+            "forecast_field": "volume_over_oi",
+            "outcome_field": "fwd5",
+            "sign": -1
+          }
+        },
+        "h_steps": 5,
+        "splits": [
+          "half"
+        ],
+        "family": {
+          "alpha": 0.05,
+          "corrections": [
+            "bh",
+            "bonferroni"
+          ]
+        }
+      },
+      "notes": "PRIMARY (5-session return): per-date Spearman IC of each feature with the next-5-session return, tested in its declared direction (Newey-West, h_steps 5); pass per feature: signed IC mean > 0 with t >= 2.5; Benjamini-Hochberg at 5% across the 6 features (Bonferroni beside it; across the two horizons Bonferroni applies for any headline). SIGNS declared before the run, all -1 (higher feature, lower next return): downside demand (put-call IV spread, risk reversal, put/call open interest and its change) prices or predicts weakness; a steeper term slope is calm that mean-reverts (stress premium sits at inverted slopes); heavy option activity relative to open interest marks informed trading that leans bearish (Johnson-So)."
+    },
+    "decile5": {
+      "uses": "dskit.pipeline.kinds_stats:QuantileSortBook",
+      "inputs": {
+        "records": "$rows.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "series_field": "symbol",
+        "quantiles": 10,
+        "min_names": 100,
+        "alpha": 0.05,
+        "signals": {
+          "put_call_iv_spread": {
+            "signal_field": "put_call_iv_spread",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "risk_reversal": {
+            "signal_field": "risk_reversal",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "term_slope": {
+            "signal_field": "term_slope",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "oi_put_call_ratio": {
+            "signal_field": "oi_put_call_ratio",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "oi_put_call_ratio_change": {
+            "signal_field": "oi_put_call_ratio_change_5d",
+            "outcome_field": "fwd5",
+            "sign": -1
+          },
+          "volume_over_oi": {
+            "signal_field": "volume_over_oi",
+            "outcome_field": "fwd5",
+            "sign": -1
+          }
+        },
+        "cost_per_side": 0.0005,
+        "sides_per_leg": 2,
+        "h_steps": 5,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        },
+        "splits": [
+          "half"
+        ]
+      },
+      "notes": "The decile long-short of each feature on the next-5-session return, long the declared-direction extreme decile, net of 10 bp round trip on EACH leg (cost_per_side 5 bp, two sides per leg: 20 bp for the book; the ADR's 10 bp round trip read as per leg, the stricter reading). Pass: net mean > 0 with Benjamini-Hochberg across the 6 features. Overlapping labels on daily stamps: h_steps = the horizon."
+    },
+    "ic5_by_stamp": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$ic5.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h1-implied-features-ic/ic5-by-stamp.jsonl",
+        "overwrite": true,
+        "source": "one row per feature and date: the cross-sectional Spearman rho and names ranked"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "decile5_by_stamp": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$decile5.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h1-implied-features-ic/decile5-by-stamp.jsonl",
+        "overwrite": true,
+        "source": "one row per feature and date: decile means, gross, cost, net"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "ic21": {
+      "uses": "dskit.pipeline.kinds_stats:CrossSectionIC",
+      "inputs": {
+        "records": "$rows.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "series_field": "symbol",
+        "measures": {
+          "put_call_iv_spread": {
+            "forecast_field": "put_call_iv_spread",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "risk_reversal": {
+            "forecast_field": "risk_reversal",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "term_slope": {
+            "forecast_field": "term_slope",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "oi_put_call_ratio": {
+            "forecast_field": "oi_put_call_ratio",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "oi_put_call_ratio_change": {
+            "forecast_field": "oi_put_call_ratio_change_5d",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "volume_over_oi": {
+            "forecast_field": "volume_over_oi",
+            "outcome_field": "fwd21",
+            "sign": -1
+          }
+        },
+        "h_steps": 21,
+        "splits": [
+          "half"
+        ],
+        "family": {
+          "alpha": 0.05,
+          "corrections": [
+            "bh",
+            "bonferroni"
+          ]
+        }
+      },
+      "notes": "PRIMARY (21-session return): per-date Spearman IC of each feature with the next-21-session return, tested in its declared direction (Newey-West, h_steps 21); pass per feature: signed IC mean > 0 with t >= 2.5; Benjamini-Hochberg at 5% across the 6 features (Bonferroni beside it; across the two horizons Bonferroni applies for any headline). SIGNS declared before the run, all -1 (higher feature, lower next return): downside demand (put-call IV spread, risk reversal, put/call open interest and its change) prices or predicts weakness; a steeper term slope is calm that mean-reverts (stress premium sits at inverted slopes); heavy option activity relative to open interest marks informed trading that leans bearish (Johnson-So)."
+    },
+    "decile21": {
+      "uses": "dskit.pipeline.kinds_stats:QuantileSortBook",
+      "inputs": {
+        "records": "$rows.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "series_field": "symbol",
+        "quantiles": 10,
+        "min_names": 100,
+        "alpha": 0.05,
+        "signals": {
+          "put_call_iv_spread": {
+            "signal_field": "put_call_iv_spread",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "risk_reversal": {
+            "signal_field": "risk_reversal",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "term_slope": {
+            "signal_field": "term_slope",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "oi_put_call_ratio": {
+            "signal_field": "oi_put_call_ratio",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "oi_put_call_ratio_change": {
+            "signal_field": "oi_put_call_ratio_change_5d",
+            "outcome_field": "fwd21",
+            "sign": -1
+          },
+          "volume_over_oi": {
+            "signal_field": "volume_over_oi",
+            "outcome_field": "fwd21",
+            "sign": -1
+          }
+        },
+        "cost_per_side": 0.0005,
+        "sides_per_leg": 2,
+        "h_steps": 21,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        },
+        "splits": [
+          "half"
+        ]
+      },
+      "notes": "The decile long-short of each feature on the next-21-session return, long the declared-direction extreme decile, net of 10 bp round trip on EACH leg (cost_per_side 5 bp, two sides per leg: 20 bp for the book; the ADR's 10 bp round trip read as per leg, the stricter reading). Pass: net mean > 0 with Benjamini-Hochberg across the 6 features. Overlapping labels on daily stamps: h_steps = the horizon."
+    },
+    "ic21_by_stamp": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$ic21.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h1-implied-features-ic/ic21-by-stamp.jsonl",
+        "overwrite": true,
+        "source": "one row per feature and date: the cross-sectional Spearman rho and names ranked"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "decile21_by_stamp": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$decile21.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h1-implied-features-ic/decile21-by-stamp.jsonl",
+        "overwrite": true,
+        "source": "one row per feature and date: decile means, gross, cost, net"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "ic5": "$ic5.summary",
+        "decile5": "$decile5.summary",
+        "ic21": "$ic21.summary",
+        "decile21": "$decile21.summary"
+      },
+      "params": {
+        "title": "H1 option-implied features and the next 5- and 21-session return",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the node summaries; evidence.json holds every value."
+    }
+  }
+}

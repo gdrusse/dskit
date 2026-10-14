@@ -218,10 +218,11 @@ def test_an_unpaired_contrast_is_the_difference_of_means_with_independent_standa
     assert block["se"] == pytest.approx(se) and block["t"] == pytest.approx((a["mean"] - b["mean"]) / se)
 
 
-def test_a_contrast_side_with_no_rows_refuses_by_name(ctx):
+def test_a_contrast_side_with_no_rows_leaves_the_contrast_empty_and_says_which(ctx):
     rows = [{"d": day(i), "v": v, "g": "on"} for i, v in enumerate(VALUES)]
-    with pytest.raises(ValueError, match="off"):
-        run(ctx, rows, contrast={"field": "g", "plus": "on", "minus": "off", "paired": True})
+    block = run(ctx, rows, contrast={"field": "g", "plus": "on", "minus": "off", "paired": True})["summary"]["contrast"]
+    assert block["mean"] is None and block["t"] is None and block["n_stamps"] == [12, 0]
+    assert "'off'" in block["hac_withheld"]
 
 
 @pytest.mark.parametrize("bad, text", [

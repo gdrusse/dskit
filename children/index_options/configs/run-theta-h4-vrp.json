@@ -1,0 +1,855 @@
+{
+  "name": "theta-h4-vrp",
+  "notes": "PRE-REGISTERED H4 (ADR-0265, Amendment 5), development period 2016-01-04 .. 2021-01-01 (end_before; nothing on or after 2026-01-01 is read). ADR RULE, verbatim: **H4** per-name variance risk premium (level, slope, regime via `VolRegimeSignals`) and weekly versus monthly: descriptive with CIs; the timing signal passes if gated-minus-ungated short-straddle return > 0, t >= 2.5. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. This is the development run. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h4-vrp.json --asof 2025-12-31",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h4-vrp",
+    "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "liquidity_tercile": "liquidity_tercile",
+              "expiration": "expiration",
+              "dte": "dte",
+              "spot": "spot",
+              "forward": "forward",
+              "atm_strike": "atm_strike",
+              "atm_iv": "atm_iv",
+              "put25_iv": "put25_iv",
+              "call25_iv": "call25_iv",
+              "risk_reversal": "risk_reversal",
+              "put_call_iv_spread": "put_call_iv_spread",
+              "term_slope": "term_slope",
+              "straddle_ratio": "straddle_ratio",
+              "half_spread_over_premium": "half_spread_over_premium",
+              "oi_call": "oi_call",
+              "oi_put": "oi_put",
+              "volume_call": "volume_call",
+              "volume_put": "volume_put",
+              "oi_put_call_ratio": "oi_put_call_ratio",
+              "oi_change_5d": "oi_change_5d",
+              "oi_put_call_ratio_change_5d": "oi_put_call_ratio_change_5d"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date",
+              "expiration"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, both targets, one file a date, read through its registered snapshot pin; `date` and `expiration` as ISO text. Bounded to the period's dates by predicate pushdown."
+    },
+    "panel_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "after_first_quote",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "status",
+            "op": "==",
+            "value": "ok"
+          }
+        ]
+      },
+      "notes": "Rows from each name's first quoted date (after_first_quote) whose forward and vols resolved."
+    },
+    "p30": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel_ok.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "target_dte",
+            "op": "==",
+            "value": 30
+          }
+        ]
+      },
+      "notes": "The 30-DTE target (the nearest listed expiry within 7 days of 30)."
+    },
+    "bars_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            },
+            "source": "stock-daily-bars",
+            "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          },
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            },
+            "source": "stock-daily-bars-300",
+            "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "Yahoo daily bars of the tested names (stock-daily-bars + stock-daily-bars-300 pinned snapshots, split-adjusted close and split+dividend adjusted close), read from bars_start so the trailing windows are full on the first day of the period; nothing at or after the period's end_before is read."
+    },
+    "bench_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            },
+            "source": "benchmark-daily-bars",
+            "snapshot": "c6aaf7955e4a642e4e1463d563a4cba653bfbe60dfc20e27fc0def27140d0522",
+            "include": [
+              "spy/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "SPY daily bars (benchmark-daily-bars), the benchmark of the idiosyncratic vol."
+    },
+    "bars_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bars_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "adjusted_close",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "A bar with a missing or non-positive close carries no price; dropped here, counted in the log."
+    },
+    "bench_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bench_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "adjusted_close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Benchmark bars with a price."
+    },
+    "bar_feats": {
+      "uses": "dskit.pipeline.libs.bar_features:DailyBarFeatures",
+      "inputs": {
+        "bars": "$bars_ok.records",
+        "benchmark": "$bench_ok.records"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "date_field": "date",
+        "close_field": "adjusted_close",
+        "benchmark_date_field": "date",
+        "benchmark_close_field": "adjusted_close",
+        "realized_vol": {
+          "windows": [
+            22
+          ],
+          "field": "rv_{window}",
+          "return_field": "ret_1d",
+          "idio_windows": [
+            66
+          ],
+          "idio_field": "idio_vol_{window}"
+        }
+      },
+      "notes": "Trailing realized volatility (root mean square of the last w 1-bar log returns of the ADJUSTED close, per session, zero-mean, null until the window is full), the 1-bar log return and the idiosyncratic vol (residual std of the return on SPY's over 66 bars). Same-day: the value at t reads bars up to t."
+    },
+    "near31": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$p30.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "dte",
+            "op": "<=",
+            "value": 31
+          },
+          {
+            "field": "atm_strike",
+            "op": "!=",
+            "value": null
+          },
+          {
+            "field": "atm_iv",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Rows whose 30-DTE target expiry is at most 31 calendar days out and whose ATM strike resolved."
+    },
+    "entries": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$near31.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "expiration"
+        ],
+        "order_field": "dte",
+        "aggregates": {
+          "date": {
+            "op": "last",
+            "field": "date"
+          },
+          "atm_strike": {
+            "op": "last",
+            "field": "atm_strike"
+          },
+          "atm_iv": {
+            "op": "last",
+            "field": "atm_iv"
+          },
+          "term_slope": {
+            "op": "last",
+            "field": "term_slope"
+          },
+          "risk_reversal": {
+            "op": "last",
+            "field": "risk_reversal"
+          },
+          "half_spread_over_premium": {
+            "op": "last",
+            "field": "half_spread_over_premium"
+          },
+          "liquidity_tercile": {
+            "op": "last",
+            "field": "liquidity_tercile"
+          },
+          "dte_open": {
+            "op": "last",
+            "field": "dte"
+          }
+        }
+      },
+      "notes": "ONE entry per (symbol, expiry): ordered by days-to-expiry, the last row is the earliest session with the expiry at most 31 days out (DTE 31 or the first later session when the symbol's cycle skips it). Entries therefore never overlap on one expiry."
+    },
+    "entries_k": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$entries.records"
+      },
+      "params": {
+        "fields": {
+          "open_date": {
+            "field": "date"
+          }
+        }
+      },
+      "notes": "The entry date as the ledger's open_date."
+    },
+    "entries_agree": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$entries_k.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "rv_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$bar_feats.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "rv_22"
+        ]
+      },
+      "notes": "The columns of rv the attachment demands: ['symbol', 'date'] + the agreed constant + ['rv_22'], nothing else."
+    },
+    "rv": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$entries_agree.records",
+        "table": "$rv_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.3,
+        "column_prefix": "rv_",
+        "families": {
+          "rv": {
+            "fields": [
+              "rv_22"
+            ],
+            "withheld_fields": {},
+            "clock_note": "Trailing 22-session realized vol known at the entry close."
+          }
+        }
+      },
+      "notes": "Trailing 22-session realized vol known at the entry close."
+    },
+    "rv_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$rv.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "rv_22",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "atm_iv",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "term_slope",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "Entries with an implied vol, a realized vol and a term slope."
+    },
+    "signals": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$rv_ok.records"
+      },
+      "params": {
+        "fields": {
+          "vrp": {
+            "op": "sub",
+            "args": [
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "field": "atm_iv"
+                  },
+                  {
+                    "field": "atm_iv"
+                  }
+                ]
+              },
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "const": 252
+                  },
+                  {
+                    "field": "rv_22"
+                  },
+                  {
+                    "field": "rv_22"
+                  }
+                ]
+              }
+            ]
+          },
+          "term_ratio": {
+            "op": "div",
+            "args": [
+              {
+                "field": "atm_iv"
+              },
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "field": "atm_iv"
+                  },
+                  {
+                    "field": "term_slope"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "notes": "The two regime readings of VolRegimeSignals (ADR-0194), restated per name because that node takes ONE date-keyed term series: vrp = iv^2 - 252 rv22^2 (annualised variance premium; its sign is gate_vrp_nonpositive) and term_ratio = 30-day IV / 90-day IV (>= 1 is gate_term_inverted). The 90-day IV is atm_iv + term_slope. Both use the entry close's own data, the same quotes the entry is filled at (the node's one-session lag guards a VIX close that arrives after the fill; these do not). A test pins these formulas to the node's on a single-name fixture."
+    },
+    "signals_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$signals.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "vrp",
+            "op": "!=",
+            "value": null
+          },
+          {
+            "field": "term_ratio",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "Both readings defined."
+    },
+    "gated": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$signals_ok.records"
+      },
+      "params": {
+        "field": "gate",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "vrp",
+                "op": ">",
+                "value": 0
+              },
+              {
+                "field": "term_ratio",
+                "op": "<",
+                "value": 1.0
+              }
+            ],
+            "value": "on"
+          },
+          {
+            "when": [],
+            "value": "off"
+          }
+        ]
+      },
+      "notes": "The timing gate, declared before the run: trade the short straddle when the variance premium is positive AND the term structure is not inverted; stand aside otherwise. Thresholds are VolRegimeSignals' own (0 and ratio 1.0)."
+    },
+    "orders": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$gated.records"
+      },
+      "params": {
+        "fields": {
+          "strikes": {
+            "list": [
+              {
+                "field": "atm_strike"
+              },
+              {
+                "field": "atm_strike"
+              }
+            ]
+          },
+          "structure": {
+            "text": "short_straddle"
+          }
+        }
+      },
+      "notes": "One ATM short straddle per entry at the panel's ATM strike and target expiry, held to expiry."
+    },
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/thetadata/parquet-v2/options-tested/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "underlying_price"
+        ],
+        "symbols": [
+          "__UNIVERSE_NOT_FROZEN__"
+        ],
+        "start": "2016-01-04",
+        "end_before": "2021-01-01",
+        "sealed_from": "2026-01-01",
+        "renames_file": "configs/root-renames.json",
+        "renames_key": "renames",
+        "renames_sha256": "ddb611ae2675fcd083c74bfd0ef7c81f74c94828b5457782717116ccbbfe27c3",
+        "breaks_key": "breaks",
+        "pending_key": "pending_verification"
+      },
+      "notes": "The daily chain of the frozen universe, bounded to the period."
+    },
+    "ledger": {
+      "uses": "dskit.pipeline.libs.option_ledger:OptionStructureLedger",
+      "inputs": {
+        "chain": "$chain.records",
+        "orders": "$orders.records"
+      },
+      "params": {
+        "chain_fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "expiration": "expiration",
+          "strike": "strike",
+          "right": "right",
+          "bid": "bid",
+          "ask": "ask",
+          "underlying": "underlying_price"
+        },
+        "order_fields": {
+          "date": "open_date",
+          "symbol": "symbol",
+          "expiration": "expiration",
+          "strikes": "strikes",
+          "structure": "structure"
+        },
+        "structures": {
+          "short_straddle": [
+            [
+              "call",
+              -1
+            ],
+            [
+              "put",
+              -1
+            ]
+          ]
+        },
+        "multiplier": 100,
+        "fill": "nbbo",
+        "close_rule": "expiry"
+      },
+      "notes": "Short straddles sold at the BID of both legs and settled at intrinsic on the expiration date (the vendor underlying of that date; stale-spot days are not removed, disclosed)."
+    },
+    "closed": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$ledger.trades"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "status",
+            "op": "==",
+            "value": "closed"
+          }
+        ]
+      },
+      "notes": "Settled trades only."
+    },
+    "outcome_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$closed.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "open_date",
+          "pnl_over_premium"
+        ]
+      },
+      "notes": "The columns of outcome the attachment demands: ['symbol', 'open_date'] + the agreed constant + ['pnl_over_premium'], nothing else."
+    },
+    "outcome": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$gated.records",
+        "table": "$outcome_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "open_date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.3,
+        "column_prefix": "outcome_",
+        "families": {
+          "outcome": {
+            "fields": [
+              "pnl_over_premium"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The short straddle's return over its credit, NBBO fills, known at expiry."
+          }
+        }
+      },
+      "notes": "The short straddle's return over its credit, NBBO fills, known at expiry."
+    },
+    "scored": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$outcome.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "pnl_over_premium",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "Entries with a settled outcome."
+    },
+    "phased": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$scored.records"
+      },
+      "params": {
+        "field": "half",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "open_date",
+                "op": "<",
+                "value": "2018-07-01"
+              }
+            ],
+            "value": "first"
+          },
+          {
+            "when": [],
+            "value": "second"
+          }
+        ]
+      },
+      "notes": "The two halves of the period, split at 2018-07-01 (the same-sign-in-both-halves check)."
+    },
+    "vrp_level": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "open_date",
+        "value_field": "vrp",
+        "by": [
+          "liquidity_tercile"
+        ],
+        "bucket": "month",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "DESCRIPTIVE: the per-name variance risk premium (iv^2 - 252 rv22^2) by liquidity tercile, monthly means with a Newey-West t and a calendar-block bootstrap interval (terciles are null before 2021-01-01 by the panel's no-look-ahead rule)."
+    },
+    "slope_level": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "open_date",
+        "value_field": "term_slope",
+        "by": [
+          "liquidity_tercile"
+        ],
+        "bucket": "month",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "DESCRIPTIVE: the 90-minus-30-day IV slope, monthly, by tercile."
+    },
+    "short_level": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "open_date",
+        "value_field": "pnl_over_premium",
+        "by": [
+          "gate"
+        ],
+        "bucket": "month",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        },
+        "contrast": {
+          "field": "gate",
+          "plus": "on",
+          "minus": "off",
+          "paired": true
+        }
+      },
+      "notes": "PRIMARY (timing): the monthly mean short-straddle return over credit of the gated entries minus the ungated (stood-aside) entries, paired on the months both exist (contrast on/off). Pass: mean > 0 with Newey-West t >= 2.5. Bootstrap interval, half and tercile splits are reported beside it. DESCRIPTIVE: the short straddle's return over credit at NBBO (every entry), by gate and tercile, monthly means with intervals."
+    },
+    "short_halves": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "open_date",
+        "value_field": "pnl_over_premium",
+        "by": [
+          "half",
+          "gate"
+        ],
+        "bucket": "month",
+        "h_steps": 1
+      },
+      "notes": "The same contrast within each half of the period (the same-sign check)."
+    },
+    "level_series": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$vrp_level.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h4-vrp/vrp-level-series.jsonl",
+        "overwrite": true,
+        "source": "one row per tercile and month: the mean variance premium"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "vrp": "$vrp_level.summary",
+        "slope": "$slope_level.summary",
+        "timing": "$short_level.summary",
+        "halves": "$short_halves.summary",
+        "ledger": "$ledger.summary"
+      },
+      "params": {
+        "title": "H4 per-name variance risk premium",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the node summaries; evidence.json holds every value."
+    }
+  }
+}

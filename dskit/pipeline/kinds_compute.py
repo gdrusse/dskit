@@ -8,7 +8,11 @@ it on every row.
 
 An expression is exactly one of ``{"field": name}`` (the row's value, any JSON type when it is
 the whole expression, so a bare field is a copy and a rename), ``{"const": number}``, or
-``{"op": name, "args": [expression, ...]}`` over the closed table :data:`OPS`. Inside an op
+``{"op": name, "args": [expression, ...]}`` over the closed table :data:`OPS`. ``{"item": {"field": name, "index": i}}``
+is the i-th number of a list field. Two kinds may only be the
+WHOLE expression of an output: ``{"text": "..."}`` (a constant string, such as a structure name) and
+``{"list": [expression, ...]}`` (a list of numbers, such as the strikes of an order; null when any
+element is). Inside an op
 every operand must be a finite real number; a missing key, ``None``, NaN, infinity, boolean or
 text operand makes the result ``None`` and is counted as ``null_input``; an operation outside
 its domain (division by zero, log or square root of a non-positive, an overflow) makes it
@@ -64,7 +68,7 @@ OPS = {
     "min": (("at_least", 2), lambda *a: min(a)),
     "max": (("at_least", 2), lambda *a: max(a)),
 }
-_KINDS = ("field", "const", "op")
+_KINDS = ("field", "const", "op", "text", "list", "item")
 _NULL = "null_input"
 _DOMAIN = "domain"
 
@@ -87,7 +91,10 @@ class ComputeFields(Node):
     ----------
     params : dict
         ``fields`` (non-empty ``{output name: expression}``, REQUIRED); ``overwrite`` (bool,
-        default false: a row already carrying an output name refuses).
+        default false: a row already carrying an output name refuses); ``keep`` (non-empty list of
+        distinct field names: each output row then holds exactly those fields, in that order, then
+        the computed ones, so the node also projects a table to the columns a keyed attachment
+        demands; a row lacking a kept field refuses).
 
     Examples
     --------
@@ -103,7 +110,7 @@ class ComputeFields(Node):
 
     role = "transform"
     outputs = ("records", "summary")
-    _PARAMS = ("fields", "overwrite")
+    _PARAMS = ("fields", "overwrite", "keep")
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
@@ -111,7 +118,7 @@ class ComputeFields(Node):
         return "pure"
 
     @classmethod
-    def _expression_problems(cls, where, expr):
+    def _expression_problems(cls, where, expr, nested=False):
         """Problems with one expression tree, empty when it is lawful."""
         if not isinstance(expr, dict):
             return [f"{where}: an expression is a dict, got {expr!r}"]
@@ -121,6 +128,8 @@ class ComputeFields(Node):
             return [f"{where}: an expression has exactly one of {list(_KINDS)}, got {sorted(expr)}"]
         kind = kinds[0]
         allowed = {"op": {"op", "args"}}.get(kind, {kind})
+        if kind in ("text", "list") and nested:
+            return [f"{where}: {kind} is only allowed as the whole expression of an output"]
         problems += [f"{where}: unknown key {k!r}" for k in sorted(set(expr) - allowed)]
         if kind == "field":
             if not isinstance(expr["field"], str) or not expr["field"]:
@@ -128,6 +137,23 @@ class ComputeFields(Node):
         elif kind == "const":
             if isinstance(expr["const"], bool) or not number_ok(expr["const"]):
                 problems.append(f"{where}: const must be a finite number, got {expr['const']!r}")
+        elif kind == "item":
+            spec = expr["item"]
+            ok = (isinstance(spec, dict) and set(spec) == {"field", "index"} and isinstance(spec["field"], str)
+                  and spec["field"] and isinstance(spec["index"], int) and not isinstance(spec["index"], bool)
+                  and spec["index"] >= 0)
+            if not ok:
+                problems.append(f"{where}: item is {{\"field\": name, \"index\": int >= 0}}, got {spec!r}")
+        elif kind == "text":
+            if not isinstance(expr["text"], str) or not expr["text"]:
+                problems.append(f"{where}: text must be a non-empty string, got {expr['text']!r}")
+        elif kind == "list":
+            items = expr["list"]
+            if not isinstance(items, list) or not items:
+                problems.append(f"{where}: list must be a non-empty list of expressions, got {items!r}")
+            else:
+                for position, item in enumerate(items):
+                    problems += cls._expression_problems(f"{where}.list[{position}]", item, nested=True)
         else:
             problems += cls._op_problems(where, expr)
         return problems
@@ -146,7 +172,7 @@ class ComputeFields(Node):
                     f"got {len(args)}"]
         problems = []
         for position, arg in enumerate(args):
-            problems += cls._expression_problems(f"{where}.args[{position}]", arg)
+            problems += cls._expression_problems(f"{where}.args[{position}]", arg, nested=True)
         return problems
 
     @classmethod
@@ -168,6 +194,11 @@ class ComputeFields(Node):
         overwrite = params.get("overwrite", False)
         if not is_node_ref(overwrite) and not isinstance(overwrite, bool):
             problems.append(f"overwrite must be a boolean, got {overwrite!r}")
+        keep = params.get("keep")
+        if "keep" in params and not is_node_ref(keep) and (
+                not isinstance(keep, list) or not keep or not all(isinstance(k, str) and k for k in keep)
+                or len(set(keep)) < len(keep)):
+            problems.append(f"keep must be a non-empty list of distinct field names, got {keep!r}")
         return problems
 
     @staticmethod
@@ -179,6 +210,19 @@ class ComputeFields(Node):
         """
         if "const" in expr:
             return float(expr["const"])
+        if "text" in expr:
+            return expr["text"]
+        if "item" in expr:
+            items = row.get(expr["item"]["field"])
+            index = expr["item"]["index"]
+            if not isinstance(items, (list, tuple)) or index >= len(items):
+                raise _Fail(_NULL)
+            value = items[index]
+            if isinstance(value, bool) or not number_ok(value):
+                raise _Fail(_NULL)
+            return float(value)
+        if "list" in expr:
+            return [ComputeFields._evaluate(item, row, False) for item in expr["list"]]
         if "field" in expr:
             value = row.get(expr["field"])
             if value is None:
@@ -219,16 +263,23 @@ class ComputeFields(Node):
             A row that is not a mapping, or that already carries an output field without ``overwrite``.
         """
         fields, overwrite = self.params["fields"], bool(self.params.get("overwrite", False))
+        keep = self.params.get("keep")
         counts = {name: {"computed": 0, _NULL: 0, _DOMAIN: 0} for name in fields}
         records = []
         for index, row in enumerate(inputs["records"]):
             if not isinstance(row, Mapping):
                 raise ValueError(f"{self.key}: row {index} must be a mapping, got {type(row).__name__}")
-            clash = [name for name in fields if name in row]
+            if keep is not None:
+                lacking = [k for k in keep if k not in row]
+                if lacking:
+                    raise ValueError(f"{self.key}: row {index} lacks the keep field(s) {lacking}")
+                out = {k: row[k] for k in keep}
+            else:
+                out = dict(row)
+            clash = [name for name in fields if name in out]
             if clash and not overwrite:
                 raise ValueError(f"{self.key}: row {index} already carries {clash}: declare overwrite "
                                  "to replace a field")
-            out = dict(row)
             for name, expr in fields.items():
                 try:
                     out[name] = self._evaluate(expr, row, True)

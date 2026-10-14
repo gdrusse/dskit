@@ -1,0 +1,757 @@
+{
+  "name": "theta-h0-har-implied-validation",
+  "notes": "PRE-REGISTERED H0 (ADR-0265, Amendment 5), validation period 2021-01-04 .. 2026-01-01 (end_before; nothing on or after 2026-01-01 is read). ADR RULE, verbatim: **H0** HAR-versus-implied straddle richness (the open ledger question): per-date Spearman IC of HAR scale / implied straddle against |31-day move| / implied; pass IC > 0, Newey–West t >= 2.5, quintile spread net of NBBO costs > 0 COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. RUN ONCE: this is the validation run; it is not repeated, tuned or re-read. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h0-har-implied-validation.json --asof 2025-12-31",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h0-har-implied-validation",
+    "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "liquidity_tercile": "liquidity_tercile",
+              "expiration": "expiration",
+              "dte": "dte",
+              "spot": "spot",
+              "forward": "forward",
+              "atm_strike": "atm_strike",
+              "atm_iv": "atm_iv",
+              "put25_iv": "put25_iv",
+              "call25_iv": "call25_iv",
+              "risk_reversal": "risk_reversal",
+              "put_call_iv_spread": "put_call_iv_spread",
+              "term_slope": "term_slope",
+              "straddle_ratio": "straddle_ratio",
+              "half_spread_over_premium": "half_spread_over_premium",
+              "oi_call": "oi_call",
+              "oi_put": "oi_put",
+              "volume_call": "volume_call",
+              "volume_put": "volume_put",
+              "oi_put_call_ratio": "oi_put_call_ratio",
+              "oi_change_5d": "oi_change_5d",
+              "oi_put_call_ratio_change_5d": "oi_put_call_ratio_change_5d"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date",
+              "expiration"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2021-01-04",
+                "end_before": "2026-01-01"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, both targets, one file a date, read through its registered snapshot pin; `date` and `expiration` as ISO text. Bounded to the period's dates by predicate pushdown."
+    },
+    "panel_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "after_first_quote",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "status",
+            "op": "==",
+            "value": "ok"
+          }
+        ]
+      },
+      "notes": "Rows from each name's first quoted date (after_first_quote) whose forward and vols resolved."
+    },
+    "p30": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel_ok.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "target_dte",
+            "op": "==",
+            "value": 30
+          }
+        ]
+      },
+      "notes": "The 30-DTE target (the nearest listed expiry within 7 days of 30)."
+    },
+    "bars_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2020-09-01",
+                "end_before": "2026-01-01"
+              }
+            },
+            "source": "stock-daily-bars",
+            "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          },
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2020-09-01",
+                "end_before": "2026-01-01"
+              }
+            },
+            "source": "stock-daily-bars-300",
+            "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "Yahoo daily bars of the tested names (stock-daily-bars + stock-daily-bars-300 pinned snapshots, split-adjusted close and split+dividend adjusted close), read from bars_start so the trailing windows are full on the first day of the period; nothing at or after the period's end_before is read."
+    },
+    "bench_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2020-09-01",
+                "end_before": "2026-01-01"
+              }
+            },
+            "source": "benchmark-daily-bars",
+            "snapshot": "c6aaf7955e4a642e4e1463d563a4cba653bfbe60dfc20e27fc0def27140d0522",
+            "include": [
+              "spy/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "SPY daily bars (benchmark-daily-bars), the benchmark of the idiosyncratic vol."
+    },
+    "bars_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bars_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "adjusted_close",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "A bar with a missing or non-positive close carries no price; dropped here, counted in the log."
+    },
+    "bench_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bench_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "adjusted_close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Benchmark bars with a price."
+    },
+    "bar_feats": {
+      "uses": "dskit.pipeline.libs.bar_features:DailyBarFeatures",
+      "inputs": {
+        "bars": "$bars_ok.records",
+        "benchmark": "$bench_ok.records"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "date_field": "date",
+        "close_field": "adjusted_close",
+        "benchmark_date_field": "date",
+        "benchmark_close_field": "adjusted_close",
+        "realized_vol": {
+          "windows": [
+            5,
+            22,
+            66
+          ],
+          "field": "rv_{window}",
+          "return_field": "ret_1d",
+          "idio_windows": [
+            66
+          ],
+          "idio_field": "idio_vol_{window}"
+        }
+      },
+      "notes": "Trailing realized volatility (root mean square of the last w 1-bar log returns of the ADJUSTED close, per session, zero-mean, null until the window is full), the 1-bar log return and the idiosyncratic vol (residual std of the return on SPY's over 66 bars). Same-day: the value at t reads bars up to t."
+    },
+    "move31": {
+      "uses": "horizon-pairs",
+      "inputs": {
+        "records": "$bars_ok.records"
+      },
+      "params": {
+        "horizon_days": 31,
+        "fallback": "previous",
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "close_field": "close",
+        "fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "settlement_date": "settle_move31",
+          "entry_close": "c0_move31",
+          "settle_close": "c1_move31",
+          "terminal_return": "move31",
+          "period": "year_move31"
+        }
+      },
+      "notes": "The realized 31-calendar-day log move of the (split-adjusted) close from every close, settled on the target day's close or the latest earlier one; an entry whose target lies past the last close of the period is dropped, so no outcome crosses the period's end."
+    },
+    "p30_agree": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$p30.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "rv_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$bar_feats.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "rv_5",
+          "rv_22",
+          "rv_66"
+        ]
+      },
+      "notes": "The columns of rv the attachment demands: ['symbol', 'date'] + the agreed constant + ['rv_5', 'rv_22', 'rv_66'], nothing else."
+    },
+    "rv": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$p30_agree.records",
+        "table": "$rv_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.2,
+        "column_prefix": "rv_",
+        "families": {
+          "rv": {
+            "fields": [
+              "rv_5",
+              "rv_22",
+              "rv_66"
+            ],
+            "withheld_fields": {},
+            "clock_note": "Trailing realized vols known at the close of the date (same-day with the NBBO the straddle is read from)."
+          }
+        }
+      },
+      "notes": "Trailing realized vols known at the close of the date (same-day with the NBBO the straddle is read from)."
+    },
+    "fwd_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$move31.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "move31"
+        ]
+      },
+      "notes": "The columns of fwd the attachment demands: ['symbol', 'date'] + the agreed constant + ['move31'], nothing else."
+    },
+    "fwd": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$rv.records",
+        "table": "$fwd_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.2,
+        "column_prefix": "fwd_",
+        "families": {
+          "fwd": {
+            "fields": [
+              "move31"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The 31-day move settles after the date; label-time value, scored only."
+          }
+        }
+      },
+      "notes": "The 31-day move settles after the date; label-time value, scored only."
+    },
+    "scored_in": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$fwd.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "straddle_ratio",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "rv_5",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "rv_22",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "rv_66",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "move31",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "The one row set every measure scores: a two-sided straddle, three realized vols and a settled move."
+    },
+    "scored": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$scored_in.records"
+      },
+      "params": {
+        "fields": {
+          "har_scale": {
+            "op": "mul",
+            "args": [
+              {
+                "const": 3.656366395715726
+              },
+              {
+                "op": "exp",
+                "args": [
+                  {
+                    "op": "div",
+                    "args": [
+                      {
+                        "op": "add",
+                        "args": [
+                          {
+                            "op": "log",
+                            "args": [
+                              {
+                                "field": "rv_5"
+                              }
+                            ]
+                          },
+                          {
+                            "op": "log",
+                            "args": [
+                              {
+                                "field": "rv_22"
+                              }
+                            ]
+                          },
+                          {
+                            "op": "log",
+                            "args": [
+                              {
+                                "field": "rv_66"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "const": 3
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "rv22_scale": {
+            "op": "mul",
+            "args": [
+              {
+                "const": 3.656366395715726
+              },
+              {
+                "field": "rv_22"
+              }
+            ]
+          },
+          "richness_har": {
+            "op": "log",
+            "args": [
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "field": "straddle_ratio"
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "const": 3.656366395715726
+                      },
+                      {
+                        "op": "exp",
+                        "args": [
+                          {
+                            "op": "div",
+                            "args": [
+                              {
+                                "op": "add",
+                                "args": [
+                                  {
+                                    "op": "log",
+                                    "args": [
+                                      {
+                                        "field": "rv_5"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "log",
+                                    "args": [
+                                      {
+                                        "field": "rv_22"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "log",
+                                    "args": [
+                                      {
+                                        "field": "rv_66"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "const": 3
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "richness_rv22": {
+            "op": "log",
+            "args": [
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "field": "straddle_ratio"
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "const": 3.656366395715726
+                      },
+                      {
+                        "field": "rv_22"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "short_straddle_ret": {
+            "op": "div",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "straddle_ratio"
+                  },
+                  {
+                    "op": "abs",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "op": "exp",
+                            "args": [
+                              {
+                                "field": "move31"
+                              }
+                            ]
+                          },
+                          {
+                            "const": 1
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "straddle_ratio"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "HAR scale = the geometric mean of the 5-, 22- and 66-session realized vols (a no-fit HAR: equal log weights, nothing estimated, so nothing can leak) times sqrt(2/pi) sqrt(21), the expected absolute 31-day move of a normal; rv22_scale is the single-window control. richness = log(implied straddle / scale). short_straddle_ret is the MID-basis proxy (straddle - |31-day move|)/straddle of a short straddle held 31 calendar days; it is a measurement of the ordering, not a tradable P&L (H3 trades the ledger)."
+    },
+    "phased": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$scored.records"
+      },
+      "params": {
+        "field": "half",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "date",
+                "op": "<",
+                "value": "2023-07-01"
+              }
+            ],
+            "value": "first"
+          },
+          {
+            "when": [],
+            "value": "second"
+          }
+        ]
+      },
+      "notes": "The two halves of the period, split at 2023-07-01 (the same-sign-in-both-halves check)."
+    },
+    "ic": {
+      "uses": "dskit.pipeline.kinds_stats:CrossSectionIC",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "series_field": "symbol",
+        "measures": {
+          "har_beyond_market": {
+            "forecast_field": "har_scale",
+            "outcome_field": "move31",
+            "control_field": "straddle_ratio",
+            "outcome_transform": "abs"
+          },
+          "rv22_beyond_market": {
+            "forecast_field": "rv22_scale",
+            "outcome_field": "move31",
+            "control_field": "straddle_ratio",
+            "outcome_transform": "abs"
+          },
+          "har_alone": {
+            "forecast_field": "har_scale",
+            "outcome_field": "move31",
+            "outcome_transform": "abs"
+          },
+          "implied_alone": {
+            "forecast_field": "straddle_ratio",
+            "outcome_field": "move31",
+            "outcome_transform": "abs"
+          }
+        },
+        "h_steps": 21,
+        "splits": [
+          "half"
+        ],
+        "by_month": false
+      },
+      "notes": "PRIMARY: har_beyond_market, the per-date partial Spearman of the HAR scale with |31-day move| given the implied straddle (pass: mean IC > 0, Newey-West t >= 2.5). AMENDMENT 5, recorded before any run: the ADR wrote the IC on the ratio HAR/implied against |move|/implied; the node refuses a ratio form because dividing both sides by one noisy field correlates two independent numerators (ADR-0259 amendment 1), so a noise forecast passes it. The partial form answers the same question without that artifact. rv22_beyond_market is the single-window control (does HAR add over rv22); har_alone and implied_alone are the market's own ordering skill, the bar to clear. h_steps 21: a 31-day label overlaps about 21 daily stamps."
+    },
+    "book": {
+      "uses": "dskit.pipeline.kinds_stats:QuantileSortBook",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "series_field": "symbol",
+        "quantiles": 5,
+        "min_names": 50,
+        "alpha": 0.05,
+        "signals": {
+          "har": {
+            "signal_field": "richness_har",
+            "outcome_field": "short_straddle_ret",
+            "cost_field": "half_spread_over_premium"
+          },
+          "rv22": {
+            "signal_field": "richness_rv22",
+            "outcome_field": "short_straddle_ret",
+            "cost_field": "half_spread_over_premium"
+          }
+        },
+        "sides_per_leg": 1,
+        "h_steps": 21,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        },
+        "splits": [
+          "half"
+        ]
+      },
+      "notes": "PRIMARY: the quintile spread of the har signal, long the richest quintile's SHORT straddle and short the cheapest quintile's (sign +1: the top bucket pays the short-straddle return), net of each leg's mean half-spread over premium paid once at entry (the proxy is held to a 31-day close, no exit crossing). Pass: net mean > 0. The rv22 signal is the control. Overlapping 31-day labels on daily stamps: h_steps 21."
+    },
+    "ic_by_stamp": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$ic.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h0-har-implied-validation/ic-by-stamp.jsonl",
+        "overwrite": true,
+        "source": "one row per measure and date: the cross-sectional Spearman rho and names ranked"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "book_by_stamp": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$book.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h0-har-implied-validation/book-by-stamp.jsonl",
+        "overwrite": true,
+        "source": "one row per signal and date: quintile means, gross, cost, net"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "ic": "$ic.summary",
+        "book": "$book.summary"
+      },
+      "params": {
+        "title": "H0 HAR versus implied straddle richness",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the node summaries; evidence.json holds every value."
+    }
+  }
+}

@@ -1,0 +1,1098 @@
+{
+  "name": "theta-h2-earnings",
+  "notes": "PRE-REGISTERED H2 (ADR-0265, Amendment 5), development period 2016-01-04 .. 2021-01-01 (end_before; nothing on or after 2026-01-01 is read). ADR RULE, verbatim: **H2** earnings: (a) implied move (front straddle) minus realized gap move; (b) long ATM straddle bought 3 sessions before the event, sold the session after, at NBBO. Events are detected from the chain itself (front-month IV collapse above a threshold frozen on 2016–2019 dates). Pass: mean > 0, t clustered by event week >= 2.5, same sign in both halves, terciles by liquidity. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. This is the development run. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h2-earnings.json --asof 2025-12-31",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h2-earnings",
+    "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "liquidity_tercile": "liquidity_tercile",
+              "expiration": "expiration",
+              "dte": "dte",
+              "spot": "spot",
+              "atm_strike": "atm_strike",
+              "atm_iv": "atm_iv",
+              "straddle_ratio": "straddle_ratio",
+              "half_spread_over_premium": "half_spread_over_premium"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date",
+              "expiration"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "The panel of chain-day features, both targets (30 and 90 DTE), read through its pinned snapshot, bounded to the period."
+    },
+    "panel_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "after_first_quote",
+            "op": "==",
+            "value": true
+          }
+        ]
+      },
+      "notes": "Rows from each name's first quoted date."
+    },
+    "events": {
+      "uses": "dskit.pipeline.libs.chain_events:ChainEventDetector",
+      "inputs": {
+        "records": "$panel_ok.records"
+      },
+      "params": {
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "target_field": "target_dte",
+        "iv_field": "atm_iv",
+        "straddle_field": "straddle_ratio",
+        "spot_field": "spot",
+        "status_field": "status",
+        "status_ok": "ok",
+        "front_target": 30,
+        "back_target": 90,
+        "window": 60,
+        "min_history": 20,
+        "crush_min": 0.12,
+        "crush_z_min": 3.0,
+        "spread_drop_min": 0.01,
+        "refractory": 50,
+        "max_market_share": 0.4,
+        "min_symbols_for_guard": 10,
+        "max_gap_days": 5,
+        "entry_lead": 3,
+        "exit_lag": 1,
+        "scale_floor": 0.01,
+        "end_before": "2021-01-01"
+      },
+      "notes": "The frozen event rules of run-theta-chain-events.json (ADR-0265 Amendment 4), chosen on AAPL 2016-2019 announcements, applied unchanged to the whole universe: a front-30 ATM vol crush of >= 12 log points that is 3 robust sigmas below the name's own trailing 60 sessions, with the 30-90 spread collapsing, no more than 40% of the symbols of a date, at most one event per 50 sessions. The realized move is an OUTPUT, not a criterion. THIS IS A RETROSPECTIVE LABELLER, NOT A LIVE SIGNAL: the entry (event - 3 sessions) precedes the detection date. The detected subset is selected on the vol outcome (EXPLORATORY per Amendment 4)."
+    },
+    "labels": {
+      "uses": "table-file",
+      "params": {
+        "path": "configs/theta-earnings-labels-2016-2020.json",
+        "source": "Announcement dates of quarterly results for AAPL, MSFT, AMZN, GOOGL and NVDA 2016-2020, recalled from the public releases and not cross-checked in the repository; each carries a confidence",
+        "retrieved": "2026-10-12",
+        "sha256": "34f072a187b4a2ed425dc0cec8f4396d6977dfc37a0352ee3a8b6997b91988df",
+        "expect": 2
+      },
+      "notes": "The owner-supplied labelled announcement dates, development years only."
+    },
+    "events_labelled": {
+      "uses": "dskit.pipeline.libs.chain_events:ChainEventDetector",
+      "inputs": {
+        "records": "$panel_ok.records",
+        "labels": "$labels.table"
+      },
+      "params": {
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "target_field": "target_dte",
+        "iv_field": "atm_iv",
+        "straddle_field": "straddle_ratio",
+        "spot_field": "spot",
+        "status_field": "status",
+        "status_ok": "ok",
+        "front_target": 30,
+        "back_target": 90,
+        "window": 60,
+        "min_history": 20,
+        "crush_min": 0.12,
+        "crush_z_min": 3.0,
+        "spread_drop_min": 0.01,
+        "refractory": 50,
+        "max_market_share": 0.4,
+        "min_symbols_for_guard": 10,
+        "max_gap_days": 5,
+        "entry_lead": 3,
+        "exit_lag": 1,
+        "scale_floor": 0.01,
+        "end_before": "2021-01-01",
+        "labelled_only": true,
+        "label_symbol_field": "symbol",
+        "label_date_field": "earnings_date",
+        "label_confidence_field": "confidence",
+        "confidences": [
+          "high"
+        ],
+        "labels_key": "labels",
+        "match_before": 0,
+        "match_after": 1,
+        "label_event_offset": 1
+      },
+      "notes": "One record per labelled announcement (event session = announcement + 1 session), flagged `detected`: the result on ALL labelled announcements, which is not selected on the vol outcome. The labels cover 5 names in 2016-2020 only; coverage by year is in the summary (labelled_by_year)."
+    },
+    "detected_rows": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$events.records"
+      },
+      "params": {
+        "fields": {
+          "event_source": {
+            "text": "detected"
+          }
+        },
+        "keep": [
+          "symbol",
+          "event_date",
+          "entry_date",
+          "exit_date",
+          "front_iv_before",
+          "front_iv_after",
+          "implied_move",
+          "realized_move"
+        ]
+      },
+      "notes": "Tags the detected events and projects them to the fields both sources share."
+    },
+    "labelled_rows": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$events_labelled.records"
+      },
+      "params": {
+        "fields": {
+          "event_source": {
+            "text": "labelled"
+          }
+        },
+        "keep": [
+          "symbol",
+          "event_date",
+          "entry_date",
+          "exit_date",
+          "front_iv_before",
+          "front_iv_after",
+          "implied_move",
+          "realized_move"
+        ]
+      },
+      "notes": "Tags the labelled announcements the same way."
+    },
+    "events_all": {
+      "uses": "concat",
+      "inputs": {
+        "detected": "$detected_rows.records",
+        "labelled": "$labelled_rows.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance": "event_source"
+      },
+      "notes": "The detected events and the labelled announcements in one table, each row agreeing with its port name."
+    },
+    "move_gap": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$events_all.merged"
+      },
+      "params": {
+        "fields": {
+          "gap_30d": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "implied_move"
+              },
+              {
+                "op": "abs",
+                "args": [
+                  {
+                    "field": "realized_move"
+                  }
+                ]
+              }
+            ]
+          },
+          "event_implied": {
+            "op": "mul",
+            "args": [
+              {
+                "const": 0.7978845608028654
+              },
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "max",
+                        "args": [
+                          {
+                            "const": 0
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "op": "mul",
+                                "args": [
+                                  {
+                                    "field": "front_iv_before"
+                                  },
+                                  {
+                                    "field": "front_iv_before"
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "mul",
+                                "args": [
+                                  {
+                                    "field": "front_iv_after"
+                                  },
+                                  {
+                                    "field": "front_iv_after"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "const": 0.0821917808219178
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "realized_abs": {
+            "op": "abs",
+            "args": [
+              {
+                "field": "realized_move"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "PRIMARY (a), as written: gap_30d = the front (30-DTE) straddle ratio at the close before the event minus the absolute close-to-close move of the event day. CAVEAT recorded before the run: the straddle spans 30 days and the move one, so this difference is positive by construction; the informative SECONDARY is event_implied, the one-day move the crush itself removes, sqrt(2/pi) sqrt((iv_before^2 - iv_after^2) 30/365), against realized_abs."
+    },
+    "move_gap2": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$move_gap.records"
+      },
+      "params": {
+        "fields": {
+          "event_gap": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "event_implied"
+              },
+              {
+                "field": "realized_abs"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Secondary difference: event-variance implied move minus realized move."
+    },
+    "move_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$move_gap2.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "event_date",
+            "op": "!=",
+            "value": null
+          },
+          {
+            "field": "gap_30d",
+            "op": "!=",
+            "value": null
+          },
+          {
+            "field": "event_gap",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "Events with both moves."
+    },
+    "gap_primary": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$move_ok.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "gap_30d",
+        "by": [
+          "event_source"
+        ],
+        "bucket": "week",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "(a) PRIMARY as written, clustered by event week. Pass: mean > 0, Newey-West t >= 2.5."
+    },
+    "gap_event": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$move_ok.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "event_gap",
+        "by": [
+          "event_source"
+        ],
+        "bucket": "week",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "(a) SECONDARY (reported, never promoted): event-variance implied move minus realized move, by week."
+    },
+    "entry_panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "liquidity_tercile": "liquidity_tercile",
+              "expiration": "expiration",
+              "atm_strike": "atm_strike",
+              "half_spread_over_premium": "half_spread_over_premium"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date",
+              "expiration"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "The panel again, for the entry session's expiry and ATM strike."
+    },
+    "entry_30": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$entry_panel.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "after_first_quote",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "status",
+            "op": "==",
+            "value": "ok"
+          },
+          {
+            "field": "target_dte",
+            "op": "==",
+            "value": 30
+          },
+          {
+            "field": "atm_strike",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "The 30-DTE ATM strike and expiry known at each entry session's close."
+    },
+    "detected_dated": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$move_ok.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "event_source",
+            "op": "==",
+            "value": "detected"
+          },
+          {
+            "field": "entry_date",
+            "op": "!=",
+            "value": null
+          },
+          {
+            "field": "exit_date",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "The detected events whose entry (event - 3 sessions) and exit (event + 1) sessions exist in the symbol's own table."
+    },
+    "detected_keyed": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$detected_dated.records"
+      },
+      "params": {
+        "fields": {
+          "date": {
+            "field": "entry_date"
+          }
+        }
+      },
+      "notes": "The entry date as the join key."
+    },
+    "detected_stream": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$detected_keyed.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "detected_entry_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$entry_30.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "expiration",
+          "atm_strike",
+          "half_spread_over_premium",
+          "liquidity_tercile"
+        ]
+      },
+      "notes": "The columns of detected_entry the attachment demands: ['symbol', 'date'] + the agreed constant + ['expiration', 'atm_strike', 'half_spread_over_premium', 'liquidity_tercile'], nothing else."
+    },
+    "detected_entry": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$detected_stream.records",
+        "table": "$detected_entry_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.5,
+        "column_prefix": "detected_entry_",
+        "families": {
+          "detected_entry": {
+            "fields": [
+              "expiration",
+              "atm_strike",
+              "half_spread_over_premium",
+              "liquidity_tercile"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The straddle's expiry (the 30-DTE target at the entry close) and ATM strike: known when the order is placed."
+          }
+        }
+      },
+      "notes": "The straddle's expiry (the 30-DTE target at the entry close) and ATM strike: known when the order is placed."
+    },
+    "detected_entry_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$detected_entry.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "atm_strike",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "Events with a resolved straddle."
+    },
+    "detected_orders": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$detected_entry_ok.records"
+      },
+      "params": {
+        "fields": {
+          "open_date": {
+            "field": "date"
+          },
+          "exit": {
+            "field": "exit_date"
+          },
+          "strikes": {
+            "list": [
+              {
+                "field": "atm_strike"
+              },
+              {
+                "field": "atm_strike"
+              }
+            ]
+          },
+          "structure": {
+            "text": "long_straddle_detected"
+          }
+        },
+        "keep": [
+          "symbol",
+          "expiration",
+          "date",
+          "event_date",
+          "event_source",
+          "exit_date",
+          "half_spread_over_premium",
+          "liquidity_tercile",
+          "agree"
+        ]
+      },
+      "notes": "Orders: a long ATM straddle at the entry session, exited at the event+1 session at the NBBO. One ledger structure name per event source (the same legs), so a detected event that is also a labelled announcement stays two distinct trades."
+    },
+    "labelled_dated": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$move_ok.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "event_source",
+            "op": "==",
+            "value": "labelled"
+          },
+          {
+            "field": "entry_date",
+            "op": "!=",
+            "value": null
+          },
+          {
+            "field": "exit_date",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "The labelled events whose entry (event - 3 sessions) and exit (event + 1) sessions exist in the symbol's own table."
+    },
+    "labelled_keyed": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$labelled_dated.records"
+      },
+      "params": {
+        "fields": {
+          "date": {
+            "field": "entry_date"
+          }
+        }
+      },
+      "notes": "The entry date as the join key."
+    },
+    "labelled_stream": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$labelled_keyed.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "labelled_entry_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$entry_30.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "expiration",
+          "atm_strike",
+          "half_spread_over_premium",
+          "liquidity_tercile"
+        ]
+      },
+      "notes": "The columns of labelled_entry the attachment demands: ['symbol', 'date'] + the agreed constant + ['expiration', 'atm_strike', 'half_spread_over_premium', 'liquidity_tercile'], nothing else."
+    },
+    "labelled_entry": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$labelled_stream.records",
+        "table": "$labelled_entry_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.5,
+        "column_prefix": "labelled_entry_",
+        "families": {
+          "labelled_entry": {
+            "fields": [
+              "expiration",
+              "atm_strike",
+              "half_spread_over_premium",
+              "liquidity_tercile"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The straddle's expiry (the 30-DTE target at the entry close) and ATM strike: known when the order is placed."
+          }
+        }
+      },
+      "notes": "The straddle's expiry (the 30-DTE target at the entry close) and ATM strike: known when the order is placed."
+    },
+    "labelled_entry_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$labelled_entry.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "atm_strike",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "Events with a resolved straddle."
+    },
+    "labelled_orders": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$labelled_entry_ok.records"
+      },
+      "params": {
+        "fields": {
+          "open_date": {
+            "field": "date"
+          },
+          "exit": {
+            "field": "exit_date"
+          },
+          "strikes": {
+            "list": [
+              {
+                "field": "atm_strike"
+              },
+              {
+                "field": "atm_strike"
+              }
+            ]
+          },
+          "structure": {
+            "text": "long_straddle_labelled"
+          }
+        },
+        "keep": [
+          "symbol",
+          "expiration",
+          "date",
+          "event_date",
+          "event_source",
+          "exit_date",
+          "half_spread_over_premium",
+          "liquidity_tercile",
+          "agree"
+        ]
+      },
+      "notes": "Orders: a long ATM straddle at the entry session, exited at the event+1 session at the NBBO. One ledger structure name per event source (the same legs), so a detected event that is also a labelled announcement stays two distinct trades."
+    },
+    "orders_all": {
+      "uses": "concat",
+      "inputs": {
+        "detected": "$detected_orders.records",
+        "labelled": "$labelled_orders.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance": "event_source"
+      },
+      "notes": "The detected and labelled orders in one table, each row agreeing with its port name."
+    },
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/thetadata/parquet-v2/options-tested/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "underlying_price"
+        ],
+        "symbols": [
+          "__UNIVERSE_NOT_FROZEN__"
+        ],
+        "start": "2016-01-04",
+        "end_before": "2021-01-01",
+        "sealed_from": "2026-01-01",
+        "renames_file": "configs/root-renames.json",
+        "renames_key": "renames",
+        "renames_sha256": "ddb611ae2675fcd083c74bfd0ef7c81f74c94828b5457782717116ccbbfe27c3",
+        "breaks_key": "breaks",
+        "pending_key": "pending_verification"
+      },
+      "notes": "The daily chain of the frozen universe, bounded to the period."
+    },
+    "ledger": {
+      "uses": "dskit.pipeline.libs.option_ledger:OptionStructureLedger",
+      "inputs": {
+        "chain": "$chain.records",
+        "orders": "$orders_all.merged"
+      },
+      "params": {
+        "chain_fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "expiration": "expiration",
+          "strike": "strike",
+          "right": "right",
+          "bid": "bid",
+          "ask": "ask",
+          "underlying": "underlying_price"
+        },
+        "order_fields": {
+          "date": "open_date",
+          "symbol": "symbol",
+          "expiration": "expiration",
+          "strikes": "strikes",
+          "structure": "structure",
+          "exit": "exit"
+        },
+        "structures": {
+          "long_straddle_detected": [
+            [
+              "call",
+              1
+            ],
+            [
+              "put",
+              1
+            ]
+          ],
+          "long_straddle_labelled": [
+            [
+              "call",
+              1
+            ],
+            [
+              "put",
+              1
+            ]
+          ]
+        },
+        "multiplier": 100,
+        "fill": "nbbo",
+        "close_rule": "exit"
+      },
+      "notes": "Buys both legs at the ASK on the entry session and sells at the BID on the exit session (an exit that cannot be quoted is counted and the trade runs to expiry, never a free exit)."
+    },
+    "closed": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$ledger.trades"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "status",
+            "op": "==",
+            "value": "closed"
+          },
+          {
+            "field": "reason_closed",
+            "op": "==",
+            "value": "exit"
+          }
+        ]
+      },
+      "notes": "Trades that exited on the event+1 session at the NBBO; a trade that fell back to expiry is not the pre-registered holding and is excluded (counted in the ledger summary)."
+    },
+    "outcome_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$closed.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "open_date",
+          "structure",
+          "pnl_over_premium"
+        ]
+      },
+      "notes": "The columns of outcome the attachment demands: ['symbol', 'open_date', 'structure'] + the agreed constant + ['pnl_over_premium'], nothing else."
+    },
+    "outcome": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$orders_all.merged",
+        "table": "$outcome_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "open_date",
+          "structure"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.5,
+        "column_prefix": "outcome_",
+        "families": {
+          "outcome": {
+            "fields": [
+              "pnl_over_premium"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The trade's return over its debit, NBBO both sides."
+          }
+        }
+      },
+      "notes": "The trade's return over its debit, NBBO both sides."
+    },
+    "scored": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$outcome.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "pnl_over_premium",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "Events with a closed trade."
+    },
+    "phased": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$scored.records"
+      },
+      "params": {
+        "field": "half",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "event_date",
+                "op": "<",
+                "value": "2018-07-01"
+              }
+            ],
+            "value": "first"
+          },
+          {
+            "when": [],
+            "value": "second"
+          }
+        ]
+      },
+      "notes": "The two halves of the period, split at 2018-07-01 (the same-sign-in-both-halves check)."
+    },
+    "pnl": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "pnl_over_premium",
+        "by": [
+          "event_source"
+        ],
+        "bucket": "week",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        },
+        "contrast": {
+          "field": "event_source",
+          "plus": "detected",
+          "minus": "labelled",
+          "paired": false
+        }
+      },
+      "notes": "PRIMARY (b): the long straddle's return over premium per event, clustered by event week (bucket week, equal weight within a week), reported on the DETECTED events, on ALL labelled announcements and the unpaired difference of the two (contrast). Pass: mean > 0, Newey-West t >= 2.5 (clustered by event week), same sign in both halves, terciles by liquidity. EXPLORATORY on the detected subset (Amendment 4)."
+    },
+    "pnl_halves": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "pnl_over_premium",
+        "by": [
+          "event_source",
+          "half"
+        ],
+        "bucket": "week",
+        "h_steps": 1
+      },
+      "notes": "The same by half of the period (same-sign check)."
+    },
+    "pnl_terciles": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "pnl_over_premium",
+        "by": [
+          "event_source",
+          "liquidity_tercile"
+        ],
+        "bucket": "week",
+        "h_steps": 1
+      },
+      "notes": "The same by liquidity tercile (null before 2021-01-01 by the panel's no-look-ahead rule)."
+    },
+    "events_table": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$detected_rows.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h2-earnings/events.jsonl",
+        "overwrite": true,
+        "source": "one row per detected event: dates, front IV before and after, implied and realized move"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "events": "$events.summary",
+        "gap_primary": "$gap_primary.summary",
+        "gap_event": "$gap_event.summary",
+        "pnl": "$pnl.summary",
+        "halves": "$pnl_halves.summary",
+        "terciles": "$pnl_terciles.summary",
+        "ledger": "$ledger.summary",
+        "labelled": "$events_labelled.summary"
+      },
+      "params": {
+        "title": "H2 earnings events: implied versus realized and the event straddle",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the node summaries; evidence.json holds every value."
+    }
+  }
+}

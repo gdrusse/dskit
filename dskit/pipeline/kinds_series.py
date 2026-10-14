@@ -25,7 +25,8 @@ the mean and of the annualised Sharpe ratio. ``hurdle`` states a Sharpe the inte
 **A contrast** (``contrast``: the field, the ``plus`` and ``minus`` values, ``paired``) compares two groups of
 that field. ``paired`` takes the difference of the two bucket series on the stamps both have (unmatched stamps
 are counted) and tests it like any series; unpaired it is the difference of the two groups' means with the
-square root of the sum of the two Newey-West variances, a difference of independent series.
+square root of the sum of the two Newey-West variances, a difference of independent series. A side with no usable row
+leaves the contrast empty (``mean`` null, ``hac_withheld`` naming the side), never a refusal that would lose the run.
 
 Import cost: stdlib and the pipeline core only. Wired by import path
 (``dskit.pipeline.kinds_series:StampSeriesStats``); :data:`NODE_KINDS` is empty and nothing registers.
@@ -300,13 +301,15 @@ class StampSeriesStats(Node):
         if spec is None:
             return None
         field = spec["field"]
-        series = {}
+        series, paired = {}, spec.get("paired", True)
+        empty = [side for side in ("plus", "minus") if f"{field}={spec[side]}" not in groups]
+        if empty:
+            return {"paired": paired, "plus": spec["plus"], "minus": spec["minus"], "n_stamps": [
+                len(self._series(groups[f"{field}={spec[s]}"])[1]) if s not in empty else 0 for s in ("plus", "minus")],
+                "mean": None, "se": None, "t": None,
+                "hac_withheld": "no usable row on the side(s) " + ", ".join(repr(spec[s]) for s in empty)}
         for side in ("plus", "minus"):
-            name = f"{field}={spec[side]}"
-            if name not in groups:
-                raise ValueError(f"{self.key}: contrast side {spec[side]!r} of {field!r} has no usable row")
-            series[side] = self._series(groups[name])
-        paired = spec.get("paired", True)
+            series[side] = self._series(groups[f"{field}={spec[side]}"])
         if paired:
             plus = dict(zip(series["plus"][0], series["plus"][1]))
             minus = dict(zip(series["minus"][0], series["minus"][1]))

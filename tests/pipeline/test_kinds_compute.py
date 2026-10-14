@@ -136,3 +136,56 @@ def test_it_is_not_a_registered_kind_and_is_pure_for_serving():
 def test_a_bad_declaration_refuses_at_construction():
     with pytest.raises(ConfigError):
         ComputeFields("calc", {"fields": {"z": {"op": "pow", "args": []}}})
+
+
+def test_keep_projects_the_rows_to_exactly_the_named_fields_plus_the_computed_ones(ctx):
+    rows = [{"a": 1.0, "b": 2.0, "junk": "x"}]
+    out = run(ctx, rows, {"c": {"op": "add", "args": [f("a"), f("b")]}}, keep=["b", "a"])
+    assert out["records"] == [{"b": 2.0, "a": 1.0, "c": 3.0}]
+    assert list(out["records"][0]) == ["b", "a", "c"]
+
+
+def test_keep_refuses_a_row_missing_a_kept_field_and_a_clash_with_a_computed_name(ctx):
+    with pytest.raises(ValueError, match="keep"):
+        run(ctx, [{"a": 1.0}], {"c": {"const": 1}}, keep=["a", "zz"])
+    with pytest.raises(ValueError, match="already carries"):
+        run(ctx, [{"a": 1.0}], {"a": {"const": 1}}, keep=["a"])
+    assert run(ctx, [{"a": 1.0}], {"a": {"const": 2}}, keep=["a"], overwrite=True)["records"] == [{"a": 2.0}]
+
+
+def test_a_bad_keep_is_refused_by_name():
+    for bad in ([], "a", [1], ["a", "a"]):
+        assert any("keep" in p for p in ComputeFields.validate_params({"fields": {"z": {"const": 1}}, "keep": bad}))
+
+
+def test_a_text_constant_and_a_list_of_numbers_can_be_whole_expressions(ctx):
+    rows = [{"k": 100.0, "j": None}, {"k": 90.0, "j": 5.0}]
+    out = run(ctx, rows, {
+        "structure": {"text": "long_straddle"},
+        "strikes": {"list": [f("k"), f("k")]},
+        "wide": {"list": [f("k"), {"op": "add", "args": [f("k"), f("j")]}]}})
+    assert [r["structure"] for r in out["records"]] == ["long_straddle"] * 2
+    assert [r["strikes"] for r in out["records"]] == [[100.0, 100.0], [90.0, 90.0]]
+    assert [r["wide"] for r in out["records"]] == [None, [90.0, 95.0]]
+    assert out["summary"]["fields"]["wide"] == {"computed": 1, "null_input": 1, "domain": 0}
+
+
+@pytest.mark.parametrize("bad, text", [
+    ({"z": {"text": 3}}, "text"), ({"z": {"text": ""}}, "text"), ({"z": {"list": []}}, "list"),
+    ({"z": {"op": "add", "args": [{"const": 1}, {"list": [{"const": 1}]}]}}, "list")])
+def test_a_bad_text_or_list_is_refused_by_name(bad, text):
+    assert any(text in p for p in ComputeFields.validate_params({"fields": bad})), bad
+
+
+def test_item_reads_one_number_out_of_a_list_field(ctx):
+    rows = [{"strikes": [97.0, 104.0]}, {"strikes": [90.0]}, {"strikes": None}]
+    out = run(ctx, rows, {"low": {"item": {"field": "strikes", "index": 0}},
+                          "high": {"op": "sub", "args": [{"item": {"field": "strikes", "index": 1}}, {"const": 4}]}})
+    assert [r["low"] for r in out["records"]] == [97.0, 90.0, None]
+    assert [r["high"] for r in out["records"]] == [100.0, None, None]
+
+
+@pytest.mark.parametrize("bad", [{"item": {"field": "s"}}, {"item": {"field": "s", "index": -1}},
+                                 {"item": {"field": "", "index": 0}}, {"item": {"field": "s", "index": 0, "x": 1}}, {"item": 3}])
+def test_a_bad_item_is_refused(bad):
+    assert any("item" in p for p in ComputeFields.validate_params({"fields": {"z": bad}})), bad

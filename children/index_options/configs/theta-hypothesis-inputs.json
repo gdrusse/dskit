@@ -1,0 +1,59 @@
+{
+  "notes": "Inputs of the ADR-0265 hypothesis documents (Amendment 5), read by index_options.theta_hypotheses: where the stores are, the snapshot pins of the registered inputs and the frozen universe. The two panel pins are 64 zeros until the panel is built and registered (`set-pin`): a document with a zero pin refuses at run time, which is the point. `universe` is a placeholder name until the census has run and `freeze-universe` has written configs/theta-universe.json: a chain reader asked for that name finds no root and refuses. Bar pins are the committed snapshots of the Yahoo daily-bar pulls (stock-daily-bars: the latest of three identical 233-file snapshots; stock-daily-bars-300; benchmark-daily-bars). Never edit by hand except through the CLI.",
+  "panel": {
+    "root": "/home/russell/data/index_options/ob",
+    "source": "theta-chain-panel",
+    "snapshot": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "panel_index": {
+    "root": "/home/russell/data/index_options/ob",
+    "source": "theta-chain-panel-index",
+    "snapshot": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "bars": {
+    "root": "/home/russell/data/index_options/ob",
+    "tested": [
+      {
+        "source": "stock-daily-bars",
+        "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97"
+      },
+      {
+        "source": "stock-daily-bars-300",
+        "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c"
+      }
+    ],
+    "benchmark": {
+      "source": "benchmark-daily-bars",
+      "snapshot": "c6aaf7955e4a642e4e1463d563a4cba653bfbe60dfc20e27fc0def27140d0522",
+      "include": "spy/underlying_prices.parquet"
+    }
+  },
+  "stock_chain": {
+    "directories": [
+      "/home/russell/data/thetadata/parquet-v2/options-tested/theta"
+    ]
+  },
+  "index_chain": {
+    "directories": [
+      "/home/russell/data/thetadata/parquet-v2/options-index/theta"
+    ]
+  },
+  "renames": {
+    "renames_file": "configs/root-renames.json",
+    "renames_key": "renames",
+    "renames_sha256": "ddb611ae2675fcd083c74bfd0ef7c81f74c94828b5457782717116ccbbfe27c3",
+    "breaks_key": "breaks",
+    "pending_key": "pending_verification"
+  },
+  "index_symbols": [
+    "SPX",
+    "SPXW",
+    "XSP"
+  ],
+  "universe": [
+    "__UNIVERSE_NOT_FROZEN__"
+  ],
+  "labels": {
+    "sha256": "34f072a187b4a2ed425dc0cec8f4396d6977dfc37a0352ee3a8b6997b91988df"
+  }
+}

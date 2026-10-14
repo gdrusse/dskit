@@ -425,13 +425,15 @@ class ParquetStreamRows(Node):
     authority upstream. An optional per-source ``include`` (a non-empty list of glob patterns on the member
     path inside the stream, e.g. ``"*/underlying_prices.parquet"``) reads only the matching members, for a
     snapshot that also holds non-Parquet files such as raw API responses; it must match at least one member
-    (ADR-0265 Amendment 5).
+    (ADR-0265 Amendment 5). An optional per-source ``iso_fields`` (output field names) turns date and datetime
+    cells of those fields into ISO text (a Parquet ``date32`` column arrives as ``datetime.date``, and the
+    flow and statistics nodes key on ISO text); a null stays null.
     """
 
     role = "data"
     outputs = ("records",)
     _PARAMS = ("sources",)
-    _SOURCE_KEYS = ("root", "source", "stream", "snapshot", "columns", "read_bounds", "include")
+    _SOURCE_KEYS = ("root", "source", "stream", "snapshot", "columns", "read_bounds", "include", "iso_fields")
 
     @classmethod
     def validate_params(cls, params):
@@ -467,6 +469,11 @@ class ParquetStreamRows(Node):
             if "include" in source and (not isinstance(include, list) or not include or not all(
                     isinstance(pattern, str) and pattern for pattern in include)):
                 problems.append(f"{prefix}.include must be a non-empty list of glob patterns on the member path")
+            iso = source.get("iso_fields")
+            if "iso_fields" in source and (not isinstance(iso, list) or not iso or not all(
+                    isinstance(name, str) and name for name in iso)
+                    or (isinstance(columns, dict) and not set(iso) <= set(columns.values()))):
+                problems.append(f"{prefix}.iso_fields must be a non-empty list of output field names from columns")
         return problems
 
     def _snapshots(self):
@@ -502,7 +509,7 @@ class ParquetStreamRows(Node):
                 "source": source["source"], "stream": source["stream"],
                 "snapshot": snapshot_dir.name, "manifest_sha256": source["snapshot"],
                 "columns": source["columns"], "read_bounds": source["read_bounds"],
-                "files": files})
+                "iso_fields": tuple(source.get("iso_fields", ())), "files": files})
         return snapshots
 
     @staticmethod
@@ -538,6 +545,8 @@ class ParquetStreamRows(Node):
                 columns = snapshot["columns"]
                 table = DateBoundedParquet(path, list(columns), snapshot["read_bounds"]).read()
                 data = {out: table.column(src).to_pylist() for src, out in columns.items()}
+                for name in snapshot["iso_fields"]:
+                    data[name] = [v.isoformat() if hasattr(v, "isoformat") else v for v in data[name]]
                 records.extend(dict(zip(data, row)) for row in zip(*data.values()))
         return {"records": records}
 

@@ -1,0 +1,479 @@
+{
+  "name": "theta-h5-index-harvests",
+  "notes": "PRE-REGISTERED H5 (ADR-0265, Amendment 5), development period 2016-01-04 .. 2021-01-01 (end_before; nothing on or after 2026-01-01 is read). ADR RULE, verbatim: **H5** index harvests on SPX/SPXW/XSP at NBBO (put-write, 1DTE strangle/condor, 16/5-delta put spread, tail-hedge cost): report Sharpe with block-bootstrap CI; pass only if the lower 90% bound > 0.5. Measurement, not proof. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. This is the development run. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h5-index-harvests.json --asof 2025-12-31",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h5-index-harvests",
+    "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/thetadata/parquet-v2/options-index/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "underlying_price"
+        ],
+        "symbols": [
+          "SPX",
+          "SPXW",
+          "XSP"
+        ],
+        "start": "2016-01-04",
+        "end_before": "2021-01-01",
+        "sealed_from": "2026-01-01"
+      },
+      "notes": "The daily chain of the index roots SPX, SPXW and XSP from the Parquet export tree (the index tier), symbol by symbol with dates ascending, bounded to the period."
+    },
+    "orders": {
+      "uses": "dskit.pipeline.libs.chain_orders:ChainStructureOrders",
+      "inputs": {
+        "records": "$chain.records"
+      },
+      "params": {
+        "chain_fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "expiration": "expiration",
+          "strike": "strike",
+          "right": "right",
+          "bid": "bid",
+          "ask": "ask",
+          "underlying": "underlying_price"
+        },
+        "order_fields": {
+          "date": "open_date",
+          "symbol": "symbol",
+          "expiration": "expiration",
+          "strikes": "strikes",
+          "structure": "structure"
+        },
+        "call_values": [
+          "call"
+        ],
+        "put_values": [
+          "put"
+        ],
+        "start": "2016-01-04",
+        "end_before": "2021-01-01",
+        "rate": 0.0,
+        "structures": {
+          "put_write": {
+            "legs": [
+              {
+                "right": "put",
+                "quantity": -1,
+                "select": {
+                  "kind": "atm"
+                }
+              }
+            ],
+            "expiry": {
+              "dte": 30,
+              "tolerance": 7,
+              "min_dte": 1
+            },
+            "entry": {
+              "kind": "after_expiry"
+            },
+            "symbols": [
+              "SPX",
+              "XSP"
+            ]
+          },
+          "strangle_1dte": {
+            "legs": [
+              {
+                "right": "put",
+                "quantity": -1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.16
+                }
+              },
+              {
+                "right": "call",
+                "quantity": -1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.16
+                }
+              }
+            ],
+            "expiry": {
+              "dte": 1,
+              "tolerance": 2,
+              "min_dte": 1
+            },
+            "entry": {
+              "kind": "after_expiry"
+            },
+            "symbols": [
+              "SPXW",
+              "XSP"
+            ]
+          },
+          "condor_1dte": {
+            "legs": [
+              {
+                "right": "put",
+                "quantity": -1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.16
+                }
+              },
+              {
+                "right": "call",
+                "quantity": -1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.16
+                }
+              },
+              {
+                "right": "put",
+                "quantity": 1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.05
+                }
+              },
+              {
+                "right": "call",
+                "quantity": 1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.05
+                }
+              }
+            ],
+            "expiry": {
+              "dte": 1,
+              "tolerance": 2,
+              "min_dte": 1
+            },
+            "entry": {
+              "kind": "after_expiry"
+            },
+            "symbols": [
+              "SPXW",
+              "XSP"
+            ]
+          },
+          "put_spread_16_5": {
+            "legs": [
+              {
+                "right": "put",
+                "quantity": -1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.16
+                }
+              },
+              {
+                "right": "put",
+                "quantity": 1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.05
+                }
+              }
+            ],
+            "expiry": {
+              "dte": 30,
+              "tolerance": 7,
+              "min_dte": 1
+            },
+            "entry": {
+              "kind": "after_expiry"
+            },
+            "symbols": [
+              "SPX",
+              "XSP"
+            ]
+          },
+          "tail_hedge": {
+            "legs": [
+              {
+                "right": "put",
+                "quantity": 1,
+                "select": {
+                  "kind": "delta",
+                  "target": 0.05
+                }
+              }
+            ],
+            "expiry": {
+              "dte": 30,
+              "tolerance": 7,
+              "min_dte": 1
+            },
+            "entry": {
+              "kind": "after_expiry"
+            },
+            "symbols": [
+              "SPX",
+              "XSP"
+            ]
+          }
+        }
+      },
+      "notes": "Chooses each structure's expiry and strikes from the day's chain. Put-write: the ATM put (strike nearest the parity forward) of the expiry nearest 30 days (within 7), rolled on the prior expiration. 1DTE strangle and condor: the 16-delta put and call (short) and, for the condor, the 5-delta put and call (long) of the nearest listed expiry 1 to 3 days out, a new order every session after the prior expires. 16/5-delta put spread: short the 16-delta put, long the 5-delta put, 30 days, rolled. Tail hedge: long the 5-delta put, 30 days, rolled. Delta is the Black-76 forward delta magnitude from each strike's own mid-implied vol on the parity forward (rate 0: it picks strikes only; nothing is marked with it). SPX (monthly cycle) carries the 30-day structures, SPXW (daily expiries) the 1DTE ones, XSP both."
+    },
+    "ledger": {
+      "uses": "dskit.pipeline.libs.option_ledger:OptionStructureLedger",
+      "inputs": {
+        "chain": "$chain.records",
+        "orders": "$orders.records"
+      },
+      "params": {
+        "chain_fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "expiration": "expiration",
+          "strike": "strike",
+          "right": "right",
+          "bid": "bid",
+          "ask": "ask",
+          "underlying": "underlying_price"
+        },
+        "order_fields": {
+          "date": "open_date",
+          "symbol": "symbol",
+          "expiration": "expiration",
+          "strikes": "strikes",
+          "structure": "structure"
+        },
+        "structures": {
+          "put_write": [
+            [
+              "put",
+              -1
+            ]
+          ],
+          "strangle_1dte": [
+            [
+              "put",
+              -1
+            ],
+            [
+              "call",
+              -1
+            ]
+          ],
+          "condor_1dte": [
+            [
+              "put",
+              -1
+            ],
+            [
+              "call",
+              -1
+            ],
+            [
+              "put",
+              1
+            ],
+            [
+              "call",
+              1
+            ]
+          ],
+          "put_spread_16_5": [
+            [
+              "put",
+              -1
+            ],
+            [
+              "put",
+              1
+            ]
+          ],
+          "tail_hedge": [
+            [
+              "put",
+              1
+            ]
+          ]
+        },
+        "multiplier": 100,
+        "fill": "nbbo",
+        "close_rule": "expiry"
+      },
+      "notes": "Every order opened at the NBBO sides (sold legs at the bid, bought legs at the ask) and settled at intrinsic on the expiration date from the chain's underlying. No fees (none are in the ADR; an owner decision, see the run book)."
+    },
+    "closed": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$ledger.trades"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "status",
+            "op": "==",
+            "value": "closed"
+          }
+        ]
+      },
+      "notes": "Settled trades only."
+    },
+    "closed_agree": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$closed.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "sized_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$orders.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "open_date",
+          "structure",
+          "spot"
+        ]
+      },
+      "notes": "The columns of sized the attachment demands: ['symbol', 'open_date', 'structure'] + the agreed constant + ['spot'], nothing else."
+    },
+    "sized": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$closed_agree.records",
+        "table": "$sized_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "open_date",
+          "structure"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.0,
+        "column_prefix": "sized_",
+        "families": {
+          "sized": {
+            "fields": [
+              "spot"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The underlying at the open, from the order: the notional the return is measured on."
+          }
+        }
+      },
+      "notes": "The underlying at the open, from the order: the notional the return is measured on."
+    },
+    "returns": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$sized.records"
+      },
+      "params": {
+        "fields": {
+          "ret_notional": {
+            "op": "div",
+            "args": [
+              {
+                "field": "pnl_usd"
+              },
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "field": "spot"
+                  },
+                  {
+                    "const": 100
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Return on notional = net P&L over (underlying level x 100) at the open. Margin is not modelled: the notional is the common base, so structures are comparable."
+    },
+    "sharpe": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$returns.records"
+      },
+      "params": {
+        "stamp_field": "open_date",
+        "value_field": "ret_notional",
+        "by": [
+          "structure",
+          "symbol"
+        ],
+        "bucket": "month",
+        "bucket_agg": "sum",
+        "periods_per_year": 12,
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        },
+        "hurdle": 0.5
+      },
+      "notes": "PRIMARY: per structure and root, the trades' returns on notional summed to calendar months, the annualised Sharpe ratio (sqrt 12 on the monthly series) and its calendar-block bootstrap interval (90-day blocks, 2000 resamples, 90% two-sided). Pass only if the lower bound of that interval is above 0.5. The one-sided 10th-percentile bound is in sharpe_ci too. Measurement, not proof (a 10-year Sharpe of 0.8 reaches t 2.5 only barely)."
+    },
+    "trades_table": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$returns.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h5-index-harvests/trades.jsonl",
+        "overwrite": true,
+        "source": "one row per settled trade: structure, root, dates, strikes, premium, P&L, return on notional"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "sharpe": "$sharpe.summary",
+        "orders": "$orders.summary",
+        "ledger": "$ledger.summary"
+      },
+      "params": {
+        "title": "H5 index harvests at NBBO",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the node summaries; evidence.json holds every value."
+    }
+  }
+}

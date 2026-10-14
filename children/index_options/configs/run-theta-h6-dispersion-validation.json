@@ -1,0 +1,991 @@
+{
+  "name": "theta-h6-dispersion-validation",
+  "notes": "PRE-REGISTERED H6 (ADR-0265, Amendment 5), validation period 2021-01-04 .. 2026-01-01 (end_before; nothing on or after 2026-01-01 is read). ADR RULE, verbatim: **H6** dispersion (index versus equal-weight basket of tested names; equal-weight proxy stated): correlation premium > 0, t >= 2.5 in both halves. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. RUN ONCE: this is the validation run; it is not repeated, tuned or re-read. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h6-dispersion-validation.json --asof 2025-12-31",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h6-dispersion-validation",
+    "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "liquidity_tercile": "liquidity_tercile",
+              "atm_iv": "atm_iv"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2021-01-04",
+                "end_before": "2026-01-01"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, both targets, one file a date, read through its registered snapshot pin; `date` and `expiration` as ISO text. Bounded to the period's dates by predicate pushdown."
+    },
+    "panel_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "after_first_quote",
+            "op": "==",
+            "value": true
+          },
+          {
+            "field": "status",
+            "op": "==",
+            "value": "ok"
+          }
+        ]
+      },
+      "notes": "Rows from each name's first quoted date (after_first_quote) whose forward and vols resolved."
+    },
+    "p30": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel_ok.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "target_dte",
+            "op": "==",
+            "value": 30
+          }
+        ]
+      },
+      "notes": "The 30-DTE target (the nearest listed expiry within 7 days of 30)."
+    },
+    "index_panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel-index",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "target_dte": "target_dte",
+              "status": "status",
+              "atm_iv": "atm_iv"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2021-01-04",
+                "end_before": "2026-01-01"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "The panel of chain-day features of the index root SPX (a panel of its own, ChainPanelBuild on the index tier), read through its pinned snapshot."
+    },
+    "spx30": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$index_panel.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "==",
+            "value": "SPX"
+          },
+          {
+            "field": "target_dte",
+            "op": "==",
+            "value": 30
+          },
+          {
+            "field": "status",
+            "op": "==",
+            "value": "ok"
+          },
+          {
+            "field": "atm_iv",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "SPX's 30-DTE ATM implied vol: the index leg."
+    },
+    "bars_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2020-09-01",
+                "end_before": "2026-01-01"
+              }
+            },
+            "source": "stock-daily-bars",
+            "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          },
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2020-09-01",
+                "end_before": "2026-01-01"
+              }
+            },
+            "source": "stock-daily-bars-300",
+            "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "Yahoo daily bars of the tested names (stock-daily-bars + stock-daily-bars-300 pinned snapshots, split-adjusted close and split+dividend adjusted close), read from bars_start so the trailing windows are full on the first day of the period; nothing at or after the period's end_before is read."
+    },
+    "bench_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2020-09-01",
+                "end_before": "2026-01-01"
+              }
+            },
+            "source": "benchmark-daily-bars",
+            "snapshot": "c6aaf7955e4a642e4e1463d563a4cba653bfbe60dfc20e27fc0def27140d0522",
+            "include": [
+              "spy/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "SPY daily bars (benchmark-daily-bars), the benchmark of the idiosyncratic vol."
+    },
+    "bars_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bars_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "adjusted_close",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "A bar with a missing or non-positive close carries no price; dropped here, counted in the log."
+    },
+    "bench_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bench_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "adjusted_close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Benchmark bars with a price."
+    },
+    "bar_feats": {
+      "uses": "dskit.pipeline.libs.bar_features:DailyBarFeatures",
+      "inputs": {
+        "bars": "$bars_ok.records",
+        "benchmark": "$bench_ok.records"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "date_field": "date",
+        "close_field": "adjusted_close",
+        "benchmark_date_field": "date",
+        "benchmark_close_field": "adjusted_close",
+        "realized_vol": {
+          "windows": [
+            22
+          ],
+          "field": "rv_{window}",
+          "return_field": "ret_1d",
+          "idio_windows": [
+            66
+          ],
+          "idio_field": "idio_vol_{window}"
+        }
+      },
+      "notes": "Trailing realized volatility (root mean square of the last w 1-bar log returns of the ADJUSTED close, per session, zero-mean, null until the window is full), the 1-bar log return and the idiosyncratic vol (residual std of the return on SPY's over 66 bars). Same-day: the value at t reads bars up to t."
+    },
+    "rv_names": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bar_feats.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "rv_22",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Names with a 22-session realized vol."
+    },
+    "spy_feats": {
+      "uses": "dskit.pipeline.libs.bar_features:DailyBarFeatures",
+      "inputs": {
+        "bars": "$bench_ok.records"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "date_field": "date",
+        "close_field": "adjusted_close",
+        "realized_vol": {
+          "windows": [
+            22
+          ],
+          "field": "rv_{window}"
+        }
+      },
+      "notes": "SPY's trailing 22-session realized vol: the index's realized leg (the index realized proxy; SPY tracks SPX)."
+    },
+    "rv_spy": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$spy_feats.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "rv_22",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "SPY dates with a realized vol."
+    },
+    "fwd_rv": {
+      "uses": "horizon-pairs",
+      "inputs": {
+        "records": "$rv_names.records"
+      },
+      "params": {
+        "horizon_days": 31,
+        "fallback": "previous",
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "close_field": "rv_22",
+        "fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "settlement_date": "settle_fwdrv",
+          "entry_close": "c0_fwdrv",
+          "settle_close": "c1_fwdrv",
+          "terminal_return": "fwdrv",
+          "period": "year_fwdrv"
+        }
+      },
+      "notes": "The 22-session realized vol read at the close 31 calendar days later (or the previous close): the vol realized over the following ~31 days. Dropped past the period's last close."
+    },
+    "fwd_spy": {
+      "uses": "horizon-pairs",
+      "inputs": {
+        "records": "$rv_spy.records"
+      },
+      "params": {
+        "horizon_days": 31,
+        "fallback": "previous",
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "close_field": "rv_22",
+        "fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "settlement_date": "settle_fwdspy",
+          "entry_close": "c0_fwdspy",
+          "settle_close": "c1_fwdspy",
+          "terminal_return": "fwdspy",
+          "period": "year_fwdspy"
+        }
+      },
+      "notes": "The same for SPY."
+    },
+    "names_agree": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$p30.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "names_fwd_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$fwd_rv.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "c1_fwdrv"
+        ]
+      },
+      "notes": "The columns of names_fwd the attachment demands: ['symbol', 'date'] + the agreed constant + ['c1_fwdrv'], nothing else."
+    },
+    "names_fwd": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$names_agree.records",
+        "table": "$names_fwd_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.3,
+        "column_prefix": "names_fwd_",
+        "families": {
+          "names_fwd": {
+            "fields": [
+              "c1_fwdrv"
+            ],
+            "withheld_fields": {},
+            "clock_note": "Forward realized vol: label-time, known 31 days later."
+          }
+        }
+      },
+      "notes": "Forward realized vol: label-time, known 31 days later."
+    },
+    "names_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$names_fwd.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "atm_iv",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "c1_fwdrv",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Names with an implied and a forward realized vol."
+    },
+    "names_sq": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$names_ok.records"
+      },
+      "params": {
+        "fields": {
+          "rv_ann": {
+            "op": "mul",
+            "args": [
+              {
+                "field": "c1_fwdrv"
+              },
+              {
+                "const": 15.874507866387544
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Forward realized vol annualised (sqrt 252)."
+    },
+    "names_sq2": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$names_sq.records"
+      },
+      "params": {
+        "fields": {
+          "iv2": {
+            "op": "mul",
+            "args": [
+              {
+                "field": "atm_iv"
+              },
+              {
+                "field": "atm_iv"
+              }
+            ]
+          },
+          "rv2": {
+            "op": "mul",
+            "args": [
+              {
+                "field": "rv_ann"
+              },
+              {
+                "field": "rv_ann"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Squares for the equal-weight sums."
+    },
+    "daily": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$names_sq2.records"
+      },
+      "params": {
+        "keys": [
+          "date"
+        ],
+        "aggregates": {
+          "n": {
+            "op": "count"
+          },
+          "s_iv": {
+            "op": "sum",
+            "field": "atm_iv"
+          },
+          "s_iv2": {
+            "op": "sum",
+            "field": "iv2"
+          },
+          "s_rv": {
+            "op": "sum",
+            "field": "rv_ann"
+          },
+          "s_rv2": {
+            "op": "sum",
+            "field": "rv2"
+          }
+        }
+      },
+      "notes": "Per date: the number of names and the sums of implied vol, implied variance, forward realized vol and variance over the equal-weight basket of the tested names."
+    },
+    "daily_agree": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$daily.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "with_spx_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$spx30.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          },
+          "iv_spx": {
+            "field": "atm_iv"
+          }
+        },
+        "keep": [
+          "date"
+        ]
+      },
+      "notes": "The columns of with_spx the attachment demands: ['date'] + the agreed constant + ['iv_spx'], nothing else."
+    },
+    "with_spx": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$daily_agree.records",
+        "table": "$with_spx_table.records"
+      },
+      "params": {
+        "identity": [
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.2,
+        "column_prefix": "with_spx_",
+        "families": {
+          "with_spx": {
+            "fields": [
+              "iv_spx"
+            ],
+            "withheld_fields": {},
+            "clock_note": "SPX's 30-day implied vol on the date."
+          }
+        }
+      },
+      "notes": "SPX's 30-day implied vol on the date."
+    },
+    "with_spy_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$fwd_spy.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          },
+          "spy_rv": {
+            "field": "c1_fwdspy"
+          }
+        },
+        "keep": [
+          "date"
+        ]
+      },
+      "notes": "The columns of with_spy the attachment demands: ['date'] + the agreed constant + ['spy_rv'], nothing else."
+    },
+    "with_spy": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$with_spx.records",
+        "table": "$with_spy_table.records"
+      },
+      "params": {
+        "identity": [
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.2,
+        "column_prefix": "with_spy_",
+        "families": {
+          "with_spy": {
+            "fields": [
+              "spy_rv"
+            ],
+            "withheld_fields": {},
+            "clock_note": "SPY's forward realized vol (annualised below)."
+          }
+        }
+      },
+      "notes": "SPY's forward realized vol (annualised below)."
+    },
+    "daily_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$with_spy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "n",
+            "op": ">=",
+            "value": 50
+          },
+          {
+            "field": "iv_spx",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "spy_rv",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Dates with at least 50 names (the basket) and both index legs."
+    },
+    "rho": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$daily_ok.records"
+      },
+      "params": {
+        "fields": {
+          "rho_implied": {
+            "op": "div",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "iv_spx"
+                      },
+                      {
+                        "field": "iv_spx"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "div",
+                    "args": [
+                      {
+                        "field": "s_iv2"
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "n"
+                          },
+                          {
+                            "field": "n"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "op": "sub",
+                    "args": [
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "s_iv"
+                          },
+                          {
+                            "field": "s_iv"
+                          }
+                        ]
+                      },
+                      {
+                        "field": "s_iv2"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "n"
+                      },
+                      {
+                        "field": "n"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "rho_realized": {
+            "op": "div",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "spy_rv"
+                          },
+                          {
+                            "const": 15.874507866387544
+                          }
+                        ]
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "spy_rv"
+                          },
+                          {
+                            "const": 15.874507866387544
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "div",
+                    "args": [
+                      {
+                        "field": "s_rv2"
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "n"
+                          },
+                          {
+                            "field": "n"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "op": "sub",
+                    "args": [
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "s_rv"
+                          },
+                          {
+                            "field": "s_rv"
+                          }
+                        ]
+                      },
+                      {
+                        "field": "s_rv2"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "n"
+                      },
+                      {
+                        "field": "n"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Average pairwise correlation implied by an index variance over an equal-weight basket: rho = (sigma_I^2 - sum w^2 sigma^2) / (sum_{i!=j} w w sigma_i sigma_j) with w = 1/n, so rho = (sigma_I^2 - S2/n^2) / ((S1^2 - S2)/n^2), S1 = sum of vols and S2 = sum of variances. Implied: SPX's 30-day ATM vol and the names' 30-day ATM vols; realized: SPY's and the names' forward realized vols. EQUAL-WEIGHT PROXY STATED: the basket is the equal-weight tested names, not the index's cap-weighted constituents (no constituent list is onboarded), so the premium carries a basis that is not zero; the pre-registered statistic is the premium itself."
+    },
+    "premium": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$rho.records"
+      },
+      "params": {
+        "fields": {
+          "corr_premium": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "rho_implied"
+              },
+              {
+                "field": "rho_realized"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Correlation premium = implied minus realized average correlation."
+    },
+    "phased": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$premium.records"
+      },
+      "params": {
+        "field": "half",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "date",
+                "op": "<",
+                "value": "2023-07-01"
+              }
+            ],
+            "value": "first"
+          },
+          {
+            "when": [],
+            "value": "second"
+          }
+        ]
+      },
+      "notes": "The two halves of the period, split at 2023-07-01 (the same-sign-in-both-halves check)."
+    },
+    "premium_series": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "value_field": "corr_premium",
+        "by": [
+          "half"
+        ],
+        "bucket": "day",
+        "h_steps": 21,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "PRIMARY: the daily correlation premium, tested one-sided E <= 0 with the Newey-West band over the 21 overlapping daily stamps of a 31-day label, overall and by half. Pass: mean > 0, t >= 2.5 in BOTH halves."
+    },
+    "implied_series": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "value_field": "rho_implied",
+        "bucket": "day",
+        "h_steps": 21
+      },
+      "notes": "DESCRIPTIVE: the implied average correlation."
+    },
+    "realized_series": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "value_field": "rho_realized",
+        "bucket": "day",
+        "h_steps": 21
+      },
+      "notes": "DESCRIPTIVE: the realized average correlation."
+    },
+    "premium_by_date": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$premium.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h6-dispersion-validation/premium-by-date.jsonl",
+        "overwrite": true,
+        "source": "one row per date: names, vol sums, SPX vol, SPY forward vol, implied and realized correlation and the premium"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "premium": "$premium_series.summary",
+        "implied": "$implied_series.summary",
+        "realized": "$realized_series.summary"
+      },
+      "params": {
+        "title": "H6 dispersion: the correlation premium",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the node summaries; evidence.json holds every value."
+    }
+  }
+}

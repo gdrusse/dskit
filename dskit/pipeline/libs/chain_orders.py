@@ -29,7 +29,7 @@ quotes (:func:`~dskit.pipeline.libs.chain_census.quote_state`) at one constant `
 strikes. Nothing is filled: a day with no usable expiry, forward, underlying or strike yields no order and is
 counted in ``summary.refused`` as ``<structure>:<reason>``.
 
-**Output.** ``orders``: one row per order, named by ``order_fields`` (the ledger's ``date``, ``symbol``,
+**Output.** ``records``: one row per order, named by ``order_fields`` (the ledger's ``date``, ``symbol``,
 ``expiration``, ``strikes``, ``structure``), plus ``spot`` (the median positive underlying of the day),
 ``forward``, ``dte`` and ``leg_quantities`` (the signed quantities in leg order). The structure's leg vocabulary
 for the ledger is the document's own ``structures`` map there; this node only chooses strikes.
@@ -95,7 +95,7 @@ class _Day:
 class ChainStructureOrders(Node):
     """Choose expirations and strikes from a daily chain and emit ledger orders — by import path.
 
-    Role ``transform``; input ``records`` (chain rows); outputs ``orders`` and ``summary``. See the module
+    Role ``transform``; input ``records`` (chain rows); outputs ``records`` (the orders) and ``summary``. See the module
     docstring for the structure vocabulary, the entry, expiry and select rules and the counted refusals.
 
     Parameters
@@ -109,7 +109,7 @@ class ChainStructureOrders(Node):
     """
 
     role = "transform"
-    outputs = ("orders", "summary")
+    outputs = ("records", "summary")
     _PARAMS = ("chain_fields", "order_fields", "call_values", "put_values", "end_before", "start", "structures",
                "rate", "days_per_year", "min_forward_pairs", "iv_min", "iv_max")
     _REQUIRED = ("chain_fields", "order_fields", "call_values", "put_values", "end_before", "start", "structures")
@@ -392,7 +392,7 @@ class ChainStructureOrders(Node):
         Returns
         -------
         dict
-            ``orders`` (in symbol, date, structure declaration order) and ``summary`` (``days``,
+            ``records`` (the orders, in symbol, date, structure declaration order) and ``summary`` (``days``,
             ``before_start_days``, ``orders`` and ``refused`` by ``<structure>:<reason>``).
 
         Raises
@@ -427,4 +427,4 @@ class ChainStructureOrders(Node):
         summary = {"stage": "chain structure orders: " + ", ".join(p["structures"]), "days": days,
                    "before_start_days": before_start, "orders": dict(per_structure), "refused": dict(sorted(refused.items()))}
         self.log.info("%s: %d symbol-day(s), %d order(s)", self.key, days, len(orders))
-        return {"orders": orders, "summary": summary}
+        return {"records": orders, "summary": summary}

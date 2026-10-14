@@ -1,0 +1,9 @@
+{
+  "notes": "The validation overlay of H6: only the dates change (2021-01-04 .. 2026-01-01, bars read from 2020-09-01, halves split at 2023-07-01); run-theta-h6-dispersion-validation.json is run-theta-h6-dispersion.json with this file applied by index_options.theta_hypotheses.apply_args. RUN ONCE, unchanged, only if the development run passed; a ledger row is written for the run whatever it shows.",
+  "period": "validation",
+  "start": "2021-01-04",
+  "end_before": "2026-01-01",
+  "bars_start": "2020-09-01",
+  "halves_at": "2023-07-01",
+  "suffix": "-validation"
+}

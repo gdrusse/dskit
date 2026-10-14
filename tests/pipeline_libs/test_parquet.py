@@ -618,3 +618,21 @@ def test_include_matching_nothing_refuses_and_a_bad_include_is_a_declaration_pro
         ParquetStreamRows("bars", {"sources": [{**declaration, "include": ["zz/*"]}]}).fingerprint()
     for bad in ([], "x", [1], [""]):
         assert any("include" in p for p in ParquetStreamRows.validate_params({"sources": [{**declaration, "include": bad}]}))
+
+
+def test_iso_fields_turn_date_columns_into_iso_text(blob_store, tmp_path):
+    import datetime as dt
+    archive = tmp_path / "dates"
+    archive.mkdir()
+    pq.write_table(pa.table({"d": pa.array([dt.date(2020, 3, 2), dt.date(2020, 3, 3)], type=pa.date32()), "x": [1.0, 2.0]}),
+                   archive / "a.parquet")
+    blob_store.add("dates", archive)
+    declaration = {"root": blob_store.path, "source": "dates", "stream": "files",
+                   "snapshot": payload_files(blob_store.path, "dates", "files")["manifest_sha256"],
+                   "columns": {"d": "date", "x": "x"}, "read_bounds": {"d": {"end_before": "2026-01-01"}}}
+    plain = ParquetStreamRows("p", {"sources": [declaration]}).run(_ctx(tmp_path), {})["records"]
+    assert plain[0]["date"] == dt.date(2020, 3, 2)
+    node = ParquetStreamRows("p", {"sources": [{**declaration, "iso_fields": ["date"]}]})
+    assert node.run(_ctx(tmp_path), {})["records"] == [{"date": "2020-03-02", "x": 1.0}, {"date": "2020-03-03", "x": 2.0}]
+    for bad in ([], "date", [1], ["nope"]):
+        assert any("iso_fields" in p for p in ParquetStreamRows.validate_params({"sources": [{**declaration, "iso_fields": bad}]})), bad
