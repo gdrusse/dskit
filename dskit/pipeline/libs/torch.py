@@ -252,10 +252,15 @@ def _value(record, name):
     ``dict`` method an attr-first lookup finds — which read as "no
     coverage" on predict and killed every row on fit.
     """
-    if isinstance(record, Mapping):
+    # ``type(...) is`` fast paths answer the common plain-dict row and
+    # float field without the ABC/tuple ``isinstance`` walk; each returns
+    # exactly what the general test below it would.
+    if type(record) is dict or isinstance(record, Mapping):
         value = record.get(name)
     else:
         value = getattr(record, name, None)
+    if type(value) is float:
+        return value if math.isfinite(value) else None
     if isinstance(value, bool):
         return float(value)
     if isinstance(value, (int, float)) and math.isfinite(value):
@@ -515,7 +520,7 @@ def _usable_rows(rows, features, label):
     for row in rows:
         values = [_value(row, name) for name in features]
         target = [_value(row, name) for name in keys]
-        if any(item is None for item in target) or any(v is None for v in values):
+        if None in target or None in values:
             skipped += 1
             continue
         xs.append(values)
