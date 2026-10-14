@@ -1193,7 +1193,12 @@ class HorizonEmpiricalCDF(CDFEstimator):
             raise ValueError("condition and reference features must be finite")
 
     def _keys(self, x):
-        return [tuple(row) for row in x[:, self.condition_indices]]
+        import numpy as np
+        conditions = x[:, self.condition_indices]
+        if type(conditions) is np.ndarray and conditions.ndim == 2 and conditions.shape[1]:
+            # Zipping the columns yields the same scalar tuples without one view per row.
+            return list(zip(*conditions.T))
+        return [tuple(row) for row in conditions]
 
     def fit(self, x, y, cal_x, cal_y):
         """Learn exact-horizon raw-outcome empirical quantiles.
@@ -1213,8 +1218,16 @@ class HorizonEmpiricalCDF(CDFEstimator):
         self.p = np.linspace(0, 1, self.knots)
         raw = y * x[:, self.reference_index]
         keys = self._keys(x)
-        self.shapes = {key: np.quantile(raw[np.array([value == key for value in keys])], self.p)
-                       for key in dict.fromkeys(keys)}
+        # One pass groups the rows by key (first-seen order), not one scan per key.
+        rows = {}
+        for row, key in enumerate(keys):
+            rows.setdefault(key, []).append(row)
+        shapes = {}
+        for key, found in rows.items():
+            mask = np.zeros(len(keys), dtype=bool)
+            mask[found] = True
+            shapes[key] = np.quantile(raw[mask], self.p)
+        self.shapes = shapes
         return self
 
     def curve(self, x):
