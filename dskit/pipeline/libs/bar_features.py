@@ -89,8 +89,24 @@ def _iso(value, where):
     return day.isoformat()
 
 
+def _iso_memo(memo, value, where):
+    """:func:`_iso` through ``memo``, one pass's map of exact-``str`` cells to their ISO text.
+
+    A ``str`` is immutable, so a repeated cell has the answer it had; any
+    other type takes :func:`_iso` every time, and a refusal is never stored.
+    """
+    if type(value) is not str:
+        return _iso(value, where)
+    day = memo.get(value)
+    if day is None:
+        day = memo[value] = _iso(value, where)
+    return day
+
+
 def _real(value, where, missing_ok=False):
     """Float of a real-number cell; ``None``/NaN is ``nan`` only when ``missing_ok``, else refused."""
+    if type(value) is float and math.isfinite(value):
+        return value
     if missing_ok and (value is None or (isinstance(value, float) and math.isnan(value))):
         return math.nan
     if not number_ok(value):
@@ -110,10 +126,6 @@ def _same_entity_type(seen, value, where):
     seen.add(type(value))
     if len(seen) > 1:
         raise ValueError(f"{where}: entity keys of mixed types {sorted(t.__name__ for t in seen)}")
-
-
-def _finite_or_none(value):
-    return float(value) if value is not None and math.isfinite(value) else None
 
 
 class _BarNode(Node):
@@ -312,15 +324,17 @@ class DailyBarFeatures(_BarNode):
         """Return the bars as validated (entity, ISO date, close, volume) tuples."""
         p, where = self.params, self.key
         volume = p["volume_field"] if "volume_liquidity" in p else None
-        seen, out = set(), []
+        cols = (p["entity_field"], p["date_field"], p["close_field"], volume)
+        seen, out, days = set(), [], {}
         for row in rows:
-            for col in (p["entity_field"], p["date_field"], p["close_field"], volume):
+            for col in cols:
                 if col is not None and col not in row:
                     raise ValueError(f"{where}: bars lack field {col!r}")
-            entity = _entity(row[p["entity_field"]], f"{where} bars")
-            _same_entity_type(seen, entity, f"{where} bars")
-            out.append((entity, _iso(row[p["date_field"]], f"{where} bars date"),
-                        _real(row[p["close_field"]], f"{where} close", missing_ok=True),
+            entity = _entity(row[cols[0]], f"{where} bars")
+            if type(entity) not in seen:
+                _same_entity_type(seen, entity, f"{where} bars")
+            out.append((entity, _iso_memo(days, row[cols[1]], f"{where} bars date"),
+                        _real(row[cols[2]], f"{where} close", missing_ok=True),
                         _real(row[volume], f"{where} volume", missing_ok=True) if volume else math.nan))
         return out
 
@@ -447,10 +461,12 @@ class DailyBarFeatures(_BarNode):
         if "market_relative" in self.params:
             self._market_columns(frame, self._benchmark(frame, inputs.get("benchmark")))
         p, fields = self.params, self._declared_fields()
-        cells = {f: frame[f].to_numpy(dtype=float) for f in fields}
-        records = [
-            {p["entity_field"]: e, p["date_field"]: d, **{f: _finite_or_none(cells[f][i]) for f in fields}}
-            for i, (e, d) in enumerate(zip(frame["entity"], frame["day"]))]
+        # Column-wise into plain lists (a non-finite float is None), then one dict per row.
+        isfinite = math.isfinite
+        keys = [p["entity_field"], p["date_field"], *fields]
+        cols = [frame["entity"].tolist(), frame["day"].tolist(),
+                *([v if isfinite(v) else None for v in frame[f].to_numpy(dtype=float).tolist()] for f in fields)]
+        records = [dict(zip(keys, row)) for row in zip(*cols)]
         self.log.info("computed %d daily bar feature row(s)", len(records))
         return {"records": records}
 
@@ -550,15 +566,17 @@ class AsTradedClose(_BarNode):
             or a split ratio is missing or not positive.
         """
         p, where = self.params, self.key
-        rows, seen, groups = [], set(), {}
+        cols = (p["entity_field"], p["date_field"], p["close_field"], p["split_field"])
+        rows, seen, groups, days = [], set(), {}, {}
         for index, row in enumerate(inputs["bars"]):
-            for col in (p["entity_field"], p["date_field"], p["close_field"], p["split_field"]):
+            for col in cols:
                 if col not in row:
                     raise ValueError(f"{where}: bars lack field {col!r}")
-            entity = _entity(row[p["entity_field"]], f"{where} bars")
-            _same_entity_type(seen, entity, f"{where} bars")
-            day = _iso(row[p["date_field"]], f"{where} bars date")
-            ratio = _real(row[p["split_field"]], f"{where} split ratio")
+            entity = _entity(row[cols[0]], f"{where} bars")
+            if type(entity) not in seen:
+                _same_entity_type(seen, entity, f"{where} bars")
+            day = _iso_memo(days, row[cols[1]], f"{where} bars date")
+            ratio = _real(row[cols[3]], f"{where} split ratio")
             if ratio <= 0:
                 raise ValueError(f"{where}: split ratio {ratio!r} must be > 0")
             rows.append(dict(row))
@@ -788,23 +806,25 @@ class TradeBarFeatures(_BarNode):
             if self._needs_underlying():
                 raise ValueError(f"{where}: the underlying input is required (calendar or moneyness fields)")
             return {}
-        out, seen = {}, set()
+        out, seen, days = {}, set(), {}
         for row in rows:
             entity = _entity(row[p["underlying_entity_field"]], f"{where} underlying")
-            _same_entity_type(seen, entity, f"{where} underlying")
-            key = (entity, _iso(row[p["underlying_date_field"]], f"{where} underlying date"))
+            if type(entity) not in seen:
+                _same_entity_type(seen, entity, f"{where} underlying")
+            key = (entity, _iso_memo(days, row[p["underlying_date_field"]], f"{where} underlying date"))
             if key in out:
                 raise ValueError(f"{where}: duplicate underlying row for {key!r}")
             out[key] = _real(row[p["underlying_close_field"]], f"{where} underlying close")
         return out
 
-    def _cell_of(self, row, seen):
+    def _cell_of(self, row, seen, days):
         """Return ((entity, date), (expiry, strike, side), size, price) of one trade row, validated."""
         p = self.params
         where = self.key
         entity = _entity(row[p["entity_field"]], f"{where} trades")
-        _same_entity_type(seen, entity, f"{where} trades")
-        key = (entity, _iso(row[p["date_field"]], f"{where} trades date"))
+        if type(entity) not in seen:
+            _same_entity_type(seen, entity, f"{where} trades")
+        key = (entity, _iso_memo(days, row[p["date_field"]], f"{where} trades date"))
         right = str(row[p["right_field"]])
         side = "C" if right in p["call_values"] else "P" if right in p["put_values"] else None
         if side is None:
@@ -824,18 +844,21 @@ class TradeBarFeatures(_BarNode):
         if self.params.get("presorted", DEFAULT_PRESORTED):
             yield from self._sorted_groups(rows)
             return
-        held, seen = {}, set()
+        held, seen, days = {}, set(), {}
         for row in rows:
-            key, cell, size, price = self._cell_of(row, seen)
-            held.setdefault(key, _Cells()).add(cell, size, price)
+            key, cell, size, price = self._cell_of(row, seen, days)
+            group = held.get(key)
+            if group is None:
+                group = held[key] = _Cells()
+            group.add(cell, size, price)
         for key in sorted(held):
             yield key, held[key]
 
     def _sorted_groups(self, rows):
         """Group an input ordered by entity then non-decreasing date, refusing any violation."""
-        closed, current, group, seen = set(), None, None, set()
+        closed, current, group, seen, days = set(), None, None, set(), {}
         for row in rows:
-            key, cell, size, price = self._cell_of(row, seen)
+            key, cell, size, price = self._cell_of(row, seen, days)
             if key != current:
                 self._check_order(closed, current, key)
                 if group is not None:
