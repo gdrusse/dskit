@@ -45,6 +45,7 @@ Import cost: stdlib only.
 
 from __future__ import annotations
 
+import heapq
 import json
 import math
 from dataclasses import dataclass
@@ -365,16 +366,34 @@ def _toposort(keys, deps):
     Returns ``(order, leftover)``; a non-empty leftover is a cycle.
     """
     remaining = {k: set(d) for k, d in deps.items()}
+    # Kahn over a heap of declaration ranks: popping the lowest ready rank
+    # is the first ready key in ``keys`` — the same tie-break as rescanning
+    # ``keys`` every step, without the cubic rescans.
+    rank = {}
+    for k in keys:
+        if k not in rank:
+            rank[k] = len(rank)
+    unique = list(rank)
+    waiting = {}
+    dependents = {}
+    ready = []
+    for k in unique:
+        pending = remaining[k]
+        waiting[k] = len(pending)
+        for d in pending:
+            dependents.setdefault(d, []).append(k)
+        if not pending:
+            ready.append(rank[k])
     order = []
-    while True:
-        ready = [k for k in keys if k not in order and not remaining[k]]
-        if not ready:
-            break
-        nxt = ready[0]
+    while ready:
+        nxt = unique[heapq.heappop(ready)]
         order.append(nxt)
-        for k in remaining:
-            remaining[k].discard(nxt)
-    leftover = [k for k in keys if k not in order]
+        for k in dependents.get(nxt, ()):
+            waiting[k] -= 1
+            if not waiting[k]:
+                heapq.heappush(ready, rank[k])
+    done = set(order)
+    leftover = [k for k in keys if k not in done]
     return tuple(order), leftover
 
 
