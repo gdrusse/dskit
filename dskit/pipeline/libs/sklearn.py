@@ -205,6 +205,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import operator
 import os
 import re
 import sys
@@ -853,14 +854,27 @@ def _row_vector(row, index, columns, where):
     row and the key. Silently dropping a row would make ``n_rows`` a lie
     about what the library saw."""
     vector = []
+    # The _row_value + _finite_number rules, inlined: this runs once per
+    # cell of the fit matrix. The mapping test is per row (a row does not
+    # change kind between its columns), and an exact finite float is
+    # already what _finite_number would return (float(x) is x).
+    mapping = isinstance(row, Mapping)
     for name in columns:
-        present, value = _row_value(row, name)
+        if mapping:
+            present = name in row
+            value = row[name] if present else None
+        else:
+            present = hasattr(row, name)
+            value = getattr(row, name) if present else None
         if not present or value is None:
             raise ValueError(
                 f"{where}: row {index} carries no {name!r} — every row must "
                 "carry every column the fit reads (cut or repair the stream "
                 "upstream; a silently dropped row would misreport the fit)"
             )
+        if type(value) is float and math.isfinite(value):
+            vector.append(value)
+            continue
         number = _finite_number(value)
         if number is None:
             raise ValueError(
@@ -891,9 +905,10 @@ def _fit_matrix(rows, features, label, where):
     every row, or a refusal naming the row and the key."""
     _refuse_zero_rows(rows, where)
     keys = _label_keys(label)
+    columns = (*features, *keys)
     matrix, targets = [], []
     for i, row in enumerate(rows):
-        vector = _row_vector(row, i, (*features, *keys), where)
+        vector = _row_vector(row, i, columns, where)
         matrix.append(vector[:-len(keys)])
         chunk = vector[-len(keys):]
         targets.append(chunk if len(keys) > 1 else chunk[0])
@@ -3649,7 +3664,7 @@ class SklearnSegment(FittedTransform):
         best, best_distance = 0, None
         for index, center in enumerate(centers):
             distance = math.fsum(
-                (a - b) ** 2 for a, b in zip(point, center)
+                [(a - b) ** 2 for a, b in zip(point, center)]
             )
             if best_distance is None or distance < best_distance:
                 best, best_distance = index, distance
@@ -3658,8 +3673,12 @@ class SklearnSegment(FittedTransform):
     def _point(self, row, features, index):
         """One row's coordinates in the STATE's feature order, or a refusal."""
         point = []
+        mapping = isinstance(row, Mapping)
         for name in features:
-            value = row.get(name) if isinstance(row, Mapping) else None
+            value = row.get(name) if mapping else None
+            if type(value) is float and math.isfinite(value):
+                point.append(value)  # what _segment_number answers: float(x) is x
+                continue
             number = _segment_number(value)
             if number is None:
                 raise ValueError(
@@ -4399,17 +4418,21 @@ class SklearnReduction(FittedTransform):
         mean = state.get("mean")
         model_id = self.reduction_model_id(state)
         out = []
+        keyed = None  # (output key, component) pairs, built on the first row
         for index, row in enumerate(rows):
             point = self._point(row, features, index)
             if mean is not None:
-                point = [p - m for p, m in zip(point, mean)]
+                point = list(map(operator.sub, point, mean))
             projected = dict(row)
             for name in features:
                 projected.pop(name, None)
-            for j, component in enumerate(components):
-                projected[f"{_COMPONENT_PREFIX}_{j}"] = math.fsum(
-                    c * v for c, v in zip(component, point)
-                )
+            if keyed is None:
+                keyed = [
+                    (f"{_COMPONENT_PREFIX}_{j}", component)
+                    for j, component in enumerate(components)
+                ]
+            for key, component in keyed:
+                projected[key] = math.fsum(map(operator.mul, component, point))
             projected[_MODEL_ID_FIELD] = model_id
             out.append(projected)
         return out
@@ -4417,8 +4440,12 @@ class SklearnReduction(FittedTransform):
     def _point(self, row, features, index):
         """One row's coordinates in the STATE's feature order, or a refusal."""
         point = []
+        mapping = isinstance(row, Mapping)
         for name in features:
-            value = row.get(name) if isinstance(row, Mapping) else None
+            value = row.get(name) if mapping else None
+            if type(value) is float and math.isfinite(value):
+                point.append(value)  # what _reduction_number answers: float(x) is x
+                continue
             number = _reduction_number(value)
             if number is None:
                 raise ValueError(
