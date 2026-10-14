@@ -2037,9 +2037,13 @@ class CalendarBlockBootstrap:
         pairs = self._blocks_for(ordinals, block_days)
         self._starts = tuple(start for start, _ in pairs)
         self._blocks = tuple(block for _, block in pairs)
-        self._inclusion = tuple(
-            sum(index in block for block in self._blocks)
-            for index in range(len(dates)))
+        # Every block holds distinct in-range indices, so tallying each
+        # block's members once equals testing every date against every block.
+        inclusion = [0] * len(dates)
+        for block in self._blocks:
+            for index in block:
+                inclusion[index] += 1
+        self._inclusion = tuple(inclusion)
 
     def _blocks_for(self, ordinals, block_days):
         """Return the (start ordinal, index tuple) pairs of complete blocks."""
