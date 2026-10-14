@@ -896,12 +896,33 @@ class GridCurve(_Curve):
     def _arrays(self):
         return {"kind": "grid", "values": self.values, "probabilities": self.probabilities}
 
+    #: Knot-by-segment slots per row block of the vectorized segment rule (bounds its memory).
+    _SEGMENT_BLOCK = 1 << 20
+
     def _segment_integrals(self, lower, upper, y):
         """Exact rule: F is piecewise linear, so 2-point Gauss-Legendre is exact per cell."""
         import numpy as np
 
         offset = 1/np.sqrt(3)
         result = np.zeros(lower.shape)
+        if (all(type(a) is np.ndarray and a.dtype == np.float64 for a in (lower, upper, y))
+                and lower.ndim == 2 and upper.shape == lower.shape
+                and y.shape == lower.shape[:1] and len(lower) <= len(self.values)):
+            step = max(1, self._SEGMENT_BLOCK // (self.values.shape[1]*max(1, lower.shape[1])))
+            # Floating-point events the caller does not ignore are reported by the
+            # row loop below, once per segment as before, not once per block.
+            raised = {key: "ignore" if mode == "ignore" else "raise"
+                      for key, mode in np.geterr().items()}
+            try:
+                with np.errstate(**raised):
+                    for start in range(0, len(lower), step):
+                        block = slice(start, start+step)
+                        self._block_integrals(lower[block], upper[block], y[block],
+                                              self.values[block], self.probabilities[block],
+                                              result[block], offset)
+                return result
+            except FloatingPointError:
+                result = np.zeros(lower.shape)
         for row in range(lower.shape[0]):
             for s in range(lower.shape[1]):
                 low, high = lower[row, s], upper[row, s]
@@ -916,6 +937,70 @@ class GridCurve(_Curve):
                     f = np.interp(point, knots, self.probabilities[row], left=0, right=1)
                     result[row, s] += (half*(f-truth)**2).sum()
         return result
+
+    @staticmethod
+    def _block_integrals(lower, upper, y, knots, probabilities, out, offset):
+        """Add one row block's segment integrals to ``out``, all segments at once.
+
+        Each (row, segment) gets the row loop's cells: the same sorted, deduplicated
+        edges, ``np.interp`` on its own row, and each point's sum over its own cells.
+        """
+        import numpy as np
+
+        rows, segments = np.nonzero(upper > lower)
+        if not len(rows):
+            return
+        low, high = lower[rows, segments], upper[rows, segments]
+        clipped = np.where(low > y[rows], low, y[rows])          # max(y, low)
+        cut = np.where(high < clipped, high, clipped)             # min(..., high)
+        # A sorted row's knots strictly inside (low, high) are the run first:stop.
+        first, stop = np.empty((2,)+lower.shape, dtype=np.intp)
+        for row in np.unique(rows):
+            first[row] = np.searchsorted(knots[row], lower[row], "right")
+            stop[row] = np.searchsorted(knots[row], upper[row], "left")
+        first, stop = first[rows, segments], stop[rows, segments]
+        count = stop-first
+        pair = np.repeat(np.arange(len(rows)), count)
+        rank = np.arange(len(pair))-np.repeat(np.cumsum(count)-count, count)
+        inner = knots[rows[pair], first[pair]+rank]
+        # Lay out the sorted edges low, knots below cut, cut, the rest, high
+        # (a NaN cut sorts last, as in np.unique).
+        nan = np.isnan(cut)
+        below = np.where(nan, count, np.bincount(pair[inner < cut[pair]], minlength=len(rows)))
+        size = count+3
+        begin = np.cumsum(size)-size
+        edges = np.empty(size.sum())
+        edges[begin] = low
+        edges[begin[pair]+1+rank+(rank >= below[pair])] = inner
+        edges[begin+np.where(nan, count+2, below+1)] = cut
+        edges[begin+np.where(nan, count+1, count+2)] = high
+        group = np.repeat(np.arange(len(rows)), size)
+        keep = np.ones(len(edges), dtype=bool)
+        keep[1:] = (edges[1:] != edges[:-1]) | (group[1:] != group[:-1])
+        edges, group = edges[keep], group[keep]
+        cell = group[1:] == group[:-1]
+        left, right, owner = edges[:-1][cell], edges[1:][cell], group[:-1][cell]
+        mid, half = (left+right)/2, (right-left)/2
+        truth = (y[rows[owner]] <= mid).astype(float)
+        points = np.stack([mid-half*offset, mid+half*offset])
+        f = np.empty_like(points)
+        row_of = rows[owner]
+        splits = np.flatnonzero(row_of[1:] != row_of[:-1])+1
+        for a, b in zip(np.r_[0, splits], np.r_[splits, len(row_of)]):
+            f[:, a:b] = np.interp(points[:, a:b], knots[row_of[a]], probabilities[row_of[a]],
+                                  left=0, right=1)
+        terms = half*(f-truth)**2
+        # Sum each pair's run on its own, batched by run length (same pairwise sum).
+        cells = np.bincount(owner, minlength=len(rows))
+        start = np.cumsum(cells)-cells
+        sums = np.empty((2, len(rows)))
+        for n in np.unique(cells):
+            pick = np.flatnonzero(cells == n)
+            index = start[pick, None]+np.arange(n)
+            for k in range(2):
+                sums[k, pick] = terms[k][index].sum(1)
+        out[rows, segments] += sums[0]
+        out[rows, segments] += sums[1]
 
     def cdf(self, values):
         """Interpolate CDF queries, using zero/one outside the declared tails.
