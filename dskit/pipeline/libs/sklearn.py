@@ -2853,12 +2853,15 @@ class SklearnExpandingRefit(Node):
             else:
                 groups.setdefault((cell.block, cell.group), []).append(cell)
         pool = self._training_pools(cells)
+        # Each pool's known instants, listed once rather than once per block.
+        known = {group: [c.known for c in members] for group, members in pool.items()}
         fits = []
         for (block, group), members in sorted(groups.items(), key=lambda kv: kv[0][0]):
             start = self.params["block_origin_ms"] + block * self.params["block_ms"]
-            fits.append(
-                self._fit_block(est_cls, start, group, members, pool.get(group), out_rows, statuses)
-            )
+            fits.append(self._fit_block(
+                est_cls, start, group, members, pool.get(group), known.get(group),
+                out_rows, statuses,
+            ))
         return fits
 
     @staticmethod
@@ -2872,10 +2875,12 @@ class SklearnExpandingRefit(Node):
             members.sort(key=lambda c: c.known)
         return pool
 
-    def _fit_block(self, est_cls, start, group, members, pool, out_rows, statuses):
-        """Fit one block and group on the rows known before ``start``; return its fit record."""
-        known = [c.known for c in (pool or [])]
-        train = (pool or [])[: bisect_left(known, start)]
+    def _fit_block(self, est_cls, start, group, members, pool, known, out_rows, statuses):
+        """Fit one block and group on the rows known before ``start``; return its fit record.
+
+        ``known`` is ``pool``'s known instants in order (``None`` with no pool).
+        """
+        train = (pool or [])[: bisect_left(known or [], start)]
         record = {
             "block_start_ms": start,
             "group": group,
@@ -2905,7 +2910,11 @@ class SklearnExpandingRefit(Node):
         if not train:
             return _STATUS_NO_TRAIN
         method = self.params.get("predict_method", DEFAULT_REFIT_PREDICT_METHOD)
-        if method == "predict_proba" and len({c.label for c in train}) < 2:
+        # Fewer than two distinct labels = all equal the first: labels are
+        # finite floats, so ``==`` is the set's own equality; stops at the
+        # first second class instead of hashing the whole train set.
+        first = train[0].label
+        if method == "predict_proba" and all(c.label == first for c in train):
             return _STATUS_ONE_CLASS
         return None
 
