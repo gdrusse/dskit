@@ -38,9 +38,11 @@ stream), and the seam's own knobs this reader answers itself are narrowed away.
 Import cost: stdlib + dskit.
 """
 
+import math
 from abc import abstractmethod
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from operator import itemgetter
 
 from dskit.pipeline import binary_decisions as bd
 from dskit.pipeline.binary_pricing import LOWER, PAYOFFS, UPPER
@@ -107,6 +109,9 @@ def instant_ms(text):
 
 def _number(value):
     """Return ``value`` as a float when it is a finite number, else None."""
+    cls = type(value)
+    if cls is float or cls is int:      # number_ok's own exact-type rule, without the call
+        return float(value) if math.isfinite(value) else None
     return float(value) if number_ok(value) else None
 
 
@@ -539,14 +544,16 @@ class QuoteBarRows(_StreamRows):
         ValueError
             When a bar's end is not epoch seconds.
         """
-        get = self.field
+        get, end_ms = self.field, self._end_ms
+        ticker, end, bid, ask = get("ticker_field"), get("end_field"), get("bid_field"), get("ask_field")
+        price, volume, interest = get("price_field"), get("volume_field"), get("open_interest_field")
         rows = [{
-            bd.TICKER: r[get("ticker_field")], bd.END_MS: self._end_ms(r.get(get("end_field"))),
-            bd.YES_BID: _number(r.get(get("bid_field"))), bd.YES_ASK: _number(r.get(get("ask_field"))),
-            bd.PRICE: _number(r.get(get("price_field"))), bd.VOLUME: _number(r.get(get("volume_field"))),
-            bd.OPEN_INTEREST: _number(r.get(get("open_interest_field"))),
+            bd.TICKER: r[ticker], bd.END_MS: end_ms(r.get(end)),
+            bd.YES_BID: _number(r.get(bid)), bd.YES_ASK: _number(r.get(ask)),
+            bd.PRICE: _number(r.get(price)), bd.VOLUME: _number(r.get(volume)),
+            bd.OPEN_INTEREST: _number(r.get(interest)),
         } for r in records]
-        rows.sort(key=lambda row: (row[bd.TICKER], row[bd.END_MS]))
+        rows.sort(key=itemgetter(bd.TICKER, bd.END_MS))
         return rows
 
 
