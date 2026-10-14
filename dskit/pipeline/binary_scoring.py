@@ -73,8 +73,8 @@ _SE_SEED = 0
 def _cluster_se(keys, values):
     """Return the toolkit's cluster-robust standard error of the mean of ``values``, clustered by ``keys``.
 
-    ``keys`` are the rows' cluster keys (event or time block, as strings), aligned with ``values``;
-    None below two clusters.
+    ``keys`` are the rows' cluster keys (event or time block, already passed through ``str``), aligned
+    with ``values``; None below two clusters.
     """
     scores = {}
     for key, value in zip(keys, values):
@@ -103,8 +103,8 @@ class _Cell:
     def add(self, entry, pnl):
         """Record one scored row and its profit (None when no trade).
 
-        ``entry`` is (event key, block key, model brier, market brier, model logloss, market logloss,
-        model, market, label); one row's entry is shared, unchanged, by every cell it lands in.
+        ``entry`` is (event, block, model brier, market brier, model logloss, market logloss, model,
+        market, label); one row's entry is shared, unchanged, by every cell it lands in.
         """
         self.rows.append(entry)
         if pnl is not None:
@@ -113,19 +113,22 @@ class _Cell:
     def summary(self):
         """Return the cell's metrics as a dict."""
         events, blocks, brier_model, brier_market, ll_model, ll_market, model, market, label = zip(*self.rows)
-        brier = [bm - bk for bm, bk in zip(brier_model, brier_market)]
-        logloss = [lm - lk for lm, lk in zip(ll_model, ll_market)]
+        # Cluster keys are stringified here, blocks before events, as the per-cell count always did.
+        blocks, events = [str(block) for block in blocks], [str(event) for event in events]
+        brier_diff = [bm - bk for bm, bk in zip(brier_model, brier_market)]
+        logloss_diff = [lm - lk for lm, lk in zip(ll_model, ll_market)]
         pnl_events, pnl_blocks, pnl = zip(*self.pnl) if self.pnl else ((), (), ())
+        pnl_blocks, pnl_events = [str(block) for block in pnl_blocks], [str(event) for event in pnl_events]
         return {
             "n": len(self.rows), "n_clusters": len(set(blocks)), "n_event_clusters": len(set(events)),
             "mean_model": _mean(model), "mean_market": _mean(market), "base_rate": _mean(label),
             "brier_model": _mean(brier_model), "brier_market": _mean(brier_market),
-            "brier_diff": _mean(brier), "brier_diff_se": _cluster_se(blocks, brier),
-            "brier_diff_se_event": _cluster_se(events, brier),
+            "brier_diff": _mean(brier_diff), "brier_diff_se": _cluster_se(blocks, brier_diff),
+            "brier_diff_se_event": _cluster_se(events, brier_diff),
             "logloss_model": _mean(ll_model), "logloss_market": _mean(ll_market),
-            "logloss_diff": _mean(logloss),
-            "logloss_diff_se": _cluster_se(blocks, logloss),
-            "logloss_diff_se_event": _cluster_se(events, logloss),
+            "logloss_diff": _mean(logloss_diff),
+            "logloss_diff_se": _cluster_se(blocks, logloss_diff),
+            "logloss_diff_se_event": _cluster_se(events, logloss_diff),
             "n_trades": len(pnl), "pnl_total": sum(pnl), "pnl_mean": _mean(pnl),
             "pnl_se": _cluster_se(pnl_blocks, pnl), "pnl_se_event": _cluster_se(pnl_events, pnl),
             "hit_rate": _mean([1.0 if value > 0 else 0.0 for value in pnl]),
@@ -423,14 +426,14 @@ class BucketedBinaryScore(Node):
                 continue
             label, bucket = self._label(index, row), self._bucket(row[p["market_field"]])
             census["outside_buckets"] += bucket is None
-            keys = (str(row[p["cluster_field"]]), str(int(row[p["settle_field"]] // block_ms)))
+            clusters = (row[p["cluster_field"]], int(row[p["settle_field"]] // block_ms))
             groups = None
             for field in p["model_fields"]:
                 observed = self._observe(index, row, field, label, census)
                 if observed is None:
                     continue
                 scores, profit, level = observed
-                entry = (*keys, *scores, *level)
+                entry = (*clusters, *scores, *level)
                 if groups is None:
                     groups = self._groups(row)
                 for group in groups:
