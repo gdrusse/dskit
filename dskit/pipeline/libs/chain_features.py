@@ -100,6 +100,7 @@ __all__ = [
     "OI_SCOPES",
     "ChainDayFeatures",
     "NoFeatureRows",
+    "QuoteBook",
 ]
 
 #: Every feature a document may name in ``fields``.
@@ -175,8 +176,12 @@ class _Totals:
         return None if not call or put is None else put / call
 
 
-class _Book:
-    """The usable quotes of one expiration on one day, and the vols solved from their mids."""
+class QuoteBook:
+    """The usable quotes of one expiration on one day, and the vols solved from their mids.
+
+    Public so a node that selects strikes from a chain (``ChainStructureOrders``) uses the very forward,
+    vol and wing rules the features use, not a copy (ADR-0265 Amendment 5).
+    """
 
     def __init__(self, years, iv_min, iv_max, rate=0.0):
         self.years, self.iv_min, self.iv_max, self.rate = years, iv_min, iv_max, rate
@@ -713,7 +718,7 @@ class ChainDayFeatures(Node):
     def _book(self, cells, years, rate):
         """Build the usable-quote book of one expiration's cells."""
         p = self.params
-        book = _Book(years, p.get("iv_min", DEFAULT_IV_MIN), p.get("iv_max", DEFAULT_IV_MAX), rate)
+        book = QuoteBook(years, p.get("iv_min", DEFAULT_IV_MIN), p.get("iv_max", DEFAULT_IV_MAX), rate)
         for cell in cells:
             if quote_state(cell[5], cell[6]) in USABLE_STATES:
                 book.add(cell[4], cell[3], cell[5], cell[6])
