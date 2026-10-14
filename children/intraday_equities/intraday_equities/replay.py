@@ -1066,14 +1066,26 @@ def _share_fill_id(symbol, asof_ms, side, origin):
     return f"{symbol}-{int(asof_ms)}-{side}-{origin}"
 
 
-def _session_markers(seq, calendar):
-    """Map calendar session bounds to their exact one-minute close marker and index."""
+def _session_markers(seq, calendar, bounds_at=None):
+    """Map calendar session bounds to their exact one-minute close marker and index.
+
+    ``bounds_at`` (``{asof_ms: session bounds, or None when shut}``) memoizes
+    the calendar's answer per instant, so names sharing a minute grid ask it
+    once per minute; the calendar answers as a pure function of the instant.
+    """
+    if bounds_at is None:
+        bounds_at = {}
     sessions = {}
     for position, bar in enumerate(seq):
         asof_ms = int(bar["asof_ms"])
-        if not calendar.is_open(asof_ms):
+        if asof_ms in bounds_at:
+            bounds = bounds_at[asof_ms]
+        else:
+            bounds = bounds_at[asof_ms] = (
+                tuple(calendar.window("session", asof_ms)) if calendar.is_open(asof_ms) else None
+            )
+        if bounds is None:
             continue
-        bounds = tuple(calendar.window("session", asof_ms))
         marker = int(bounds[1]) - _BAR_MS
         if marker < bounds[0]:
             raise ConfigError([
@@ -1170,8 +1182,9 @@ class SessionShareBook:
         its session-last indices; the ledger is untouched.
         """
         self._bars = dict(by_symbol)
+        bounds_at = {}
         self._session_last = {
-            symbol: _session_markers(seq, self._calendar)
+            symbol: _session_markers(seq, self._calendar, bounds_at)
             for symbol, seq in self._bars.items()
         }
         self._closes = {
@@ -1694,6 +1707,7 @@ class EquityReplay:
         by_symbol = defaultdict(list)
         halt_field = policy.halt_field
         session_bars = []
+        open_at = {}
         for bar in bars:
             row = dict(bar)
             row["asof_ms"] = int(row["asof_ms"])
@@ -1709,9 +1723,14 @@ class EquityReplay:
             # Session-share replay consumes only calendar-open observations.
             # Leaving closed raw bars on either the bar index or replay tape
             # lets calendar-gated ticks skip their feed pulls, desynchronising
-            # the tape cursor from the next open scheduler tick.
-            if self._share_mode and not self._book.calendar_open(row["asof_ms"]):
-                continue
+            # the tape cursor from the next open scheduler tick. Names share
+            # a minute grid, so the calendar is asked once per instant.
+            if self._share_mode:
+                asof_ms = row["asof_ms"]
+                if asof_ms not in open_at:
+                    open_at[asof_ms] = self._book.calendar_open(asof_ms)
+                if not open_at[asof_ms]:
+                    continue
             session_bars.append(row)
             by_symbol[row[policy.symbol_field]].append(row)
         for seq in by_symbol.values():
