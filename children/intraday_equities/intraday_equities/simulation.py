@@ -1008,6 +1008,48 @@ class ForecastPublisher(Node):
             raise ValueError(f"{symbol} has a prediction at {stamp} but no tape bar")
         return float(prices[loc]), float(sigma[loc]), 0.0 if beta is None else float(beta[loc])
 
+    def _market_columns(self, market, symbol, stamps):
+        """:meth:`_market_at` at every one of ``stamps``: ``(prices, sigmas, betas)`` lists.
+
+        One ``searchsorted`` serves every stamp when the fold tape is the
+        time-ordered int64 stamps and 1-D float64 columns ``_Walk.market``
+        builds, every stamp is an int64-range ``int`` and ``_market_at`` is
+        not overridden; anything else takes :meth:`_market_at` per stamp.
+        Either way the first stamp with no tape bar refuses.
+        """
+        import numpy as np
+
+        if not stamps:
+            return [], [], []
+        fast = self._market_at is ForecastPublisher._market_at
+        if fast:
+            tape, prices, beta, sigma = market[symbol]
+            columns = (prices, sigma) if beta is None else (prices, sigma, beta)
+            fast = (
+                isinstance(tape, np.ndarray) and tape.dtype == np.int64 and tape.ndim == 1
+                and bool((tape[1:] >= tape[:-1]).all())
+                and all(
+                    isinstance(column, np.ndarray) and column.dtype == np.float64
+                    and column.ndim == 1 and column.size >= tape.size
+                    for column in columns
+                )
+                and all(type(stamp) is int for stamp in stamps)
+                and -(2 ** 63) <= min(stamps) and max(stamps) < 2 ** 63
+            )
+        if not fast:
+            rows = [self._market_at(market, symbol, stamp) for stamp in stamps]
+            return [row[0] for row in rows], [row[1] for row in rows], [row[2] for row in rows]
+        keys = np.array(stamps, dtype=np.int64)
+        locs = tape.searchsorted(keys)
+        if tape.size:
+            missing = (locs >= tape.size) | (tape[locs.clip(0, tape.size - 1)] != keys)
+        else:
+            missing = np.ones(keys.size, dtype=bool)
+        if missing.any():
+            raise ValueError(f"{symbol} has a prediction at {stamps[int(missing.argmax())]} but no tape bar")
+        betas = [0.0] * len(stamps) if beta is None else beta[locs].tolist()
+        return prices[locs].tolist(), sigma[locs].tolist(), betas
+
     @staticmethod
     def tick_row(release, symbol, stamp, lead, price, yhat, sigma, beta, weights, draws, contract):
         """One ``ForecastBundle`` input row -- the ONE builder both cadences use (ADR-0186).
@@ -1730,13 +1772,10 @@ class MinuteForecastPublisher(ForecastPublisher):
             if stamps != sorted(set(stamps)):
                 raise ValueError(f"{symbol}:h{lead:02d} trade rows are not unique and time-ordered")
             self._refuse_trade_disagreement(symbol, lead, dict(rows), scored.get((symbol, lead), ()), start, end)
+            yhat = [value for _, value in rows]
+            prices, sigmas, betas = self._market_columns(market, symbol, stamps)
             block = {"fold": index, "release_id": release["release_id"], "symbol": symbol, "lead": lead,
-                     "ts": stamps, "price": [], "yhat": [value for _, value in rows], "sigma": [], "beta": []}
-            for stamp in stamps:
-                price, sigma, beta = self._market_at(market, symbol, stamp)
-                block["price"].append(price)
-                block["sigma"].append(sigma)
-                block["beta"].append(beta)
+                     "ts": stamps, "price": prices, "yhat": yhat, "sigma": sigmas, "beta": betas}
             if horizons is not None:
                 block["yhat_by_lead"] = self._lead_columns(
                     symbol, stamps, horizons[symbol], trade, scored, start, end
