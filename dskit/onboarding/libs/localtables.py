@@ -137,6 +137,22 @@ def _json_constant(name):
     raise ValueError(f"{name} is not JSON")
 
 
+#: One finite-JSON decoder for every line: ``json.loads`` given a keyword
+#: builds a fresh ``JSONDecoder`` per call, which costs more than the parse.
+_FINITE_JSON = json.JSONDecoder(parse_constant=_json_constant)
+
+
+def _json_line(line):
+    """``json.loads(line, parse_constant=_json_constant)``, decoder reused.
+
+    A line opening with a BOM still goes through ``json.loads``, which
+    refuses it by name; any other ``str`` decodes exactly as it would.
+    """
+    if line.startswith("﻿"):
+        return json.loads(line, parse_constant=_json_constant)
+    return _FINITE_JSON.decode(line)
+
+
 def _jsonable(value):
     """Convert a parquet cell to a JSON value; raise _NoJsonSpelling for what JSON cannot carry."""
     if value is None or isinstance(value, (bool, int, str)):
@@ -455,7 +471,7 @@ class LocalTablesConnector(Connector):
                 if not line.strip():
                     continue
                 try:
-                    obj = json.loads(line, parse_constant=_json_constant)
+                    obj = _json_line(line)
                 except ValueError as exc:
                     raise AssetError([f"{path}:{n} is not valid JSON: {exc}"]) from exc
                 if not isinstance(obj, dict):
