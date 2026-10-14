@@ -1334,13 +1334,14 @@ class _PanelIndex:
 
     def find(self, code, instant):
         """Return the global row of ``code`` at ``instant``, or None when the panel has no such row."""
-        import numpy as np
-
         rows, times = self._by_code.get(code, (None, None))
         if rows is None or not len(rows):
             return None
-        at = int(np.searchsorted(times, instant))
-        return int(rows[at]) if at < len(rows) and int(times[at]) == instant else None
+        # Called once per decision row: the bound method skips the
+        # ``np.searchsorted`` dispatch wrapper, and ``rows`` is always the
+        # intp array ``flatnonzero`` built, so ``item`` is ``int(rows[at])``.
+        at = int(times.searchsorted(instant))
+        return rows.item(at) if at < len(rows) and int(times[at]) == instant else None
 
 
 class PanelHorizonFairValue(Node):
