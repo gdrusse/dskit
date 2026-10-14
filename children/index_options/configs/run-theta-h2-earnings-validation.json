@@ -21,53 +21,38 @@
               "target_dte": "target_dte",
               "status": "status",
               "after_first_quote": "after_first_quote",
-              "liquidity_tercile": "liquidity_tercile",
-              "expiration": "expiration",
-              "dte": "dte",
-              "spot": "spot",
-              "atm_strike": "atm_strike",
               "atm_iv": "atm_iv",
               "straddle_ratio": "straddle_ratio",
-              "half_spread_over_premium": "half_spread_over_premium"
+              "spot": "spot"
             },
             "include": [
               "*.parquet"
             ],
             "iso_fields": [
-              "date",
-              "expiration"
+              "date"
             ],
             "read_bounds": {
               "date": {
                 "start": "2021-01-04",
                 "end_before": "2026-01-01"
               }
-            }
+            },
+            "where": [
+              {
+                "field": "after_first_quote",
+                "op": "==",
+                "value": true
+              }
+            ]
           }
         ]
       },
-      "notes": "The panel of chain-day features, both targets (30 and 90 DTE), read through its pinned snapshot, bounded to the period."
-    },
-    "panel_ok": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$panel.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "after_first_quote",
-            "op": "==",
-            "value": true
-          }
-        ]
-      },
-      "notes": "Rows from each name's first quoted date."
+      "notes": "The panel of chain-day features, both targets (30 and 90 DTE), read through its pinned snapshot, bounded to the period, from each name's first quoted date, only the columns the detector reads."
     },
     "events": {
       "uses": "dskit.pipeline.libs.chain_events:ChainEventDetector",
       "inputs": {
-        "records": "$panel_ok.records"
+        "records": "$panel.records"
       },
       "params": {
         "symbol_field": "symbol",
@@ -303,7 +288,7 @@
       },
       "notes": "(a) SECONDARY (reported, never promoted): event-variance implied move minus realized move, by week."
     },
-    "entry_panel": {
+    "entry_30": {
       "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
       "params": {
         "sources": [
@@ -318,10 +303,10 @@
               "target_dte": "target_dte",
               "status": "status",
               "after_first_quote": "after_first_quote",
-              "liquidity_tercile": "liquidity_tercile",
               "expiration": "expiration",
               "atm_strike": "atm_strike",
-              "half_spread_over_premium": "half_spread_over_premium"
+              "half_spread_over_premium": "half_spread_over_premium",
+              "liquidity_tercile": "liquidity_tercile"
             },
             "include": [
               "*.parquet"
@@ -335,42 +320,33 @@
                 "start": "2021-01-04",
                 "end_before": "2026-01-01"
               }
-            }
+            },
+            "where": [
+              {
+                "field": "after_first_quote",
+                "op": "==",
+                "value": true
+              },
+              {
+                "field": "status",
+                "op": "==",
+                "value": "ok"
+              },
+              {
+                "field": "target_dte",
+                "op": "==",
+                "value": 30
+              },
+              {
+                "field": "atm_strike",
+                "op": "!=",
+                "value": null
+              }
+            ]
           }
         ]
       },
-      "notes": "The panel again, for the entry session's expiry and ATM strike."
-    },
-    "entry_30": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$entry_panel.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "after_first_quote",
-            "op": "==",
-            "value": true
-          },
-          {
-            "field": "status",
-            "op": "==",
-            "value": "ok"
-          },
-          {
-            "field": "target_dte",
-            "op": "==",
-            "value": 30
-          },
-          {
-            "field": "atm_strike",
-            "op": "!=",
-            "value": null
-          }
-        ]
-      },
-      "notes": "The 30-DTE ATM strike and expiry known at each entry session's close."
+      "notes": "The panel again, for the entry session's expiry and ATM strike: the 30-DTE rows with a resolved ATM strike, known at each entry session's close."
     },
     "detected_dated": {
       "uses": "filter",

@@ -21,27 +21,13 @@
               "target_dte": "target_dte",
               "status": "status",
               "after_first_quote": "after_first_quote",
-              "liquidity_tercile": "liquidity_tercile",
               "expiration": "expiration",
               "dte": "dte",
-              "spot": "spot",
-              "forward": "forward",
               "atm_strike": "atm_strike",
               "atm_iv": "atm_iv",
-              "put25_iv": "put25_iv",
-              "call25_iv": "call25_iv",
-              "risk_reversal": "risk_reversal",
-              "put_call_iv_spread": "put_call_iv_spread",
               "term_slope": "term_slope",
-              "straddle_ratio": "straddle_ratio",
               "half_spread_over_premium": "half_spread_over_premium",
-              "oi_call": "oi_call",
-              "oi_put": "oi_put",
-              "volume_call": "volume_call",
-              "volume_put": "volume_put",
-              "oi_put_call_ratio": "oi_put_call_ratio",
-              "oi_change_5d": "oi_change_5d",
-              "oi_put_call_ratio_change_5d": "oi_put_call_ratio_change_5d"
+              "liquidity_tercile": "liquidity_tercile"
             },
             "include": [
               "*.parquet"
@@ -55,48 +41,28 @@
                 "start": "2016-01-04",
                 "end_before": "2021-01-01"
               }
-            }
+            },
+            "where": [
+              {
+                "field": "after_first_quote",
+                "op": "==",
+                "value": true
+              },
+              {
+                "field": "status",
+                "op": "==",
+                "value": "ok"
+              },
+              {
+                "field": "target_dte",
+                "op": "==",
+                "value": 30
+              }
+            ]
           }
         ]
       },
-      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, both targets, one file a date, read through its registered snapshot pin; `date` and `expiration` as ISO text. Bounded to the period's dates by predicate pushdown."
-    },
-    "panel_ok": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$panel.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "after_first_quote",
-            "op": "==",
-            "value": true
-          },
-          {
-            "field": "status",
-            "op": "==",
-            "value": "ok"
-          }
-        ]
-      },
-      "notes": "Rows from each name's first quoted date (after_first_quote) whose forward and vols resolved."
-    },
-    "p30": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$panel_ok.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "target_dte",
-            "op": "==",
-            "value": 30
-          }
-        ]
-      },
-      "notes": "The 30-DTE target (the nearest listed expiry within 7 days of 30)."
+      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, read through its registered snapshot pin, one file a date, `date` and `expiration` as ISO text, bounded to the period's dates by predicate pushdown. Only the 30-DTE target (the nearest listed expiry within 7 days of 30), from each name's first quoted date (after_first_quote) and with a resolved forward and vols (status ok), is kept, one file at a time, and only the columns this document reads."
     },
     "bars_raw": {
       "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
@@ -246,7 +212,7 @@
     "near31": {
       "uses": "filter",
       "inputs": {
-        "records": "$p30.records"
+        "records": "$panel.records"
       },
       "params": {
         "where": [
@@ -254,6 +220,11 @@
             "field": "dte",
             "op": "<=",
             "value": 31
+          },
+          {
+            "field": "dte",
+            "op": ">=",
+            "value": 28
           },
           {
             "field": "atm_strike",
@@ -267,7 +238,7 @@
           }
         ]
       },
-      "notes": "Rows whose 30-DTE target expiry is at most 31 calendar days out and whose ATM strike resolved."
+      "notes": "Rows whose 30-DTE target expiry is 28 to 31 calendar days out and whose ATM strike resolved. The floor of 28 keeps an expiry whose first session fell before the period began (so only a later, shorter-dated row remains) from entering late: it has no entry."
     },
     "entries": {
       "uses": "groupby",
@@ -296,10 +267,6 @@
           "term_slope": {
             "op": "last",
             "field": "term_slope"
-          },
-          "risk_reversal": {
-            "op": "last",
-            "field": "risk_reversal"
           },
           "half_spread_over_premium": {
             "op": "last",

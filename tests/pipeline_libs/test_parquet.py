@@ -636,3 +636,22 @@ def test_iso_fields_turn_date_columns_into_iso_text(blob_store, tmp_path):
     assert node.run(_ctx(tmp_path), {})["records"] == [{"date": "2020-03-02", "x": 1.0}, {"date": "2020-03-03", "x": 2.0}]
     for bad in ([], "date", [1], ["nope"]):
         assert any("iso_fields" in p for p in ParquetStreamRows.validate_params({"sources": [{**declaration, "iso_fields": bad}]})), bad
+
+
+def test_where_keeps_only_the_rows_that_pass_every_clause_on_output_fields(blob_store, tmp_path):
+    archive = tmp_path / "wheres"
+    archive.mkdir()
+    pq.write_table(pa.table({"d": ["2025-01-02", "2025-01-02", "2025-01-03"], "t": [30, 90, 30],
+                             "ok": [True, True, False], "x": [1.0, 2.0, 3.0]}), archive / "a.parquet")
+    blob_store.add("wheres", archive)
+    declaration = {"root": blob_store.path, "source": "wheres", "stream": "files",
+                   "snapshot": payload_files(blob_store.path, "wheres", "files")["manifest_sha256"],
+                   "columns": {"d": "date", "t": "target", "ok": "ok", "x": "x"},
+                   "read_bounds": {"d": {"end_before": "2026-01-01"}}}
+    rows = ParquetStreamRows("p", {"sources": [{**declaration, "where": [
+        {"field": "target", "op": "==", "value": 30}, {"field": "ok", "op": "==", "value": True}]}]}).run(_ctx(tmp_path), {})["records"]
+    assert rows == [{"date": "2025-01-02", "target": 30, "ok": True, "x": 1.0}]
+    nothing = ParquetStreamRows("p", {"sources": [{**declaration, "where": [{"field": "x", "op": ">", "value": 9}]}]})
+    assert nothing.run(_ctx(tmp_path), {})["records"] == []
+    for bad in ([], "x", [{"field": "nope", "op": "==", "value": 1}], [{"field": "x", "op": "~", "value": 1}]):
+        assert any("where" in p for p in ParquetStreamRows.validate_params({"sources": [{**declaration, "where": bad}]})), bad

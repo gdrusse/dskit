@@ -155,6 +155,9 @@ def test_set_pin_and_freeze_universe_write_the_inputs_and_regenerate_to_a_consis
     (tmp_path / th.PANEL_DOC).write_text((CONFIGS / th.PANEL_DOC).read_text())
     assert th.main(["set-pin", "panel", "ab" * 32]) == 0
     assert th.main(["set-pin", "panel", "nope"]) == 1
+    monkeypatch.setattr(th, "store_pin", lambda spec: "cd" * 32)
+    assert th.main(["set-pin", "panel_index"]) == 0 and th.load_inputs()["panel_index"]["snapshot"] == "cd" * 32
+    assert th.main(["set-pin", "bars", "ab" * 32]) == 1
     census = tmp_path / "census.jsonl"
     census.write_text("\n".join(json.dumps(r) for r in [
         {"root": "AAA", "first_bid_date": "2016-01-04", "liquidity_tercile": 2, "median_quoted_development": 9.0},
@@ -186,7 +189,8 @@ def _swap(obj, tmp):
             dataset = {"theta-chain-panel": "panel", "theta-chain-panel-index": "index_panel", "stock-daily-bars": "bars",
                        "benchmark-daily-bars": "bench"}[sources[0]["source"]]
             declared = {"kind": "stream", "sources": [
-                {"columns": s["columns"], "read_bounds": s["read_bounds"], "iso_fields": s.get("iso_fields", []), "dataset_part": n}
+                {"columns": s["columns"], "read_bounds": s["read_bounds"], "iso_fields": s.get("iso_fields", []), "where": s.get("where", []),
+                 "dataset_part": n}
                 for n, s in enumerate(sources)]}
             node["uses"], node["params"] = "theta_synthetic:StaticRecords", {"dataset": dataset, "declared": declared}
         elif node["uses"] == th.CHAIN_ROWS:

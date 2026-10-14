@@ -640,9 +640,8 @@
               "target_dte": "target_dte",
               "status": "status",
               "after_first_quote": "after_first_quote",
-              "liquidity_tercile": "liquidity_tercile",
-              "atm_iv": "atm_iv",
-              "half_spread_over_premium": "half_spread_over_premium"
+              "half_spread_over_premium": "half_spread_over_premium",
+              "liquidity_tercile": "liquidity_tercile"
             },
             "include": [
               "*.parquet"
@@ -655,53 +654,33 @@
                 "start": "2021-01-04",
                 "end_before": "2026-01-01"
               }
-            }
+            },
+            "where": [
+              {
+                "field": "after_first_quote",
+                "op": "==",
+                "value": true
+              },
+              {
+                "field": "status",
+                "op": "==",
+                "value": "ok"
+              },
+              {
+                "field": "target_dte",
+                "op": "==",
+                "value": 30
+              }
+            ]
           }
         ]
       },
-      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, both targets, one file a date, read through its registered snapshot pin; `date` and `expiration` as ISO text. Bounded to the period's dates by predicate pushdown."
-    },
-    "panel_ok": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$panel.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "after_first_quote",
-            "op": "==",
-            "value": true
-          },
-          {
-            "field": "status",
-            "op": "==",
-            "value": "ok"
-          }
-        ]
-      },
-      "notes": "Rows from each name's first quoted date (after_first_quote) whose forward and vols resolved."
-    },
-    "p30": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$panel_ok.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "target_dte",
-            "op": "==",
-            "value": 30
-          }
-        ]
-      },
-      "notes": "The 30-DTE target (the nearest listed expiry within 7 days of 30)."
+      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, read through its registered snapshot pin, one file a date, `date` and `expiration` as ISO text, bounded to the period's dates by predicate pushdown. Only the 30-DTE target (the nearest listed expiry within 7 days of 30), from each name's first quoted date (after_first_quote) and with a resolved forward and vols (status ok), is kept, one file at a time, and only the columns this document reads."
     },
     "spreads": {
       "uses": "filter",
       "inputs": {
-        "records": "$p30.records"
+        "records": "$panel.records"
       },
       "params": {
         "where": [

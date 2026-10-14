@@ -15,7 +15,7 @@ CLI (from ``children/index_options``)::
 
     python -m index_options.theta_hypotheses write              # regenerate every committed file
     python -m index_options.theta_hypotheses check              # exit 1 when a committed file differs
-    python -m index_options.theta_hypotheses set-pin NAME HASH  # record a registered panel's snapshot pin
+    python -m index_options.theta_hypotheses set-pin NAME [HASH]  # record a registered panel's snapshot pin (default: the store's latest)
     python -m index_options.theta_hypotheses freeze-universe CENSUS_ROOTS_JSONL  # write the frozen universe
 """
 
@@ -140,14 +140,20 @@ class Graph:
 
     # -- readers -----------------------------------------------------------------------------------------
 
-    def panel(self, key, which, columns, notes):
-        """The date-partitioned panel of chain-day features, read through its registered, pinned snapshot."""
+    def panel(self, key, which, columns, notes, where=None):
+        """The date-partitioned panel of chain-day features, read through its registered, pinned snapshot.
+
+        ``where`` (clauses on the output fields) keeps only the rows a document needs while each file is read, so the
+        dropped rows never occupy memory.
+        """
         spec, p = self.inputs[which], self.period
-        return self.add(key, PARQUET_STREAM, {"sources": [{
-            "root": spec["root"], "source": spec["source"], "stream": "files", "snapshot": spec["snapshot"],
-            "columns": {c: c for c in columns}, "include": ["*.parquet"], "iso_fields": ["date", "expiration"]
-            if "expiration" in columns else ["date"],
-            "read_bounds": {"date": {"start": p.start, "end_before": p.end_before}}}]}, notes=notes)
+        source = {"root": spec["root"], "source": spec["source"], "stream": "files", "snapshot": spec["snapshot"],
+                  "columns": {c: c for c in columns}, "include": ["*.parquet"],
+                  "iso_fields": ["date", "expiration"] if "expiration" in columns else ["date"],
+                  "read_bounds": {"date": {"start": p.start, "end_before": p.end_before}}}
+        if where:
+            source["where"] = where
+        return self.add(key, PARQUET_STREAM, {"sources": [source]}, notes=notes)
 
     def bars(self, key, columns, benchmark=False, notes=""):
         """The Yahoo daily bars (split-adjusted close, split+dividend adjusted close) of the tested names."""
@@ -239,14 +245,11 @@ def _series_node(g, key, source, value, stamp, notes, **over):
 # shared study fragments
 # ------------------------------------------------------------------------------------------------------
 
-PANEL_BASE = ["symbol", "date", "target_dte", "status", "after_first_quote", "liquidity_tercile"]
-PANEL_FEATURES = ["expiration", "dte", "spot", "forward", "atm_strike", "atm_iv", "put25_iv", "call25_iv",
-                  "risk_reversal", "put_call_iv_spread", "term_slope", "straddle_ratio",
-                  "half_spread_over_premium", "oi_call", "oi_put", "volume_call", "volume_put",
-                  "oi_put_call_ratio", "oi_change_5d", "oi_put_call_ratio_change_5d"]
+PANEL_BASE = ["symbol", "date", "target_dte", "status", "after_first_quote"]
 BAR_COLUMNS = {"symbol": "symbol", "date": "date", "open": "open", "close": "close",
                "adjusted_close": "adjusted_close"}
 GATE = [{"field": "after_first_quote", "op": "==", "value": True}, {"field": "status", "op": "==", "value": "ok"}]
+TARGET_30 = {"field": "target_dte", "op": "==", "value": 30}
 
 
 def _f(name):
@@ -261,15 +264,12 @@ def _c(value):
     return {"const": value}
 
 
-def _panel_30(g, columns=None):
-    """The 30-DTE rows of the panel past each name's first quote and with a resolved forward."""
-    cols = PANEL_BASE + (columns or PANEL_FEATURES)
-    g.panel("panel", "panel", cols, "The panel of chain-day features (ChainPanelBuild), every landed root, both targets, one file a "
-            "date, read through its registered snapshot pin; `date` and `expiration` as ISO text. Bounded to the period's "
-            "dates by predicate pushdown.")
-    g.filter("panel_ok", "panel", GATE, "Rows from each name's first quoted date (after_first_quote) whose forward and vols resolved.")
-    return g.filter("p30", "panel_ok", [{"field": "target_dte", "op": "==", "value": 30}],
-                    "The 30-DTE target (the nearest listed expiry within 7 days of 30).")
+def _panel_30(g, columns):
+    """The 30-DTE rows of the panel past each name's first quote and with a resolved forward, only the named columns."""
+    return g.panel("panel", "panel", PANEL_BASE + columns, "The panel of chain-day features (ChainPanelBuild), every landed root, read through its registered snapshot "
+                   "pin, one file a date, `date` and `expiration` as ISO text, bounded to the period's dates by predicate pushdown. Only the 30-DTE target (the nearest listed "
+                   "expiry within 7 days of 30), from each name's first quoted date (after_first_quote) and with a resolved forward and vols (status ok), is kept, one file at a "
+                   "time, and only the columns this document reads.", where=GATE + [TARGET_30])
 
 
 def _bar_features(g, windows=(5, 22, 66), idio=66):
@@ -300,7 +300,7 @@ def _bar_features(g, windows=(5, 22, 66), idio=66):
 def build_h0(inputs, period):
     g = Graph(inputs, period)
     g.name = "h0-har-implied"
-    p30 = _panel_30(g)
+    p30 = _panel_30(g, ["straddle_ratio", "half_spread_over_premium"])
     feats = _bar_features(g)
     g.pairs("move31", "bars_ok", 31, "close", "move31", "The realized 31-calendar-day log move of the (split-adjusted) close from every close, settled on the "
             "target day's close or the latest earlier one; an entry whose target lies past the last close of the period is dropped, so "
@@ -351,27 +351,24 @@ def build_h0(inputs, period):
     return g
 
 
-def _entries(g, p30, features_attached=None):
+ENTRY_COLUMNS = ["expiration", "dte", "atm_strike", "atm_iv", "term_slope", "half_spread_over_premium", "liquidity_tercile"]
+
+
+def _entries(g, p30):
     """One straddle entry per (symbol, expiration): the first session on which the 30-DTE target expiry is at most 31 days out."""
-    g.filter("near31", p30, [{"field": "dte", "op": "<=", "value": 31}, {"field": "atm_strike", "op": "!=", "value": None},
-                             {"field": "atm_iv", "op": ">", "value": 0}],
-             "Rows whose 30-DTE target expiry is at most 31 calendar days out and whose ATM strike resolved.")
+    g.filter("near31", p30, [{"field": "dte", "op": "<=", "value": 31}, {"field": "dte", "op": ">=", "value": 28},
+                             {"field": "atm_strike", "op": "!=", "value": None}, {"field": "atm_iv", "op": ">", "value": 0}],
+             "Rows whose 30-DTE target expiry is 28 to 31 calendar days out and whose ATM strike resolved. The floor of 28 keeps an expiry whose first session fell before the "
+             "period began (so only a later, shorter-dated row remains) from entering late: it has no entry.")
     keep = {"date": "date", "atm_strike": "atm_strike", "atm_iv": "atm_iv", "term_slope": "term_slope",
-            "risk_reversal": "risk_reversal", "half_spread_over_premium": "half_spread_over_premium",
-            "liquidity_tercile": "liquidity_tercile", "dte_open": "dte"}
+            "half_spread_over_premium": "half_spread_over_premium", "liquidity_tercile": "liquidity_tercile", "dte_open": "dte"}
+    if "risk_reversal" in g.nodes[p30]["params"]["sources"][0]["columns"]:
+        keep["risk_reversal"] = "risk_reversal"
     aggregates = {out: {"op": "last", "field": src} for out, src in keep.items()}
     return g.add("entries", "groupby", {"keys": ["symbol", "expiration"], "order_field": "dte", "aggregates": aggregates},
                  {"records": g.ref("near31")},
                  "ONE entry per (symbol, expiry): ordered by days-to-expiry, the last row is the earliest session with the expiry at most 31 days out "
                  "(DTE 31 or the first later session when the symbol's cycle skips it). Entries therefore never overlap on one expiry.")
-
-
-def _straddle_orders(g, source, structure, notes):
-    return g.compute("orders", source, {
-        "open_date": _f("date"), "strikes": {"list": [_f("atm_strike"), _f("atm_strike")]},
-        "structure": {"text": structure}},
-        notes, keep=["symbol", "expiration", "date", "term_slope", "risk_reversal", "half_spread_over_premium",
-                     "atm_iv", "liquidity_tercile", "atm_strike"])
 
 
 def _ledger(g, key, orders, chain, structures, fill, close_rule, notes, order_exit=False, extra=None, orders_port="records"):
@@ -393,7 +390,7 @@ LEDGER_FIELDS = ["symbol", "expiration", "strike", "right", "bid", "ask", "under
 def build_h3(inputs, period):
     g = Graph(inputs, period)
     g.name = "h3-straddle-sorts"
-    p30 = _panel_30(g)
+    p30 = _panel_30(g, ENTRY_COLUMNS + ["risk_reversal"])
     feats = _bar_features(g)
     entries = _entries(g, p30)
     g.compute("entries_k", entries, {"open_date": _f("date")}, "The entry date as the ledger's open_date.")
@@ -445,7 +442,8 @@ def build_h3(inputs, period):
 def build_h1(inputs, period):
     g = Graph(inputs, period)
     g.name = "h1-implied-features-ic"
-    p30 = _panel_30(g)
+    p30 = _panel_30(g, ["put_call_iv_spread", "risk_reversal", "term_slope", "oi_put_call_ratio", "oi_put_call_ratio_change_5d",
+                        "volume_call", "volume_put", "oi_call", "oi_put"])
     g.bars("bars_raw", BAR_COLUMNS, notes="Yahoo daily bars of the tested names (pinned snapshots); the forward returns use the ADJUSTED close (split + dividend adjusted: total return).")
     g.filter("bars_ok", "bars_raw", [{"field": "adjusted_close", "op": ">", "value": 0}], "Bars with a price.")
     g.pairs("fwd5", "bars_ok", 7, "adjusted_close", "fwd5", "The next 5 sessions: the log return from the close to the close 7 calendar days later (or the latest earlier close). An entry whose "
@@ -492,7 +490,7 @@ def _short_orders(g, source):
 def build_h4(inputs, period):
     g = Graph(inputs, period)
     g.name = "h4-vrp"
-    p30 = _panel_30(g)
+    p30 = _panel_30(g, ENTRY_COLUMNS)
     feats = _bar_features(g, windows=(22,), idio=66)
     entries = _entries(g, p30)
     g.compute("entries_k", entries, {"open_date": _f("date")}, "The entry date as the ledger's open_date.")
@@ -543,11 +541,10 @@ def build_h2(inputs, period):
     g = Graph(inputs, period)
     g.name = "h2-earnings"
     rules = json.loads((CONFIGS / EVENTS_FILE).read_text())["pipeline"]["events"]["params"]
-    cols = PANEL_BASE + ["expiration", "dte", "spot", "atm_strike", "atm_iv", "straddle_ratio", "half_spread_over_premium"]
-    g.panel("panel", "panel", cols, "The panel of chain-day features, both targets (30 and 90 DTE), read through its pinned snapshot, bounded to the period.")
-    g.filter("panel_ok", "panel", [{"field": "after_first_quote", "op": "==", "value": True}], "Rows from each name's first quoted date.")
+    g.panel("panel", "panel", PANEL_BASE + ["atm_iv", "straddle_ratio", "spot"], "The panel of chain-day features, both targets (30 and 90 DTE), read through its pinned "
+            "snapshot, bounded to the period, from each name's first quoted date, only the columns the detector reads.", where=[GATE[0]])
     detector = {k: v for k, v in rules.items() if k != "end_before"}
-    g.add("events", DETECTOR, {**detector, "end_before": period.end_before}, {"records": g.ref("panel_ok")},
+    g.add("events", DETECTOR, {**detector, "end_before": period.end_before}, {"records": g.ref("panel")},
           "The frozen event rules of run-theta-chain-events.json (ADR-0265 Amendment 4), chosen on AAPL 2016-2019 announcements, applied unchanged to the whole universe: "
           "a front-30 ATM vol crush of >= 12 log points that is 3 robust sigmas below the name's own trailing 60 sessions, with the 30-90 spread collapsing, no more than 40% of "
           "the symbols of a date, at most one event per 50 sessions. The realized move is an OUTPUT, not a criterion. THIS IS A RETROSPECTIVE LABELLER, NOT A LIVE SIGNAL: the "
@@ -559,7 +556,7 @@ def build_h2(inputs, period):
               "sha256": inputs["labels"]["sha256"], "expect": 2}, notes="The owner-supplied labelled announcement dates, development years only.")
         g.add("events_labelled", DETECTOR, {**detector, "end_before": period.end_before, "labelled_only": True, "label_symbol_field": "symbol",
               "label_date_field": "earnings_date", "label_confidence_field": "confidence", "confidences": ["high"], "labels_key": "labels",
-              "match_before": 0, "match_after": 1, "label_event_offset": 1}, {"records": g.ref("panel_ok"), "labels": "$labels.table"},
+              "match_before": 0, "match_after": 1, "label_event_offset": 1}, {"records": g.ref("panel"), "labels": "$labels.table"},
               "One record per labelled announcement (event session = announcement + 1 session), flagged `detected`: the result on ALL labelled announcements, which is "
               "not selected on the vol outcome. The labels cover 5 names in 2016-2020 only; coverage by year is in the summary (labelled_by_year).")
     common = ["symbol", "event_date", "entry_date", "exit_date", "front_iv_before", "front_iv_after", "implied_move", "realized_move"]
@@ -585,9 +582,9 @@ def build_h2(inputs, period):
     _series_node(g, "gap_primary", "move_ok", "gap_30d", "event_date", "(a) PRIMARY as written, clustered by event week. Pass: mean > 0, Newey-West t >= 2.5.", by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
     _series_node(g, "gap_event", "move_ok", "event_gap", "event_date", "(a) SECONDARY (reported, never promoted): event-variance implied move minus realized move, by week.", by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
     # (b) the straddle through the ledger
-    g.panel("entry_panel", "panel", PANEL_BASE + ["expiration", "atm_strike", "half_spread_over_premium"], "The panel again, for the entry session's expiry and ATM strike.")
-    g.filter("entry_30", "entry_panel", GATE + [{"field": "target_dte", "op": "==", "value": 30}, {"field": "atm_strike", "op": "!=", "value": None}],
-             "The 30-DTE ATM strike and expiry known at each entry session's close.")
+    g.panel("entry_30", "panel", PANEL_BASE + ["expiration", "atm_strike", "half_spread_over_premium", "liquidity_tercile"],
+            "The panel again, for the entry session's expiry and ATM strike: the 30-DTE rows with a resolved ATM strike, known at each entry session's close.",
+            where=GATE + [TARGET_30, {"field": "atm_strike", "op": "!=", "value": None}])
     sources = ["detected"] + (["labelled"] if port == "merged" else [])
     structures = {}
     for tag in sources:
@@ -694,10 +691,10 @@ def build_h6(inputs, period):
     g = Graph(inputs, period)
     g.name = "h6-dispersion"
     p30 = _panel_30(g, ["atm_iv"])
-    g.panel("index_panel", "panel_index", ["symbol", "date", "target_dte", "status", "atm_iv"],
-            "The panel of chain-day features of the index root SPX (a panel of its own, ChainPanelBuild on the index tier), read through its pinned snapshot.")
-    g.filter("spx30", "index_panel", [{"field": "symbol", "op": "==", "value": "SPX"}, {"field": "target_dte", "op": "==", "value": 30}, {"field": "status", "op": "==", "value": "ok"},
-                                       {"field": "atm_iv", "op": ">", "value": 0}], "SPX's 30-DTE ATM implied vol: the index leg.")
+    g.panel("spx30", "panel_index", ["symbol", "date", "target_dte", "status", "atm_iv"],
+            "SPX's 30-DTE ATM implied vol, the index leg: the panel of chain-day features of the index root SPX (a panel of its own, ChainPanelBuild on the index tier), read through "
+            "its pinned snapshot, the ok 30-DTE rows with a positive vol.", where=[{"field": "symbol", "op": "==", "value": "SPX"}, TARGET_30,
+                                                                              {"field": "status", "op": "==", "value": "ok"}, {"field": "atm_iv", "op": ">", "value": 0}])
     _bar_features(g, windows=(22,), idio=66)
     g.filter("rv_names", "bar_feats", [{"field": "rv_22", "op": ">", "value": 0}], "Names with a 22-session realized vol.")
     g.add("spy_feats", BAR_FEATURES, {"entity_field": "symbol", "date_field": "date", "close_field": "adjusted_close", "realized_vol": {"windows": [22], "field": "rv_{window}"}},
@@ -705,7 +702,7 @@ def build_h6(inputs, period):
     g.filter("rv_spy", "spy_feats", [{"field": "rv_22", "op": ">", "value": 0}], "SPY dates with a realized vol.")
     g.pairs("fwd_rv", "rv_names", 31, "rv_22", "fwdrv", "The 22-session realized vol read at the close 31 calendar days later (or the previous close): the vol realized over the following ~31 days. Dropped past the period's last close.")
     g.pairs("fwd_spy", "rv_spy", 31, "rv_22", "fwdspy", "The same for SPY.")
-    base = g.agreed("names_agree", "p30")
+    base = g.agreed("names_agree", p30)
     g.attach("names_fwd", base, "fwd_rv", ["symbol", "date"], ["c1_fwdrv"], 0.3, "Forward realized vol: label-time, known 31 days later.")
     g.filter("names_ok", "names_fwd", [{"field": "atm_iv", "op": ">", "value": 0}, {"field": "c1_fwdrv", "op": ">", "value": 0}], "Names with an implied and a forward realized vol.")
     ann = math.sqrt(SESSIONS_PER_YEAR)
@@ -789,7 +786,7 @@ def build_h7(inputs, period):
     _series_node(g, "toward_star_series", "phased", "toward_star", "open_date", "DESCRIPTIVE: movement toward the max-open-interest strike.", bucket="month", h_steps=1)
     _series_node(g, "toward_placebo_series", "phased", "toward_placebo", "open_date", "DESCRIPTIVE: movement toward the placebo strike.", bucket="month", h_steps=1)
     # (b) the spread census
-    p30 = _panel_30(g, ["atm_iv", "half_spread_over_premium"])
+    p30 = _panel_30(g, ["half_spread_over_premium", "liquidity_tercile"])
     g.filter("spreads", p30, [{"field": "half_spread_over_premium", "op": ">=", "value": 0}], "Rows with a measured half-spread over premium.")
     _series_node(g, "spread_series", "spreads", "half_spread_over_premium", "date",
                  "SPREAD CENSUS: the monthly mean half-spread over premium of the 30-DTE ATM straddle, by liquidity tercile (null before 2021-01-01 by the panel's rule), with intervals.",
@@ -895,6 +892,16 @@ def dump(obj):
     return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
 
 
+def store_pin(spec):
+    """The manifest pin of the latest snapshot of a registered source (read-only), or ``""`` when there is none."""
+    from dskit.onboarding.artifacts import payload_files
+    try:
+        return payload_files(spec["root"], spec["source"], "files")["manifest_sha256"]
+    except Exception as exc:                         # an unregistered source or a missing store: the caller prints usage
+        print(f"cannot read the pin: {exc}")
+        return ""
+
+
 def freeze_universe(census_jsonl, symbols_out):
     """The frozen universe: every root the census saw with a bid above zero, with its first bid date and tercile."""
     roots = {}
@@ -925,11 +932,12 @@ def main(argv=None):
             print("differs from the generator:", *stale, sep="\n  ")
             return 1
         return 0
-    if verb == "set-pin" and len(argv) == 2:
-        name, pin = argv
+    if verb == "set-pin" and len(argv) in (1, 2):
+        name = argv[0]
         inputs = load_inputs()
-        if name not in inputs or len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
-            print("usage: set-pin panel|panel_index <64 hex>")
+        pin = argv[1] if len(argv) == 2 else store_pin(inputs.get(name))
+        if name not in ("panel", "panel_index") or len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
+            print("usage: set-pin panel|panel_index [<64 hex>]  (without a hash: the registered source's latest snapshot)")
             return 1
         inputs[name]["snapshot"] = pin
         (CONFIGS / INPUTS_FILE).write_text(dump(inputs))

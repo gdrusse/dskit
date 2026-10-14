@@ -13,6 +13,7 @@ import random
 from datetime import date, timedelta
 from functools import lru_cache
 
+from dskit.pipeline.kinds_flow import clause_holds
 from dskit.pipeline.libs.chain_features import ChainDayFeatures
 from dskit.pipeline.node import Node, NodeContext
 from dskit.pipeline.option_pricing import black76
@@ -73,7 +74,9 @@ class StaticRecords(Node):
                     day = row["date"] if isinstance(row["date"], str) else row["date"].isoformat()
                     if bounds.get("start", "0") <= day < bounds["end_before"]:
                         projected = {field: row[column] for column, field in columns.items()}
-                        out.append({k: (v.isoformat() if k in iso and hasattr(v, "isoformat") else v) for k, v in projected.items()})
+                        projected = {k: (v.isoformat() if k in iso and hasattr(v, "isoformat") else v) for k, v in projected.items()}
+                        if all(clause_holds(projected, c) for c in source.get("where", [])):
+                            out.append(projected)
             return {"records": out}
         symbols, fields = set(spec["symbols"]), spec["fields"]
         if not symbols & WORLD["symbols"][self.params["dataset"]]:

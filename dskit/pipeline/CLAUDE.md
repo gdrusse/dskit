@@ -76,6 +76,10 @@ dskit/pipeline/
 │                      holdout locked first, count-sized rolling folds, warm-up vs
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
+├── kinds_compute.py   ComputeFields (by import path, ADR-0265 Amendment 5): per-row arithmetic over declared fields, `keep` projection, text / list / item; null and
+│                      out-of-domain results are None and counted
+├── kinds_series.py    StampSeriesStats (by import path, ADR-0265 Amendment 5): stamped values to a per-group week / month series, Newey-West, Sharpe + calendar-block
+│                      bootstrap interval, hurdle, paired / unpaired contrast
 ├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
 ├── kinds_run_write.py RecordsWriteRun (records-write-run, a RecordsWrite subclass): `{run}` in the file stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085),
@@ -174,6 +178,7 @@ dskit/pipeline/
 │                      chain_features (ChainDayFeatures: ATM/wing IV, skew, term, straddle, spread, OI/volume per symbol-date-DTE from NBBO mids, by import path, ADR-0265),
 │                      chain_events (ChainEventDetector + ChainEventCalibrator: earnings-like events from the front-IV crush in the chain-day features, no calendar; a retrospective labeller, by import path, ADR-0265)
 │                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3
+│                      chain_orders (ChainStructureOrders: expiry + strike selection by atm / delta / max open interest / mirror from a daily chain, orders for the ledger, by import path, ADR-0265 Amendment 5); ParquetStreamRows takes `include` / `iso_fields` / `where`; DailyBarFeatures takes `realized_vol`; QuoteBook is chain_features' public quote book
 ├── README.md          user-facing docs
 ├── EXTENDING.md       extension points + gotchas (moved out of this file 2026-10-10)
 └── CLAUDE.md          this file

@@ -21,7 +21,6 @@
               "target_dte": "target_dte",
               "status": "status",
               "after_first_quote": "after_first_quote",
-              "liquidity_tercile": "liquidity_tercile",
               "atm_iv": "atm_iv"
             },
             "include": [
@@ -35,50 +34,30 @@
                 "start": "2016-01-04",
                 "end_before": "2021-01-01"
               }
-            }
+            },
+            "where": [
+              {
+                "field": "after_first_quote",
+                "op": "==",
+                "value": true
+              },
+              {
+                "field": "status",
+                "op": "==",
+                "value": "ok"
+              },
+              {
+                "field": "target_dte",
+                "op": "==",
+                "value": 30
+              }
+            ]
           }
         ]
       },
-      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, both targets, one file a date, read through its registered snapshot pin; `date` and `expiration` as ISO text. Bounded to the period's dates by predicate pushdown."
+      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, read through its registered snapshot pin, one file a date, `date` and `expiration` as ISO text, bounded to the period's dates by predicate pushdown. Only the 30-DTE target (the nearest listed expiry within 7 days of 30), from each name's first quoted date (after_first_quote) and with a resolved forward and vols (status ok), is kept, one file at a time, and only the columns this document reads."
     },
-    "panel_ok": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$panel.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "after_first_quote",
-            "op": "==",
-            "value": true
-          },
-          {
-            "field": "status",
-            "op": "==",
-            "value": "ok"
-          }
-        ]
-      },
-      "notes": "Rows from each name's first quoted date (after_first_quote) whose forward and vols resolved."
-    },
-    "p30": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$panel_ok.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "target_dte",
-            "op": "==",
-            "value": 30
-          }
-        ]
-      },
-      "notes": "The 30-DTE target (the nearest listed expiry within 7 days of 30)."
-    },
-    "index_panel": {
+    "spx30": {
       "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
       "params": {
         "sources": [
@@ -105,42 +84,33 @@
                 "start": "2016-01-04",
                 "end_before": "2021-01-01"
               }
-            }
+            },
+            "where": [
+              {
+                "field": "symbol",
+                "op": "==",
+                "value": "SPX"
+              },
+              {
+                "field": "target_dte",
+                "op": "==",
+                "value": 30
+              },
+              {
+                "field": "status",
+                "op": "==",
+                "value": "ok"
+              },
+              {
+                "field": "atm_iv",
+                "op": ">",
+                "value": 0
+              }
+            ]
           }
         ]
       },
-      "notes": "The panel of chain-day features of the index root SPX (a panel of its own, ChainPanelBuild on the index tier), read through its pinned snapshot."
-    },
-    "spx30": {
-      "uses": "filter",
-      "inputs": {
-        "records": "$index_panel.records"
-      },
-      "params": {
-        "where": [
-          {
-            "field": "symbol",
-            "op": "==",
-            "value": "SPX"
-          },
-          {
-            "field": "target_dte",
-            "op": "==",
-            "value": 30
-          },
-          {
-            "field": "status",
-            "op": "==",
-            "value": "ok"
-          },
-          {
-            "field": "atm_iv",
-            "op": ">",
-            "value": 0
-          }
-        ]
-      },
-      "notes": "SPX's 30-DTE ATM implied vol: the index leg."
+      "notes": "SPX's 30-DTE ATM implied vol, the index leg: the panel of chain-day features of the index root SPX (a panel of its own, ChainPanelBuild on the index tier), read through its pinned snapshot, the ok 30-DTE rows with a positive vol."
     },
     "bars_raw": {
       "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
@@ -386,7 +356,7 @@
     "names_agree": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
       "inputs": {
-        "records": "$p30.records"
+        "records": "$panel.records"
       },
       "params": {
         "fields": {
