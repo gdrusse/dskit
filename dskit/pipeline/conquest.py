@@ -244,10 +244,15 @@ class HorizonConquest(Node):
             if slice_field is not None:
                 unit_slices.setdefault(unit, set()).add(slice_value)
 
+        # unit -> the set of horizons it evidences, built in one pass so the
+        # walk below never rescans every key per unit.
+        unit_horizons = {}
+        for key in units:
+            unit_horizons.setdefault(key[0], set()).add(key[1])
         caps = []
         total_passed = 0
         for unit in sorted({key[0] for key in units}, key=str):
-            horizon_keys = sorted({key[1] for key in units if key[0] == unit})
+            horizon_keys = sorted(unit_horizons[unit])
             if horizon_keys != list(range(1, len(horizon_keys) + 1)):
                 present = set(horizon_keys)
                 missing = [
