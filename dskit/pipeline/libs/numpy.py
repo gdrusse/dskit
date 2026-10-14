@@ -141,6 +141,8 @@ import math
 from abc import abstractmethod
 from collections import namedtuple
 from dataclasses import is_dataclass, replace
+from itertools import repeat
+from operator import is_
 
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import Node, reject_unknown_params
@@ -791,8 +793,10 @@ def _carried_column(name, values):
 
 def _field_column(records, name, missing):
     """One field read off every record, attr-or-key, ``missing`` when absent."""
-    if all(type(record) is dict for record in records):
-        return [record.get(name, missing) for record in records]
+    if all(map(is_, map(type, records), repeat(dict))):
+        # All exact dicts: the check and `dict.get` both mapped in C, no
+        # per-record bytecode.
+        return list(map(dict.get, records, repeat(name), repeat(missing)))
     return [
         record.get(name, missing) if isinstance(record, dict)
         else getattr(record, name, missing)
@@ -800,14 +804,26 @@ def _field_column(records, name, missing):
     ]
 
 
+def _all_float_or_none(values):
+    """Whether every value is an exact ``float`` or ``None``, by identity alone.
+
+    The all-float stream is decided in C first; one with absences falls
+    back to the per-value test.
+    """
+    return all(map(is_, map(type, values), repeat(float))) or all(
+        type(value) is float or value is None for value in values
+    )
+
+
 def _lifted_column(records, name):
-    """One numeric field as a float64 array by :func:`_num`'s rule, vectorized when all-float."""
+    """One numeric field as a float64 array by :func:`_num`'s rule, vectorized when float-or-None."""
     import numpy as np
 
     raw = _field_column(records, name, None)
-    if all(type(value) is float for value in raw):
+    if _all_float_or_none(raw):
         # An exact float is lifted as itself when finite and as NaN when
-        # not — which is what `_num` answers, cell by cell.
+        # not, and numpy reads ``None`` as NaN under a float64 dtype —
+        # which is what `_num` answers, cell by cell.
         column = np.array(raw, dtype=np.float64)
         absent = ~np.isfinite(column)
         if absent.any():
@@ -1057,7 +1073,11 @@ def _identified(carried, carry, required, n):
     if not required or any(name not in carry for name in required):
         return None
     columns = [carried[carry.index(name)] for name in required]
-    return [all(cluster_ok(column[pos]) for column in columns) for pos in range(n)]
+    # Each column holds exactly `n` cells, so walking them by zip is the
+    # per-position read; `cluster_ok` already answers a bool.
+    if len(columns) == 1:
+        return list(map(cluster_ok, columns[0]))
+    return [all(map(cluster_ok, cells)) for cells in zip(*columns)]
 
 
 def _row_cells(columns, names, n):
