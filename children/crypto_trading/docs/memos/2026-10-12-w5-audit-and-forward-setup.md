@@ -66,3 +66,21 @@ Maker fee is 0: the fee schedule is quadratic and "makers pay nothing" (`fees.py
 - On one real-tape day (33 markets, 2026-10-07) the fill rates match the proxy.
 - **The verdict waits for the real tape.** The W5 trade pull runs at about 23 s a market, so it lands in about 24–28 h, not 13. `logs/maker-when-ready.sh` runs `research/maker/run.sh` on it automatically and writes `research/maker/report.out`.
 - Only if the move-with rule is positive under a queue-aware fill model on the real tape does it get a forward pre-registration, scored on the recorded books.
+
+## Maker simulation on the real tape (2026-10-15): no maker edge
+
+Source `kalshi-history-trades-15m-w5`, pulled as six widened close windows after two WSL crashes (C: was full); 86.9M trades, all 4,368 W5 markets. Same rules and orders as the proxy; fills from the prints: conservative (traded through our price), queue (at least 1,000 contracts at our price, about a touch-size queue) and optimistic (any trade at our price).
+
+| Rule (cancel at the next decision) | Fills/day | Conservative | Queue | Optimistic |
+|---|---|---|---|---|
+| Touch, no signal | 2,260 | −1.47c (t −17) | −0.95c (t −14) | +0.08c (t 2.3) |
+| Sell the long shot (mid ≥ .80) | 220–270 | −0.09c (t −0.1) | +0.50c (t 0.5) | +1.18c (t 1.3) |
+| Quote with the early move | 350–430 | −0.63c (t −0.7) | +0.25c (t 0.3) | +1.01c (t 1.2) |
+| Blend-skewed, ±1–3c | 1,700–2,100 | −0.8 to −1.0c (t −5 to −10) | −0.65 to −0.73c | −0.14 to −0.40c |
+
+- The adverse selection is real: about 1.5–1.8c against the 0.4–0.5c half-spread earned, at every lead and on both sides.
+- The two biases still carry signal (+1.6 to +1.9c), but adverse selection takes almost all of it. The move-with rule is +0.25c, t 0.3 under queue fills, and +0.02c / +0.45c on the two halves. That is not positive in any useful sense, so it gets no forward pre-registration (the rule above). Cancelling at the close changes nothing.
+- The blend gives makers nothing either: about −1c whatever the skew.
+- **Verdict:** the maker line is closed, like the taker rule on W5. The only live test is the overnight forward rule, read on 2026-11-11.
+
+Ops: the chunked pull is `logs/trades-w5-chunks.sh` (reboot-safe through `trades-w5-resume.sh`). `logs/host-disk-ok.sh` now holds heavy jobs when C: has under 20 GB free. The crashes zeroed the store's event-log tail and left six record files empty; the repair (quarantine plus exact rebuilds) is in `logs/store-repair-20261014/`. Order books are missing for the two outages: 10-13 05:28 to 10-13 22:45 and 10-14 16:21 to 22:32.

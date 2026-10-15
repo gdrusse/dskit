@@ -45,12 +45,10 @@ development data. W5 audit: no bug (`docs/memos/2026-10-12-w5-audit-and-forward-
 - Forward test pre-registered (`2026-10-12-forward-preregistration.md`): overnight blend, leads 9-14,
   markets closing 2026-10-12..11-11; read once on 2026-11-11 (W5 configs with the cut moved; the
   holdout guard is `configs/holdout-forward.json`).
-- Maker simulation on W5 trade prints once `kalshi-history-trades-15m-w5` lands (pull started
-  2026-10-12 ~16:17 EDT, ~24-28 h; `data/crypto_trading/logs/trades-w5.out`). Runs itself on landing
-  (`logs/maker-when-ready.sh`, not reboot-safe) -> `data/crypto_trading/research/maker/report.out`.
-  Candle proxy: no maker edge under conservative fills (memo, maker section). Research scripts:
-  `data/crypto_trading/research/` (leads, w5, maker).
-- Running ops (outside the repo, `data/crypto_trading/logs/`): `books-recorder.sh` (15 s books,
+- Maker simulation on the real W5 tape (86.9M trades, 2026-10-15): no maker edge. Adverse selection (about 1.5-1.8c)
+  eats the half-spread and the biases; move-with is +0.25c (t 0.3) under queue fills. Maker line closed (memo, last section).
+  Research scripts: `data/crypto_trading/research/` (leads, w5, maker).
+- Running ops (outside the repo, `data/crypto_trading/logs/`; heavy jobs held by `host-disk-ok.sh` when C: has < 20 GB): `books-recorder.sh` (15 s books,
   @reboot cron), `forward-pull.sh` (daily 02:15 cron, pinned worktree `wt/crypto-pull`).
   Forward GRU refit (B9) saved to `data/crypto_trading/production-fwd`.
 
