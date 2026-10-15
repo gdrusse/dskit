@@ -76,6 +76,10 @@ dskit/pipeline/
 │                      holdout locked first, count-sized rolling folds, warm-up vs
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
+├── kinds_compute.py   ComputeFields (by import path, ADR-0265 Amendment 5): per-row arithmetic over declared fields, `keep` projection, text / list / item; null and
+│                      out-of-domain results are None and counted
+├── kinds_series.py    StampSeriesStats (by import path, ADR-0265 Amendment 5): stamped values to a per-group week / month series, Newey-West, Sharpe + calendar-block
+│                      bootstrap interval, hurdle, paired / unpaired contrast
 ├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
 ├── kinds_run_write.py RecordsWriteRun (records-write-run, a RecordsWrite subclass): `{run}` in the file stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085),
@@ -83,7 +87,8 @@ dskit/pipeline/
 │                      one series or one per `symbol_field`, ADR-0259)
 ├── kinds_stats.py     owned validate + stat_test; CrossSectionIC (by import path, ADR-0259):
 │                      per-instant rank IC of named measures across names, a benchmark
-│                      partialled out, split/month summaries, drop census
+│                      partialled out, split/month summaries, drop census; QuantileSortBook (by import
+│                      path, ADR-0265): per-stamp quantile long-short book, cost per side, NW + bootstrap + BH
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
 │                      are generic search values (ADR-0113).
@@ -114,6 +119,7 @@ dskit/pipeline/
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 │                      CalendarBlockBootstrap + EdgePaddedCalendarBlockBootstrap:
 │                      calendar-day block resampling, one `_blocks_for` hook (ADR-0258)
+│                      sample_quantile: interpolated quantile of a whole sample (ADR-0265)
 ├── binary_pricing.py  AveragedLognormal law, Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
 ├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)
 ├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0257)
@@ -124,7 +130,9 @@ dskit/pipeline/
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
 │                      to [floor, ceiling], a smile that dips below zero refused
-│                      (ADR-0182 tier placement)
+│                      (ADR-0182 tier placement); black76_implied_vol (safeguarded Newton, ADR-0265)
+├── option_structures.py leg-set algebra (credit, payoff, max loss, quote_defect) graduated from
+│                      the index_options child; names no structure (ADR-0265)
 ├── false_signal.py    pi_hat + a widened pi_widened per signal, from
 │                      out-of-fold evidence and a scramble null (ADR-0152);
 │                      pi_widened is a widened point estimate, not a bound
@@ -156,15 +164,21 @@ dskit/pipeline/
 │                      pyomo, sb3, matplotlib, lightgbm (a fitted volatility-
 │                      scale rung, ADR-0181),
 │                      mlflow (tracking SINK pack, no nodes),
-│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
+│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077; ObservationUnitRows: member-order stream deduplicated by unit only, memory O(units), ADR-0265),
 │                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
-│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260; PanelHorizonFairValue prices a binary from a forecaster's CDF, ADR-0262)
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date; underlying_close writes the moneyness denominator out, ADR-0259)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries + prior_index + the stream-manifests node, ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
+│                      option_ledger (OptionStructureLedger: NBBO open, mid marks, settle/exit, optional Black-76 delta hedge, by import path, ADR-0265),
+│                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260; PanelHorizonFairValue prices a binary from a forecaster's CDF, ADR-0262)
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0256),
-│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257)
+│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257),
+│                      chain_census (ChainCensus + quote_state: per-root coverage and quote quality of a daily option-chain stream, by import path, ADR-0265),
+│                      chain_features (ChainDayFeatures: ATM/wing IV, skew, term, straddle, spread, OI/volume per symbol-date-DTE from NBBO mids, by import path, ADR-0265),
+│                      chain_events (ChainEventDetector + ChainEventCalibrator: earnings-like events from the front-IV crush in the chain-day features, no calendar; a retrospective labeller, by import path, ADR-0265)
+│                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3
+│                      chain_orders (ChainStructureOrders: expiry + strike selection by atm / delta / max open interest / mirror from a daily chain, orders for the ledger, by import path, ADR-0265 Amendment 5); ParquetStreamRows takes `include` / `iso_fields` / `where`; DailyBarFeatures takes `realized_vol`; QuoteBook is chain_features' public quote book
 ├── README.md          user-facing docs
 ├── EXTENDING.md       extension points + gotchas (moved out of this file 2026-10-10)
 └── AGENTS.md          this file
