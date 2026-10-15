@@ -1705,6 +1705,29 @@ def test_adwin_cuts_take_the_slice_sums_for_a_numpy_float():
     assert_adwin_cuts_are_the_slice_means(values)
 
 
+class _DeviantFloat(float):
+    """A float whose ``__float__`` lies: ``fsum`` reads the stored double, never the hook."""
+
+    def __float__(self):
+        return float.__float__(self) + 1.0
+
+
+class _HalfInt(int):
+    """An int whose ``__float__`` halves it: ``fsum`` converts through the hook."""
+
+    def __float__(self):
+        return int.__float__(self) * 0.5
+
+
+def test_adwin_cuts_take_the_slice_sums_for_a_float_subclass_with_a_float_hook():
+    values = (0.0, 1.0, 0.5, 2.0, 0.25, 3.0, 1.0, 0.0)
+    assert_adwin_cuts_are_the_slice_means([_DeviantFloat(value) for value in values])
+
+
+def test_adwin_cuts_take_the_slice_sums_for_an_int_subclass_with_a_float_hook():
+    assert_adwin_cuts_are_the_slice_means([_HalfInt(value) for value in (0, 1, 5, 2, 7, 3, 1, 0)])
+
+
 @pytest.mark.parametrize("big", [1.7e308, -1.7e308, 2.0**1023])
 def test_adwin_keeps_the_fsum_overflow_refusal_of_a_side_too_large_to_sum(big):
     monitor = adwin(threshold=at_most(NEVER), min_sub=2, max_window=4)
