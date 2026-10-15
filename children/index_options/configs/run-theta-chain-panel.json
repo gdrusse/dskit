@@ -133,7 +133,7 @@
         "chunk_months": 3,
         "census_asof": "2019-01-01"
       },
-      "notes": "D9: census liquidity uses 2016-2018 only; census_asof 2019-01-01 keeps terciles null before 2019. Features and stale-spot rules are unchanged. A bounded pre-2026 rate source is required before any run: the legacy ObservationRows path is blocked by the owner's strict no-read seal."
+      "notes": "D9: census liquidity uses 2016-2018 only; census_asof 2019-01-01 keeps terciles null before 2019. Features and stale-spot rules are unchanged. The rates input uses a bounded, explicitly pinned Parquet source; an unresolved pin refuses before rate-data decoding."
     },
     "summary": {
       "uses": "run-report",
@@ -149,16 +149,33 @@
       "notes": "evidence.md renders the roots built / skipped / empty, the rows and dates, the status counts per target, the quote exclusions and the reader counters."
     },
     "rates_raw": {
-      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
       "params": {
-        "root": "/home/russell/data/index_options/ob",
-        "source": "fred-market-features",
-        "stream": "dgs3mo",
-        "key_fields": [
-          "observation_date"
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-rates-pre2026",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "stream": "files",
+            "include": [
+              "*.parquet"
+            ],
+            "columns": {
+              "observation_date": "observation_date",
+              "DGS3MO": "DGS3MO"
+            },
+            "iso_fields": [
+              "observation_date"
+            ],
+            "read_bounds": {
+              "observation_date": {
+                "end_before": "2026-01-01"
+              }
+            }
+          }
         ]
       },
-      "notes": "The FRED 3-month constant-maturity Treasury yield (DGS3MO, percent, dated by the observation date, '.' on a holiday) from the index_options onboarding root, read-only. The series runs to 2026-09, so the node below drops 2026 before anything joins it."
+      "notes": "Strict seal: read the same FRED DGS3MO definition only from a separately registered safe rate artifact. The unresolved zero pin refuses before scanning any records. Never read the mixed-year legacy observation stream to create this input; no rate substitution is permitted."
     },
     "rates": {
       "uses": "filter",
@@ -179,7 +196,7 @@
           }
         ]
       },
-      "notes": "Sealed period and holidays: a 2026 observation never reaches the features node (which also refuses one), and a '.' (no print) is not a rate. The 2026 rows are parsed by the reader above and dropped here; the series is a macro rate, not option data."
+      "notes": "Holiday prints ('.') are excluded. The upstream reader already applies end_before 2026-01-01 before row materialization; this filter is only a second bound, not the seal."
     }
   }
 }

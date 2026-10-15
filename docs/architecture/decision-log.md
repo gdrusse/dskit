@@ -31159,3 +31159,16 @@ A day the vendor has not published yet (404) counts against the existing `max_re
 | D11 | H4 weekly-versus-monthly is dropped (not built); H4 keeps its monthly legs. |
 
 Consequences to implement (by the generator, `index_options.theta_hypotheses`, then `check`): H2 primary and notes (D3, D4), H5 primary cell and fee sensitivity (D7), panel `census_asof` 2019-01-01 (D9), H7 and H4 notes (D10, D11). Order of use unchanged: census, freeze-universe, panel, development runs, then each validation twin once.
+
+
+**ADR-0265 Amendment 6 implementation safeguard (2026-10-15, before any programme run).**
+The owner's strict no-read-2026 instruction forbids the panel's legacy `ObservationRows`
+rate reader: a downstream filter decodes sealed rows before discarding them. Both generated
+panel documents will instead use the existing `ParquetStreamRows` with an observation-date
+`end_before` of 2026-01-01 and a separately registered, hash-pinned `theta-rates-pre2026`
+source. Its pin remains an unresolved zero placeholder until an independently safe artifact
+is identified and registered; no mixed-2026 source may be read to manufacture it. Thus the
+panel refuses before rate-data decoding until the safe input exists. No rate is substituted,
+and no statistic, sign, threshold, split or event rule changes. `set-pin rates` only records
+the vetted snapshot identity, as for the existing panel pins. This is an execution safeguard
+under the owner's existing seal, not a new empirical pre-registration or permission to run.

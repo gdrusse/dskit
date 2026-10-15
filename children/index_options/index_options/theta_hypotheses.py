@@ -1005,8 +1005,13 @@ def apply_args(args):
     return period
 
 
-def panel_documents():
+def panel_documents(inputs=None):
     """Generate the amended census and stock/index panel documents.
+
+    Parameters
+    ----------
+    inputs : dict, optional
+        Store references and explicit safe rate snapshot pin.
 
     Returns
     -------
@@ -1018,11 +1023,21 @@ def panel_documents():
     OSError
         A prerequisite document cannot be read.
     """
+    inputs = inputs or load_inputs()
     base = json.loads((CONFIGS / PANEL_DOC).read_text())
     base["pipeline"]["panel"]["params"]["census_asof"] = TERCILE_ASOF
     base["pipeline"]["panel"]["notes"] = ("D9: census liquidity uses 2016-2018 only; census_asof 2019-01-01 keeps terciles null before 2019. "
-        "Features and stale-spot rules are unchanged. A bounded pre-2026 rate source is required before any run: the legacy ObservationRows path is blocked by the owner's strict no-read seal.")
+        "Features and stale-spot rules are unchanged. The rates input uses a bounded, explicitly pinned Parquet source; an unresolved pin refuses before rate-data decoding.")
     base["pipeline"]["chain"]["params"]["start"] = DEV.start
+    base["pipeline"]["rates_raw"] = {
+        "uses": PARQUET_STREAM,
+        "params": {"sources": [{**inputs["rates"], "stream": "files", "include": ["*.parquet"],
+            "columns": {"observation_date": "observation_date", "DGS3MO": "DGS3MO"},
+            "iso_fields": ["observation_date"],
+            "read_bounds": {"observation_date": {"end_before": SEALED}}}]},
+        "notes": "Strict seal: read the same FRED DGS3MO definition only from a separately registered safe rate artifact. The unresolved zero pin refuses before scanning any records. Never read the mixed-year legacy observation stream to create this input; no rate substitution is permitted."}
+    base["pipeline"]["rates"]["notes"] = (
+        "Holiday prints ('.') are excluded. The upstream reader already applies end_before 2026-01-01 before row materialization; this filter is only a second bound, not the seal.")
     doc = json.loads(json.dumps(base))
     doc["name"] = "theta-chain-panel-index"
     doc["notes"] = ("The panel of chain-day features of the index root SPX for H6 (ADR-0265 Amendment 5): run-theta-chain-panel.json with the index tier "
@@ -1049,7 +1064,7 @@ def panel_documents():
 def files(inputs=None):
     """Every generated file: ``{name: object}`` (documents, overlays and the index panel document)."""
     inputs = inputs or load_inputs()
-    out = dict(panel_documents())
+    out = dict(panel_documents(inputs))
     for h in HYPOTHESES:
         out[doc_file(h, DEV)] = build(h, DEV, inputs)
         args = args_for(h)
@@ -1087,6 +1102,18 @@ def freeze_universe(census_jsonl, symbols_out):
 
 
 def main(argv=None):
+    """Generate/check documents or record explicit input pins and universe metadata.
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        CLI verb and arguments; otherwise use the process arguments.
+
+    Returns
+    -------
+    int
+        Zero on success, one on a usage or consistency error.
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
     verb = argv.pop(0) if argv else ""
     if verb in ("write", "check"):
@@ -1106,8 +1133,8 @@ def main(argv=None):
         name = argv[0]
         inputs = load_inputs()
         pin = argv[1] if len(argv) == 2 else store_pin(inputs.get(name))
-        if name not in ("panel", "panel_index") or len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
-            print("usage: set-pin panel|panel_index [<64 hex>]  (without a hash: the registered source's latest snapshot)")
+        if name not in ("panel", "panel_index", "rates") or len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
+            print("usage: set-pin panel|panel_index|rates [<64 hex>]  (without a hash: the registered source's latest snapshot)")
             return 1
         inputs[name]["snapshot"] = pin
         (CONFIGS / INPUTS_FILE).write_text(dump(inputs))

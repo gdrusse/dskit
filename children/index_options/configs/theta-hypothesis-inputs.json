@@ -1,5 +1,5 @@
 {
-  "notes": "Inputs of the ADR-0265 hypothesis documents (Amendment 5), read by index_options.theta_hypotheses: where the stores are, the snapshot pins of the registered inputs and the frozen universe. The two panel pins are 64 zeros until the panel is built and registered (`set-pin`): a document with a zero pin refuses at run time, which is the point. `universe` is a placeholder name until the census has run and `freeze-universe` has written configs/theta-universe.json: a chain reader asked for that name finds no root and refuses. Bar pins are the committed snapshots of the Yahoo daily-bar pulls (stock-daily-bars: the latest of three identical 233-file snapshots; stock-daily-bars-300; benchmark-daily-bars). Never edit by hand except through the CLI.",
+  "notes": "Inputs of the ADR-0265 hypothesis documents (Amendment 5), read by index_options.theta_hypotheses: where the stores are, the snapshot pins of the registered inputs and the frozen universe. The two panel pins are 64 zeros until the panel is built and registered (`set-pin`): a document with a zero pin refuses at run time, which is the point. `universe` is a placeholder name until the census has run and `freeze-universe` has written configs/theta-universe.json: a chain reader asked for that name finds no root and refuses. Bar pins are the committed snapshots of the Yahoo daily-bar pulls (stock-daily-bars: the latest of three identical 233-file snapshots; stock-daily-bars-300; benchmark-daily-bars). Never edit by hand except through the CLI. The rates pin is unresolved: panel generation uses a separately registered, bounded pre-2026 rate source and cannot read the legacy mixed-year observation stream.",
   "panel": {
     "root": "/home/russell/data/index_options/ob",
     "source": "theta-chain-panel",
@@ -55,5 +55,10 @@
   ],
   "labels": {
     "sha256": "16668d5d6eafbb3b1fc10742fefef18123d2df865d79e794c27f52f925b5f92f"
+  },
+  "rates": {
+    "root": "/home/russell/data/index_options/ob",
+    "source": "theta-rates-pre2026",
+    "snapshot": "0000000000000000000000000000000000000000000000000000000000000000"
   }
 }

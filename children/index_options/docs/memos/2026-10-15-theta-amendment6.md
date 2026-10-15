@@ -1,6 +1,6 @@
 ## TL;DR
 
-Phase A is in progress. No real-data hypothesis, census, panel, validation or training run has occurred in this session.
+Phase A is in review after the sealed-rate correction. No real-data hypothesis, census, panel, validation or training run has occurred in this session.
 
 ## Execution contract
 
@@ -32,7 +32,7 @@ Synthetic tests only. No empirical pass/fail exists yet.
 - Added fee/risk behavior checks initially accessed persisted output references as rows; corrected to read the synthetic audit files. No runtime rule changed in that correction.
 - `python -m index_options.theta_hypotheses check`: passed. All 23 `run-theta-*.json` documents: validate + plan, 46 checks passed, zero data execution. Logs: `/tmp/theta-amendment6-validation.json`.
 - Targeted ruff: unchanged base 16 findings; current 14, all pre-existing (docstrings plus lambda/variable naming). Two edited docstrings corrected; no ignore or check disabled. Logs: `/tmp/theta-amendment6-ruff{,-base}.txt`.
-- Requested two-file rerun pending at candidate freeze; `/tmp/theta-amendment6-final-tests.txt`.
+- Requested two-file rerun: 776 passed, sole failure numeric memo count548->549. Correction7c364d76; the exact manifest test then passed (1 passed0.63s). All777 requested cases pass across these runs; no further full rerun needed for the count-only correction. Final generator check and all46 validate/plan checks pass. `/tmp/theta-amendment6-final-tests.txt`.
 
 ### Design review and fixed contract
 
@@ -50,3 +50,24 @@ Review matrix: (a) unchanged statistics/signs/thresholds/half splits outside D3/
 ## Reproducibility and handoff
 
 Use /home/russell/dskit/.venv/bin/python with PYTHONPATH pointing at this worktree; run from children/index_options. Phase B remains gated on completed tested-tier export, safe bounded inputs and committed frozen universe/pins.
+
+Read-only readiness check: cursor updated 2026-10-15T23:41:32+00:00 (19:41 ET), 76 roots present,75 reached oldest<=2016-01-04 of414 required. CHTR oldest2023-07-06; BRUN/CBRS no_chain. No ALERT.txt. Latest logged export alarms=[], verify OK; historical cumulative alarms3 (date_coverage2, rows_per_date_jump1) remain recorded, not erased. Raw-only warnings list113 snapshots (known observation-copy offload); no assumption that warnings prove full tier complete. C:103GB free. No Phase B run started; H-census and H0-H7 are NOT RUN, not failed. No new run ledger row is appropriate for non-execution.
+
+
+## Retained final-lens round 1 (superseded, not release approval)
+
+GPT-5.6 Terra `/root/terra_final_correctness`, candidate7c364d76 against basebd7c6612:
+
+> Finding - Major, unresolved (1): Phase B is not technically blocked. The two panel configs only state that Phase B is blocked. Yet rates_raw still uses unbounded ObservationRows; its keep_values() is None, so it calls scan_stream and materializes the stream before downstream rates drops2026. A real panel run can therefore parse sealed2026 rates. Consequence: the strict no-read seal depends on prose. Add an executable refusal/bounded pre-2026 source and regression test before any real run. This review approves no real runs.
+>
+> All other assigned invariants passed inspection: D3 source/week/halves; D4 labelled population; D7 one primary and descriptive fee/ROC; D9 cutoff/original halves; D10/D11; historical ADR clearly marked; label file digest matches. Check and diff check passed; Amendment6 tests10 passed, manifest1 passed. Critical0; Major1 unresolved; Minor0; Nit0.
+
+GPT-6 Luna `/root/luna_final_tests`, same candidate7c364d76:
+
+> Independent tests/integration lens on candidate7c364d76 against basebd7c6612: no proven findings;0 unresolved Critical/Major. The D3 event-gap source/week/half wiring, D4 labelled-only H2(b) population, D7 sole zero-fee SPX put-write hurdle and descriptive fee/capital streams, D9 cutoff with original halves, and D10/D11 behavior match the stated contract. H5 tests exercise synthetic ledger output. I also checked all20 AAPL source pages against their recorded dates. Verification: two scoped test files777 passed with278 deprecation warnings. Generator check and all23 validate+23 plan passed. No empirical data was run; D3/D4/D9 conclusions remain synthetic or config-level.
+
+### Batched correction
+
+Terra's Major is accepted; Luna's clean lens is superseded for the changed candidate. No severity downgrade. The ADR implementation-safeguard paragraph was written before code; it changes no statistical contract. Both panel rates_raw nodes now use the existing ParquetStreamRows with end_before2026-01-01, source theta-rates-pre2026 and an explicit unresolved zero pin. The old unbounded observation source is absent from those graphs. `set-pin rates` records the future vetted input. No source was acquired or data read. The safe artifact remains a Phase B prerequisite.
+
+RED on unchanged reader: both panel tests failed because ObservationRows was still configured (2 failed). GREEN: 20 targeted checks passed (rate refusal, pin update, node validation); rate-refusal tests use an empty temporary store and spies that fail on any legacy scan or Arrow dataset scan. An unresolved pin refuses before either scanner is invoked. New full focused run and two fresh final lenses pending.

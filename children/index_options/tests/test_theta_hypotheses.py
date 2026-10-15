@@ -159,6 +159,8 @@ def test_set_pin_and_freeze_universe_write_the_inputs_and_regenerate_to_a_consis
     monkeypatch.setattr(th, "store_pin", lambda spec: "cd" * 32)
     assert th.main(["set-pin", "panel_index"]) == 0 and th.load_inputs()["panel_index"]["snapshot"] == "cd" * 32
     assert th.main(["set-pin", "bars", "ab" * 32]) == 1
+    assert th.main(["set-pin", "rates", "ef" * 32]) == 0
+    assert th.files()[th.PANEL_DOC]["pipeline"]["rates_raw"]["params"]["sources"][0]["snapshot"] == "ef" * 32
     census = tmp_path / "census.jsonl"
     census.write_text("\n".join(json.dumps(r) for r in [
         {"root": "AAA", "first_bid_date": "2016-01-04", "liquidity_tercile": 2, "median_quoted_development": 9.0},
@@ -629,3 +631,23 @@ def test_amendment6_h2_labelled_primary_excludes_detected_events():
     rows = [{"event_source": source, "pnl_over_premium": value} for source, value in [("detected", 99), ("labelled", -1)]]
     out = Filter("primary", nodes["pnl_primary_rows"]["params"]).run(ctx, {"records": rows})["records"]
     assert out == [rows[1]]
+
+
+@pytest.mark.parametrize("name", [th.PANEL_DOC, th.INDEX_PANEL_DOC])
+def test_panel_rates_refuse_unresolved_input_without_scanning_any_records(name, tmp_path, monkeypatch):
+    from dskit.pipeline.libs.parquet import ParquetStreamRows
+    from dskit.pipeline.node import NodeContext
+    from dskit.onboarding import observations
+    node = th.files()[name]["pipeline"]["rates_raw"]
+    assert node["uses"] == "dskit.pipeline.libs.parquet:ParquetStreamRows"
+    params = copy.deepcopy(node["params"])
+    source = params["sources"][0]
+    assert source["source"] == "theta-rates-pre2026"
+    assert source["snapshot"] == "0" * 64
+    assert source["read_bounds"] == {"observation_date": {"end_before": "2026-01-01"}}
+    source["root"] = str(tmp_path / "absent-store")
+    monkeypatch.setattr(observations, "scan_stream", lambda *a, **kw: pytest.fail("legacy stream read"))
+    monkeypatch.setattr("pyarrow.dataset.dataset", lambda *a, **kw: pytest.fail("scanner reached unresolved input"))
+    ctx = NodeContext(name="t", asof="2025-12-31", run_dir=str(tmp_path))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        ParquetStreamRows("rates_raw", params).run(ctx, {})
