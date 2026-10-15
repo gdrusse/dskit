@@ -1,6 +1,7 @@
 """bar_features: daily bar and option-trade bar features, hand-computed, leak-tested, refusals."""
 
 import math
+import tracemalloc
 
 import pytest
 
@@ -195,6 +196,27 @@ def test_streaming_reads_only_through_the_first_key_change():
 
     next(node.stream(feed(), {}))
     assert len(taken) == 5  # first group is rows 0-3; row 4 is the key change that closes it
+
+
+@pytest.mark.parametrize("presorted", [True, False])
+def test_trade_stream_memory_does_not_grow_with_distinct_date_cells(presorted):
+    """Memory is the groups' cells, never the stream: every-row-distinct timestamp cells must not pile up."""
+    node = TradeBarFeatures("t", {**TRADE, "presorted": presorted})
+
+    def peak(n):
+        def feed():
+            for i in range(n):
+                stamp = f"{D1}T09:{(i // 60) % 60:02d}:{i % 60:02d}.{i:06d}"
+                yield _t(stamp, "E1", 100 + 10 * (i % 3), "CP"[i % 2], 1, 1.0)
+
+        tracemalloc.start()
+        try:
+            assert len(list(node.stream(feed(), {}))) == 1
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    assert peak(20_000) - peak(2_000) < 100_000  # bytes; a per-cell memo would add MBs
 
 
 def test_presorted_refuses_a_reappearing_key():

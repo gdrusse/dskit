@@ -87,8 +87,25 @@ def _day(value):
     return None
 
 
+def _day_memo(memo, value):
+    """:func:`_day` through ``memo``, a ``[cell, answer]`` pair holding only the latest exact-``str`` cell.
+
+    A ``str`` is immutable, so a repeat of the held cell has the answer it had
+    (``None`` included); any other type takes :func:`_day` every time. One cell
+    at most: O(1) memory however many distinct cells the pass reads, and a run
+    of one date (a sorted chain's day or expiration) parses once.
+    """
+    if type(value) is not str:
+        return _day(value)
+    if value != memo[0]:
+        memo[0], memo[1] = value, _day(value)
+    return memo[1]
+
+
 def _number(value):
     """Return ``float(value)`` for a finite non-bool number, else ``None``."""
+    if type(value) is float:
+        return value if math.isfinite(value) else None
     return float(value) if number_ok(value) else None
 
 
@@ -719,8 +736,9 @@ class OptionStructureLedger(Node):
         chain = _Chain()
         if not isinstance(rows, (list, tuple)) or not rows:
             raise ValueError(f"{self.key}: no chain rows")
+        days, expirations = [None, None], [None, None]
         for index, row in enumerate(rows):
-            if not isinstance(row, Mapping):
+            if type(row) is not dict and not isinstance(row, Mapping):
                 raise ValueError(f"{self.key}: chain row {index} must be a mapping, "
                                  f"got {type(row).__name__}")
             chain.rows_in += 1
@@ -729,18 +747,18 @@ class OptionStructureLedger(Node):
             if entry is None:
                 chain.dropped["other_symbol"] += 1
                 continue
-            day = _day(row.get(f["date"]))
+            day = _day_memo(days, row.get(f["date"]))
             if day is None:
                 chain.dropped["bad_date"] += 1
             elif not entry["lo"] <= day <= entry["hi"]:
                 chain.dropped["outside_window"] += 1
             else:
-                self._take(chain, entry, symbol, day, row, f)
+                self._take(chain, entry, symbol, day, row, f, expirations)
         chain.finish()
         return chain
 
     @staticmethod
-    def _take(chain, entry, symbol, day, row, f):
+    def _take(chain, entry, symbol, day, row, f, expirations):
         """Keep one in-window row: its day, its underlying and, if needed, its quote."""
         chain.seen.add((symbol, day))
         chain.days.add(day)
@@ -751,7 +769,7 @@ class OptionStructureLedger(Node):
                 chain.conflicts += 1
         else:
             chain.dropped["bad_underlying"] += 1
-        expiration, strike = _day(row.get(f["expiration"])), _number(row.get(f["strike"]))
+        expiration, strike = _day_memo(expirations, row.get(f["expiration"])), _number(row.get(f["strike"]))
         right = row.get(f["right"])
         right = _RIGHT_NAMES.get(right.strip().lower()) if isinstance(right, str) else None
         if expiration is None or strike is None or right is None:
