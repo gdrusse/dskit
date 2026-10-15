@@ -9,12 +9,14 @@ itself keeps planning there.
 
 from __future__ import annotations
 
+import decimal
 import hashlib
 import itertools
 import json
 import os
 import pathlib
 import re
+from collections.abc import Mapping
 from types import SimpleNamespace
 
 import numpy as np
@@ -42,6 +44,11 @@ from dskit.pipeline.libs.sklearn import (
     SklearnSegment,
     SklearnSelect,
     SklearnSignal,
+    _finite_number,
+    _reduction_number,
+    _row_value,
+    _row_vector,
+    _segment_number,
     register,
 )
 from dskit.pipeline.node import NodeContext, NodeKindRegistry, class_ref
@@ -4951,3 +4958,141 @@ def test_reduce_runs_through_a_document(tmp_path):
         row["reduction_model_id"] == out["reduction_model_id"]
         for row in out["rows"]
     )
+
+
+# ---------------------------------------------------------------------------
+# The inlined row rules, pinned to their owners (no sklearn needed)
+#
+# _row_vector restates _row_value then _finite_number per cell, and both
+# _point methods restate _reduction_number / _segment_number for an exact
+# float, as hot-path copies. These pin every copy to its owner over every
+# row kind and a grid of cell values, so the attribute-row branch and the
+# slow paths are reached and a drifted copy fails here by name.
+# ---------------------------------------------------------------------------
+
+
+class _PinMapRow(Mapping):
+    """A Mapping that is not a dict: the key-lookup branch, not a fast path."""
+
+    def __init__(self, data):
+        self._data = dict(data)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+
+class _PinSubFloat(float):
+    """A float subclass: never the exact-float fast path."""
+
+
+_PIN_CELLS = [
+    0.0, -0.0, 1.5, 5e-324, 1.7976931348623157e308,
+    float("nan"), float("inf"), float("-inf"),
+    True, False, 3, 10**30, 10**400,
+    np.float64(2.5), np.float64(-0.0), np.float32(2.5), np.int64(4),
+    _PinSubFloat(1.25), decimal.Decimal("1.5"), "0.5", None, [1.0],
+]
+_PIN_ROW_KINDS = {
+    "dict": lambda v: {"a": v},
+    "mapping": lambda v: _PinMapRow({"a": v}),
+    "attr": lambda v: SimpleNamespace(a=v),
+    "dict-missing": lambda v: {"b": v},
+    "attr-missing": lambda v: SimpleNamespace(b=v),
+}
+
+
+def _pin_outcome(fn):
+    """``("ok", [(type, hex)...])`` or ``("raise", type name, message)``."""
+    try:
+        out = fn()
+    except Exception as exc:  # noqa: BLE001 - the outcome IS the comparison
+        return ("raise", type(exc).__name__, str(exc))
+    return ("ok", [(type(x).__name__, x.hex()) for x in out])
+
+
+def _pin_id(cell):
+    return f"{type(cell).__name__}-{cell!r}"[:40]
+
+
+@pytest.mark.parametrize("kind", sorted(_PIN_ROW_KINDS))
+@pytest.mark.parametrize("cell", _PIN_CELLS, ids=_pin_id)
+def test_row_vector_is_the_row_value_then_finite_number_rule(kind, cell):
+    row = _PIN_ROW_KINDS[kind](cell)
+    present, value = _row_value(row, "a")
+    if not present or value is None:
+        expected = ("raise", "ValueError", "W: row 0 carries no 'a'")
+    else:
+        try:
+            number = _finite_number(value)
+        except Exception as exc:  # noqa: BLE001 - the owner's refusal is the expectation
+            expected = ("raise", type(exc).__name__, str(exc))
+        else:
+            if number is None:
+                expected = (
+                    "raise", "ValueError",
+                    f"W: row 0 field 'a' is {value!r}, not a finite number",
+                )
+            else:
+                expected = ("ok", [("float", number.hex())])
+
+    got = _pin_outcome(lambda: _row_vector(row, 0, ("a",), "W"))
+
+    if expected[0] == "raise":
+        assert got[:2] == expected[:2] and got[2].startswith(expected[2])
+    else:
+        assert got == expected
+
+
+def _pin_node(cls, **extra):
+    return cls("n", {"fit_split": "train", "order_field": "ts", "features": ["a"], **extra})
+
+
+@pytest.mark.parametrize("cell", _PIN_CELLS, ids=_pin_id)
+@pytest.mark.parametrize(
+    "make,owner",
+    [
+        (
+            lambda: _pin_node(
+                SklearnReduction, algorithm="svd", n_components=1, seed=3
+            ),
+            _reduction_number,
+        ),
+        (
+            lambda: _pin_node(
+                SklearnSegment, algorithm="kmeans",
+                algorithm_params={"n_clusters": 1}, seed=3,
+            ),
+            _segment_number,
+        ),
+    ],
+    ids=["reduction", "segment"],
+)
+@pytest.mark.parametrize("kind", ["dict", "mapping", "attr"])
+def test_point_is_the_owning_number_rule(make, owner, kind, cell):
+    node = make()
+    row = _PIN_ROW_KINDS[kind](cell)
+    if kind == "attr":  # only mappings carry features; anything else refuses
+        expected = ("raise", "ValueError")
+    else:
+        try:
+            number = owner(cell)
+        except Exception as exc:  # noqa: BLE001 - the owner's refusal is the expectation
+            expected = ("raise", type(exc).__name__)
+        else:
+            expected = (
+                ("raise", "ValueError") if number is None
+                else ("ok", [("float", number.hex())])
+            )
+
+    got = _pin_outcome(lambda: node._point(row, ["a"], 0))
+
+    if expected[0] == "raise":
+        assert got[:2] == expected
+    else:
+        assert got == expected

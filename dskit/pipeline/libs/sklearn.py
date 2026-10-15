@@ -3673,7 +3673,7 @@ class SklearnSegment(FittedTransform):
         best, best_distance = 0, None
         for index, center in enumerate(centers):
             distance = math.fsum(
-                [(a - b) ** 2 for a, b in zip(point, center)]
+                (a - b) ** 2 for a, b in zip(point, center)
             )
             if best_distance is None or distance < best_distance:
                 best, best_distance = index, distance
