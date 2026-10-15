@@ -2872,8 +2872,11 @@ def _ranks(values):
         np.concatenate(([True], sorted_vals[1:] != sorted_vals[:-1], [True]))
     )
     ranks = np.empty(n, dtype=np.float64)
-    for start, end in zip(bounds[:-1], bounds[1:]):
-        ranks[order[start:end]] = (start + end - 1) / 2.0 + 1.0
+    starts = bounds[:-1]
+    ends = bounds[1:]
+    # Each tie group's average rank, (start + end - 1) / 2 + 1 as before,
+    # written to every member at once rather than one group per step.
+    ranks[order] = np.repeat((starts + ends - 1) / 2.0 + 1.0, ends - starts)
     return ranks.tolist()
 
 
