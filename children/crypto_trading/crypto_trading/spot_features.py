@@ -278,8 +278,10 @@ class SpotFeatures(ListPortsNode):
 
     def _reachable(self, anchors, instants):
         """Keep the anchors some instant could use: known before the last one and no older than the age cap at the first."""
-        return [a for a in anchors
-                if int(instants.min()) - self.params["max_basis_age_ms"] <= a[f.ANCHOR_KNOWN_MS] < int(instants.max())]
+        if not anchors:
+            return []
+        first, last = int(instants.min()) - self.params["max_basis_age_ms"], int(instants.max())  # once, not per anchor
+        return [a for a in anchors if first <= a[f.ANCHOR_KNOWN_MS] < last]
 
     def _bars(self, series, instants, estimators, anchors):
         """Load the klines that can matter for ``instants`` and their anchors; return ``(bars, columns)``."""
