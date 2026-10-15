@@ -162,15 +162,19 @@ def test_set_pin_and_freeze_universe_write_the_inputs_and_regenerate_to_a_consis
     census.write_text("\n".join(json.dumps(r) for r in [
         {"root": "AAA", "first_bid_date": "2016-01-04", "liquidity_tercile": 2, "median_quoted_development": 9.0},
         {"root": "BBB", "first_bid_date": None},
-        {"root": "CCC", "first_bid_date": "2017-02-01", "liquidity_tercile": 1}]) + "\n")
+        {"root": "CCC", "first_bid_date": "2017-02-01", "liquidity_tercile": 1},
+        {"root": "DDD", "first_bid_date": "2022-03-01", "liquidity_tercile": 0}]) + "\n")
     assert th.main(["freeze-universe", str(census)]) == 0
     frozen = json.loads((tmp_path / "theta-universe.json").read_text())
-    assert sorted(frozen["roots"]) == ["AAA", "CCC"] and frozen["roots"]["AAA"]["liquidity_tercile"] == 2
+    assert sorted(frozen["roots"]) == ["AAA", "CCC", "DDD"] and frozen["roots"]["AAA"]["liquidity_tercile"] == 2
     inputs = th.load_inputs()
-    assert inputs["universe"] == ["AAA", "CCC"] and inputs["panel"]["snapshot"] == "ab" * 32
+    assert inputs["universe"] == ["AAA", "CCC", "DDD"] and inputs["panel"]["snapshot"] == "ab" * 32
+    assert inputs["universe_first_bid"] == {"AAA": "2016-01-04", "CCC": "2017-02-01", "DDD": "2022-03-01"}
     assert th.main(["write"]) == 0 and th.main(["check"]) == 0
     doc = json.loads((tmp_path / "run-theta-h3-straddle-sorts.json").read_text())
-    assert doc["pipeline"]["chain"]["params"]["symbols"] == ["AAA", "CCC"]
+    assert doc["pipeline"]["chain"]["params"]["symbols"] == ["AAA", "CCC"]          # DDD is first quoted after the development window
+    val = json.loads((tmp_path / "run-theta-h3-straddle-sorts-validation.json").read_text())
+    assert val["pipeline"]["chain"]["params"]["symbols"] == ["AAA", "CCC", "DDD"]
     assert doc["pipeline"]["panel"]["params"]["sources"][0]["snapshot"] == "ab" * 32
     (tmp_path / "run-theta-h3-straddle-sorts.json").write_text("{}")
     assert th.main(["check"]) == 1
@@ -178,7 +182,7 @@ def test_set_pin_and_freeze_universe_write_the_inputs_and_regenerate_to_a_consis
 
 # -- end to end on the synthetic world ----------------------------------------------------------------------------------------
 
-def _swap(obj, tmp):
+def _swap(obj, tmp, sized=True):
     """The document with its readers replaced by static rows and its outputs in ``tmp``."""
     obj = copy.deepcopy(obj)
     obj["outputs"]["run_root"] = str(tmp / "runs")
@@ -201,15 +205,17 @@ def _swap(obj, tmp):
         elif node["uses"] == "records-write":
             params["path"] = str(tmp / Path(params["path"]).name)
         elif node["uses"].endswith("QuantileSortBook"):
-            params.update(min_names=6, quantiles=min(params["quantiles"], 3))
+            if sized:
+                params.update(min_names=6, quantiles=min(params["quantiles"], 3))
             if "bootstrap" in params:
                 params["bootstrap"] = {**params["bootstrap"], "block_days": 21, "replicates": 40}
-        elif node["uses"] == "filter":
+        elif node["uses"] == "filter" and sized:
             for clause in params["where"]:
                 if clause == {"field": "n", "op": ">=", "value": 50}:
                     clause["value"] = 10                              # the basket floor, sized to the synthetic 16 names
         elif node["uses"].endswith("CrossSectionIC"):
-            params.update(usable_names=5, min_names=5)
+            if sized:
+                params.update(usable_names=5, min_names=5)
         elif node["uses"].endswith("StampSeriesStats"):
             if "bootstrap" in params:
                 params["bootstrap"] = {**params["bootstrap"], "block_days": 28, "replicates": 40}
@@ -277,6 +283,8 @@ def _check_h2(r):
     pnl = _summary(r, "pnl")
     assert {"event_source=detected", "event_source=labelled"} <= set(pnl["groups"]) and pnl["contrast"]["paired"] is False
     assert _g(r, "gap_primary", "event_source=detected")["n_stamps"] > 2
+    source = _summary(r, "gap_source")["groups"]
+    assert source["realized_source=bar"]["n_rows"] > 3 and sum(g["n_rows"] for k, g in source.items() if k != "all") == source["all"]["n_rows"]
 
 
 def _check_h3(r):
@@ -375,3 +383,155 @@ def test_every_document_the_run_book_names_exists_and_every_document_is_in_the_r
     assert "run-theta-chain-census-parquet.json" in named and "run-theta-chain-panel.json" in named
     for verb in ("freeze-universe", "set-pin panel", "write", "check"):
         assert verb in book
+
+
+# -- planted effect and null on the cross-sectional IC path, with the PRE-REGISTERED parameters ---------------------------------------
+#
+# The 16-name synthetic world above forces the size knobs down (QuantileSortBook min_names/quantiles, CrossSectionIC floors, the basket
+# floor n >= 50) and so cannot say whether the real thresholds detect anything. These worlds have 80 to 120 names, so the documents run
+# with every statistic, sign, threshold, window and floor as committed. The swap changes ONLY: the Parquet readers (static rows through the
+# same declared columns and bounds), the output directory, the audit-row paths and the bootstrap's replicates and block length (speed).
+
+import random as _random
+from datetime import date as _date, timedelta as _timedelta
+
+
+
+def _sessions(start, n):
+    out, d = [], start
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d)
+        d += _timedelta(days=1)
+    return out
+
+
+def _walk(rng, n, vol_path):
+    level, closes = 100.0, []
+    for i in range(n):
+        level *= 2.718281828 ** (vol_path(i) * rng.gauss(0, 1))
+        closes.append(level)
+    return closes
+
+
+def _bar_rows(symbol, days, closes):
+    return [{"symbol": symbol, "date": d.isoformat(), "open": c, "high": c, "low": c, "close": c, "adjusted_close": c, "volume": 1}
+            for d, c in zip(days, closes)]
+
+
+def _install(panel, bars, bench):
+    synth.WORLD.clear()
+    synth.WORLD.update(data={"panel": panel, "bars": bars, "bench": bench}, symbols={})
+
+
+def _run_registered(h, tmp_path, monkeypatch):
+    doc = th.build(h, th.DEV, {**th.load_inputs(), "universe": []})
+    swapped = _swap(doc, tmp_path, sized=False)
+    changed = []
+    for key, node in swapped["pipeline"].items():
+        original = doc["pipeline"][key]
+        if node["uses"] != original["uses"]:
+            assert original["uses"] == th.PARQUET_STREAM and node["uses"] == "theta_synthetic:StaticRecords", key
+            changed.append((key, "reader"))
+        elif node.get("params") != original.get("params"):
+            before, after = copy.deepcopy(original["params"]), copy.deepcopy(node["params"])
+            for side in (before, after):
+                side.pop("path", None)
+                if "bootstrap" in side:
+                    side["bootstrap"] = {k: v for k, v in side["bootstrap"].items() if k not in ("replicates", "block_days")}
+            assert before == after, (key, "changes more than the audit path or the bootstrap size")
+            changed.append((key, "path/bootstrap"))
+    assert {k for k, _ in changed} and all(w in ("reader", "path/bootstrap") for _, w in changed)
+    monkeypatch.chdir(CONFIGS.parent)
+    result = run_document(PipelineDocument.from_obj(swapped), asof="2025-12-31", journal=False)
+    assert result.state == "ran", result.error
+    return result
+
+
+def _h1_world(effect, seed, names=120, n=300):
+    rng = _random.Random(seed)
+    days = _sessions(_date(2018, 2, 1), n + 60)
+    panel, bars, feats = [], [], ["put_call_iv_spread", "risk_reversal", "term_slope", "oi_put_call_ratio", "oi_put_call_ratio_change_5d"]
+    for i in range(names):
+        sym = f"N{i:03d}"
+        z = {f: [rng.gauss(0, 1) for _ in days] for f in feats}
+        rets = []
+        for t in range(len(days)):
+            drift = -0.004 * z["put_call_iv_spread"][t - 1] if effect and t else 0.0          # the planted effect: next-session drift
+            rets.append(drift + 0.015 * rng.gauss(0, 1))
+        closes, level = [], 100.0
+        for r in rets:
+            level *= 2.718281828 ** r
+            closes.append(level)
+        bars += _bar_rows(sym, days, closes)
+        for t, d in enumerate(days[:n]):
+            row = {"symbol": sym, "date": d, "target_dte": 30, "status": "ok", "after_first_quote": True,
+                   "volume_call": 10 + rng.random() * 90, "volume_put": 10 + rng.random() * 90, "oi_call": 100 + rng.random() * 900,
+                   "oi_put": 100 + rng.random() * 900}
+            row.update({f: z[f][t] for f in feats})
+            panel.append(row)
+    return panel, bars
+
+
+def _h1_flags(result):
+    out = {}
+    for tag in ("5", "21"):
+        fam = result.outputs[f"ic{tag}"]["summary"]["family"]
+        book = result.outputs[f"decile{tag}"]["summary"]["family"]
+        out[tag] = (fam["decisions"]["bh"], book["decisions"]["bh"], result.outputs[f"ic{tag}"]["summary"]["measures"])
+    return out
+
+
+def test_h1_with_the_preregistered_parameters_detects_a_planted_effect_and_finds_nothing_in_pure_noise(tmp_path, monkeypatch):
+    panel, bars = _h1_world(True, seed=11)
+    _install(panel, bars, [])
+    planted = _h1_flags(_run_registered("H1", tmp_path / "a", monkeypatch))
+    bh_ic, bh_book, measures = planted["5"]
+    assert bh_ic["put_call_iv_spread"] is True and bh_book["put_call_iv_spread"] is True
+    assert measures["put_call_iv_spread"]["signed"]["ic"] > 0.05 and measures["put_call_iv_spread"]["signed"]["ic_t"] >= 2.5
+    assert not any(v for k, v in bh_ic.items() if k != "put_call_iv_spread")          # the noise features stay unrejected
+    panel, bars = _h1_world(False, seed=11)
+    _install(panel, bars, [])
+    null = _h1_flags(_run_registered("H1", tmp_path / "b", monkeypatch))
+    for tag in ("5", "21"):
+        assert not any(null[tag][0].values()) and not any(null[tag][1].values()), tag
+    assert all(m["signed"]["ic_t"] is None or m["signed"]["ic_t"] < 2.5 for m in null["5"][2].values())     # stated tolerance: no t at the 2.5 bar
+
+
+def _h0_world(effect, seed, names=80, n=330):
+    rng = _random.Random(seed)
+    days = _sessions(_date(2018, 1, 2), n + 70 + 45)
+    panel, bars = [], []
+    spy = _walk(rng, len(days), lambda i: 0.01)
+    for i in range(names):
+        sym = f"N{i:03d}"
+        h, vols, closes, level = rng.gauss(0, 0.3) if effect else 0.0, [], [], 100.0
+        for t in range(len(days)):
+            h = 0.98 * h + (0.08 * rng.gauss(0, 1) if effect else 0.0) if t else h                 # a persistent log-vol state, or a constant vol
+            vols.append(0.015 * 2.718281828 ** h)
+            level *= 2.718281828 ** (vols[-1] * rng.gauss(0, 1))
+            closes.append(level)
+        bars += _bar_rows(sym, days, closes)
+        for t in range(70, 70 + n):
+            implied = 0.8 * vols[t] * 21 ** 0.5 * 2.718281828 ** rng.gauss(0, 0.35) if effect else 0.8 * 0.015 * 21 ** 0.5 * 2.718281828 ** rng.gauss(0, 0.35)
+            panel.append({"symbol": sym, "date": days[t], "target_dte": 30, "status": "ok", "after_first_quote": True,
+                          "straddle_ratio": implied, "half_spread_over_premium": 0.01})
+    return panel, bars, _bar_rows("SPY", days, spy)
+
+
+def test_h0_with_the_preregistered_parameters_detects_planted_vol_persistence_and_finds_nothing_when_vol_is_constant(tmp_path, monkeypatch):
+    panel, bars, bench = _h0_world(True, seed=5)
+    _install(panel, bars, bench)
+    planted = _run_registered("H0", tmp_path / "a", monkeypatch).outputs["ic"]["summary"]["measures"]["har_beyond_market"]
+    assert planted["ic"] > 0.02 and planted["ic_t"] >= 2.5 and planted["usable"] is True
+    panel, bars, bench = _h0_world(False, seed=5)
+    _install(panel, bars, bench)
+    null = _run_registered("H0", tmp_path / "b", monkeypatch).outputs["ic"]["summary"]["measures"]["har_beyond_market"]
+    assert null["usable"] is True and null["ic_t"] < 2.5            # stated tolerance: the one-sided pass bar of the ADR
+
+
+def test_the_documents_the_planted_tests_run_are_the_real_ones_and_still_validate():
+    for h in ("H0", "H1"):
+        name = th.doc_file(h, th.DEV)
+        assert _doc(name) == th.build(h, th.DEV, th.load_inputs())
+        assert _classes(name)

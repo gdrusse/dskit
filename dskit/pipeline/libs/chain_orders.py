@@ -26,7 +26,8 @@ rule), an ``entry`` rule, an ``expiry`` rule, and optionally ``symbols`` (only t
 
 The forward, the vols and the delta are :class:`~dskit.pipeline.libs.chain_features.QuoteBook`'s, from the usable
 quotes (:func:`~dskit.pipeline.libs.chain_census.quote_state`) at one constant ``rate`` that serves only to pick
-strikes. Nothing is filled: a day with no usable expiry, forward, underlying or strike yields no order and is
+strikes. A ``days_before_expiry`` order whose entry date has no chain row of the symbol is counted as ``<structure>:no_entry_row``.
+Nothing is filled: a day with no usable expiry, forward, underlying or strike yields no order and is
 counted in ``summary.refused`` as ``<structure>:<reason>``.
 
 **Output.** ``records``: one row per order, named by ``order_fields`` (the ledger's ``date``, ``symbol``,
@@ -39,7 +40,7 @@ Import cost: stdlib and the pipeline core; pandas is imported inside the forward
 
 import math
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 from statistics import median
 
 from dskit.pipeline.document import is_node_ref
@@ -321,6 +322,24 @@ class ChainStructureOrders(Node):
             return [], "no_expiry"
         return [min(near, key=lambda e: (abs((e - day).days - rule["dte"]), e))], None
 
+    def _track_missing(self, name, spec, block, picks, state, refused):
+        """Count, under ``<structure>:no_entry_row``, each expiration whose entry date passed with no chain row of the symbol.
+
+        An expiration is expected once it is listed on a date before its entry date; if the next date the chain shows is
+        already past the entry date, the order was silently lost, so it is counted instead.
+        """
+        days, pending = spec["entry"]["days"], state["pending"]
+        for exp in block.expirations:
+            entry = exp - timedelta(days=days)
+            if entry > block.day and self._eligible(spec, exp):
+                pending.setdefault(exp, entry)
+        for exp in picks:
+            pending.pop(exp, None)
+        for exp, entry in list(pending.items()):
+            if entry < block.day:
+                refused[f"{name}:no_entry_row"] += 1
+                del pending[exp]
+
     def _book(self, block, exp):
         """The usable-quote book of one expiration, its forward solved; ``(book, reason)``."""
         p = self.params
@@ -416,8 +435,10 @@ class ChainStructureOrders(Node):
             for name, spec in p["structures"].items():
                 if spec.get("symbols") and block.symbol not in spec["symbols"]:
                     continue
-                state = states.setdefault((block.symbol, name), {"next": None, "seen": 0})
+                state = states.setdefault((block.symbol, name), {"next": None, "seen": 0, "pending": {}})
                 picks, why = self._expirations(spec, block, state)
+                if spec["entry"]["kind"] == "days_before_expiry":
+                    self._track_missing(name, spec, block, picks, state, refused)
                 if why == "no_expiry":
                     refused[f"{name}:{why}"] += 1
                 for exp in picks:

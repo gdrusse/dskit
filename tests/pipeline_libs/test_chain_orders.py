@@ -224,3 +224,18 @@ def test_max_open_interest_skips_a_strike_whose_leg_has_no_usable_quote_and_a_du
     assert run(rows, structures={"pin": spec})["records"][0]["strikes"] == [103.0]
     with pytest.raises(ValueError, match="repeats"):
         run(rows + rows[:1], structures={"pin": spec})
+
+
+def test_a_days_before_expiry_entry_date_with_no_chain_row_is_counted_not_skipped_silently():
+    third_fri = date(2020, 3, 20)
+    spec = {"legs": [{"right": "call", "quantity": 1, "select": {"kind": "max_oi"}}],
+            "entry": {"kind": "days_before_expiry", "days": 7}, "expiry_rule": {"weekday": 4, "day_of_month": [15, 21]}}
+    days = [d for d in sessions(date(2020, 3, 9), 15) if d != date(2020, 3, 13)]          # the entry day is missing
+    rows = []
+    for d in days:
+        rows += day_rows("AAA", d, [third_fri], strikes=range(95, 106))
+    out = run(rows, structures={"pin": spec})
+    assert out["records"] == [] and out["summary"]["refused"] == {"pin:no_entry_row": 1}
+    ok = [r for r in rows] + day_rows("AAA", date(2020, 3, 13), [third_fri], strikes=range(95, 106))
+    ok.sort(key=lambda r: r["date"])
+    assert len(run(ok, structures={"pin": spec})["records"]) == 1

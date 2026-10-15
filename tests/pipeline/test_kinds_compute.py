@@ -189,3 +189,18 @@ def test_item_reads_one_number_out_of_a_list_field(ctx):
                                  {"item": {"field": "", "index": 0}}, {"item": {"field": "s", "index": 0, "x": 1}}, {"item": 3}])
 def test_a_bad_item_is_refused(bad):
     assert any("item" in p for p in ComputeFields.validate_params({"fields": {"z": bad}})), bad
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_bare_field_that_is_nan_or_infinite_is_missing_and_counted(ctx, value):
+    out = run(ctx, [{"a": value}, {"a": 2.0}], {"b": f("a")})
+    assert [r["b"] for r in out["records"]] == [None, 2.0]
+    assert out["summary"]["fields"]["b"] == {"computed": 1, "null_input": 1, "domain": 0}
+
+
+def test_coalesce_takes_the_first_expression_with_a_value(ctx):
+    rows = [{"bar": 0.02, "vendor": 0.05}, {"bar": None, "vendor": 0.05}, {"bar": float("nan"), "vendor": None}]
+    out = run(ctx, rows, {"move": {"coalesce": [{"op": "abs", "args": [f("bar")]}, {"op": "abs", "args": [f("vendor")]}]}})
+    assert [r["move"] for r in out["records"]] == [0.02, 0.05, None]
+    assert out["summary"]["fields"]["move"] == {"computed": 2, "null_input": 1, "domain": 0}
+    assert any("coalesce" in p for p in ComputeFields.validate_params({"fields": {"z": {"coalesce": [{"const": 1}]}}}))

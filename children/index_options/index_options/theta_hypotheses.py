@@ -122,6 +122,19 @@ class Graph:
     def __init__(self, inputs, period):
         self.inputs, self.period, self.nodes = inputs, period, {}
 
+    def universe(self):
+        """The roots a chain reader is asked for in this period: those first quoted before the period's end.
+
+        A root whose first date with a bid above zero lies on or after ``end_before`` has no row in the period, and the
+        whole-sample census statistic is used here only as that date bound (ADR-0265 Amendment 1(e)): the development
+        universe is the roots quoted by the end of 2020, the validation one those quoted by the end of 2025. Without a
+        frozen universe the inputs' own list (the placeholder, or a test's) is used.
+        """
+        first = self.inputs.get("universe_first_bid")
+        if first is None:
+            return self.inputs["universe"]
+        return sorted(root for root, day in first.items() if day < self.period.end_before)
+
     def add(self, key, uses, params=None, inputs=None, notes=""):
         if key in self.nodes:
             raise ValueError(f"node {key!r} declared twice")
@@ -405,7 +418,7 @@ def build_h3(inputs, period):
     g.compute("orders", "signals_in", {"strikes": {"list": [_f("atm_strike"), _f("atm_strike")]}, "structure": {"text": "long_straddle"}},
               "One ATM long straddle per entry: both legs at the panel's ATM strike (nearest the parity forward among strikes quoted on both sides), the "
               "target expiry. Held to expiry and settled at intrinsic.")
-    g.chain("chain", "stock_chain", inputs["universe"], ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying_price"],
+    g.chain("chain", "stock_chain", g.universe(), ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying_price"],
             "The daily chain of the frozen universe from the Parquet tree (symbol by symbol, dates ascending), bounded to the period; the ledger reads each needed "
             "contract once.")
     _ledger(g, "ledger", "orders", "chain", {"long_straddle": STRADDLE_LEGS}, "mid", "expiry",
@@ -512,7 +525,7 @@ def build_h4(inputs, period):
         "The timing gate, declared before the run: trade the short straddle when the variance premium is positive AND the term structure is not inverted; stand aside "
         "otherwise. Thresholds are VolRegimeSignals' own (0 and ratio 1.0).")
     _short_orders(g, "gated")
-    g.chain("chain", "stock_chain", inputs["universe"], ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying_price"],
+    g.chain("chain", "stock_chain", g.universe(), ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying_price"],
             "The daily chain of the frozen universe, bounded to the period.")
     _ledger(g, "ledger", "orders", "chain", {"short_straddle": SHORT_LEGS}, "nbbo", "expiry",
             "Short straddles sold at the BID of both legs and settled at intrinsic on the expiration date (the vendor underlying of that date; stale-spot days are not removed, disclosed).")
@@ -561,25 +574,42 @@ def build_h2(inputs, period):
               "not selected on the vol outcome. The labels cover 5 names in 2016-2020 only; coverage by year is in the summary (labelled_by_year).")
     common = ["symbol", "event_date", "entry_date", "exit_date", "front_iv_before", "front_iv_after", "implied_move", "realized_move"]
     g.compute("detected_rows", "events", {"event_source": {"text": "detected"}}, "Tags the detected events and projects them to the fields both sources share.", keep=common)
-    rows, port = "detected_rows", "records"
-    if labelled and period.name == "development":
+    g.bars("bars_raw", BAR_COLUMNS, notes="Yahoo daily bars of the tested names (pinned snapshots): the close-to-close move of the event day is read from the bars, not from the vendor's underlying_price "
+           "(whose stale-spot guard passes any error under 5% in log terms).")
+    g.filter("bars_ok", "bars_raw", [{"field": "adjusted_close", "op": ">", "value": 0}], "Bars with a price.")
+    g.add("bar_ret", BAR_FEATURES, {"entity_field": "symbol", "date_field": "date", "close_field": "adjusted_close",
+                                    "realized_vol": {"windows": [5], "field": "rv_{window}", "return_field": "ret_1d"}},
+          {"bars": g.ref("bars_ok")}, "The 1-bar log return of the adjusted close: on an event day, the close-to-close move.")
+    tags = ["detected"] + (["labelled"] if labelled and period.name == "development" else [])
+    if "labelled" in tags:
         g.compute("labelled_rows", "events_labelled", {"event_source": {"text": "labelled"}}, "Tags the labelled announcements the same way.", keep=common)
-        g.add("events_all", "concat", {"shape": "records", "provenance": "event_source"},
-              {"detected": g.ref("detected_rows"), "labelled": g.ref("labelled_rows")},
+    for tag in tags:
+        g.add(f"{tag}_event_key", COMPUTE, {"fields": {"date": _f("event_date"), AGREE: {"const": 1}}}, {"records": g.ref(f"{tag}_rows")}, "The event date as the join key.")
+        g.attach(f"{tag}_bar", f"{tag}_event_key", "bar_ret", ["symbol", "date"], ["ret_1d"], 1.0,
+                 "The event day's close-to-close log return from the bars: label-time, measured at the event close. A name or day with no bar keeps the vendor move (counted in realized_source).")
+        g.add(f"{tag}_sourced", "derive", {"field": "realized_source", "cases": [
+            {"when": [{"field": "ret_1d", "op": "!=", "value": None}], "value": "bar"}, {"when": [], "value": "vendor"}]},
+            {"records": g.ref(f"{tag}_bar")}, "Which move each event uses: the bar close-to-close, else the detector's vendor-spot move (the fallback is counted by realized_source).")
+        g.compute(f"{tag}_gap", f"{tag}_sourced", {
+            "event_implied": _op("mul", _c(SQRT_2_OVER_PI), _op("sqrt", _op("mul", _op("max", _c(0), _op("sub", _op("mul", _f("front_iv_before"), _f("front_iv_before")), _op("mul", _f("front_iv_after"), _f("front_iv_after")))), _c(30 / 365)))),
+            "realized_abs": {"coalesce": [_op("abs", _f("ret_1d")), _op("abs", _f("realized_move"))]}},
+            "realized_abs = |bar close-to-close move|, else |vendor move| where no bar exists. event_implied = sqrt(2/pi) sqrt((iv_before^2 - iv_after^2) 30/365), the one-day "
+            "move the crush itself removes.", keep=common + ["event_source", "realized_source"])
+        g.compute(f"{tag}_gap2", f"{tag}_gap", {
+            "gap_30d": _op("sub", _f("implied_move"), _f("realized_abs")), "event_gap": _op("sub", _f("event_implied"), _f("realized_abs"))},
+            "PRIMARY (a), as written: gap_30d = the front (30-DTE) straddle ratio at the close before the event minus the absolute close-to-close move of the event day. CAVEAT recorded "
+            "before the run: the straddle spans 30 days and the move one, so this difference is positive by construction; the informative SECONDARY is event_gap = event_implied - realized_abs.")
+    if len(tags) > 1:
+        g.add("move_gap2", "concat", {"shape": "records", "provenance": "event_source"}, {tag: g.ref(f"{tag}_gap2") for tag in tags},
               "The detected events and the labelled announcements in one table, each row agreeing with its port name.")
-        rows, port = "events_all", "merged"
-    # (a) implied versus realized
-    g.add("move_gap", COMPUTE, {"fields": {
-        "gap_30d": _op("sub", _f("implied_move"), _op("abs", _f("realized_move"))),
-        "event_implied": _op("mul", _c(SQRT_2_OVER_PI), _op("sqrt", _op("mul", _op("max", _c(0), _op("sub", _op("mul", _f("front_iv_before"), _f("front_iv_before")), _op("mul", _f("front_iv_after"), _f("front_iv_after")))), _c(30 / 365)))),
-        "realized_abs": _op("abs", _f("realized_move"))}}, {"records": g.ref(rows, port)},
-        "PRIMARY (a), as written: gap_30d = the front (30-DTE) straddle ratio at the close before the event minus the absolute close-to-close move of the event day. CAVEAT recorded "
-        "before the run: the straddle spans 30 days and the move one, so this difference is positive by construction; the informative SECONDARY is event_implied, the one-day "
-        "move the crush itself removes, sqrt(2/pi) sqrt((iv_before^2 - iv_after^2) 30/365), against realized_abs.")
-    g.compute("move_gap2", "move_gap", {"event_gap": _op("sub", _f("event_implied"), _f("realized_abs"))}, "Secondary difference: event-variance implied move minus realized move.")
-    g.filter("move_ok", "move_gap2", [{"field": "event_date", "op": "!=", "value": None}, {"field": "gap_30d", "op": "!=", "value": None}, {"field": "event_gap", "op": "!=", "value": None}],
-             "Events with both moves.")
+        rows_key, port = "move_gap2", "merged"
+    else:
+        rows_key, port = "detected_gap2", "records"
+    g.add("move_ok", "filter", {"where": [{"field": "event_date", "op": "!=", "value": None}, {"field": "gap_30d", "op": "!=", "value": None},
+                                          {"field": "event_gap", "op": "!=", "value": None}]},
+          {"records": g.ref(rows_key, port)}, "Events with both moves.")
     _series_node(g, "gap_primary", "move_ok", "gap_30d", "event_date", "(a) PRIMARY as written, clustered by event week. Pass: mean > 0, Newey-West t >= 2.5.", by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
+    _series_node(g, "gap_source", "move_ok", "gap_30d", "event_date", "How many events use the bar move and how many fall back to the vendor move (n_rows per realized_source).", by=["realized_source"], bucket="week", h_steps=1)
     _series_node(g, "gap_event", "move_ok", "event_gap", "event_date", "(a) SECONDARY (reported, never promoted): event-variance implied move minus realized move, by week.", by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
     # (b) the straddle through the ledger
     g.panel("entry_30", "panel", PANEL_BASE + ["expiration", "atm_strike", "half_spread_over_premium", "liquidity_tercile"],
@@ -591,7 +621,8 @@ def build_h2(inputs, period):
         g.filter(f"{tag}_dated", "move_ok", [{"field": "event_source", "op": "==", "value": tag}, {"field": "entry_date", "op": "!=", "value": None},
                                              {"field": "exit_date", "op": "!=", "value": None}],
                  f"The {tag} events whose entry (event - 3 sessions) and exit (event + 1) sessions exist in the symbol's own table.")
-        g.compute(f"{tag}_keyed", f"{tag}_dated", {"date": _f("entry_date")}, "The entry date as the join key.")
+        g.compute(f"{tag}_keyed", f"{tag}_dated", {"date": _f("entry_date")}, "The entry date as the join key (the event-date key of the bar attachment is dropped).",
+                  keep=common + ["event_source"])
         g.agreed(f"{tag}_stream", f"{tag}_keyed")
         g.attach(f"{tag}_entry", f"{tag}_stream", "entry_30", ["symbol", "date"], ["expiration", "atm_strike", "half_spread_over_premium", "liquidity_tercile"], 0.5,
                  "The straddle's expiry (the 30-DTE target at the entry close) and ATM strike: known when the order is placed.")
@@ -609,7 +640,7 @@ def build_h2(inputs, period):
         orders_key, orders_port = "orders_all", "merged"
     else:
         orders_key, orders_port = "detected_orders", "records"
-    g.chain("chain", "stock_chain", inputs["universe"], ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying_price"],
+    g.chain("chain", "stock_chain", g.universe(), ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying_price"],
             "The daily chain of the frozen universe, bounded to the period.")
     _ledger(g, "ledger", orders_key, "chain", structures, "nbbo", "exit",
             "Buys both legs at the ASK on the entry session and sells at the BID on the exit session (an exit that cannot be quoted is counted and the trade runs to expiry, never a free exit).",
@@ -630,7 +661,7 @@ def build_h2(inputs, period):
     _series_node(g, "pnl_terciles", "phased", "pnl_over_premium", "event_date", "The same by liquidity tercile (null before 2021-01-01 by the panel's no-look-ahead rule).",
                  by=["event_source", "liquidity_tercile"], bucket="week", h_steps=1)
     g.write("events_table", "detected_rows", "records", "events", "one row per detected event: dates, front IV before and after, implied and realized move")
-    summaries = {"events": "events", "gap_primary": "gap_primary", "gap_event": "gap_event", "pnl": "pnl", "halves": "pnl_halves", "terciles": "pnl_terciles", "ledger": "ledger"}
+    summaries = {"events": "events", "gap_source": "gap_source", "gap_primary": "gap_primary", "gap_event": "gap_event", "pnl": "pnl", "halves": "pnl_halves", "terciles": "pnl_terciles", "ledger": "ledger"}
     if labelled and period.name == "development":
         summaries["labelled"] = "events_labelled"
     g.report("report", "H2 earnings events: implied versus realized and the event straddle", summaries)
@@ -744,7 +775,7 @@ def build_h7(inputs, period):
     g = Graph(inputs, period)
     g.name = "h7-pin-spread"
     fields = ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "open_interest", "underlying_price"]
-    g.chain("chain", "stock_chain", inputs["universe"], fields, "The daily chain of the frozen universe (open interest included), bounded to the period.")
+    g.chain("chain", "stock_chain", g.universe(), fields, "The daily chain of the frozen universe (open interest included), bounded to the period.")
     g.add("orders", ORDERS, {
         "chain_fields": {"symbol": "symbol", "date": "date", "expiration": "expiration", "strike": "strike", "right": "right", "bid": "bid", "ask": "ask",
                          "underlying": "underlying_price", "open_interest": "open_interest"},
@@ -947,6 +978,7 @@ def main(argv=None):
         (CONFIGS / "theta-universe.json").write_text(dump(frozen))
         inputs = load_inputs()
         inputs["universe"] = sorted(frozen["roots"])
+        inputs["universe_first_bid"] = {root: row["first_bid_date"] for root, row in sorted(frozen["roots"].items())}
         inputs["universe_sha256"] = hashlib.sha256((CONFIGS / "theta-universe.json").read_bytes()).hexdigest()
         (CONFIGS / INPUTS_FILE).write_text(dump(inputs))
         return 0

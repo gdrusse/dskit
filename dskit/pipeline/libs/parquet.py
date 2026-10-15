@@ -561,8 +561,8 @@ class ParquetStreamRows(Node):
                 for name in snapshot["iso_fields"]:
                     data[name] = [v.isoformat() if hasattr(v, "isoformat") else v for v in data[name]]
                 for clause in snapshot["where"]:
-                    sample = data[clause["field"]][:1]
-                    if sample and hasattr(sample[0], "isoformat"):
+                    sample = next((v for v in data[clause["field"]] if v is not None), None)    # the first non-null value
+                    if sample is not None and hasattr(sample, "isoformat"):
                         raise ValueError(f"{self.key}: where reads {clause['field']!r}, a date column: list it in iso_fields "
                                          "so the clause compares ISO text (a date against text drops every row)")
                 rows = (dict(zip(data, row)) for row in zip(*data.values()))

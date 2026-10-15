@@ -671,3 +671,18 @@ def test_where_on_a_date_column_not_in_iso_fields_refuses_instead_of_dropping_ev
         ParquetStreamRows("p", {"sources": [declaration]}).run(_ctx(tmp_path), {})
     ok = ParquetStreamRows("p", {"sources": [{**declaration, "iso_fields": ["date"]}]}).run(_ctx(tmp_path), {})["records"]
     assert ok == [{"date": "2020-03-02", "x": 1.0}]
+
+
+def test_the_where_date_guard_looks_past_leading_nulls(blob_store, tmp_path):
+    import datetime as dt
+    archive = tmp_path / "wherenull"
+    archive.mkdir()
+    pq.write_table(pa.table({"d": pa.array([dt.date(2020, 3, 2), dt.date(2020, 3, 3)], type=pa.date32()),
+                             "e": pa.array([None, dt.date(2020, 4, 1)], type=pa.date32())}), archive / "a.parquet")
+    blob_store.add("wherenull", archive)
+    declaration = {"root": blob_store.path, "source": "wherenull", "stream": "files",
+                   "snapshot": payload_files(blob_store.path, "wherenull", "files")["manifest_sha256"],
+                   "columns": {"d": "date", "e": "expiry"}, "read_bounds": {"d": {"end_before": "2026-01-01"}},
+                   "where": [{"field": "expiry", "op": ">=", "value": "2020-01-01"}]}
+    with pytest.raises(ValueError, match="iso_fields"):
+        ParquetStreamRows("p", {"sources": [declaration]}).run(_ctx(tmp_path), {})

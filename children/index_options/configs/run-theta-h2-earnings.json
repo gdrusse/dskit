@@ -160,6 +160,93 @@
       },
       "notes": "Tags the detected events and projects them to the fields both sources share."
     },
+    "bars_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            },
+            "source": "stock-daily-bars",
+            "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          },
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2021-01-01"
+              }
+            },
+            "source": "stock-daily-bars-300",
+            "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "Yahoo daily bars of the tested names (pinned snapshots): the close-to-close move of the event day is read from the bars, not from the vendor's underlying_price (whose stale-spot guard passes any error under 5% in log terms)."
+    },
+    "bars_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bars_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "adjusted_close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Bars with a price."
+    },
+    "bar_ret": {
+      "uses": "dskit.pipeline.libs.bar_features:DailyBarFeatures",
+      "inputs": {
+        "bars": "$bars_ok.records"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "date_field": "date",
+        "close_field": "adjusted_close",
+        "realized_vol": {
+          "windows": [
+            5
+          ],
+          "field": "rv_{window}",
+          "return_field": "ret_1d"
+        }
+      },
+      "notes": "The 1-bar log return of the adjusted close: on an event day, the close-to-close move."
+    },
     "labelled_rows": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
       "inputs": {
@@ -184,41 +271,103 @@
       },
       "notes": "Tags the labelled announcements the same way."
     },
-    "events_all": {
-      "uses": "concat",
-      "inputs": {
-        "detected": "$detected_rows.records",
-        "labelled": "$labelled_rows.records"
-      },
-      "params": {
-        "shape": "records",
-        "provenance": "event_source"
-      },
-      "notes": "The detected events and the labelled announcements in one table, each row agreeing with its port name."
-    },
-    "move_gap": {
+    "detected_event_key": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
       "inputs": {
-        "records": "$events_all.merged"
+        "records": "$detected_rows.records"
       },
       "params": {
         "fields": {
-          "gap_30d": {
-            "op": "sub",
-            "args": [
-              {
-                "field": "implied_move"
-              },
-              {
-                "op": "abs",
-                "args": [
-                  {
-                    "field": "realized_move"
-                  }
-                ]
-              }
-            ]
+          "date": {
+            "field": "event_date"
           },
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "The event date as the join key."
+    },
+    "detected_bar_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$bar_ret.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "ret_1d"
+        ]
+      },
+      "notes": "The columns of detected_bar the attachment demands: ['symbol', 'date'] + the agreed constant + ['ret_1d'], nothing else."
+    },
+    "detected_bar": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$detected_event_key.records",
+        "table": "$detected_bar_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 1.0,
+        "column_prefix": "detected_bar_",
+        "families": {
+          "detected_bar": {
+            "fields": [
+              "ret_1d"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The event day's close-to-close log return from the bars: label-time, measured at the event close. A name or day with no bar keeps the vendor move (counted in realized_source)."
+          }
+        }
+      },
+      "notes": "The event day's close-to-close log return from the bars: label-time, measured at the event close. A name or day with no bar keeps the vendor move (counted in realized_source)."
+    },
+    "detected_sourced": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$detected_bar.records"
+      },
+      "params": {
+        "field": "realized_source",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "ret_1d",
+                "op": "!=",
+                "value": null
+              }
+            ],
+            "value": "bar"
+          },
+          {
+            "when": [],
+            "value": "vendor"
+          }
+        ]
+      },
+      "notes": "Which move each event uses: the bar close-to-close, else the detector's vendor-spot move (the fallback is counted by realized_source)."
+    },
+    "detected_gap": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$detected_sourced.records"
+      },
+      "params": {
+        "fields": {
           "event_implied": {
             "op": "mul",
             "args": [
@@ -276,24 +425,59 @@
             ]
           },
           "realized_abs": {
-            "op": "abs",
-            "args": [
+            "coalesce": [
               {
-                "field": "realized_move"
+                "op": "abs",
+                "args": [
+                  {
+                    "field": "ret_1d"
+                  }
+                ]
+              },
+              {
+                "op": "abs",
+                "args": [
+                  {
+                    "field": "realized_move"
+                  }
+                ]
               }
             ]
           }
-        }
+        },
+        "keep": [
+          "symbol",
+          "event_date",
+          "entry_date",
+          "exit_date",
+          "front_iv_before",
+          "front_iv_after",
+          "implied_move",
+          "realized_move",
+          "event_source",
+          "realized_source"
+        ]
       },
-      "notes": "PRIMARY (a), as written: gap_30d = the front (30-DTE) straddle ratio at the close before the event minus the absolute close-to-close move of the event day. CAVEAT recorded before the run: the straddle spans 30 days and the move one, so this difference is positive by construction; the informative SECONDARY is event_implied, the one-day move the crush itself removes, sqrt(2/pi) sqrt((iv_before^2 - iv_after^2) 30/365), against realized_abs."
+      "notes": "realized_abs = |bar close-to-close move|, else |vendor move| where no bar exists. event_implied = sqrt(2/pi) sqrt((iv_before^2 - iv_after^2) 30/365), the one-day move the crush itself removes."
     },
-    "move_gap2": {
+    "detected_gap2": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
       "inputs": {
-        "records": "$move_gap.records"
+        "records": "$detected_gap.records"
       },
       "params": {
         "fields": {
+          "gap_30d": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "implied_move"
+              },
+              {
+                "field": "realized_abs"
+              }
+            ]
+          },
           "event_gap": {
             "op": "sub",
             "args": [
@@ -307,12 +491,246 @@
           }
         }
       },
-      "notes": "Secondary difference: event-variance implied move minus realized move."
+      "notes": "PRIMARY (a), as written: gap_30d = the front (30-DTE) straddle ratio at the close before the event minus the absolute close-to-close move of the event day. CAVEAT recorded before the run: the straddle spans 30 days and the move one, so this difference is positive by construction; the informative SECONDARY is event_gap = event_implied - realized_abs."
+    },
+    "labelled_event_key": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$labelled_rows.records"
+      },
+      "params": {
+        "fields": {
+          "date": {
+            "field": "event_date"
+          },
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "The event date as the join key."
+    },
+    "labelled_bar_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$bar_ret.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        },
+        "keep": [
+          "symbol",
+          "date",
+          "ret_1d"
+        ]
+      },
+      "notes": "The columns of labelled_bar the attachment demands: ['symbol', 'date'] + the agreed constant + ['ret_1d'], nothing else."
+    },
+    "labelled_bar": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$labelled_event_key.records",
+        "table": "$labelled_bar_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 1.0,
+        "column_prefix": "labelled_bar_",
+        "families": {
+          "labelled_bar": {
+            "fields": [
+              "ret_1d"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The event day's close-to-close log return from the bars: label-time, measured at the event close. A name or day with no bar keeps the vendor move (counted in realized_source)."
+          }
+        }
+      },
+      "notes": "The event day's close-to-close log return from the bars: label-time, measured at the event close. A name or day with no bar keeps the vendor move (counted in realized_source)."
+    },
+    "labelled_sourced": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$labelled_bar.records"
+      },
+      "params": {
+        "field": "realized_source",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "ret_1d",
+                "op": "!=",
+                "value": null
+              }
+            ],
+            "value": "bar"
+          },
+          {
+            "when": [],
+            "value": "vendor"
+          }
+        ]
+      },
+      "notes": "Which move each event uses: the bar close-to-close, else the detector's vendor-spot move (the fallback is counted by realized_source)."
+    },
+    "labelled_gap": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$labelled_sourced.records"
+      },
+      "params": {
+        "fields": {
+          "event_implied": {
+            "op": "mul",
+            "args": [
+              {
+                "const": 0.7978845608028654
+              },
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "max",
+                        "args": [
+                          {
+                            "const": 0
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "op": "mul",
+                                "args": [
+                                  {
+                                    "field": "front_iv_before"
+                                  },
+                                  {
+                                    "field": "front_iv_before"
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "mul",
+                                "args": [
+                                  {
+                                    "field": "front_iv_after"
+                                  },
+                                  {
+                                    "field": "front_iv_after"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "const": 0.0821917808219178
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "realized_abs": {
+            "coalesce": [
+              {
+                "op": "abs",
+                "args": [
+                  {
+                    "field": "ret_1d"
+                  }
+                ]
+              },
+              {
+                "op": "abs",
+                "args": [
+                  {
+                    "field": "realized_move"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "keep": [
+          "symbol",
+          "event_date",
+          "entry_date",
+          "exit_date",
+          "front_iv_before",
+          "front_iv_after",
+          "implied_move",
+          "realized_move",
+          "event_source",
+          "realized_source"
+        ]
+      },
+      "notes": "realized_abs = |bar close-to-close move|, else |vendor move| where no bar exists. event_implied = sqrt(2/pi) sqrt((iv_before^2 - iv_after^2) 30/365), the one-day move the crush itself removes."
+    },
+    "labelled_gap2": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$labelled_gap.records"
+      },
+      "params": {
+        "fields": {
+          "gap_30d": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "implied_move"
+              },
+              {
+                "field": "realized_abs"
+              }
+            ]
+          },
+          "event_gap": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "event_implied"
+              },
+              {
+                "field": "realized_abs"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "PRIMARY (a), as written: gap_30d = the front (30-DTE) straddle ratio at the close before the event minus the absolute close-to-close move of the event day. CAVEAT recorded before the run: the straddle spans 30 days and the move one, so this difference is positive by construction; the informative SECONDARY is event_gap = event_implied - realized_abs."
+    },
+    "move_gap2": {
+      "uses": "concat",
+      "inputs": {
+        "detected": "$detected_gap2.records",
+        "labelled": "$labelled_gap2.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance": "event_source"
+      },
+      "notes": "The detected events and the labelled announcements in one table, each row agreeing with its port name."
     },
     "move_ok": {
       "uses": "filter",
       "inputs": {
-        "records": "$move_gap2.records"
+        "records": "$move_gap2.merged"
       },
       "params": {
         "where": [
@@ -356,6 +774,22 @@
         }
       },
       "notes": "(a) PRIMARY as written, clustered by event week. Pass: mean > 0, Newey-West t >= 2.5."
+    },
+    "gap_source": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$move_ok.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "gap_30d",
+        "by": [
+          "realized_source"
+        ],
+        "bucket": "week",
+        "h_steps": 1
+      },
+      "notes": "How many events use the bar move and how many fall back to the vendor move (n_rows per realized_source)."
     },
     "gap_event": {
       "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
@@ -475,9 +909,20 @@
           "date": {
             "field": "entry_date"
           }
-        }
+        },
+        "keep": [
+          "symbol",
+          "event_date",
+          "entry_date",
+          "exit_date",
+          "front_iv_before",
+          "front_iv_after",
+          "implied_move",
+          "realized_move",
+          "event_source"
+        ]
       },
-      "notes": "The entry date as the join key."
+      "notes": "The entry date as the join key (the event-date key of the bar attachment is dropped)."
     },
     "detected_stream": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
@@ -639,9 +1084,20 @@
           "date": {
             "field": "entry_date"
           }
-        }
+        },
+        "keep": [
+          "symbol",
+          "event_date",
+          "entry_date",
+          "exit_date",
+          "front_iv_before",
+          "front_iv_after",
+          "implied_move",
+          "realized_move",
+          "event_source"
+        ]
       },
-      "notes": "The entry date as the join key."
+      "notes": "The entry date as the join key (the event-date key of the bar attachment is dropped)."
     },
     "labelled_stream": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
@@ -1054,6 +1510,7 @@
       "uses": "run-report",
       "inputs": {
         "events": "$events.summary",
+        "gap_source": "$gap_source.summary",
         "gap_primary": "$gap_primary.summary",
         "gap_event": "$gap_event.summary",
         "pnl": "$pnl.summary",

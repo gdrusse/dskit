@@ -9,7 +9,8 @@ it on every row.
 An expression is exactly one of ``{"field": name}`` (the row's value, any JSON type when it is
 the whole expression, so a bare field is a copy and a rename), ``{"const": number}``, or
 ``{"op": name, "args": [expression, ...]}`` over the closed table :data:`OPS`. ``{"item": {"field": name, "index": i}}``
-is the i-th number of a list field. Two kinds may only be the
+is the i-th number of a list field, and ``{"coalesce": [expression, ...]}`` is the first of its expressions that has a value (a
+null or out-of-domain one is skipped; none left is null, counted). A bare ``field`` whose value is NaN or infinite is missing. Two kinds may only be the
 WHOLE expression of an output: ``{"text": "..."}`` (a constant string, such as a structure name) and
 ``{"list": [expression, ...]}`` (a list of numbers, such as the strikes of an order; null when any
 element is). Inside an op
@@ -68,7 +69,7 @@ OPS = {
     "min": (("at_least", 2), lambda *a: min(a)),
     "max": (("at_least", 2), lambda *a: max(a)),
 }
-_KINDS = ("field", "const", "op", "text", "list", "item")
+_KINDS = ("field", "const", "op", "text", "list", "item", "coalesce")
 _NULL = "null_input"
 _DOMAIN = "domain"
 
@@ -144,6 +145,13 @@ class ComputeFields(Node):
                   and spec["index"] >= 0)
             if not ok:
                 problems.append(f"{where}: item is {{\"field\": name, \"index\": int >= 0}}, got {spec!r}")
+        elif kind == "coalesce":
+            items = expr["coalesce"]
+            if not isinstance(items, list) or len(items) < 2:
+                problems.append(f"{where}: coalesce is a list of at least 2 expressions, got {items!r}")
+            else:
+                for position, item in enumerate(items):
+                    problems += cls._expression_problems(f"{where}.coalesce[{position}]", item, nested)
         elif kind == "text":
             if not isinstance(expr["text"], str) or not expr["text"]:
                 problems.append(f"{where}: text must be a non-empty string, got {expr['text']!r}")
@@ -212,6 +220,14 @@ class ComputeFields(Node):
             return float(expr["const"])
         if "text" in expr:
             return expr["text"]
+        if "coalesce" in expr:
+            last = _Fail(_NULL)
+            for item in expr["coalesce"]:
+                try:
+                    return ComputeFields._evaluate(item, row, top)
+                except _Fail as failure:
+                    last = failure
+            raise last
         if "item" in expr:
             items = row.get(expr["item"]["field"])
             index = expr["item"]["index"]
@@ -225,7 +241,7 @@ class ComputeFields(Node):
             return [ComputeFields._evaluate(item, row, False) for item in expr["list"]]
         if "field" in expr:
             value = row.get(expr["field"])
-            if value is None:
+            if value is None or (isinstance(value, float) and not math.isfinite(value)):
                 raise _Fail(_NULL)
             if top:
                 return value
