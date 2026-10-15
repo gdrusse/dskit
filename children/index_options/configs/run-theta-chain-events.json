@@ -1430,7 +1430,7 @@
     "path": "configs/theta-earnings-labels-2016-2020.json",
     "source": "Announcement dates of quarterly results for AAPL, MSFT, AMZN, GOOGL and NVDA, 2016-01-01..2020-12-31, recalled by the implementer from the public releases and not cross-checked in this repository; each carries a confidence",
     "retrieved": "2026-10-12",
-    "sha256": "34f072a187b4a2ed425dc0cec8f4396d6977dfc37a0352ee3a8b6997b91988df",
+    "sha256": "16668d5d6eafbb3b1fc10742fefef18123d2df865d79e794c27f52f925b5f92f",
     "expect": 2
    },
    "notes": "The owner-supplied labelled dates. Only confidence 'high' labels are scored (AAPL); 'medium' labels are for the other symbols once their features exist. Nothing after 2020-12-31."

@@ -1,6 +1,6 @@
 {
   "name": "theta-h4-vrp-validation",
-  "notes": "PRE-REGISTERED H4 (ADR-0265, Amendment 5), validation period 2021-01-04 .. 2026-01-01 (end_before; nothing on or after 2026-01-01 is read). ADR RULE, verbatim: **H4** per-name variance risk premium (level, slope, regime via `VolRegimeSignals`) and weekly versus monthly: descriptive with CIs; the timing signal passes if gated-minus-ungated short-straddle return > 0, t >= 2.5. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. RUN ONCE: this is the validation run; it is not repeated, tuned or re-read. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h4-vrp-validation.json --asof 2025-12-31",
+  "notes": "PRE-REGISTERED H4 (ADR-0265, Amendments 5-6), validation period 2021-01-04 .. 2026-01-01 (end_before; nothing on or after 2026-01-01 is read). HISTORICAL ADR RULE, verbatim (Amendment 6 below controls): **H4** per-name variance risk premium (level, slope, regime via `VolRegimeSignals`) and weekly versus monthly: descriptive with CIs; the timing signal passes if gated-minus-ungated short-straddle return > 0, t >= 2.5. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. AMENDMENT 6 controls: D3 event_gap primary; D4 labelled H2(b) primary population, measurement only, detected-only validation cannot close it; D7 SPX put-write only primary, fee/capital sensitivities descriptive; D9 only tercile-dependent readings start 2019 using 2016-2018 liquidity, original overall/half splits unchanged; D10 H7 descriptive, cannot close programme; D11 H4 monthly only, weekly-versus-monthly dropped. RUN ONCE: this is the validation run; it is not repeated, tuned or re-read. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h4-vrp-validation.json --asof 2025-12-31",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h4-vrp-validation",
     "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
@@ -700,10 +700,31 @@
       },
       "notes": "The two halves of the period, split at 2023-07-01 (the same-sign-in-both-halves check)."
     },
+    "tercile_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "open_date",
+            "op": ">=",
+            "value": "2021-01-04"
+          },
+          {
+            "field": "liquidity_tercile",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "D9: tercile readings start in 2019 using 2016-2018 census liquidity; overall monthly timing and original halves are unchanged."
+    },
     "vrp_level": {
       "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
       "inputs": {
-        "records": "$phased.records"
+        "records": "$tercile_rows.records"
       },
       "params": {
         "stamp_field": "open_date",
@@ -720,12 +741,12 @@
           "level": 0.9
         }
       },
-      "notes": "DESCRIPTIVE: the per-name variance risk premium (iv^2 - 252 rv22^2) by liquidity tercile, monthly means with a Newey-West t and a calendar-block bootstrap interval (terciles are null before 2021-01-01 by the panel's no-look-ahead rule)."
+      "notes": "DESCRIPTIVE: the per-name variance risk premium (iv^2 - 252 rv22^2) by liquidity tercile, monthly means with a Newey-West t and a calendar-block bootstrap interval (D9: 2016-2018 terciles, readings from 2019)."
     },
     "slope_level": {
       "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
       "inputs": {
-        "records": "$phased.records"
+        "records": "$tercile_rows.records"
       },
       "params": {
         "stamp_field": "open_date",

@@ -1,6 +1,6 @@
 {
   "name": "theta-chain-census-parquet",
-  "notes": "H-census of ADR-0265 on the Parquet tree (Amendment 3): the same census node and the same outputs as run-theta-chain-census.json, fed by the columnar ParquetChainRows reader instead of the gzip unit reader, so every landed root is counted in minutes instead of hours. The two readers give identical node outputs on the same data (tests/pipeline_libs/test_chain_parquet.py, and a real-data parity run on the landed ACMR snapshots in the Amendment). READ-ONLY: /home/russell/data/thetadata/parquet-v2/<tier>/theta/*.parquet (one immutable file per committed snapshot, written by the export driver) is only read; the reader pins the files it listed at fingerprint time, so a run describes exactly the snapshots present when it started. first_bid_date and every share are WHOLE-SAMPLE statistics: a universe gate for a test must be recomputed from dates up to that test's start only. SEALED PERIOD: end_before 2026-01-01 is pushed into the Arrow scan (a later row is never decoded) and sealed_from 2026-01-01 refuses a file whose footer window reaches it; the census node also refuses any row on or after end_before. STITCHING: configs/root-renames.json (sha256-pinned) renames an old root to its new root so a renamed name is one series; an old/new overlap or an effective date the data contradicts refuses. TERCILES use dates before 2021-01-01 only. STRIKE GRID: half-dollar below 200, whole dollars above, a first-pass approximation. CLOSES: the Alpaca as-traded 1-Day SIP bars of the second-300 option universe are wired as the census 'closes' input (price check); as of 2026-10-12 none of the landed roots (A..AG of the tested names) is in that store, so price_compared is 0 until a root of that universe lands; the comparison against the older Yahoo as-traded bars of the tested names is in the ADR amendment. Run from children/index_options: nice -n 10 python -m dskit.pipeline run configs/run-theta-chain-census-parquet.json --asof 2025-12-31.",
+  "notes": "H-census of ADR-0265 on the Parquet tree (Amendment 3): the same census node and the same outputs as run-theta-chain-census.json, fed by the columnar ParquetChainRows reader instead of the gzip unit reader, so every landed root is counted in minutes instead of hours. The two readers give identical node outputs on the same data (tests/pipeline_libs/test_chain_parquet.py, and a real-data parity run on the landed ACMR snapshots in the Amendment). READ-ONLY: /home/russell/data/thetadata/parquet-v2/<tier>/theta/*.parquet (one immutable file per committed snapshot, written by the export driver) is only read; the reader pins the files it listed at fingerprint time, so a run describes exactly the snapshots present when it started. first_bid_date and every share are WHOLE-SAMPLE statistics: a universe gate for a test must be recomputed from dates up to that test's start only. SEALED PERIOD: end_before 2026-01-01 is pushed into the Arrow scan (a later row is never decoded) and sealed_from 2026-01-01 refuses a file whose footer window reaches it; the census node also refuses any row on or after end_before. STITCHING: configs/root-renames.json (sha256-pinned) renames an old root to its new root so a renamed name is one series; an old/new overlap or an effective date the data contradicts refuses. D9: TERCILES use 2016-2018 only (liquidity_end_before 2019-01-01). STRIKE GRID: half-dollar below 200, whole dollars above, a first-pass approximation. CLOSES: the Alpaca as-traded 1-Day SIP bars of the second-300 option universe are wired as the census 'closes' input (price check); as of 2026-10-12 none of the landed roots (A..AG of the tested names) is in that store, so price_compared is 0 until a root of that universe lands; the comparison against the older Yahoo as-traded bars of the tested names is in the ADR amendment. Run from children/index_options: nice -n 10 python -m dskit.pipeline run configs/run-theta-chain-census-parquet.json --asof 2025-12-31.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-research-20261012/chain-census-parquet",
     "notes": "A new directory beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
@@ -29,7 +29,8 @@
         "renames_key": "renames",
         "renames_sha256": "ddb611ae2675fcd083c74bfd0ef7c81f74c94828b5457782717116ccbbfe27c3",
         "breaks_key": "breaks",
-        "pending_key": "pending_verification"
+        "pending_key": "pending_verification",
+        "start": "2016-01-04"
       },
       "notes": "The ThetaData daily chain from the Parquet export tree, symbol by symbol, projected to the seven fields the census reads (column pruning), the sealed period excluded by predicate pushdown and by refusing a whole file whose footer window reaches 2026-01-01. A (symbol, date) unit held by two files comes from the newest-acquired file (footer windows decide; the counters match the gzip reader's). Lazy, re-iterable, read-only. Add a tier directory to directories when its Parquet tree exists."
     },
@@ -58,7 +59,7 @@
           }
         ],
         "end_before": "2026-01-01",
-        "liquidity_end_before": "2021-01-01",
+        "liquidity_end_before": "2019-01-01",
         "close_symbol_field": "symbol",
         "close_date_field": "ts",
         "close_field": "close",

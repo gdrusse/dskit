@@ -153,6 +153,7 @@ def test_set_pin_and_freeze_universe_write_the_inputs_and_regenerate_to_a_consis
     (tmp_path / th.INPUTS_FILE).write_text((CONFIGS / th.INPUTS_FILE).read_text())
     (tmp_path / th.EVENTS_FILE).write_text((CONFIGS / th.EVENTS_FILE).read_text())
     (tmp_path / th.PANEL_DOC).write_text((CONFIGS / th.PANEL_DOC).read_text())
+    (tmp_path / "run-theta-chain-census-parquet.json").write_text((CONFIGS / "run-theta-chain-census-parquet.json").read_text())
     assert th.main(["set-pin", "panel", "ab" * 32]) == 0
     assert th.main(["set-pin", "panel", "nope"]) == 1
     monkeypatch.setattr(th, "store_pin", lambda spec: "cd" * 32)
@@ -247,7 +248,7 @@ def _summary(result, node):
 
 @pytest.mark.parametrize("h", sorted(th.HYPOTHESES))
 def test_the_development_document_runs_end_to_end_on_the_synthetic_world(h, tmp_path, monkeypatch):
-    result = _run(h, th.DEV, 2018, tmp_path, monkeypatch)
+    result = _run(h, th.DEV, 2019 if h in ("H2", "H4", "H7") else 2018, tmp_path, monkeypatch)
     check = CHECKS[h]
     check(result)
     assert list(tmp_path.glob("*.jsonl")), "the audit rows were written under the run's own directory"
@@ -308,7 +309,28 @@ def _check_h5(r):
     assert _summary(r, "ledger")["closed"].get("expiry", 0) > 50
     groups = _summary(r, "sharpe")["groups"]
     assert any(name.startswith("structure=put_write|symbol=SPX") for name in groups)
-    assert all("hurdle" in g for name, g in groups.items() if g["n_stamps"] >= 2 and name != "all")
+    assert all("hurdle" not in g or g["hurdle"] is None for g in groups.values())
+    assert _g(r, "primary_sharpe")["hurdle"] is not None
+    def audit(key):
+        return [json.loads(line) for line in Path(r.outputs[key]["path"]).read_text().splitlines()]
+    base = {(t["symbol"], t["open_date"], t["structure"]): t for t in audit("trades_table")}
+    paid = {(t["symbol"], t["open_date"], t["structure"]): t for t in audit("trades_table_fee")}
+    assert base.keys() == paid.keys()
+    units = {"put_write": 1, "strangle_1dte": 2, "condor_1dte": 4, "put_spread_16_5": 2, "tail_hedge": 1}
+    for key, trade in base.items():
+        other = paid[key]
+        assert other["pnl_usd"] == pytest.approx(trade["pnl_usd"] - 0.65 * units[trade["structure"]])
+        if trade["structure"] == "put_write":
+            assert trade["max_loss_usd"] == pytest.approx(trade["strikes"][0] * 100 - trade["credit_usd"])
+    primary = [t for t in base.values() if t["structure"] == "put_write" and t["symbol"] == "SPX"]
+    assert _g(r, "primary_sharpe")["n_rows"] == len(primary)
+    assert primary and {(t["structure"], t["symbol"]) for t in primary} == {("put_write", "SPX")}
+    for suffix in ("", "_fee"):
+        capital = audit("capital_table" + suffix)
+        assert capital and all(t["ret_capital"] == pytest.approx(t["pnl_usd"] / t["max_loss_usd"]) for t in capital)
+        assert not any(t["max_loss_unbounded"] for t in capital)
+        assert any(t["max_loss_unbounded"] for t in audit("trades_table" + suffix))
+
 
 
 def _check_h6(r):
@@ -535,3 +557,75 @@ def test_the_documents_the_planted_tests_run_are_the_real_ones_and_still_validat
         name = th.doc_file(h, th.DEV)
         assert _doc(name) == th.build(h, th.DEV, th.load_inputs())
         assert _classes(name)
+
+
+# Amendment 6: independent contract assertions, before real-data execution.
+@pytest.mark.parametrize("period", [th.DEV, th.VAL])
+def test_amendment6_event_gap_is_primary_with_unchanged_formula_and_halves(period):
+    nodes = th.build("H2", period)["pipeline"]
+    assert nodes["gap_primary"]["params"]["value_field"] == "event_gap"
+    assert nodes["gap_primary"]["params"]["bucket"] == "week"
+    assert nodes["gap_primary"]["params"]["h_steps"] == 1
+    assert nodes["gap_halves"]["params"]["by"] == ["event_source", "half"]
+    assert nodes["gap_halves"]["params"]["value_field"] == "event_gap"
+    assert nodes["gap_phased"]["params"]["cases"][0]["when"][0]["value"] == period.halves_at
+    assert nodes["gap_30d"]["params"]["value_field"] == "gap_30d"
+
+
+@pytest.mark.parametrize("period", [th.DEV, th.VAL])
+def test_amendment6_h5_only_spx_put_write_has_a_primary_hurdle(period):
+    nodes = th.build("H5", period)["pipeline"]
+    hurdles = [key for key, node in nodes.items() if "hurdle" in node.get("params", {})]
+    assert hurdles == ["primary_sharpe"]
+    assert nodes["primary_trades"]["params"]["where"] == [
+        {"field": "structure", "op": "==", "value": "put_write"},
+        {"field": "symbol", "op": "==", "value": "SPX"}]
+    assert nodes["primary_sharpe"]["params"]["value_field"] == "ret_notional"
+    assert nodes["primary_sharpe"]["params"]["hurdle"] == 0.5
+    assert nodes["ledger"]["params"]["fee_per_contract"] == 0
+    assert nodes["ledger_fee"]["params"]["fee_per_contract"] == 0.65
+    assert nodes["ledger_fee"]["params"]["settle_fee_per_contract"] == 0
+    assert nodes["capital"]["params"]["fields"]["ret_capital"] == {
+        "op": "div", "args": [{"field": "pnl_usd"}, {"field": "max_loss_usd"}]}
+
+
+def test_amendment6_panel_and_census_use_only_2016_through_2018_liquidity():
+    assert th.files()[th.PANEL_DOC]["pipeline"]["panel"]["params"]["census_asof"] == "2019-01-01"
+    census = th.files()["run-theta-chain-census-parquet.json"]
+    assert census["pipeline"]["census"]["params"]["liquidity_end_before"] == "2019-01-01"
+    assert census["pipeline"]["chain"]["params"]["start"] == "2016-01-04"
+
+
+def test_amendment6_only_aapl_labels_are_verified_and_eligible():
+    import hashlib
+    path = CONFIGS / "theta-earnings-labels-2016-2020.json"
+    labels = json.loads(path.read_text())["labels"]
+    verified = [row for row in labels if row["confidence"] == "high"]
+    assert len(verified) == 20 and {row["symbol"] for row in verified} == {"AAPL"}
+    assert all(row["source_url"].startswith("https://www.apple.com/newsroom/") for row in verified)
+    assert th.load_inputs()["labels"]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("h,field", [("H2", "event_date"), ("H4", "open_date"), ("H7", "date")])
+def test_amendment6_tercile_boundary_preserves_original_halves(h, field):
+    from dskit.pipeline.kinds_flow import Filter
+    from dskit.pipeline.node import NodeContext
+    nodes = th.build(h, th.DEV)["pipeline"]
+    node = nodes["tercile_rows"]
+    rows = [{field: day, "liquidity_tercile": tier} for day, tier in [
+        ("2018-12-31", 1), ("2019-01-01", 1), ("2019-01-02", None), ("2020-12-31", 2)]]
+    ctx = NodeContext(name="t", asof="2025-12-31", run_dir="/x")
+    out = Filter("tercile_rows", node["params"]).run(ctx, {"records": rows})["records"]
+    assert [row[field] for row in out] == ["2019-01-01", "2020-12-31"]
+    assert nodes["phased"]["params"]["cases"][0]["when"][0]["value"] == "2018-07-01"
+
+
+def test_amendment6_h2_labelled_primary_excludes_detected_events():
+    from dskit.pipeline.kinds_flow import Filter
+    from dskit.pipeline.node import NodeContext
+    nodes = th.build("H2", th.DEV)["pipeline"]
+    assert nodes["events_labelled"]["params"]["confidences"] == ["high"]
+    ctx = NodeContext(name="t", asof="2025-12-31", run_dir="/x")
+    rows = [{"event_source": source, "pnl_over_premium": value} for source, value in [("detected", 99), ("labelled", -1)]]
+    out = Filter("primary", nodes["pnl_primary_rows"]["params"]).run(ctx, {"records": rows})["records"]
+    assert out == [rows[1]]

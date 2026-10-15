@@ -1,6 +1,6 @@
 {
   "name": "theta-h2-earnings-validation",
-  "notes": "PRE-REGISTERED H2 (ADR-0265, Amendment 5), validation period 2021-01-04 .. 2026-01-01 (end_before; nothing on or after 2026-01-01 is read). ADR RULE, verbatim: **H2** earnings: (a) implied move (front straddle) minus realized gap move; (b) long ATM straddle bought 3 sessions before the event, sold the session after, at NBBO. Events are detected from the chain itself (front-month IV collapse above a threshold frozen on 2016–2019 dates). Pass: mean > 0, t clustered by event week >= 2.5, same sign in both halves, terciles by liquidity. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. RUN ONCE: this is the validation run; it is not repeated, tuned or re-read. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h2-earnings-validation.json --asof 2025-12-31",
+  "notes": "PRE-REGISTERED H2 (ADR-0265, Amendments 5-6), validation period 2021-01-04 .. 2026-01-01 (end_before; nothing on or after 2026-01-01 is read). HISTORICAL ADR RULE, verbatim (Amendment 6 below controls): **H2** earnings: (a) implied move (front straddle) minus realized gap move; (b) long ATM straddle bought 3 sessions before the event, sold the session after, at NBBO. Events are detected from the chain itself (front-month IV collapse above a threshold frozen on 2016–2019 dates). Pass: mean > 0, t clustered by event week >= 2.5, same sign in both halves, terciles by liquidity. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. AMENDMENT 6 controls: D3 event_gap primary; D4 labelled H2(b) primary population, measurement only, detected-only validation cannot close it; D7 SPX put-write only primary, fee/capital sensitivities descriptive; D9 only tercile-dependent readings start 2019 using 2016-2018 liquidity, original overall/half splits unchanged; D10 H7 descriptive, cannot close programme; D11 H4 monthly only, weekly-versus-monthly dropped. RUN ONCE: this is the validation run; it is not repeated, tuned or re-read. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h2-earnings-validation.json --asof 2025-12-31",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h2-earnings-validation",
     "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
@@ -412,7 +412,7 @@
           }
         }
       },
-      "notes": "PRIMARY (a), as written: gap_30d = the front (30-DTE) straddle ratio at the close before the event minus the absolute close-to-close move of the event day. CAVEAT recorded before the run: the straddle spans 30 days and the move one, so this difference is positive by construction; the informative SECONDARY is event_gap = event_implied - realized_abs."
+      "notes": "D3: event_gap = event_implied - realized_abs is PRIMARY; gap_30d compares a 30-day straddle with a one-day move and is descriptive only."
     },
     "move_ok": {
       "uses": "filter",
@@ -440,48 +440,36 @@
       },
       "notes": "Events with both moves."
     },
+    "gap_phased": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$move_ok.records"
+      },
+      "params": {
+        "field": "half",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "event_date",
+                "op": "<",
+                "value": "2023-07-01"
+              }
+            ],
+            "value": "first"
+          },
+          {
+            "when": [],
+            "value": "second"
+          }
+        ]
+      },
+      "notes": "The two halves of the period, split at 2023-07-01 (the same-sign-in-both-halves check)."
+    },
     "gap_primary": {
       "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
       "inputs": {
-        "records": "$move_ok.records"
-      },
-      "params": {
-        "stamp_field": "event_date",
-        "value_field": "gap_30d",
-        "by": [
-          "event_source"
-        ],
-        "bucket": "week",
-        "h_steps": 1,
-        "bootstrap": {
-          "block_days": 90,
-          "replicates": 2000,
-          "seed": 20261012,
-          "level": 0.9
-        }
-      },
-      "notes": "(a) PRIMARY as written, clustered by event week. Pass: mean > 0, Newey-West t >= 2.5."
-    },
-    "gap_source": {
-      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
-      "inputs": {
-        "records": "$move_ok.records"
-      },
-      "params": {
-        "stamp_field": "event_date",
-        "value_field": "gap_30d",
-        "by": [
-          "realized_source"
-        ],
-        "bucket": "week",
-        "h_steps": 1
-      },
-      "notes": "How many events use the bar move and how many fall back to the vendor move (n_rows per realized_source)."
-    },
-    "gap_event": {
-      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
-      "inputs": {
-        "records": "$move_ok.records"
+        "records": "$gap_phased.records"
       },
       "params": {
         "stamp_field": "event_date",
@@ -498,7 +486,62 @@
           "level": 0.9
         }
       },
-      "notes": "(a) SECONDARY (reported, never promoted): event-variance implied move minus realized move, by week."
+      "notes": "D3 PRIMARY: event-variance implied move minus realized move, by event source, clustered by event week. Pass: mean > 0 and t >= 2.5 in both frozen halves. The detected population and labelled robustness are reported separately; no pooled-source claim."
+    },
+    "gap_halves": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$gap_phased.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "event_gap",
+        "by": [
+          "event_source",
+          "half"
+        ],
+        "bucket": "week",
+        "h_steps": 1
+      },
+      "notes": "D3 primary in each original half, before ledger/trade filtering: mean > 0 and t >= 2.5 in both halves."
+    },
+    "gap_30d": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$move_ok.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "gap_30d",
+        "by": [
+          "event_source"
+        ],
+        "bucket": "week",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "DESCRIPTIVE ONLY (D3): 30-day straddle minus a one-day move; no pass rule."
+    },
+    "gap_source": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$move_ok.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "event_gap",
+        "by": [
+          "realized_source"
+        ],
+        "bucket": "week",
+        "h_steps": 1
+      },
+      "notes": "Coverage of bar versus vendor move (n_rows per realized_source)."
     },
     "entry_30": {
       "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
@@ -942,7 +985,42 @@
           "level": 0.9
         }
       },
-      "notes": "PRIMARY (b): the long straddle's return over premium per event, clustered by event week (bucket week, equal weight within a week), reported on the DETECTED events, on ALL labelled announcements and the unpaired difference of the two (contrast). Pass: mean > 0, Newey-West t >= 2.5 (clustered by event week), same sign in both halves, terciles by liquidity. EXPLORATORY on the detected subset (Amendment 4)."
+      "notes": "D4: H2(b) is measurement only. The ALL-labelled-dates robustness set (verified AAPL/high only) is the primary population; detected events and their unpaired difference are descriptive. A detected-only validation twin cannot pass or close H2(b). Event-week buckets and the original half split are unchanged."
+    },
+    "pnl_primary_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "event_source",
+            "op": "==",
+            "value": "labelled"
+          }
+        ]
+      },
+      "notes": "D4/D5: sole primary population for H2(b), all verified AAPL/high labelled announcements. Validation has none: detected-only cannot close H2(b)."
+    },
+    "pnl_primary": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$pnl_primary_rows.records"
+      },
+      "params": {
+        "stamp_field": "event_date",
+        "value_field": "pnl_over_premium",
+        "bucket": "week",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "D4 PRIMARY POPULATION, measurement only: verified labelled-dates straddle returns, event-week buckets; no detected-only pass criterion."
     },
     "pnl_halves": {
       "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
@@ -961,10 +1039,31 @@
       },
       "notes": "The same by half of the period (same-sign check)."
     },
+    "tercile_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "event_date",
+            "op": ">=",
+            "value": "2021-01-04"
+          },
+          {
+            "field": "liquidity_tercile",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "D9: only the tercile-dependent reading starts in 2019; the overall and original half-period readings retain 2016-2020."
+    },
     "pnl_terciles": {
       "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
       "inputs": {
-        "records": "$phased.records"
+        "records": "$tercile_rows.records"
       },
       "params": {
         "stamp_field": "event_date",
@@ -976,17 +1075,17 @@
         "bucket": "week",
         "h_steps": 1
       },
-      "notes": "The same by liquidity tercile (null before 2021-01-01 by the panel's no-look-ahead rule)."
+      "notes": "The same by liquidity tercile, frozen using 2016-2018 only (D9)."
     },
     "events_table": {
       "uses": "records-write",
       "inputs": {
-        "records": "$detected_rows.records"
+        "records": "$gap_phased.records"
       },
       "params": {
         "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h2-earnings-validation/events.jsonl",
         "overwrite": true,
-        "source": "one row per detected event: dates, front IV before and after, implied and realized move"
+        "source": "detected and labelled events: dates, source, realized source, event_gap, gap_30d and frozen half; before trade filtering"
       },
       "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
     },
@@ -996,8 +1095,10 @@
         "events": "$events.summary",
         "gap_source": "$gap_source.summary",
         "gap_primary": "$gap_primary.summary",
-        "gap_event": "$gap_event.summary",
+        "gap_halves": "$gap_halves.summary",
+        "gap_30d": "$gap_30d.summary",
         "pnl": "$pnl.summary",
+        "pnl_primary": "$pnl_primary.summary",
         "halves": "$pnl_halves.summary",
         "terciles": "$pnl_terciles.summary",
         "ledger": "$ledger.summary"

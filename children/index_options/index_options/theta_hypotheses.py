@@ -1,4 +1,4 @@
-"""The pre-registered ThetaData hypothesis documents H0-H7 and their validation twins (ADR-0265 Amendment 5).
+"""The pre-registered ThetaData hypothesis documents H0-H7 and their validation twins (ADR-0265 Amendments 5-6).
 
 Every document is a pure function of two things: the :data:`INPUTS` file (store locations, pins, the frozen
 universe) and a :class:`Period`. The development document and the validation document of one hypothesis are the
@@ -33,6 +33,7 @@ INPUTS_FILE = "theta-hypothesis-inputs.json"
 EVENTS_FILE = "run-theta-chain-events.json"
 RUN_BASE = "/home/russell/data/index_options/theta-research-20261012/hypotheses"
 SEALED = "2026-01-01"
+TERCILE_ASOF = "2019-01-01"
 AGREE = "agree"
 COMPUTE = "dskit.pipeline.kinds_compute:ComputeFields"
 SERIES = "dskit.pipeline.kinds_series:StampSeriesStats"
@@ -501,6 +502,20 @@ def _short_orders(g, source):
 
 
 def build_h4(inputs, period):
+    """Build the pre-registered hypothesis graph without reading market data.
+
+    Parameters
+    ----------
+    inputs : dict
+        Store references, pins and frozen universe.
+    period : Period
+        Unchanged development or validation dates and half split.
+
+    Returns
+    -------
+    Graph
+        Nodes implementing ADR-0265 Amendments 5-6.
+    """
     g = Graph(inputs, period)
     g.name = "h4-vrp"
     p30 = _panel_30(g, ENTRY_COLUMNS)
@@ -534,10 +549,14 @@ def build_h4(inputs, period):
     g.attach("outcome", "gated", "closed", ["symbol", "open_date"], ["pnl_over_premium"], 0.3, "The short straddle's return over its credit, NBBO fills, known at expiry.")
     g.filter("scored", "outcome", [{"field": "pnl_over_premium", "op": "!=", "value": None}], "Entries with a settled outcome.")
     g.half("phased", "scored", "open_date")
-    _series_node(g, "vrp_level", "phased", "vrp", "open_date", "DESCRIPTIVE: the per-name variance risk premium (iv^2 - 252 rv22^2) by liquidity tercile, monthly means with a Newey-West t and a "
-                 "calendar-block bootstrap interval (terciles are null before 2021-01-01 by the panel's no-look-ahead rule).",
+    g.filter("tercile_rows", "phased", [
+        {"field": "open_date", "op": ">=", "value": max(period.start, TERCILE_ASOF)},
+        {"field": "liquidity_tercile", "op": "!=", "value": None}],
+        "D9: tercile readings start in 2019 using 2016-2018 census liquidity; overall monthly timing and original halves are unchanged.")
+    _series_node(g, "vrp_level", "tercile_rows", "vrp", "open_date", "DESCRIPTIVE: the per-name variance risk premium (iv^2 - 252 rv22^2) by liquidity tercile, monthly means with a Newey-West t and a "
+                 "calendar-block bootstrap interval (D9: 2016-2018 terciles, readings from 2019).",
                  by=["liquidity_tercile"], bucket="month", h_steps=1, bootstrap=BOOTSTRAP)
-    _series_node(g, "slope_level", "phased", "term_slope", "open_date", "DESCRIPTIVE: the 90-minus-30-day IV slope, monthly, by tercile.",
+    _series_node(g, "slope_level", "tercile_rows", "term_slope", "open_date", "DESCRIPTIVE: the 90-minus-30-day IV slope, monthly, by tercile.",
                  by=["liquidity_tercile"], bucket="month", h_steps=1, bootstrap=BOOTSTRAP)
     _series_node(g, "short_level", "phased", "pnl_over_premium", "open_date", "DESCRIPTIVE: the short straddle's return over credit at NBBO (every entry), by gate and tercile, monthly means with intervals.",
                  by=["gate"], bucket="month", h_steps=1, bootstrap=BOOTSTRAP, contrast={"field": "gate", "plus": "on", "minus": "off", "paired": True})
@@ -551,6 +570,20 @@ def build_h4(inputs, period):
 
 
 def build_h2(inputs, period):
+    """Build the pre-registered hypothesis graph without reading market data.
+
+    Parameters
+    ----------
+    inputs : dict
+        Store references, pins and frozen universe.
+    period : Period
+        Unchanged development or validation dates and half split.
+
+    Returns
+    -------
+    Graph
+        Nodes implementing ADR-0265 Amendments 5-6.
+    """
     g = Graph(inputs, period)
     g.name = "h2-earnings"
     rules = json.loads((CONFIGS / EVENTS_FILE).read_text())["pipeline"]["events"]["params"]
@@ -565,7 +598,7 @@ def build_h2(inputs, period):
     labelled = "labels" in inputs
     if labelled and period.name == "development":
         g.add("labels", "table-file", {"path": "configs/theta-earnings-labels-2016-2020.json", "source": "Announcement dates of quarterly results for AAPL, MSFT, AMZN, GOOGL and "
-              "NVDA 2016-2020, recalled from the public releases and not cross-checked in the repository; each carries a confidence", "retrieved": "2026-10-12",
+              "NVDA 2016-2020. All 20 AAPL/high dates verified against linked Apple releases; other names unverified and exploratory", "retrieved": "2026-10-15",
               "sha256": inputs["labels"]["sha256"], "expect": 2}, notes="The owner-supplied labelled announcement dates, development years only.")
         g.add("events_labelled", DETECTOR, {**detector, "end_before": period.end_before, "labelled_only": True, "label_symbol_field": "symbol",
               "label_date_field": "earnings_date", "label_confidence_field": "confidence", "confidences": ["high"], "labels_key": "labels",
@@ -597,8 +630,7 @@ def build_h2(inputs, period):
             "move the crush itself removes.", keep=common + ["event_source", "realized_source"])
         g.compute(f"{tag}_gap2", f"{tag}_gap", {
             "gap_30d": _op("sub", _f("implied_move"), _f("realized_abs")), "event_gap": _op("sub", _f("event_implied"), _f("realized_abs"))},
-            "PRIMARY (a), as written: gap_30d = the front (30-DTE) straddle ratio at the close before the event minus the absolute close-to-close move of the event day. CAVEAT recorded "
-            "before the run: the straddle spans 30 days and the move one, so this difference is positive by construction; the informative SECONDARY is event_gap = event_implied - realized_abs.")
+            "D3: event_gap = event_implied - realized_abs is PRIMARY; gap_30d compares a 30-day straddle with a one-day move and is descriptive only.")
     if len(tags) > 1:
         g.add("move_gap2", "concat", {"shape": "records", "provenance": "event_source"}, {tag: g.ref(f"{tag}_gap2") for tag in tags},
               "The detected events and the labelled announcements in one table, each row agreeing with its port name.")
@@ -608,9 +640,17 @@ def build_h2(inputs, period):
     g.add("move_ok", "filter", {"where": [{"field": "event_date", "op": "!=", "value": None}, {"field": "gap_30d", "op": "!=", "value": None},
                                           {"field": "event_gap", "op": "!=", "value": None}]},
           {"records": g.ref(rows_key, port)}, "Events with both moves.")
-    _series_node(g, "gap_primary", "move_ok", "gap_30d", "event_date", "(a) PRIMARY as written, clustered by event week. Pass: mean > 0, Newey-West t >= 2.5.", by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
-    _series_node(g, "gap_source", "move_ok", "gap_30d", "event_date", "How many events use the bar move and how many fall back to the vendor move (n_rows per realized_source).", by=["realized_source"], bucket="week", h_steps=1)
-    _series_node(g, "gap_event", "move_ok", "event_gap", "event_date", "(a) SECONDARY (reported, never promoted): event-variance implied move minus realized move, by week.", by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
+    g.half("gap_phased", "move_ok", "event_date")
+    _series_node(g, "gap_primary", "gap_phased", "event_gap", "event_date",
+                 "D3 PRIMARY: event-variance implied move minus realized move, by event source, clustered by event week. Pass: mean > 0 and t >= 2.5 in both frozen halves. The detected population and labelled robustness are reported separately; no pooled-source claim.",
+                 by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
+    _series_node(g, "gap_halves", "gap_phased", "event_gap", "event_date",
+                 "D3 primary in each original half, before ledger/trade filtering: mean > 0 and t >= 2.5 in both halves.",
+                 by=["event_source", "half"], bucket="week", h_steps=1)
+    _series_node(g, "gap_30d", "move_ok", "gap_30d", "event_date",
+                 "DESCRIPTIVE ONLY (D3): 30-day straddle minus a one-day move; no pass rule.",
+                 by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
+    _series_node(g, "gap_source", "move_ok", "event_gap", "event_date", "Coverage of bar versus vendor move (n_rows per realized_source).", by=["realized_source"], bucket="week", h_steps=1)
     # (b) the straddle through the ledger
     g.panel("entry_30", "panel", PANEL_BASE + ["expiration", "atm_strike", "half_spread_over_premium", "liquidity_tercile"],
             "The panel again, for the entry session's expiry and ATM strike: the 30-DTE rows with a resolved ATM strike, known at each entry session's close.",
@@ -654,14 +694,23 @@ def build_h2(inputs, period):
     g.half("phased", "scored", "event_date")
     contrast = {"field": "event_source", "plus": "detected", "minus": "labelled", "paired": False} if port == "merged" else None
     over = {"contrast": contrast} if contrast else {}
-    _series_node(g, "pnl", "phased", "pnl_over_premium", "event_date", "PRIMARY (b): the long straddle's return over premium per event, clustered by event week (bucket week, equal weight within a week), reported on the DETECTED events, on ALL "
-                 "labelled announcements and the unpaired difference of the two (contrast). Pass: mean > 0, Newey-West t >= 2.5 (clustered by event week), same sign in both halves, terciles by liquidity. "
-                 "EXPLORATORY on the detected subset (Amendment 4).", by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP, **over)
+    _series_node(g, "pnl", "phased", "pnl_over_premium", "event_date",
+                 "D4: H2(b) is measurement only. The ALL-labelled-dates robustness set (verified AAPL/high only) is the primary population; detected events and their unpaired difference are descriptive. A detected-only validation twin cannot pass or close H2(b). Event-week buckets and the original half split are unchanged.",
+                 by=["event_source"], bucket="week", h_steps=1, bootstrap=BOOTSTRAP, **over)
+    g.filter("pnl_primary_rows", "phased", [{"field": "event_source", "op": "==", "value": "labelled"}],
+             "D4/D5: sole primary population for H2(b), all verified AAPL/high labelled announcements. Validation has none: detected-only cannot close H2(b).")
+    _series_node(g, "pnl_primary", "pnl_primary_rows", "pnl_over_premium", "event_date",
+                 "D4 PRIMARY POPULATION, measurement only: verified labelled-dates straddle returns, event-week buckets; no detected-only pass criterion.",
+                 bucket="week", h_steps=1, bootstrap=BOOTSTRAP)
     _series_node(g, "pnl_halves", "phased", "pnl_over_premium", "event_date", "The same by half of the period (same-sign check).", by=["event_source", "half"], bucket="week", h_steps=1)
-    _series_node(g, "pnl_terciles", "phased", "pnl_over_premium", "event_date", "The same by liquidity tercile (null before 2021-01-01 by the panel's no-look-ahead rule).",
+    g.filter("tercile_rows", "phased", [
+        {"field": "event_date", "op": ">=", "value": max(period.start, TERCILE_ASOF)},
+        {"field": "liquidity_tercile", "op": "!=", "value": None}],
+        "D9: only the tercile-dependent reading starts in 2019; the overall and original half-period readings retain 2016-2020.")
+    _series_node(g, "pnl_terciles", "tercile_rows", "pnl_over_premium", "event_date", "The same by liquidity tercile, frozen using 2016-2018 only (D9).",
                  by=["event_source", "liquidity_tercile"], bucket="week", h_steps=1)
-    g.write("events_table", "detected_rows", "records", "events", "one row per detected event: dates, front IV before and after, implied and realized move")
-    summaries = {"events": "events", "gap_source": "gap_source", "gap_primary": "gap_primary", "gap_event": "gap_event", "pnl": "pnl", "halves": "pnl_halves", "terciles": "pnl_terciles", "ledger": "ledger"}
+    g.write("events_table", "gap_phased", "records", "events", "detected and labelled events: dates, source, realized source, event_gap, gap_30d and frozen half; before trade filtering")
+    summaries = {"events": "events", "gap_source": "gap_source", "gap_primary": "gap_primary", "gap_halves": "gap_halves", "gap_30d": "gap_30d", "pnl": "pnl", "pnl_primary": "pnl_primary", "halves": "pnl_halves", "terciles": "pnl_terciles", "ledger": "ledger"}
     if labelled and period.name == "development":
         summaries["labelled"] = "events_labelled"
     g.report("report", "H2 earnings events: implied versus realized and the event straddle", summaries)
@@ -669,6 +718,20 @@ def build_h2(inputs, period):
 
 
 def build_h5(inputs, period):
+    """Build the pre-registered hypothesis graph without reading market data.
+
+    Parameters
+    ----------
+    inputs : dict
+        Store references, pins and frozen universe.
+    period : Period
+        Unchanged development or validation dates and half split.
+
+    Returns
+    -------
+    Graph
+        Nodes implementing ADR-0265 Amendments 5-6.
+    """
     g = Graph(inputs, period)
     g.name = "h5-index-harvests"
     fields = ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying_price"]
@@ -698,23 +761,45 @@ def build_h5(inputs, period):
         "Delta is the Black-76 forward delta magnitude from each strike's own mid-implied vol on the parity forward (rate 0: it picks strikes only; nothing is marked with it). SPX (monthly cycle) "
         "carries the 30-day structures, SPXW (daily expiries) the 1DTE ones, XSP both.")
     vocabulary = {name: [[l["right"], l["quantity"]] for l in spec["legs"]] for name, spec in structures.items()}
-    _ledger(g, "ledger", "orders", "chain", vocabulary, "nbbo", "expiry",
-            "Every order opened at the NBBO sides (sold legs at the bid, bought legs at the ask) and settled at intrinsic on the expiration date from the chain's underlying. No fees "
-            "(none are in the ADR; an owner decision, see the run book).")
-    g.filter("closed", "ledger", [{"field": "status", "op": "==", "value": "closed"}], "Settled trades only.")
-    g.nodes["closed"]["inputs"] = {"records": "$ledger.trades"}
-    g.agreed("closed_agree", "closed")
-    g.attach("sized", "closed_agree", "orders", ["symbol", "open_date", "structure"], ["spot"], 0.0,
-             "The underlying at the open, from the order: the notional the return is measured on.")
-    g.compute("returns", "sized", {"ret_notional": _op("div", _f("pnl_usd"), _op("mul", _f("spot"), _c(100)))},
-              "Return on notional = net P&L over (underlying level x 100) at the open. Margin is not modelled: the notional is the common base, so structures are comparable.")
-    _series_node(g, "sharpe", "returns", "ret_notional", "open_date",
-                 "PRIMARY: per structure and root, the trades' returns on notional summed to calendar months, the annualised Sharpe ratio (sqrt 12 on the monthly series) and its calendar-block "
-                 "bootstrap interval (90-day blocks, 2000 resamples, 90% two-sided). Pass only if the lower bound of that interval is above 0.5. The one-sided 10th-percentile bound is in sharpe_ci too. "
-                 "Measurement, not proof (a 10-year Sharpe of 0.8 reaches t 2.5 only barely).",
-                 by=["structure", "symbol"], bucket="month", bucket_agg="sum", periods_per_year=12, h_steps=1, bootstrap=BOOTSTRAP, hurdle=0.5)
-    g.write("trades_table", "returns", "records", "trades", "one row per settled trade: structure, root, dates, strikes, premium, P&L, return on notional")
-    g.report("report", "H5 index harvests at NBBO", {"sharpe": "sharpe", "orders": "orders", "ledger": "ledger"})
+    summaries = {"orders": "orders"}
+    for suffix, fee in (("", 0.0), ("_fee", 0.65)):
+        ledger, closed = "ledger" + suffix, "closed" + suffix
+        _ledger(g, ledger, "orders", "chain", vocabulary, "nbbo", "expiry",
+                f"D7: NBBO fills; fee USD {fee} per contract per leg at entry or quoted exit; intrinsic settlement fee is zero. Fee sensitivity is descriptive, not a second primary.",
+                extra={"fee_per_contract": fee, "settle_fee_per_contract": 0.0})
+        g.filter(closed, ledger, [{"field": "status", "op": "==", "value": "closed"}], "Settled trades only.")
+        g.nodes[closed]["inputs"] = {"records": g.ref(ledger, "trades")}
+        g.agreed("closed_agree" + suffix, closed)
+        g.attach("sized" + suffix, "closed_agree" + suffix, "orders", ["symbol", "open_date", "structure"], ["spot"], 0.0,
+                 "The underlying at entry is the notional base; capital at risk comes from the ledger's existing maximum-loss rule.")
+        g.compute("returns" + suffix, "sized" + suffix, {
+            "ret_notional": _op("div", _f("pnl_usd"), _op("mul", _f("spot"), _c(100))),
+            "fee_per_contract": _c(fee)},
+            "Return on notional = net P&L / (entry underlying x 100), unchanged. Fees do not change orders or the primary denominator.")
+        g.filter("capital_defined" + suffix, "returns" + suffix, [{"field": "max_loss_usd", "op": ">", "value": 0}],
+                 "Finite positive maximum loss only. Unbounded strangles have null max_loss_usd; exclusions are counted and remain in the complete trade audit.")
+        g.compute("capital" + suffix, "capital_defined" + suffix, {
+            "ret_capital": _op("div", _f("pnl_usd"), _f("max_loss_usd"))},
+            "D7 DESCRIPTIVE: return on capital at risk = net P&L / finite positive maximum loss, including entry fees. This is not broker margin.")
+        for key, source, value in (("sharpe", "returns", "ret_notional"), ("capital_sharpe", "capital", "ret_capital")):
+            _series_node(g, key + suffix, source + suffix, value, "open_date",
+                         "D7 DESCRIPTIVE: by structure and root, calendar-month sums, annualised Sharpe and the unchanged 90-day block bootstrap. No pass claim on the other nine cells, fees or capital-risk bases. The pooled all group is not a result.",
+                         by=["structure", "symbol"], bucket="month", bucket_agg="sum", periods_per_year=12, h_steps=1, bootstrap=BOOTSTRAP)
+            summaries[key + suffix] = key + suffix
+        summaries[ledger] = ledger
+        g.write("trades_table" + suffix, "returns" + suffix, "records", "trades" + suffix,
+                "Every settled trade: fees, net P&L, notional return, maximum loss and unbounded-risk flag")
+        g.write("capital_table" + suffix, "capital" + suffix, "records", "capital" + suffix,
+                "Trades with finite positive capital at risk: net P&L divided by maximum loss")
+    g.filter("primary_trades", "returns", [
+        {"field": "structure", "op": "==", "value": "put_write"},
+        {"field": "symbol", "op": "==", "value": "SPX"}],
+        "D7: the ONE primary cell, SPX put-write at zero fees, return on notional. All other cells and sensitivities are descriptive.")
+    _series_node(g, "primary_sharpe", "primary_trades", "ret_notional", "open_date",
+                 "D7 PRIMARY: SPX put-write only. Monthly summed notional returns; pass only if the lower end (5th percentile) of the two-sided 90% block-bootstrap interval for annualised Sharpe exceeds 0.5. Measurement, not proof.",
+                 bucket="month", bucket_agg="sum", periods_per_year=12, h_steps=1, bootstrap=BOOTSTRAP, hurdle=0.5)
+    summaries["primary"] = "primary_sharpe"
+    g.report("report", "H5 index harvests at NBBO", summaries)
     return g
 
 
@@ -772,6 +857,20 @@ def build_h6(inputs, period):
 
 
 def build_h7(inputs, period):
+    """Build the pre-registered hypothesis graph without reading market data.
+
+    Parameters
+    ----------
+    inputs : dict
+        Store references, pins and frozen universe.
+    period : Period
+        Unchanged development or validation dates and half split.
+
+    Returns
+    -------
+    Graph
+        Nodes implementing ADR-0265 Amendments 5-6.
+    """
     g = Graph(inputs, period)
     g.name = "h7-pin-spread"
     fields = ["symbol", "date", "expiration", "strike", "right", "bid", "ask", "open_interest", "underlying_price"]
@@ -811,7 +910,7 @@ def build_h7(inputs, period):
           {"records": g.ref("sided_in")}, "Which side of the underlying the max-open-interest strike sits on: a drift in the underlying moves it toward one side, so the effect is read on each side.")
     g.half("phased", "sided", "open_date")
     _series_node(g, "pin", "phased", "pin_excess", "open_date",
-                 "PRIMARY: the monthly mean pin excess (toward the max-open-interest strike minus toward the placebo), overall and by side of the underlying and by half, with a Newey-West t and a "
+                 "DESCRIPTIVE ONLY (D10; cannot close the programme): the monthly mean pin excess (toward the max-open-interest strike minus toward the placebo), overall and by side of the underlying and by half, with a Newey-West t and a "
                  "calendar-block bootstrap interval. A pin pulls on both sides; a drift pulls on one. Descriptive (the ADR gives no pass number).",
                  by=["side", "half"], bucket="month", h_steps=1, bootstrap=BOOTSTRAP)
     _series_node(g, "toward_star_series", "phased", "toward_star", "open_date", "DESCRIPTIVE: movement toward the max-open-interest strike.", bucket="month", h_steps=1)
@@ -819,8 +918,12 @@ def build_h7(inputs, period):
     # (b) the spread census
     p30 = _panel_30(g, ["half_spread_over_premium", "liquidity_tercile"])
     g.filter("spreads", p30, [{"field": "half_spread_over_premium", "op": ">=", "value": 0}], "Rows with a measured half-spread over premium.")
-    _series_node(g, "spread_series", "spreads", "half_spread_over_premium", "date",
-                 "SPREAD CENSUS: the monthly mean half-spread over premium of the 30-DTE ATM straddle, by liquidity tercile (null before 2021-01-01 by the panel's rule), with intervals.",
+    g.filter("tercile_rows", "spreads", [
+        {"field": "date", "op": ">=", "value": max(period.start, TERCILE_ASOF)},
+        {"field": "liquidity_tercile", "op": "!=", "value": None}],
+        "D9: tercile readings from 2019 only, using 2016-2018 liquidity. Per-name and pin descriptions retain the full period.")
+    _series_node(g, "spread_series", "tercile_rows", "half_spread_over_premium", "date",
+                 "SPREAD CENSUS: the monthly mean half-spread over premium of the 30-DTE ATM straddle, by liquidity tercile (D9: frozen on 2016-2018, readings from 2019), with intervals.",
                  by=["liquidity_tercile"], bucket="month", h_steps=1, bootstrap=BOOTSTRAP)
     g.add("spread_by_name", "groupby", {"keys": ["symbol"], "aggregates": {
         "dates": {"op": "count"}, "mean_half_spread": {"op": "mean", "field": "half_spread_over_premium"}, "max_half_spread": {"op": "max", "field": "half_spread_over_premium"}}},
@@ -842,12 +945,28 @@ OVERLAY_NOTE = ("The validation overlay of {h}: only the dates change ({start} .
 
 
 def build(h, period, inputs=None):
-    """The document of hypothesis ``h`` for ``period``: ``{name, notes, outputs, pipeline}``."""
+    """Build a hypothesis document under the frozen period contract.
+
+    Parameters
+    ----------
+    h : str
+        Hypothesis H0 through H7.
+    period : Period
+        Development or validation dates and original half split.
+    inputs : dict, optional
+        Store pins and universe; otherwise read the configured inputs file.
+
+    Returns
+    -------
+    dict
+        Pipeline document with current Amendment 6 notes and graph.
+    """
     inputs = inputs or load_inputs()
     graph = HYPOTHESES[h](inputs, period)
     file = doc_file(h, period)
-    notes = (f"PRE-REGISTERED {h} (ADR-0265, Amendment 5), {period.name} period {period.start} .. {period.end_before} (end_before; nothing on or after 2026-01-01 is read). "
-             f"ADR RULE, verbatim: {ADR_RULE[h]} {COMMON_RULES} "
+    notes = (f"PRE-REGISTERED {h} (ADR-0265, Amendments 5-6), {period.name} period {period.start} .. {period.end_before} (end_before; nothing on or after 2026-01-01 is read). "
+             f"HISTORICAL ADR RULE, verbatim (Amendment 6 below controls): {ADR_RULE[h]} {COMMON_RULES} "
+             + "AMENDMENT 6 controls: D3 event_gap primary; D4 labelled H2(b) primary population, measurement only, detected-only validation cannot close it; D7 SPX put-write only primary, fee/capital sensitivities descriptive; D9 only tercile-dependent readings start 2019 using 2016-2018 liquidity, original overall/half splits unchanged; D10 H7 descriptive, cannot close programme; D11 H4 monthly only, weekly-versus-monthly dropped. "
              + ("RUN ONCE: this is the validation run; it is not repeated, tuned or re-read. " if period.name == "validation" else "This is the development run. ")
              + RUN_INSTRUCTION.format(file=file))
     return {"name": file.removesuffix(".json").removeprefix("run-"), "notes": notes,
@@ -887,8 +1006,23 @@ def apply_args(args):
 
 
 def panel_documents():
-    """The index-tier panel document: the stock panel document with the index tier, the SPX root and no stock-only gates."""
+    """Generate the amended census and stock/index panel documents.
+
+    Returns
+    -------
+    dict
+        Documents keyed by filename, with the 2016-2018 liquidity cutoff.
+
+    Raises
+    ------
+    OSError
+        A prerequisite document cannot be read.
+    """
     base = json.loads((CONFIGS / PANEL_DOC).read_text())
+    base["pipeline"]["panel"]["params"]["census_asof"] = TERCILE_ASOF
+    base["pipeline"]["panel"]["notes"] = ("D9: census liquidity uses 2016-2018 only; census_asof 2019-01-01 keeps terciles null before 2019. "
+        "Features and stale-spot rules are unchanged. A bounded pre-2026 rate source is required before any run: the legacy ObservationRows path is blocked by the owner's strict no-read seal.")
+    base["pipeline"]["chain"]["params"]["start"] = DEV.start
     doc = json.loads(json.dumps(base))
     doc["name"] = "theta-chain-panel-index"
     doc["notes"] = ("The panel of chain-day features of the index root SPX for H6 (ADR-0265 Amendment 5): run-theta-chain-panel.json with the index tier "
@@ -904,7 +1038,12 @@ def panel_documents():
     params["path"] = "/home/russell/data/index_options/theta-research-20261012/chain-panel-index"
     for key in ("first_quote_file", "first_quote_field", "gate_field", "census_file", "census_columns", "census_asof"):
         params.pop(key, None)
-    return {INDEX_PANEL_DOC: doc}
+    census_name = "run-theta-chain-census-parquet.json"
+    census = json.loads((CONFIGS / census_name).read_text())
+    census["pipeline"]["census"]["params"]["liquidity_end_before"] = TERCILE_ASOF
+    census["pipeline"]["chain"]["params"]["start"] = DEV.start
+    census["notes"] = census["notes"].replace("TERCILES use dates before 2021-01-01 only.", "D9: TERCILES use 2016-2018 only (liquidity_end_before 2019-01-01).")
+    return {PANEL_DOC: base, INDEX_PANEL_DOC: doc, census_name: census}
 
 
 def files(inputs=None):

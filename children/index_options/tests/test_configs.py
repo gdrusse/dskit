@@ -345,6 +345,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/research/strategy-alternatives/2026-10-11-patchtst-edge-and-harvest.md",
         # The 2026-10-10 T2 result (first run refused on null spot; amendment 2; then the IC).
         "docs/memos/2026-10-10-t2-dispersion-ic-result.md",
+        "docs/memos/2026-10-15-theta-amendment6.md",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
