@@ -800,8 +800,30 @@ def _field_column(records, name, missing):
     ]
 
 
+#: The shortest leading run of exact ``float``/``None`` cells that
+#: :func:`_lifted_column` hands to numpy in one pass, and the shortest
+#: column it looks for one in: below either, the per-cell rule is the
+#: cheaper road. Speed only — both roads lift the same bits.
+_VECTOR_RUN = 64
+_VECTOR_COLUMN = 16 * _VECTOR_RUN
+
+
+def _float_or_none_run(values):
+    """Length of the leading run of exact ``float`` or ``None`` cells, by identity alone."""
+    return next(
+        (pos for pos, value in enumerate(values)
+         if type(value) is not float and value is not None),
+        len(values),
+    )
+
+
 def _lifted_column(records, name):
-    """One numeric field as a float64 array by :func:`_num`'s rule, vectorized when all-float."""
+    """One numeric field as a float64 array by :func:`_num`'s rule, vectorized when all-float.
+
+    A long column that is not all-float still has its leading run of
+    floats and ``None`` lifted by numpy when the run is long enough; the
+    cells after it go through :func:`_num` one by one, in order.
+    """
     import numpy as np
 
     raw = _field_column(records, name, None)
@@ -813,7 +835,18 @@ def _lifted_column(records, name):
         if absent.any():
             column[absent] = np.nan
         return column
-    return np.asarray([_num(value) for value in raw], dtype=np.float64)
+    run = _float_or_none_run(raw) if len(raw) >= _VECTOR_COLUMN else 0
+    if run < _VECTOR_RUN:
+        return np.asarray([_num(value) for value in raw], dtype=np.float64)
+    # The same rule over the run, numpy reading ``None`` as NaN under a
+    # float64 dtype — `_num`'s answer for it too.
+    head = np.array(raw[:run], dtype=np.float64)
+    absent = ~np.isfinite(head)
+    if absent.any():
+        head[absent] = np.nan
+    if run == len(raw):
+        return head
+    return np.concatenate((head, np.asarray([_num(value) for value in raw[run:]], dtype=np.float64)))
 
 
 def _lift(records, group_field, order_field, fields):
@@ -1057,7 +1090,11 @@ def _identified(carried, carry, required, n):
     if not required or any(name not in carry for name in required):
         return None
     columns = [carried[carry.index(name)] for name in required]
-    return [all(cluster_ok(column[pos]) for column in columns) for pos in range(n)]
+    # Each column holds exactly `n` cells, so walking them by zip is the
+    # per-position read; `cluster_ok` already answers a bool.
+    if len(columns) == 1:
+        return list(map(cluster_ok, columns[0]))
+    return [all(map(cluster_ok, cells)) for cells in zip(*columns)]
 
 
 def _row_cells(columns, names, n):

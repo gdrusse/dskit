@@ -1952,3 +1952,39 @@ def test_required_fields_read_off_carried_columns_match_the_per_record_read(tmp_
     slow = _PerRecord("r", params).run(ctx(tmp_path), {"records": records})
     assert fast["rows"] == slow["rows"] and fast["metrics"] == slow["metrics"]
     assert fast["metrics"]["n_rows"] < len(records)
+
+
+def test_a_single_required_field_is_held_to_cluster_ok_not_truthiness():
+    from dskit.pipeline.libs.numpy import _identified
+
+    cells = ["a", "", None, 5, b"x", ["y"], 0, "b"]
+    want = [True, False, False, False, False, False, False, True]
+    got = _identified([cells], ("contract",), ("contract",), len(cells))
+    assert got == want and all(type(flag) is bool for flag in got)
+    both = _identified([cells, ["g"] * len(cells)], ("contract", "group"),
+                       ("contract", "group"), len(cells))
+    assert both == want and all(type(flag) is bool for flag in both)
+
+
+def test_a_long_float_column_with_a_late_odd_cell_is_lifted_by_the_number_rule():
+    from dskit.pipeline.libs.numpy import _lifted_column, _num
+
+    # Thousands of float/None cells: long enough for the vectorized road.
+    run = [1.5, None, -0.0, float("nan"), float("inf"), -2.25] * 500
+    for odd in (True, False, 7, "3", np.float64(2.0)):
+        cells = run + [odd, 2.5, None]
+        got = _lifted_column([{"v": v} for v in cells], "v")
+        expected = np.asarray([_num(v) for v in cells], dtype=np.float64)
+        assert got.dtype == np.float64 and got.shape == expected.shape
+        assert got.tobytes() == expected.tobytes(), odd
+
+
+def test_a_dict_subclass_is_read_through_its_own_get():
+    from dskit.pipeline.libs.numpy import _field_column
+
+    class _Loud(dict):
+        def get(self, key, default=None):
+            return "via-get"
+
+    assert _field_column([{"v": 1.0}, _Loud(v=2.0)], "v", None) == [1.0, "via-get"]
+    assert _field_column([_Loud(v=2.0), _Loud(v=3.0)], "v", None) == ["via-get", "via-get"]
