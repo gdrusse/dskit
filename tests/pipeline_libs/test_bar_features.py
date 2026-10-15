@@ -198,9 +198,10 @@ def test_streaming_reads_only_through_the_first_key_change():
     assert len(taken) == 5  # first group is rows 0-3; row 4 is the key change that closes it
 
 
-def test_presorted_stream_memory_does_not_grow_with_distinct_date_cells():
-    """Presorted memory is one group's cells: every-row-distinct timestamp cells must not pile up."""
-    node = TradeBarFeatures("t", {**TRADE, "presorted": True})
+@pytest.mark.parametrize("presorted", [True, False])
+def test_trade_stream_memory_does_not_grow_with_distinct_date_cells(presorted):
+    """Memory is the groups' cells, never the stream: every-row-distinct timestamp cells must not pile up."""
+    node = TradeBarFeatures("t", {**TRADE, "presorted": presorted})
 
     def peak(n):
         def feed():
