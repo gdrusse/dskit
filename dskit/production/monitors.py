@@ -60,6 +60,7 @@ import math
 import statistics
 from abc import ABC, abstractmethod
 from collections import Counter
+from itertools import accumulate
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -227,6 +228,10 @@ ALL_SLICE = "all"
 #: report follows, and this is it at a one-step horizon.
 _DM_HORIZON = 1
 _DM_MIN_PAIRS = 2
+
+#: The largest magnitude ``_exact_prefix_sums`` takes: ``2**63`` terms this
+#: size cannot overflow a ``math.fsum`` partial, so its sum is the exact one.
+_EXACT_SUM_BOUND = 2.0**960
 
 # Vocabulary members by name, unpacked from the closed sets so a reorder
 # in vocab.py fails here at import instead of drifting silently.
@@ -454,6 +459,30 @@ def _ks(reference, window):
         cur_cdf = bisect.bisect_right(cur, point) / len(cur)
         gap = max(gap, abs(ref_cdf - cur_cdf))
     return gap
+
+
+def _exact_prefix_sums(values):
+    """Return ``(sums, scale)`` with ``sums[k] / scale == math.fsum(values[:k])``, or None.
+
+    ``math.fsum`` returns the correctly rounded EXACT sum, and every finite
+    double is an integer once scaled by a large enough power of two, so one
+    pass of integer prefix sums answers every slice sum bit for bit — ``int
+    / int`` rounds correctly too. None unless every value is an exact
+    ``float`` or ``int`` within ``_EXACT_SUM_BOUND``; the caller then sums
+    the slices itself.
+    """
+    ratios = []
+    for value in values:
+        if (type(value) is not float and type(value) is not int) or not (
+            abs(value) <= _EXACT_SUM_BOUND
+        ):
+            return None
+        ratios.append(float(value).as_integer_ratio())
+    shift = max((denominator.bit_length() for _, denominator in ratios), default=1) - 1
+    scaled = (
+        numerator << (shift + 1 - denominator.bit_length()) for numerator, denominator in ratios
+    )
+    return list(accumulate(scaled, initial=0)), 1 << shift
 
 
 def _pairs(window):
@@ -3047,7 +3076,8 @@ class ADWIN(StreamMonitor):
     The two lengths differ, and only the declared one reaches the §6 record.
 
     Every split point is examined on every observation, so a fold costs
-    ``O(n²)`` in the adaptive window's length, and the window rides in every
+    ``O(n)`` in the adaptive window's length over exact prefix sums
+    (``O(n²)`` for a value not an exact float or int), and the window rides in every
     §6 ``snapshot``; a breach is the only thing that shortens it, so a
     stationary stream would grow both without bound. ``max_window`` is the
     cap, and it drops OLDEST first — the window is the statistic's memory,
@@ -3145,11 +3175,17 @@ class ADWIN(StreamMonitor):
     def _cuts(self):
         """Return every legal cut as ``(gap / eps_cut, index)``, oldest first."""
         total = len(self._adaptive)
+        exact = _exact_prefix_sums(self._adaptive)
         out = []
         for at in range(self._min_sub, total - self._min_sub + 1):
-            left, right = self._adaptive[:at], self._adaptive[at:]
-            gap = abs(statistics.fmean(left) - statistics.fmean(right))
-            out.append((gap / self._eps_cut(len(left), len(right), total), at))
+            if exact is None:
+                left, right = self._adaptive[:at], self._adaptive[at:]
+                gap = abs(statistics.fmean(left) - statistics.fmean(right))
+            else:
+                # fmean is fsum / len, and the prefix sums give each fsum in O(1).
+                sums, scale = exact
+                gap = abs(sums[at] / scale / at - (sums[total] - sums[at]) / scale / (total - at))
+            out.append((gap / self._eps_cut(at, total - at, total), at))
         return out
 
     def _eps_cut(self, n_left, n_right, total):
