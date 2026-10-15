@@ -38,7 +38,6 @@ stream), and the seam's own knobs this reader answers itself are narrowed away.
 Import cost: stdlib + dskit.
 """
 
-import math
 from abc import abstractmethod
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -109,9 +108,6 @@ def instant_ms(text):
 
 def _number(value):
     """Return ``value`` as a float when it is a finite number, else None."""
-    cls = type(value)
-    if cls is float or cls is int:      # number_ok's own exact-type rule, without the call
-        return float(value) if math.isfinite(value) else None
     return float(value) if number_ok(value) else None
 
 

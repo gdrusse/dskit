@@ -89,18 +89,31 @@ def _iso(value, where):
     return day.isoformat()
 
 
-def _iso_memo(memo, value, where):
-    """:func:`_iso` through ``memo``, one pass's map of exact-``str`` cells to their ISO text.
+class _IsoMemo:
+    """:func:`_iso` for one pass, remembering the ISO text of exact-``str`` cells.
 
     A ``str`` is immutable, so a repeated cell has the answer it had; any
     other type takes :func:`_iso` every time, and a refusal is never stored.
+    With ``last_only`` only the latest cell is held, so a streaming pass keeps
+    O(1) memory however many distinct cells (timestamps, say) it reads.
     """
-    if type(value) is not str:
-        return _iso(value, where)
-    day = memo.get(value)
-    if day is None:
-        day = memo[value] = _iso(value, where)
-    return day
+
+    __slots__ = ("held", "last_only")
+
+    def __init__(self, last_only=False):
+        self.held, self.last_only = {}, last_only
+
+    def day(self, value, where):
+        """Return :func:`_iso` of ``value``, from the memo when held."""
+        if type(value) is not str:
+            return _iso(value, where)
+        text = self.held.get(value)
+        if text is None:
+            text = _iso(value, where)
+            if self.last_only:
+                self.held.clear()
+            self.held[value] = text
+        return text
 
 
 def _real(value, where, missing_ok=False):
@@ -325,7 +338,7 @@ class DailyBarFeatures(_BarNode):
         p, where = self.params, self.key
         volume = p["volume_field"] if "volume_liquidity" in p else None
         cols = (p["entity_field"], p["date_field"], p["close_field"], volume)
-        seen, out, days = set(), [], {}
+        seen, out, days = set(), [], _IsoMemo()
         for row in rows:
             for col in cols:
                 if col is not None and col not in row:
@@ -333,7 +346,7 @@ class DailyBarFeatures(_BarNode):
             entity = _entity(row[cols[0]], f"{where} bars")
             if type(entity) not in seen:
                 _same_entity_type(seen, entity, f"{where} bars")
-            out.append((entity, _iso_memo(days, row[cols[1]], f"{where} bars date"),
+            out.append((entity, days.day(row[cols[1]], f"{where} bars date"),
                         _real(row[cols[2]], f"{where} close", missing_ok=True),
                         _real(row[volume], f"{where} volume", missing_ok=True) if volume else math.nan))
         return out
@@ -567,7 +580,7 @@ class AsTradedClose(_BarNode):
         """
         p, where = self.params, self.key
         cols = (p["entity_field"], p["date_field"], p["close_field"], p["split_field"])
-        rows, seen, groups, days = [], set(), {}, {}
+        rows, seen, groups, days = [], set(), {}, _IsoMemo()
         for index, row in enumerate(inputs["bars"]):
             for col in cols:
                 if col not in row:
@@ -575,7 +588,7 @@ class AsTradedClose(_BarNode):
             entity = _entity(row[cols[0]], f"{where} bars")
             if type(entity) not in seen:
                 _same_entity_type(seen, entity, f"{where} bars")
-            day = _iso_memo(days, row[cols[1]], f"{where} bars date")
+            day = days.day(row[cols[1]], f"{where} bars date")
             ratio = _real(row[cols[3]], f"{where} split ratio")
             if ratio <= 0:
                 raise ValueError(f"{where}: split ratio {ratio!r} must be > 0")
@@ -806,12 +819,12 @@ class TradeBarFeatures(_BarNode):
             if self._needs_underlying():
                 raise ValueError(f"{where}: the underlying input is required (calendar or moneyness fields)")
             return {}
-        out, seen, days = {}, set(), {}
+        out, seen, days = {}, set(), _IsoMemo()
         for row in rows:
             entity = _entity(row[p["underlying_entity_field"]], f"{where} underlying")
             if type(entity) not in seen:
                 _same_entity_type(seen, entity, f"{where} underlying")
-            key = (entity, _iso_memo(days, row[p["underlying_date_field"]], f"{where} underlying date"))
+            key = (entity, days.day(row[p["underlying_date_field"]], f"{where} underlying date"))
             if key in out:
                 raise ValueError(f"{where}: duplicate underlying row for {key!r}")
             out[key] = _real(row[p["underlying_close_field"]], f"{where} underlying close")
@@ -824,7 +837,7 @@ class TradeBarFeatures(_BarNode):
         entity = _entity(row[p["entity_field"]], f"{where} trades")
         if type(entity) not in seen:
             _same_entity_type(seen, entity, f"{where} trades")
-        key = (entity, _iso_memo(days, row[p["date_field"]], f"{where} trades date"))
+        key = (entity, days.day(row[p["date_field"]], f"{where} trades date"))
         right = str(row[p["right_field"]])
         side = "C" if right in p["call_values"] else "P" if right in p["put_values"] else None
         if side is None:
@@ -844,7 +857,7 @@ class TradeBarFeatures(_BarNode):
         if self.params.get("presorted", DEFAULT_PRESORTED):
             yield from self._sorted_groups(rows)
             return
-        held, seen, days = {}, set(), {}
+        held, seen, days = {}, set(), _IsoMemo()
         for row in rows:
             key, cell, size, price = self._cell_of(row, seen, days)
             group = held.get(key)
@@ -856,7 +869,8 @@ class TradeBarFeatures(_BarNode):
 
     def _sorted_groups(self, rows):
         """Group an input ordered by entity then non-decreasing date, refusing any violation."""
-        closed, current, group, seen, days = set(), None, None, set(), {}
+        # The latest date cell only: a stream's distinct cells must not pile up.
+        closed, current, group, seen, days = set(), None, None, set(), _IsoMemo(last_only=True)
         for row in rows:
             key, cell, size, price = self._cell_of(row, seen, days)
             if key != current:
