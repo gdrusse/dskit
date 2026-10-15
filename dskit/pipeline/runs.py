@@ -1511,15 +1511,24 @@ def _series_family(cell):
     return cell["key"]["series"]
 
 
-def _family_count(registry, family_of, family):
-    """Count registered cells assigned to one injected family."""
+def _registry_families(registry, family_of):
+    """Map every registered cell to its injected family, in registry order.
+
+    Read once per :func:`score_bar`, not once per family: that call does
+    not write the registry while it builds the bar, and reads it as one
+    snapshot, so every family counts against the same rows (an append by
+    another process lands after the snapshot and is not counted).
+    """
     if registry is None:
         return None
-    return sum(
-        1
-        for row in registry.cells().values()
-        if family_of({"key": row["key"]}) == family
-    )
+    return [family_of({"key": row["key"]}) for row in registry.cells().values()]
+
+
+def _family_count(families, family):
+    """Count registered cells assigned to one injected family."""
+    if families is None:
+        return None
+    return sum(1 for value in families if value == family)
 
 
 def score_bar(
@@ -1621,13 +1630,14 @@ def score_bar(
     if bad:
         raise ValueError(f"family_of must return non-empty strings, got {bad}")
     families, notes = {}, []
+    registered = _registry_families(registry, family_of)
     for unit in sorted(set(assigned.values())):
         cells = {
             c["cell"]: {s: tuple(v) for s, v in c["totals"].items()}
             for c in collected.values()
             if assigned[c["cell"]] == unit
         }
-        declared = _family_count(registry, family_of, unit)
+        declared = _family_count(registered, unit)
         try:
             bar = max_bar(
                 cells,
