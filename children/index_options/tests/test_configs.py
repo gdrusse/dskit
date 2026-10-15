@@ -384,7 +384,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # its labelled dates = 515, plus Amendment 3's Parquet census, features and panel documents and the
     # root stitch map = 519, plus Amendment 5's index panel document, the 8 hypothesis documents with their
     # validation twins and overlays, the generator, its inputs and the two test files = 548.
-    assert len(actual) == 548
+    # Plus the owner-requested Amendment 6 execution/review memo = 549.
+    assert len(actual) == 549
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
