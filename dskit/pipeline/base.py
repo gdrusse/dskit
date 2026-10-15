@@ -306,12 +306,69 @@ def value_hash(value):
     return config_hash(_Value(value), exclude=())
 
 
+#: Exact scalar types a JSON tree holds. Hot-path walkers skip a value of
+#: one of these (``type(v) in``, never ``isinstance``: a subclass may
+#: override what the walker would call) because it has no children.
+_JSON_SCALARS = frozenset((str, int, float, bool, type(None)))
+
+
 def _strip_notes(obj):
     if isinstance(obj, dict):
-        return {k: _strip_notes(v) for k, v in obj.items() if k != "notes"}
+        return {
+            k: v if type(v) in _JSON_SCALARS else _strip_notes(v)
+            for k, v in obj.items()
+            if k != "notes"
+        }
     if isinstance(obj, list):
-        return [_strip_notes(v) for v in obj]
+        return [v if type(v) in _JSON_SCALARS else _strip_notes(v) for v in obj]
     return obj
+
+
+class _NotPlainJson(Exception):
+    """Raised inside :func:`_copy_plain_json` to hand back to ``deepcopy``."""
+
+
+def _copy_plain_json(value, seen):
+    """Copy a plain JSON tree exactly as ``copy.deepcopy`` would.
+
+    Exact ``dict``/``list`` containers are rebuilt in order and exact
+    scalars are returned as themselves, which is what ``deepcopy`` does
+    for them. Anything else — another type, a non-scalar key, or a
+    container reached twice (shared or cyclic, which ``deepcopy``'s memo
+    would preserve) — raises :class:`_NotPlainJson`.
+    """
+    if id(value) in seen:
+        raise _NotPlainJson
+    seen.add(id(value))
+    if type(value) is dict:
+        out = {}
+        for k, v in value.items():
+            if type(k) not in _JSON_SCALARS:
+                raise _NotPlainJson
+            out[k] = v if type(v) in _JSON_SCALARS else _copy_plain_json(v, seen)
+        return out
+    if type(value) is list:
+        return [
+            v if type(v) in _JSON_SCALARS else _copy_plain_json(v, seen)
+            for v in value
+        ]
+    raise _NotPlainJson
+
+
+#: What :func:`_try_copy_plain_json` returns for a tree it cannot copy.
+_NOT_PLAIN_JSON = object()
+
+
+def _try_copy_plain_json(value):
+    """Return the :func:`_copy_plain_json` copy, or :data:`_NOT_PLAIN_JSON`.
+
+    The caller runs ``copy.deepcopy`` itself on the sentinel, outside any
+    handler and with no extra frame, so its errors read exactly as before.
+    """
+    try:
+        return _copy_plain_json(value, set())
+    except _NotPlainJson:
+        return _NOT_PLAIN_JSON
 
 
 #: Dataclass field names per class — fixed at class creation, so read once.
@@ -332,7 +389,8 @@ def _dataclass_to_obj(cfg) -> dict:
         elif isinstance(v, tuple):
             v = list(v)
         elif isinstance(v, dict):
-            v = copy.deepcopy(v)
+            copied = _try_copy_plain_json(v)
+            v = copy.deepcopy(v) if copied is _NOT_PLAIN_JSON else copied
         out[name] = v
     return out
 

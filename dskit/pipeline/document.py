@@ -62,6 +62,7 @@ from dskit.pipeline.base import (
     _check_int,
     _check_open_dict,
     _check_str,
+    _JSON_SCALARS,
     _dataclass_to_obj,
     _raise_if,
     _reject_unknown,
@@ -177,6 +178,12 @@ _SEGMENT_OK = r"^[A-Za-z_][A-Za-z0-9_]*$"
 _NODE_KEY_MATCH = re.compile(_NODE_KEY_OK).match
 _KIND_MATCH = re.compile(_KIND_OK).match
 _SEGMENT_MATCH = re.compile(_SEGMENT_OK).match
+
+#: The JSON scalars that can never be a reference: everything but ``str``,
+#: whose ``$`` prefix the walkers below still have to read. Exact types, so
+#: a subclass takes the walkers' full path.
+_NON_STR_SCALARS = _JSON_SCALARS - {str}
+
 
 def _copy_mapping_or_raw(value):
     """Copy a JSON object, leaving invalid shapes for validation."""
@@ -332,10 +339,18 @@ def _contains_captured_ref(obj):
     """
     if isinstance(obj, dict) and CAPTURED_KEY in obj:
         return True
+    # A scalar answers False with no side effect: skip the call for it,
+    # inside the same generator (so StopIteration still converts as before).
     if isinstance(obj, dict):
-        return any(_contains_captured_ref(value) for value in obj.values())
+        return any(
+            type(value) not in _JSON_SCALARS and _contains_captured_ref(value)
+            for value in obj.values()
+        )
     if isinstance(obj, (list, tuple)):
-        return any(_contains_captured_ref(value) for value in obj)
+        return any(
+            type(value) not in _JSON_SCALARS and _contains_captured_ref(value)
+            for value in obj
+        )
     return False
 
 
@@ -599,11 +614,22 @@ def _check_ref_tree(errors, where, obj, *, allow_prev):
         except ConfigError as exc:
             errors.extend(f"{where}: {e}" for e in exc.errors)
         return
+    # A scalar that is not a ``$``-string holds no reference, so its call
+    # would only format a ``where`` nobody reads: skip it (under a ``str``
+    # key, whose formatting has no side effect).
     if isinstance(obj, dict):
         for k, v in obj.items():
+            cls = type(v)
+            if type(k) is str and (
+                cls in _NON_STR_SCALARS or (cls is str and not v.startswith("$"))
+            ):
+                continue
             _check_ref_tree(errors, f"{where}.{k}", v, allow_prev=allow_prev)
     elif isinstance(obj, (list, tuple)):
         for i, v in enumerate(obj):
+            cls = type(v)
+            if cls in _NON_STR_SCALARS or (cls is str and not v.startswith("$")):
+                continue
             _check_ref_tree(errors, f"{where}[{i}]", v, allow_prev=allow_prev)
 
 
@@ -624,11 +650,18 @@ def _collect_refs(obj, node_refs, prev_refs):
         except ConfigError:
             pass
         return
+    # A scalar that is not a ``$``-string holds no reference: skip its call.
     if isinstance(obj, dict):
         for v in obj.values():
+            cls = type(v)
+            if cls in _NON_STR_SCALARS or (cls is str and not v.startswith("$")):
+                continue
             _collect_refs(v, node_refs, prev_refs)
     elif isinstance(obj, (list, tuple)):
         for v in obj:
+            cls = type(v)
+            if cls in _NON_STR_SCALARS or (cls is str and not v.startswith("$")):
+                continue
             _collect_refs(v, node_refs, prev_refs)
 
 
