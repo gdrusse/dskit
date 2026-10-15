@@ -363,3 +363,15 @@ def test_h4_regime_readings_are_volregimesignals_own_on_a_single_name():
     for mine, theirs in zip(out[:-1], read[1:]):                    # the node reads the PREVIOUS row; ours reads the row itself
         assert theirs["vrp"] == pytest.approx(mine["vrp"])
         assert theirs["vix_term_ratio"] == pytest.approx(mine["term_ratio"])
+
+
+def test_every_document_the_run_book_names_exists_and_every_document_is_in_the_run_book():
+    log = (Path(__file__).resolve().parents[3] / "docs" / "architecture" / "decision-log.md").read_text()
+    book = log[log.index("**Amendment 5 (2026-10-13"):log.index("## ADR-0266")]
+    named = set(re.findall(r"configs/([\w.-]+\.json)", book))
+    assert named - {"theta-universe.json"} <= {p.name for p in CONFIGS.iterdir()}
+    for name in DEV_DOCS:
+        assert name in book or name.removeprefix("run-").removesuffix(".json") in book, name
+    assert "run-theta-chain-census-parquet.json" in named and "run-theta-chain-panel.json" in named
+    for verb in ("freeze-universe", "set-pin panel", "write", "check"):
+        assert verb in book

@@ -202,7 +202,7 @@ def iso_date(stamp):
         raise ValueError(f"the bootstrap needs ISO-date stamps, got {stamp!r}") from None
 
 
-def block_bootstrap_interval(stamps, values, spec, statistic=None):
+def block_bootstrap_interval(stamps, values, spec, statistic=None, sampler_class=CalendarBlockBootstrap):
     """The calendar-block bootstrap percentile interval of a statistic of ``values`` (one per stamp).
 
     Parameters
@@ -215,6 +215,10 @@ def block_bootstrap_interval(stamps, values, spec, statistic=None):
         ``block_days``, ``replicates``, ``seed``, ``level`` (all required).
     statistic : callable or None
         Maps a resampled value list to a number or ``None``; ``None`` takes the exactly rounded mean.
+    sampler_class : type
+        The calendar block sampler: :class:`~dskit.pipeline.stats.CalendarBlockBootstrap` (complete blocks only, the
+        default) or :class:`~dskit.pipeline.stats.EdgePaddedCalendarBlockBootstrap` (every date in equally many blocks:
+        the one for week and month stamps, which complete blocks leave unsupported).
 
     Returns
     -------
@@ -228,7 +232,7 @@ def block_bootstrap_interval(stamps, values, spec, statistic=None):
            "seed": seed, "supported": False, "lo": None, "hi": None, "lower_one_sided": None}
     if not values:
         return out
-    sampler = CalendarBlockBootstrap([iso_date(s) for s in stamps], out["block_days"])
+    sampler = sampler_class([iso_date(s) for s in stamps], out["block_days"])
     out["supported"] = sampler.supported
     if not sampler.supported:
         return out

@@ -214,3 +214,13 @@ def test_the_node_is_deterministic():
     rows = day_rows("AAA", D0, [D0 + timedelta(days=30)])
     assert run(rows)["records"] == run(rows)["records"]
     assert not math.isnan(run(rows)["records"][0]["forward"])
+
+
+def test_max_open_interest_skips_a_strike_whose_leg_has_no_usable_quote_and_a_duplicate_row_refuses():
+    exp = D0 + timedelta(days=7)
+    rows = day_rows("AAA", D0, [exp], strikes=range(95, 106), oi=lambda e, k, r: 9000 if k == 110 else (500 if k == 103 else 20))
+    rows += [dict(r, strike=110.0, bid=0.0) for r in day_rows("AAA", D0, [exp], strikes=[110], oi=lambda *_: 9000)]
+    spec = {"legs": [{"right": "put", "quantity": 1, "select": {"kind": "max_oi"}}], "entry": {"kind": "days_before_expiry", "days": 7}}
+    assert run(rows, structures={"pin": spec})["records"][0]["strikes"] == [103.0]
+    with pytest.raises(ValueError, match="repeats"):
+        run(rows + rows[:1], structures={"pin": spec})

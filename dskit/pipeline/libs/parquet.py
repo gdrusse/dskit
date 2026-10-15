@@ -560,6 +560,11 @@ class ParquetStreamRows(Node):
                 data = {out: table.column(src).to_pylist() for src, out in columns.items()}
                 for name in snapshot["iso_fields"]:
                     data[name] = [v.isoformat() if hasattr(v, "isoformat") else v for v in data[name]]
+                for clause in snapshot["where"]:
+                    sample = data[clause["field"]][:1]
+                    if sample and hasattr(sample[0], "isoformat"):
+                        raise ValueError(f"{self.key}: where reads {clause['field']!r}, a date column: list it in iso_fields "
+                                         "so the clause compares ISO text (a date against text drops every row)")
                 rows = (dict(zip(data, row)) for row in zip(*data.values()))
                 records.extend(row for row in rows if all(clause_holds(row, c) for c in snapshot["where"]))
         return {"records": records}

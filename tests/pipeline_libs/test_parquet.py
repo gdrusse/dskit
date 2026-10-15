@@ -655,3 +655,19 @@ def test_where_keeps_only_the_rows_that_pass_every_clause_on_output_fields(blob_
     assert nothing.run(_ctx(tmp_path), {})["records"] == []
     for bad in ([], "x", [{"field": "nope", "op": "==", "value": 1}], [{"field": "x", "op": "~", "value": 1}]):
         assert any("where" in p for p in ParquetStreamRows.validate_params({"sources": [{**declaration, "where": bad}]})), bad
+
+
+def test_where_on_a_date_column_not_in_iso_fields_refuses_instead_of_dropping_every_row(blob_store, tmp_path):
+    import datetime as dt
+    archive = tmp_path / "wheredate"
+    archive.mkdir()
+    pq.write_table(pa.table({"d": pa.array([dt.date(2020, 3, 2)], type=pa.date32()), "x": [1.0]}), archive / "a.parquet")
+    blob_store.add("wheredate", archive)
+    declaration = {"root": blob_store.path, "source": "wheredate", "stream": "files",
+                   "snapshot": payload_files(blob_store.path, "wheredate", "files")["manifest_sha256"],
+                   "columns": {"d": "date", "x": "x"}, "read_bounds": {"d": {"end_before": "2026-01-01"}},
+                   "where": [{"field": "date", "op": ">=", "value": "2020-01-01"}]}
+    with pytest.raises(ValueError, match="iso_fields"):
+        ParquetStreamRows("p", {"sources": [declaration]}).run(_ctx(tmp_path), {})
+    ok = ParquetStreamRows("p", {"sources": [{**declaration, "iso_fields": ["date"]}]}).run(_ctx(tmp_path), {})["records"]
+    assert ok == [{"date": "2020-03-02", "x": 1.0}]

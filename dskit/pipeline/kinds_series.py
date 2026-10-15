@@ -42,7 +42,7 @@ from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.kinds_stats import block_bootstrap_interval, iso_date, series_statistics
 from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
-from dskit.pipeline.stats import sharpe_ratio
+from dskit.pipeline.stats import CalendarBlockBootstrap, EdgePaddedCalendarBlockBootstrap, sharpe_ratio
 
 __all__ = ["BUCKETS", "BUCKET_AGGS", "NODE_KINDS", "StampSeriesStats"]
 
@@ -254,12 +254,16 @@ class StampSeriesStats(Node):
         return groups, dropped
 
     def _series(self, cells):
-        """The stamp-ordered ``(stamps, values, row counts)`` of one group's buckets."""
+        """The bucket-ordered ``(keys, stamps, values, row counts)`` of one group's buckets."""
         agg = self.params.get("bucket_agg", "mean")
-        ordered = sorted(cells.values(), key=lambda cell: cell[0])
+        ordered = sorted(cells.items(), key=lambda item: item[1][0])
         reduce = (lambda v: math.fsum(v)) if agg == "sum" else (lambda v: math.fsum(v) / len(v))
-        return ([stamp for stamp, _ in ordered], [reduce(vals) for _, vals in ordered],
-                [len(vals) for _, vals in ordered])
+        return ([key for key, _ in ordered], [cell[0] for _, cell in ordered],
+                [reduce(cell[1]) for _, cell in ordered], [len(cell[1]) for _, cell in ordered])
+
+    def _sampler(self):
+        """Complete blocks for a daily series; edge-padded blocks for week and month stamps, which complete blocks leave unsupported."""
+        return CalendarBlockBootstrap if self.params.get("bucket", "day") == "day" else EdgePaddedCalendarBlockBootstrap
 
     # -- one block -----------------------------------------------------------------------------
 
@@ -285,10 +289,10 @@ class StampSeriesStats(Node):
             if analytic["sharpe"] is not None and factor is not None:
                 block["sharpe_annualized"] = analytic["sharpe"] * factor
         if "bootstrap" in p and n >= 2:
-            block["ci"] = block_bootstrap_interval(stamps, values, p["bootstrap"])
+            block["ci"] = block_bootstrap_interval(stamps, values, p["bootstrap"], sampler_class=self._sampler())
             if "periods_per_year" in p:
                 block["sharpe_ci"] = block_bootstrap_interval(
-                    stamps, values, p["bootstrap"], _annual_sharpe(math.sqrt(p["periods_per_year"])))
+                    stamps, values, p["bootstrap"], _annual_sharpe(math.sqrt(p["periods_per_year"])), self._sampler())
         if "hurdle" in p:
             low = (block.get("sharpe_ci") or {}).get("lo")
             block["hurdle"] = {"sharpe": p["hurdle"], "lower_bound": low,
@@ -305,25 +309,26 @@ class StampSeriesStats(Node):
         empty = [side for side in ("plus", "minus") if f"{field}={spec[side]}" not in groups]
         if empty:
             return {"paired": paired, "plus": spec["plus"], "minus": spec["minus"], "n_stamps": [
-                len(self._series(groups[f"{field}={spec[s]}"])[1]) if s not in empty else 0 for s in ("plus", "minus")],
+                len(self._series(groups[f"{field}={spec[s]}"])[2]) if s not in empty else 0 for s in ("plus", "minus")],
                 "mean": None, "se": None, "t": None,
                 "hac_withheld": "no usable row on the side(s) " + ", ".join(repr(spec[s]) for s in empty)}
         for side in ("plus", "minus"):
             series[side] = self._series(groups[f"{field}={spec[side]}"])
         if paired:
-            plus = dict(zip(series["plus"][0], series["plus"][1]))
-            minus = dict(zip(series["minus"][0], series["minus"][1]))
-            common = sorted(set(plus) & set(minus))
-            values = [plus[s] - minus[s] for s in common]
-            block = self._block(common, values, len(common))
+            plus = {k: (st, v) for k, st, v in zip(series["plus"][0], series["plus"][1], series["plus"][2])}
+            minus = {k: (st, v) for k, st, v in zip(series["minus"][0], series["minus"][1], series["minus"][2])}
+            common = sorted(set(plus) & set(minus), key=lambda k: min(plus[k][0], minus[k][0]))
+            stamps = [min(plus[k][0], minus[k][0]) for k in common]
+            values = [plus[k][1] - minus[k][1] for k in common]
+            block = self._block(stamps, values, len(common))
             block["stamps_unmatched"] = len(set(plus) ^ set(minus))
         else:
-            hac = [series_statistics(series[s][1], self.params.get("lags"), self.params.get("h_steps", 1))
+            hac = [series_statistics(series[s][2], self.params.get("lags"), self.params.get("h_steps", 1))
                    for s in ("plus", "minus")]
             mean = (hac[0]["mean"] or 0.0) - (hac[1]["mean"] or 0.0)
             ses = [h["se"] for h in hac]
             se = None if None in ses else math.sqrt(ses[0] ** 2 + ses[1] ** 2)
-            block = {"n_stamps": [len(series["plus"][1]), len(series["minus"][1])], "mean": mean, "se": se,
+            block = {"n_stamps": [len(series["plus"][2]), len(series["minus"][2])], "mean": mean, "se": se,
                      "t": None if not se else mean / se, "hac_withheld": ""
                      if se else "a side's HAC statistic is withheld"}
         block.update(paired=paired, plus=spec["plus"], minus=spec["minus"])
@@ -354,7 +359,7 @@ class StampSeriesStats(Node):
         groups, dropped = self._collect(inputs["records"])
         blocks, records = {}, []
         for name, cells in sorted(groups.items(), key=lambda kv: (kv[0] != _ALL, kv[0])):
-            stamps, values, counts = self._series(cells)
+            _keys, stamps, values, counts = self._series(cells)
             blocks[name] = self._block(stamps, values, sum(counts))
             records += [{"group": name, "stamp": s.isoformat(), "value": v, "n_rows": c}
                         for s, v, c in zip(stamps, values, counts)]

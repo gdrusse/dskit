@@ -84,7 +84,10 @@ class _Day:
         self.underlyings = []
 
     def add(self, expiration, strike, side, bid, ask, oi, underlying):
-        self.expirations.setdefault(expiration, {}).setdefault(strike, {})[side] = (bid, ask, oi)
+        sides = self.expirations.setdefault(expiration, {}).setdefault(strike, {})
+        if side in sides:
+            raise ValueError(f"the chain repeats {self.symbol} {expiration} {strike} {side} on {self.day}")
+        sides[side] = (bid, ask, oi)
         if underlying is not None and underlying > 0:
             self.underlyings.append(underlying)
 
@@ -348,7 +351,8 @@ class ChainStructureOrders(Node):
                 values = [oi for (_b, _a, oi) in sides.values() if oi is not None]
                 if values:
                     totals[strike] = sum(values)
-            return min(totals, key=lambda k: (-totals[k], k)) if totals else None
+            usable = {k: v for k, v in totals.items() if k in book.quotes[right]}      # the leg must be tradable
+            return min(usable, key=lambda k: (-usable[k], k)) if usable else None
         if kind == "mirror":
             return self._nearest(list(book.quotes[right]), 2.0 * block.spot() - chosen[kind_spec["of"]])
         out_of_money = [k for k in book.quotes[right] if (k < book.forward if right == "put" else k > book.forward)]

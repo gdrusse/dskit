@@ -243,3 +243,25 @@ def test_it_is_not_a_registered_kind_and_a_bad_declaration_refuses_at_constructi
     assert "stamp-series-stats" not in DEFAULT_NODE_KINDS.kinds()
     with pytest.raises(ConfigError):
         StampSeriesStats("series", {**BASE, "bucket": "year"})
+
+
+def test_a_paired_contrast_on_week_and_month_buckets_pairs_on_the_bucket_not_the_opening_date(ctx):
+    rows = []
+    for w in range(6):
+        rows.append({"d": day(7 * w), "v": 0.02 + 0.001 * w, "g": "P"})          # Mondays
+        rows.append({"d": day(7 * w + 1), "v": 0.01, "g": "M"})                  # Tuesdays of the same weeks
+    block = run(ctx, rows, bucket="week", lags=0, contrast={"field": "g", "plus": "P", "minus": "M", "paired": True})["summary"]["contrast"]
+    assert block["n_stamps"] == 6 and block["stamps_unmatched"] == 0
+    assert block["mean"] == pytest.approx(sum(0.02 + 0.001 * w - 0.01 for w in range(6)) / 6)
+    months = [{"d": day(31 * m + off), "v": 0.03 if g == "P" else 0.01, "g": g} for m in range(5) for g, off in (("P", 0), ("M", 9))]
+    monthly = run(ctx, months,
+                  bucket="month", lags=0, contrast={"field": "g", "plus": "P", "minus": "M", "paired": True})["summary"]["contrast"]
+    assert monthly["n_stamps"] >= 4 and monthly["mean"] == pytest.approx(0.02)
+
+
+def test_week_and_month_series_get_a_supported_bootstrap_with_the_edge_padded_blocks(ctx):
+    rng = random.Random(2)
+    rows = [{"d": (date(2020, 1, 6) + timedelta(days=30 * i)).isoformat(), "v": rng.gauss(0.01, 0.02)} for i in range(60)]
+    spec = {"block_days": 90, "replicates": 100, "seed": 3, "level": 0.9}
+    block = run(ctx, rows, bucket="month", periods_per_year=12, bootstrap=spec, hurdle=-100.0)["summary"]["groups"]["all"]
+    assert block["ci"]["supported"] and block["sharpe_ci"]["supported"] and block["hurdle"]["passes"] is True
