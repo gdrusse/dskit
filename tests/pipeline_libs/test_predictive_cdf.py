@@ -2495,6 +2495,53 @@ def test_grid_curve_wing_integral_matches_a_dense_rule_on_random_curves():
     np.testing.assert_allclose(got, want, rtol=1e-5)
 
 
+def _force_row_loop(*args):
+    raise FloatingPointError("force the row loop")
+
+
+def _wing_query(rng, rows=40, knots=41, segments=3, atoms=False):
+    values = np.sort(rng.standard_normal((rows, knots)), 1)
+    if atoms:
+        values = np.sort(np.round(values, 1), 1)
+    probabilities = np.sort(rng.random((rows, knots)), 1)
+    probabilities[:, 0], probabilities[:, -1] = 0., 1.
+    lower = rng.standard_normal((rows, segments))*2
+    upper = lower + rng.random((rows, segments))*3
+    lower[::7, -1] = upper[::7, -1] = 0.  # zero-width padding
+    on_knots = np.arange(rows)[:, None], rng.integers(0, knots, (rows, segments))
+    lower[::2], upper[1::2] = values[on_knots][::2], values[on_knots][1::2]  # bounds on knots
+    upper = np.maximum(upper, lower)
+    y = rng.standard_normal(rows)
+    y[::5] = lower[::5, 0]  # outcome on a bound
+    return GridCurve(values, probabilities), lower, upper, y
+
+
+@pytest.mark.parametrize("atoms", [False, True])
+def test_grid_curve_wing_integral_is_bit_identical_to_its_row_loop(monkeypatch, atoms):
+    curve, lower, upper, y = _wing_query(np.random.default_rng(9), atoms=atoms)
+    blocked = curve._segment_integrals(lower, upper, y)
+    monkeypatch.setattr(GridCurve, "_block_integrals", staticmethod(_force_row_loop),
+                        raising=False)
+    looped = curve._segment_integrals(lower, upper, y)
+    assert blocked.tobytes() == looped.tobytes() and blocked.any()
+
+
+def test_grid_curve_wing_integral_reports_floating_point_events_per_segment():
+    curve, lower, upper, y = _wing_query(np.random.default_rng(3), rows=4)
+    upper[1, 0] = np.inf
+    with np.errstate(all="raise"), pytest.raises(FloatingPointError):
+        curve._segment_integrals(lower, upper, y)
+    with pytest.warns(RuntimeWarning):
+        curve._segment_integrals(lower, upper, y)
+
+
+def test_horizon_empirical_cdf_compares_object_keys_with_equality():
+    x = np.empty((4, 2), dtype=object)
+    x[:, 0], x[:, 1] = [1, 2, pd.NA, 1], 1.
+    with pytest.raises(TypeError, match="NA"):
+        HorizonEmpiricalCDF(0, 1, 3).fit(x, np.arange(1., 5.), None, None)
+
+
 @pytest.mark.parametrize("name", ["gaussian", "student"])
 def test_wing_and_crps_gradients_match_finite_differences(name):
     torch = pytest.importorskip("torch")

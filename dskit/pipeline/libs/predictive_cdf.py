@@ -905,9 +905,12 @@ class GridCurve(_Curve):
 
         offset = 1/np.sqrt(3)
         result = np.zeros(lower.shape)
+        # NaN inputs keep the row loop, whose operation order fixes the sign of NaN results.
         if (all(type(a) is np.ndarray and a.dtype == np.float64 for a in (lower, upper, y))
                 and lower.ndim == 2 and upper.shape == lower.shape
-                and y.shape == lower.shape[:1] and len(lower) <= len(self.values)):
+                and y.shape == lower.shape[:1] and len(lower) <= len(self.values)
+                and self.probabilities.dtype.kind in "biuf"
+                and not any(np.isnan(a).any() for a in (lower, upper, y))):
             step = max(1, self._SEGMENT_BLOCK // (self.values.shape[1]*max(1, lower.shape[1])))
             # Floating-point events the caller does not ignore are reported by the
             # row loop below, once per segment as before, not once per block.
@@ -963,17 +966,15 @@ class GridCurve(_Curve):
         pair = np.repeat(np.arange(len(rows)), count)
         rank = np.arange(len(pair))-np.repeat(np.cumsum(count)-count, count)
         inner = knots[rows[pair], first[pair]+rank]
-        # Lay out the sorted edges low, knots below cut, cut, the rest, high
-        # (a NaN cut sorts last, as in np.unique).
-        nan = np.isnan(cut)
-        below = np.where(nan, count, np.bincount(pair[inner < cut[pair]], minlength=len(rows)))
+        # Lay out the sorted edges: low, knots below cut, cut, the rest, high.
+        below = np.bincount(pair[inner < cut[pair]], minlength=len(rows))
         size = count+3
         begin = np.cumsum(size)-size
         edges = np.empty(size.sum())
         edges[begin] = low
         edges[begin[pair]+1+rank+(rank >= below[pair])] = inner
-        edges[begin+np.where(nan, count+2, below+1)] = cut
-        edges[begin+np.where(nan, count+1, count+2)] = high
+        edges[begin+below+1] = cut
+        edges[begin+count+2] = high
         group = np.repeat(np.arange(len(rows)), size)
         keep = np.ones(len(edges), dtype=bool)
         keep[1:] = (edges[1:] != edges[:-1]) | (group[1:] != group[:-1])
@@ -1303,7 +1304,12 @@ class HorizonEmpiricalCDF(CDFEstimator):
         self.p = np.linspace(0, 1, self.knots)
         raw = y * x[:, self.reference_index]
         keys = self._keys(x)
-        # One pass groups the rows by key (first-seen order), not one scan per key.
+        if type(x) is not np.ndarray or x.dtype.kind not in "biufcmM":
+            # Object keys may disagree between == and hash (pd.NA, mixed scalars): scan.
+            self.shapes = {key: np.quantile(raw[np.array([value == key for value in keys])], self.p)
+                           for key in dict.fromkeys(keys)}
+            return self
+        # Numeric keys: == and hash agree, so one pass groups the rows (first-seen order).
         rows = {}
         for row, key in enumerate(keys):
             rows.setdefault(key, []).append(row)
