@@ -891,9 +891,9 @@ class Performance:
             frac, usd = max(frac, (peak - value) / peak), max(usd, peak - value)
         return frac, usd
 
-    def _equity_at(self, instant):
-        """Return the equity of the last path point at or before ``instant`` (the start if none)."""
-        index = bisect.bisect_right([t for t, _ in self.path], instant) - 1
+    def _equity_at(self, instant, times):
+        """Return the equity of the last path point at or before ``instant`` (the start if none); ``times`` are its instants."""
+        index = bisect.bisect_right(times, instant) - 1
         return self.path[max(index, 0)][1]
 
     def _day_stats(self):
@@ -902,7 +902,8 @@ class Performance:
         for fill in self.fills:
             pnl[fill["close_ms"] // DAY_MS] += fill["pnl"]
         dollars = [pnl[d] for d in self.days]
-        returns = [pnl[d] / self._equity_at(d * DAY_MS) for d in self.days]
+        times = [t for t, _ in self.path]  # once, not once per day
+        returns = [pnl[d] / self._equity_at(d * DAY_MS, times) for d in self.days]
         out = {}
         for key, series in (("day_pnl", dollars), ("day_return", returns)):
             test = across_fold_t(series) if len(series) >= 2 else {"n": len(series), "mean": None, "t": None}
