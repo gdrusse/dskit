@@ -44,6 +44,7 @@ Import cost: stdlib plus ``dskit.production.base`` and ``vocab``.
 
 from __future__ import annotations
 
+import collections
 import functools
 import math
 import types
@@ -1396,7 +1397,14 @@ class UniverseMembership(_Record):
             A duplicate key, a blank or non-string key, or no key at all.
         """
         keys = list(keys)
-        duplicates = sorted({key for key in keys if keys.count(key) > 1})
+        if all(type(key) is str for key in keys):
+            # Exact str keys hash and compare by content alone, so one
+            # counting pass names the repeats ``keys.count`` would, in
+            # O(K) rather than O(K^2) — this runs per tick and per leg.
+            counts = collections.Counter(keys)
+            duplicates = sorted(key for key, count in counts.items() if count > 1)
+        else:
+            duplicates = sorted({key for key in keys if keys.count(key) > 1})
         if duplicates:
             raise ProductionError([
                 f"a universe with no intervals carries duplicate key(s) {duplicates} — "

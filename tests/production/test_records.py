@@ -1673,6 +1673,54 @@ def test_a_flat_key_list_becomes_whole_run_membership():
         assert membership.members_at(at_ms) == ("INS1", "INS2")
 
 
+def test_a_key_with_its_own_equality_is_checked_for_repeats_the_original_way():
+    """Only exact str keys take the one-pass repeat count; any other key —
+    here a str subclass with its own ``__eq__`` — keeps the per-key
+    ``keys.count`` scan, so the refusal and the hook's calls are unchanged."""
+
+    class CountedKey(str):
+        calls = 0
+
+        def __eq__(self, other):
+            type(self).calls += 1
+            return str.__eq__(self, other)
+
+        __hash__ = str.__hash__
+
+    keys = [CountedKey("INS1"), CountedKey("INS2"), CountedKey("INS1")]
+    with pytest.raises(ProductionError) as caught:
+        records.UniverseMembership.whole_run(keys)
+    assert list(caught.value.problems) == [
+        "a universe with no intervals carries duplicate key(s) ['INS1'] — "
+        "with no window to tell the repeats apart the second one is a typo"
+    ]
+    # keys.count per key meets two other objects (6 calls), and the set
+    # meets the first "INS1" again when the second is added (1 call).
+    assert CountedKey.calls == 7
+
+
+def test_exact_str_repeats_are_named_once_and_sorted():
+    """The one-pass count over exact str keys names each repeated key once,
+    sorted, whatever order or how often it repeats — an equal key built at
+    run time included — and reads a one-shot iterator only once."""
+    keys = ["INS2", "INS1", "INS2", "".join(["IN", "S1"]), "INS3", "INS2"]
+    with pytest.raises(ProductionError) as caught:
+        records.UniverseMembership.whole_run(iter(keys))
+    assert list(caught.value.problems) == [
+        "a universe with no intervals carries duplicate key(s) ['INS1', 'INS2'] — "
+        "with no window to tell the repeats apart the second one is a typo"
+    ]
+
+
+def test_a_universe_with_two_of_each_is_refused_and_one_of_each_is_not():
+    """A key seen exactly twice is already a repeat — named as one, not left
+    to the overlap check to catch — and distinct keys pass."""
+    with pytest.raises(ProductionError) as caught:
+        records.UniverseMembership.whole_run(["A", "B", "A", "B"])
+    assert "duplicate key(s) ['A', 'B']" in "; ".join(caught.value.problems)
+    assert records.UniverseMembership.whole_run(["B", "A"]).keys == ("A", "B")
+
+
 def test_membership_resolves_each_instant_against_its_own_windows():
     membership = records.UniverseMembership.declared([
         {"key": "INS1", "from_ms": 0, "to_ms": None},
