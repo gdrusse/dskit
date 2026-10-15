@@ -31141,3 +31141,21 @@ A day the vendor has not published yet (404) counts against the existing `max_re
 **Test.** `tests/onboarding/test_kalshi_history_window.py`: the filter and both boundaries, date/datetime/offset forms, no-close-time markets, widened, shifted, narrower, disjoint and dropped windows, legacy checkpoint, malformed recorded spans, default-deny; plus an acquisition e2e that widens a registered source.
 
 **Sweep** (2026-10-12, `close_window markets_per_snapshot kalshi_history window`): no existing date bound on any pull pack.
+
+**ADR-0265 Amendment 6 (2026-10-15): owner decisions D1–D11 resolved, before any run.** The owner delegated the answers ("answer the questions that you need"); this entry takes the recommended defaults of Amendment 5 (d) with the specifics below, and is a pre-registration: nothing has been run on real data, and any later change is a new pre-registration.
+
+| # | Resolved as |
+|---|---|
+| D1 | Accept: H0 primary is the partial IC of HAR given the implied straddle; the ratio form is never computed. |
+| D2 | H1 cost is 10 bp per leg (20 bp for the book), the stricter reading; signs all −1 as declared. |
+| D3 | H2(a) is reported descriptively; the primary is `event_gap` (event-variance implied move minus realized gap move), pass rule mean > 0 with t >= 2.5 clustered by event week, both halves. |
+| D4 | H2(b) is measurement only; the labelled-dates robustness set is the primary and the detected-only twin is not a pass criterion. |
+| D5 | Only the AAPL labels (`high`) are used for a labelled pass; they must be checked against a public source (company earnings releases) before use and any wrong date dropped. The other four names are exploratory. |
+| D6 | Accept: H3 mid-fill returns minus the actual half-spread. |
+| D7 | H5 declares ONE primary cell, SPX put-write; the other nine cells are descriptive. Add a fee sensitivity (0 and 0.65 USD per contract per leg) and report return on capital at risk beside return on notional. |
+| D8 | Accept the H6 horizon alignment (bias at most one term in 22). |
+| D9 | Terciles are computed from 2016-2018 only, inside development: the panel is rebuilt with `census_asof` 2019-01-01 and the development run starts 2019-01-01 for criteria that use terciles (H2, H4, H7). |
+| D10 | H7 is descriptive only; it cannot close the programme. |
+| D11 | H4 weekly-versus-monthly is dropped (not built); H4 keeps its monthly legs. |
+
+Consequences to implement (by the generator, `index_options.theta_hypotheses`, then `check`): H2 primary and notes (D3, D4), H5 primary cell and fee sensitivity (D7), panel `census_asof` 2019-01-01 (D9), H7 and H4 notes (D10, D11). Order of use unchanged: census, freeze-universe, panel, development runs, then each validation twin once.
