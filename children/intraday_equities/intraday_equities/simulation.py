@@ -1013,15 +1013,16 @@ class ForecastPublisher(Node):
 
         One ``searchsorted`` serves every stamp when the fold tape is the
         time-ordered int64 stamps and 1-D float64 columns ``_Walk.market``
-        builds, every stamp is an int64-range ``int`` and ``_market_at`` is
-        not overridden; anything else takes :meth:`_market_at` per stamp.
-        Either way the first stamp with no tape bar refuses.
+        builds, every stamp is an int64-range ``int`` with a tape bar, and
+        ``_market_at`` is the one defined here (not overridden or patched);
+        anything else, every refusal included, takes :meth:`_market_at` per
+        stamp, so the first stamp with no tape bar refuses with its error.
         """
         import numpy as np
 
         if not stamps:
             return [], [], []
-        fast = self._market_at is ForecastPublisher._market_at
+        fast = self._market_at is _MARKET_AT
         if fast:
             tape, prices, beta, sigma = market[symbol]
             columns = (prices, sigma) if beta is None else (prices, sigma, beta)
@@ -1036,17 +1037,15 @@ class ForecastPublisher(Node):
                 and all(type(stamp) is int for stamp in stamps)
                 and -(2 ** 63) <= min(stamps) and max(stamps) < 2 ** 63
             )
+        if fast:
+            keys = np.array(stamps, dtype=np.int64)
+            locs = tape.searchsorted(keys)
+            fast = bool(tape.size) and not (
+                (locs >= tape.size) | (tape[locs.clip(0, tape.size - 1)] != keys)
+            ).any()
         if not fast:
             rows = [self._market_at(market, symbol, stamp) for stamp in stamps]
             return [row[0] for row in rows], [row[1] for row in rows], [row[2] for row in rows]
-        keys = np.array(stamps, dtype=np.int64)
-        locs = tape.searchsorted(keys)
-        if tape.size:
-            missing = (locs >= tape.size) | (tape[locs.clip(0, tape.size - 1)] != keys)
-        else:
-            missing = np.ones(keys.size, dtype=bool)
-        if missing.any():
-            raise ValueError(f"{symbol} has a prediction at {stamps[int(missing.argmax())]} but no tape bar")
         betas = [0.0] * len(stamps) if beta is None else beta[locs].tolist()
         return prices[locs].tolist(), sigma[locs].tolist(), betas
 
@@ -1420,6 +1419,12 @@ class ForecastPublisher(Node):
             }
             for (stamp, lead), rows in sorted(self._tick_rows(walk, index, release, scenarios).items())
         ]
+
+
+#: :meth:`ForecastPublisher._market_at` as defined above: the one lookup
+#: :meth:`ForecastPublisher._market_columns` batches, so an override or a
+#: later patch of it is called per stamp instead.
+_MARKET_AT = ForecastPublisher._market_at
 
 
 class _MinuteWalk(_Walk):

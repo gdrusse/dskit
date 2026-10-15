@@ -1925,6 +1925,60 @@ def test_minute_publisher_refuses_trade_rows_out_of_time_order(mfx):
         _mrun(mfx)
 
 
+def test_minute_tick_blocks_read_the_market_as_the_per_stamp_lookup_does():
+    """Each tick block's price/sigma/beta are ``_market_at`` at every stamp, whatever the market's shape.
+
+    Pins the batched read (an int64 tape with float64 columns) and the
+    per-stamp one (any other shape) to the same bits, a label without a beta
+    to 0.0, a name with no trade rows to empty columns that never read its
+    market, and a stamp with no tape bar to ``_market_at``'s own refusal.
+    """
+    from intraday_equities.simulation import ForecastPublisher, MinuteForecastPublisher
+
+    class Walk:
+        def __init__(self, market, stamps):
+            self.lead_map = {"AAA": 1, "BBB": 2, "CCC": 1, "DDD": 3}
+            self._market = market
+            self._trade = {
+                (symbol, lead): [(stamp, 0.25) for stamp in stamps]
+                for symbol, lead in self.lead_map.items() if symbol in market
+            }
+
+        def market(self, index):
+            return self._market, {}
+
+        def trade_yhat(self, index, horizons=None):
+            return self._trade
+
+        def yhat(self, index):
+            return {}
+
+    tape = np.array([60_000 * k for k in (1, 2, 3, 5, 8, 13)], dtype=np.int64)
+    values = np.array([1.5, -0.0, float("nan"), 2.25, float("inf"), 5e-324])
+    market = {
+        "AAA": (tape, values, values[::-1].copy(), values * 2.0),
+        "BBB": (tape, values + 1.0, None, values * 3.0),
+        "CCC": (tape.astype(np.float64), values.tolist(), None, values.tolist()),
+    }
+    publisher = MinuteForecastPublisher.__new__(MinuteForecastPublisher)
+    publisher.params = {}
+    release = {"release_id": "r", "segment_start_ms": 0, "segment_end_ms": 10**15}
+    stamps = [60_000 * k for k in (2, 3, 8, 13)]
+    blocks = publisher._publish_ticks(Walk(market, stamps), 0, release, None)
+    assert [block["symbol"] for block in blocks] == ["AAA", "BBB", "CCC", "DDD"]
+    for block in blocks:
+        expected = [
+            ForecastPublisher._market_at(market, block["symbol"], stamp) for stamp in block["ts"]
+        ]
+        for column, field in enumerate(("price", "sigma", "beta")):
+            assert [value.hex() for value in block[field]] == [row[column].hex() for row in expected]
+    assert blocks[1]["beta"] == [0.0] * len(stamps)
+    assert [blocks[3][field] for field in ("ts", "price", "sigma", "beta")] == [[], [], [], []]
+    off_tape = Walk(market, [60_000 * 2, 60_000 * 4, 60_000 * 9])
+    with pytest.raises(ValueError, match=r"^AAA has a prediction at 240000 but no tape bar$"):
+        publisher._publish_ticks(off_tape, 0, release, None)
+
+
 def test_minute_publisher_refuses_an_unpinned_trade_file_in_a_fold(mfx):
     extra = os.path.join(mfx["runs"][1], "artifacts", "scan_extra")
     with PredictionWriter(extra, list(NAMES), filename=TRADE_PREDICTIONS_FILE) as writer:
