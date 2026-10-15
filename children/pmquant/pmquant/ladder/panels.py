@@ -417,6 +417,18 @@ def _strike_value(strike_type, floor, cap):
     return sum(finite) / len(finite) if finite else float("nan")
 
 
+def _tame(value):
+    """Say whether a strike value is zero or of a magnitude in ``[1e-6, 1e6]``.
+
+    Such values are multiples of ``2**-72``, so over fewer than ~1.8e10 of
+    them :func:`_strike_geometry` meets no NaN and nothing overflows or
+    underflows, through its float32 cast too: a nonzero ``z`` is at least
+    ~2.1e-28 / n and a gap ratio at most ~1.9e28. It raises no
+    floating-point warning there.
+    """
+    return value == 0.0 or 1e-6 <= abs(value) <= 1e6
+
+
 def _strike_geometry(values):
     """Compute ``(strike_z, gap_z)`` from the per-rung strike values."""
     import numpy as np
@@ -557,6 +569,10 @@ def _pit_geometry(contracts, strike_values, instants, membership):
     strike_z = np.zeros((n_steps, n_rungs), dtype=np.float32)
     gap_z = np.zeros((n_steps, n_rungs), dtype=np.float32)
     rung_of = {ticker: rung for rung, ticker in enumerate(contracts)}
+    # The geometry is a pure function of the listed set, so each distinct
+    # set is computed once — but only when every strike is :func:`_tame`,
+    # so no numpy warning (NaN, overflow, underflow) is ever skipped.
+    memo = {} if all(_tame(value) for value in strike_values) else None
     for step, at_ms in enumerate(instants):
         if at_ms is None:
             continue
@@ -564,7 +580,13 @@ def _pit_geometry(contracts, strike_values, instants, membership):
         if not members:
             continue
         listed[step, members] = True
-        z, gz = _strike_geometry([strike_values[rung] for rung in members])
+        key = tuple(members)
+        if memo is not None and key in memo:
+            z, gz = memo[key]
+        else:
+            z, gz = _strike_geometry([strike_values[rung] for rung in members])
+            if memo is not None:
+                memo[key] = (z, gz)
         strike_z[step, members] = z
         gap_z[step, members] = gz
     return listed, strike_z, gap_z

@@ -7,6 +7,7 @@ list from the module would assert nothing.
 """
 
 import math
+import warnings
 
 import pytest
 
@@ -153,6 +154,23 @@ def test_strike_geometry_is_zero_without_two_finite_strikes():
     assert built.panels[0].strike_z.tolist() == [[0.0, 0.0]] * len(FRACS)
     assert built.panels[0].gap_z.tolist() == [[0.0, 0.0]] * len(FRACS)
 
+
+def test_a_nan_strike_warns_at_every_lead_of_a_constant_listed_set():
+    """The geometry warning of a NaN strike fires once PER LEAD, even when the set never changes."""
+    close = 100 * HOUR_MS
+    rows = [
+        market_row("A", "E", "KXA", "less", None, 50.0, close),
+        market_row("B", "E", "KXA", "between", None, None, close),
+        market_row("C", "E", "KXA", "greater", 60.0, None, close),
+    ]
+    records = [lead_record("KXA", "E", r["ticker"], f, close) for r in rows for f in FRACS]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        built = build(records, rows, {"A": True, "B": False, "C": False})
+    assert built.panels[0].contracts == ["A", "B", "C"]
+    assert built.panels[0].listed.all()
+    nan_slices = [w for w in caught if "All-NaN slice" in str(w.message)]
+    assert len(nan_slices) == len(FRACS)
 
 def test_unsettled_events_are_skipped_and_counted():
     records, markets, outcomes, contracts = threshold_event()
