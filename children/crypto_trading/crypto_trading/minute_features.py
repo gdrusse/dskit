@@ -256,13 +256,10 @@ class _Frame:
 
     def _run_lengths(self):
         """Count, per bar, the consecutive contiguous bars ending there (0 at a bar after a gap)."""
-        run, count = [], 0
-        for ok in self.bars.contiguous:
-            count = count + 1 if ok else 0
-            run.append(count)
         import numpy as np
 
-        return np.array(run, dtype=np.int64)
+        index = np.arange(self.bars.contiguous.size, dtype=np.int64)
+        return index - np.maximum.accumulate(np.where(self.bars.contiguous, -1, index))  # bars since the last break
 
     def returns(self):
         """Return each bar's one-minute log return, NaN at a bar with no contiguous predecessor.
@@ -1275,7 +1272,8 @@ class MinuteFeatures(ListPortsNode):
             if bad.any():
                 raise ValueError(f"{self.key}: kline close_time_ms must be open_time_ms + {BAR_MS - CLOSE_OFFSET_MS}, "
                                  f"first failure at open_time_ms {np.asarray(block['open_time_ms'])[bad][0]}")
-            if np.unique(block["open_time_ms"]).size != np.asarray(block["open_time_ms"]).size:
+            times = np.sort(np.asarray(block["open_time_ms"]), axis=None)  # equal neighbours: a duplicate
+            if (times[1:] == times[:-1]).any():
                 raise ValueError(f"{self.key}: duplicate open_time_ms for asset {asset!r}")
         return {asset: mapping[asset] for asset in assets}
 
@@ -1553,7 +1551,9 @@ class MinuteFeatures(ListPortsNode):
         """Also refuse the bars whose other asset has no eligible bar at the same instant."""
         import numpy as np
 
-        usable = np.isin(frame.close_time, partner.close_time[other == ""])
+        eligible = np.sort(partner.close_time[other == ""])  # membership by sorted search: np.isin hashes slowly
+        position = np.minimum(np.searchsorted(eligible, frame.close_time), max(eligible.size - 1, 0))
+        usable = eligible[position] == frame.close_time if eligible.size else np.zeros(frame.size, dtype=bool)
         out = own.copy()
         out[(out == "") & ~usable] = "xasset_unavailable"
         return out
