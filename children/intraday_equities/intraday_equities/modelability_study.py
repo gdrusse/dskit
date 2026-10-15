@@ -1224,15 +1224,25 @@ def _matching_stage_actions(actions, artifact, token):
     ]
 
 
-def _matching_walk_actions(actions, summary, document, asof):
-    """Return journal IDs proving one exact derived walk summary."""
-    summary = os.path.abspath(summary)
+def _execute_actions_by_output(actions):
+    """Group the journal's ``execute`` rows by absolute output path, journal order kept."""
+    by_output = {}
+    for row in actions:
+        if row.category == "execute":
+            by_output.setdefault(os.path.abspath(row.outputs), []).append(row)
+    return by_output
+
+
+def _matching_walk_actions(by_output, summary, document, asof):
+    """Return journal IDs proving one exact derived walk summary.
+
+    ``by_output`` is :func:`_execute_actions_by_output` of the journal, built
+    once per inventory, so each walk reads only the rows naming its summary.
+    """
     return [
         row.id
-        for row in actions
-        if row.category == "execute"
-        and os.path.abspath(row.outputs) == summary
-        and f"hash={document.hash[:8]}" in row.notes
+        for row in by_output.get(os.path.abspath(summary), ())
+        if f"hash={document.hash[:8]}" in row.notes
         and f"asof={asof}" in row.notes
         and "state=ran" in row.notes
     ]
@@ -1286,8 +1296,11 @@ def _skill_problems(label, skill):
     return problems
 
 
-def _walk_evidence(document, summary, asof, actions):
-    """Inventory one expected walk and its journal evidence without mutation."""
+def _walk_evidence(document, summary, asof, by_output):
+    """Inventory one expected walk and its journal evidence without mutation.
+
+    ``by_output`` is :func:`_execute_actions_by_output` of the journal.
+    """
     record_path = os.path.join(summary, "walkforward.json")
     report_path = os.path.join(summary, "report.md")
     problems = []
@@ -1321,7 +1334,7 @@ def _walk_evidence(document, summary, asof, actions):
                 problems.extend(_ran_fold_problems(row, cutoff))
     elif payload is not None:
         problems.append("walkforward.json is not an object")
-    action_ids = _matching_walk_actions(actions, summary, document, asof)
+    action_ids = _matching_walk_actions(by_output, summary, document, asof)
     if not action_ids:
         problems.append("missing matching journal evidence")
     return {
@@ -1471,6 +1484,7 @@ class Gate3RecoveryInventoryStage(Stage):
         caches = memory["groups"]
         _StudyStage.refuse_moved_universes(self, ctx, caches)
         placement = _place(cohort, caches)
+        walk_actions = _execute_actions_by_output(actions)
         families = []
         reconstructed = []
         rerun = []
@@ -1493,7 +1507,7 @@ class Gate3RecoveryInventoryStage(Stage):
                     document, self.params["data_cut"], p10._child_root(ctx)
                 )
                 main = _walk_evidence(
-                    document, summary, self.params["data_cut"], actions
+                    document, summary, self.params["data_cut"], walk_actions
                 )
                 parts = []
                 for index, cutoff in enumerate(p10._fold_cutoffs(document.walkforward)):
@@ -1503,7 +1517,7 @@ class Gate3RecoveryInventoryStage(Stage):
                     )
                     parts.append(
                         _walk_evidence(
-                            part, part_summary, self.params["data_cut"], actions
+                            part, part_summary, self.params["data_cut"], walk_actions
                         )
                     )
                 complete = main["complete"] and all(part["complete"] for part in parts)
