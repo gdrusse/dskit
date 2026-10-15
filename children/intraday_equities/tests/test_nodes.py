@@ -27,6 +27,7 @@ from intraday_equities.nodes import (
     WindowRows,
     _emit_feature_names,
     _horizon_verdict,
+    _ranks,
     horizon_leads,
     session_feature_names,
 )
@@ -3110,3 +3111,23 @@ def test_entry_offset_zero_is_the_adr_0059_label_unchanged():
     )
     assert np.allclose(a.values("JPM", loc, future), b.values("JPM", loc, future))
     assert b.describe() == a.describe()
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [],
+        [5.0],
+        [2.0, 2.0, 1.0, 3.0, 2.0],
+        [0.0, -0.0, 1.5, -1.5, 1.5, 0.0],
+        [round(math.sin(k) * 3) / 2 for k in range(60)],
+        [math.sin(k * 0.7) for k in range(60)],
+    ],
+)
+def test_ranks_average_each_tie_group_as_the_definition_does(values):
+    """Rank = values below + (values equal + 1) / 2, ties sharing one rank."""
+    expected = [
+        sum(v < x for v in values) + (sum(v == x for v in values) + 1) / 2.0
+        for x in values
+    ]
+    assert _ranks(values) == expected

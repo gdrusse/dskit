@@ -1343,12 +1343,23 @@ def horizon_leads(start, step, stop):
     return tuple(range(start, stop + 1, step))
 
 
-def _ny_date_minutes(asof_ms, zone):
-    """Split one epoch stamp into a calendar date and clock minutes."""
+def _local_date_minutes(asof_ms, zone):
+    """Split one epoch stamp into a local ``date`` and clock minutes.
+
+    The one reading of a stamp in the session zone: the feature
+    calendar takes the ``date`` as is, :func:`_ny_date_minutes` (the
+    holdout cluster key) takes it as ISO text.
+    """
     instant = datetime.fromtimestamp(asof_ms / 1000.0, tz=timezone.utc).astimezone(
         ZoneInfo(zone)
     )
-    return instant.date().isoformat(), instant.hour * 60 + instant.minute
+    return instant.date(), instant.hour * 60 + instant.minute
+
+
+def _ny_date_minutes(asof_ms, zone):
+    """Split one epoch stamp into a calendar date and clock minutes."""
+    day, minutes = _local_date_minutes(asof_ms, zone)
+    return day.isoformat(), minutes
 
 
 def _cell(value):
@@ -1367,17 +1378,19 @@ def _cell(value):
 def _cells(values, n):
     """:func:`_cell` of ``values[0]`` .. ``values[n - 1]`` as a list.
 
-    ``None`` reads as ``n`` Nones. A one-dimensional float array (at
-    most double width) of length ``n`` takes a plain-list pass: ``tolist`` hands back exactly
-    the Python floats ``_cell`` would have unwrapped, so only the
-    finiteness test remains per cell. Anything else goes cell by cell.
+    ``None`` reads as ``n`` Nones. A plain one-dimensional float array
+    (at most double width) of length ``n`` takes a plain-list pass:
+    ``tolist`` hands back exactly the Python floats ``_cell`` would have
+    unwrapped, so only the finiteness test remains per cell. Anything
+    else, ndarray subclasses such as masked arrays included, goes cell
+    by cell.
     """
     import numpy as np
 
     if values is None:
         return [None] * n
     if (
-        isinstance(values, np.ndarray)
+        type(values) is np.ndarray
         and values.ndim == 1
         and values.shape[0] == n
         and values.dtype.kind == "f"
@@ -1511,27 +1524,31 @@ def _session_feature_arrays(
     with np.errstate(divide="ignore", invalid="ignore"):
         clv = np.where(spread > 0.0, (2.0 * close - high - low) / spread, 0.0)
     columns["clv"] = clv
-    # The :func:`_ny_date_minutes` reading of each stamp, done in plain
-    # lists: the zone is resolved once, the UTC instant converts straight
-    # into it, and the date is taken off the instant rather than through
-    # a text round trip. Arrays are built once at the end.
-    ordinals, clock, weekdays, months = [], [], [], []
+    day_ordinals = np.empty(n, dtype=np.int32)
+    mins = np.empty(n, dtype=float_dtype)
+    dow = np.empty(n, dtype=float_dtype)
+    month = np.empty(n, dtype=float_dtype)
     parsed = [] if internals is not None else None
-    if n:
-        zone = ZoneInfo(session["tz"])
-        for stamp in ms.tolist() if isinstance(ms, np.ndarray) else ms:
-            instant = datetime.fromtimestamp(int(stamp) / 1000.0, tz=zone)
-            day = instant.date()
-            clock.append(instant.hour * 60 + instant.minute)
-            ordinals.append(day.toordinal())
-            weekdays.append(day.weekday())
-            months.append(day.month)
-            if parsed is not None:
-                parsed.append(day)
-    day_ordinals = np.array(ordinals, dtype=np.int32)
-    mins = np.array(clock, dtype=float_dtype)
-    dow = np.array(weekdays, dtype=float_dtype)
-    month = np.array(months, dtype=float_dtype)
+    # Each stamp's local date is used as a ``date`` (no ISO text round
+    # trip) and the fields gather in plain lists, written into the
+    # arrays once after the loop.
+    ordinals, clock, weekdays, months = [], [], [], []
+    for i, stamp in enumerate(ms.tolist() if type(ms) is np.ndarray else ms):
+        day, minutes = _local_date_minutes(int(stamp), session["tz"])
+        if i == n:
+            # More stamps than bars: fail where the per-bar write did.
+            mins[i] = minutes
+        clock.append(minutes)
+        ordinals.append(day.toordinal())
+        weekdays.append(day.weekday())
+        months.append(day.month)
+        if parsed is not None:
+            parsed.append(day)
+    count = len(clock)
+    day_ordinals[:count] = ordinals
+    mins[:count] = clock
+    dow[:count] = weekdays
+    month[:count] = months
     del ordinals, clock, weekdays, months
     columns["minutes_from_open"] = mins - session["rth_start_minutes"]
     columns["minutes_to_close"] = session["rth_end_minutes"] - mins

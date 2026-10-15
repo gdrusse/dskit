@@ -15,7 +15,7 @@ the validation fold's.
 """
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -36,6 +36,7 @@ from intraday_equities.nodes import (
     FoldFeatureStats,
     SessionFeatureRows,
     _emit_feature_names,
+    _ny_date_minutes,
     _session_feature_arrays,
 )
 
@@ -763,3 +764,55 @@ def test_the_universe_refuses_cross_wiring_it_cannot_honour(tmp_path):
     )
     problems = node.validate_inputs({"records": [], "spec": spec})
     assert any("sector_etf" in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    "zone, start",
+    [
+        # Both 2024 New York DST weekends: the walk crosses each switch.
+        ("America/New_York", datetime(2024, 3, 9, 12, 0, tzinfo=timezone.utc)),
+        ("America/New_York", datetime(2024, 11, 2, 12, 0, tzinfo=timezone.utc)),
+        # East of UTC: a month end in Tokyo, Sydney's April switch, and
+        # Kolkata's half-hour offset across a year end.
+        ("Asia/Tokyo", datetime(2024, 6, 30, 10, 0, tzinfo=timezone.utc)),
+        ("Australia/Sydney", datetime(2024, 4, 6, 6, 0, tzinfo=timezone.utc)),
+        ("Asia/Kolkata", datetime(2024, 12, 31, 12, 0, tzinfo=timezone.utc)),
+    ],
+)
+def test_the_feature_calendar_reads_each_stamp_as_the_cluster_key_does(zone, start):
+    """Feature time-of-day and dates match :func:`_ny_date_minutes` per stamp.
+
+    The holdout cluster key takes its day from ``_ny_date_minutes``; the
+    feature columns must read the same local day and minute off every
+    stamp, or a fold's calendar and its cluster key disagree.
+    """
+    ms = np.asarray(
+        [
+            int((start + timedelta(minutes=17 * k)).timestamp() * 1000)
+            for k in range(240)
+        ],
+        dtype=np.int64,
+    )
+    close = np.full(ms.size, 100.0)
+    session = dict(SESSION, tz=zone)
+    out = {}
+    columns = _session_feature_arrays(
+        ms, close, close, close, close, close, 1, _MAX_GAP_MS, (), [], session,
+        internals=out,
+    )
+    keys = [_ny_date_minutes(int(stamp), zone) for stamp in ms]
+    days = [date.fromisoformat(text) for text, _ in keys]
+    mins = np.asarray([minutes for _, minutes in keys], dtype=np.float64)
+    dow = np.asarray([day.weekday() for day in days], dtype=np.float64)
+    month = np.asarray([day.month for day in days], dtype=np.float64)
+    assert out["parsed"] == days
+    assert out["mins"].tobytes() == mins.tobytes()
+    assert columns["dow_sin"].tobytes() == np.sin(2.0 * math.pi * dow / 7.0).tobytes()
+    assert columns["dow_cos"].tobytes() == np.cos(2.0 * math.pi * dow / 7.0).tobytes()
+    assert (
+        columns["month_sin"].tobytes()
+        == np.sin(2.0 * math.pi * (month - 1.0) / 12.0).tobytes()
+    )
+    first = [1.0] + [float(a != b) for a, b in zip(days[1:], days[:-1])]
+    assert columns["is_first_rth"].tolist() == first
+    assert len(set(days)) > 1
