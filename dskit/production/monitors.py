@@ -60,9 +60,9 @@ import math
 import statistics
 from abc import ABC, abstractmethod
 from collections import Counter
-from itertools import accumulate
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from itertools import accumulate
 from pathlib import Path
 
 from dskit.pipeline import metrics as pipeline_metrics
@@ -181,13 +181,14 @@ DEFAULT_ADWIN_DELTA = 0.002
 DEFAULT_MIN_SUB = 5
 
 #: The longest adaptive window ``adwin`` keeps. Cutting at every split point
-#: is O(n²) in the window's length AND the window rides in every §6
-#: ``snapshot``, so on a stationary stream an uncapped window would take a
-#: growing slice of every tick and write itself into the ledger for ever.
-#: 500 keeps a fold's scan in the low hundreds of thousands of operations and
-#: the window inside ~10 KB of snapshot, while still leaving the middle cut
-#: 250 observations a side — enough to detect a shift of about a quarter of a
-#: bounded field's range at ``DEFAULT_ADWIN_DELTA``.
+#: is O(n) in the window's length (O(n²) on the fallback path) AND the window
+#: rides in every §6 ``snapshot``, so on a stationary stream an uncapped
+#: window would take a growing slice of every tick and write itself into the
+#: ledger for ever. 500 keeps even the fallback's scan in the low hundreds of
+#: thousands of operations and the window inside ~10 KB of snapshot, while
+#: still leaving the middle cut 250 observations a side — enough to detect a
+#: shift of about a quarter of a bounded field's range at
+#: ``DEFAULT_ADWIN_DELTA``.
 DEFAULT_ADWIN_MAX_WINDOW = 500
 
 #: The share of a window's legs whose labels must have arrived before an
@@ -462,15 +463,11 @@ def _ks(reference, window):
 
 
 def _exact_prefix_sums(values):
-    """Return ``(sums, scale)`` with ``sums[k] / scale == math.fsum(values[:k])``, or None.
-
-    ``math.fsum`` returns the correctly rounded EXACT sum, and every finite
-    double is an integer once scaled by a large enough power of two, so one
-    pass of integer prefix sums answers every slice sum bit for bit — ``int
-    / int`` rounds correctly too. None unless every value is an exact
-    ``float`` or ``int`` within ``_EXACT_SUM_BOUND``; the caller then sums
-    the slices itself.
-    """
+    """Return ``(sums, scale)`` with ``sums[k] / scale == math.fsum(values[:k])``, or None."""
+    # fsum is the correctly rounded EXACT sum and every double is an integer
+    # once scaled by a power of two, so integer prefix sums (int / int rounds
+    # correctly too) answer every slice bit for bit. None hands anything but
+    # an exact float or int within _EXACT_SUM_BOUND back to the slice sums.
     ratios = []
     for value in values:
         if (type(value) is not float and type(value) is not int) or not (
@@ -3077,7 +3074,8 @@ class ADWIN(StreamMonitor):
 
     Every split point is examined on every observation, so a fold costs
     ``O(n)`` in the adaptive window's length over exact prefix sums
-    (``O(n²)`` for a value not an exact float or int), and the window rides in every
+    (``O(n²)`` once a value is not an exact float or int, or exceeds
+    ``2**960`` in magnitude), and the window rides in every
     §6 ``snapshot``; a breach is the only thing that shortens it, so a
     stationary stream would grow both without bound. ``max_window`` is the
     cap, and it drops OLDEST first — the window is the statistic's memory,

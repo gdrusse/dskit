@@ -121,6 +121,7 @@ import dataclasses
 import inspect
 import json
 import math
+import random
 import statistics
 
 import pytest
@@ -1643,6 +1644,85 @@ def test_adwin_state_round_trips_through_json():
     restored.observe(prediction_record(0.0))
     assert live.verdict() == restored.verdict()
     assert live.state()["stream"]["window"] == restored.state()["stream"]["window"]
+
+
+def adwin_bits(cuts):
+    """Cuts as ``(ratio.hex(), index)``, so equality is equality of bits."""
+    return [(ratio.hex(), at) for ratio, at in cuts]
+
+
+def assert_adwin_cuts_are_the_slice_means(values, min_sub=1):
+    """Observe ``values``: each statistic, cut and survivor is ``adwin_walk``'s, bit for bit."""
+    expected, survivors = adwin_walk(values, DEFAULT_ADWIN_DELTA, min_sub)
+    monitor = adwin(threshold=at_most(NEVER), min_sub=min_sub)
+    for value, want in zip(values, expected):
+        monitor.observe(prediction_record(value))
+        window = monitor.state()["stream"]["window"]
+        cuts = adwin_cuts(window, DEFAULT_ADWIN_DELTA, min_sub)
+        assert adwin_bits(monitor._cuts()) == adwin_bits(cuts)
+        statistic = monitor.verdict().statistic
+        assert statistic == want and (want is None or statistic.hex() == want.hex())
+    assert monitor.state()["stream"]["window"] == survivors
+
+
+#: Windows where a sum rounds on a tie, cancels, or lives in the subnormals,
+#: and integers that ``fsum`` rounds to a double before it adds them.
+ADWIN_HARD_WINDOWS = {
+    "ties": [1.0, 2.0**-53, 2.0**-53, 1.0 + 2.0**-52, 2.0**-54, 3.0, -(2.0**-53), 2.0**52,
+             0.5, 2.0**-53, -1.0, 1.0, 2.0**-54, 2.0**53, 1.0, 1.0 + 2.0**-52, 2.0**-53],
+    "cancellation": [1e200, -1e200, 1e-200, 1.0, -1.0, 1e16, -1e16, 0.1, 1e200, 0.1,
+                     -1e200, 1e-16, 1.0, 0.3, -0.1, 1e16, 0.2],
+    "subnormal": [5e-324, -5e-324, 1e-310, 2.2250738585072014e-308, 0.0, -0.0, 1e-320,
+                  5e-324, 3e-323, -1e-315, 1e-300, 5e-324],
+    # 2**53 + 1 becomes 2**53 BEFORE it meets the 1: the first cut is a gap of 0.
+    "rounded_ints": [2**53 + 1, 1, 2**53, 0, 2**60 + 3, 7, 2**53 + 1, 2**70 + 5,
+                     -(2**55) - 1, 3, 2**53 + 1, 2**53 + 3, 1, 2**54 + 1],
+}
+
+
+@pytest.mark.parametrize("name", sorted(ADWIN_HARD_WINDOWS))
+def test_adwin_cuts_are_the_slice_means_bit_for_bit(name):
+    assert_adwin_cuts_are_the_slice_means(ADWIN_HARD_WINDOWS[name])
+    assert_adwin_cuts_are_the_slice_means(ADWIN_HARD_WINDOWS[name], min_sub=2)
+
+
+def test_adwin_cuts_are_the_slice_means_on_a_seeded_mixed_magnitude_stream():
+    rng = random.Random(20261015)
+    values = [
+        rng.choice((-1, 1)) * rng.random() * 10.0 ** rng.randint(-320, 200) for _ in range(80)
+    ]
+    assert_adwin_cuts_are_the_slice_means(values)
+
+
+def test_adwin_cuts_take_the_slice_sums_past_two_to_the_960():
+    assert_adwin_cuts_are_the_slice_means([2.0**961, 1.0, -(2.0**961), 0.5, 3.0, 2.0**-60, 1.0])
+    assert_adwin_cuts_are_the_slice_means([2**961, 1, 2, -(2**962), 3, 2**53 + 1])
+
+
+def test_adwin_cuts_take_the_slice_sums_for_a_numpy_float():
+    np = pytest.importorskip("numpy")
+    values = [np.float64(value) for value in ADWIN_HARD_WINDOWS["ties"]]
+    assert_adwin_cuts_are_the_slice_means(values)
+
+
+@pytest.mark.parametrize("big", [1.7e308, -1.7e308, 2.0**1023])
+def test_adwin_keeps_the_fsum_overflow_refusal_of_a_side_too_large_to_sum(big):
+    monitor = adwin(threshold=at_most(NEVER), min_sub=2, max_window=4)
+    for _ in range(3):
+        monitor.observe(prediction_record(big))
+    with pytest.raises(OverflowError, match="^intermediate overflow in fsum$"):
+        monitor.observe(prediction_record(big))
+
+
+def test_adwin_keeps_the_fsum_overflow_refusal_of_two_to_the_fourteen_large_terms():
+    """``2**14`` terms of ``2**1010`` overflow an fsum partial though each is far below the max."""
+    side = 2**14
+    monitor = adwin(threshold=at_most(NEVER), min_sub=side, max_window=2 * side)
+    state = monitor.state()
+    state["stream"]["window"] = [2.0**1010] * (2 * side - 1)
+    monitor.restore(state)
+    with pytest.raises(OverflowError, match="^intermediate overflow in fsum$"):
+        monitor.observe(prediction_record(2.0**1010))
 
 
 # ---------------------------------------------------------------------------
