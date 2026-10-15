@@ -1343,12 +1343,23 @@ def horizon_leads(start, step, stop):
     return tuple(range(start, stop + 1, step))
 
 
-def _ny_date_minutes(asof_ms, zone):
-    """Split one epoch stamp into a calendar date and clock minutes."""
+def _local_date_minutes(asof_ms, zone):
+    """Split one epoch stamp into a local ``date`` and clock minutes.
+
+    The one reading of a stamp in the session zone: the feature
+    calendar takes the ``date`` as is, :func:`_ny_date_minutes` (the
+    holdout cluster key) takes it as ISO text.
+    """
     instant = datetime.fromtimestamp(asof_ms / 1000.0, tz=timezone.utc).astimezone(
         ZoneInfo(zone)
     )
-    return instant.date().isoformat(), instant.hour * 60 + instant.minute
+    return instant.date(), instant.hour * 60 + instant.minute
+
+
+def _ny_date_minutes(asof_ms, zone):
+    """Split one epoch stamp into a calendar date and clock minutes."""
+    day, minutes = _local_date_minutes(asof_ms, zone)
+    return day.isoformat(), minutes
 
 
 def _cell(value):
@@ -1362,6 +1373,32 @@ def _cell(value):
     if not math.isfinite(float(value)):
         return None
     return float(value)
+
+
+def _cells(values, n):
+    """:func:`_cell` of ``values[0]`` .. ``values[n - 1]`` as a list.
+
+    ``None`` reads as ``n`` Nones. A plain one-dimensional float array
+    (at most double width) of length ``n`` takes a plain-list pass:
+    ``tolist`` hands back exactly the Python floats ``_cell`` would have
+    unwrapped, so only the finiteness test remains per cell. Anything
+    else, ndarray subclasses such as masked arrays included, goes cell
+    by cell.
+    """
+    import numpy as np
+
+    if values is None:
+        return [None] * n
+    if (
+        type(values) is np.ndarray
+        and values.ndim == 1
+        and values.shape[0] == n
+        and values.dtype.kind == "f"
+        and values.dtype.itemsize <= 8
+    ):
+        isfinite = math.isfinite
+        return [value if isfinite(value) else None for value in values.tolist()]
+    return [_cell(values[i]) for i in range(n)]
 
 
 def _session_feature_arrays(
@@ -1402,12 +1439,11 @@ def _session_feature_arrays(
     if n > 1:
         gap[1:] = np.diff(ms) > max_gap_ms
     ret1[gap] = np.nan
-    sess_start = np.zeros(n, dtype=np.int64)
-    start = 0
-    for i in range(n):
-        if gap[i]:
-            start = i
-        sess_start[i] = start
+    # Each bar's session opens at the latest gap at or before it (bar 0
+    # when none): a running maximum of the gap indices, integer-exact.
+    sess_start = np.maximum.accumulate(
+        np.where(gap, np.arange(n, dtype=np.int64), np.int64(0))
+    )
     columns = {}
     idx = np.arange(n)
     for step in range(lookback):
@@ -1493,14 +1529,27 @@ def _session_feature_arrays(
     dow = np.empty(n, dtype=float_dtype)
     month = np.empty(n, dtype=float_dtype)
     parsed = [] if internals is not None else None
-    for i, stamp in enumerate(ms):
-        day_text, mins[i] = _ny_date_minutes(int(stamp), session["tz"])
-        day = date.fromisoformat(day_text)
-        day_ordinals[i] = day.toordinal()
-        dow[i] = day.weekday()
-        month[i] = day.month
+    # Each stamp's local date is used as a ``date`` (no ISO text round
+    # trip) and the fields gather in plain lists, written into the
+    # arrays once after the loop.
+    ordinals, clock, weekdays, months = [], [], [], []
+    for i, stamp in enumerate(ms.tolist() if type(ms) is np.ndarray else ms):
+        day, minutes = _local_date_minutes(int(stamp), session["tz"])
+        if i == n:
+            # More stamps than bars: fail where the per-bar write did.
+            mins[i] = minutes
+        clock.append(minutes)
+        ordinals.append(day.toordinal())
+        weekdays.append(day.weekday())
+        months.append(day.month)
         if parsed is not None:
             parsed.append(day)
+    count = len(clock)
+    day_ordinals[:count] = ordinals
+    mins[:count] = clock
+    dow[:count] = weekdays
+    month[:count] = months
+    del ordinals, clock, weekdays, months
     columns["minutes_from_open"] = mins - session["rth_start_minutes"]
     columns["minutes_to_close"] = session["rth_end_minutes"] - mins
     span = max(float(session["rth_end_minutes"] - session["rth_start_minutes"]), 1.0)
@@ -2333,19 +2382,20 @@ class SessionFeatureRows(Node):
             del opn, high, low, volume, market_ret, sector_ret
             n = int(kept_ms.size)
             own = col_kept.get("ret_lag_0")
+            # Plain-list passes: ``tolist`` yields the same Python ints and
+            # floats the per-element ``int``/``float`` calls did.
+            kept_stamps = kept_ms.tolist()
             if symbol in ref_ret and own is not None:
                 table = ref_ret[symbol]
-                for i, stamp in enumerate(kept_ms):
-                    value = own[i]
-                    if np.isfinite(value):
-                        table[int(stamp)] = float(value)
+                for stamp, value in zip(kept_stamps, own.tolist()):
+                    if math.isfinite(value):
+                        table[stamp] = value
             for ref in reference:
-                ref_arr = np.full(n, np.nan)
                 table = ref_ret[ref]
-                for i in range(n):
-                    value = table.get(int(kept_ms[i]))
-                    if value is not None:
-                        ref_arr[i] = value
+                ref_arr = np.array(
+                    [table.get(stamp, np.nan) for stamp in kept_stamps],
+                    dtype=np.float64,
+                )
                 col_kept[f"ref_ret_{ref}"] = ref_arr
                 residual = np.full(n, np.nan)
                 if own is not None:
@@ -2379,16 +2429,20 @@ class SessionFeatureRows(Node):
                 )
                 del stacked
             else:
-                for i in range(n):
-                    row = {
-                        "symbol": symbol,
-                        "asof_ms": int(kept_ms[i]),
-                        "close": _cell(kept_close[i]),
-                    }
-                    for name in feat_names:
-                        arr = col_kept.get(name)
-                        row[name] = _cell(arr[i]) if arr is not None else None
+                # Column by column into JSON-safe cells, then one dict per
+                # row in the same key order as a per-cell build.
+                cells = [
+                    _cells(col_kept.get(name), n) for name in feat_names
+                ]
+                for stamp, price, values in zip(
+                    kept_stamps,
+                    _cells(kept_close, n),
+                    zip(*cells) if cells else [()] * n,
+                ):
+                    row = {"symbol": symbol, "asof_ms": stamp, "close": price}
+                    row.update(zip(feat_names, values))
                     records.append(row)
+                del cells
             n_rows += n
             del col_kept
         if layout != "columns":
@@ -2835,8 +2889,11 @@ def _ranks(values):
         np.concatenate(([True], sorted_vals[1:] != sorted_vals[:-1], [True]))
     )
     ranks = np.empty(n, dtype=np.float64)
-    for start, end in zip(bounds[:-1], bounds[1:]):
-        ranks[order[start:end]] = (start + end - 1) / 2.0 + 1.0
+    starts = bounds[:-1]
+    ends = bounds[1:]
+    # Each tie group's average rank, (start + end - 1) / 2 + 1 as before,
+    # written to every member at once rather than one group per step.
+    ranks[order] = np.repeat((starts + ends - 1) / 2.0 + 1.0, ends - starts)
     return ranks.tolist()
 
 
@@ -3988,13 +4045,26 @@ def _attach_lead_frames(
         else:
             keep = (val_start <= asof) & (asof <= val_end) & (future_ms <= val_end)
         keep &= np.isfinite(y)
-        for j in np.flatnonzero(keep):
-            i = int(idx[j])
-            row = {name: float(x[i, k]) for k, name in enumerate(features)}
+        chosen = np.flatnonzero(keep)
+        # Plain lists of the kept rows: ``tolist`` yields the very floats
+        # and ints the per-element ``float``/``int`` calls produced.
+        x_rows = (
+            x[idx[chosen]].tolist()
+            if x.ndim == 2 and x.dtype.kind == "f" and x.dtype.itemsize <= 8
+            else None
+        )
+        for pos, (stamp, value) in enumerate(
+            zip(asof[chosen].tolist(), y[chosen].tolist())
+        ):
+            if x_rows is None:
+                i = int(idx[chosen[pos]])
+                row = {name: float(x[i, k]) for k, name in enumerate(features)}
+            else:
+                row = dict(zip(features, x_rows[pos]))
             row["symbol"] = symbol
-            row["asof_ms"] = int(asof[j])
-            row[label] = float(y[j])
-            row["y_up"] = 1.0 if y[j] > 0.0 else 0.0
+            row["asof_ms"] = stamp
+            row[label] = value
+            row["y_up"] = 1.0 if value > 0.0 else 0.0
             out.append(row)
     return out
 
