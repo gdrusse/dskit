@@ -1,0 +1,41 @@
+{
+  "notes": "ADR-0268 candidate-family map for existing family-availability and feature selection. Numeric units and formulas are inherited from ChainDayFeatures, with no re-estimation. Field names are new aliases, not new formulas. This mapping is date-keyed, not contract-expiry-keyed. OI publication remains unverified and OI is withheld. Historical quote publication and source schema parity still need evidence before running.",
+  "end_before": "2026-01-01",
+  "join": "strict_prior_symbol_date",
+  "target": "terminal_return",
+  "families": {
+    "theta_volatility": [
+      "theta_atm_iv_30",
+      "theta_atm_iv_90"
+    ],
+    "theta_skew": [
+      "theta_risk_reversal_30",
+      "theta_put_call_iv_spread_30",
+      "theta_term_slope_30"
+    ],
+    "theta_liquidity": [
+      "theta_half_spread_over_premium_30",
+      "theta_straddle_ratio_30",
+      "theta_volume_call_30",
+      "theta_volume_put_30"
+    ]
+  },
+  "withheld": [
+    "open_interest",
+    "oi_change",
+    "oi_put_call_ratio"
+  ],
+  "units": {
+    "theta_atm_iv_30": "annualized Black76 decimal IV",
+    "theta_atm_iv_90": "annualized Black76 decimal IV",
+    "theta_risk_reversal_30": "put25 IV minus call25 IV, decimal",
+    "theta_put_call_iv_spread_30": "mean put-minus-call IV across paired strikes in ATM band, decimal",
+    "theta_term_slope_30": "90-day ATM IV minus30-day ATM IV, annualized decimal",
+    "theta_half_spread_over_premium_30": "dimensionless",
+    "theta_straddle_ratio_30": "dimensionless premium / vendor spot; null when stale spot flagged",
+    "theta_volume_call_30": "contracts across selected expiry",
+    "theta_volume_put_30": "contracts across selected expiry"
+  },
+  "max_age_days": 7,
+  "strict_prior": true
+}

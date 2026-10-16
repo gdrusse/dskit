@@ -1,0 +1,140 @@
+{
+  "name": "theta-ml-features",
+  "notes": "ADR-0268 PREPARATION ONLY. Read only after tested414, safe-rate panel, census/root policy and snapshot pins are approved. Project existing ChainDayFeatures; no vendor IV, fills, fits or H0-H7 statistics. The30/90-day descriptors keep their own expiry; they are prior-date predictors, not exact-expiry substitutes. Every market-data read ends before2026-01-01. Zero pins refuse before payload reads. This diagnostic projection does not assert historical publication availability.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-ml-20261015/feature-runs"
+  },
+  "pipeline": {
+    "theta30": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "expiration": "expiration",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "atm_iv": "atm_iv",
+              "risk_reversal": "risk_reversal",
+              "put_call_iv_spread": "put_call_iv_spread",
+              "term_slope": "term_slope",
+              "half_spread_over_premium": "half_spread_over_premium",
+              "straddle_ratio": "straddle_ratio",
+              "volume_call": "volume_call",
+              "volume_put": "volume_put"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date",
+              "expiration"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2026-01-01"
+              }
+            },
+            "where": [
+              {
+                "field": "target_dte",
+                "op": "==",
+                "value": 30
+              },
+              {
+                "field": "after_first_quote",
+                "op": "==",
+                "value": true
+              },
+              {
+                "field": "status",
+                "op": "==",
+                "value": "ok"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "write30": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$theta30.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-ml-20261015/features/theta30.jsonl",
+        "source": "Pinned pre2026 ChainDayFeatures target30; no overwrite, no fitting."
+      }
+    },
+    "theta90": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "expiration": "expiration",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "atm_iv": "atm_iv"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date",
+              "expiration"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2026-01-01"
+              }
+            },
+            "where": [
+              {
+                "field": "target_dte",
+                "op": "==",
+                "value": 90
+              },
+              {
+                "field": "after_first_quote",
+                "op": "==",
+                "value": true
+              },
+              {
+                "field": "status",
+                "op": "==",
+                "value": "ok"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "write90": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$theta90.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-ml-20261015/features/theta90.jsonl",
+        "source": "Pinned pre2026 ChainDayFeatures target90; no overwrite, no fitting."
+      }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "notes": "ADR0268 PREPARATION WORKFLOW ONLY; not yet end-to-end runnable because the generic panel bridge needs approval/implementation. Run --plan only now. Both stages require nonzero approved source pins and readiness; no fits, adaptive blocks, rule replay or2026reads. theta-ml-initial-study.json is a separate gated candidate specification, deliberately not an automatic command. Existing pipeline runner and workflow ledger own orchestration.",
+  "args": {
+    "work_dir": "/home/russell/data/index_options/theta-ml-20261015",
+    "A": "2025-12-31"
+  },
+  "layout": {
+    "features": {
+      "dir": "{W}/features",
+      "theta30": "{W}/features/theta30.jsonl",
+      "theta90": "{W}/features/theta90.jsonl"
+    },
+    "panel": {
+      "dir": "{W}/workflow/panel",
+      "panel": "{W}/panel/panel.parquet",
+      "manifest": "{W}/panel/manifest.json",
+      "admission": "{W}/admission.jsonl"
+    }
+  },
+  "registry": {
+    "features": {
+      "template": "run-theta-ml-features.json",
+      "command": "{python} -m dskit.pipeline run {config} --asof {in.A}"
+    },
+    "panel": {
+      "template": "run-theta-ml-panel.json",
+      "command": "{python} -m dskit.pipeline run {config} --asof {in.A}"
+    }
+  },
+  "steps": {
+    "features": {
+      "registry": "features",
+      "in": {
+        "A": "$args.A",
+        "W": "$args.work_dir"
+      },
+      "out": [
+        "theta30",
+        "theta90"
+      ]
+    },
+    "panel": {
+      "registry": "panel",
+      "in": {
+        "A": "$args.A",
+        "W": "$args.work_dir"
+      },
+      "out": [
+        "panel",
+        "manifest",
+        "admission"
+      ]
+    }
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "notes": "ADR0268 PREPARATION; ZERO fits authorized. Ten retrospective development inspections, not ten independent holdouts. Each next stage requires an immutable recipe and append-only charged attempt/inspection ledger. Existing static runner does not enforce this state machine. No automatic progression; a new revision after block10 is forbidden.35days is only a planning allowance: every used label and publication must be strictly earlier than next_decision, otherwise halt. No2024/25 stress or trading-rule replay is authorized by this packet.",
+  "end_before": "2026-01-01",
+  "initial_development": {
+    "start": "2016-01-04",
+    "end_before": "2021-01-01",
+    "inner_scoring_years": [
+      2018,
+      2019,
+      2020
+    ]
+  },
+  "authorized_fit_attempts": 0,
+  "seeds": [
+    11,
+    29,
+    47
+  ],
+  "nominal_seed": 11,
+  "max_outer_recipes": 10,
+  "max_inspections": 10,
+  "independent_final_test": null,
+  "blocks": [
+    {
+      "block": 1,
+      "origin_start": "2021-01-04",
+      "origin_end_before": "2021-03-15",
+      "next_decision": "2021-04-19",
+      "status": "unopened_development"
+    },
+    {
+      "block": 2,
+      "origin_start": "2021-04-19",
+      "origin_end_before": "2021-06-28",
+      "next_decision": "2021-08-02",
+      "status": "unopened_development"
+    },
+    {
+      "block": 3,
+      "origin_start": "2021-08-02",
+      "origin_end_before": "2021-10-11",
+      "next_decision": "2021-11-15",
+      "status": "unopened_development"
+    },
+    {
+      "block": 4,
+      "origin_start": "2021-11-15",
+      "origin_end_before": "2022-01-24",
+      "next_decision": "2022-02-28",
+      "status": "unopened_development"
+    },
+    {
+      "block": 5,
+      "origin_start": "2022-02-28",
+      "origin_end_before": "2022-05-09",
+      "next_decision": "2022-06-13",
+      "status": "unopened_development"
+    },
+    {
+      "block": 6,
+      "origin_start": "2022-06-13",
+      "origin_end_before": "2022-08-22",
+      "next_decision": "2022-09-26",
+      "status": "unopened_development"
+    },
+    {
+      "block": 7,
+      "origin_start": "2022-09-26",
+      "origin_end_before": "2022-12-05",
+      "next_decision": "2023-01-09",
+      "status": "unopened_development"
+    },
+    {
+      "block": 8,
+      "origin_start": "2023-01-09",
+      "origin_end_before": "2023-03-20",
+      "next_decision": "2023-04-24",
+      "status": "unopened_development"
+    },
+    {
+      "block": 9,
+      "origin_start": "2023-04-24",
+      "origin_end_before": "2023-07-03",
+      "next_decision": "2023-08-07",
+      "status": "unopened_development"
+    },
+    {
+      "block": 10,
+      "origin_start": "2023-08-07",
+      "origin_end_before": "2023-10-16",
+      "next_decision": "2023-11-20",
+      "status": "unopened_development"
+    }
+  ],
+  "launch_gates": [
+    "tested414 complete and export verified",
+    "safe pre2026 rates and rebuilt chain panel",
+    "frozen root/action/universe and source schema/publication contracts",
+    "nonzero source, augmented panel, fold, code and dependency pins",
+    "development-only family admission applied to candidate grid",
+    "per-fold and per-block strict label/publication cutoffs",
+    "immutable numeric attempt inventory including all seeds, baselines and failures",
+    "durable attempt/inspection admission owner and append-only ledger",
+    "two independent final reviews and separate run approval"
+  ]
+}
