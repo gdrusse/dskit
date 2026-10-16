@@ -21,6 +21,7 @@ exists to avoid.
 
 from __future__ import annotations
 
+import functools
 import gzip
 import json
 import math
@@ -89,14 +90,24 @@ def _quote_ms(stamp):
     ``datetime.fromisoformat`` cannot parse on every supported runtime,
     so the fractional part is cut to milliseconds by hand.
     """
+    second_ms = _second_ms_memo if type(stamp) is str else _second_ms
     head, _, tail = stamp.partition(".")
     if not tail:
-        return _ms(datetime.strptime(head.rstrip("Z"), "%Y-%m-%dT%H:%M:%S")
-                   .replace(tzinfo=_UTC))
+        return second_ms(head.rstrip("Z"))
     digits = tail.rstrip("Z")
     milli = int((digits + "000")[:3])
-    base = datetime.strptime(head, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_UTC)
-    return _ms(base) + milli
+    return second_ms(head) + milli
+
+
+def _second_ms(head):
+    """Epoch milliseconds for a whole-second ``YYYY-MM-DDTHH:MM:SS`` UTC stamp."""
+    return _ms(datetime.strptime(head, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_UTC))
+
+
+# Pure parsing of an immutable str into an int: safe to memoize, as
+# ``base.parse_utc`` is. Quotes arrive dozens a second, so consecutive
+# stamps share their whole-second head; lru_cache never caches a raise.
+_second_ms_memo = functools.lru_cache(maxsize=4096)(_second_ms)
 
 
 def _finite(value):
