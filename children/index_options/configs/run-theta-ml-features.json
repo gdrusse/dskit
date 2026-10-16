@@ -1,6 +1,6 @@
 {
   "name": "theta-ml-features",
-  "notes": "ADR-0268 PREPARATION ONLY. Read only after tested414, safe-rate panel, census/root policy and snapshot pins are approved. Project existing ChainDayFeatures; no vendor IV, fills, fits or H0-H7 statistics. The30/90-day descriptors keep their own expiry; they are prior-date predictors, not exact-expiry substitutes. Every market-data read ends before2026-01-01. Zero pins refuse before payload reads. This diagnostic projection does not assert historical publication availability.",
+  "notes": "ADR-0269 PREPARATION ONLY. Read only after tested414, safe-rate panel, census/root policy and snapshot pins are approved. Project existing ChainDayFeatures; no vendor IV, fills, fits or H0-H7 statistics. The30/90-day descriptors keep their own expiry; they are prior-date predictors, not exact-expiry substitutes. Every market-data read ends before2026-01-01. Zero pins refuse before payload reads. This diagnostic projection does not assert historical publication availability.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-ml-20261015/feature-runs"
   },

@@ -1,5 +1,5 @@
 {
-  "notes": "ADR-0268 candidate-family map for existing family-availability and feature selection. Numeric units and formulas are inherited from ChainDayFeatures, with no re-estimation. Field names are new aliases, not new formulas. This mapping is date-keyed, not contract-expiry-keyed. OI publication remains unverified and OI is withheld. Historical quote publication and source schema parity still need evidence before running.",
+  "notes": "ADR-0269 candidate-family map for existing family-availability and feature selection. Numeric units and formulas are inherited from ChainDayFeatures, with no re-estimation. Field names are new aliases, not new formulas. This mapping is date-keyed, not contract-expiry-keyed. OI publication remains unverified and OI is withheld. Historical quote publication and source schema parity still need evidence before running.",
   "end_before": "2026-01-01",
   "join": "strict_prior_symbol_date",
   "target": "terminal_return",

@@ -1,4 +1,4 @@
-"""No-fit contracts for ADR-0268 pipeline preparation; all inputs are declarations."""
+"""No-fit contracts for ADR-0269 pipeline preparation; all inputs are declarations."""
 import json
 from pathlib import Path
 
