@@ -6,6 +6,34 @@ read at session start. Older history: `2026-10-10-consolidated-history.md`.
 
 ---
 
+# Core note — 2026-10-11 (replaced 2026-10-16 by the ADR-0268 performance sweep wrap)
+
+**Now.** 2026-10-10 cleanup: `docs/RE-ENTRY.md` was 469,597 lines (4,431 unique)
+after keep-both merges doubled it at every merge; it is now this index plus one
+note per lane, history in `docs/archive/re-entry/`. Root `CLAUDE.md`/`AGENTS.md`
+shrank to the rules; the standards moved to `docs/standards/`. The branch
+`claude/index-options-perf-pilots` is merged. ADR-0256/0257 are on main;
+ADR-0258 is built in the index_options lane. Open pack minors: `TODO.md`.
+Known reds on main, untouched here, each its own bounded task:
+`test_purity.py::test_core_never_reaches_outside_the_toolkit_at_any_depth`
+(`libs/parquet.py` imports `dskit.onboarding.snapshot`) and, on Python 3.13,
+`test_uncertainty_set.py::...::test_replace_without_the_arrays_cannot_recover_them`
+(`dataclasses.replace` now requires the `weights` InitVar).
+
+**Next.** Owner, from a machine with push rights (the cloud proxy refuses ref
+deletion): delete the contained remote branches `claude/correlation-arb-research`,
+`claude/crypto-trading-child`, `claude/ct-kalshi-history`, `claude/ct-parquet-io`,
+`claude/ct-restwindow`, `claude/ct-zipcsv`, `claude/index-options-perf-pilots`,
+`claude/repo-cleanup-20261010` (this cleanup, fast-forwarded into main),
+`claude/index-options-dispersion-ic` (ADR-0259, fast-forwarded into main);
+tag `codex/index-options-iterative-validation`'s tip `80f0e4ee` as
+`archive/codex-index-options-iterative-validation`, push the tag, then delete
+that branch (superseded; ADR-0215's `CDFEstimatorModel` lives only there).
+
+**Blocked.** Nothing.
+
+---
+
 # Active handoff — 2026-10-06: behavior-identical speedups (merged)
 
 **Merged to main as `2ef373d9` (PR #18, fast-forward from `f9f2f905`).** Pure speedups across
