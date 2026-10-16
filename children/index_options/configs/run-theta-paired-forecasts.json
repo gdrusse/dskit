@@ -1,0 +1,180 @@
+{
+  "name": "theta-paired-forecasts",
+  "notes": "ADR-0269 approved implementation; preparation template, ZERO real fits until exact registration. end_before2021-01-01;2026 permanently sealed. Template for a3-component candidate; bind component count and score projections per resolved recipe. Exact cohort/settlement/scale/decision-strike agreement required. No inner-join row loss. Model/control artifact manifests and common scale source must be verified during registration.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-pocket-study-20261016/pipeline-runs"
+  },
+  "pipeline": {
+    "model": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-paired-model",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "model_weighted_crps": "model_weighted_crps",
+              "baseline_weighted_crps": "baseline_weighted_crps",
+              "weights0": "weights0",
+              "weights1": "weights1",
+              "weights2": "weights2",
+              "means0": "means0",
+              "means1": "means1",
+              "means2": "means2",
+              "scales0": "scales0",
+              "scales1": "scales1",
+              "scales2": "scales2"
+            },
+            "include": [
+              "model.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "end_before": "2021-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "control": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-paired-control",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "model_weighted_crps": "model_weighted_crps",
+              "baseline_weighted_crps": "baseline_weighted_crps"
+            },
+            "include": [
+              "control.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "end_before": "2021-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "market": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-paired-market",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "reference_scale": "reference_scale",
+              "decision_strike_z": "decision_strike_z",
+              "market_eligible": "market_eligible",
+              "market_raw_sd_z": "market_raw_sd_z",
+              "market_raw_lower_probability": "market_raw_lower_probability",
+              "market_raw_weighted_crps": "market_raw_weighted_crps",
+              "market_calibrated_weighted_crps": "market_calibrated_weighted_crps"
+            },
+            "include": [
+              "market.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "end_before": "2021-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "context": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-paired-context",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "reference_scale": "reference_scale",
+              "decision_strike_z": "decision_strike_z",
+              "theta_atm_iv_30": "theta_atm_iv_30",
+              "theta_half_spread_over_premium_30": "theta_half_spread_over_premium_30",
+              "trained_through": "trained_through"
+            },
+            "include": [
+              "context.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "end_before": "2021-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "paired": {
+      "uses": "dskit.pipeline.libs.cdf_research:PairedForecastScores",
+      "inputs": {
+        "model": "$model.records",
+        "control": "$control.records",
+        "market": "$market.records",
+        "context": "$context.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ],
+        "date": "quote_date",
+        "end": "settlement_date",
+        "end_before": "2021-01-01",
+        "components": 3,
+        "market": "market_raw",
+        "decision_strike": "decision_strike_z",
+        "iv": "theta_atm_iv_30",
+        "spread": "theta_half_spread_over_premium_30",
+        "trained_through": "trained_through",
+        "reference": "reference_scale"
+      }
+    }
+  }
+}

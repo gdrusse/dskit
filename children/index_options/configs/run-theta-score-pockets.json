@@ -1,0 +1,133 @@
+{
+  "name": "theta-score-pockets",
+  "notes": "ADR-0269 approved implementation; preparation template, ZERO real fits until exact registration. end_before2021-01-01;2026 permanently sealed. 67fixed descriptive summaries. min_rows/min_dates=1 only labels empty cells, not evidence or selection thresholds. All discovery forecasts must be OOF with mature outcomes. Real minimum-support/multiple-search/pass policy remains unregistered; no promotion or later checkpoint execution.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-pocket-study-20261016/pipeline-runs"
+  },
+  "pipeline": {
+    "fit": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-paired-prior",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "trained_through": "trained_through",
+              "ratio": "ratio",
+              "tail_gap": "tail_gap",
+              "iv": "iv",
+              "spread": "spread",
+              "market_eligible": "market_eligible",
+              "model_weighted_crps": "model_weighted_crps",
+              "baseline_weighted_crps": "baseline_weighted_crps",
+              "price_only_weighted_crps": "price_only_weighted_crps",
+              "market_raw_weighted_crps": "market_raw_weighted_crps",
+              "market_calibrated_weighted_crps": "market_calibrated_weighted_crps"
+            },
+            "include": [
+              "prior.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "end_before": "2020-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2020-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "score": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-paired-later",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "trained_through": "trained_through",
+              "ratio": "ratio",
+              "tail_gap": "tail_gap",
+              "iv": "iv",
+              "spread": "spread",
+              "market_eligible": "market_eligible",
+              "model_weighted_crps": "model_weighted_crps",
+              "baseline_weighted_crps": "baseline_weighted_crps",
+              "price_only_weighted_crps": "price_only_weighted_crps",
+              "market_raw_weighted_crps": "market_raw_weighted_crps",
+              "market_calibrated_weighted_crps": "market_calibrated_weighted_crps"
+            },
+            "include": [
+              "later.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "start": "2020-01-01",
+                "end_before": "2021-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "pockets": {
+      "uses": "dskit.pipeline.libs.cdf_research:ConditionalScorePockets",
+      "inputs": {
+        "fit": "$fit.records",
+        "score": "$score.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ],
+        "date": "quote_date",
+        "end": "settlement_date",
+        "trained_through": "trained_through",
+        "cutoff": "2020-01-01",
+        "end_before": "2021-01-01",
+        "features": [
+          "ratio",
+          "tail_gap",
+          "iv",
+          "spread"
+        ],
+        "quantiles": [
+          0.3333333333333333,
+          0.6666666666666666
+        ],
+        "max_order": 2,
+        "losses": {
+          "model": "model_weighted_crps",
+          "historical": "baseline_weighted_crps",
+          "price_only": "price_only_weighted_crps",
+          "market_raw": "market_raw_weighted_crps",
+          "market_calibrated": "market_calibrated_weighted_crps"
+        },
+        "model": "model",
+        "min_rows": 1,
+        "min_dates": 1,
+        "eligible": "market_eligible"
+      }
+    }
+  }
+}

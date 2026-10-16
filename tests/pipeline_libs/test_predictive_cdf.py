@@ -5563,3 +5563,33 @@ def test_curve_moments_node_refuses_by_row_and_default_denies():
     with pytest.raises(ValueError, match="row 0"):
         predictive_cdf.CurveMoments("m", {**good, "keep": ["missing"]}).run(
             _moments_ctx(), {"records": [row]})
+
+
+@pytest.mark.parametrize("growth", [0.95, 1.0, 1.07])
+def test_option_price_cdf_discount_invariance(growth):
+    original = _priced_options()
+    discounted = original.copy()
+    discounted["mark"] /= growth
+    before = discounted.copy(deep=True)
+    owner = predictive_cdf.OptionPriceCDF(**_option_curve_params())
+    expected = owner.estimate(original, 100)
+    actual = owner.estimate(discounted, 100, growth=growth)
+    assert actual["eligible"]
+    for field in ("forward_ratio", "quantiles", "raw_projected_probabilities"):
+        np.testing.assert_allclose(actual[field], expected[field], atol=1e-12)
+    pd.testing.assert_frame_equal(discounted, before)
+
+
+@pytest.mark.parametrize("growth", [0, -1, True, float("nan"), float("inf"), "1"])
+def test_option_price_cdf_refuses_invalid_discount_growth(growth):
+    result = predictive_cdf.OptionPriceCDF(**_option_curve_params()).estimate(
+        _priced_options(), 100, growth=growth)
+    assert result == {"eligible": False, "reasons": ["invalid_growth"]}
+
+
+
+def test_grid_moments_uniform_and_atom():
+    curve = predictive_cdf.GridCurve([[0., 2.], [3., 3.]], [[0., 1.], [0., 1.]])
+    mean, sd = curve.moments()
+    np.testing.assert_allclose(mean, [1., 3.])
+    np.testing.assert_allclose(sd, [np.sqrt(1/3), 0.])

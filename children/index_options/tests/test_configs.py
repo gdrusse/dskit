@@ -37,6 +37,12 @@ def test_shipped_suite_passes_each_nonempty_snapshot(child_root, rows, store_fac
 
 def test_exact_manifest_and_agent_parity(child_root):
     expected = {
+        "configs/run-theta-market-proxy.json",
+        "configs/run-theta-mixture-grid.json",
+        "configs/run-theta-market-reference-scores.json",
+        "configs/run-theta-paired-forecasts.json",
+        "configs/run-theta-score-pockets.json",
+        "configs/theta-ml-pocket-calendar.json",
         "pyproject.toml", "AGENTS.md", "CLAUDE.md", "README.md", ".gitignore", "journal.json",
         # ADR-0238: fixed-protocol advanced study and published interim evidence.
         "configs/advanced-cdf-zoo.json",
@@ -391,7 +397,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # validation twins and overlays, the generator, its inputs and the two test files = 548.
     # Plus the owner-requested Amendment 6 execution/review memo = 549.
     # Plus the six ADR-0269 draft configs and their no-fit contract test = 556.
-    assert len(actual) == 556
+    # Plus the five market/pocket pipeline templates and explicit search calendar = 562.
+    assert len(actual) == 562
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -4050,3 +4057,31 @@ def test_the_labelled_dates_are_dev_period_only_pinned_and_each_carries_a_confid
     assert not dropped & {(r["symbol"], r["earnings_date"]) for r in doc["labels"]}
     pinned = _theta_doc(child_root, "run-theta-chain-events.json")["pipeline"]["labels"]["params"]
     assert pinned["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest() and pinned["expect"] == len(doc)
+
+
+@pytest.mark.parametrize("name", ["run-theta-market-proxy.json", "run-theta-mixture-grid.json",
+                                 "run-theta-market-reference-scores.json", "run-theta-paired-forecasts.json",
+                                 "run-theta-score-pockets.json"])
+def test_theta_pocket_documents_plan_and_bound_sources(child_root, name):
+    doc = json.loads((child_root / "configs" / name).read_text())
+    planned = plan(load_document(str(child_root / "configs" / name)))
+    assert planned.order
+    for node in doc["pipeline"].values():
+        if node["uses"] == "dskit.pipeline.libs.parquet:ParquetStreamRows":
+            for source in node["params"]["sources"]:
+                assert source["snapshot"] == "0" * 64
+                assert source["read_bounds"]["quote_date"]["end_before"] <= "2021-01-01"
+                assert all(b.get("end_before", "2021-01-01") <= "2021-01-01"
+                           for b in source["read_bounds"].values())
+    if "refs" in doc["pipeline"]:
+        assert doc["pipeline"]["refs"]["params"]["authorized_fit_attempts"] == 0
+
+
+def test_theta_pocket_calendar_separates_inner_search_and_outer_revisions(child_root):
+    doc = json.loads((child_root / "configs/theta-ml-pocket-calendar.json").read_text())
+    assert doc["inner_candidate_recipes"] == 12
+    assert doc["feature_arms"] == 2
+    assert doc["max_outer_recipes"] == doc["max_inspections"] == 10
+    assert doc["initial_development"]["inner_scoring_years"] == [2019, 2020]
+    assert doc["authorized_fit_attempts"] == 0
+    assert doc["end_before"] == "2026-01-01"

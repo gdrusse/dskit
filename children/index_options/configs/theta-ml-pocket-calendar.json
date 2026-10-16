@@ -1,0 +1,122 @@
+{
+  "notes": "ADR0269 approved implementation mapping; zero fits. Replaces inner2018-2020template only for this new proposed search. Retain original and capacity refusals; all later blocks previously exposed retrospective research. end_before2026-01-01; never read2026.",
+  "end_before": "2026-01-01",
+  "initial_development": {
+    "start": "2016-01-04",
+    "end_before": "2021-01-01",
+    "inner_scoring_years": [
+      2019,
+      2020
+    ],
+    "roles": {
+      "2019": "warmup",
+      "2020": "scored"
+    },
+    "fold_table": {
+      "cal_n": 40,
+      "holdout_start": "2021-01-01",
+      "notes": "R5 original2019warmup/2020scored only;2018uniformlycapacity-refused beforefits. Familyadmission remains original2018FIT. end_before2021-01-01.",
+      "path": "/home/russell/data/index_options/theta-training-20261016/registration/runnable-folds-r5.jsonl",
+      "roles": [
+        "warmup",
+        "scored"
+      ],
+      "sha256": "2992065c0a9528490da95cafa4b6646b160016c21b3ebb886c7a12e533e7365d"
+    }
+  },
+  "authorized_fit_attempts": 0,
+  "seeds": [
+    11,
+    29,
+    47
+  ],
+  "nominal_seed": 11,
+  "max_outer_recipes": 10,
+  "max_inspections": 10,
+  "independent_final_test": null,
+  "blocks": [
+    {
+      "block": 1,
+      "origin_start": "2021-01-04",
+      "origin_end_before": "2021-03-15",
+      "next_decision": "2021-04-19",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 2,
+      "origin_start": "2021-04-19",
+      "origin_end_before": "2021-06-28",
+      "next_decision": "2021-08-02",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 3,
+      "origin_start": "2021-08-02",
+      "origin_end_before": "2021-10-11",
+      "next_decision": "2021-11-15",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 4,
+      "origin_start": "2021-11-15",
+      "origin_end_before": "2022-01-24",
+      "next_decision": "2022-02-28",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 5,
+      "origin_start": "2022-02-28",
+      "origin_end_before": "2022-05-09",
+      "next_decision": "2022-06-13",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 6,
+      "origin_start": "2022-06-13",
+      "origin_end_before": "2022-08-22",
+      "next_decision": "2022-09-26",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 7,
+      "origin_start": "2022-09-26",
+      "origin_end_before": "2022-12-05",
+      "next_decision": "2023-01-09",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 8,
+      "origin_start": "2023-01-09",
+      "origin_end_before": "2023-03-20",
+      "next_decision": "2023-04-24",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 9,
+      "origin_start": "2023-04-24",
+      "origin_end_before": "2023-07-03",
+      "next_decision": "2023-08-07",
+      "status": "not_executed_under_this_recipe"
+    },
+    {
+      "block": 10,
+      "origin_start": "2023-08-07",
+      "origin_end_before": "2023-10-16",
+      "next_decision": "2023-11-20",
+      "status": "not_executed_under_this_recipe"
+    }
+  ],
+  "launch_gates": [
+    "tested414 complete and export verified",
+    "safe pre2026 rates and rebuilt chain panel",
+    "frozen root/action/universe and source schema/publication contracts",
+    "nonzero source, augmented panel, fold, code and dependency pins",
+    "development-only family admission applied to candidate grid",
+    "per-fold and per-block strict label/publication cutoffs",
+    "immutable numeric attempt inventory including all seeds, baselines and failures",
+    "durable attempt/inspection admission owner and append-only ledger",
+    "two independent final reviews and separate run approval"
+  ],
+  "inner_candidate_recipes": 12,
+  "feature_arms": 2
+}

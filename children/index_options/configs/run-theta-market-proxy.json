@@ -1,0 +1,119 @@
+{
+  "name": "theta-market-proxy",
+  "notes": "ADR-0269 approved implementation; preparation template, ZERO real fits until exact registration. end_before2021-01-01;2026 permanently sealed. Bind exact-expiry sources, corporate-action basis, conservative decision/availability dates and strictly earlier safe rates. growth=exp(rate*actual_years) must be published in the pinned request artifact. No IV/OI placeholders. Copy the verified quote snapshot SHA into proxy.source_sha256.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-pocket-study-20261016/pipeline-runs"
+  },
+  "pipeline": {
+    "requests": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-market-requests",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "spot": "spot",
+              "reference_scale": "reference_scale",
+              "growth": "growth",
+              "decision_at": "decision_at"
+            },
+            "include": [
+              "requests.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "end_before": "2021-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "quotes": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-exact-expiry-quotes",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "strike": "strike",
+              "type": "type",
+              "bid": "bid",
+              "ask": "ask",
+              "available_at": "available_at"
+            },
+            "include": [
+              "quotes.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "end_before": "2021-01-01"
+              },
+              "available_at": {
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "proxy": {
+      "uses": "dskit.pipeline.libs.cdf_research:OptionPriceProxy",
+      "inputs": {
+        "requests": "$requests.records",
+        "quotes": "$quotes.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ],
+        "date": "quote_date",
+        "end": "settlement_date",
+        "end_before": "2021-01-01",
+        "spot": "spot",
+        "scale": "reference_scale",
+        "growth": "growth",
+        "available": "available_at",
+        "decision": "decision_at",
+        "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "parameters": {
+          "probabilities": [
+            0.01,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            0.75,
+            0.9,
+            0.95,
+            0.99
+          ],
+          "min_forward_pairs": 3,
+          "min_wing_nodes": 3,
+          "max_inner_gap": 0.08,
+          "max_outer_gap": 0.12,
+          "max_projection_distance": null,
+          "max_forward_dispersion": null
+        }
+      }
+    }
+  }
+}

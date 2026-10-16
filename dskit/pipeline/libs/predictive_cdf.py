@@ -896,6 +896,24 @@ class GridCurve(_Curve):
     def _arrays(self):
         return {"kind": "grid", "values": self.values, "probabilities": self.probabilities}
 
+    def moments(self):
+        """Return exact mean and standard deviation, including grid atoms.
+
+        Returns
+        -------
+        tuple of numpy.ndarray
+            Rowwise means and standard deviations in the curve's units.
+        """
+        import numpy as np
+        mass = np.diff(self.probabilities, axis=1)
+        a, b = self.values[:, :-1], self.values[:, 1:]
+        mean = np.sum(mass * (a / 2 + b / 2), axis=1)
+        left, right = a - mean[:, None], b - mean[:, None]
+        variance = np.sum(mass * (left * left + left * right + right * right) / 3, axis=1)
+        if not np.isfinite(mean).all() or not np.isfinite(variance).all():
+            raise ValueError("nonfinite grid moments")
+        return mean, np.sqrt(np.maximum(variance, 0))
+
     #: Knot-by-segment slots per row block of the vectorized segment rule (bounds its memory).
     _SEGMENT_BLOCK = 1 << 20
 
@@ -7637,9 +7655,29 @@ class OptionPriceCDF:
         forwards = paired.index.to_numpy()+growth*(paired.call.to_numpy()-paired.put.to_numpy())
         return forwards[np.isfinite(forwards) & (forwards > 0)]
 
-    def estimate(self, rows, spot):
-        """Return an eligible curve and diagnostics, or explicit rejection reasons."""
+    def estimate(self, rows, spot, growth=1.0):
+        """Recover a proxy using consistently undiscounted option prices.
+
+        Parameters
+        ----------
+        rows : pandas.DataFrame
+            Validated strike, type and discounted mark observations.
+        spot : float
+            Positive underlying price on the same share basis.
+        growth : float, default 1.0
+            Positive finite exp(rate * years). Applied once to marks before
+            parity and price-slope recovery; one preserves legacy behavior.
+
+        Returns
+        -------
+        dict
+            Eligible proxy diagnostics, or explicit rejection reasons.
+        """
         import numpy as np
+        from numbers import Real
+        if (isinstance(growth, (bool, np.bool_)) or not isinstance(growth, Real)
+                or not np.isfinite(growth) or growth <= 0):
+            return {"eligible": False, "reasons": ["invalid_growth"]}
         clean = rows.copy()
         if (not {"strike", "type", "mark"}.issubset(clean.columns)
                 or not len(clean)):
@@ -7659,6 +7697,10 @@ class OptionPriceCDF:
             return {"eligible": False, "reasons": ["invalid_spot"]}
         if np.max(numeric[:, 0]) > np.finfo(float).max*min(float(spot), 1.):
             return {"eligible": False, "reasons": ["nonfinite_return_coordinates"]}
+        with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+            numeric[:, 1] *= growth
+        if not np.isfinite(numeric).all() or not (numeric[:, 1] > 0).all():
+            return {"eligible": False, "reasons": ["invalid_grown_prices"]}
         clean[["strike", "mark"]] = numeric
         forwards = self.parity_forwards(clean)
         if forwards is None:

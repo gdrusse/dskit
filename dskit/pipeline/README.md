@@ -290,6 +290,13 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+ADR-0269 adds `libs/cdf_research.py`: guarded price-only market proxies,
+immutable single-seed experiment plans, explicitly budgeted paired market scores,
+and frozen chronological pocket summaries. These are research building blocks;
+zero-pin/zero-budget templates cannot launch market-data fitting or qualify trades.
+`OptionPriceCDF.estimate` accepts positive discount growth (default1 unchanged),
+and `GridCurve.moments` supplies exact segment/atom moments for paired comparisons.
+
 ADR-0269 adds `libs/parquet_panel.py:ParquetPanelAugment`: bounded pinned base
 and prior-date keyed Parquet inputs, identity/collision refusal, immutable atomic
 panel publication with manifest. It reuses `ObservationTables` joins and

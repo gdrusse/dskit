@@ -1,0 +1,185 @@
+{
+  "name": "theta-market-reference-scores",
+  "notes": "ADR-0269 approved implementation; preparation template, ZERO real fits until exact registration. end_before2021-01-01;2026 permanently sealed. Frozen resolved variants must use exact R5 fit-band bounds, not all pre-cutoff rows; only pinned approved fit shards qualify. Five charged operations per group:2outer estimator fits+2empirical tail fits+1PIT map. Claim is exclusive; failure consumes attempts. Fallback rows remain labelled and are excluded from market-pocket comparisons, not relabelled as market.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-pocket-study-20261016/pipeline-runs"
+  },
+  "pipeline": {
+    "fit": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-market-reference-fit",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "terminal_return": "terminal_return",
+              "decision_strike_z": "decision_strike_z",
+              "proxy_q_0": "proxy_q_0",
+              "proxy_q_1": "proxy_q_1",
+              "proxy_q_2": "proxy_q_2",
+              "proxy_q_3": "proxy_q_3",
+              "proxy_q_4": "proxy_q_4",
+              "proxy_q_5": "proxy_q_5",
+              "proxy_q_6": "proxy_q_6",
+              "proxy_q_7": "proxy_q_7",
+              "proxy_q_8": "proxy_q_8",
+              "market_eligible": "market_eligible",
+              "actual_calendar_dte": "actual_calendar_dte",
+              "reference_scale": "reference_scale"
+            },
+            "include": [
+              "fit.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "end_before": "2020-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2020-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "score": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-market-reference-score",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "terminal_return": "terminal_return",
+              "decision_strike_z": "decision_strike_z",
+              "proxy_q_0": "proxy_q_0",
+              "proxy_q_1": "proxy_q_1",
+              "proxy_q_2": "proxy_q_2",
+              "proxy_q_3": "proxy_q_3",
+              "proxy_q_4": "proxy_q_4",
+              "proxy_q_5": "proxy_q_5",
+              "proxy_q_6": "proxy_q_6",
+              "proxy_q_7": "proxy_q_7",
+              "proxy_q_8": "proxy_q_8",
+              "market_eligible": "market_eligible",
+              "actual_calendar_dte": "actual_calendar_dte",
+              "reference_scale": "reference_scale"
+            },
+            "include": [
+              "score.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "start": "2020-01-01",
+                "end_before": "2021-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2021-01-01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "refs": {
+      "uses": "dskit.pipeline.libs.cdf_research:CDFReferenceScores",
+      "inputs": {
+        "fit": "$fit.records",
+        "score": "$score.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ],
+        "group": "symbol",
+        "date": "quote_date",
+        "end": "settlement_date",
+        "cutoff": "2020-01-01",
+        "end_before": "2021-01-01",
+        "features": [
+          "proxy_q_0",
+          "proxy_q_1",
+          "proxy_q_2",
+          "proxy_q_3",
+          "proxy_q_4",
+          "proxy_q_5",
+          "proxy_q_6",
+          "proxy_q_7",
+          "proxy_q_8",
+          "market_eligible",
+          "actual_calendar_dte",
+          "reference_scale"
+        ],
+        "target": "terminal_return",
+        "reference": "reference_scale",
+        "eligible": "market_eligible",
+        "decision_strike": "decision_strike_z",
+        "parameters": {
+          "proxy_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ],
+          "probabilities": [
+            0.01,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            0.75,
+            0.9,
+            0.95,
+            0.99
+          ],
+          "eligible_index": 9,
+          "condition_indices": [
+            10
+          ],
+          "reference_index": 11,
+          "knots": 401,
+          "tail_width": 4.0
+        },
+        "transports": {
+          "market_raw": 0,
+          "market_calibrated": 21
+        },
+        "samples": 201,
+        "tail_intervals": [
+          [
+            -2.5,
+            -0.5
+          ],
+          [
+            0.5,
+            2.5
+          ]
+        ],
+        "tail_points": 101,
+        "tail_weight": 1.0,
+        "authorized_fit_attempts": 0,
+        "claim": "/home/russell/data/index_options/theta-pocket-study-20261016/registered/market-reference-claim.json"
+      }
+    }
+  }
+}
