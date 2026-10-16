@@ -290,7 +290,7 @@ legacy stage-list grammar (below).
 
 ## What ships
 
-ADR-0268 adds `libs/parquet_panel.py:ParquetPanelAugment`: bounded pinned base
+ADR-0269 adds `libs/parquet_panel.py:ParquetPanelAugment`: bounded pinned base
 and prior-date keyed Parquet inputs, identity/collision refusal, immutable atomic
 panel publication with manifest. It reuses `ObservationTables` joins and
 `ParquetStreamRows` reads. No model fit; row limits apply after materialization.

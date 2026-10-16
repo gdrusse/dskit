@@ -346,7 +346,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         # The 2026-10-10 T2 result (first run refused on null spot; amendment 2; then the IC).
         "docs/memos/2026-10-10-t2-dispersion-ic-result.md",
         "docs/memos/2026-10-15-theta-amendment6.md",
-        # ADR-0268: owner-requested configuration preparation, no fits authorized.
+        # ADR-0269: owner-requested configuration preparation, no fits authorized.
         "configs/run-theta-ml-features.json", "configs/run-theta-ml-panel.json",
         "configs/theta-ml-feature-families.json", "configs/theta-ml-initial-study.json",
         "configs/theta-ml-calendar.json", "configs/workflow-theta-ml.json",
@@ -390,7 +390,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # root stitch map = 519, plus Amendment 5's index panel document, the 8 hypothesis documents with their
     # validation twins and overlays, the generator, its inputs and the two test files = 548.
     # Plus the owner-requested Amendment 6 execution/review memo = 549.
-    # Plus the six ADR-0268 draft configs and their no-fit contract test = 556.
+    # Plus the six ADR-0269 draft configs and their no-fit contract test = 556.
     assert len(actual) == 556
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 

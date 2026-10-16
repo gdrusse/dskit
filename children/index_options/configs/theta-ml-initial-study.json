@@ -116,7 +116,7 @@
       "notes": "UNRESOLVED. Do not reuse old2021/22 folds. Need exact2018/19/20 inner fold rows plus boundary sentinel, and strict settlement/publication enforcement at each cutoff before launch."
     },
     "wing_metrics": false,
-    "notes": "ADR0268 DRAFT INITIAL DEVELOPMENT ONLY. Nominal seed11; separate identically specified seed29/47 registrations required before confirmation. Initial2018/19/20 fold manifest is unresolved. Every fold must enforce its own label-maturity cutoff; one global upper bound does NOT prove that. No fit until exact immutable folds, per-fold cutoff enforcement, family admission, finite attempts and source/dependency identities are registered. All2021-2025 is reused development, never an untouched holdout. This file is not called by the preparation workflow.",
+    "notes": "ADR0269 DRAFT INITIAL DEVELOPMENT ONLY. Nominal seed11; separate identically specified seed29/47 registrations required before confirmation. Initial2018/19/20 fold manifest is unresolved. Every fold must enforce its own label-maturity cutoff; one global upper bound does NOT prove that. No fit until exact immutable folds, per-fold cutoff enforcement, family admission, finite attempts and source/dependency identities are registered. All2021-2025 is reused development, never an untouched holdout. This file is not called by the preparation workflow.",
     "tail_weight": 1.0,
     "min_task_fit_rows": 40,
     "min_task_cal_rows": 1

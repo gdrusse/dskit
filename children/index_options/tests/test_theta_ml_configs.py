@@ -219,6 +219,12 @@ def test_full_preparation_workflow_materializes_and_reuses_synthetic_panel(tmp_p
 
 
 def test_all_preparation_graphs_plan_and_share_exact_source_declarations():
+    for filename in ("run-theta-ml-features.json", "run-theta-ml-panel.json",
+                     "theta-ml-feature-families.json", "theta-ml-calendar.json",
+                     "theta-ml-initial-study.json", "workflow-theta-ml.json"):
+        text = (CONFIGS / filename).read_text().replace("ADR-", "ADR")
+        assert "ADR0268" not in text, filename
+        assert "ADR0269" in text, filename
     feature = _read("run-theta-ml-features.json")
     panel = _read("run-theta-ml-panel.json")
     for doc in (feature, panel):

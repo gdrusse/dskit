@@ -1,5 +1,5 @@
 {
-  "notes": "ADR0268 PREPARATION; ZERO fits authorized. Ten retrospective development inspections, not ten independent holdouts. Each next stage requires an immutable recipe and append-only charged attempt/inspection ledger. Existing static runner does not enforce this state machine. No automatic progression; a new revision after block10 is forbidden.35days is only a planning allowance: every used label and publication must be strictly earlier than next_decision, otherwise halt. No2024/25 stress or trading-rule replay is authorized by this packet.",
+  "notes": "ADR0269 PREPARATION; ZERO fits authorized. Ten retrospective development inspections, not ten independent holdouts. Each next stage requires an immutable recipe and append-only charged attempt/inspection ledger. Existing static runner does not enforce this state machine. No automatic progression; a new revision after block10 is forbidden.35days is only a planning allowance: every used label and publication must be strictly earlier than next_decision, otherwise halt. No2024/25 stress or trading-rule replay is authorized by this packet.",
   "end_before": "2026-01-01",
   "initial_development": {
     "start": "2016-01-04",

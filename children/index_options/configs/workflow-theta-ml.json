@@ -1,5 +1,5 @@
 {
-  "notes": "ADR0268 PREPARATION WORKFLOW ONLY; the approved generic panel bridge completes this preparation flow. Run --plan only until readiness and source pins are resolved. Both stages require nonzero approved source pins and readiness; no fits, adaptive blocks, rule replay or2026reads. theta-ml-initial-study.json is a separate gated candidate specification, deliberately not an automatic command. Existing pipeline runner and workflow ledger own orchestration. These concrete documents and layout paths share one output root; moving the packet requires updating both, checked by the focused tests.",
+  "notes": "ADR0269 PREPARATION WORKFLOW ONLY; the approved generic panel bridge completes this preparation flow. Run --plan only until readiness and source pins are resolved. Both stages require nonzero approved source pins and readiness; no fits, adaptive blocks, rule replay or2026reads. theta-ml-initial-study.json is a separate gated candidate specification, deliberately not an automatic command. Existing pipeline runner and workflow ledger own orchestration. These concrete documents and layout paths share one output root; moving the packet requires updating both, checked by the focused tests.",
   "args": {
     "work_dir": "/home/russell/data/index_options/theta-ml-20261015",
     "A": "2025-12-31"
