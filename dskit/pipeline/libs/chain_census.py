@@ -85,6 +85,8 @@ _USABLE_INDEXES = tuple(_INDEX[s] for s in USABLE_STATES)
 
 def _side(name, value):
     """Return ``value`` as a float, ``None`` for a missing / NaN cell; refuse anything else."""
+    if type(value) is float and math.isfinite(value):  # the hot case: float() of an exact float is itself
+        return value
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return None
     if not number_ok(value):
@@ -217,8 +219,10 @@ class _Day:
 
     def see_near(self, strike):
         """Widen the interval of near-the-money strikes to hold ``strike``."""
-        self.near_low = strike if self.near_low is None else min(self.near_low, strike)
-        self.near_high = strike if self.near_high is None else max(self.near_high, strike)
+        if self.near_low is None or strike < self.near_low:  # min() and max() of two, without the calls
+            self.near_low = strike
+        if self.near_high is None or strike > self.near_high:
+            self.near_high = strike
 
     def usable(self):
         """Count the day's usable quotes."""
@@ -226,8 +230,10 @@ class _Day:
 
     def see_price(self, price):
         """Widen the reported-price range to hold ``price``."""
-        self.price_low = price if self.price_low is None else min(self.price_low, price)
-        self.price_high = price if self.price_high is None else max(self.price_high, price)
+        if self.price_low is None or price < self.price_low:
+            self.price_low = price
+        if self.price_high is None or price > self.price_high:
+            self.price_high = price
 
 
 class ChainCensus(Node):
@@ -436,6 +442,7 @@ class ChainCensus(Node):
             if "strike_grid" in self.params else None
         days, months, seen = {}, {}, 0
         band = self.params.get("reuse_band", DEFAULT_REUSE_BAND) if "reuse_price_factor" in self.params else None
+        has_flag, has_price = "flag" in fields, "price" in fields
         for index, record in enumerate(rows):
             seen += 1
             symbol, day, strike, bid, ask, flag, price = self._cells(record, index, fields, dates)
@@ -445,14 +452,14 @@ class ChainCensus(Node):
             tally.rows += 1
             tally.states[_INDEX[quote_state(bid, ask)]] += 1
             tally.bid_positive += bid is not None and bid > 0
-            tally.flagged += "flag" in fields and self._is_flag(flag)
+            tally.flagged += has_flag and self._is_flag(flag)
             if price is not None and price > 0:
                 tally.see_price(price)
                 if band is not None and abs(strike / price - 1) <= band:
                     tally.see_near(strike)
             elif price is not None:
                 tally.bad_price += 1
-            elif "price" in fields:
+            elif has_price:
                 tally.null_price += 1
             if grid is not None:
                 cell = months.setdefault((symbol, day[:7]), [0, 0, set()])

@@ -381,6 +381,8 @@ class ChainDayFeatures(Node):
     _ROWS = ("symbol_field", "date_field", "expiration_field", "strike_field", "right_field",
              "bid_field", "ask_field")
     _OPTIONAL_ROWS = ("open_interest_field", "volume_field", "underlying_price_field")
+    #: The optional numeric cells of a row in read order, as (name in messages, field param).
+    _OPTIONAL_CELLS = tuple((f.removesuffix("_field"), f) for f in (*_OPTIONAL_ROWS, "rate_field"))
     _RATES = ("rate_date_field", "rate_value_field", "rate_max_age_days")
     _PARAMS = (*_ROWS, *_OPTIONAL_ROWS, "call_values", "put_values", "end_before", "targets", "target_field",
                "status_field", "atm_band", "wing_delta", "min_forward_pairs", "fields", "term_pair", "oi_scope",
@@ -577,47 +579,54 @@ class ChainDayFeatures(Node):
     # -- reading ---------------------------------------------------------------------------
 
     def _cell(self, record, index, memo):
-        """Return ``(symbol, day, expiration, strike, side, bid, ask, oi, volume, underlying)`` of one row."""
+        """Return ``(symbol, day, expiration, strike, side, bid, ask, oi, volume, underlying)`` of one row.
+
+        Runs once per row: the reads are methods, not per-row closures.
+        """
         p, where = self.params, f"{self.key}: row {index}"
-
-        def get(name):
-            field = p[name]
-            if not isinstance(record, dict) or field not in record:
-                raise ValueError(f"{where}: missing field {field!r} ({name})")
-            return record[field]
-
-        def number(name, value, missing_ok=True):
-            if value is None or (isinstance(value, float) and math.isnan(value)):
-                if missing_ok:
-                    return None
-                raise ValueError(f"{where}: {name} must be a number, got {value!r}")
-            if not number_ok(value):
-                raise ValueError(f"{where}: {name} must be a finite number or null, got {value!r}")
-            return float(value)
-
-        symbol = get("symbol_field")
+        get, number = self._get, self._number
+        symbol = get(record, where, "symbol_field")
         if not isinstance(symbol, str) or not symbol:
             raise ValueError(f"{where}: symbol must be a non-empty string, got {symbol!r}")
-        day, expiration = (self._iso(get(name), f"{where} {label}", memo)
+        day, expiration = (self._iso(get(record, where, name), f"{where} {label}", memo)
                            for name, label in (("date_field", "date"), ("expiration_field", "expiration")))
         if day >= p["end_before"]:
             raise ValueError(f"{where}: date {day} is at or after end_before {p['end_before']} "
                              "- the node refuses rows on or after end_before (the registered stores end "
                              "2025-12-31, so none are expected)")
-        strike = number("strike", get("strike_field"), missing_ok=False)
+        strike = number(where, "strike", get(record, where, "strike_field"), missing_ok=False)
         if strike <= 0:
             raise ValueError(f"{where}: strike must be > 0, got {strike!r}")
-        right = get("right_field")
+        right = get(record, where, "right_field")
         side = "call" if right in p["call_values"] else "put" if right in p["put_values"] else None
         if side is None:
             raise ValueError(f"{where}: right {right!r} is in neither call_values nor put_values")
-        optional = {name: number(name, get(f"{name}_field")) if f"{name}_field" in p else None
-                    for name in ("open_interest", "volume", "underlying_price", "rate")}
+        optional = {name: number(where, name, get(record, where, field)) if field in p else None
+                    for name, field in self._OPTIONAL_CELLS}
         if optional["rate"] is not None:
             optional["rate"] *= p.get("rate_scale", 1.0)
-        return (symbol, day, expiration, strike, side, number("bid", get("bid_field")),
-                number("ask", get("ask_field")), optional["open_interest"], optional["volume"],
-                optional["underlying_price"], optional["rate"])
+        return (symbol, day, expiration, strike, side, number(where, "bid", get(record, where, "bid_field")),
+                number(where, "ask", get(record, where, "ask_field")), optional["open_interest"],
+                optional["volume"], optional["underlying_price"], optional["rate"])
+
+    def _get(self, record, where, name):
+        """Return the cell of the field named by param ``name``, refusing a row that lacks it."""
+        field = self.params[name]
+        if not isinstance(record, dict) or field not in record:
+            raise ValueError(f"{where}: missing field {field!r} ({name})")
+        return record[field]
+
+    def _number(self, where, name, value, missing_ok=True):
+        """Return a numeric cell as a float, ``None`` when missing and ``missing_ok``; refuse anything else."""
+        if type(value) is float and math.isfinite(value):  # the hot case: float() of an exact float is itself
+            return value
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            if missing_ok:
+                return None
+            raise ValueError(f"{where}: {name} must be a number, got {value!r}")
+        if not number_ok(value):
+            raise ValueError(f"{where}: {name} must be a finite number or null, got {value!r}")
+        return float(value)
 
     @staticmethod
     def _iso(value, where, memo):
@@ -635,7 +644,7 @@ class ChainDayFeatures(Node):
         """
         p = self.params
         flush_symbols, streaming = p.get("symbol_contiguous", False), p.get("presorted", False)
-        memo, held, closed, seen, held_rows = {}, {}, set(), 0, 0
+        memo, held, closed, seen, held_rows, plain = {}, {}, set(), 0, 0, True
         limit = p.get("max_symbol_rows")
         current_symbol = current_day = None
         for index, record in enumerate(rows):
@@ -659,7 +668,13 @@ class ChainDayFeatures(Node):
                         yield from self._flush(held)
                         held_rows = 0
                     current_day = day
-            held.setdefault((symbol, day), _DayCells(symbol, day)).add(cell)
+            # While every symbol is an exact str (day always is), a lookup runs no user hash or __eq__, so a
+            # second lookup on a miss is unobservable and saves building a _DayCells (eight arrays) per row.
+            plain = plain and type(symbol) is str
+            group = held.get((symbol, day)) if plain else None
+            if group is None:
+                group = held.setdefault((symbol, day), _DayCells(symbol, day))
+            group.add(cell)
             held_rows += 1
             if limit is not None and held_rows > limit:
                 raise ValueError(f"{self.key}: {symbol!r} holds more than max_symbol_rows={limit} rows "
@@ -704,7 +719,10 @@ class ChainDayFeatures(Node):
                 counts["excluded_quotes"][state] += 1
             else:
                 counts["usable_quotes"] += 1
-            totals.setdefault(expiration, _Totals()).add(side, oi, volume)
+            scope = totals.get(expiration)
+            if scope is None:
+                scope = totals[expiration] = _Totals()
+            scope.add(side, oi, volume)
             totals[_CHAIN].add(side, oi, volume)
             if underlying is not None and underlying > 0:
                 prices.append(underlying)

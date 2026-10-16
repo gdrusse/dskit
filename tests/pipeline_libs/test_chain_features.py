@@ -17,6 +17,7 @@ from dskit.pipeline.libs import chain_features
 from dskit.pipeline.libs.chain_features import FEATURES, ChainDayFeatures
 from dskit.pipeline.node import NodeContext
 from dskit.pipeline.option_pricing import black76, black76_delta
+from tests.pipeline_libs.test_chain_census import LyingFloat
 
 DAY = "2020-03-02"
 ALL_FIELDS = {name: name for name in FEATURES}
@@ -397,6 +398,16 @@ def test_a_malformed_row_refuses_by_row():
         run([dict(chain()[0], open_interest="many")])
     with pytest.raises(ValueError, match="duplicate"):
         run(chain() + [chain()[0]])
+
+
+@pytest.mark.parametrize("cells, over, message", [
+    ({"bid": float("inf")}, {}, "row 0: bid must be a finite number or null, got inf"),
+    ({"bid": LyingFloat(1.0)}, {}, "bid must be a finite number or null, got inf"),
+    ({"open_interest": "many", "r": "x"}, {"rate_field": "r"}, "row 0: open_interest must be"),   # read in order
+])
+def test_a_cell_read_as_infinite_and_the_first_bad_optional_cell_refuse(cells, over, message):
+    with pytest.raises(ValueError, match=message):
+        run([dict(chain()[0], **cells)], **over)
 
 
 @pytest.mark.parametrize("over, fragment", [

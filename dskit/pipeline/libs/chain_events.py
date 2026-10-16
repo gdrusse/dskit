@@ -78,7 +78,8 @@ stdlib and the pipeline core.
 
 import itertools
 import math
-from bisect import bisect_left
+from array import array
+from bisect import bisect_left, insort
 from collections import defaultdict
 from datetime import date
 from statistics import median
@@ -98,6 +99,9 @@ NODE_KINDS = ()
 
 _MAD_TO_SD = 1.4826
 _MISSING = ("no_front", "no_prev", "gap", "no_back", "insufficient_history")
+#: The keys of a session's detail, in :meth:`_Scan.measure` order.
+_DETAIL = ("change", "z", "spread_drop", "ret")
+_NAN = float("nan")
 _RULES_1_3 = ("crush", "crush_z", "term")
 _REJECTED = (*_RULES_1_3, "market_wide", "refractory")
 _FIELD_PARAMS = ("symbol_field", "date_field", "target_field", "iv_field", "straddle_field", "spot_field",
@@ -106,6 +110,11 @@ _VOCAB = (*_FIELD_PARAMS, "status_ok", "front_target", "back_target", "end_befor
 _LABEL_FIELDS = ("label_symbol_field", "label_date_field", "label_confidence_field")
 _LABEL_COUNTS = ("labels_total", "labels_ignored_confidence", "labels_dropped_after_fit_end",
                  "labels_without_symbol_rows", "labels_outside_table", "labels_merged_duplicates", "labels_scored")
+
+
+def _plain(*values):
+    """Say whether every value is an exact int or float: comparing and hashing one runs no user code."""
+    return all(type(v) is int or type(v) is float for v in values)
 
 
 def _is_number(value):
@@ -168,6 +177,7 @@ class _Series:
         self.spot = [cells[d].get("spot") for d in self.dates]
         self.ordinals = [date.fromisoformat(d).toordinal() for d in self.dates]
         self._stats = {}
+        self._measures = (None, None)   # (rule key last scanned, its _Measures once a second scan reuses it)
 
     def __len__(self):
         return len(self.dates)
@@ -178,7 +188,8 @@ class _Series:
 
     def breaks(self, max_gap_days):
         """Return how many consecutive-session pairs are more than ``max_gap_days`` apart."""
-        return sum(1 for i in range(1, len(self)) if self.gap(i) > max_gap_days)
+        o = self.ordinals
+        return sum(1 for a, b in zip(o, o[1:]) if b - a > max_gap_days)
 
     def change(self, i, max_gap_days):
         """Return ``log(front_i / front_{i-1})``; ``None`` when either is unusable or the pair spans a gap."""
@@ -195,20 +206,101 @@ class _Series:
     def trailing(self, window, max_gap_days):
         """Return per index ``(n_changes, median, scale)`` of the changes of the ``window`` sessions ending at i-1.
 
-        The window starts after the latest gap longer than ``max_gap_days``.
+        The window starts after the latest gap longer than ``max_gap_days``. An exact int ``window`` takes
+        :meth:`_sliding`; any other (an int subclass may hook the index arithmetic) reads each window in date
+        order, as it always did (:meth:`_in_order`).
         """
         key = (window, max_gap_days)
         if key not in self._stats:
             changes = [self.change(i, max_gap_days) for i in range(len(self))]
-            out, last_break = [], 0
-            for i in range(len(self)):
-                if i >= 2 and self.gap(i - 1) > max_gap_days:
-                    last_break = i - 1
-                c = [x for x in changes[max(1, i - window, last_break + 1):i] if x is not None]
-                med = median(c) if c else None
-                out.append((len(c), med, _MAD_TO_SD * median([abs(x - med) for x in c]) if c else None))
+            if type(window) is int:
+                out = self._sliding(changes, window, max_gap_days)
+            else:
+                out = self._in_order(changes, window, max_gap_days)
             self._stats[key] = out
         return self._stats[key]
+
+    def _in_order(self, changes, window, max_gap_days):
+        """Return :meth:`trailing`'s list, each window's changes read in date order."""
+        out, last_break = [], 0
+        for i in range(len(self)):
+            if i >= 2 and self.gap(i - 1) > max_gap_days:
+                last_break = i - 1
+            c = [x for x in changes[max(1, i - window, last_break + 1):i] if x is not None]
+            med = median(c) if c else None
+            out.append((len(c), med, _MAD_TO_SD * median([abs(x - med) for x in c]) if c else None))
+        return out
+
+    def _sliding(self, changes, window, max_gap_days):
+        """Return :meth:`trailing`'s list for an exact int ``window``, sliding one sorted window along the series.
+
+        ``held`` keeps the non-NaN changes of ``[lo, hi)`` sorted, so each median sorts presorted data, and
+        ``nans`` counts the NaN ones. A change is the log of a ratio of positive floats: finite or +inf, never
+        -0.0 nor -inf, so equal changes are the same bits and the held order equals any sort of the window. A NaN
+        change (an infinite front over another) sorts by position, as does the NaN deviation of an infinite
+        median: then the window is read in date order, as :meth:`_in_order` does.
+        """
+        out, last_break, held, nans, lo, hi = [], 0, [], 0, 1, 1
+        for i in range(len(self)):
+            if i >= 2 and self.gap(i - 1) > max_gap_days:
+                last_break = i - 1
+            start = max(1, i - window, last_break + 1)
+            for x in changes[lo:min(start, hi)]:
+                if x is None:
+                    continue
+                if x != x:
+                    nans -= 1
+                else:
+                    del held[bisect_left(held, x)]
+            for x in changes[max(start, hi):i]:
+                if x is None:
+                    continue
+                if x != x:
+                    nans += 1
+                else:
+                    insort(held, x)
+            lo, hi = start, max(start, i)
+            if nans:
+                c = [x for x in changes[start:i] if x is not None]
+                med = median(c)
+                out.append((len(c), med, _MAD_TO_SD * median([abs(x - med) for x in c])))
+                continue
+            if not held:
+                out.append((0, None, None))
+                continue
+            med = median(held)
+            c = held if math.isfinite(med) else [x for x in changes[start:i] if x is not None]
+            out.append((len(held), med, _MAD_TO_SD * median([abs(x - med) for x in c])))
+        return out
+
+
+class _Measures:
+    """One series' :meth:`_Scan.measure` outcomes under one rule key, packed per session.
+
+    The missing name (or ``None``), four float columns in :data:`_DETAIL` order and a byte saying ``ret`` is
+    ``None``; a missing session's columns hold NaN and are never read. A candidate's ``change``, ``z`` and
+    ``spread_drop`` are always exact floats (parsed cells are), and its ``ret`` an exact float or ``None``, which
+    the byte keeps apart from a NaN ``ret`` (an infinite spot over another). An ``array("d")`` keeps every
+    float's bits, -0.0 and NaN included.
+    """
+
+    __slots__ = ("missing", "_columns", "_no_ret")
+
+    def __init__(self):
+        self.missing, self._columns, self._no_ret = [], tuple(array("d") for _ in _DETAIL), bytearray()
+
+    def append(self, missing, detail):
+        """Pack one :meth:`_Scan.measure` outcome."""
+        self.missing.append(missing)
+        change, z, spread_drop, ret = (_NAN,) * 4 if missing else detail.values()
+        self._no_ret.append(ret is None)
+        for column, value in zip(self._columns, (change, z, spread_drop, _NAN if ret is None else ret)):
+            column.append(value)
+
+    def values(self, i):
+        """Return candidate session ``i``'s detail values in :data:`_DETAIL` order."""
+        change, z, spread_drop, ret = self._columns
+        return change[i], z[i], spread_drop[i], None if self._no_ret[i] else ret[i]
 
 
 class FeatureTable:
@@ -224,22 +316,28 @@ class FeatureTable:
         cells = defaultdict(dict)
         seen = set()
         counts = {"rows": 0, "rows_other_target": 0, "rows_dropped_after_fit_end": 0}
+        days = {}
+
+        def get(name, row, where):
+            if not isinstance(row, dict) or p[name] not in row:
+                raise ValueError(f"{where}: missing field {p[name]!r} ({name})")
+            return row[p[name]]
+
         for index, row in enumerate(rows):
             where = f"{key}: row {index}"
-
-            def get(name, row=row, where=where):
-                if not isinstance(row, dict) or p[name] not in row:
-                    raise ValueError(f"{where}: missing field {p[name]!r} ({name})")
-                return row[p[name]]
-
             counts["rows"] += 1
-            symbol = get("symbol_field")
+            symbol = get("symbol_field", row, where)
             if not isinstance(symbol, str) or not symbol:
                 raise ValueError(f"{where}: symbol must be a non-empty string, got {symbol!r}")
-            day = iso_day(get("date_field"), f"{where} date").isoformat()
+            text = get("date_field", row, where)
+            day = days.get(text) if type(text) is str else None
+            if day is None:
+                day = iso_day(text, f"{where} date").isoformat()
+                if type(text) is str:  # iso_day reads a str by its text alone
+                    days[text] = day
             if day >= p["end_before"]:
                 raise ValueError(f"{where}: date {day} is at or after end_before {p['end_before']}")
-            target = get("target_field")
+            target = get("target_field", row, where)
             if target not in (p["front_target"], p["back_target"]):
                 counts["rows_other_target"] += 1
                 continue
@@ -249,8 +347,8 @@ class FeatureTable:
             if (symbol, day, target) in seen:
                 raise ValueError(f"{where}: ({symbol!r}, {day}, target {target}) repeats an earlier row")
             seen.add((symbol, day, target))
-            usable = get("status_field") == p["status_ok"]
-            iv, spot, straddle = (cls._number(get(n), p[n], where)
+            usable = get("status_field", row, where) == p["status_ok"]
+            iv, spot, straddle = (cls._number(get(n, row, where), p[n], where)
                                   for n in ("iv_field", "spot_field", "straddle_field"))
             cell = cells[symbol].setdefault(day, {})
             side = "front" if target == p["front_target"] else "back"
@@ -266,6 +364,8 @@ class FeatureTable:
 
     @staticmethod
     def _number(value, name, where):
+        if type(value) is float and math.isfinite(value):  # the hot case: float() of an exact float is itself
+            return value
         if value is None or (isinstance(value, float) and math.isnan(value)):
             return None
         if not _is_number(value):
@@ -348,21 +448,28 @@ class _Scan:
     def run(self):
         """Return ``(events, counts)``; ``without_events`` and ``event_index`` are set."""
         fired, candidates = defaultdict(list), defaultdict(int)
+        counts, missed, rejected = self.counts, self.counts["missing"], self.counts["rejected_by"]
         for series in self.table.series.values():
+            measured = self._measured(series)
             for i in range(len(series)):
-                self.counts["sessions"] += 1
-                missing, detail = self.measure(series, i)
-                if missing:
-                    self.counts["missing"][missing] += 1
-                    continue
-                self.counts["candidate_days"] += 1
-                candidates[series.dates[i]] += 1
-                failed = self._failed_rule(detail)
-                if failed:
-                    self.counts["rejected_by"][failed] += 1
+                counts["sessions"] += 1
+                if measured is None:
+                    missing, detail = self.measure(series, i)
+                    values = None if missing else tuple(detail.values())
                 else:
-                    self.counts["fired"] += 1
-                    fired[series.dates[i]].append((series, i, detail))
+                    missing, detail = measured.missing[i], None
+                    values = None if missing else measured.values(i)
+                if missing:
+                    missed[missing] += 1
+                    continue
+                counts["candidate_days"] += 1
+                candidates[series.dates[i]] += 1
+                failed = self._failed_rule(values)
+                if failed:
+                    rejected[failed] += 1
+                else:
+                    counts["fired"] += 1
+                    fired[series.dates[i]].append((series, i, dict(zip(_DETAIL, values)) if detail is None else detail))
         events = self._accept(fired, candidates)
         self.counts["events"] = len(events)
         events.sort(key=lambda e: (e["event_date"], e["symbol"]))
@@ -370,6 +477,44 @@ class _Scan:
         self.without_events = [s for s in self.table.series if s not in with_events]
         self.counts["symbols_without_events_count"] = len(self.without_events)
         return events, self.counts
+
+    def _measured(self, series):
+        """Return the series' :class:`_Measures` under this scan's rules, or ``None`` to measure each session in turn.
+
+        :meth:`measure` reads only the window, gap, history and floor rules, so consecutive cells of a calibration
+        grid that share them can share one measurement per series. The series holds the last key only: a key seen
+        for the first time is measured in the loop as before and remembered; the next scan with the same key packs
+        the outcomes (about 41 bytes a session) and later scans reuse them, until the key changes. The key holds
+        each value's type so ``1`` and ``1.0`` stay apart; ``None`` unless all four, and every key of the series'
+        trailing cache, are a plain int or float, whose arithmetic and comparison run no user code.
+
+        The contract this buys: measurements are taken once per rule key per series and reused, only while
+        :meth:`measure` provably runs no user code: the four rule values and every key of the series' trailing
+        cache are exact ints or floats. So :class:`ChainEventCalibrator`, which parses one table and scans it once
+        per grid cell, reuses measurements across cells only for plain-typed keys; a cell or an earlier cell whose
+        window or gap is a subclass measures every session in turn, as before. The rest holds only for direct
+        reuse of one :class:`FeatureTable`, which no node builds: the second scan of an unchanged key measures each
+        series whole before scanning its sessions, so a refusal inside :meth:`measure` comes before that series'
+        session counters and rule hooks (a node run never gets there: the same refusal ends it at the first scan
+        of that key); and from the third scan :meth:`measure` is not called again, so a change to the series data
+        or to the rules between or during scans, and a rules object that hooks its attribute reads, are not
+        re-observed. A refusal while packing stores nothing, so the next scan measures again.
+        """
+        r = self.rules
+        values = (r.window, r.max_gap_days, r.min_history, r.scale_floor)
+        if not all(_plain(v) for v in values) or not all(_plain(*k) for k in series._stats):
+            return None
+        key = tuple((type(v), v) for v in values)
+        seen, packed = series._measures
+        if seen != key:
+            series._measures = (key, None)
+            return None
+        if packed is None:
+            packed = _Measures()
+            for i in range(len(series)):
+                packed.append(*self.measure(series, i))
+            series._measures = (key, packed)   # only once complete: a refusal mid-way leaves nothing half-filled
+        return packed
 
     def measure(self, series, i):
         """Return ``(missing-data name or None, detail)`` for session ``i``; detail holds what could be computed."""
@@ -391,12 +536,17 @@ class _Scan:
         detail["z"] = (detail["change"] - med) / max(scale, r.scale_floor)
         return None, detail
 
-    def _failed_rule(self, detail):
+    def _failed_rule(self, values):
+        """Return the first of rules 1-3 the session's detail values (in ``_DETAIL`` order) fail, else ``None``."""
         r = self.rules
-        for rule, passed in (("crush", detail["change"] <= -r.crush_min), ("crush_z", detail["z"] <= -r.crush_z_min),
-                             ("term", detail["spread_drop"] >= r.spread_drop_min)):
-            if not passed:
-                return rule
+        change, z, spread_drop, _ = values
+        crush, crush_z, term = change <= -r.crush_min, z <= -r.crush_z_min, spread_drop >= r.spread_drop_min
+        if not crush:
+            return "crush"
+        if not crush_z:
+            return "crush_z"
+        if not term:
+            return "term"
         return None
 
     def _accept(self, fired, candidates):

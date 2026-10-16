@@ -109,6 +109,21 @@ def test_a_non_numeric_bid_refuses(bad):
         quote_state(bad, 1.0)
 
 
+class LyingFloat(float):
+    """A float stored finite whose ``float()`` is infinite: it passes ``number_ok``, then reads as inf."""
+
+    def __float__(self):
+        return float("inf")
+
+
+@pytest.mark.parametrize("side", ["bid", "ask"])
+@pytest.mark.parametrize("value", [float("inf"), LyingFloat(1.0)])
+def test_a_quote_that_reads_as_infinite_refuses(side, value):
+    quote = {"bid": 1.0, "ask": 1.1, side: value}
+    with pytest.raises(ValueError, match=f"{side} must be a finite number or null, got inf"):
+        census([row("AAA", "2020-01-02", 100.0, quote["bid"], quote["ask"])])
+
+
 # -- the per-root table --------------------------------------------------------------------
 
 
@@ -254,11 +269,12 @@ def test_a_non_positive_underlying_price_is_counted_not_compared():
     assert out["price_missing_close"] == 0
 
 
-def test_a_null_underlying_price_is_counted():
+@pytest.mark.parametrize("flag", [{}, {"iv_error_field": ..., "iv_error_flag": ...}])
+def test_a_null_underlying_price_is_counted(flag):
     rows = [row("AAA", "2020-01-02", 100.0, 1.0, 1.1, underlying=None),
             row("AAA", "2020-01-02", 101.0, 1.0, 1.1, underlying=float("nan")),
             row("AAA", "2020-01-02", 102.0, 1.0, 1.1, underlying=50.0)]
-    out = by_symbol(census(rows))["AAA"]
+    out = by_symbol(census(rows, **flag))["AAA"]
     assert out["underlying_price_null_rows"] == 2 and out["underlying_price_nonpositive_rows"] == 0
 
 

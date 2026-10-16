@@ -8,7 +8,9 @@ expected date and number is computed here from the plan, never read back from th
 import copy
 import json
 import random
+import re
 from datetime import date, timedelta
+from statistics import median
 
 import pytest
 
@@ -255,6 +257,19 @@ def test_the_counters_account_for_every_session_exactly_once():
     assert s["events"] == 3 and s["rejected_by"]["refractory"] == 2
 
 
+def test_a_session_failing_several_rules_is_tested_against_all_three_and_counted_against_the_first():
+    negated = []
+
+    class Threshold(float):
+        def __neg__(self):
+            negated.append(self)
+            return -float(self)
+
+    s = run(table("AAA", {100: {"term": False}}), crush_z_min=Threshold(1e9))["summary"]   # z and term both fail
+    assert s["rejected_by"]["crush_z"] == 1 and s["rejected_by"]["term"] == 0
+    assert len(negated) == s["candidate_days"]
+
+
 def test_the_numeric_counters_hold_no_lists_and_the_quiet_symbols_are_reported_apart():
     out = run(table("AAA") + table("BBB", {100: {}}))
     flat = [v for k, v in out["summary"].items() if k not in ("missing", "rejected_by", "rules")]
@@ -314,6 +329,19 @@ def test_a_malformed_row_is_refused_naming_the_field():
     rows = table("AAA", {100: {}})
     del rows[3]["spot"]
     with pytest.raises(ValueError, match="spot"):
+        run(rows)
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("atm_iv", float("inf"), "row 4: atm_iv must be a finite number or null, got inf"),
+    ("spot", float("-inf"), "row 4: spot must be a finite number or null, got -inf"),
+    ("straddle_ratio", float("inf"), "row 4: straddle_ratio must be a finite number or null, got inf"),
+    ("date", ["2018-01-02"], "row 4 date: ['2018-01-02'] is not an ISO date"),
+])
+def test_a_non_finite_or_unreadable_cell_is_refused_naming_its_row(field, value, message):
+    rows = table("AAA")
+    rows[4] = dict(rows[4], **{field: value})
+    with pytest.raises(ValueError, match=re.escape(message)):
         run(rows)
 
 
@@ -436,6 +464,20 @@ def test_the_calibrator_output_is_json_serialisable_and_deterministic():
     assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
 
 
+def test_a_grid_mixing_a_float_subclass_scale_floor_with_plain_cells_scores_like_the_all_plain_grid():
+    class Floor(float):
+        pass
+
+    rows = table("AAA", {80: {}, 150: {}, 210: {}}) + table("BBB", {120: {}}, seed=1)
+    labs = labels("AAA", [80, 150]) + labels("BBB", [120])
+    plain = {"scale_floor": [0.005, 0.005, 0.005], "crush_min": [0.1, 0.15]}
+    mixed = {"scale_floor": [0.005, Floor(0.005), 0.005], "crush_min": [0.1, 0.15]}
+    a = calibrate(rows, labs, fit_end_before="2026-01-01", grid=plain)
+    b = calibrate(rows, labs, fit_end_before="2026-01-01", grid=mixed)
+    assert [type(r["params"]["scale_floor"]) for r in b["records"]] == [float, float, Floor, Floor, float, float]
+    assert b == a and a["records"][0]["events"] > 0
+
+
 def test_labels_may_arrive_as_a_mapping_naming_its_list():
     rows = table("AAA", {100: {}})
     labs = {"notes": "n", "labels": labels("AAA", [100])}
@@ -460,6 +502,14 @@ def test_a_gap_inside_the_history_restarts_the_trailing_window_and_is_counted():
     # 110 has only 10 changes since the gap (< min_history 15): not evaluated; 150 has plenty: an event
     assert [e["event_date"] for e in out["records"]] == [sessions()[150]]
     assert out["summary"]["missing"]["insufficient_history"] > 18
+
+
+@pytest.mark.parametrize("max_gap_days", [2, 3])
+def test_a_break_is_a_gap_longer_than_max_gap_days_not_one_equal_to_it(max_gap_days):
+    days = [date.fromisoformat(d) for d in sessions()]
+    longer = sum((b - a).days > max_gap_days for a, b in zip(days, days[1:]))     # weekends are 3 days apart
+    assert (longer > 0) == (max_gap_days == 2)
+    assert run(table("AAA", {100: {}}), max_gap_days=max_gap_days)["summary"]["window_breaks"] == longer
 
 
 def test_a_change_across_a_gap_is_never_part_of_the_history():
@@ -561,3 +611,140 @@ def test_the_calibrator_requires_every_rule_from_base_or_grid():
     with pytest.raises(ConfigError, match="window"):
         ChainEventCalibrator("cal", {**CAL, "base": base})
     ChainEventCalibrator("cal", {**CAL, "base": base, "grid": {"crush_min": [0.1], "window": [40]}})
+
+
+# -- one parsed table, scanned once per grid cell ------------------------------------------------------------------
+
+CALLS = []
+
+
+def hooked(kind):
+    """A ``kind`` subclass whose ``==``, ``<`` and ``>`` are logged in ``CALLS``; the rule checks accept it."""
+
+    class Hooked(kind):
+        __hash__ = kind.__hash__
+
+        def __eq__(self, other):
+            CALLS.append("eq")
+            return kind(self) == other
+
+        def __lt__(self, other):
+            CALLS.append("lt")
+            return kind(self) < other
+
+        def __gt__(self, other):
+            CALLS.append("gt")
+            return kind(self) > other
+
+    return Hooked
+
+
+HookedInt, HookedFloat = hooked(int), hooked(float)
+INNER = [0.1, 0.15, 0.2]           # three consecutive grid cells that share every rule a session is measured with
+
+
+def grid_table():
+    """Two symbols with planted crushes; AAA's front alternates up and down on sessions 100-139, so the window
+    length changes what is detected."""
+    swing = {d: 1.3 if i % 2 else 1 / 1.3 for i, d in enumerate(sessions()[100:140])}
+    rows = [dict(r, atm_iv=r["atm_iv"] * swing[r["date"]])
+            if r["symbol"] == "AAA" and r["target_dte"] == FRONT and r["date"] in swing else r
+            for r in table("AAA", {20: {}, 80: {}, 150: {}, 210: {}}) + table("BBB", {120: {}}, seed=1)]
+    return rows, labels("AAA", [20, 80, 150]) + labels("BBB", [120])
+
+
+@pytest.mark.parametrize("name, values", [
+    ("window", [40, 15]), ("max_gap_days", [5, 1]), ("min_history", [15, 40]), ("scale_floor", [0.005, 10.0]),
+])
+def test_each_grid_cell_scores_as_a_calibration_of_that_cell_alone(name, values):
+    rows, labs = grid_table()
+    out = calibrate(rows, labs, fit_end_before="2026-01-01", grid={name: values, "crush_min": INNER})
+    alone = [calibrate(rows, labs, fit_end_before="2026-01-01", grid={name: [v], "crush_min": [c]})["records"][0]
+             for v in values for c in INNER]
+    assert out["records"] == alone
+    assert len({r["events"] for r in alone}) > 1           # the rule under test changes the result
+
+
+@pytest.mark.parametrize("name, values", [
+    ("window", [HookedInt(40), 40]), ("window", [30, HookedInt(40), 40]), ("window", [HookedInt(40), 30, 40]),
+    ("max_gap_days", [HookedInt(5), 5]), ("min_history", [HookedInt(15), 15]),
+    ("scale_floor", [HookedFloat(0.005), 0.005]),
+])
+def test_a_grid_cell_holding_a_subclass_runs_its_hooks_as_if_every_session_were_measured(monkeypatch, name, values):
+    rows, labs = grid_table()
+
+    def scored():
+        CALLS.clear()
+        out = calibrate(rows, labs, fit_end_before="2026-01-01", grid={name: values, "crush_min": INNER})
+        return out, list(CALLS)
+
+    shared = scored()
+    # measure every session of every cell in turn (a tree without shared measurements has nothing to switch off)
+    monkeypatch.setattr(chain_events._Scan, "_measured", lambda self, series: None, raising=False)
+    assert scored() == shared and shared[1]
+
+
+def test_a_table_scanned_again_yields_the_same_events():
+    rows = [dict(r, spot=None) if r["date"] == sessions()[100] else r for r in table("AAA", {100: {}})]
+    parsed = chain_events.FeatureTable.parse("events", rows, PARAMS)
+    scans = [repr(chain_events._Scan(parsed, chain_events.EventRules.from_params(PARAMS)).run()) for _ in range(3)]
+    assert "'realized_move': None" in scans[0] and scans[1] == scans[0] and scans[2] == scans[0]
+
+
+# -- the trailing statistics, read directly ------------------------------------------------------------------------
+
+def trailing_by_definition(series, window, max_gap_days):
+    """Per index ``(n, median, scale)`` of the changes of the window's sessions read in date order: the definition."""
+    changes = [series.change(i, max_gap_days) for i in range(len(series))]
+    out, last_break = [], 0
+    for i in range(len(series)):
+        if i >= 2 and series.gap(i - 1) > max_gap_days:
+            last_break = i - 1
+        c = [x for x in changes[max(1, i - window, last_break + 1):i] if x is not None]
+        med = median(c) if c else None
+        out.append((len(c), med, chain_events._MAD_TO_SD * median([abs(x - med) for x in c]) if c else None))
+    return out
+
+
+class Index(int):
+    """A window start whose comparisons and use as an index are logged in ``CALLS``."""
+
+    def __index__(self):
+        CALLS.append("index")
+        return int(self)
+
+    def __lt__(self, other):
+        CALLS.append("lt")
+        return int(self) < other
+
+    def __gt__(self, other):
+        CALLS.append("gt")
+        return int(self) > other
+
+
+class Window(int):
+    """A window length whose ``i - window`` is an :class:`Index`."""
+
+    def __rsub__(self, other):
+        return Index(other - int(self))
+
+
+INF = float("inf")
+#: Infinite runs (an infinite change enters, NaN changes follow), each closed by a missing front; a week is missing.
+FRONTS = [0.30, 0.31, 0.29, INF, INF, INF, None, 0.30, 0.32, 0.31, INF, None, 0.30, 0.33, INF, None, 0.28, 0.30,
+          0.29, 0.31, INF, INF, None, 0.30, INF, None, 0.31, 0.32, INF, None, 0.30, 0.31, 0.32]
+
+
+def infinite_fronts():
+    days = sessions(len(FRONTS) + 5)
+    days = days[:12] + days[17:]
+    return chain_events._Series("X", {d: {"front": f, "back": 0.3} for d, f in zip(days, FRONTS)})
+
+
+@pytest.mark.parametrize("window", [-3, 0, 1, 2, 3, 5, 8, 40, Window(3), Window(5)])
+def test_the_trailing_statistics_follow_their_definition_through_infinite_and_nan_changes(window):
+    CALLS.clear()
+    got = repr(infinite_fronts().trailing(window, 5)), list(CALLS)
+    CALLS.clear()
+    assert got == (repr(trailing_by_definition(infinite_fronts(), window, 5)), CALLS)
+    assert window < 1 or "nan" in got[0] and "inf" in got[0]           # an empty window (< 1) holds no change
