@@ -324,7 +324,23 @@ def test_pocket_ties_retain_empty_bins_without_recutting():
     )
 
 
-def test_paired_forecasts_align_before_computing_gap_and_refuse_missing():
+@pytest.mark.parametrize("source", ["model", "control", "market", "context"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("scale", 0.4),
+        ("scale", 0.0),
+        ("scale", float("nan")),
+        ("strike", 0.2),
+        ("strike", float("inf")),
+        ("trained_through", "2020-01-01"),
+        ("trained_through", "2020-12-31"),
+        ("trained_through", "2019-1-1"),
+    ],
+)
+def test_paired_forecasts_align_before_computing_gap_and_refuse_missing(
+    source, field, value
+):
     from dskit.pipeline.libs.cdf_research import PairedForecastScores
 
     params = dict(
@@ -340,7 +356,14 @@ def test_paired_forecasts_align_before_computing_gap_and_refuse_missing():
         trained_through="trained_through",
         reference="scale",
     )
-    common = dict(symbol="A", date="2020-01-01", end="2020-02-01")
+    common = dict(
+        symbol="A",
+        date="2020-01-01",
+        end="2020-02-01",
+        scale=0.2,
+        strike=0.0,
+        trained_through="2019-01-01",
+    )
     model = {
         **common,
         "weights0": 1.0,
@@ -385,21 +408,31 @@ def test_paired_forecasts_align_before_computing_gap_and_refuse_missing():
             None,
             {"model": [model], "control": [], "market": [market], "context": [context]},
         )
-    context["scale"] = 0.4
-    with pytest.raises(ValueError, match="scale"):
-        node.run(
-            None,
-            {
-                "model": [model],
-                "control": [model],
-                "market": [market],
-                "context": [context],
-            },
-        )
+    inputs = {
+        "model": [dict(model)],
+        "control": [dict(model)],
+        "market": [dict(market)],
+        "context": [dict(context)],
+    }
+    inputs[source][0][field] = value
+    with pytest.raises(ValueError):
+        node.run(None, inputs)
+    del inputs[source][0][field]
+    with pytest.raises(ValueError):
+        node.run(None, inputs)
+    inputs[source][0][field] = common[field]
+    inputs["control"][0]["trained_through"] = "2019-12-01"
+    out = node.run(None, inputs)
+    assert out["records"][0]["trained_through"] == "2019-12-01"
+    for row in inputs.values():
+        row[0]["end"] = row[0]["date"]
+    with pytest.raises(ValueError):
+        node.run(None, inputs)
 
 
+@pytest.mark.parametrize("failure", ["fit", "file_sync", "directory_sync"])
 def test_reference_failure_leaves_consumed_claim_and_terminal_receipt(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, failure
 ):
     from dskit.pipeline.libs.predictive_cdf import OptionImpliedTransportCDF
     import json
@@ -434,10 +467,26 @@ def test_reference_failure_leaves_consumed_claim_and_terminal_receipt(
         claim=str(tmp_path / "claim.json"),
     )
 
+    calls = []
+
     def fail(*args, **kwargs):
+        calls.append("fit")
         raise RuntimeError("injected fit interruption")
 
     monkeypatch.setattr(OptionImpliedTransportCDF, "fit", fail)
+    if failure != "fit":
+        import os
+
+        original_sync = os.fsync
+        sync_calls = []
+
+        def sync(descriptor):
+            sync_calls.append(descriptor)
+            if len(sync_calls) == (1 if failure == "file_sync" else 2):
+                raise OSError("injected sync interruption")
+            return original_sync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", sync)
 
     def row(year):
         return dict(
@@ -454,12 +503,13 @@ def test_reference_failure_leaves_consumed_claim_and_terminal_receipt(
         )
 
     node = CDFReferenceScores("refs", params)
-    with pytest.raises(RuntimeError, match="injected"):
+    with pytest.raises((RuntimeError, OSError), match="injected"):
         node.run(None, {"fit": [row(2019)], "score": [row(2020)]})
     assert (tmp_path / "claim.json").exists()
     terminal = json.loads((tmp_path / "claim.json.terminal.json").read_text())
     assert terminal["status"] == "failed"
     assert terminal["charged_fit_attempts"] == 2
+    assert calls == (["fit"] if failure == "fit" else [])
     with pytest.raises(FileExistsError):
         node.run(None, {"fit": [row(2019)], "score": [row(2020)]})
 

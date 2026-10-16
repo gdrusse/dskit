@@ -876,20 +876,44 @@ class PairedForecastScores(_ResearchNode):
         model, control, market, context = [
             frames[name] for name in ("model", "control", "market", "context")
         ]
-        for frame in frames.values():
+        for name, frame in frames.items():
+            required = {
+                p[key]
+                for key in (
+                    "date",
+                    "end",
+                    "reference",
+                    "decision_strike",
+                    "trained_through",
+                )
+            }
+            if required - set(frame):
+                raise ValueError(name + " lacks required comparison metadata")
+        for name, frame in frames.items():
             try:
                 CDFExperiment.check_pairing(model, frame, [*p["identity"], p["end"]])
             except IntegrityError as error:
                 raise ValueError(str(error)) from error
-            for field in (p["date"], p["end"]):
+            for field in (p["date"], p["end"], p["trained_through"]):
                 frame[field].map(_date)
                 if not (frame[field] < p["end_before"]).all():
                     raise ValueError("paired record reaches end_before")
-        for field in (p["reference"], p["decision_strike"]):
-            if not np.array_equal(market[field].to_numpy(), context[field].to_numpy()):
-                raise ValueError("market/context scale or strike mismatch")
-        if not all(_positive(value) for value in context[p["reference"]]):
-            raise ValueError("invalid comparison scale")
+            if not (
+                (frame[p["trained_through"]] < frame[p["date"]])
+                & (frame[p["date"]] < frame[p["end"]])
+            ).all():
+                raise ValueError(
+                    "paired training/origin/settlement chronology violation"
+                )
+            if not all(_positive(value) for value in frame[p["reference"]]):
+                raise ValueError("invalid comparison scale")
+            if not np.isfinite(frame[p["decision_strike"]].to_numpy(float)).all():
+                raise ValueError("invalid comparison strike")
+            for field in (p["reference"], p["decision_strike"]):
+                if not np.array_equal(
+                    frame[field].to_numpy(), context[field].to_numpy()
+                ):
+                    raise ValueError(name + " comparison scale or strike mismatch")
         arrays = [
             model[[name + str(i) for i in range(p["components"])]].to_numpy(float)
             for name in ("weights", "means", "scales")
@@ -907,6 +931,12 @@ class PairedForecastScores(_ResearchNode):
         ):
             raise ValueError("invalid market distribution moments or probabilities")
         result = context.copy()
+        result[p["trained_through"]] = [
+            max(values)
+            for values in zip(
+                *(frame[p["trained_through"]] for frame in frames.values())
+            )
+        ]
         result["ratio"] = sd / market_sd
         result["tail_gap"] = curve.cdf(strike[:, None])[:, 0] - market_tail
         result["iv"] = context[p["iv"]]

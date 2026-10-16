@@ -1,6 +1,6 @@
 {
   "name": "theta-paired-forecasts",
-  "notes": "ADR-0269 approved implementation; preparation template, ZERO real fits until exact registration. end_before2021-01-01;2026 permanently sealed. Template for a3-component candidate; bind component count and score projections per resolved recipe. Exact cohort/settlement/scale/decision-strike agreement required. No inner-join row loss. Model/control artifact manifests and common scale source must be verified during registration.",
+  "notes": "ADR-0269 approved implementation; preparation template, ZERO real fits until exact registration. end_before2021-01-01;2026 permanently sealed. Template for a3-component candidate; bind component count and score projections per resolved recipe. Exact cohort/settlement/scale/decision-strike agreement required. No inner-join row loss. Model/control artifact manifests and common scale source must be verified during registration. Every prepared input must carry verified common reference_scale/decision_strike_z and its actual latest training/selection outcome date trained_through, strictly before origin. Legacy R5 scores lack this metadata: attach only from verified manifests and pinned panel provenance before registration; never infer agreement or fabricate values. Paired output retains the latest date across all four inputs.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-pocket-study-20261016/pipeline-runs"
   },
@@ -29,7 +29,10 @@
               "means2": "means2",
               "scales0": "scales0",
               "scales1": "scales1",
-              "scales2": "scales2"
+              "scales2": "scales2",
+              "reference_scale": "reference_scale",
+              "decision_strike_z": "decision_strike_z",
+              "trained_through": "trained_through"
             },
             "include": [
               "model.parquet"
@@ -39,6 +42,9 @@
                 "end_before": "2021-01-01"
               },
               "settlement_date": {
+                "end_before": "2021-01-01"
+              },
+              "trained_through": {
                 "end_before": "2021-01-01"
               }
             }
@@ -61,7 +67,10 @@
               "expiry": "expiry",
               "settlement_date": "settlement_date",
               "model_weighted_crps": "model_weighted_crps",
-              "baseline_weighted_crps": "baseline_weighted_crps"
+              "baseline_weighted_crps": "baseline_weighted_crps",
+              "reference_scale": "reference_scale",
+              "decision_strike_z": "decision_strike_z",
+              "trained_through": "trained_through"
             },
             "include": [
               "control.parquet"
@@ -71,6 +80,9 @@
                 "end_before": "2021-01-01"
               },
               "settlement_date": {
+                "end_before": "2021-01-01"
+              },
+              "trained_through": {
                 "end_before": "2021-01-01"
               }
             }
@@ -98,7 +110,8 @@
               "market_raw_sd_z": "market_raw_sd_z",
               "market_raw_lower_probability": "market_raw_lower_probability",
               "market_raw_weighted_crps": "market_raw_weighted_crps",
-              "market_calibrated_weighted_crps": "market_calibrated_weighted_crps"
+              "market_calibrated_weighted_crps": "market_calibrated_weighted_crps",
+              "trained_through": "trained_through"
             },
             "include": [
               "market.parquet"
@@ -108,6 +121,9 @@
                 "end_before": "2021-01-01"
               },
               "settlement_date": {
+                "end_before": "2021-01-01"
+              },
+              "trained_through": {
                 "end_before": "2021-01-01"
               }
             }
@@ -143,6 +159,9 @@
                 "end_before": "2021-01-01"
               },
               "settlement_date": {
+                "end_before": "2021-01-01"
+              },
+              "trained_through": {
                 "end_before": "2021-01-01"
               }
             }

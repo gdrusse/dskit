@@ -4073,6 +4073,11 @@ def test_theta_pocket_documents_plan_and_bound_sources(child_root, name):
                 assert source["read_bounds"]["quote_date"]["end_before"] <= "2021-01-01"
                 assert all(b.get("end_before", "2021-01-01") <= "2021-01-01"
                            for b in source["read_bounds"].values())
+    if "paired" in doc["pipeline"]:
+        for role in ("model", "control", "market", "context"):
+            source = doc["pipeline"][role]["params"]["sources"][0]
+            assert {"reference_scale", "decision_strike_z", "trained_through"} <= set(source["columns"])
+            assert source["read_bounds"]["trained_through"]["end_before"] == "2021-01-01"
     if "refs" in doc["pipeline"]:
         assert doc["pipeline"]["refs"]["params"]["authorized_fit_attempts"] == 0
 
