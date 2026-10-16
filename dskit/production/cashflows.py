@@ -36,6 +36,14 @@ def _utc(value, name):
     return value.astimezone(utc_timezone.utc)
 
 
+def _plain_instant(value):
+    """Whether ``value`` is a plain ``datetime`` whose zone answers without a hook."""
+    if type(value) is not datetime:
+        return False
+    zone = type(value.tzinfo)
+    return zone is ZoneInfo or zone is utc_timezone
+
+
 def _amount(value, name, *, positive=False):
     """Return one exact finite amount, optionally requiring positivity."""
     if not isinstance(value, Decimal) or not value.is_finite():
@@ -154,6 +162,10 @@ class CashFlowOverride(ABC):
         """Return the base occurrence this override targets, or None."""
         return None
 
+    def _landing(self):
+        """Return the instant a flow this override targets holds after ``apply``."""
+        return self._target()
+
 
 @dataclass(frozen=True)
 class SkipCashFlow(CashFlowOverride):
@@ -227,6 +239,9 @@ class MoveCashFlow(CashFlowOverride):
 
     def _target(self):
         return self.occurrence_at
+
+    def _landing(self):
+        return self.effective_at
 
 
 @dataclass(frozen=True)
@@ -370,6 +385,16 @@ _APPROVED_OVERRIDE_TYPES = (
     WithdrawalCashFlow,
     CorrectCashFlow,
 )
+#: The types the target index understands: off its target each one's
+#: ``apply`` returns the flow unchanged, and only a move changes its instant.
+#: Any other type, approved or not, sends a schedule down the tuple walk.
+_INDEXED_OVERRIDE_TYPES = (
+    SkipCashFlow,
+    MoveCashFlow,
+    ReplaceCashFlow,
+    WithdrawalCashFlow,
+    CorrectCashFlow,
+)
 
 
 @dataclass(frozen=True)
@@ -476,6 +501,10 @@ class RecurringCashFlowSchedule:
                    for target in (override._target() for override in self.overrides)
                    if target is not None]
         last_target = max(targets, default=None)
+        # The override index serves the exact class only: a subclass keeps
+        # the tuple walk, private steps and all.
+        positions = (self._target_positions() if type(self) is RecurringCashFlowSchedule
+                     else None)
         flows = []
         index = 0
         while True:
@@ -487,14 +516,60 @@ class RecurringCashFlowSchedule:
                 _base_id(self.schedule_id, occurrence), occurrence,
                 self.currency, self.amount, _DEPOSIT,
             )
-            for override in self.overrides:
-                if due is None:
-                    break
-                due = override.apply(due)
+            if positions is None:
+                for override in self.overrides:
+                    if due is None:
+                        break
+                    due = override.apply(due)
+            elif positions:
+                due = self._apply_targeted(due, positions)
             if due is not None:
                 flows.append(self._check_emitted(due))
             index += 1
         return tuple(flows)
+
+    def _target_positions(self):
+        """Map each targeted override's UTC instant to its tuple position, or None to walk."""
+        # The index may replace the walk only where the walk calls no hook and
+        # refuses nothing sooner: index-aware types, plain instants and zone
+        # (every apply it passes by compares only those), unique targets, and
+        # move destinations that reach UTC (the index converts one right
+        # after the move; the walk may never). It trusts the shipped methods
+        # of those exact types and this module's helpers: a class-level patch
+        # of either, like an object.__setattr__ on a frozen value, is unguarded.
+        if type(self.timezone) is not ZoneInfo:
+            return None
+        positions, targeted = {}, 0
+        for position, override in enumerate(self.overrides):
+            if not any(type(override) is known for known in _INDEXED_OVERRIDE_TYPES):
+                return None
+            target = override._target()
+            if target is None:
+                continue
+            moved = override._landing()
+            if not (_plain_instant(target) and _plain_instant(moved)):
+                return None
+            try:
+                _utc(moved, "occurrence")
+            except (OverflowError, ValueError):
+                return None
+            positions[_utc(target, "override occurrence_at")] = position
+            targeted += 1
+        return positions if len(positions) == targeted else None
+
+    def _apply_targeted(self, due, positions):
+        """Apply, in tuple order, only the overrides whose target ``due`` reaches."""
+        # Equal to walking the whole tuple: an override whose target is not
+        # due's instant returns due unchanged, and a move can only reach the
+        # one LATER override targeting its new instant.
+        position = -1
+        while due is not None:
+            found = positions.get(_utc(due.effective_at, "occurrence"))
+            if found is None or found <= position:
+                break
+            position = found
+            due = self.overrides[found].apply(due)
+        return due
 
     def _standalone_flows(self):
         """Return freshly validated, concrete standalone declarations."""
