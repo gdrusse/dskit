@@ -158,3 +158,8 @@ Generated from `configs/workflow.json` (`steps.*.in`): a source starting `$args.
   "report": {"title": "<str>", "lane_field": "<ledger field>", "sections": {"<name>": {"title": "<str>", "format": "<str>", "required": "<bool>", "file": "<path>", "caption": "<str, optional>", "flatten": {"separator": "<str>", "max_items": "<int>"}}}}
 }
 ```
+
+
+## 7. Proposed Theta source extension (not executable)
+
+[ADR-0269](../../../../docs/architecture/decision-log.md#adr-0269--proposed-theta-source-extension-of-the-existing-price-distribution-workflow) preserves the existing underlying-price-distribution pipeline/model and proposes longer Theta option inputs, five years of initial development and ten sequential ten-week checkpoints with outcome-maturity gaps. The inspected2021-2025 years remain retrospective development. Source mapping, a concrete finite fit budget and fresh reviews precede training; H0-H7 remains unchanged and2026 sealed. Owner selected existing option-feature selection; the latest42-feature baseline stays as the control. A reviewed Theta-to-exact-expiry schema mapping is still required.
