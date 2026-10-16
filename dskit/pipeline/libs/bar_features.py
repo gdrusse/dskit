@@ -5,8 +5,9 @@ window, band, column and output field name is declared, nothing is a default
 of the code):
 
 * :class:`DailyBarFeatures` reads a daily bar stream (and optionally a
-  benchmark close series) and writes volume/liquidity features and
-  market-relative features, one row per input bar.
+  benchmark close series) and writes volume/liquidity features,
+  market-relative features and trailing realized volatility (with the
+  idiosyncratic part against the benchmark), one row per input bar.
 * :class:`AsTradedClose` rebuilds the point-in-time as-traded close from a
   split-adjusted close and the split ratios, so an option strike (always
   as traded) can be compared with a close on the same basis.
@@ -214,7 +215,16 @@ class DailyBarFeatures(_BarNode):
         with ``relative_field`` containing ``{window}``: bar log return minus
         benchmark log return over the same dates; ``beta_window`` int >= 3
         with ``beta_field`` and/or ``corr_field``: trailing beta and
-        correlation of 1-bar returns). At least one block is required.
+        correlation of 1-bar returns). ``realized_vol`` (dict: ``windows`` list
+        of distinct ints >= 1 with ``field`` containing ``{window}``: the root
+        mean square of the entity's last ``window`` 1-bar log returns, zero-mean,
+        per bar and not annualised (the numpy pack's convention), null until the
+        window is full of defined returns; optional ``return_field``: the 1-bar
+        log return; optional ``idio_windows`` (distinct ints >= 3) with
+        ``idio_field`` containing ``{window}``: the residual standard deviation
+        of the entity's 1-bar returns regressed on the benchmark's over the last
+        ``window`` bars, which needs the benchmark input and its two field
+        names). At least one block is required.
 
     Examples
     --------
@@ -231,9 +241,10 @@ class DailyBarFeatures(_BarNode):
     """
 
     _PARAMS = ("entity_field", "date_field", "close_field", "volume_field", "benchmark_date_field",
-               "benchmark_close_field", "volume_liquidity", "market_relative")
+               "benchmark_close_field", "volume_liquidity", "market_relative", "realized_vol")
     _VOLUME_PARAMS = ("window", "fields")
     _MARKET_PARAMS = ("windows", "relative_field", "beta_window", "beta_field", "corr_field")
+    _REALIZED_PARAMS = ("windows", "field", "return_field", "idio_windows", "idio_field")
 
     @classmethod
     def validate_params(cls, params):
@@ -253,8 +264,10 @@ class DailyBarFeatures(_BarNode):
         reject_unknown_params(problems, params, cls._PARAMS)
         cls._required_names(problems, params, ("entity_field", "date_field", "close_field"))
         outputs = []
-        if "volume_liquidity" not in params and "market_relative" not in params:
-            problems.append("declare at least one of volume_liquidity, market_relative")
+        if not {"volume_liquidity", "market_relative", "realized_vol"} & set(params):
+            problems.append("declare at least one of volume_liquidity, market_relative, realized_vol")
+        if "realized_vol" in params:
+            outputs += cls._realized_problems(problems, params)
         if "volume_liquidity" in params:
             cls._required_names(problems, params, ("volume_field",))
             outputs += cls._volume_problems(problems, params["volume_liquidity"])
@@ -274,6 +287,43 @@ class DailyBarFeatures(_BarNode):
                               [f"volume_liquidity.{k}" for k in cls._VOLUME_PARAMS])
         check_int_param(problems, "volume_liquidity.window", block.get("window"), ge=2)
         return cls._fields_problems(problems, "volume_liquidity.fields", block.get("fields"), VOLUME_KEYS)
+
+    @classmethod
+    def _realized_problems(cls, problems, params):
+        """Check ``realized_vol`` (and the benchmark names its idiosyncratic part needs); return its output names."""
+        block = params["realized_vol"]
+        if is_node_ref(block):
+            return []
+        if not isinstance(block, dict):
+            problems.append(f"realized_vol must be an object, got {block!r}")
+            return []
+        reject_unknown_params(problems, {f"realized_vol.{k}": v for k, v in block.items()},
+                              [f"realized_vol.{k}" for k in cls._REALIZED_PARAMS])
+        outputs = cls._window_outputs(problems, block, "windows", "field", 1)
+        if "return_field" in block:
+            if _name(block["return_field"]):
+                outputs.append(block["return_field"])
+            else:
+                problems.append("realized_vol.return_field must be a non-empty string")
+        if "idio_windows" in block or "idio_field" in block:
+            outputs += cls._window_outputs(problems, block, "idio_windows", "idio_field", 3)
+            cls._required_names(problems, params, ("benchmark_date_field", "benchmark_close_field"))
+        return outputs
+
+    @staticmethod
+    def _window_outputs(problems, block, windows_key, field_key, floor):
+        """Check one ``windows`` list and its ``{window}`` field template; return the output names."""
+        windows, template = block.get(windows_key), block.get(field_key)
+        where = f"realized_vol.{windows_key}"
+        if not isinstance(windows, list) or not windows or len(set(windows)) != len(windows):
+            problems.append(f"{where} must be a non-empty list of distinct ints")
+            return []
+        for w in windows:
+            check_int_param(problems, f"{where}[]", w, ge=floor)
+        if not _name(template) or WINDOW_TOKEN not in template:
+            problems.append(f"realized_vol.{field_key} must be a string containing {WINDOW_TOKEN}")
+            return []
+        return [template.replace(WINDOW_TOKEN, str(int(w))) for w in windows if isinstance(w, (int, float))]
 
     @staticmethod
     def _fields_problems(problems, where, fields, allowed):
@@ -432,6 +482,42 @@ class DailyBarFeatures(_BarNode):
         if "corr_field" in block:
             frame[block["corr_field"]] = pd.concat(corr)
 
+    def _realized_columns(self, frame, bench):
+        """Add the declared trailing realized volatility, 1-bar return and idiosyncratic volatility columns."""
+        import numpy as np
+
+        block = self.params["realized_vol"]
+        by = frame.groupby("entity", sort=False)
+        ret = by["lnc"].diff()
+        squared = ret ** 2
+        for w in map(int, block["windows"]):
+            mean_sq = squared.groupby(frame["entity"], sort=False).transform(
+                lambda s, n=w: s.rolling(n, min_periods=n).mean())
+            frame[block["field"].replace(WINDOW_TOKEN, str(w))] = np.sqrt(mean_sq)
+        if "return_field" in block:
+            frame[block["return_field"]] = ret
+        if "idio_windows" in block:
+            frame["_bm"] = bench
+            mkt = frame.groupby("entity", sort=False)["_bm"].diff()
+            for w in map(int, block["idio_windows"]):
+                frame[block["idio_field"].replace(WINDOW_TOKEN, str(w))] = self._idio(frame["entity"], ret, mkt, w)
+
+    @staticmethod
+    def _idio(entity, own, mkt, w):
+        """Trailing residual standard deviation of ``own`` regressed on ``mkt`` over ``w`` bars, per entity."""
+        import numpy as np
+        import pandas as pd
+
+        pairs = pd.DataFrame({"y": own, "x": mkt, "e": entity})
+        parts = []
+        for _, grp in pairs.groupby("e", sort=False):
+            vy = grp["y"].rolling(w, min_periods=w).var()
+            vx = grp["x"].rolling(w, min_periods=w).var()
+            cov = grp["y"].rolling(w, min_periods=w).cov(grp["x"])
+            resid = vy - cov * cov / vx
+            parts.append(np.sqrt(resid.clip(lower=0.0)))
+        return pd.concat(parts)
+
     def _declared_fields(self):
         """Output field names in declaration order."""
         p = self.params
@@ -439,6 +525,10 @@ class DailyBarFeatures(_BarNode):
         block = p.get("market_relative", {})
         out += [block["relative_field"].replace(WINDOW_TOKEN, str(int(w))) for w in block.get("windows", [])]
         out += [block[k] for k in ("beta_field", "corr_field") if k in block]
+        real = p.get("realized_vol", {})
+        out += [real["field"].replace(WINDOW_TOKEN, str(int(w))) for w in real.get("windows", [])]
+        out += [real[k] for k in ("return_field",) if k in real]
+        out += [real["idio_field"].replace(WINDOW_TOKEN, str(int(w))) for w in real.get("idio_windows", [])]
         return out
 
     def run(self, ctx, inputs):
@@ -468,8 +558,13 @@ class DailyBarFeatures(_BarNode):
             return {"records": []}
         if "volume_liquidity" in self.params:
             self._volume_columns(frame)
+        bench = None
+        if "market_relative" in self.params or "idio_windows" in self.params.get("realized_vol", {}):
+            bench = self._benchmark(frame, inputs.get("benchmark"))
         if "market_relative" in self.params:
-            self._market_columns(frame, self._benchmark(frame, inputs.get("benchmark")))
+            self._market_columns(frame, bench)
+        if "realized_vol" in self.params:
+            self._realized_columns(frame, bench)
         p, fields = self.params, self._declared_fields()
         # Column-wise into plain lists (a non-finite float is None), then one dict per row.
         isfinite = math.isfinite

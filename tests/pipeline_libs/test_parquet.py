@@ -578,3 +578,111 @@ def test_bounded_batches_refuse_unverified_dates_before_scanning(tmp_path):
     pq.write_table(pa.table({"d": pa.array([None], type=pa.string()), "value": [7]}), path)
     with pytest.raises(ValueError, match="temporal predicate"):
         list(pack.DateBoundedParquet(path, ["value"], {"d": {"end_before": "2026-01-01"}}).batches())
+
+
+# ADR-0265 Amendment 5: a snapshot that also holds raw responses (the Yahoo bar pulls keep _raw/*.json beside
+# <ticker>/underlying_prices.parquet) is read through an include filter on the member path.
+def _bar_snapshot(blob_store, tmp_path, name="bars"):
+    archive = tmp_path / name
+    for ticker, day in (("aa", "2025-01-02"), ("bb", "2025-01-03")):
+        (archive / ticker).mkdir(parents=True)
+        pq.write_table(pa.table({"date": [day], "symbol": [ticker.upper()]}), archive / ticker / "underlying_prices.parquet")
+    (archive / "_raw").mkdir()
+    (archive / "_raw" / "AA.json").write_text("{}")
+    blob_store.add(name, archive)
+    return {"root": blob_store.path, "source": name, "stream": "files",
+            "snapshot": payload_files(blob_store.path, name, "files")["manifest_sha256"],
+            "columns": {"date": "date", "symbol": "symbol"},
+            "read_bounds": {"date": {"end_before": "2026-01-01"}}}
+
+
+def test_include_reads_only_the_matching_members_in_manifest_order(blob_store, tmp_path):
+    declaration = _bar_snapshot(blob_store, tmp_path)
+    node = ParquetStreamRows("bars", {"sources": [{**declaration, "include": ["*/underlying_prices.parquet"]}]})
+    assert node.run(_ctx(tmp_path), {})["records"] == [
+        {"date": "2025-01-02", "symbol": "AA"}, {"date": "2025-01-03", "symbol": "BB"}]
+    assert node.fingerprint()["snapshots"][0]["members"] == ["aa/underlying_prices.parquet", "bb/underlying_prices.parquet"]
+    narrow = ParquetStreamRows("bars", {"sources": [{**declaration, "include": ["aa/*"]}]})
+    assert narrow.run(_ctx(tmp_path), {})["records"] == [{"date": "2025-01-02", "symbol": "AA"}]
+
+
+def test_without_include_a_non_parquet_member_is_still_read_and_fails_loudly(blob_store, tmp_path):
+    declaration = _bar_snapshot(blob_store, tmp_path)
+    with pytest.raises(Exception):
+        ParquetStreamRows("bars", {"sources": [declaration]}).run(_ctx(tmp_path), {})
+
+
+def test_include_matching_nothing_refuses_and_a_bad_include_is_a_declaration_problem(blob_store, tmp_path):
+    declaration = _bar_snapshot(blob_store, tmp_path)
+    with pytest.raises(ValueError, match="include"):
+        ParquetStreamRows("bars", {"sources": [{**declaration, "include": ["zz/*"]}]}).fingerprint()
+    for bad in ([], "x", [1], [""]):
+        assert any("include" in p for p in ParquetStreamRows.validate_params({"sources": [{**declaration, "include": bad}]}))
+
+
+def test_iso_fields_turn_date_columns_into_iso_text(blob_store, tmp_path):
+    import datetime as dt
+    archive = tmp_path / "dates"
+    archive.mkdir()
+    pq.write_table(pa.table({"d": pa.array([dt.date(2020, 3, 2), dt.date(2020, 3, 3)], type=pa.date32()), "x": [1.0, 2.0]}),
+                   archive / "a.parquet")
+    blob_store.add("dates", archive)
+    declaration = {"root": blob_store.path, "source": "dates", "stream": "files",
+                   "snapshot": payload_files(blob_store.path, "dates", "files")["manifest_sha256"],
+                   "columns": {"d": "date", "x": "x"}, "read_bounds": {"d": {"end_before": "2026-01-01"}}}
+    plain = ParquetStreamRows("p", {"sources": [declaration]}).run(_ctx(tmp_path), {})["records"]
+    assert plain[0]["date"] == dt.date(2020, 3, 2)
+    node = ParquetStreamRows("p", {"sources": [{**declaration, "iso_fields": ["date"]}]})
+    assert node.run(_ctx(tmp_path), {})["records"] == [{"date": "2020-03-02", "x": 1.0}, {"date": "2020-03-03", "x": 2.0}]
+    for bad in ([], "date", [1], ["nope"]):
+        assert any("iso_fields" in p for p in ParquetStreamRows.validate_params({"sources": [{**declaration, "iso_fields": bad}]})), bad
+
+
+def test_where_keeps_only_the_rows_that_pass_every_clause_on_output_fields(blob_store, tmp_path):
+    archive = tmp_path / "wheres"
+    archive.mkdir()
+    pq.write_table(pa.table({"d": ["2025-01-02", "2025-01-02", "2025-01-03"], "t": [30, 90, 30],
+                             "ok": [True, True, False], "x": [1.0, 2.0, 3.0]}), archive / "a.parquet")
+    blob_store.add("wheres", archive)
+    declaration = {"root": blob_store.path, "source": "wheres", "stream": "files",
+                   "snapshot": payload_files(blob_store.path, "wheres", "files")["manifest_sha256"],
+                   "columns": {"d": "date", "t": "target", "ok": "ok", "x": "x"},
+                   "read_bounds": {"d": {"end_before": "2026-01-01"}}}
+    rows = ParquetStreamRows("p", {"sources": [{**declaration, "where": [
+        {"field": "target", "op": "==", "value": 30}, {"field": "ok", "op": "==", "value": True}]}]}).run(_ctx(tmp_path), {})["records"]
+    assert rows == [{"date": "2025-01-02", "target": 30, "ok": True, "x": 1.0}]
+    nothing = ParquetStreamRows("p", {"sources": [{**declaration, "where": [{"field": "x", "op": ">", "value": 9}]}]})
+    assert nothing.run(_ctx(tmp_path), {})["records"] == []
+    for bad in ([], "x", [{"field": "nope", "op": "==", "value": 1}], [{"field": "x", "op": "~", "value": 1}]):
+        assert any("where" in p for p in ParquetStreamRows.validate_params({"sources": [{**declaration, "where": bad}]})), bad
+
+
+def test_where_on_a_date_column_not_in_iso_fields_refuses_instead_of_dropping_every_row(blob_store, tmp_path):
+    import datetime as dt
+    archive = tmp_path / "wheredate"
+    archive.mkdir()
+    pq.write_table(pa.table({"d": pa.array([dt.date(2020, 3, 2)], type=pa.date32()), "x": [1.0]}), archive / "a.parquet")
+    blob_store.add("wheredate", archive)
+    declaration = {"root": blob_store.path, "source": "wheredate", "stream": "files",
+                   "snapshot": payload_files(blob_store.path, "wheredate", "files")["manifest_sha256"],
+                   "columns": {"d": "date", "x": "x"}, "read_bounds": {"d": {"end_before": "2026-01-01"}},
+                   "where": [{"field": "date", "op": ">=", "value": "2020-01-01"}]}
+    with pytest.raises(ValueError, match="iso_fields"):
+        ParquetStreamRows("p", {"sources": [declaration]}).run(_ctx(tmp_path), {})
+    ok = ParquetStreamRows("p", {"sources": [{**declaration, "iso_fields": ["date"]}]}).run(_ctx(tmp_path), {})["records"]
+    assert ok == [{"date": "2020-03-02", "x": 1.0}]
+
+
+def test_the_where_date_guard_looks_past_leading_nulls(blob_store, tmp_path):
+    import datetime as dt
+    archive = tmp_path / "wherenull"
+    archive.mkdir()
+    pq.write_table(pa.table({"d": pa.array([dt.date(2020, 3, 2), dt.date(2020, 3, 3)], type=pa.date32()),
+                             "e": pa.array([None, dt.date(2020, 4, 1)], type=pa.date32())}), archive / "a.parquet")
+    blob_store.add("wherenull", archive)
+    declaration = {"root": blob_store.path, "source": "wherenull", "stream": "files",
+                   "snapshot": payload_files(blob_store.path, "wherenull", "files")["manifest_sha256"],
+                   "columns": {"d": "date", "e": "expiry"}, "read_bounds": {"d": {"end_before": "2026-01-01"}},
+                   "where": [{"field": "expiry", "op": ">=", "value": "2020-01-01"}]}
+    with pytest.raises(ValueError, match="iso_fields"):
+        ParquetStreamRows("p", {"sources": [declaration]}).run(_ctx(tmp_path), {})

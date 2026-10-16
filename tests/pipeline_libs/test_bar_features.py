@@ -550,3 +550,95 @@ def test_underlying_close_is_the_trade_dates_close_as_the_underlying_states_it()
         "moneyness_band", "price_field", "expiry_field")}
     lean["fields"] = {"underlying_close": "spot"}
     assert ["fields.underlying_close needs the underlying param(s)"] == TradeBarFeatures.validate_params(lean)
+
+
+# -- ADR-0265 Amendment 5: trailing realized volatility, the 1-bar return and the idiosyncratic volatility ----------
+
+def _path(returns, start=100.0):
+    closes = [start]
+    for r in returns:
+        closes.append(closes[-1] * math.exp(r))
+    return closes
+
+
+RV = {"entity_field": "sym", "date_field": "date", "close_field": "close",
+      "benchmark_date_field": "date", "benchmark_close_field": "close"}
+
+
+def _rv(bars, bench=None, block=None, **over):
+    block = block or {"windows": [2, 3], "field": "rv{window}", "return_field": "ret"}
+    node = DailyBarFeatures("d", {**RV, "realized_vol": block, **over})
+    return node.run(CTX, {"bars": bars, "benchmark": bench})["records"]
+
+
+def test_realized_vol_is_the_root_mean_square_of_the_last_w_log_returns_and_the_return_is_one_bar():
+    rets = [0.01, -0.02, 0.03, -0.01]
+    out = _rv(_bars("A", _path(rets), [1] * 5))
+    assert out[0]["ret"] is None and out[0]["rv2"] is None
+    assert [r["ret"] for r in out[1:]] == pytest.approx(rets)
+    assert out[1]["rv2"] is None and out[2]["rv3"] is None
+    assert out[2]["rv2"] == pytest.approx(math.sqrt((0.01 ** 2 + 0.02 ** 2) / 2))
+    assert out[3]["rv3"] == pytest.approx(math.sqrt((0.01 ** 2 + 0.02 ** 2 + 0.03 ** 2) / 3))
+    assert out[4]["rv2"] == pytest.approx(math.sqrt((0.03 ** 2 + 0.01 ** 2) / 2))      # zero-mean, not demeaned
+
+
+def test_realized_vol_reads_nothing_after_the_row_and_entities_do_not_bleed():
+    rets = [0.01, -0.02, 0.03, -0.01]
+    both = _rv(_bars("A", _path(rets), [1] * 5) + _bars("B", _path([0.5, 0.5, 0.5, 0.5]), [1] * 5))
+    alone = _rv(_bars("A", _path(rets), [1] * 5))
+    a = [r for r in both if r["sym"] == "A"]
+    assert [r["rv2"] for r in a] == [r["rv2"] for r in alone]
+    shorter = _rv(_bars("A", _path(rets[:3]), [1] * 4))
+    assert [r["rv2"] for r in shorter] == [r["rv2"] for r in alone][:4]
+
+
+def test_a_missing_close_blanks_every_window_that_holds_its_return():
+    closes = _path([0.01, 0.02, 0.03, 0.04, 0.05])
+    closes[2] = None
+    out = _rv(_bars("A", closes, [1] * 6), block={"windows": [2], "field": "rv{window}"})
+    assert out[3]["rv2"] is None and out[4]["rv2"] is None        # returns at 2 and 3 are undefined
+    assert out[5]["rv2"] == pytest.approx(math.sqrt((0.04 ** 2 + 0.05 ** 2) / 2))
+
+
+def test_idiosyncratic_vol_is_the_residual_of_a_regression_on_the_benchmark():
+    m = [0.01, -0.02, 0.03, -0.01, 0.02]
+    e = [0.004, -0.003, 0.002, -0.001, 0.003]
+    y = [2 * a + b for a, b in zip(m, e)]
+    out = _rv(_bars("A", _path(y), [1] * 6), _bench(_path(m)),
+              block={"windows": [3], "field": "rv{window}", "idio_windows": [4], "idio_field": "idio{window}"})
+    w = slice(0, 4)
+    ys, xs = y[w], m[w]
+    my, mx = sum(ys) / 4, sum(xs) / 4
+    cov = sum((a - my) * (b - mx) for a, b in zip(ys, xs)) / 3
+    vx = sum((b - mx) ** 2 for b in xs) / 3
+    vy = sum((a - my) ** 2 for a in ys) / 3
+    assert out[4]["idio4"] == pytest.approx(math.sqrt(vy - cov * cov / vx))
+    assert out[3]["idio4"] is None                                   # window not yet full
+
+
+def test_idiosyncratic_vol_of_a_name_that_is_the_benchmark_is_zero_not_negative():
+    m = [0.01, -0.02, 0.03, -0.01, 0.02]
+    out = _rv(_bars("A", _path(m), [1] * 6), _bench(_path(m)),
+              block={"windows": [2], "field": "rv{window}", "idio_windows": [3], "idio_field": "idio{window}"})
+    assert out[5]["idio3"] == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.parametrize("block, text", [
+    ({"windows": [], "field": "rv{window}"}, "windows"),
+    ({"windows": [2, 2], "field": "rv{window}"}, "windows"),
+    ({"windows": [2], "field": "rv"}, "{window}"),
+    ({"windows": [2], "field": "rv{window}", "idio_windows": [3]}, "idio_field"),
+    ({"windows": [2], "field": "rv{window}", "idio_windows": [2], "idio_field": "i{window}"}, "idio_windows"),
+    ({"windows": [2], "field": "rv{window}", "return_field": "rv2"}, "collides"),
+    ({"windows": [2], "field": "rv{window}", "zzz": 1}, "zzz")])
+def test_realized_vol_declarations_are_refused_by_name(block, text):
+    problems = DailyBarFeatures.validate_params({**RV, "realized_vol": block})
+    assert any(text in p for p in problems), problems
+
+
+def test_idiosyncratic_vol_without_a_benchmark_input_refuses_and_realized_vol_alone_needs_none():
+    bars = _bars("A", _path([0.01, 0.02, 0.03]), [1] * 4)
+    block = {"windows": [2], "field": "rv{window}", "idio_windows": [3], "idio_field": "i{window}"}
+    with pytest.raises(ValueError, match="benchmark"):
+        DailyBarFeatures("d", {**RV, "realized_vol": block}).run(CTX, {"bars": bars})
+    assert _rv(bars, None)[3]["rv3"] is not None

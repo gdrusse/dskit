@@ -20,9 +20,11 @@ builds an expensive panel once and every later stage reuses it.
 from __future__ import annotations
 
 import datetime
+import fnmatch
 
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
+from dskit.pipeline.kinds_flow import clause_holds, clause_problems
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, reject_unknown_params
 
 __all__ = ["DateBoundedParquet", "NODE_KINDS", "ParquetFrameCache", "ParquetRows", "ParquetStreamRows", "register"]
@@ -421,13 +423,20 @@ class ParquetStreamRows(Node):
     in lexical manifest order; their records are concatenated in that order.
     This node has no cross-source deduplication or latest-vintage claim: roots
     are independent snapshots and a caller that needs a winner must name that
-    authority upstream.
+    authority upstream. An optional per-source ``include`` (a non-empty list of glob patterns on the member
+    path inside the stream, e.g. ``"*/underlying_prices.parquet"``) reads only the matching members, for a
+    snapshot that also holds non-Parquet files such as raw API responses; it must match at least one member
+    (ADR-0265 Amendment 5). An optional per-source ``iso_fields`` (output field names) turns date and datetime
+    cells of those fields into ISO text (a Parquet ``date32`` column arrives as ``datetime.date``, and the
+    flow and statistics nodes key on ISO text); a null stays null. An optional per-source ``where`` (clauses
+    ``{field, op, value}`` on the OUTPUT field names, the ``filter`` kind's grammar) keeps only the rows that pass
+    every clause, applied one file at a time so the dropped rows never accumulate in memory.
     """
 
     role = "data"
     outputs = ("records",)
     _PARAMS = ("sources",)
-    _SOURCE_KEYS = ("root", "source", "stream", "snapshot", "columns", "read_bounds")
+    _SOURCE_KEYS = ("root", "source", "stream", "snapshot", "columns", "read_bounds", "include", "iso_fields", "where")
 
     @classmethod
     def validate_params(cls, params):
@@ -459,6 +468,25 @@ class ParquetStreamRows(Node):
                 problems.append(f"{prefix}.columns must map unique output names from non-empty source names")
             problems += [f"{prefix}.{problem}" for problem in
                          DateBoundedParquet.problems(source.get("read_bounds"))]
+            include = source.get("include")
+            if "include" in source and (not isinstance(include, list) or not include or not all(
+                    isinstance(pattern, str) and pattern for pattern in include)):
+                problems.append(f"{prefix}.include must be a non-empty list of glob patterns on the member path")
+            where = source.get("where")
+            if "where" in source:
+                if not isinstance(where, list) or not where:
+                    problems.append(f"{prefix}.where must be a non-empty list of {{field, op, value}} clauses")
+                else:
+                    outputs = set(columns.values()) if isinstance(columns, dict) else set()
+                    for n, clause in enumerate(where):
+                        problems += [f"{prefix}.where[{n}]: {p}" for p in clause_problems(f"where[{n}]", clause)]
+                        if isinstance(clause, dict) and outputs and clause.get("field") not in outputs:
+                            problems.append(f"{prefix}.where[{n}]: field {clause.get('field')!r} is not an output field of columns")
+            iso = source.get("iso_fields")
+            if "iso_fields" in source and (not isinstance(iso, list) or not iso or not all(
+                    isinstance(name, str) and name for name in iso)
+                    or (isinstance(columns, dict) and not set(iso) <= set(columns.values()))):
+                problems.append(f"{prefix}.iso_fields must be a non-empty list of output field names from columns")
         return problems
 
     def _snapshots(self):
@@ -479,18 +507,22 @@ class ParquetStreamRows(Node):
             if manifest["source"] != source["source"]:
                 raise ValueError(f"{self.key}: snapshot belongs to another source")
             prefix = f"{source['stream']}/"
+            patterns = source.get("include")
             files = sorted(
                 (entry["relpath"][len(prefix):],
                  payload / entry["relpath"][len(prefix):], entry["sha256"])
                 for entry in manifest["files"]
-                if entry["relpath"].startswith(prefix))
+                if entry["relpath"].startswith(prefix)
+                and (patterns is None or any(fnmatch.fnmatchcase(entry["relpath"][len(prefix):], pattern)
+                                             for pattern in patterns)))
             if not files:
-                raise ValueError(f"{self.key}: pinned stream has no manifest members")
+                raise ValueError(f"{self.key}: pinned stream has no manifest members"
+                                 + (f" matching include {patterns}" if patterns else ""))
             snapshots.append({
                 "source": source["source"], "stream": source["stream"],
                 "snapshot": snapshot_dir.name, "manifest_sha256": source["snapshot"],
                 "columns": source["columns"], "read_bounds": source["read_bounds"],
-                "files": files})
+                "iso_fields": tuple(source.get("iso_fields", ())), "where": source.get("where", []), "files": files})
         return snapshots
 
     @staticmethod
@@ -526,7 +558,15 @@ class ParquetStreamRows(Node):
                 columns = snapshot["columns"]
                 table = DateBoundedParquet(path, list(columns), snapshot["read_bounds"]).read()
                 data = {out: table.column(src).to_pylist() for src, out in columns.items()}
-                records.extend(dict(zip(data, row)) for row in zip(*data.values()))
+                for name in snapshot["iso_fields"]:
+                    data[name] = [v.isoformat() if hasattr(v, "isoformat") else v for v in data[name]]
+                for clause in snapshot["where"]:
+                    sample = next((v for v in data[clause["field"]] if v is not None), None)    # the first non-null value
+                    if sample is not None and hasattr(sample, "isoformat"):
+                        raise ValueError(f"{self.key}: where reads {clause['field']!r}, a date column: list it in iso_fields "
+                                         "so the clause compares ISO text (a date against text drops every row)")
+                rows = (dict(zip(data, row)) for row in zip(*data.values()))
+                records.extend(row for row in rows if all(clause_holds(row, c) for c in snapshot["where"]))
         return {"records": records}
 
     _verified_bytes_ok = staticmethod(ParquetRows._verified_bytes_ok)

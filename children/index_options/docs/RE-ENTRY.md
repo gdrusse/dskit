@@ -1,52 +1,55 @@
-# RE-ENTRY — index_options
+# RE-ENTRY - index_options
 
-Updated: 2026-10-12 by Claude Sonnet 5.5. Rewritten whole at every `/wrap`; the note
-this replaced is at the top of `docs/archive/re-entry/index_options.md` (dskit repo).
+Updated: 2026-10-15 by GPT-6 Astra. Previous note archived in docs/archive/re-entry/index_options.md.
 
 ## Now
 
-Question since T2: does the forecast have predictive power or edge, and where, apart from
-the trading algorithm? **No edge found anywhere so far.** Ledger A1136–A1152, last commit
-`4c5f3817` on main. All compute-only; 2026 untouched.
-
-- **T2** (ADR-0259) failed: beyond-market IC 0.033, t 1.15. Memo `2026-10-10-t2-dispersion-ic-result.md`.
-- **Condor replay, 2025**: no cutoff, band or skill split survives; the "high win rate"
-  patterns were market drift. The low credit/wing lead is weak (same-date gap +$26 in 2024,
-  +$224 in 2025, CIs span 0). 2024 holdout config: `run-equity-condor-2024-holdout.json`.
-- **Real option-implied CDF vs forecast** (`OptionPriceCDF`): tie on CRPS (49% coverage).
-- **Audit**: the PatchTST (~19k params) adds almost nothing beyond the HAR vol scale; its
-  skill sits in illiquid/short-history names; 2024–25 was used for architecture selection.
-- **HAR vs implied straddle**: fails on both sets (first t 1.52; second 300 t 1.43; net of
-  8% costs −5.7%).
-- **75–90% shoulder** (only region lead; first set HAR +4.0): did NOT replicate on the
-  second 300 names (+0.66, CI [−1.87, +3.37]); about half was drift. Treat as closed.
-- **Second 300 pull** (`option-universe-300b`, ADR-0235 amendment 2026-10-12): 285 usable
-  names, 11,056 exact-DTE31 rows, chains thin (18% market-curve coverage). Same 2024–25
-  dates as the first set, so the market factor is shared.
+- Phase A implements ADR-0265 Amendment 6 in theta_hypotheses.py and generated documents; reviewed candidate 69cb3c6a; landed c41fa6d1 on origin/main.
+- D3 event_gap primary with original halves; D4 labelled H2(b) primary population, measurement only.
+- D7 only zero-fee SPX put-write is primary; .65 USD per leg/contract fee and maximum-loss return are descriptive.
+- D9 liquidity frozen on 2016-2018, panel census_asof 2019-01-01; only tercile-dependent readings start2019.
+  Full development 2016-2020 and original half split 2018-07-01 stay unchanged; validation 2021-2025 unchanged.
+- D10 H7 descriptive, no pass; D11 H4 weekly comparison dropped, monthly behavior unchanged.
+- All 20 AAPL labels verified against linked Apple company earnings releases; zero wrong dates/drops.
+- Generator check and 46 validate/plan checks pass (all 23 Theta pipeline documents).
+- Requested tests: 779 passed, 278 deprecation warnings; all synthetic.
+  No full suite. Existing lint debt: 13 findings, versus 16 on base; no newly introduced finding.
+- Fresh Terra correctness and Luna integration reviews clean: zero findings; candidate locked in memo.
+- No real-data census, panel, hypothesis, validation or training run occurred in this session.
+- Read-only pull check 2026-10-15 20:02 ET: 75/414 roots at 2016-01-04; 76 cursor roots, CHTR at2018-09-20;
+  BRUN/CBRS no_chain. Latest logged verify OK, no ALERT.txt. C:103GB free (minimum30GB).
 
 ## Next
 
-1. Owner decides: drift-removed model check in 75–90% (cheap); ADR adopting HAR as the
-   reference forecast; a forward chain recorder (Schwab) or paid history (ORATS etc.).
-2. Power is capped (about 91–95 dates); more names do not add dates.
-3. A new trading structure (wheel, reverse condor) needs a pre-registered rule first.
+1. Phase A landed; retain the isolated checkout for the gated continuation. Recheck pull readiness first.
+2. Only after tested414 reaches oldest<=2016-01-04 and export verify is OK: follow Amendment5 as amended by6.
+3. Before any panel run, resolve the strict-seal rate-source blocker below using existing safe metadata/artifacts.
+4. Census -> freeze universe (development only) -> panel -> census stale-spot refresh -> register/set pins ->
+   generate/check/test/commit pins+universe. Declare proven reuse breaks/stitches from census evidence.
+5. Development H0..H7 in owner-requested order, ledger/memo for each pass/fail. H5/H6 also require index tier.
+   Validation once, unchanged, only after eligible development pass. H7 has no pass; H2 detected-only cannot close(b).
 
 ## Blocked / owner decisions
 
-- Everything in Next 1; opening 2026 data (irreversible, wants a stronger lead first).
-- Model-based tests cannot run on the 300b names: no forecasts exist for them.
+- Tested tier incomplete; no Phase B run authorized yet by its dependency gate.
+- Panel rates_raw now uses bounded ParquetStreamRows with an unresolved zero rate pin (refuses before scanning).
+  Need an independently existing safe pre2026 rate artifact, registered theta-rates-pre2026, then set-pin rates;
+  never read mixed2026 to create it or substitute zero rates. Phase B remains withheld until resolved.
+- Validation earnings labels absent; H2(b) cannot close from its detected-only twin.
+- Index tier and zero panel pins/unfrozen universe remain prerequisites. 2026 stays sealed forever for this program.
 
 ## Read first
 
-- `docs/memos/2026-10-10-t2-dispersion-ic-result.md`
-- `docs/decisioning/actions.csv`, rows A1136–A1152
-- ADR-0235 (amendment 2026-10-12), ADR-0259
-- Scratchpad scripts are NOT committed; rebuild from configs if needed.
+- CLAUDE.md; docs/skills/implementation-workflow.md.
+- ADR-0263; ADR-0265 Amendments1-6 (Amendment6 is at end of decision-log.md).
+- children/index_options/docs/memos/2026-10-15-theta-amendment6.md (contract, tests, review, source provenance).
+- children/index_options/index_options/theta_hypotheses.py and configs/theta-hypothesis-inputs.json.
 
 ## Do not
 
-- No 2026 data access, fits, or spending. No cross-name selection in replays.
-- Do not rerun T2 or the region/IC tests hoping for a different answer; rules were
-  pre-registered and thresholds must not be tuned.
-- Run with `PYTHONPATH=<this worktree>`; the venv editable install points at a stale tree.
-- Open small defect: `DiscreteCDFGrid.worst_expected_loss` HiGHS tolerance.
+- Never read2026 data, fit/train, tune statistics/signs/thresholds/splits, or rerun validation.
+- Never write under /home/russell/data/thetadata/options-*; never start/stop driver or call port25503.
+- Check df -h /mnt/c before outputs; keep>=30GB free; delete nothing under /home/russell/data.
+- Read ALERT.txt if present and tell owner; do not delete it. Kill processes only with anchored patterns.
+- WSL2 only; /home/russell/dskit/.venv/bin/python with PYTHONPATH=<current worktree>.
+- Never alter owner-only Path rows. Tests use synthetic data only.

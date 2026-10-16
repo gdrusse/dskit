@@ -607,3 +607,23 @@ def test_open_interest_window_validates():
     for bad in (0, 400, True, "20"):
         with pytest.raises(AssetError):
             ThetaDataConnector().resolve_knobs({**CONFIG, "oi_window_days": bad})
+
+
+def test_scan_mode_does_not_refuse_a_delisted_root_and_logs_a_dead_one():
+    t = Terminal()                      # AAA: data only on the oldest day; recent days empty (delisted)
+    t.chain[(EOD, "20250102")] = [eod_row()]
+    cfg = {**CONFIG, "empty_guard": 1, "empty_guard_action": "scan", "open_interest": False}
+    with pytest.raises(AssetError):
+        pull(connector(t), {**cfg, "empty_guard_action": "refuse"})
+    conn = connector(t)
+    messages = list(conn.read(cfg, [OPTION_EOD_STREAM], {}, "backfill"))
+    assert [m["data"]["date"] for m in messages if m["type"] == "RECORD"] == ["2025-01-02"]
+    assert not [m for m in messages if m["type"] == "LOG"]
+    dead = {**cfg, "symbols": ["ZZZ"]}
+    messages = list(connector(Terminal()).read(dead, [OPTION_EOD_STREAM], {}, "backfill"))
+    logs = [m for m in messages if m["type"] == "LOG"]
+    state = [m for m in messages if m["type"] == "STATE"][-1]["state"]
+    assert len(logs) == 1 and "ZZZ" in logs[0]["message"]
+    assert state[OPTION_EOD_STREAM]["ZZZ"]["no_chain"] is True
+    with pytest.raises(AssetError):
+        ThetaDataConnector().resolve_knobs({**CONFIG, "empty_guard_action": "ignore"})

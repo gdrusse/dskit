@@ -72,6 +72,24 @@ def test_exact_manifest_and_agent_parity(child_root):
         # ADR-0265 Amendment 3: the same documents on the Parquet tree, the panel, and the root stitch map.
         "configs/run-theta-chain-census-parquet.json", "configs/run-theta-chain-features-parquet.json",
         "configs/run-theta-chain-panel.json", "configs/root-renames.json",
+        # ADR-0265 Amendment 5: the pre-registered H0-H7 documents (development + validation twin + the
+        # validation overlay each), their generator and inputs, the index-tier panel document, and the
+        # synthetic-world tests that run them end to end without a real row.
+        "index_options/theta_hypotheses.py", "tests/test_theta_hypotheses.py", "tests/theta_synthetic.py",
+        "configs/run-theta-chain-panel-index.json",
+        "configs/run-theta-h0-har-implied-validation.json",
+        "configs/run-theta-h0-har-implied.json", "configs/run-theta-h1-implied-features-ic-validation.json",
+        "configs/run-theta-h1-implied-features-ic.json", "configs/run-theta-h2-earnings-validation.json",
+        "configs/run-theta-h2-earnings.json", "configs/run-theta-h3-straddle-sorts-validation.json",
+        "configs/run-theta-h3-straddle-sorts.json", "configs/run-theta-h4-vrp-validation.json",
+        "configs/run-theta-h4-vrp.json", "configs/run-theta-h5-index-harvests-validation.json",
+        "configs/run-theta-h5-index-harvests.json", "configs/run-theta-h6-dispersion-validation.json",
+        "configs/run-theta-h6-dispersion.json", "configs/run-theta-h7-pin-spread-validation.json",
+        "configs/run-theta-h7-pin-spread.json", "configs/theta-h0-validation-args.json",
+        "configs/theta-h1-validation-args.json", "configs/theta-h2-validation-args.json",
+        "configs/theta-h3-validation-args.json", "configs/theta-h4-validation-args.json",
+        "configs/theta-h5-validation-args.json", "configs/theta-h6-validation-args.json",
+        "configs/theta-h7-validation-args.json", "configs/theta-hypothesis-inputs.json",
         "docs/memos/2026-10-09-condor-executable-clock-contract.md",
         "docs/memos/2026-10-09-condor-executable-clock-result.md",
         "docs/research/distribution-modeling/2026-10-09-condor-selection-intuition.md",
@@ -327,6 +345,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/research/strategy-alternatives/2026-10-11-patchtst-edge-and-harvest.md",
         # The 2026-10-10 T2 result (first run refused on null spot; amendment 2; then the IC).
         "docs/memos/2026-10-10-t2-dispersion-ic-result.md",
+        "docs/memos/2026-10-15-theta-amendment6.md",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -363,8 +382,10 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the ADR-0259 forecast-dispersion IC document = 498, plus its result memo = 499;
     # plus ADR-0265's chain census and chain features documents = 513, plus the chain-events document and
     # its labelled dates = 515, plus Amendment 3's Parquet census, features and panel documents and the
-    # root stitch map = 519.
-    assert len(actual) == 519
+    # root stitch map = 519, plus Amendment 5's index panel document, the 8 hypothesis documents with their
+    # validation twins and overlays, the generator, its inputs and the two test files = 548.
+    # Plus the owner-requested Amendment 6 execution/review memo = 549.
+    assert len(actual) == 549
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

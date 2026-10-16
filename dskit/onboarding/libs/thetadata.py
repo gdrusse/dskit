@@ -56,6 +56,7 @@ __all__ = [
     "DEFAULT_CONCURRENCY",
     "DEFAULT_EMPTY_GUARD",
     "DEFAULT_OI_WINDOW_DAYS",
+    "EMPTY_GUARD_ACTIONS",
     "DEFAULT_RETRIES",
     "DEFAULT_TIMEOUT_S",
     "EMPTY_STATUSES",
@@ -109,6 +110,8 @@ MAX_CONCURRENCY = 8
 DEFAULT_RETRIES = 5
 DEFAULT_EMPTY_GUARD = 20
 DEFAULT_OI_WINDOW_DAYS = 1
+EMPTY_GUARD_ACTIONS = ("refuse", "scan")
+DEFAULT_EMPTY_GUARD_ACTION = "refuse"
 _OI_CACHE_BLOCKS = 6
 DEFAULT_RETRY_BASE_S = 1.0
 DEFAULT_TIMEOUT_S = 300
@@ -313,6 +316,13 @@ class ThetaDataConnector(Connector):
                          "the request count of a pull. A window the Terminal calls too "
                          "large falls back to one request per day for that window.",
             },
+            "empty_guard_action": {
+                "notes": "refuse (default): a root with no chain in its first empty_guard "
+                         "weekdays from the newest end is refused. scan: never refuse on "
+                         "recent emptiness (a delisted root has old history but empty recent "
+                         "days); scan the whole window and LOG a root that never returned a "
+                         "chain. Use scan for vendor-listed roots.",
+            },
             "empty_guard": {
                 "notes": "Refuse a root whose first N consecutive weekdays (newest "
                          "first) return no chain and which has never returned one; "
@@ -409,6 +419,9 @@ class ThetaDataConnector(Connector):
         kind = config.get("underlying_kind", "stock")
         if kind not in _UNDERLYING_PATHS:
             problems.append(f"config.underlying_kind must be one of {sorted(_UNDERLYING_PATHS)}")
+        action = config.get("empty_guard_action", DEFAULT_EMPTY_GUARD_ACTION)
+        if action not in EMPTY_GUARD_ACTIONS:
+            problems.append(f"config.empty_guard_action must be one of {EMPTY_GUARD_ACTIONS}")
         base_url = config.get("base_url", DEFAULT_BASE_URL)
         if not isinstance(base_url, str) or not base_url.startswith("http"):
             problems.append(f"config.base_url must be an http URL, got {base_url!r}")
@@ -416,7 +429,7 @@ class ThetaDataConnector(Connector):
             raise AssetError(problems)
         return {
             "symbols": list(symbols), "start": dates["start"], "end": dates["end"],
-            "base_url": base_url.rstrip("/"), "quote_times": list(times),
+            "base_url": base_url.rstrip("/"), "quote_times": list(times), "empty_guard_action": action,
             "underlying_kind": kind, **flags, **ints, **floats,
         }
 
@@ -748,6 +761,14 @@ class ThetaDataConnector(Connector):
                 count += 1
                 yield symbol, day
 
+    @staticmethod
+    def _window_exhausted(knobs, day):
+        """Return True when no weekday remains on or after ``start`` below ``day``."""
+        prev = day - timedelta(days=1)
+        while prev.weekday() >= 5:
+            prev -= timedelta(days=1)
+        return prev < knobs["start"]
+
     def _option_messages(self, knobs, stream, cursors):
         units = self._units(knobs, cursors)
         newest = (knobs["end"] - timedelta(days=1)).isoformat()
@@ -764,13 +785,18 @@ class ThetaDataConnector(Connector):
                 cursor["seen"] = True
             elif not cursor.get("seen"):
                 empties[symbol] = empties.get(symbol, 0) + 1
-                if empties[symbol] >= knobs["empty_guard"]:
+                if empties[symbol] >= knobs["empty_guard"] and knobs["empty_guard_action"] == "refuse":
                     raise AssetError([
                         f"{symbol}: {empties[symbol]} consecutive weekdays from "
                         f"{day.isoformat()} upward returned no chain and none ever "
                         "has; check the symbol, the plan and that it is an option root"])
             cursor.setdefault("newest", newest)
             cursor["oldest"] = day.isoformat()
+            if not cursor.get("seen") and self._window_exhausted(knobs, day):
+                cursor["no_chain"] = True
+                yield {"protocol": PROTOCOL, "type": "LOG", "level": "warning",
+                       "message": f"{symbol}: no option chain on any weekday in "
+                                  f"{knobs['start']}..{knobs['end']}; recorded as done with none"}
 
     def _underlying_messages(self, knobs, stream, cursors):
         for symbol in knobs["symbols"]:

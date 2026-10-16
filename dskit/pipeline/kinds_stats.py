@@ -72,7 +72,9 @@ from dskit.pipeline.stats import (
     sample_quantile,
 )
 
-__all__ = ["MIN_CLUSTERS", "CrossSectionIC", "QuantileSortBook", "StatTest", "Validate", "register"]
+__all__ = ["DEFAULT_CORRECTIONS", "MIN_CLUSTERS", "P_FLOOR", "CrossSectionIC", "QuantileSortBook", "StatTest",
+           "Validate", "block_bootstrap_interval", "corrections_problems", "family_decisions", "iso_date",
+           "register", "series_statistics"]
 
 #: The bootstrap's honesty floor: below this many clusters an instrument's
 #: resampling distribution is degenerate (one cluster resamples to itself
@@ -94,6 +96,154 @@ MIN_CLUSTERS = 2
 #: shims and can go once the importers move.
 _reject_unknown = reject_unknown_params
 _check_int = check_int_param
+
+
+#: The smallest p-value a family accepts (a correction refuses 0).
+P_FLOOR = sys.float_info.min
+#: The corrections run when a family does not declare ``corrections``.
+DEFAULT_CORRECTIONS = ("bh", "bonferroni")
+
+
+def corrections_problems(corrections):
+    """Problems with a declared ``corrections`` list (names of unweighted registered corrections)."""
+    if not isinstance(corrections, list) or not corrections:
+        return [f"corrections must be a non-empty list of names, got {corrections!r}"]
+    problems = []
+    for name in corrections:
+        entry = CORRECTIONS.get(name) if isinstance(name, str) else None
+        if entry is None or entry["needs_weights"]:
+            problems.append(f"corrections names {name!r}: must be one of "
+                            f"{sorted(n for n, e in CORRECTIONS.items() if not e['needs_weights'])}")
+    return problems
+
+
+def family_decisions(p_values, alpha, corrections=None):
+    """The corrections over one family of one-sided p-values.
+
+    Parameters
+    ----------
+    p_values : dict
+        ``name -> p``; a name whose statistic is withheld carries ``None`` and stays in the family at
+        ``p = 1`` (the family size is the declared count), listed in ``withheld``.
+    alpha : float
+        The level in (0, 1).
+    corrections : list of str or None
+        Registered correction names; ``None`` takes :data:`DEFAULT_CORRECTIONS`.
+
+    Returns
+    -------
+    dict
+        ``alpha``, ``p`` (as tested), ``withheld`` and ``decisions`` (per correction ``name -> rejected``).
+    """
+    p, withheld = {}, []
+    for name, value in p_values.items():
+        if value is None:
+            p[name] = 1.0
+            withheld.append(name)
+        else:
+            p[name] = min(max(value, P_FLOOR), 1.0)
+    names = corrections or list(DEFAULT_CORRECTIONS)
+    return {"alpha": alpha, "p": p, "withheld": withheld,
+            "decisions": {name: correction(name)["fn"](p, alpha) for name in names}}
+
+
+def series_statistics(values, lags=None, h_steps=1):
+    """The one-sided Newey-West statistics of a stamp-ordered series, with the HAC guard.
+
+    The shared reading of :class:`QuantileSortBook` and ``StampSeriesStats``: ``n``, ``mean`` (exactly
+    rounded), ``se``, ``t``, ``p_value`` (one-sided, ``E <= 0`` rejected), ``lags``, ``frac_pos`` and
+    ``hac_withheld`` (empty when the statistics stand). A band that spans the series (``lags >= n - 1``),
+    fewer than two stamps and a series with no variance keep the mean and withhold the rest.
+
+    Parameters
+    ----------
+    values : list of float
+        The series in stamp order.
+    lags : int or None
+        The Bartlett truncation; ``None`` takes :func:`~dskit.pipeline.stats.dm_lags` over ``h_steps``.
+    h_steps : int
+        The horizon in stamp steps.
+
+    Returns
+    -------
+    dict
+        The statistics above.
+    """
+    n = len(values)
+    out = {"n": n, "mean": math.fsum(values) / n if n else None, "se": None, "t": None,
+           "p_value": None, "lags": None, "frac_pos": None, "hac_withheld": ""}
+    if n == 0:
+        out["hac_withheld"] = "no stamp was scored"
+        return out
+    out["frac_pos"] = sum(1 for v in values if v > 0.0) / n
+    if n < 2:
+        out["hac_withheld"] = "fewer than 2 scored stamps: no HAC statistic is reported"
+        return out
+    lags = dm_lags(n, h_steps) if lags is None else int(lags)
+    out["lags"] = lags
+    if lags >= n - 1:
+        out["hac_withheld"] = (f"the Bartlett band ({lags} lag(s)) spans the {n}-stamp "
+                               "series: no HAC statistic is reported")
+        return out
+    hac = newey_west_mean(values, lags=lags)
+    out.update(mean=hac["mean"], se=hac["se"], t=hac["t"], p_value=hac["p_value"])
+    if hac["t"] is None:         # no variance: the owner's p of 0.0 or 1.0 is a sign rule, not evidence
+        out.update(se=None, p_value=None, hac_withheld="no_variance")
+    return out
+
+
+def iso_date(stamp):
+    """The calendar date of an ISO-date stamp (a ``date`` passes), refusing anything else."""
+    if type(stamp) is date:
+        return stamp
+    try:
+        return date.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        raise ValueError(f"the bootstrap needs ISO-date stamps, got {stamp!r}") from None
+
+
+def block_bootstrap_interval(stamps, values, spec, statistic=None, sampler_class=CalendarBlockBootstrap):
+    """The calendar-block bootstrap percentile interval of a statistic of ``values`` (one per stamp).
+
+    Parameters
+    ----------
+    stamps : list
+        ISO-date stamps, strictly increasing and distinct.
+    values : list of float
+        One value per stamp.
+    spec : dict
+        ``block_days``, ``replicates``, ``seed``, ``level`` (all required).
+    statistic : callable or None
+        Maps a resampled value list to a number or ``None``; ``None`` takes the exactly rounded mean.
+    sampler_class : type
+        The calendar block sampler: :class:`~dskit.pipeline.stats.CalendarBlockBootstrap` (complete blocks only, the
+        default) or :class:`~dskit.pipeline.stats.EdgePaddedCalendarBlockBootstrap` (every date in equally many blocks:
+        the one for week and month stamps, which complete blocks leave unsupported).
+
+    Returns
+    -------
+    dict
+        ``level``, ``block_days``, ``replicates``, ``seed``, ``supported`` and, when supported, ``lo``,
+        ``hi`` (the two-sided ``level`` interval) and ``lower_one_sided`` (the ``1 - level`` quantile).
+        A resample whose statistic is ``None`` is left out; no resample left leaves the bounds ``None``.
+    """
+    level, replicates, seed = spec["level"], int(spec["replicates"]), int(spec["seed"])
+    out = {"level": level, "block_days": int(spec["block_days"]), "replicates": replicates,
+           "seed": seed, "supported": False, "lo": None, "hi": None, "lower_one_sided": None}
+    if not values:
+        return out
+    sampler = sampler_class([iso_date(s) for s in stamps], out["block_days"])
+    out["supported"] = sampler.supported
+    if not sampler.supported:
+        return out
+    take = statistic or (lambda sample: math.fsum(sample) / len(sample))
+    stats = sorted(s for s in (take([values[i] for i in draw])
+                               for draw in sampler.sample_indices(replicates, seed)) if s is not None)
+    if stats:
+        tail = (1.0 - level) / 2.0
+        out.update(lo=sample_quantile(stats, tail), hi=sample_quantile(stats, 1.0 - tail),
+                   lower_one_sided=sample_quantile(stats, 1.0 - level))
+    return out
 
 
 def _field(record, name):
@@ -887,8 +1037,9 @@ class CrossSectionIC(Node):
     #: What may be done to the outcome before ranking.
     OUTCOME_TRANSFORMS = ("identity", "abs")
     _PARAMS = ("stamp_field", "series_field", "measures", "lags", "h_steps",
-               "min_names", "usable_names", "splits", "by_month")
-    _MEASURE_KEYS = ("forecast_field", "outcome_field", "control_field", "outcome_transform")
+               "min_names", "usable_names", "splits", "by_month", "family")
+    _MEASURE_KEYS = ("forecast_field", "outcome_field", "control_field", "outcome_transform", "sign")
+    _FAMILY_KEYS = ("alpha", "corrections")
     #: The pseudo-split ``by_month`` writes; a declared split may not reuse it.
     _MONTH = "month"
     #: The optional floors: knob -> its inclusive lower bound.
@@ -915,6 +1066,30 @@ class CrossSectionIC(Node):
         if not is_node_ref(transform) and transform not in cls.OUTCOME_TRANSFORMS:
             problems.append(f"{where}.outcome_transform must be one of "
                             f"{list(cls.OUTCOME_TRANSFORMS)}, got {transform!r}")
+        sign = spec.get("sign")
+        if "sign" in spec and not is_node_ref(sign) and (isinstance(sign, bool) or sign not in (1, -1)):
+            problems.append(f"{where}.sign must be 1 or -1, got {sign!r}")
+        return problems
+
+    @classmethod
+    def _family_problems(cls, params):
+        """Problems with the ``family`` block: its keys, its level, its corrections and a sign on every measure."""
+        family = params.get("family")
+        if "family" not in params or is_node_ref(family):
+            return []
+        if not isinstance(family, dict):
+            return [f"family must be a dict, got {family!r}"]
+        problems = [f"family: unknown key {k!r} — allowed: {list(cls._FAMILY_KEYS)}"
+                    for k in sorted(set(family) - set(cls._FAMILY_KEYS))]
+        alpha = family.get("alpha")
+        if not is_node_ref(alpha) and not (number_ok(alpha) and not isinstance(alpha, bool) and 0 < alpha < 1):
+            problems.append(f"family.alpha must be a number in (0, 1), got {alpha!r}")
+        if "corrections" in family and not is_node_ref(family["corrections"]):
+            problems += ["family." + m for m in corrections_problems(family["corrections"])]
+        measures = params.get("measures")
+        if isinstance(measures, dict) and not all(
+                isinstance(spec, dict) and "sign" in spec for spec in measures.values()):
+            problems.append("family tests a declared direction: every measure needs a sign (1 or -1)")
         return problems
 
     @classmethod
@@ -956,6 +1131,7 @@ class CrossSectionIC(Node):
                 problems.append(f"splits must be a non-empty list of field names, got {splits!r}")
             elif len(set(splits)) < len(splits):
                 problems.append("splits names must be distinct")
+        problems.extend(cls._family_problems(params))
         by_month = params.get("by_month", False)
         if not is_node_ref(by_month) and not isinstance(by_month, bool):
             problems.append(f"by_month must be a boolean, got {by_month!r}")
@@ -1005,12 +1181,10 @@ class CrossSectionIC(Node):
         value = self.params.get(name)
         return None if value is None else int(value)
 
-    def _score(self, stamps, names, outcomes, forecasts, control):
-        """The per_timestamp_ic dict and the scored ``(stamp, rho, n_names)`` triples."""
-        cs = cross_section_by_stamp(stamps, names, outcomes, forecasts,
-                                    min_names=self._knob("min_names"), control=control)
+    def _ic_stats(self, cs, rho):
+        """The ``ic_from_rho`` dict of a rho series, the HAC statistics withheld when the band spans it."""
         stats = ic_from_rho(
-            cs["rho"], cs["n_names_all"], lags=self._knob("lags"),
+            rho, cs["n_names_all"], lags=self._knob("lags"),
             h_steps=self._knob("h_steps") or 1, usable_names=self._knob("usable_names"),
             n_skipped=cs["n_skipped"])
         withheld = ""
@@ -1019,6 +1193,22 @@ class CrossSectionIC(Node):
                         f"{stats['n_stamps']}-stamp series: no HAC statistic is reported")
             stats.update(ic_se=None, ic_t=None, ic_p=None)
         stats["hac_withheld"] = withheld
+        return stats
+
+    def _score(self, stamps, names, outcomes, forecasts, control, sign=None):
+        """The per_timestamp_ic dict and the scored ``(stamp, rho, n_names)`` triples.
+
+        With a declared ``sign`` the dict also carries ``sign`` and ``signed``: the same statistics of
+        ``sign * rho``, whose one-sided ``ic_p`` tests the declared direction.
+        """
+        cs = cross_section_by_stamp(stamps, names, outcomes, forecasts,
+                                    min_names=self._knob("min_names"), control=control)
+        stats = self._ic_stats(cs, cs["rho"])
+        if sign is not None:
+            signed = self._ic_stats(cs, [sign * r for r in cs["rho"]])
+            stats["sign"] = sign
+            stats["signed"] = {k: signed[k] for k in ("ic", "ic_se", "ic_t", "ic_p", "frac_pos", "hac_withheld")}
+            stats["signed"]["usable"] = signed["usable"]
         return stats, list(zip(cs["stamps"], cs["rho"], cs["n_names"]))
 
     def _collect(self, rows):
@@ -1083,7 +1273,8 @@ class CrossSectionIC(Node):
             controlled = p["measures"][name].get("control_field") is not None
             columns = ("stamps", "names", "y", "yhat") + (("control",) if controlled else ())
             stats, scored = self._score(*[panel[col] for col in columns],
-                                        *([] if controlled else [None]))
+                                        *([] if controlled else [None]),
+                                        sign=p["measures"][name].get("sign"))
             measures[name] = {**stats, "rows_scored": len(panel["y"]), "dropped": panel["dropped"]}
             records.extend({"measure": name, "stamp": stamp, "rho": rho, "n_names": n}
                            for stamp, rho, n in scored)
@@ -1104,6 +1295,11 @@ class CrossSectionIC(Node):
             "measures": measures,
             "splits": splits,
         }
+        if "family" in p:
+            summary["family"] = family_decisions(
+                {name: (m["signed"]["ic_p"] if m["signed"]["usable"] and m["signed"]["ic_t"] is not None else None)
+                 for name, m in measures.items()},
+                p["family"]["alpha"], p["family"].get("corrections"))
         self.log.info("%s: %d row(s) in, %d measure(s), %d split summar(ies)",
                       self.key, rows_in, len(measures), len(splits))
         return {"summary": summary, "records": records}
@@ -1209,9 +1405,7 @@ class QuantileSortBook(Node):
     _SIGNAL_KEYS = ("signal_field", "outcome_field", "sign", "cost_field")
     _BOOTSTRAP_KEYS = ("block_days", "replicates", "seed", "level")
     #: The corrections run when ``corrections`` is not declared.
-    DEFAULT_CORRECTIONS = ("bh", "bonferroni")
-    #: The smallest p-value the family accepts (a correction refuses 0).
-    _P_FLOOR = sys.float_info.min
+    DEFAULT_CORRECTIONS = DEFAULT_CORRECTIONS
 
     @classmethod
     def _signal_problems(cls, name, spec):
@@ -1332,14 +1526,7 @@ class QuantileSortBook(Node):
         problems = []
         corrections = params.get("corrections")
         if "corrections" in params and not is_node_ref(corrections):
-            if not isinstance(corrections, list) or not corrections:
-                problems.append(f"corrections must be a non-empty list of names, got {corrections!r}")
-            else:
-                for name in corrections:
-                    entry = CORRECTIONS.get(name) if isinstance(name, str) else None
-                    if entry is None or entry["needs_weights"]:
-                        problems.append(f"corrections names {name!r}: must be one of "
-                                        f"{sorted(n for n, e in CORRECTIONS.items() if not e['needs_weights'])}")
+            problems.extend(corrections_problems(corrections))
         splits = params.get("splits")
         if "splits" in params and not is_node_ref(splits):
             if (not isinstance(splits, list) or not splits
@@ -1467,57 +1654,11 @@ class QuantileSortBook(Node):
 
     def _series(self, values):
         """The one-sided Newey–West statistics of a stamp-ordered series, with the HAC guard."""
-        n = len(values)
-        out = {"n": n, "mean": self._mean(values) if n else None, "se": None, "t": None,
-               "p_value": None, "lags": None, "frac_pos": None, "hac_withheld": ""}
-        if n == 0:
-            out["hac_withheld"] = "no stamp was scored"
-            return out
-        out["frac_pos"] = sum(1 for v in values if v > 0.0) / n
-        if n < 2:
-            out["hac_withheld"] = "fewer than 2 scored stamps: no HAC statistic is reported"
-            return out
-        lags = self.params.get("lags")
-        lags = dm_lags(n, self.params.get("h_steps", 1)) if lags is None else int(lags)
-        out["lags"] = lags
-        if lags >= n - 1:
-            out["hac_withheld"] = (f"the Bartlett band ({lags} lag(s)) spans the {n}-stamp "
-                                   "series: no HAC statistic is reported")
-            return out
-        hac = newey_west_mean(values, lags=lags)
-        out.update(mean=hac["mean"], se=hac["se"], t=hac["t"], p_value=hac["p_value"])
-        if hac["t"] is None:         # no variance: the owner's p of 0.0 or 1.0 is a sign rule, not evidence
-            out.update(se=None, p_value=None, hac_withheld="no_variance")
-        return out
-
-    @staticmethod
-    def _as_date(stamp):
-        """The calendar date of an ISO-date stamp, refusing anything else."""
-        if type(stamp) is date:
-            return stamp
-        try:
-            return date.fromisoformat(stamp)
-        except (TypeError, ValueError):
-            raise ValueError(f"the bootstrap needs ISO-date stamps, got {stamp!r}") from None
+        return series_statistics(values, self.params.get("lags"), self.params.get("h_steps", 1))
 
     def _interval(self, stamps, values):
         """The block-bootstrap percentile interval of the mean of ``values`` (one per stamp)."""
-        spec = self.params["bootstrap"]
-        level, replicates, seed = spec["level"], int(spec["replicates"]), int(spec["seed"])
-        out = {"level": level, "block_days": int(spec["block_days"]), "replicates": replicates,
-               "seed": seed, "supported": False, "lo": None, "hi": None, "lower_one_sided": None}
-        if not values:
-            return out
-        sampler = CalendarBlockBootstrap([self._as_date(s) for s in stamps], out["block_days"])
-        out["supported"] = sampler.supported
-        if sampler.supported:
-            n = len(values)
-            means = sorted(math.fsum(values[i] for i in draw) / n
-                           for draw in sampler.sample_indices(replicates, seed))
-            tail = (1.0 - level) / 2.0
-            out.update(lo=sample_quantile(means, tail), hi=sample_quantile(means, 1.0 - tail),
-                       lower_one_sided=sample_quantile(means, 1.0 - level))
-        return out
+        return block_bootstrap_interval(stamps, values, self.params["bootstrap"])
 
     def _signal_summary(self, signal, panel):
         """One signal's records and its summary block."""
@@ -1555,18 +1696,10 @@ class QuantileSortBook(Node):
 
     def _family(self, signals):
         """The corrections over the signals' net p-values; a signal without one stays in at p = 1."""
-        alpha = self.params["alpha"]
-        p, withheld = {}, []
-        for name, block in signals.items():
-            net = block["net"]
-            if net["t"] is None or net["p_value"] is None:
-                p[name] = 1.0
-                withheld.append(name)
-            else:
-                p[name] = min(max(net["p_value"], self._P_FLOOR), 1.0)
-        names = self.params.get("corrections") or list(self.DEFAULT_CORRECTIONS)
-        return {"alpha": alpha, "p": p, "withheld": withheld,
-                "decisions": {name: correction(name)["fn"](p, alpha) for name in names}}
+        return family_decisions(
+            {name: (None if block["net"]["t"] is None or block["net"]["p_value"] is None
+                    else block["net"]["p_value"]) for name, block in signals.items()},
+            self.params["alpha"], self.params.get("corrections"))
 
     def run(self, ctx, inputs):
         """Sort every signal's cross-sections, then test the spread series and the family.

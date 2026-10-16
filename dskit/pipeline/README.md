@@ -738,6 +738,13 @@ they register only into private registries, never the default one.
   all labelled, and the difference). `ChainEventCalibrator` reports precision/recall of a rule grid against labelled dates,
   dropping rows and labels from `fit_end_before` on; it never selects. Every rule value is a required param: the frozen
   values live in the child's run document.
+- `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
+  `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
+  out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one
+  series per group (day, ISO-week or month bucket, mean or sum: the clustering step) and reports the mean with the Newey-West statistics, the Sharpe ratio (analytic and calendar-block
+  bootstrap interval, annualised by a declared period count, a `hurdle` on the lower bound) and a paired or unpaired contrast of two groups. `ChainStructureOrders` reads a daily chain and
+  chooses each structure's expiry (a DTE rule or a calendar offset) and strikes (`atm`, `delta`, `max_oi`, `mirror`) with a serial-roll, every-n or days-before-expiry entry, emitting the orders
+  `OptionStructureLedger` takes. `CrossSectionIC` takes a declared `sign` per measure and a `family`; `ParquetStreamRows` takes `include`, `iso_fields` and `where`; `DailyBarFeatures` takes `realized_vol`.
 - `libs/chain_parquet.py`, `libs/chain_panel.py`, `libs/chain_reuse.py`, `libs/root_stitch.py` (ADR-0265 Amendment 3, by import path):
   `ParquetChainRows` reads a snapshot-export Parquet tree as the same row dicts as the gzip unit reader (column pruning, symbol
   and date predicates pushed to row groups, newest-acquired copy of a unit wins by footer windows, symbol-by-symbol order);
@@ -909,6 +916,10 @@ dskit/pipeline/
 │                      holdout locked first, count-sized rolling folds, warm-up vs
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
+├── kinds_compute.py   ComputeFields (by import path, ADR-0265 Amendment 5): per-row arithmetic over declared fields, `keep` projection, text / list / item; null and
+│                      out-of-domain results are None and counted
+├── kinds_series.py    StampSeriesStats (by import path, ADR-0265 Amendment 5): stamped values to a per-group week / month series, Newey-West, Sharpe + calendar-block
+│                      bootstrap interval, hurdle, paired / unpaired contrast
 ├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
 ├── kinds_run_write.py RecordsWriteRun (records-write-run): a table file, and so a published stream, named by the run; `{run}` in the path stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
@@ -1036,6 +1047,7 @@ dskit/pipeline/
 │                      chain_features (ChainDayFeatures: ATM/wing IV, skew, term, straddle, spread, OI/volume per symbol-date-DTE from NBBO mids, by import path, ADR-0265),
 │                      chain_events (ChainEventDetector + ChainEventCalibrator: earnings-like events from the front-IV crush in the chain-day features, no calendar; a retrospective labeller, by import path, ADR-0265)
 │                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3
+│                      chain_orders (ChainStructureOrders: expiry + strike selection by atm / delta / max open interest / mirror from a daily chain, orders for the ledger, by import path, ADR-0265 Amendment 5); ParquetStreamRows takes `include` / `iso_fields`; DailyBarFeatures takes `realized_vol`; QuoteBook is chain_features' public quote book
 ├── README.md          this file
 ├── EXTENDING.md       extension points + gotchas (the seams, and what bites)
 └── CLAUDE.md          agent orientation

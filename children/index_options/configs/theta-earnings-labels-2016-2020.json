@@ -1,105 +1,145 @@
 {
- "notes": "Announcement dates (after the close for all five names; NVDA, AMZN, GOOGL, MSFT, AAPL all report after the US close) of quarterly results, 2016-01-01..2020-12-31 only, compiled from memory of the public releases by the implementer (Claude Sonnet 5.5, 2026-10-12) and NOT cross-checked against a source in this repository. confidence: high = certain; medium = recalled with good confidence but unverified. Dates the implementer or the reviewer was not sure of were dropped (GOOGL 2017-07, GOOGL 2016-07-28 and NVDA 2017-05-09 are absent). A date after 2020-12-31 is never listed. Intended use: ChainEventCalibrator labels for ADR-0265 H2; only AAPL has a landed feature table at the time of writing.",
+ "notes": "Announcement dates (after the close for all five names; NVDA, AMZN, GOOGL, MSFT, AAPL all report after the US close) of quarterly results, 2016-01-01..2020-12-31 only, compiled from memory of the public releases by the implementer (Claude Sonnet 5.5, 2026-10-12) and NOT cross-checked against a source in this repository. confidence: high = certain; medium = recalled with good confidence but unverified. Dates the implementer or the reviewer was not sure of were dropped (GOOGL 2017-07, GOOGL 2016-07-28 and NVDA 2017-05-09 are absent). A date after 2020-12-31 is never listed. Intended use: ChainEventCalibrator labels for ADR-0265 H2; only AAPL has a landed feature table at the time of writing. D5 verification, 2026-10-15: all 20 AAPL dates match the dated Apple company earnings releases linked on their rows; zero dates dropped. The other four names remain unverified and exploratory. No date or confidence changed.",
  "labels": [
   {
    "symbol": "AAPL",
    "earnings_date": "2016-01-26",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2016/01/26Apple-Reports-Record-First-Quarter-Results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2016-04-26",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2016/04/26Apple-Reports-Second-Quarter-Results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2016-07-26",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2016/07/apple-reports-third-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2016-10-25",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2016/10/apple-reports-fourth-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2017-01-31",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2017/01/apple-reports-record-first-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2017-05-02",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2017/05/apple-reports-second-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2017-08-01",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2017/08/apple-reports-third-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2017-11-02",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2017/11/apple-reports-fourth-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2018-02-01",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2018/02/apple-reports-first-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2018-05-01",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2018/05/apple-reports-second-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2018-07-31",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2018/07/apple-reports-third-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2018-11-01",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2018/11/apple-reports-fourth-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2019-01-29",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2019/01/apple-reports-first-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2019-04-30",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2019/04/apple-reports-second-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2019-07-30",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2019/07/apple-reports-third-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2019-10-30",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2019/10/apple-reports-fourth-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2020-01-28",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2020/01/apple-reports-record-first-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2020-04-30",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2020/04/apple-reports-second-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2020-07-30",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2020/07/apple-reports-third-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "AAPL",
    "earnings_date": "2020-10-29",
-   "confidence": "high"
+   "confidence": "high",
+   "source_url": "https://www.apple.com/newsroom/2020/10/apple-reports-fourth-quarter-results/",
+   "verified_date": "2026-10-15"
   },
   {
    "symbol": "MSFT",

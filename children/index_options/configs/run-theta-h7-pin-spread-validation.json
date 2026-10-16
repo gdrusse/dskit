@@ -1,0 +1,794 @@
+{
+  "name": "theta-h7-pin-spread-validation",
+  "notes": "PRE-REGISTERED H7 (ADR-0265, Amendments 5-6), validation period 2021-01-04 .. 2026-01-01 (end_before; nothing on or after 2026-01-01 is read). HISTORICAL ADR RULE, verbatim (Amendment 6 below controls): **H7** pin/expiry (return toward the max-open-interest strike versus a placebo strike) and a spread census of wide-spread names. COMMON (ADR-0265 decisions 1-4): Split. Development 2016-01-04..2020-12-31; validation 2021-01-04..2025-12-31, run once per hypothesis, unchanged, only if the development run passed; 2024-25 is a labelled subperiod, never the sole basis of a pass; 2026 stays sealed. Universe gate: a root enters a test only from its first date with bid > 0 (the census); roots are stitched across renames. Cost model: buy at the ask, sell at the bid (NBBO); no mid fills; `close` is never a mark; our own Black-76 implied vol from the mid and the parity forward. Multiple testing: Benjamini-Hochberg 5% within a hypothesis's feature family; Bonferroni across the families for any headline claim; secondary analyses are reported, never promoted. AMENDMENT 6 controls: D3 event_gap primary; D4 labelled H2(b) primary population, measurement only, detected-only validation cannot close it; D7 SPX put-write only primary, fee/capital sensitivities descriptive; D9 only tercile-dependent readings start 2019 using 2016-2018 liquidity, original overall/half splits unchanged; D10 H7 descriptive, cannot close programme; D11 H4 monthly only, weekly-versus-monthly dropped. RUN ONCE: this is the validation run; it is not repeated, tuned or re-read. Run from children/index_options, niced, after the census, the universe freeze and the panel (ADR-0265 Amendment 5 run book): nice -n 10 python -m dskit.pipeline run configs/run-theta-h7-pin-spread-validation.json --asof 2025-12-31",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h7-pin-spread-validation",
+    "notes": "Beside the other research runs; nothing is written under /home/russell/data/thetadata. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/thetadata/parquet-v2/options-tested/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "open_interest",
+          "underlying_price"
+        ],
+        "symbols": [
+          "__UNIVERSE_NOT_FROZEN__"
+        ],
+        "start": "2021-01-04",
+        "end_before": "2026-01-01",
+        "sealed_from": "2026-01-01",
+        "renames_file": "configs/root-renames.json",
+        "renames_key": "renames",
+        "renames_sha256": "ddb611ae2675fcd083c74bfd0ef7c81f74c94828b5457782717116ccbbfe27c3",
+        "breaks_key": "breaks",
+        "pending_key": "pending_verification"
+      },
+      "notes": "The daily chain of the frozen universe (open interest included), bounded to the period."
+    },
+    "orders": {
+      "uses": "dskit.pipeline.libs.chain_orders:ChainStructureOrders",
+      "inputs": {
+        "records": "$chain.records"
+      },
+      "params": {
+        "chain_fields": {
+          "symbol": "symbol",
+          "date": "date",
+          "expiration": "expiration",
+          "strike": "strike",
+          "right": "right",
+          "bid": "bid",
+          "ask": "ask",
+          "underlying": "underlying_price",
+          "open_interest": "open_interest"
+        },
+        "order_fields": {
+          "date": "open_date",
+          "symbol": "symbol",
+          "expiration": "expiration",
+          "strikes": "strikes",
+          "structure": "structure"
+        },
+        "call_values": [
+          "call"
+        ],
+        "put_values": [
+          "put"
+        ],
+        "start": "2021-01-04",
+        "end_before": "2026-01-01",
+        "rate": 0.0,
+        "structures": {
+          "pin": {
+            "legs": [
+              {
+                "right": "call",
+                "quantity": 1,
+                "select": {
+                  "kind": "max_oi"
+                }
+              },
+              {
+                "right": "put",
+                "quantity": 1,
+                "select": {
+                  "kind": "mirror",
+                  "of": 0
+                }
+              }
+            ],
+            "entry": {
+              "kind": "days_before_expiry",
+              "days": 7
+            },
+            "expiry_rule": {
+              "weekday": 4,
+              "day_of_month": [
+                15,
+                21
+              ]
+            }
+          }
+        }
+      },
+      "notes": "For each standard monthly expiration (a Friday on the 15th to 21st) seven calendar days before it: the strike with the largest open interest (calls plus puts) and a PLACEBO strike, the listed strike with a usable put quote nearest the mirror image of it through the underlying (2 spot - strike): the same distance on the other side, chosen by the same rule and before any outcome. Monthly expiries that fall on a Thursday (a Friday holiday) are not ordered."
+    },
+    "bars_raw": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2020-09-01",
+                "end_before": "2026-01-01"
+              }
+            },
+            "source": "stock-daily-bars",
+            "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          },
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "stream": "files",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "close": "close",
+              "adjusted_close": "adjusted_close"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2020-09-01",
+                "end_before": "2026-01-01"
+              }
+            },
+            "source": "stock-daily-bars-300",
+            "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c",
+            "include": [
+              "*/underlying_prices.parquet"
+            ]
+          }
+        ]
+      },
+      "notes": "Yahoo daily bars of the tested names (pinned snapshots), for the underlying's move between the open and the expiration."
+    },
+    "bars_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$bars_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "close",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Bars with a price."
+    },
+    "stream0": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$orders.records"
+      },
+      "params": {
+        "fields": {
+          "date": {
+            "field": "open_date"
+          }
+        }
+      },
+      "notes": "The open date as the join key."
+    },
+    "stream1": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$stream0.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          }
+        }
+      },
+      "notes": "Adds the constant the keyed attachments below agree on."
+    },
+    "at_open_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$bars_ok.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          },
+          "close_open": {
+            "field": "close"
+          }
+        },
+        "keep": [
+          "symbol",
+          "date"
+        ]
+      },
+      "notes": "The columns of at_open the attachment demands: ['symbol', 'date'] + the agreed constant + ['close_open'], nothing else."
+    },
+    "at_open": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$stream1.records",
+        "table": "$at_open_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.3,
+        "column_prefix": "at_open_",
+        "families": {
+          "at_open": {
+            "fields": [
+              "close_open"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The split-adjusted close of the open date."
+          }
+        }
+      },
+      "notes": "The split-adjusted close of the open date."
+    },
+    "stream2": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$at_open.records"
+      },
+      "params": {
+        "fields": {
+          "date": {
+            "field": "expiration"
+          }
+        },
+        "overwrite": true
+      },
+      "notes": "The expiration as the join key."
+    },
+    "at_expiry_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$bars_ok.records"
+      },
+      "params": {
+        "fields": {
+          "agree": {
+            "const": 1
+          },
+          "close_expiry": {
+            "field": "close"
+          }
+        },
+        "keep": [
+          "symbol",
+          "date"
+        ]
+      },
+      "notes": "The columns of at_expiry the attachment demands: ['symbol', 'date'] + the agreed constant + ['close_expiry'], nothing else."
+    },
+    "at_expiry": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$stream2.records",
+        "table": "$at_expiry_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "date"
+        ],
+        "agree_fields": [
+          "agree"
+        ],
+        "max_absent_fraction": 0.3,
+        "column_prefix": "at_expiry_",
+        "families": {
+          "at_expiry": {
+            "fields": [
+              "close_expiry"
+            ],
+            "withheld_fields": {},
+            "clock_note": "The split-adjusted close of the expiration date."
+          }
+        }
+      },
+      "notes": "The split-adjusted close of the expiration date."
+    },
+    "pins_ok": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$at_expiry.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "close_open",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "close_expiry",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Orders with both closes."
+    },
+    "moves": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$pins_ok.records"
+      },
+      "params": {
+        "fields": {
+          "k_star": {
+            "item": {
+              "field": "strikes",
+              "index": 0
+            }
+          },
+          "k_mirror": {
+            "item": {
+              "field": "strikes",
+              "index": 1
+            }
+          },
+          "expiry_level": {
+            "op": "mul",
+            "args": [
+              {
+                "field": "spot"
+              },
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "field": "close_expiry"
+                  },
+                  {
+                    "field": "close_open"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "notes": "The strikes out of the list, and the underlying's level at expiry = spot at the open x the split-adjusted close ratio (a ratio is split-invariant; a split inside the 7 days would break it, rare and disclosed)."
+    },
+    "toward": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$moves.records"
+      },
+      "params": {
+        "fields": {
+          "toward_star": {
+            "op": "div",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "op": "abs",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "field": "spot"
+                          },
+                          {
+                            "field": "k_star"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "abs",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "field": "expiry_level"
+                          },
+                          {
+                            "field": "k_star"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "spot"
+              }
+            ]
+          },
+          "toward_placebo": {
+            "op": "div",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "op": "abs",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "field": "spot"
+                          },
+                          {
+                            "field": "k_mirror"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "abs",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "field": "expiry_level"
+                          },
+                          {
+                            "field": "k_mirror"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "spot"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Movement toward a strike over the 7 days as a fraction of the spot: (|spot - K| - |level at expiry - K|) / spot. Positive: the underlying ended closer to K."
+    },
+    "excess": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$toward.records"
+      },
+      "params": {
+        "fields": {
+          "pin_excess": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "toward_star"
+              },
+              {
+                "field": "toward_placebo"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "PIN EXCESS = movement toward the max-open-interest strike minus movement toward the mirror placebo."
+    },
+    "sided_in": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$excess.records"
+      },
+      "params": {
+        "fields": {
+          "above": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "k_star"
+              },
+              {
+                "field": "spot"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "K* minus the spot: positive when the max-open-interest strike lies above the underlying."
+    },
+    "sided": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$sided_in.records"
+      },
+      "params": {
+        "field": "side",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "above",
+                "op": ">",
+                "value": 0
+              }
+            ],
+            "value": "above"
+          },
+          {
+            "when": [],
+            "value": "below"
+          }
+        ]
+      },
+      "notes": "Which side of the underlying the max-open-interest strike sits on: a drift in the underlying moves it toward one side, so the effect is read on each side."
+    },
+    "phased": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$sided.records"
+      },
+      "params": {
+        "field": "half",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "open_date",
+                "op": "<",
+                "value": "2023-07-01"
+              }
+            ],
+            "value": "first"
+          },
+          {
+            "when": [],
+            "value": "second"
+          }
+        ]
+      },
+      "notes": "The two halves of the period, split at 2023-07-01 (the same-sign-in-both-halves check)."
+    },
+    "pin": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "open_date",
+        "value_field": "pin_excess",
+        "by": [
+          "side",
+          "half"
+        ],
+        "bucket": "month",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "DESCRIPTIVE ONLY (D10; cannot close the programme): the monthly mean pin excess (toward the max-open-interest strike minus toward the placebo), overall and by side of the underlying and by half, with a Newey-West t and a calendar-block bootstrap interval. A pin pulls on both sides; a drift pulls on one. Descriptive (the ADR gives no pass number)."
+    },
+    "toward_star_series": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "open_date",
+        "value_field": "toward_star",
+        "bucket": "month",
+        "h_steps": 1
+      },
+      "notes": "DESCRIPTIVE: movement toward the max-open-interest strike."
+    },
+    "toward_placebo_series": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$phased.records"
+      },
+      "params": {
+        "stamp_field": "open_date",
+        "value_field": "toward_placebo",
+        "bucket": "month",
+        "h_steps": 1
+      },
+      "notes": "DESCRIPTIVE: movement toward the placebo strike."
+    },
+    "panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "theta-chain-panel",
+            "stream": "files",
+            "snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "target_dte": "target_dte",
+              "status": "status",
+              "after_first_quote": "after_first_quote",
+              "half_spread_over_premium": "half_spread_over_premium",
+              "liquidity_tercile": "liquidity_tercile"
+            },
+            "include": [
+              "*.parquet"
+            ],
+            "iso_fields": [
+              "date"
+            ],
+            "read_bounds": {
+              "date": {
+                "start": "2021-01-04",
+                "end_before": "2026-01-01"
+              }
+            },
+            "where": [
+              {
+                "field": "after_first_quote",
+                "op": "==",
+                "value": true
+              },
+              {
+                "field": "status",
+                "op": "==",
+                "value": "ok"
+              },
+              {
+                "field": "target_dte",
+                "op": "==",
+                "value": 30
+              }
+            ]
+          }
+        ]
+      },
+      "notes": "The panel of chain-day features (ChainPanelBuild), every landed root, read through its registered snapshot pin, one file a date, `date` and `expiration` as ISO text, bounded to the period's dates by predicate pushdown. Only the 30-DTE target (the nearest listed expiry within 7 days of 30), from each name's first quoted date (after_first_quote) and with a resolved forward and vols (status ok), is kept, one file at a time, and only the columns this document reads."
+    },
+    "spreads": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "half_spread_over_premium",
+            "op": ">=",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "Rows with a measured half-spread over premium."
+    },
+    "tercile_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$spreads.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "date",
+            "op": ">=",
+            "value": "2021-01-04"
+          },
+          {
+            "field": "liquidity_tercile",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "D9: tercile readings from 2019 only, using 2016-2018 liquidity. Per-name and pin descriptions retain the full period."
+    },
+    "spread_series": {
+      "uses": "dskit.pipeline.kinds_series:StampSeriesStats",
+      "inputs": {
+        "records": "$tercile_rows.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "value_field": "half_spread_over_premium",
+        "by": [
+          "liquidity_tercile"
+        ],
+        "bucket": "month",
+        "h_steps": 1,
+        "bootstrap": {
+          "block_days": 90,
+          "replicates": 2000,
+          "seed": 20261012,
+          "level": 0.9
+        }
+      },
+      "notes": "SPREAD CENSUS: the monthly mean half-spread over premium of the 30-DTE ATM straddle, by liquidity tercile (D9: frozen on 2016-2018, readings from 2019), with intervals."
+    },
+    "spread_by_name": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$spreads.records"
+      },
+      "params": {
+        "keys": [
+          "symbol"
+        ],
+        "aggregates": {
+          "dates": {
+            "op": "count"
+          },
+          "mean_half_spread": {
+            "op": "mean",
+            "field": "half_spread_over_premium"
+          },
+          "max_half_spread": {
+            "op": "max",
+            "field": "half_spread_over_premium"
+          }
+        }
+      },
+      "notes": "Per name: dates, mean and maximum half-spread over premium: the table a reader sorts to see the wide-spread names."
+    },
+    "spread_table": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$spread_by_name.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-research-20261012/hypotheses/h7-pin-spread-validation/spread-by-name.jsonl",
+        "overwrite": true,
+        "source": "one row per name: dates, mean and max half-spread over premium"
+      },
+      "notes": "Audit rows, overwritten on a rerun: the run directory keeps the hashed record."
+    },
+    "report": {
+      "uses": "run-report",
+      "inputs": {
+        "pin": "$pin.summary",
+        "star": "$toward_star_series.summary",
+        "placebo": "$toward_placebo_series.summary",
+        "spread": "$spread_series.summary",
+        "orders": "$orders.summary"
+      },
+      "params": {
+        "title": "H7 pin and expiry, spread census",
+        "sections": [
+          "stages"
+        ]
+      },
+      "notes": "evidence.md renders the node summaries; evidence.json holds every value."
+    }
+  }
+}
