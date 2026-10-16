@@ -4,7 +4,7 @@ Updated: 2026-10-16 by GPT-6 Astra. Previous note in docs/archive/re-entry/index
 
 ## Now
 
-- ADR-0269 Theta ML preparation: approved generic ParquetPanelAugment + six JSONs built.
+- ADR-0269 Theta ML preparation: approved ParquetPanelAugment + six JSONs landed780017f2 on origin/main.
 - Candidate886db23e on basec5483aae; fresh Terra correctness and Luna integration clean, zero findings.
 - ADR was renumbered from0268 because main's performance sweep occupied that ID; no experimental change.
 - Existing price-distribution PatchTST32/42-feature baseline and target preserved; Theta families are prior-date inputs.

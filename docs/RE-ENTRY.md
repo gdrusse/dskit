@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-16: ADR-0268 perf sweep landed 471dd655 (26 units, two clean lenses each); owner purges remote branches |
-| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-16: ADR0269 preparation built/reviewed886db23e;686tests, 3-ticker source smoke passes; full real test blocked on safe rates/panel pins; no fits |
+| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-16: ADR0269 preparation landed780017f2/reviewed886db23e;686tests, 3-ticker source smoke passes; full real test blocked on safe rates/panel pins; no fits |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-11: W1 selection + zoo done, W2 read -1.2% CRPS vs empirical; MIO/W4 owner-gated; ADR-0261 keep rule unapproved |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
