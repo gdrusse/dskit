@@ -520,6 +520,12 @@ def _str_keys_only(value):
             for key, child in item.items():
                 if not isinstance(key, str):
                     return False
+                # An exact scalar holds no key below it: popping it later
+                # would only fail both isinstance checks, so skip the trip.
+                kind = type(child)
+                if (kind is str or kind is float or kind is int
+                        or kind is bool or child is None):
+                    continue
                 stack.append(child)
         elif isinstance(item, (list, tuple)):
             stack.extend(item)

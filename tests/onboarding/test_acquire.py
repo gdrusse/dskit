@@ -400,6 +400,29 @@ def test_restamp_splice_is_byte_identical_to_the_round_trip(tmp_path):
             assert fh.readlines() == want
 
 
+def test_key_check_still_pops_scalar_subclasses():
+    # Only an EXACT scalar skips the stack. A subclass is still pushed,
+    # popped and isinstance-checked, so its hooks run exactly as before:
+    # each failed check reads __class__ (once for dict, once each for
+    # list and tuple), in LIFO order.
+    from dskit.onboarding.acquire import _str_keys_only
+
+    seen = []
+
+    def logged(base):
+        class Logged(base):
+            @property
+            def __class__(self):
+                seen.append(base.__name__)
+                return type(self)
+        return Logged
+
+    data = {"s": logged(str)("a"), "i": logged(int)(1), "f": logged(float)(1.5),
+            "n": None, "b": True}
+    assert _str_keys_only(data) is True
+    assert seen == ["float"] * 3 + ["int"] * 3 + ["str"] * 3
+
+
 def test_a_non_str_nested_key_restamps_through_the_round_trip(
     root, registry, fake_source, monkeypatch
 ):
