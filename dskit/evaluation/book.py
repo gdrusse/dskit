@@ -21,15 +21,18 @@ Returns exclude external flows: the time-weighted return chains
 subperiods through :class:`dskit.production.report.PerformanceCalculator`,
 the one owner of TWR, so a deposit is never a return.
 
-Import cost: stdlib plus ``dskit.pipeline`` and ``dskit.production``.
+Import cost: stdlib plus ``dskit.evaluation.events``, ``dskit.pipeline`` and
+``dskit.production``.
 """
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from fractions import Fraction
 
+from dskit.evaluation.events import EVENT_KINDS, EventLog, Fill
 from dskit.pipeline.stats import max_drawdown
 from dskit.production.accounting import WindowBook, decimal_of
 from dskit.production.report import PerformanceCalculator, PerformanceObservation
@@ -42,6 +45,51 @@ _ZERO = Fraction(0)
 def _exact(value):
     """Read a JSON number as the decimal it was written as (``100.05`` -> 2001/20)."""
     return Fraction(repr(value)) if isinstance(value, float) else Fraction(value)
+
+
+def _plain(event):
+    """Say whether ``event`` is a built-in event holding built-in values, as constructed."""
+    # Such an event's class is built in (matched by id: a class's own hash may
+    # be user code); its instance dict is an exact dict with str keys only, so
+    # probing it runs no user code; it shadows neither kind nor get; and a
+    # folded kind also has such a body and carries an int instant, a str or
+    # None instrument, and the int or finite float numbers and str or None
+    # ids EvaluationBook._READS names. Reading its kind, or folding it as a
+    # mark or cash flow, then runs no code but the book's own and cannot
+    # raise. An unfolded kind's body is not checked: only a fill's handler
+    # reads it, through Links, after the flush. Not covered: a class-level
+    # patch of the book's or the events' methods, or a log whose private
+    # _links is replaced.
+    spec = _PLAIN.get(id(type(event)))
+    if spec is None:
+        return False
+    attrs = vars(event)
+    if type(attrs) is not dict:
+        return False
+    for key in attrs:
+        if type(key) is not str:
+            return False
+    if "kind" in attrs or "get" in attrs:
+        return False
+    if not spec:
+        return True
+    numbers, ids = spec
+    body, instrument = attrs.get("_body"), attrs.get("instrument")
+    if (type(body) is not dict or type(attrs.get("ts_ms")) is not int
+            or "instrument" not in attrs or not (instrument is None or type(instrument) is str)):
+        return False
+    for key in body:
+        if type(key) is not str:
+            return False
+    for name, absent in numbers.items():
+        value = body.get(name, absent)
+        if not (type(value) is int or type(value) is float and math.isfinite(value)):
+            return False
+    for name in ids:
+        value = body.get(name)
+        if value is not None and type(value) is not str:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -265,14 +313,48 @@ class EvaluationBook:
         self._trips, self._points = [], []
         self.trips_of_fill = defaultdict(list)
         self.role_of_fill = {}
-        handlers = {"fill": self._on_fill, "mark": self._on_mark, "cashflow": self._on_cashflow}
+        handlers = {kind: getattr(self, f"_on_{kind}") for kind in EvaluationBook._READS}
+        # The account is recorded after every event and the last event at an
+        # instant wins, so while the log stays plain (see _plain) the point of
+        # an instant waits for the instant's last event. A fill may raise, so
+        # it always meets the book with every earlier point recorded.
+        eager = (type(self) is not EvaluationBook or type(log) is not EventLog
+                 or type(vars(log)) is not dict or type(vars(log).get("_events")) is not list)
+        pending = None
         for event in log:
+            if not eager and not _plain(event):
+                eager = True
+            if eager and pending is not None:
+                self._record(pending)
+                pending = None
             handler = handlers.get(event.kind)
-            if handler is not None:
+            if handler is None:
+                continue
+            if eager:
                 handler(event)
                 self._record(event.ts_ms)
+                continue
+            if pending is not None and (type(event) is Fill or event.ts_ms != pending):
+                self._record(pending)
+            handler(event)
+            pending = event.ts_ms
+            if type(pending) is not int:  # the handler's user code changed it
+                eager = True
+                self._record(pending)
+                pending = None
+        if pending is not None:
+            self._record(pending)
 
     # -- the fold ------------------------------------------------------------
+
+    #: The folded kinds, each handled by ``_on_<kind>`` below, with the body
+    #: fields it reads: numbers (with what an absent one reads as), then ids.
+    #: ``_plain`` checks exactly these.
+    _READS = {
+        "fill": ({"qty": None, "price": None, "fee": 0}, ("fill_id", "order_id", "side")),
+        "mark": ({"price": None}, ()),
+        "cashflow": ({"amount": None}, ()),
+    }
 
     def _on_fill(self, fill):
         """Apply one fill to both WindowBooks, the cash, the position and the lots."""
@@ -546,3 +628,9 @@ class EvaluationBook:
             fills=fills,
             trips=trips,
         )
+
+
+#: Every built-in event class (EVENT_KINDS as imported) by id, with the fields
+#: its handler reads (none for the kinds the book skips).
+_PLAIN = {id(kind_class): EvaluationBook._READS.get(kind, ())
+          for kind, kind_class in EVENT_KINDS.items()}

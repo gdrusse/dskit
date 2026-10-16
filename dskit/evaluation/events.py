@@ -959,7 +959,13 @@ class LocalTime:
 
     def day(self, ms):
         """Return the local calendar day of ``ms`` as ``YYYY-MM-DD``."""
-        return self.at(ms).strftime("%Y-%m-%d")
+        local = self.at(ms)
+        if (type(local) is datetime and local.year >= 1000
+                and (type(local.tzinfo) is ZoneInfo or type(local.tzinfo) is timezone)):
+            # strftime's text for a four-digit year in a built-in zone (whose
+            # dst() strftime would ask is not user code), at a fraction of its cost.
+            return local.date().isoformat()
+        return local.strftime("%Y-%m-%d")
 
     def stamp(self, ms):
         """Return ``ms`` as local ``YYYY-MM-DD HH:MM:SS``."""
