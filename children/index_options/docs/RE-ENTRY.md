@@ -4,48 +4,47 @@ Updated: 2026-10-16 by GPT-6 Astra. Previous note in docs/archive/re-entry/index
 
 ## Now
 
-- Owner explicitly authorized autonomy THROUGH actual training with new option features; preparation-only limits superseded for R5.
-- Reviewed candidate cc0e1a0b; base baa35a65; branch codex/theta-initial-training-20261016.
-- R=/home/russell/data/index_options/theta-training-20261016. One-shot training is INTERRUPTED; NEVER relaunch/resume.
-- Gate cleared: two fresh final Terra/Luna lenses C0/M0,14 operational tests,14 focused CDF tests,4 docs tests passed.
-- Fixed R5: original392-price universe; Theta frozen118candidate roots/93raw-present; missing options retained.
-- Price history1997-05-15..<2021; Theta2016-01-04..<2021; every outcome end_before2021-01-01.
-- Frozen2018FIT-only family admission admits liquidity/skew/volatility; all8subsets,42control+9optional inputs.
-- Original2019warmup/2020scored folds,seed11,PatchTST32/target/caps/loss/500epochs unchanged.
-- Exact4528attempts precharged once:16neural+4512empirical. Zero retries,4hourqueue,1GBoutputs,30GBdiskfloor.
-- All8original2019cells+2020control/liquidity COMPLETE:10models (8withoptions),2790empirical references;6unfinished.
-- Run state: registration/training-claim.json,attempts.jsonl; fits/seed11/status-pooled-0.json; training.log.
-- No training process or registration/training-terminal.json at17:38Z; running status is stale; cause unknown.
-- Packet SHA10e7897edfe5f40a6aed6c3d56500afcf819e8af02e0b6ceb30b16c26293b229; final reports/auth in registration.
-- No production model code or repository JSON changed. Operational scripts/configs/evidence live under R.
+- ADR0269 market-relative pocket/mixture implementation complete; reviewed candidate5c113137, basea98745bc.
+- Two fresh final lenses: GPT-5.6 Terra and GPT-6 Luna, both C0/M0/Minor0/Nit0.
+- Focused82tests passed; allfivepipeline validate/plan pairs pass; no full suite or real market run.
+- Generic cdf_research.py composes rate-aware proxy, reference scoring, paired comparison, grid plans and67pockets.
+- Five run-theta-* templates plus theta-ml-pocket-calendar.json have zero source pins/real-fit allowance.
+- Plan-only run generated36single-seed documents:12recipes,2arms,3seeds,2folds;144neural/40608empirical estimates.
+- Plan root /home/russell/data/index_options/theta-pocket-study-20261016/grid-plan;830886bytes,never overwrite.
+- All4paired inputs now require verified common scale/strike and strict prior trained-through; output keeps latest date.
+- R5 at /home/russell/data/index_options/theta-training-20261016 is INTERRUPTED; NEVER relaunch/resume/retry.
+- R5 consumed4528attempts;10/16neuralmodels completed,6unfinished; no terminal, cause unknown.
+- Prior results remain mixed:2019volatility +0.556%,allfeatures -0.332%;2020liquidity +0.092% vs price-only by row loss.
+- No new evidence that a forecast pocket beats the market, no selected rule or trading result.
 
 ## Next
 
-1. Preserve interrupted R5 claim/ledger/artifacts; any future training requires separate registration, no retry.
-2. Saved-score inspection in memo:2019volatility +0.556%,allfeatures -0.332%;2020liquidity +0.092% by row loss.
-3. Later seeds/checkpoints/rules need a separately frozen finite packet; no promotion/trading claim from this run.
-4. H0-H7 remains separate unchanged preregistration; follow Amendment5/6 only if resumed.
+1. Prepare exact-expiry quote/request cohorts through pinned bounded sources; freeze action/rate/availability clocks.
+2. Attach scale/decision-strike/trained-through from verified manifests/panel provenance; legacy R5 scores lack these fields.
+3. Register exact source hashes, eligible groups, folds, full neural/empirical/tail/transport/calibration inventory and totals.
+4. Freeze support/multiplicity/selection/seed rules, costs/capital/trade inventory, compute/storage limits and worker lifetime.
+5. Obtain separate exact launch approval/final reviews; only then new real fits/scores/replay. Preserve all failed/consumed slots.
 
 ## Blocked / owner decisions
 
-- Owner endpoint achieved: actual training with all9newoptioninputs works; whole16-cellqueue stopped incomplete; no reliable feature benefit established.
-- Partial coverage and later-acquired snapshots: retrospective research, no historical PIT/live/executable qualification.
-- R1 stale optional dependencies; R2/R3 insufficient118cohort history; R4 all2018cells capacity-refused before fits.
-- R5 uniformly omits2018 by capacity alone; no2018model result. Full failure/config history retained.
-- Prior final-review bugs (serialization order; failure receipts) fixed with RED/GREEN and fresh clean lenses.
-- Deferred wording caveat: skippedcell may leave remaining fixed/precharged cells running; wholepacket then fails/no retry.
-- All2021-2025alreadyseen, retrospective development.2026sealed forever. H0-H7 statistics/splits unchanged.
+- Owner approved implementation/testing; actual new144-slot research execution remains ZERO until exact registration.
+- Planning estimates do not authorize fits. Pipeline validate/plan does not prove real source/schema/PIT readiness.
+- Partial Theta coverage and later-acquired snapshots mean retrospective research; American proxy limitations remain.
+- All2021-2025alreadyseen, reused development, never clean holdouts.2026sealed forever.
+- H0-H7 remains separate unchanged preregistration; follow ADR0265 Amendments5/6 only if resumed.
+- R5 missing terminal never permits retry; source/source-code pins must be freshly resolved for a new packet.
 
 ## Read first
 
-- CLAUDE.md; docs/skills/implementation-workflow.md; ADR0269 latest training registrations.
-- children/index_options/docs/memos/2026-10-15-theta-amendment6.md: scope,pins,failures,review/launch lock.
-- R/registration/review-packet.json,launch-authorization.json,preflight.json,launch-recomputation.json.
-- R/registration/training-claim.json and training-terminal.json if present; do not rerun launch_once.py.
+- CLAUDE.md; docs/skills/implementation-workflow.md; ADR0269 market-relative extension and implementation approval.
+- children/index_options/docs/memos/2026-10-15-theta-amendment6.md: scope, RED/GREEN, reviews, run evidence, next gates.
+- children/index_options/configs/run-theta-market-proxy.json and run-theta-market-reference-scores.json.
+- children/index_options/configs/run-theta-mixture-grid.json and theta-ml-pocket-calendar.json.
+- children/index_options/configs/run-theta-paired-forecasts.json and run-theta-score-pockets.json.
 
 ## Do not
 
-- Never read2026marketrecords; current training packet is stricter: end_before2021-01-01.
+- Never read2026marketrecords; current preparation/inner templates end_before2021-01-01.
 - Never edit preregistered statistics/signs/thresholds/splits or rerun hypothesis validation.
 - Never write options-* stores, start/stop Theta driver, call25503, or delete /home/russell/data content.
 - Check df -h /mnt/c; keep>=30GB. Read/report ALERT.txt if present, never delete it.
