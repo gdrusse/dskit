@@ -1,5 +1,5 @@
 {
-  "notes": "ADR0268 PREPARATION WORKFLOW ONLY; not yet end-to-end runnable because the generic panel bridge needs approval/implementation. Run --plan only now. Both stages require nonzero approved source pins and readiness; no fits, adaptive blocks, rule replay or2026reads. theta-ml-initial-study.json is a separate gated candidate specification, deliberately not an automatic command. Existing pipeline runner and workflow ledger own orchestration.",
+  "notes": "ADR0268 PREPARATION WORKFLOW ONLY; the approved generic panel bridge completes this preparation flow. Run --plan only until readiness and source pins are resolved. Both stages require nonzero approved source pins and readiness; no fits, adaptive blocks, rule replay or2026reads. theta-ml-initial-study.json is a separate gated candidate specification, deliberately not an automatic command. Existing pipeline runner and workflow ledger own orchestration. These concrete documents and layout paths share one output root; moving the packet requires updating both, checked by the focused tests.",
   "args": {
     "work_dir": "/home/russell/data/index_options/theta-ml-20261015",
     "A": "2025-12-31"
@@ -14,7 +14,9 @@
       "dir": "{W}/workflow/panel",
       "panel": "{W}/panel/panel.parquet",
       "manifest": "{W}/panel/manifest.json",
-      "admission": "{W}/admission.jsonl"
+      "admission": "{W}/admission.jsonl",
+      "artifact": "{W}/panel",
+      "availability_dates": "{W}/availability-dates.jsonl"
     }
   },
   "registry": {
@@ -46,10 +48,11 @@
         "W": "$args.work_dir"
       },
       "out": [
-        "panel",
-        "manifest",
-        "admission"
-      ]
+        "artifact",
+        "admission",
+        "availability_dates"
+      ],
+      "notes": "Declare the atomic directory as one output: the workflow creates parents of outputs, so listing panel.parquet here would prematurely create its immutable destination."
     }
   }
 }

@@ -1869,7 +1869,8 @@
     "/home/russell/wt/theta-amendment6-20261015/dskit/pipeline/libs/neuralforecast.py": "23b1b077284bac4cf8ec50fd58ed43456a637eb7c5330a928f7394d133783ab0",
     "/home/russell/wt/theta-amendment6-20261015/dskit/pipeline/libs/cdf_experiment.py": "6498e5239b27e2e8d7e8baf57bb8b796a86cdbdc015eb2391f2e23013b6676f6",
     "/home/russell/wt/theta-amendment6-20261015/pyproject.toml": "6f1fa44f065bca46698b406a4a2f8f254359154e4e5a1dbf999d6ba51896916a",
-    "/home/russell/wt/theta-amendment6-20261015/dskit/pipeline/libs/parquet.py": "0648eade784295700b431ff42b89561414e605ee738fe3742564a0265f98c8d1"
+    "/home/russell/wt/theta-amendment6-20261015/dskit/pipeline/libs/parquet.py": "0648eade784295700b431ff42b89561414e605ee738fe3742564a0265f98c8d1",
+    "/home/russell/wt/theta-amendment6-20261015/dskit/pipeline/libs/parquet_panel.py": "3fc402edbc45eefe046bdf9df1aefa437390511e728f1d0e9d896022bf74cc3c"
   },
   "dependencies": {
     "Farama-Notifications": "0.0.6",

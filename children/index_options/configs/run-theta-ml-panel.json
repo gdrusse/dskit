@@ -1,6 +1,6 @@
 {
   "name": "theta-ml-panel",
-  "notes": "ADR-0268 DRAFT; ParquetPanelAugment implementation is pending owner approval. Not runnable yet. Preserve the frozen price target,42features, identities and all rows within explicit2016-2025 origin/settlement bounds; no new stock-price reader or unbounded auxiliary reads. Attach date-keyed Theta descriptors strictly before each forecast date, max7calendar days; retain nulls and age/missing flags. Missing option data never drops a base row. Publication clocks and frozen universe remain launch gates. Family admission below uses only origins AND settled labels before2021; it does not fit or authorize training. No open-interest features until publication contract is verified.",
+  "notes": "ADR-0268 APPROVED PREPARATION ADAPTER. Runtime refuses unresolved pins; real-data readiness and training registration are still separate gates. Preserve the frozen price target,42features, identities and all rows within explicit2016-2025 origin/settlement bounds; no new stock-price reader or unbounded auxiliary reads. Attach date-keyed Theta descriptors strictly before each forecast date, max7calendar days; retain nulls and age/missing flags. Missing option data never drops a base row. Publication clocks and frozen universe remain launch gates. Family admission below uses only origins AND settled labels before2021; it does not fit or authorize training. No open-interest features until publication contract is verified.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-ml-20261015/panel-runs"
   },
@@ -158,7 +158,9 @@
               "half_spread_over_premium": "theta_half_spread_over_premium_30",
               "straddle_ratio": "theta_straddle_ratio_30",
               "volume_call": "theta_volume_call_30",
-              "volume_put": "theta_volume_put_30"
+              "volume_put": "theta_volume_put_30",
+              "date": "theta_source_date_30",
+              "expiration": "theta_source_expiration_30"
             },
             "max_age_days": 7,
             "strict_prior": true
@@ -216,7 +218,9 @@
               "date"
             ],
             "columns": {
-              "atm_iv": "theta_atm_iv_90"
+              "atm_iv": "theta_atm_iv_90",
+              "date": "theta_source_date_90",
+              "expiration": "theta_source_expiration_90"
             },
             "max_age_days": 7,
             "strict_prior": true
@@ -227,7 +231,11 @@
         "end_before": "2026-01-01",
         "output": "/home/russell/data/index_options/theta-ml-20261015/panel",
         "max_rows": 2000000,
-        "max_output_bytes": 536870912
+        "max_output_bytes": 536870912,
+        "temporal_fields": [
+          "quote_date",
+          "settlement_date"
+        ]
       }
     },
     "development": {

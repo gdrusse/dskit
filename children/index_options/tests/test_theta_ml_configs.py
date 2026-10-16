@@ -144,3 +144,93 @@ def test_feature_document_runs_on_synthetic_parquet_without_model_fit(tmp_path, 
         assert (found[0]["symbol"], found[0]["date"], found[0]["target_dte"]) == (
             "SYNTHETIC", "2019-01-02", dte)
         assert found[0]["atm_iv"] == 0.25
+
+
+def test_full_preparation_workflow_materializes_and_reuses_synthetic_panel(tmp_path, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from dskit.onboarding import OnboardingRoot, run_acquisition
+    from dskit.onboarding.artifacts import payload_files
+    from dskit.pipeline.workflow import run_workflow
+
+    ob = OnboardingRoot.create(str(tmp_path / "ob"))
+    registry = ob.registry()
+
+    def onboard(name, rows, relpath):
+        archive = tmp_path / (name + "-input")
+        dest = archive / relpath
+        dest.parent.mkdir(parents=True)
+        pq.write_table(pa.Table.from_pylist(rows), dest, row_group_size=1)
+        vid = registry.register("source_config", {
+            "name": name, "catalog_source": "synthetic", "connector": "localblobs",
+            "config": {"path": str(archive), "as_of": "2025-12-31T00:00:00+00:00"}}, origin="test")
+        registry.transition(vid, "active", origin="test")
+        run_acquisition(ob, registry, name, "files", "backfill")
+        return payload_files(ob.root, name, "files")["manifest_sha256"]
+
+    panel = _read("run-theta-ml-panel.json")
+    params = panel["pipeline"]["panel"]["params"]
+    base_rows = []
+    for day, end in [("2019-01-03", "2019-02-04"), ("2019-01-04", "2019-02-05"),
+                     ("2020-12-15", "2021-01-15")]:
+        row = {key: .2 for key in params["base"]["columns"]}
+        row.update(symbol="SYNTHETIC", quote_date=day, expiry=end, settlement_date=end)
+        base_rows.append(row)
+    base_pin = onboard("universe-model-inputs-20261008", base_rows, "panel/frame.parquet")
+    feature = _read("run-theta-ml-features.json")
+    fields = feature["pipeline"]["theta30"]["params"]["sources"][0]["columns"]
+    chain = []
+    for dte in (30, 90):
+        row = {key: .25 for key in fields}
+        row.update(symbol="SYNTHETIC", date="2019-01-02", expiration="2019-04-02",
+                   target_dte=dte, status="ok", after_first_quote=True)
+        chain.append(row)
+    chain_pin = onboard("theta-chain-panel", chain, "day.parquet")
+    params["base"].update(root=ob.root, snapshot=base_pin)
+    for table in params["tables"].values():
+        table["sources"][0].update(root=ob.root, snapshot=chain_pin)
+    for key in ("theta30", "theta90"):
+        feature["pipeline"][key]["params"]["sources"][0].update(root=ob.root, snapshot=chain_pin)
+    flow = _read("workflow-theta-ml.json")
+    old_root = flow["args"]["work_dir"]
+    new_root = str(tmp_path / "result")
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    for name, doc in [("run-theta-ml-features.json", feature),
+                      ("run-theta-ml-panel.json", panel), ("workflow-theta-ml.json", flow)]:
+        (configs / name).write_text(json.dumps(doc).replace(old_root, new_root))
+    monkeypatch.chdir(tmp_path)
+    messages = []
+    assert run_workflow(str(configs / "workflow-theta-ml.json"), out=messages.append) == 0, messages
+    output = Path(new_root) / "panel"
+    actual = pq.read_table(output / "panel.parquet").to_pylist()
+    assert len(actual) == 3
+    for expected, found in zip(base_rows, actual):
+        assert {key: found[key] for key in expected} == expected
+    assert [row["theta_atm_iv_30"] for row in actual] == [.25, .25, None]
+    availability = [json.loads(line) for line in
+                    (Path(new_root) / "availability-dates.jsonl").read_text().splitlines()]
+    assert {row["quote_date"] for row in availability} == {"2019-01-03", "2019-01-04"}
+    manifest_before = (output / "manifest.json").read_bytes()
+    messages.clear()
+    assert run_workflow(str(configs / "workflow-theta-ml.json"), out=messages.append) == 0
+    assert sum(message.startswith("skip ") for message in messages) == 2
+    assert (output / "manifest.json").read_bytes() == manifest_before
+
+
+def test_all_preparation_graphs_plan_and_share_exact_source_declarations():
+    feature = _read("run-theta-ml-features.json")
+    panel = _read("run-theta-ml-panel.json")
+    for doc in (feature, panel):
+        assert plan(PipelineDocument.from_obj(doc)).order
+    params = panel["pipeline"]["panel"]["params"]
+    assert params["temporal_fields"] == ["quote_date", "settlement_date"]
+    for dte in (30, 90):
+        assert params["tables"][f"theta{dte}"]["sources"] == feature["pipeline"][f"theta{dte}"]["params"]["sources"]
+    flow = Workflow(_read("workflow-theta-ml.json"), str(CONFIGS))
+    assert flow.path("panel", "artifact") == params["output"]
+    assert "artifact" in flow.steps["panel"]["out"]
+    assert "panel" not in flow.steps["panel"]["out"]  # parent must not be pre-created
+    assert flow.path("panel", "admission") == panel["pipeline"]["admission"]["params"]["path"]
+    for dte in (30, 90):
+        assert flow.path("features", f"theta{dte}") == feature["pipeline"][f"write{dte}"]["params"]["path"]

@@ -290,6 +290,11 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+ADR-0268 adds `libs/parquet_panel.py:ParquetPanelAugment`: bounded pinned base
+and prior-date keyed Parquet inputs, identity/collision refusal, immutable atomic
+panel publication with manifest. It reuses `ObservationTables` joins and
+`ParquetStreamRows` reads. No model fit; row limits apply after materialization.
+
 ADR-0248 adds explicit protected projections: ParquetRows accepts read_bounds,
 mapping source date columns to inclusive start and/or exclusive end_before.
 Bounds combine with AND; date/string schema and zero-null metadata are required.
