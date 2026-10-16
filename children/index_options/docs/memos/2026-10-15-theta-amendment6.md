@@ -1,6 +1,6 @@
 ## TL;DR
 
-Phase A is in review after the sealed-rate correction. No real-data hypothesis, census, panel, validation or training run has occurred in this session.
+Phase A is release-approved after the sealed-rate correction; both fresh final reviews are clean. Rebase/push verification follows below. No real-data hypothesis, census, panel, validation or training run has occurred in this session.
 
 ## Execution contract
 
@@ -17,7 +17,7 @@ Disk check: /mnt/c 104 GB available before work (minimum 30 GB).
 Sweep completed across 74 refs and 72 other worktrees: theta_hypotheses event_gap capital_at_risk fee_sensitivity census_asof theta-amendment6.
 Existing owners: generator; OptionStructureLedger fee_per_contract, max_loss_usd and max_loss_unbounded; ComputeFields; StampSeriesStats. No new package or generic mechanism is needed.
 Initial sweep hit its 8-second budget; rerun with a temporary 60-second config completed (exit 0); full output /tmp/theta-amendment6-sweep.txt.
-The panel rate source currently parses 2026 macro rows before filtering. No run may use that path under this session's strict seal; a verified bounded existing source must be found before Phase B.
+The original panel rate source parsed 2026 macro rows before filtering (now replaced by an executable gate; see correction below). No run may use that path under this session's strict seal; a verified bounded existing source must be found before Phase B.
 
 ## AAPL labels (D5)
 
@@ -70,4 +70,32 @@ GPT-6 Luna `/root/luna_final_tests`, same candidate7c364d76:
 
 Terra's Major is accepted; Luna's clean lens is superseded for the changed candidate. No severity downgrade. The ADR implementation-safeguard paragraph was written before code; it changes no statistical contract. Both panel rates_raw nodes now use the existing ParquetStreamRows with end_before2026-01-01, source theta-rates-pre2026 and an explicit unresolved zero pin. The old unbounded observation source is absent from those graphs. `set-pin rates` records the future vetted input. No source was acquired or data read. The safe artifact remains a Phase B prerequisite.
 
-RED on unchanged reader: both panel tests failed because ObservationRows was still configured (2 failed). GREEN: 20 targeted checks passed (rate refusal, pin update, node validation); rate-refusal tests use an empty temporary store and spies that fail on any legacy scan or Arrow dataset scan. An unresolved pin refuses before either scanner is invoked. New full focused run and two fresh final lenses pending.
+RED on unchanged reader: both panel tests failed because ObservationRows was still configured (2 failed). GREEN: 20 targeted checks passed (rate refusal, pin update, node validation); rate-refusal tests use an empty temporary store and spies that fail on any legacy scan or Arrow dataset scan. An unresolved pin refuses before either scanner is invoked. Corrected candidate69cb3c6adeff782a7549144716dd132344158e2d: full requested two-file run779 passed,278 deprecation warnings,89.63s. Generator check and all23 validate+23 plan checks passed. Logs: /tmp/theta-amendment6-safe-tests.txt and /tmp/theta-amendment6-safe-validation.json. Current scoped lint13 pre-existing findings versus16 on base; no new findings or disabled checks (/tmp/theta-amendment6-ruff-final.txt).
+
+
+## Retained final-lens round 2
+
+GPT-5.6 Terra (gpt-5.6-terra), fresh correctness/authority lens `/root/terra_corrected_final`, exact candidate69cb3c6adeff782a7549144716dd132344158e2d vs basebd7c6612d356b0980e53dea24d5353b33af13eb5:
+
+> CLEAN. Proven findings: Critical0, Major0, Minor0, Nit0; unresolved C/M0. D3 event_gap, week, h=1, original halves pre-ledger; D4 high/AAPL labelled-only H2b primary measurement and detected validation cannot close; D7 sole zero-fee SPX put_write notional .5 hurdle, .65/finite-positive ROC descriptive; D9 2016-18+2019 cutoff retains2018-07-01 halves; D10/D11, historical ADR marking, generated twins, pins/provenance all pass. Rates correction: both panels use dedicated theta-rates-pre2026 zero pin + ParquetStreamRows end_before2026; unresolved pin fails before legacy or Arrow scan (2 panels). Evidence: retained779 passed/278 warnings;23 validate+23 plan all exit0; my generator check passed; synthetic subset12 passed. Limits: synthetic/config review only; no real data, no rate artifact, Phase B remains blocked (75/414). Candidate code equals HEAD; only allowed unstaged re-entry/archive docs exist.
+
+
+GPT-6 Luna (gpt-6-luna), fresh tests/integration lens `/root/luna_corrected_final`, same exact candidate and base:
+
+> Clean;0 Critical,0 Major,0 Minor,0 Nit;0 unresolved C/M. I independently reran the two focused test files:779 passed, with278 deprecation warnings, and the generator check passed. The retained memo records all23 validate and23 plan checks passing. The D3/D4/D7/D9/D10/D11 wiring and sealed-rate refusal align with the contract; no real data was read. Phase B remains blocked pending the safe rate artifact and tested-tier completion.
+
+## Candidate lock and delivery
+
+Locked candidate69cb3c6adeff782a7549144716dd132344158e2d against basebd7c6612d356b0980e53dea24d5353b33af13eb5. Contract: immutable ADR-0265 Amendment6 plus implementation-only strict-rate safeguard. Matrix: the seven families above plus pre-scan rate refusal. Dependencies: unchanged dskit libraries at the base; no external rate artifact/panel pin is accepted by this lock. Both fresh independent lenses above have zero unresolved findings. Pre-existing scoped lint debt13 and278 deprecation warnings are disclosed; no fixes after lock. No empirical run approval is implied.
+
+Reviewed Git object identities (config directory tree includes every generated document and pin):
+
+```
+children/index_options/index_options/theta_hypotheses.py: 65e72f481be42ef6d75797b7602c47dfa2e4b76a
+children/index_options/tests/test_theta_hypotheses.py: 02f1747627a92091abeec7408456ae931e1a2346
+children/index_options/tests/test_configs.py: e9d706b593cf2869c908a56c75a4eb9279041771
+children/index_options/configs: 192fae2155e2ef8a83b360246a8481a64445dfd9
+docs/architecture/decision-log.md: 08c130c01e0bb676c8bf2b1188f9cc7d0b20aeed
+```
+
+Only memo/re-entry/archive evidence changes follow this candidate. Documentation budget checks4 passed0.10s; git diff --check passed. C:103GB free. Final fetch/rebase must preserve the reviewed base dependencies; push must be verified against the remote. The eventual landing commit is recorded below after verification.

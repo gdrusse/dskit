@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-11: repo cleanup landed; owner purges 8 remote branches |
-| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-15: ThetaData 2016–25 chain pull running (tested tier ~2 days left); census/panel/H0–H7 built, owner decisions D1–D11 before any run |
+| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-15: Amendment6 Phase A candidate69cb3c6a, two clean reviews; ready to land; pull75/414, Phase B blocked on tier and sealed-rate source |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-11: W1 selection + zoo done, W2 read -1.2% CRPS vs empirical; MIO/W4 owner-gated; ADR-0261 keep rule unapproved |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
