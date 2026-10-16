@@ -6,29 +6,29 @@ Updated: 2026-10-16 by GPT-6 Astra. Previous note in docs/archive/re-entry/index
 
 - Owner explicitly authorized autonomy THROUGH actual training with new option features; preparation-only limits superseded for R5.
 - Reviewed candidate cc0e1a0b; base baa35a65; branch codex/theta-initial-training-20261016.
-- R=/home/russell/data/index_options/theta-training-20261016. One-shot training is RUNNING; NEVER relaunch/resume.
+- R=/home/russell/data/index_options/theta-training-20261016. One-shot training is INTERRUPTED; NEVER relaunch/resume.
 - Gate cleared: two fresh final Terra/Luna lenses C0/M0,14 operational tests,14 focused CDF tests,4 docs tests passed.
 - Fixed R5: original392-price universe; Theta frozen118candidate roots/93raw-present; missing options retained.
 - Price history1997-05-15..<2021; Theta2016-01-04..<2021; every outcome end_before2021-01-01.
 - Frozen2018FIT-only family admission admits liquidity/skew/volatility; all8subsets,42control+9optional inputs.
 - Original2019warmup/2020scored folds,seed11,PatchTST32/target/caps/loss/500epochs unchanged.
 - Exact4528attempts precharged once:16neural+4512empirical. Zero retries,4hourqueue,1GBoutputs,30GBdiskfloor.
-- All8original2019cells+2020control COMPLETE:9models (7withoptions),2503empirical references;2020queue running.
+- All8original2019cells+2020control/liquidity COMPLETE:10models (8withoptions),2790empirical references;6unfinished.
 - Run state: registration/training-claim.json,attempts.jsonl; fits/seed11/status-pooled-0.json; training.log.
-- Terminal receipt will be registration/training-terminal.json. It must be verified before calling wholequeue complete.
+- No training process or registration/training-terminal.json at17:38Z; running status is stale; cause unknown.
 - Packet SHA10e7897edfe5f40a6aed6c3d56500afcf819e8af02e0b6ceb30b16c26293b229; final reports/auth in registration.
 - No production model code or repository JSON changed. Operational scripts/configs/evidence live under R.
 
 ## Next
 
-1. Monitor the EXISTING invocation, verify terminal/checkpoint/score inventory; no rerun even after failure.
-2. Record every outcome and limits in existing memo; finish reviewed docs-only wrap/rebase/push.
+1. Preserve interrupted R5 claim/ledger/artifacts; any future training requires separate registration, no retry.
+2. Saved-score inspection in memo:2019volatility +0.556%,allfeatures -0.332%;2020liquidity +0.092% by row loss.
 3. Later seeds/checkpoints/rules need a separately frozen finite packet; no promotion/trading claim from this run.
 4. H0-H7 remains separate unchanged preregistration; follow Amendment5/6 only if resumed.
 
 ## Blocked / owner decisions
 
-- Owner endpoint achieved: actual training with all9newoptioninputs works; whole16-cellqueue is not yet complete.
+- Owner endpoint achieved: actual training with all9newoptioninputs works; whole16-cellqueue stopped incomplete; no reliable feature benefit established.
 - Partial coverage and later-acquired snapshots: retrospective research, no historical PIT/live/executable qualification.
 - R1 stale optional dependencies; R2/R3 insufficient118cohort history; R4 all2018cells capacity-refused before fits.
 - R5 uniformly omits2018 by capacity alone; no2018model result. Full failure/config history retained.

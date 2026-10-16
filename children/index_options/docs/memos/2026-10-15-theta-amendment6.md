@@ -313,3 +313,44 @@ The requested endpoint was autonomous progress until training with new option in
 Immutable handoff observation registration/training-progress-at-handoff.json SHA 63f6867cf4fbb113f9197097cfad6b5e046325d7a0abb3be82dfd72ab125043d records percellcounts/epochs/seconds/nonmissingoptioncounts/checkpointpaths and claim/ledgerpins. The registered16-cellqueue remains RUNNING on2020;4528attempts are precharged, not a claim that all4528havecompleted. Existing launcher independently writes training-terminal.json oncompletion/failure/timeout and refusesrerun. Fourhourtimer and1GBpostrunoutputcheck remain active. No additionaltraininglaunch or automaticretry. Later qualityassessment/selection/seeds/rules are outside thismilestone; no claim options improveforecasts or tradingprofit.
 
 All60reviewedpacketmembers stillmatchaftertheactualfits; finaltwo-lens approvals carryunchanged. Source/model/test/JSONblobs inrepository unchanged. Documentation-only handoff records ongoingexecution honestly; no fullqueuecompletion or finalterminalreceipt claimed.
+
+
+## First saved-score inspection and interrupted queue — 2026-10-16
+
+### TL;DR
+
+New option inputs have not demonstrated a reliable benefit. This is one PatchTST32 stock-return distribution model with eight input combinations, not eight different algorithms. The queue stopped after ten completed neural cells; six remain unfinished. The earlier running observations above are historical snapshots, superseded by this inspection.
+
+### Execution contract and status
+
+Owner asked what models ran, what their results show, and whether the features help. This is a read-only inspection of completed R5 scores, authorized by that question, not a new fit, selection, threshold, or promotion. Base is 418b6cd934b3a4e7c6c62f991dfec22b5c458c9c. Every score read applies quote_date and settlement_date end_before 2021-01-01 before decoding. The 2019 fold is warmup; 2020 is the registered scored fold. Both are retrospective development, seed 11 only. No 2021+ records were read.
+
+At 2026-10-16T17:38:00Z, the status file still says running with processed_this_run=10 and last=2020 price_plus_liquidity, but no launch_once/cdf_experiment Python process exists and registration/training-terminal.json is absent. Ten fit and completed directories exist, with no skipped directories. This is an interrupted/incomplete packet, not a successful sixteen-cell run. Cause is unknown. The stale status file, claim and attempt ledger were preserved; no restart/resume and no fabricated terminal receipt. All eight 2019 cells and the 2020 price-only/liquidity cells completed: 10 neural fits and 2,790 empirical reference fits. The remaining six 2020 option combinations are uncompleted, not negative forecast results. All 4,528 precharged attempts remain charged under the existing zero-retry rule.
+
+### Empirical results
+
+Verified each completed fit, completion and score directory through AtomicFitStore against the preflight-derived identities and content hashes. Every comparison has exactly matching symbol/quote_date/expiry/settlement_date rows, finite scores, and identical historical-reference scores. No rows or poorly covered symbols were dropped. The 2019 comparisons each contain 35,969 forecast rows across 277 symbols, origins 2019-01-04 through 2019-11-29. The 2020 comparisons each contain 36,874 rows across 287 symbols, origins 2020-01-03 through 2020-11-30. Overlapping outcomes mean these are not independent sample counts.
+
+Descriptive loss is the saved model_weighted_crps, equal to CRPS plus the unchanged tail-weighted component (weight 1). Lower is better; units are standardized-return distribution error, not dollars or trading return. Let L be mean row loss for an option arm and C the same-row price-only mean; improvement is 100*(1-L/C) percent. Also report the mean of per-symbol improvements as a separately labelled descriptive weighting check. Neither calculation introduces a new preregistered pass rule or uncertainty claim.
+
+2019 warmup: price-only mean loss 1.051041014; historical empirical reference 1.006426999. Each following entry gives mean loss; row-weighted improvement versus price-only; mean per-symbol improvement; symbols with lower mean loss:
+
+- Liquidity: 1.052663190; -0.154340%; -0.945376%; 136/277.
+- Skew: 1.052461724; -0.135172%; -0.816280%; 144/277.
+- Skew + liquidity: 1.047287477; +0.357126%; -0.201085%; 134/277.
+- Volatility: 1.045201426; +0.555600%; +0.188342%; 148/277.
+- Volatility + liquidity: 1.046998577; +0.384613%; -0.184460%; 141/277.
+- Volatility + skew: 1.053767939; -0.259450%; -0.768963%; 138/277.
+- All three families: 1.054533829; -0.332320%; -1.030799%; 138/277.
+
+Thus volatility alone has the lowest observed 2019 row loss among these eight arms, but this is warmup and a descriptive ranking after viewing eight combinations. Every neural arm loses to the historical empirical reference in 2019. No winner is promoted or selected.
+
+2020 scored fold: price-only mean loss 1.234192597; liquidity mean 1.233057368; historical empirical reference 1.241428663. Liquidity improvement is 100*(1-1.233057368/1.234192597)=0.091982% by rows, 0.064417% averaging symbol improvements; 151/287 symbols improve. Both neural models slightly beat the historical reference by this row mean. Other six arms have no completed 2020 score and cannot be compared.
+
+### Interpretation and reproducibility
+
+The model predicts the distribution of future stock returns (convertible to a price distribution), not option-premium distributions. The control uses 42 price/history inputs; optional families add two volatility, three skew/term-structure and four liquidity fields, up to 51 inputs. Partial Theta coverage and fit-only imputation remain part of the estimand. Results are small, mixed, and sensitive to weighting in some arms. No block uncertainty, additional seeds, rule development, option-trade profitability, or promotion test was performed. This inspection supports training feasibility, not a reliable claim that options improve forecasting.
+
+Reproduce from R/registration/preflight.json and R/fits/seed11/pooled/{arm}/PatchTST32/{fold}/pooled/scores/{symbol}/scores.parquet, using AtomicFitStore verification, DateBoundedParquet with both end_before bounds above, exact paired identities, then saved loss means and the stated formula. Preflight SHA 2ea53fbd97e75eb1f65f5bcd19c170d0bfaa1584f8c7909406290cea7e5fe323; claim SHA 74c1882a535c2830f20695843bff4e91d610ed06f6cc74664768e7da7783bd03; attempt ledger SHA 6df4c4a6816a8cd43665366ec4d9af16259283a29fde93abe2f7f56a897c4879; stale status SHA beff568785112fd44b8ad2de9517be8358033106b66139310cced9c68d264af3. All 60 reviewed packet file hashes still match. No code, tests, config, dependency, statistic, split, claim or ledger changed. C: has 77GB free. This append and handoff correction are evidence-only; prior scoped implementation approvals carry unchanged under skeptic-review's editorial/evidence rule. Interruption diagnosis or any new training packet is separate work; no retry is silently authorized by a results question.
+
+Evidence-only checks: four documentation-budget tests passed in 0.08s; git diff --check clean. Compared source/model/test blobs with the final reviewed candidate cc0e1a0b: unchanged. All 60 external reviewed dependencies also retain their hashes. No full test suite or additional score/model run.
