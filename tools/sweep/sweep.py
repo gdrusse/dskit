@@ -400,6 +400,25 @@ class Sweep:
         self.config = config
         self._generic_stems = {s.lower() for s in config["generic_basenames"]}
         self._generic_syms = {s.lower() for s in config["generic_symbols"]}
+        self._shapes = {}  # plain-str name -> _shape(name)
+
+    def _shape(self, name):
+        """(tokens, joined, token set, char counts) of one name.
+
+        A report scores each new name against every inventory name, so a
+        plain ``str`` is split once per sweep, not once per comparison.
+        """
+        shape = self._shapes.get(name) if type(name) is str else None
+        if shape is None:
+            tokens = _tokens(name)
+            joined = "".join(tokens)
+            counts = {}
+            for ch in joined:
+                counts[ch] = counts.get(ch, 0) + 1
+            shape = (tokens, joined, set(tokens), counts)
+            if type(name) is str:
+                self._shapes[name] = shape
+        return shape
 
     def score(self, a, b):
         """Similarity of two names in [0, 1].
@@ -417,8 +436,8 @@ class Sweep:
             string ratio and the token Jaccard (Jaccard counts only with at
             least two shared tokens), or 0.0 below the thresholds.
         """
-        ta, tb = _tokens(a), _tokens(b)
-        na, nb = "".join(ta), "".join(tb)
+        ta, na, sa, ca = self._shape(a)
+        tb, nb, sb, cb = self._shape(b)
         if not na or not nb:
             return 0.0
         if na == nb:
@@ -427,16 +446,20 @@ class Sweep:
         if min(len(ta), len(tb)) >= 2 and len(short) >= 6 and short in long_:
             return 0.9
         best = 0.0
-        sa, sb = set(ta), set(tb)
         shared = len(sa & sb)
         if shared >= 2:
             jac = shared / len(sa | sb)
             if jac >= self.config["token_overlap"]:
                 best = jac
         cut = self.config["similarity"]
-        sm = difflib.SequenceMatcher(None, na, nb)
-        if sm.real_quick_ratio() >= cut and sm.quick_ratio() >= cut:
-            r = sm.ratio()
+        # difflib's real_quick_ratio and quick_ratio bounds (shorter length;
+        # multiset overlap), from the cached counts: the matcher is built
+        # only for the rare pair that passes both.
+        size = len(na) + len(nb)
+        if (2.0 * min(len(na), len(nb)) / size >= cut
+                and 2.0 * sum(min(n, cb.get(ch, 0)) for ch, n in ca.items())
+                / size >= cut):
+            r = difflib.SequenceMatcher(None, na, nb).ratio()
             if r >= cut:
                 best = max(best, r)
         return best
