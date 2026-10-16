@@ -17,6 +17,7 @@ Updated: 2026-10-16 by GPT-6 Astra. Previous note in docs/archive/re-entry/index
 - Repeat workflow skipped both unchanged stages; panel hash unchanged. About7.34MBoutput; C:81GBfree.
 - Artifacts/configs/logs/receipts: /home/russell/data/index_options/theta-ml-prep-20261016.
 - Evidence registered theta-preparation-evidence in that root's ob; pin ed45ece7449a83efd8982374682488ae06e90851d5e88c14f75e92141e40fd39.
+- Final candidate0c6d5d5c: fresh Terra/Luna lenses C0/M0; shared formatting Minor corrected; docs4passed.
 - No production code/model/full-study/H0-H7 configs changed; no fits, hypotheses, validation or rule replay.
 - Latest observed export20261016T150842Z:alarms=[]; ALERT.txt absent. DOW old coverage alarm unresolved.
 
