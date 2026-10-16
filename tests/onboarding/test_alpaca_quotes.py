@@ -71,6 +71,26 @@ def test_a_boundary_quote_older_than_its_own_minute_is_refused():
     assert list(minute_rows("LLY", quotes, max_age_ms=10000)) == []
 
 
+def test_stamps_parse_alike_with_or_without_a_fraction_and_a_bad_one_refuses_alike_twice():
+    def row(stamp):
+        return list(minute_rows("LLY", [dict(_quote(0, 10.0, 10.2), t=stamp)]))[0]
+
+    # No fraction (with and without "Z"), then one head seen twice.
+    stamps = ["2026-02-25T14:30:07Z", "2026-02-25T14:30:07",
+              "2026-02-25T14:30:07.250Z", "2026-02-25T14:30:07.250Z"]
+    rows = [row(stamp) for stamp in stamps]
+    assert [r["quote_ts"] for r in rows] == ["2026-02-25T14:30:07Z"] * 2 + [
+        "2026-02-25T14:30:07.250000Z"] * 2
+    assert [r["quote_age_ms"] for r in rows] == [53000, 53000, 52750, 52750]
+    for bad in ("2026-02-30T14:30:07.250Z", "2026-02-30T14:30:07Z"):
+        errors = []
+        for _ in range(2):
+            with pytest.raises(ValueError) as caught:
+                row(bad)
+            errors.append((type(caught.value), str(caught.value)))
+        assert errors[0] == errors[1]
+
+
 def test_spec_is_default_deny_and_end_is_required():
     connector = AlpacaQuoteMinutesConnector()
     check_config(connector, CONFIG)
