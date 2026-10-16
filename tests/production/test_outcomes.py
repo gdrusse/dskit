@@ -29,8 +29,12 @@ Readings this file pins where §5.13.2 is silent or self-contradictory are
 marked `READING:` in the test that carries them.
 """
 
+import dataclasses
 import json
 import os
+import random
+import types
+from collections import Counter
 from decimal import Decimal
 
 import pytest
@@ -404,6 +408,202 @@ def test_no_matched_label_is_ever_at_or_before_the_decision(decided, offsets):
     assert len(matched) == (1 if later else 0)
     if later:
         assert at_of(matched[0][1]) == min(at_of(ev) for ev in later)
+
+
+# ---------------------------------------------------------------------------
+# `forward_asof`'s keyed walk — held to the scan it replaced
+# ---------------------------------------------------------------------------
+
+#: What the spies below were asked, by name. A read the scan makes of a
+#: hook must be made exactly as often by the keyed walk, or the walk must
+#: not be taken; `test_report.py` imports these for the value curve.
+READS = Counter()
+
+
+def spying(cls, name):
+    """Return a subclass of the record class `cls` that counts every field read."""
+
+    def __getattribute__(self, attribute):
+        if not attribute.startswith("__"):
+            READS[f"{name}.{attribute}"] += 1
+        return object.__getattribute__(self, attribute)
+
+    return type(f"Spying{cls.__name__}", (cls,), {"__getattribute__": __getattribute__})
+
+
+class SpyStr(str):
+    """A `str` that counts its hashes and equality tests."""
+
+    def __hash__(self):
+        READS["str.hash"] += 1
+        return str.__hash__(self)
+
+    def __eq__(self, other):
+        READS["str.eq"] += 1
+        return str.__eq__(self, other)
+
+
+class SpyInt(int):
+    """An `int` that counts its `<=` and `>=`."""
+
+    def __le__(self, other):
+        READS["int.le"] += 1
+        return int.__le__(self, other)
+
+    def __ge__(self, other):
+        READS["int.ge"] += 1
+        return int.__ge__(self, other)
+
+
+class FieldSpyingLabels(LabelOutcomes):
+    """A `LabelOutcomes` whose entity field is a property that counts its reads."""
+
+    @property
+    def _entity_field(self):
+        READS["entity_field"] += 1
+        return self._spied_field
+
+    @_entity_field.setter
+    def _entity_field(self, value):
+        self._spied_field = value
+
+
+def scanned(legs, events, key, at):
+    """The leg-by-event scan `forward_asof` replaced, verbatim: the oracle."""
+    ordered = sorted(
+        outcomes_module._indexed_events(events, at), key=lambda pair: (pair[0], pair[1])
+    )
+    taken, matched = set(), []
+    for leg in sorted(legs, key=lambda item: (item.decided_at_ms, item.leg_id)):
+        wanted = key(leg)
+        for instant, position, found in ordered:
+            if position in taken or instant <= leg.decided_at_ms or key(found) != wanted:
+                continue
+            taken.add(position)
+            matched.append((leg, found))
+            break
+    return tuple(matched)
+
+
+def asked(call, *args):
+    """Return `call(*args)`'s pairs as identities, with the spy reads it made."""
+    READS.clear()
+    matched = call(*args)
+    reads = dict(READS)
+    return [(id(leg), id(found)) for leg, found in matched], reads
+
+
+def respun(record, spy):
+    """`record` rebuilt with a spy for its `class`, its `key` or its `instant`."""
+    values = {field.name: getattr(record, field.name) for field in dataclasses.fields(record)}
+    instant = "decided_at_ms" if isinstance(record, DecidedLeg) else "settled_ms"
+    if spy == "key":
+        values["instrument"] = SpyStr(values["instrument"])
+    elif spy == "instant":
+        values[instant] = SpyInt(values[instant])
+    cls = spying(type(record), type(record).__name__) if spy == "class" else type(record)
+    return cls(**values)
+
+
+def scan_inputs(seed, variant="plain"):
+    """Seeded legs and settlements over few keys and tied instants; one may be a spy."""
+    rng = random.Random(seed)
+    legs = [
+        decided_leg(
+            leg_id=f"leg-{n}",
+            instrument=f"INS{rng.randint(1, 3)}",
+            decided_at_ms=BASE_MS + rng.randint(0, 8),
+        )
+        for n in range(rng.randint(1, 14))
+    ]
+    events = [
+        settlement(instrument=f"INS{rng.randint(1, 4)}", settled_ms=BASE_MS + rng.randint(-2, 10))
+        for _ in range(rng.randint(1, 14))
+    ]
+    j, k = rng.randrange(len(legs)), rng.randrange(len(events))
+    side, _, spy = variant.partition("_")
+    if side == "leg":
+        legs[j] = respun(legs[j], spy)
+    elif side == "event":
+        events[k] = respun(events[k], spy)
+    return legs, events
+
+
+def a_label_key(variant):
+    """`(key, at)` of a `LabelOutcomes`, its key spied on or made foreign as asked."""
+    params = {
+        "source": LABEL_SOURCE,
+        "stream": LABEL_STREAM,
+        "key_fields": ["instrument"],
+        "time_field": "asof",
+        "value_field": "value",
+    }
+    cls = FieldSpyingLabels if variant == "property" else LabelOutcomes
+    source = cls(params, root=None, registry=None)
+    if variant == "field":
+        source._entity_field = SpyStr(source._entity_field)
+    if variant != "foreign":
+        return source._key, source._at
+
+    def foreign(self, item):
+        READS["foreign"] += 1
+        return LabelOutcomes._key(self, item)
+
+    return types.MethodType(foreign, source), source._at
+
+
+@pytest.mark.parametrize("seed", range(12))
+@pytest.mark.parametrize(
+    "variant",
+    ["plain", "leg_class", "leg_key", "leg_instant", "event_class", "event_key", "event_instant"],
+)
+def test_forward_asof_matches_the_scan_and_makes_exactly_its_reads(variant, seed):
+    """The keyed walk answers what the scan answers. A spy anywhere in the
+    input — a record subclass, a `str` key or an `int` instant that runs
+    code — keeps the scan, so it sees exactly the reads the scan makes."""
+    legs, events = scan_inputs(seed, variant)
+    args = (outcomes_module._instrument_of, outcomes_module._settled_at)
+    expected = asked(scanned, list(legs), list(events), *args)
+    assert asked(forward_asof, list(legs), list(events), *args) == expected
+
+
+@pytest.mark.parametrize("seed", range(8))
+@pytest.mark.parametrize("variant", ["plain", "field", "foreign", "property"])
+def test_a_label_stream_is_indexed_only_through_its_own_plain_key(variant, seed):
+    """Only the bound `LabelOutcomes._key` of an exact source over an exact
+    `str` field is indexed; a spied field, a foreign method or a subclass's
+    property keeps the scan and every read it makes."""
+    legs, events = scan_inputs(seed)
+    rows = [
+        {"instrument": item.instrument, LabelOutcomes._TS_OUT: item.settled_ms, "value": "1"}
+        for item in events
+    ]
+    key, at = a_label_key(variant)
+    expected = asked(scanned, list(legs), list(rows), key, at)
+    assert asked(forward_asof, list(legs), list(rows), key, at) == expected
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("rebound", [False, True], ids=["passed_in", "rebound"])
+def test_a_key_the_module_does_not_own_is_called_exactly_as_the_scan_calls_it(
+    rebound, seed, monkeypatch
+):
+    """A key passed in, or rebound over the module's own name, is not the
+    plain one the index was proven for: it is called as often as the scan
+    calls it."""
+    legs, events = scan_inputs(seed)
+    real = outcomes_module._instrument_of
+
+    def counted(item):
+        READS["key"] += 1
+        return real(item)
+
+    if rebound:
+        monkeypatch.setattr(outcomes_module, "_instrument_of", counted)
+    args = (outcomes_module._instrument_of if rebound else counted, outcomes_module._settled_at)
+    expected = asked(scanned, list(legs), list(events), *args)
+    assert expected[1]
+    assert asked(forward_asof, list(legs), list(events), *args) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ from decimal import Decimal
 import pytest
 
 from dskit.pipeline import metrics as pipeline_metrics
+from dskit.production.accounting import WindowBook, decimal_of, effective_fills
 from dskit.pipeline.runs import render_cell
 from dskit.production import __main__ as cli
 from dskit.production import report as report_module
@@ -91,6 +92,7 @@ from tests.production.test_main import (
     serve_root_of,
     write_document,
 )
+from tests.production.test_outcomes import READS, SpyStr, spying
 from tests.production.test_reconcile import (
     PROCESS_ID,
     RELEASE_HASH,
@@ -132,11 +134,11 @@ def a_document(**overrides):
     return ServeDocument.from_obj(obj)
 
 
-def a_report(ledger, document=None, clock=None):
+def a_report(ledger, document=None, clock=None, history=None):
     """The composite over one ledger, reading outcomes through a real join."""
     document = document if document is not None else a_document()
     clock = clock if clock is not None else TestClock(start_ms=BASE_MS)
-    history = LedgerHistory(ledger)
+    history = history if history is not None else LedgerHistory(ledger)
     join = OutcomeJoin(
         document,
         FakeRelease,
@@ -791,6 +793,139 @@ class TestValueCurve:
         """A tick after the cut had not happened yet."""
         curve = a_report(self.a_traded_series()).value_curve(BASE_MS)
         assert [point.at_ms for point in curve] == [BASE_MS]
+
+
+class SpyDecimal(Decimal):
+    """A `Decimal` that counts the exact-ratio reads a `Fraction` makes of it."""
+
+    def as_integer_ratio(self):
+        READS["decimal.ratio"] += 1
+        return Decimal.as_integer_ratio(self)
+
+
+class FillsOver:
+    """A ledger's `LedgerHistory`, answering `fills` with the given fills verbatim."""
+
+    def __init__(self, ledger, fills):
+        self._history, self._fills = LedgerHistory(ledger), tuple(fills)
+
+    def fills(self, since_ms):
+        return self._fills
+
+    def __getattr__(self, name):
+        return getattr(self._history, name)
+
+
+class TestValueCurveFold:
+    """The curve's book is carried tick to tick only where a fresh fold agrees.
+
+    Every expectation is the fold the curve replaced — a fresh `WindowBook`
+    over `effective_fills` at each tick — so the carried book is held to it
+    rather than to numbers restated here.
+    """
+
+    TICKS = 8
+
+    @staticmethod
+    def a_fill(fill_id, tick, *, offset_ms=1_000, cls=Fill, **fields):
+        """One fill `offset_ms` into a tick; money fields may be given as strings."""
+        values = {
+            "fill_id": fill_id, "venue_ref": "v", "client_ref": "c", "instrument": INSTRUMENT,
+            "side": "buy", "qty": "2", "price": "0.5", "fee": "0.01", "fee_currency": "USD",
+            "liquidity": "taker", "status": "final", "native": None,
+            "ts_ms": BASE_MS + tick * MINUTE_MS + offset_ms,
+        }
+        values.update(fields)
+        for name in ("qty", "price", "fee"):
+            if type(values[name]) is str:
+                values[name] = Decimal(values[name])
+        return cls(**values)
+
+    def history(self, case, **spy):
+        """Four fills, one of them (`b`) rebuilt with `spy`, plus what `case` adds."""
+        fill = self.a_fill
+        base = [
+            fill("a", 0),
+            fill("b", 1, **{"side": "sell", "price": "0.7", **spy}),
+            fill("c", 2, qty="3"),
+            fill("d", 4, side="sell", qty="1", price="0.4"),
+        ]
+        return base + {
+            "plain": [],
+            "reversal": [fill("c", 5, status="reversed")],
+            "reversal_of_last": [fill("d", 6, status="reversed")],
+            "rereport": [fill("b", 3, side="sell", price="0.9")],
+            "pending_then_final": [fill("e", 1, status="pending"), fill("e", 5, qty="4")],
+            "earlier_than_applied": [fill("z", 0, offset_ms=995)],
+        }[case]
+
+    def curve(self, fills):
+        """The value curve over `TICKS` ticks whose history holds `fills`."""
+        ledger = a_ledger()
+        for tick in range(self.TICKS):
+            record_tick(ledger, f"tick-{tick}", BASE_MS + tick * MINUTE_MS, [a_leg(f"leg-{tick}")])
+        report = a_report(ledger, history=FillsOver(ledger, fills))
+        return lambda: report.value_curve(BASE_MS + self.TICKS * MINUTE_MS)
+
+    def fresh_folds(self, fills):
+        """The fold the curve replaced: a fresh book over `effective_fills` per tick."""
+        books = []
+        for tick in range(self.TICKS):
+            books.append(WindowBook())
+            for fill in effective_fills(fills, BASE_MS + tick * MINUTE_MS):
+                books[-1].apply(fill)
+        return books
+
+    @pytest.mark.parametrize(
+        "case",
+        ["plain", "reversal", "reversal_of_last", "rereport", "pending_then_final",
+         "earlier_than_applied"],
+    )
+    def test_each_point_realises_what_a_fresh_fold_of_its_tick_realises(self, case):
+        """A reversal, a re-reported fill or one stamped before what is
+        already applied breaks the prefix the carried book extends."""
+        fills = self.history(case)
+        expected = [decimal_of(book.realised) for book in self.fresh_folds(fills)]
+        assert [point.realised for point in self.curve(fills)()] == expected
+
+    @pytest.mark.parametrize(
+        "spy",
+        [
+            {"cls": spying(Fill, "fill")},
+            {"qty": SpyDecimal("2")},
+            {"price": SpyDecimal("0.7")},
+            {"fee": SpyDecimal("0.01")},
+            {"side": SpyStr("sell")},
+            {"instrument": SpyStr(INSTRUMENT)},
+        ],
+        ids=["class", "qty", "price", "fee", "side", "instrument"],
+    )
+    def test_a_fill_that_runs_code_is_read_as_a_fresh_fold_reads_it(self, spy):
+        """Only an exact `Fill` of exact `str`/`Decimal` fields is carried
+        between ticks; any other is refolded every tick, as before."""
+        fills = self.history("plain", **spy)
+        curve = self.curve(fills)
+        READS.clear()
+        self.fresh_folds(fills)
+        expected = dict(READS)
+        READS.clear()
+        curve()
+        assert expected and dict(READS) == expected
+
+    def test_a_patched_apply_is_called_as_a_fresh_fold_calls_it(self, monkeypatch):
+        """The book is carried only under the `WindowBook.apply` it was proven for."""
+        fills, calls, real = self.history("plain"), [], WindowBook.apply
+
+        def counted(book, fill):
+            calls.append(fill.fill_id)
+            return real(book, fill)
+
+        monkeypatch.setattr(WindowBook, "apply", counted)
+        curve = self.curve(fills)
+        self.fresh_folds(fills)
+        expected, calls[:] = list(calls), []
+        curve()
+        assert calls == expected
 
 
 # ---------------------------------------------------------------------------

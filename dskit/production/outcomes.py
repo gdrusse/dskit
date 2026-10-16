@@ -55,7 +55,7 @@ and the source registry), ``dskit.pipeline.node`` and this package.
 
 from abc import ABC, abstractmethod
 from decimal import Decimal
-from types import MappingProxyType
+from types import MappingProxyType, MethodType
 
 import dskit.onboarding.observations as observations
 from dskit.onboarding.acquire import find_active_source
@@ -204,7 +204,11 @@ def forward_asof(legs, events, key, at):
     """
     ordered = sorted(_indexed_events(events, at), key=lambda pair: (pair[0], pair[1]))
     taken, matched = set(), []
-    for leg in sorted(legs, key=lambda item: (item.decided_at_ms, item.leg_id)):
+    legs = sorted(legs, key=lambda item: (item.decided_at_ms, item.leg_id))
+    groups = _plain_groups(legs, ordered, key)
+    if groups is not None:
+        return _first_after_by_key(legs, groups, key)
+    for leg in legs:
         wanted = key(leg)
         for instant, position, event in ordered:
             if position in taken or instant <= leg.decided_at_ms or key(event) != wanted:
@@ -212,6 +216,72 @@ def forward_asof(legs, events, key, at):
             taken.add(position)
             matched.append((leg, event))
             break
+    return tuple(matched)
+
+
+def _plain_groups(legs, ordered, key):
+    """Return ``key -> [(instant, event), ...]`` in ``ordered``'s order, or None.
+
+    The scan above compares every leg with every event, which is quadratic
+    in a history whose legs only grow. The keyed walk is its exact equal
+    only where every read the scan repeats is a plain field read, so the
+    index is built only then: ``key`` is one of this module's own, every
+    leg an exact ``DecidedLeg`` with an exact ``str`` instrument and
+    ``int`` instant, and every event an exact ``Settlement`` (or, for a
+    label stream, ``dict``) with an exact ``int`` instant and ``str`` key.
+    Anything else answers None, and the scan runs as it always has.
+    """
+    if key is _PLAIN_SETTLEMENT_KEY:
+        event_type = Settlement
+    elif (
+        type(key) is MethodType
+        and key.__func__ is _PLAIN_LABEL_KEY
+        and type(key.__self__) is LabelOutcomes
+        and type(key.__self__._entity_field) is str
+    ):
+        event_type = dict
+    else:
+        return None
+    for leg in legs:
+        if (
+            type(leg) is not DecidedLeg
+            or type(leg.instrument) is not str
+            or type(leg.decided_at_ms) is not int
+        ):
+            return None
+    groups = {}
+    for instant, _position, event in ordered:
+        if type(event) is not event_type or type(instant) is not int:
+            return None
+        found = key(event)
+        if type(found) is not str:
+            return None
+        groups.setdefault(found, []).append((instant, event))
+    return groups
+
+
+def _first_after_by_key(legs, groups, key):
+    """Walk the sorted legs against each key's events, as the scan would match them.
+
+    Legs arrive in non-decreasing ``decided_at_ms``, so an event at or
+    before one leg's decision is at or before every later leg's too, and
+    each key's events before its cursor are taken or out of reach for good:
+    the first one past the cursor and strictly after the decision is the
+    scan's first untaken match.
+    """
+    cursors, matched = {}, []
+    for leg in legs:
+        wanted = key(leg)
+        group = groups.get(wanted)
+        if group is None:
+            continue
+        index = cursors.get(wanted, 0)
+        while index < len(group) and group[index][0] <= leg.decided_at_ms:
+            index += 1
+        if index < len(group):
+            matched.append((leg, group[index][1]))
+            index += 1
+        cursors[wanted] = index
     return tuple(matched)
 
 
@@ -702,6 +772,10 @@ def _decimal_of(row, field, where):
     except ArithmeticError as exc:
         raise ProductionError([f"label row field {where!r} is {value!r}, not a number"]) from exc
 
+
+#: The two join keys whose reads are plain field reads, captured at import
+#: so a name rebound later never passes for one in ``_plain_groups``.
+_PLAIN_SETTLEMENT_KEY, _PLAIN_LABEL_KEY = _instrument_of, LabelOutcomes._key
 
 OUTCOME_SOURCE_KINDS.register(_SETTLEMENT_SOURCE, SettlementOutcomes)
 OUTCOME_SOURCE_KINDS.register(_LABEL_SOURCE, LabelOutcomes)

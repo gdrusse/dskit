@@ -94,6 +94,7 @@ from dskit.production.records import (
     CalibrationReport,
     Divergence,
     FeedResult,
+    Fill,
     ParityReport,
     ValuePoint,
 )
@@ -221,6 +222,10 @@ _SIGNS = pin_members(
 )
 
 _ZERO = Decimal(0)
+
+#: ``WindowBook.apply`` as imported, so the value curve extends a book only
+#: while the fold is the one a fresh book would run (see ``_folded_book``).
+_WINDOW_BOOK_APPLY = WindowBook.apply
 
 
 def classify_field(name):
@@ -809,11 +814,10 @@ class Report:
         marks = self._marks(at_ms)
         instruments = {leg.leg_id: leg.instrument for leg in self._history.legs(0)}
         points, peak = [], None
+        book, folded = None, None
         for body in self._ticks(at_ms):
             instant = body["observed_at_ms"]
-            book = WindowBook()
-            for fill in effective_fills(reported, instant):
-                book.apply(fill)
+            book, folded = _folded_book(book, folded, effective_fills(reported, instant))
             realised = decimal_of(book.realised)
             unrealised = decimal_of(
                 book.unrealised(_marker(marks, instruments, instant))
@@ -967,6 +971,43 @@ def _by_client_ref(fills):
     for fill in fills:
         grouped[fill.client_ref].append(fill)
     return {ref: tuple(items) for ref, items in grouped.items()}
+
+
+def _folded_book(book, folded, effective):
+    """Return ``(book, folded)``: a ``WindowBook`` that has applied ``effective`` in order.
+
+    A tick's effective fills usually extend the previous tick's by the fills
+    stamped since, and refolding them all from a fresh book made the value
+    curve quadratic in the ledger. When ``folded`` — exactly what ``book``
+    has applied — is an identity prefix of ``effective``, only the tail is
+    applied: the same applies, in the same order, from the same state as a
+    fresh fold. Anything else (a reversal, a re-reported fill) folds a fresh
+    book. The answer's ``folded`` is None, so the next tick folds afresh,
+    unless every fill applied is an exact ``Fill`` of exact immutables and
+    the fold is ``WindowBook.apply`` as imported.
+    """
+    count = 0 if folded is None else len(folded)
+    if folded is None or count > len(effective) or any(
+        old is not new for old, new in zip(folded, effective)
+    ):
+        book, count = WindowBook(), 0
+    tail = effective[count:]
+    for fill in tail:
+        book.apply(fill)
+    plain = WindowBook.apply is _WINDOW_BOOK_APPLY and all(_is_plain_fill(fill) for fill in tail)
+    return book, (effective if plain else None)
+
+
+def _is_plain_fill(fill):
+    """Whether a fill is an exact ``Fill`` whose folded fields are exact ``str``/``Decimal``."""
+    return (
+        type(fill) is Fill
+        and type(fill.side) is str
+        and type(fill.instrument) is str
+        and type(fill.qty) is Decimal
+        and type(fill.price) is Decimal
+        and type(fill.fee) is Decimal
+    )
 
 
 def _nearest_mark(marks, target_ms, tolerance_ms):
