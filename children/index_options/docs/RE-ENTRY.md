@@ -4,7 +4,7 @@ Updated: 2026-10-15 by GPT-6 Astra. Previous note archived in docs/archive/re-en
 
 ## Now
 
-- Phase A implements ADR-0265 Amendment 6 in theta_hypotheses.py and generated documents; candidate 69cb3c6a.
+- Phase A implements ADR-0265 Amendment 6 in theta_hypotheses.py and generated documents; reviewed candidate 69cb3c6a; landed c41fa6d1 on origin/main.
 - D3 event_gap primary with original halves; D4 labelled H2(b) primary population, measurement only.
 - D7 only zero-fee SPX put-write is primary; .65 USD per leg/contract fee and maximum-loss return are descriptive.
 - D9 liquidity frozen on 2016-2018, panel census_asof 2019-01-01; only tercile-dependent readings start2019.
@@ -16,12 +16,12 @@ Updated: 2026-10-15 by GPT-6 Astra. Previous note archived in docs/archive/re-en
   No full suite. Existing lint debt: 13 findings, versus 16 on base; no newly introduced finding.
 - Fresh Terra correctness and Luna integration reviews clean: zero findings; candidate locked in memo.
 - No real-data census, panel, hypothesis, validation or training run occurred in this session.
-- Read-only pull check 2026-10-15 19:41 ET: 75/414 roots at 2016-01-04; 76 cursor roots, CHTR at2023-07-06;
+- Read-only pull check 2026-10-15 20:02 ET: 75/414 roots at 2016-01-04; 76 cursor roots, CHTR at2018-09-20;
   BRUN/CBRS no_chain. Latest logged verify OK, no ALERT.txt. C:103GB free (minimum30GB).
 
 ## Next
 
-1. Rebase to origin/main, push and verify the locked Phase A candidate; evidence in the memo below.
+1. Phase A landed; retain the isolated checkout for the gated continuation. Recheck pull readiness first.
 2. Only after tested414 reaches oldest<=2016-01-04 and export verify is OK: follow Amendment5 as amended by6.
 3. Before any panel run, resolve the strict-seal rate-source blocker below using existing safe metadata/artifacts.
 4. Census -> freeze universe (development only) -> panel -> census stale-spot refresh -> register/set pins ->
