@@ -70,8 +70,9 @@ s0 = text.index("## 5. The seams")
 s1 = text.index("## 8. Package structure")
 
 # ---------------------------------------------------- 1. bare doc reads
+nxt = 0  # offset of the next line: a running sum, not a re-split per line
 for i, line in enumerate(text.split("\n"), start=1):
-    off = sum(len(x) + 1 for x in text.split("\n")[: i - 1])
+    off, nxt = nxt, nxt + len(line) + 1
     if not (s0 <= off < s1) or line.lstrip().startswith(("###", "##")):
         continue
     for sect, key in re.findall(r"(?<![.\w])`(\w+)\.([a-z_][\w.]*)`", line):
