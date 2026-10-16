@@ -34,7 +34,7 @@ from abc import ABC, abstractmethod
 from statistics import NormalDist
 from types import SimpleNamespace
 
-from dskit.pipeline.records import cluster_of, number_ok
+from dskit.pipeline.records import _exact_finite_floats, cluster_of, number_ok
 from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
 from dskit.pipeline.split_policy import SPLIT_NAMES
 
@@ -164,6 +164,11 @@ class SampleDistribution:
         values = list(samples)
         if not values:
             raise ValueError("samples must hold at least one draw")
+        if _exact_finite_floats(values):
+            # Exact finite floats pass ``number_ok`` and ``float`` returns
+            # each unchanged: sorted as they are.
+            self.samples = tuple(sorted(values))
+            return
         bad = [v for v in values if not number_ok(v)]
         if bad:
             raise ValueError(f"samples must be finite numbers, got {bad[:3]!r}")
@@ -375,6 +380,81 @@ class ThresholdWeightedCrps(ScoringRule):
         if (y != y or type(self) is not ThresholdWeightedCrps
                 or type(dist) is not SampleDistribution):
             return self._score_by_bisect(dist, y)
+        if not self._walkable(self.intervals, dist.samples, y):
+            return self._score_by_counter(dist, y)
+        samples = dist.samples
+        n = len(samples)
+        points = sorted(set(samples) | {float(y)})
+        intervals = self.intervals
+        m = len(intervals)
+        steps = len(points) - 1
+        total = 0.0
+        # ``points`` ascend, so ``bisect_right(samples, left)`` only grows:
+        # advance one counter instead of bisecting at every step. The
+        # interval starts ascend too, so a second counter drops the
+        # intervals that end by ``left``, and the walk jumps over every step
+        # that ends by the next interval's start. A skipped term is exactly
+        # 0.0, so ``total`` and the per-step sum keep their bits.
+        k = 0
+        j = 0
+        t = 0
+        while t < steps:
+            left, right = points[t], points[t + 1]
+            while j < m and intervals[j][1] <= left:
+                j += 1
+            if j == m:
+                break
+            if intervals[j][0] >= right:
+                t = bisect.bisect_right(points, intervals[j][0]) - 1
+                continue
+            t += 1
+            while k < n and samples[k] <= left:
+                k += 1
+            gap = (k / n - (1.0 if y <= left else 0.0)) ** 2
+            if not gap:
+                continue
+            end = j + 1
+            while end < m and intervals[end][0] < right:
+                end += 1
+            if end == j + 1:
+                # ``max(0.0, min(right, hi) - max(left, lo))`` with the builtins
+                # spelled out (same comparisons, same operand returned); a term
+                # that is not positive is 0.0 and adds nothing.
+                lo, hi = intervals[j]
+                covered = (hi if hi < right else right) - (lo if lo > left else left)
+                if covered > 0.0:
+                    total += gap * covered
+            else:
+                total += gap * sum(
+                    [max(0.0, min(right, hi) - max(left, lo))
+                     for lo, hi in intervals[j:end]]
+                )
+        return total
+
+    @staticmethod
+    def _walkable(intervals, samples, y):
+        """Whether the jump walk in :meth:`score` may run.
+
+        It needs builtin numbers only (so no comparison hook runs a
+        different number of times), finite draws, and float intervals whose
+        starts ascend without NaN: what the constructors build. Anything
+        else keeps :meth:`_score_by_counter`.
+        """
+        return (
+            (type(y) is float or type(y) is int)
+            and _exact_finite_floats(samples)
+            and type(intervals) is tuple
+            and all(
+                type(pair) is tuple and len(pair) == 2
+                and type(pair[0]) is float and type(pair[1]) is float
+                and pair[0] == pair[0]
+                for pair in intervals
+            )
+            and all(a[0] <= b[0] for a, b in zip(intervals, intervals[1:]))
+        )
+
+    def _score_by_counter(self, dist, y):
+        """Score by one counter over the sorted draws, visiting every step."""
         samples = dist.samples
         n = len(samples)
         points = sorted(set(samples) | {float(y)})

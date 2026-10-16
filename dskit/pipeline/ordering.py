@@ -41,8 +41,9 @@ Import cost: stdlib only.
 from __future__ import annotations
 
 import math
+from itertools import repeat
 
-from dskit.pipeline.records import number_ok
+from dskit.pipeline.records import _exact_finite_floats, number_ok
 from dskit.pipeline.stats import across_fold_t, dm_lags, newey_west_mean
 
 __all__ = [
@@ -86,6 +87,10 @@ def _as_floats(values, label):
             f"{label} must be a list or tuple of numbers, "
             f"got {type(values).__name__}"
         )
+    # Exact finite floats coerce to themselves: a copy is the same list.
+    # Anything else takes the per-cell walk below.
+    if _exact_finite_floats(values):
+        return list(values)
     out = []
     for i, v in enumerate(values):
         if not number_ok(v):
@@ -96,12 +101,20 @@ def _as_floats(values, label):
 
 def _ranks(values):
     """Rank ``values``, ties sharing their mean rank."""
-    order = sorted(range(len(values)), key=lambda i: values[i])
-    ranks = [0.0] * len(values)
+    n = len(values)
+    order = sorted(range(n), key=values.__getitem__)
+    ranks = [0.0] * n
+    if len(set(values)) == n:
+        # No two values compare equal, so every run below is one long and
+        # its shared rank ``(i + i) / 2.0 + 1.0`` is exactly ``i + 1``.
+        for rank, index in enumerate(order, 1):
+            ranks[index] = float(rank)
+        return ranks
     i = 0
-    while i < len(order):
+    while i < n:
+        tied = values[order[i]]
         j = i
-        while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+        while j + 1 < n and values[order[j + 1]] == tied:
             j += 1
         shared = (i + j) / 2.0 + 1.0
         for k in range(i, j + 1):
@@ -450,6 +463,21 @@ def _stamp_groups(stamps, series, y, yhat, control=None):
             f"control has {len(control)} values, stamps {len(stamps)} — must agree"
         )
     grouped = {}
+    columns = (y, yhat) if control is None else (y, yhat, control)
+    if ((type(stamps) is list or type(stamps) is tuple)
+            and (type(series) is list or type(series) is tuple)
+            and all(_exact_finite_floats(column) for column in columns)):
+        # Every cell is an exact finite float: no row is left out and
+        # ``float`` hands each one back unchanged, so group off the columns.
+        bench = repeat(None) if control is None else control
+        for stamp, name, outcome, forecast, cue in zip(stamps, series, y, yhat, bench):
+            cell = grouped.setdefault(stamp, ([], [], [], []))
+            cell[0].append(str(name))
+            cell[1].append(outcome)
+            cell[2].append(forecast)
+            if control is not None:
+                cell[3].append(cue)
+        return grouped
     for i, stamp in enumerate(stamps):
         if not number_ok(y[i]) or not number_ok(yhat[i]):
             continue

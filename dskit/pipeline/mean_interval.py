@@ -228,9 +228,15 @@ def _student_t_critical(level, df):
     low = 0.0
     for _ in range(_BISECTION_STEPS):
         mid = 0.5 * (low + high)
+        # A step that leaves (low, high) unchanged is a fixed point: every
+        # later step repeats it exactly, so stopping returns the same bits.
         if student_t_sf(mid, df) > target:
+            if mid == low:
+                break
             low = mid
         else:
+            if mid == high:
+                break
             high = mid
     return 0.5 * (low + high)
 

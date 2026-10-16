@@ -151,7 +151,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from dskit.pipeline.node import class_ref
-from dskit.pipeline.records import number_ok
+from dskit.pipeline.records import _exact_finite_floats, number_ok
 from dskit.pipeline.stats import regularized_incomplete_beta
 
 __all__ = [
@@ -270,11 +270,14 @@ class SignalEvidence:
             ) from None
         if not draws:
             raise ValueError("null_draws must hold at least one scramble statistic")
-        for i, value in enumerate(draws):
-            if not number_ok(value):
-                raise ValueError(
-                    f"null_draws[{i}] must be a finite number, got {value!r}"
-                )
+        # Exact finite floats pass ``number_ok`` by its own rule; anything
+        # else takes the per-draw walk, which names the culprit.
+        if not _exact_finite_floats(draws):
+            for i, value in enumerate(draws):
+                if not number_ok(value):
+                    raise ValueError(
+                        f"null_draws[{i}] must be a finite number, got {value!r}"
+                    )
         object.__setattr__(self, "statistic", float(self.statistic))
         object.__setattr__(self, "null_draws", tuple(map(float, draws)))
 
@@ -383,9 +386,15 @@ def clopper_pearson_upper(successes, trials, confidence):
     low, high = 0.0, 1.0
     for _ in range(_BISECTION_STEPS):
         mid = 0.5 * (low + high)
+        # A step that leaves (low, high) unchanged is a fixed point: every
+        # later step repeats it exactly, so stopping returns the same bits.
         if regularized_incomplete_beta(shape_a, shape_b, mid) < confidence:
+            if mid == low:
+                break
             low = mid
         else:
+            if mid == high:
+                break
             high = mid
     return 0.5 * (low + high)
 

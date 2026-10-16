@@ -216,6 +216,25 @@ def number_ok(value):
     )
 
 
+def _exact_finite_floats(values):
+    """Say whether ``values`` is a list or tuple of exact, finite floats.
+
+    :func:`number_ok`'s exact-float rule over a whole column in one lean
+    pass, the one owner of that check for the fast paths that skip a
+    per-cell walk. Only an exact ``list`` or ``tuple`` qualifies (iterating
+    one runs no hook), the first cell that is not an exact finite float
+    answers at once, and no cell's own methods are called. ``True`` means
+    every cell passes :func:`number_ok` and ``float`` returns it unchanged;
+    an empty column is ``True``.
+    """
+    if type(values) is not list and type(values) is not tuple:
+        return False
+    for value in values:
+        if type(value) is not float or not math.isfinite(value):
+            return False
+    return True
+
+
 def price_ok(value):
     """Say whether ``value`` is a price this envelope can hold.
 

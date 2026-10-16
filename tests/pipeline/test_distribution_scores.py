@@ -93,6 +93,30 @@ def test_twcrps_counter_walk_is_bit_identical_to_bisecting_including_nan():
             assert got == want or (got != got and want != want), (xs, y)
 
 
+def test_twcrps_walk_and_counter_paths_give_the_same_bits():
+    # A float outcome on built draws and intervals may take the jump walk;
+    # a float-subclass outcome, or a declaration reassigned as lists, keeps
+    # the counter walk. One integral, so one result, bit for bit.
+    class Outcome(float):
+        pass
+
+    rng = random.Random(29)
+    for intervals in ([[-2.5, -0.5], [0.5, 2.5]], [[-INF, -1.0], [1.0, INF]],
+                      [[-3.0, -2.0], [-1.5, -0.5], [0.5, 1.5], [2.0, 3.0]],
+                      [[-1.0, 0.0], [0.0, 1.0]]):
+        walk_rule = ThresholdWeightedCrps(intervals)
+        counter_rule = ThresholdWeightedCrps(intervals)
+        counter_rule.intervals = [list(pair) for pair in counter_rule.intervals]
+        for _ in range(100):
+            xs = [rng.choice([rng.gauss(0, 1.5), rng.randint(-6, 6) * 0.5, -0.0])
+                  for _ in range(rng.choice([1, 3, 12, 60]))]
+            dist = SampleDistribution(xs)
+            y = rng.choice([rng.gauss(0, 2), xs[0], 0.5, -2.5, INF, -INF, -0.0])
+            want = walk_rule.score(dist, y)
+            for got in (walk_rule.score(dist, Outcome(y)), counter_rule.score(dist, y)):
+                assert type(got) is float and got.hex() == want.hex(), (xs, y)
+
+
 def test_twcrps_ignores_errors_outside_the_region():
     dist = SampleDistribution([0.0])
     assert ThresholdWeightedCrps([[1.0, 2.0]]).score(dist, 0.5) == 0.0
