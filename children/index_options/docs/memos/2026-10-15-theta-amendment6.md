@@ -163,3 +163,33 @@ Actual completed-ticker reader smoke,2026-10-16: executed existing ParquetChainR
 Reproducibility: effective param hash0839e0d9cfa53cdc482c9761a618bc3c61a61042f645ae7639098f0593670a22; small full source fingerprint/report at /tmp/theta-ml-real-smoke-20261016.json. Contributing files/manifest digests: AAPL20261012T163905Z-backfill-36f1da2b.parquet /3e883a45b77189f0ec3f6e0117c7bfb19396229cb92e4e35fd390706b974a34d; ABBV20261012T165236Z-backfill-b288c5e6.parquet /fcddc9ed1748690a4e5b115ed97b902af6065684ea9280e4e2d9bd604709b65c; ABT20261012T180327Z-backfill-7d43016a.parquet /6d21abf0735db100c81e5dea60a0241754dc43d0f2b05cd5440c9c62962cada1. Project PYTHONPATH and mandated venv used,120second alarm and1million-row-per-symbol refusal caps, neither reached.
 
 Deliberately unrun: the real feature projection, augmented panel, family admission, training and rules. theta-rates-pre2026 and theta-chain-panel are absent from configured source metadata; real pins remain zero. No safe FRED connector/source was found in this inventory; the existing fred-market-features raw JSONL is documented as mixed through2026-09-24 and remains unopened. The next bounded preparation task is a separately bounded safe DGS3MO acquisition/artifact and source registration, then a limited chain-feature build and actual bridge smoke. This is a data-input blocker, not evidence that the end-to-end real-data pipeline passed.
+
+
+## Final preparation lock — 2026-10-16
+
+Locked candidate886db23e316e1b7625e17999b007585575ce2355 against current origin/main c5483aae9c8eb8d0686876bbef1ce665b304313b. Contract ADR-0269 (Theta proposal formerly numbered0268), frozen eight-family matrix above, inherited reference/target/model unchanged. No unresolved findings or Minor/Nit backlog. Exact reader/model/planner dependencies are the base plus the reviewed bridge; all67declared initial-study source hashes match their current bytes. No fit or full real-data workflow approval follows from this implementation lock.
+
+Fresh GPT-5.6 Terra, /root/bridge_corrected_correctness, correctness/authority, actual retained report:
+
+> Final correctness/authority review of886db23e vs c5483aae:0Critical,0Major,0Minor,0Nit. Falsified lifecycle/pins, bounds/aliases, strict-prior, row/collision, atomic/lock/failure, provenance/limits, workflow reuse, and unchanged model/H0-H7 claims; no defect proven. Checks:38bridge/config tests passed; focused config/manifest tests75passed; panel validate/plan and feature plan passed; diff check clean. Limits: synthetic only; no real workflow/training reviewed.
+
+Fresh GPT-6 Luna, /root/bridge_corrected_integration, test-quality/integration, actual retained report:
+
+> Independent integration/test-quality review of886db23: no evidenced Critical/Major/Minor/Nit findings. Inspected declaration/fingerprint/direct-run lifecycle, aliased temporal bounds, strict-prior matching and missingness, duplicate/collision guards, atomic publication/locking/cleanup, provenance/size limits, all six configs, child workflow and targeted regression tests. Ran bridge and Theta config tests:38passed in4.31s with absolute PYTHONPATH. First attempt with relative PYTHONPATH failed only because workflow subprocess changed cwd; absolute path rerun passed. Real data untouched. Did not run full suite or empirical end-to-end real pipeline; absent real pins/rates remain documented blockers.
+
+Writer checks:686focused tests before the ID correction,42focused tests after, ruff clean for new module/tests, git diff --check clean, feature and panel validate/plan passed, workflow planning/execution/repeat verified synthetically. Known baseline purity failure and278existing deprecation warnings retained, no tests disabled. No full suite. Relative PYTHONPATH is unsuitable for workflow subprocesses; use absolute worktree and child paths.
+
+Reviewed Git identities:
+
+```
+040000 tree de4cffcd7c617d9b0c07e804f914e6e47d6fd566	children/index_options/configs
+100644 blob f3944d010014a6ebcd9ce194c66a3f4d2a383e68	children/index_options/tests/test_configs.py
+100644 blob 385032564bb819c154847cc43ff779596b603913	children/index_options/tests/test_theta_ml_configs.py
+100644 blob 28b7b0ad5c8c5231c3faadf8536470b1f1f1af49	docs/architecture/decision-log.md
+100644 blob cb624691c6f6818a467977ba6085e05661679719	dskit/pipeline/libs/parquet_panel.py
+100644 blob 65640177a09841a43dfd50d530afcb6938fcbd7b	tests/pipeline_libs/test_parquet_panel.py
+```
+
+Only memo/re-entry/archive evidence follows the lock. The three-ticker real source-smoke result above is a limited preparation check, not model validation. Latest pull metadata cursor2026-10-16T13:59:31Z:123/414 at floor,124tracked; latest pull11 rc0,505990records/export alarms=[], verifyOK, noALERT.txt. Historical DOW date-coverage alarm remains recorded; watchdog continuation is not proof the gap is resolved. Driver unchanged.
+
+Next bounded action: supply/obtain an independently safe date-bounded DGS3MO artifact through an existing onboarding connector, then build/register/pin a limited chain-feature panel and exercise the full real preparation workflow. Generic HTTP/local-blob connectors exist, but no safe FRED source is registered and FRED_API_KEY is absent from this execution environment (value never read/printed). The existing mixed2026 rate file is not a fallback. Training remains a separate gated task requiring all data readiness, folds/maturity, candidate/seed budget and durable ledger controls.

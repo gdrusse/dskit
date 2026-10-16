@@ -1,55 +1,53 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-10-15 by GPT-6 Astra. Previous note archived in docs/archive/re-entry/index_options.md.
+Updated: 2026-10-16 by GPT-6 Astra. Previous note in docs/archive/re-entry/index_options.md.
 
 ## Now
 
-- Phase A implements ADR-0265 Amendment 6 in theta_hypotheses.py and generated documents; reviewed candidate 69cb3c6a; landed c41fa6d1 on origin/main.
-- D3 event_gap primary with original halves; D4 labelled H2(b) primary population, measurement only.
-- D7 only zero-fee SPX put-write is primary; .65 USD per leg/contract fee and maximum-loss return are descriptive.
-- D9 liquidity frozen on 2016-2018, panel census_asof 2019-01-01; only tercile-dependent readings start2019.
-  Full development 2016-2020 and original half split 2018-07-01 stay unchanged; validation 2021-2025 unchanged.
-- D10 H7 descriptive, no pass; D11 H4 weekly comparison dropped, monthly behavior unchanged.
-- All 20 AAPL labels verified against linked Apple company earnings releases; zero wrong dates/drops.
-- Generator check and 46 validate/plan checks pass (all 23 Theta pipeline documents).
-- Requested tests: 779 passed, 278 deprecation warnings; all synthetic.
-  No full suite. Existing lint debt: 13 findings, versus 16 on base; no newly introduced finding.
-- Fresh Terra correctness and Luna integration reviews clean: zero findings; candidate locked in memo.
-- No real-data census, panel, hypothesis, validation or training run occurred in this session.
-- Read-only pull check 2026-10-15 20:02 ET: 75/414 roots at 2016-01-04; 76 cursor roots, CHTR at2018-09-20;
-  BRUN/CBRS no_chain. Latest logged verify OK, no ALERT.txt. C:103GB free (minimum30GB).
+- ADR-0269 Theta ML preparation: approved generic ParquetPanelAugment + six JSONs built.
+- Candidate886db23e on basec5483aae; fresh Terra correctness and Luna integration clean, zero findings.
+- ADR was renumbered from0268 because main's performance sweep occupied that ID; no experimental change.
+- Existing price-distribution PatchTST32/42-feature baseline and target preserved; Theta families are prior-date inputs.
+- Preparation workflow has no model-fit command. Initial-study is a gated draft, zero authorized fits/pins.
+- Focused checks686passed before ID correction;42after; reviewers each38passed; lint/diff/validate/plan clean.
+  Known baseline purity failure remains;278existing deprecation warnings. No full suite.
+- Actual bounded reader smoke: AAPL/ABBV/ABT,2020-01-02<=date<2020-02-01;80,352rows,21dates each,
+  zero unit-count mismatches. This is SOURCE-READER evidence, not a full real preparation/ML pass.
+- Safe theta-rates-pre2026 and derived theta-chain-panel are absent; real preparation remains blocked.
+- H0-H7 Phase A previously landed c41fa6d1; Amendment6 pre-registration and all generated twins unchanged.
+  No H-census/H0-H7 statistic, validation, model training or rule replay has run in this program.
+- Pull cursor2026-10-16T13:59:31Z:123/414 at2016-01-04,124tracked; latest export alarms=[], verifyOK,
+  no ALERT.txt. DOW historical coverage alarm is unresolved despite watchdog continuation.
 
 ## Next
 
-1. Phase A landed; retain the isolated checkout for the gated continuation. Recheck pull readiness first.
-2. Only after tested414 reaches oldest<=2016-01-04 and export verify is OK: follow Amendment5 as amended by6.
-3. Before any panel run, resolve the strict-seal rate-source blocker below using existing safe metadata/artifacts.
-4. Census -> freeze universe (development only) -> panel -> census stale-spot refresh -> register/set pins ->
-   generate/check/test/commit pins+universe. Declare proven reuse breaks/stitches from census evidence.
-5. Development H0..H7 in owner-requested order, ledger/memo for each pass/fail. H5/H6 also require index tier.
-   Validation once, unchanged, only after eligible development pass. H7 has no pass; H2 detected-only cannot close(b).
+1. Supply/obtain an independently safe bounded DGS3MO artifact through onboarding; never read mixed2026.
+2. Build/register/pin a limited chain-feature panel, then test actual feature projection/augmentation/admission.
+3. Full study needs tested414/export readiness, root/action accounting, actual pins and safe price/rate inputs.
+4. Before any fit: exact matured folds, admitted candidates/all seeds, numeric attempt budget and durable ledger.
+5. H0-H7 remains a separate unchanged registration. If resumed, follow Amendment5/6 exactly after its gates;
+   validation once only for eligible development passes. H7 is descriptive; detected-only H2b cannot close.
 
 ## Blocked / owner decisions
 
-- Tested tier incomplete; no Phase B run authorized yet by its dependency gate.
-- Panel rates_raw now uses bounded ParquetStreamRows with an unresolved zero rate pin (refuses before scanning).
-  Need an independently existing safe pre2026 rate artifact, registered theta-rates-pre2026, then set-pin rates;
-  never read mixed2026 to create it or substitute zero rates. Phase B remains withheld until resolved.
-- Validation earnings labels absent; H2(b) cannot close from its detected-only twin.
-- Index tier and zero panel pins/unfrozen universe remain prerequisites. 2026 stays sealed forever for this program.
+- Missing safe rates and derived feature-panel pins prevent a full real-data preparation test.
+- Existing fred-market-features JSONL extends into2026; forbidden as input or extraction source.
+- FRED_API_KEY absent from this environment. Generic HTTP/local-blob onboarding exists; no rate artifact acquired.
+- All2021-2025 already seen: retrospective development, not clean holdouts.2026sealed forever.
+- Fits/rule development additionally require the finite launch registration and adaptive controls; not built here.
 
 ## Read first
 
 - CLAUDE.md; docs/skills/implementation-workflow.md.
-- ADR-0263; ADR-0265 Amendments1-6 (Amendment6 is at end of decision-log.md).
-- children/index_options/docs/memos/2026-10-15-theta-amendment6.md (contract, tests, review, source provenance).
-- children/index_options/index_options/theta_hypotheses.py and configs/theta-hypothesis-inputs.json.
+- ADR-0269 in docs/architecture/decision-log.md; ADR-0265 Amendments1-6 for the separate hypothesis program.
+- children/index_options/docs/memos/2026-10-15-theta-amendment6.md (tests, actual smoke, final reviews/lock).
+- children/index_options/configs/workflow-theta-ml.json and theta-ml-initial-study.json (gated draft).
 
 ## Do not
 
-- Never read2026 data, fit/train, tune statistics/signs/thresholds/splits, or rerun validation.
-- Never write under /home/russell/data/thetadata/options-*; never start/stop driver or call port25503.
-- Check df -h /mnt/c before outputs; keep>=30GB free; delete nothing under /home/russell/data.
-- Read ALERT.txt if present and tell owner; do not delete it. Kill processes only with anchored patterns.
-- WSL2 only; /home/russell/dskit/.venv/bin/python with PYTHONPATH=<current worktree>.
-- Never alter owner-only Path rows. Tests use synthetic data only.
+- Never read2026 market records; every read has explicit end_before. No fits or rule replay under preparation approval.
+- Never change pre-registered statistics/signs/thresholds/splits or rerun hypothesis validation.
+- Never write options-* stores, start/stop the Theta driver, call25503, or delete anything under /home/russell/data.
+- Check df -h /mnt/c before outputs; keep>=30GB. Read/report ALERT.txt if present, do not delete it.
+- WSL2 only; /home/russell/dskit/.venv/bin/python with absolute PYTHONPATH=<worktree>:<worktree>/children/index_options.
+- Preserve owner-only Path/Current Work and frozen20261008 configs. Kill only with anchored patterns.
