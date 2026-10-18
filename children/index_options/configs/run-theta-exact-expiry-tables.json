@@ -1,0 +1,124 @@
+{
+  "name": "theta-exact-expiry-tables",
+  "notes": "ADR-0270 owner-approved converter (2026-10-18): the frozen ThetaData chain export in, the four inputs the existing exact-expiry stack reads out, so ExactExpiryCDFPanel (surface + lifecycle + own_iv), RawChainFeatureBuilder and DecisionRegionContextBuilder (the chain archive) run on Theta chains with no dskit or owner change. The reader is ParquetChainRows on the frozen symlink directory of exactly the 427 committed files (never the live export folder), symbol by symbol with dates ascending; start 2017-01-03 is the development start (79 of the 118 names have no valid quote before it), end_before 2024-01-01 keeps the sealed holdout (2024-2025) out of the scan: it is a predicate pushed into the row groups, so a later row is never decoded. The reader's sealed_from is NOT set because it refuses a whole file whose footer reaches the sealed date, and the frozen export's files straddle it (they run to 2025-12-31); the bound is therefore end_before, repeated on the bars and on the node, which refuses any row or bar at or after it. The tables node repeats start and end_before and refuses a source whose bounds differ. Outputs go to ONE new directory (output_root must not exist; the run is built in a hidden .partial sibling and published by one rename): surface.parquet, lifecycle.parquet, archive/<symbol>/options_<year>.parquet, own_iv/index_daily/<SYMBOL>.parquet, manifest.json (sha256 and rows of every file, per-symbol/year counts, refusals, the column definitions). DEFINITIONS are the legacy exact_expiry_surface rules recovered from the options-dataset-hist archive (see the node docstring): ATM band 2.5% of the underlying; 25-delta wing = mean IV of the calls (puts) with |delta| in 0.20..0.30; rel_spread = mean (ask-bid)/mid; put/call ratios NaN unless both sides are positive; Theta volume is real so chain_volume and chain_put_call_volume are filled (the legacy archive had none). An expiry-day with fewer than min_two_sided_strikes strikes carrying a valid quote (bid > 0, ask >= bid), and every expiry of a quote day with no valid quote, is refused and counted, not emitted. first_seen_date is left-censored at the symbol's first processed date (counted per symbol). own_iv is the chain ATM IV of the kept expiry nearest 30 calendar days within 15 days, as a decimal annualized vol (0.18, not VIX points); acquire own_iv/ with the localtables connector (layout directory, stamp_stem_as symbol, effective_field date) to serve it through IndexCloseRows as iv_source. To adapt: change output_root for every run (it is refused when it exists), narrow symbols on the reader for a smoke, and keep reader and node bounds equal. Run from children/index_options: python -m dskit.pipeline run configs/run-theta-exact-expiry-tables.json --asof 2023-12-31. No model is fitted and nothing outside output_root is written. PRICE BASIS: Theta strikes, underlying and option prices are RAW, the stock bars are split-adjusted, and ExactExpiryCDFPanel refuses a symbol whose close disagrees with chain_underlying_price; the node converts strike, underlying_price, bid, ask (so mark) by a per-split-segment factor (4:1 gives exactly 0.25), keeps strike_raw and basis_factor in the archive, records the factor per symbol-day in the manifest, and refuses days that do not fit (stale underlying, no bar). prices/ and own_iv/ are both localtables directory layouts: register each with the localtables connector (layout directory, stamp_stem_as symbol, effective_field date), then point the panel's price_source and iv_source at them (symbols maps every name to its own own_iv series).",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-strike-screen-20261018/prepare/exact-expiry-run",
+    "notes": "The pipeline run directory (run report and fingerprints); the tables themselves go to the node's output_root. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/index_options/theta-strike-screen-20261018/export-frozen/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "bid_size",
+          "ask_size",
+          "open_interest",
+          "volume",
+          "implied_vol",
+          "delta",
+          "gamma",
+          "vega",
+          "underlying_price"
+        ],
+        "start": "2017-01-03",
+        "end_before": "2024-01-01"
+      },
+      "notes": "The frozen Theta export (read-only symlink directory, manifest registration/export-frozen-manifest.json), projected to the sixteen fields the converter reads; the newest-acquired copy of a (symbol, date) unit wins. Dates arrive as ISO text, right as call/put, bounds pushed into the scan. Add symbols to narrow it; rename stitching is not applied here (a stitched root appears under each raw name)."
+    },
+    "tables": {
+      "uses": "index_options.theta_exact_expiry:ThetaExactExpiryTables",
+      "inputs": {
+        "records": "$chain.records",
+        "bars": "$bars.records"
+      },
+      "params": {
+        "output_root": "/home/russell/data/index_options/theta-strike-screen-20261018/exact-expiry-tables",
+        "max_dte": 60,
+        "start": "2017-01-03",
+        "end_before": "2024-01-01",
+        "atm_band": 0.025,
+        "wing_delta": 0.25,
+        "wing_delta_width": 0.05,
+        "min_two_sided_strikes": 2,
+        "own_iv_target_dte": 30,
+        "own_iv_max_gap_days": 15,
+        "flush_rows": 1000000,
+        "bar_price_field": "close",
+        "basis_tolerance": 0.01
+      },
+      "notes": "max_dte 60 is the first screen's maximum horizon (ADR-0270 reformulation: one output curve per listed expiry up to 60 calendar days). Every other knob is spelled out at the node's default so the identity hash pins it: the legacy surface rules (2.5% ATM band, 0.20-0.30 |delta| wings), two valid strikes per expiry-day, a 30-day own_iv tenor within 15 days, one million rows per chunk (bounds memory, never changes a value). bar_price_field close is the split-adjusted close (not adjusted_close, which would turn labels into total returns and make the Theta-to-bar ratio drift); basis_tolerance 0.01 is how far a day's close-over-vendor-underlying ratio may stray from its split segment's factor before the day is refused (kept below the panel's 0.02 spot_tolerance so an accepted day always passes its spot check)."
+    },
+    "bars": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "stock-daily-bars",
+            "stream": "files",
+            "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97",
+            "include": [
+              "*/underlying_prices.parquet"
+            ],
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "high": "high",
+              "low": "low",
+              "close": "close",
+              "volume": "volume",
+              "dividend_amount": "dividend_amount",
+              "split_coefficient": "split_coefficient"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2024-01-01"
+              }
+            }
+          },
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "stock-daily-bars-300",
+            "stream": "files",
+            "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c",
+            "include": [
+              "*/underlying_prices.parquet"
+            ],
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "high": "high",
+              "low": "low",
+              "close": "close",
+              "volume": "volume",
+              "dividend_amount": "dividend_amount",
+              "split_coefficient": "split_coefficient"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2024-01-01"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "The daily bars of the tested names, the same two pinned snapshots the Theta hypothesis documents read (stock-daily-bars + stock-daily-bars-300; no symbol is in both). Their open/high/low/close are SPLIT-adjusted (a 4:1 split divides every earlier bar by 4) and NOT dividend-adjusted; adjusted_close, which is both, is deliberately not read. They give the converter (a) the price basis it converts Theta's RAW strikes and underlying to, and (b) the price_source shards. The date window opens 2016-01-04 so trailing windows are full on the first Theta day, and closes at the same sealed date as the chain: no bar at or after it is read, and the node refuses one."
+    }
+  }
+}

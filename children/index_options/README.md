@@ -552,6 +552,8 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258);
+                           # theta_exact_expiry.py (ADR-0270: ThetaExactExpiryTables, the frozen Theta chains -> the
+                           # exact-expiry surface, lifecycle, chain archive and own_iv series; no model)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
@@ -572,6 +574,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # run-theta-chain-events.json (ADR-0265 node 5: the earnings-like events of
                            # the sample root from the front-IV crush, retrospective labels) with
                            # theta-earnings-labels-2016-2020.json (dev-period announcement dates)
+                           # run-theta-exact-expiry-tables.json (ADR-0270: the frozen Theta export through
+                           # ThetaExactExpiryTables into surface/lifecycle/archive/own_iv; new output_root per run)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner
@@ -595,7 +599,7 @@ docs/research/              # README.md, .gitkeep; distribution-modeling/, real-
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
-                           # quote_backtest, debit_backtest, ledger_studies (.py)
+                           # quote_backtest, debit_backtest, ledger_studies, theta_exact_expiry (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or

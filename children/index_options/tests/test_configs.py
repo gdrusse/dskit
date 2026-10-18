@@ -357,6 +357,17 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/theta-ml-feature-families.json", "configs/theta-ml-initial-study.json",
         "configs/theta-ml-calendar.json", "configs/workflow-theta-ml.json",
         "tests/test_theta_ml_configs.py",
+        # ADR-0270 (strike-region fast screen): the preparation files the previous commits left out
+        # of this manifest (8), and the owner-approved Theta exact-expiry converter (3).
+        "configs/run-strike-screen-exact-expiry-quotes.json",
+        "configs/run-strike-screen-market-requests.json",
+        "configs/strike-screen-experiment-template.json", "configs/strike-screen-matrix.json",
+        "docs/research/distribution-modeling/2026-10-18-market-implied-reference-and-baselines.md",
+        "docs/research/distribution-modeling/2026-10-18-strike-screen-windows-lead-time-cells.md",
+        "docs/research/distribution-modeling/2026-10-18-theta-chain-feature-engineering.md",
+        "tests/test_strike_screen_market_configs.py",
+        "configs/run-theta-exact-expiry-tables.json", "index_options/theta_exact_expiry.py",
+        "tests/test_theta_exact_expiry.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -398,7 +409,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the owner-requested Amendment 6 execution/review memo = 549.
     # Plus the six ADR-0269 draft configs and their no-fit contract test = 556.
     # Plus the five market/pocket pipeline templates and explicit search calendar = 562.
-    assert len(actual) == 562
+    # Plus ADR-0270's eight preparation files and the Theta exact-expiry converter, its document and test = 573.
+    assert len(actual) == 573
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
