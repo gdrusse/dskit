@@ -125,7 +125,7 @@ The next useful test is fresh-data prediction, with the existing frozen January 
 
 The first method-16 fit completed, but the writer refused a missing output directory. A same-identity retry was then refused. Both attempts are retained; completed outputs use runs-final. No output was overwritten, and only complete runs count. The initial tail-test fixture lacked required identifier fields and was corrected before model execution.
 
-Verification covers all 22 current document/run identities, all 132 file hashes/counts, identical row cohorts and benchmark predictions, every causal fit census, proper-score arithmetic and every aggregate view. 236 focused tests and Ruff passed; the full suite was not run. Independent review receipts will be appended after closure.
+Verification covers all 22 current document/run identities, all 132 file hashes/counts, identical row cohorts and benchmark predictions, every causal fit census, proper-score arithmetic and every aggregate view. 236 focused tests and Ruff passed; the full suite was not run. Two fresh independent reviews passed with zero findings; receipts follow below.
 
 ## Reproducibility
 
@@ -148,3 +148,11 @@ Use the project Python environment in WSL and run a selected JSON from the crypt
 - [SGDClassifier](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.SGDClassifier.html): modified Huber and logistic probability behavior.
 - [MLPRegressor](https://scikit-learn.org/stable/modules/generated/sklearn.neural_network.MLPRegressor.html): squared-error neural fitting.
 - [LightGBM parameters](https://lightgbm.readthedocs.io/en/latest/Parameters.html): Fair, absolute and cross-entropy objectives.
+
+## Review closure
+
+Candidate 89ca6c39f06f3f3a6bff722d7f85588a733295f0 passed two sequential fresh GPT-6 skeptic reviews: correctness/statistics/causality and integration/reproducibility. Both report zero Critical, Major, Minor or Nit findings. The evidence packet retains both complete reports and their SHA256 digests.
+
+Together they independently checked all 132 outputs, 2,081 causal fit records, cohort and benchmark equality, score and aggregation arithmetic, inference adjustments and the market-gap map. The second reviewer also reran all 236 focused tests; Ruff passed. The full suite and model training were not rerun during review. These reviews validate the bounded historical research and retained results, not future predictive advantage.
+
+Closure changes only this receipt, the evidence receipt and re-entry notes. Reviewed configurations, tests, dependencies, journal, source and numerical results remain unchanged.
