@@ -209,7 +209,9 @@ The earlier combined-period recommendations are superseded by this aligned asses
 
 ## Verification, failures and limits
 
-The initial tests failed because the 114 documents did not yet exist and a synthetic regression fixture omitted its prediction-method argument. Both were corrected before model execution. Every completed pipeline is retained with its configuration identity and six writer hashes. Exact source, fit, score and aggregation audits are recorded in the evidence packet. All 114 modeling runs completed without runtime failure. The audit verified 684 output hashes/counts, all 1,971 causal training and prediction censuses, identical benchmark predictions/cohorts, five probability-score series and every aggregate field. All 238 focused tests, Ruff, and document validation passed; the full suite was not run. Independent reviews are pending.
+The initial tests failed because the 114 documents did not yet exist and a synthetic regression fixture omitted its prediction-method argument. Both were corrected before model execution. Every completed pipeline is retained with its configuration identity and six writer hashes. Exact source, fit, score and aggregation audits are recorded in the evidence packet. All 114 modeling runs completed without runtime failure. The audit verified 684 output hashes/counts, all 1,971 causal training and prediction censuses, identical benchmark predictions/cohorts, five probability-score series and every aggregate field. All 238 focused tests, Ruff, and document validation passed; the full suite was not run. Two fresh independent reviews completed on candidate c505e7e1ca731c899f411819e14dcc51fba42cfa with zero Critical/Major findings. The integration review recorded one Minor provenance omission, closed by the clarification below.
+
+The market benchmark is the inherited one-minute candle-based midpoint proxy, not a reconstructed exchange order book. Original source generation and GRU training were not rebuilt in this study.
 
 W1/W2 were already explored in earlier work. Selection isolation within this batch does not undo that knowledge. The inherited GRU backbone updates on its original causal schedule, while all fitted correction models and benchmarks are fixed at May2 throughout validation. This is Kalshi BTC/ETH only; no Polymarket or profitability conclusion. Day-cluster inference assumes approximately independent days; seven-day sensitivity is not proof of independence. Every comparator family is corrected separately, not jointly across all four comparators.
 
@@ -236,3 +238,9 @@ Artifacts: /home/russell/data/crypto_trading/research/warmup20-20261018. Exact s
 - [Linear and quadratic discriminant models](https://scikit-learn.org/stable/modules/lda_qda.html)
 - [Distance-weighted neighbors](https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.KNeighborsRegressor.html)
 - [LightGBM objectives and randomized splits](https://lightgbm.readthedocs.io/en/latest/Parameters.html)
+
+## Review closure
+
+Candidate c505e7e1ca731c899f411819e14dcc51fba42cfa received sequential independent correctness/statistics/causality and tests/integration/reproducibility reviews. The full reviewer reports and SHA-256 digests are retained in the evidence packet under review_closure. The first review independently verified all global/cell statistics; the second independently verified every aggregate field (16,758 aggregate-column checks). Their focused test results were 238 and 188 passes respectively.
+
+Integration finding I-1 (Minor, midpoint-proxy provenance) is closed by the explicit source clarification above. Final unresolved counts: Critical 0, Major 0, Minor 0, Nit 0. No experimental code, configuration, test, dependency, selection rule, result or analysis script changed after review. The closure changes only provenance wording, review evidence and handoff notes. This review covers the historical research deliverable; raw source reconstruction and inherited GRU retraining remain outside its scope.
