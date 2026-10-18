@@ -1,0 +1,394 @@
+{
+  "protocol": {
+    "base": "cabba42c2470ac89b2158ef90a712c1e824e47b3",
+    "status": "frozen-before-new-calculation",
+    "purpose": "Historical attribution diagnostic; no new model selection or confirmation claim",
+    "contrasts": [
+      [
+        "global",
+        "m24",
+        "m45"
+      ],
+      [
+        "global",
+        "m24",
+        "m46"
+      ],
+      [
+        "global",
+        "m24",
+        "m47"
+      ],
+      [
+        "global",
+        "m48",
+        "m24"
+      ],
+      [
+        "pocket",
+        "s03",
+        "raw"
+      ],
+      [
+        "pocket",
+        "s03",
+        "logistic"
+      ],
+      [
+        "pocket",
+        "s03",
+        "m02"
+      ],
+      [
+        "pocket",
+        "s03",
+        "m45"
+      ],
+      [
+        "pocket",
+        "s03",
+        "m24"
+      ]
+    ],
+    "family": 9,
+    "alpha": 0.05,
+    "stages": {
+      "warmup": [
+        "2026-02-19",
+        "2026-04-20",
+        "2026-03-21"
+      ],
+      "validation": [
+        "2026-05-02",
+        "2026-08-01",
+        "2026-06-16"
+      ]
+    },
+    "pocket": {
+      "asset": "ETH",
+      "lead_minutes": 11,
+      "probability_bin": "10-20"
+    },
+    "monthly": "UTC settlement month; descriptive known July1 GRU update",
+    "clustering": "UTC settlement day and fixed epoch seven-day block; contract-weighted global contrasts",
+    "inference": "one-sided cluster t with Bonferroni9 for nine primary full-stage contrasts; descriptive intervals and subdivisions never promotion",
+    "pass_rule": "negative LL, both day/week adjusted p<.05, nonpositive Brier, negative LL both existing validation halves; no confirmation due historical reuse",
+    "quality": "warmup median spread frozen before validation metadata summaries; volume0 versus positive; no timestamp freshness inferred from candle endpoint",
+    "stop": "Stop tuning; do not replace24 absent incremental evidence; no local promotion without robust gain beyond raw/calibrated/parent; diagnose fragility across weeks, months and quality. Unavailable exact quote timestamps imply unresolved measurement, not proven stale quotes.",
+    "non_goals": [
+      "training",
+      "new architecture",
+      "protected outcomes",
+      "new cell selection",
+      "trading",
+      "profitability",
+      "deployment"
+    ],
+    "models": [
+      "m02",
+      "m24",
+      "m38",
+      "m44",
+      "m45",
+      "m46",
+      "m47",
+      "m48",
+      "s03",
+      "s06",
+      "s09",
+      "s12",
+      "raw",
+      "logistic"
+    ],
+    "result_inputs": {
+      "warmup:m02": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/warmup-02.json",
+        "sha256": "9f4d33e347624124f5b704e75cc2193ec2f98e7387f2e5e3b98087025a2e2e87",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/warmup-2-predictions-crypto-warmup20-warmup-02-isotonic-calibration-2026-10-18-b7646d01.jsonl",
+          "sha256": "62cad6c243d18ff1261c9b1107a7f7ac9ecd2e5cc2105b158f1a824ee8685a8a",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-warmup-02-isotonic-calibration.json",
+        "config_sha256": "686648c5d457c3109af32a86b66018b848268593039c7415e2947ca20938d983",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/warmup/crypto-warmup20-warmup-02-isotonic-calibration-2026-10-18-b7646d01/artifacts/fit/fits.json"
+      },
+      "warmup:m24": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/warmup-24.json",
+        "sha256": "e9fa918d9527384747bbb6fb6638aeb012335ff6b7266ab7114684c0a11714e9",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/warmup-24-predictions-crypto-warmup20-warmup-24-newton-logloss-sparse-2026-10-18-22a8351c.jsonl",
+          "sha256": "ca160107325252cb1e81dbb861a6e83369abf028cc80a439eedee08c276e984c",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-warmup-24-newton-logloss-sparse.json",
+        "config_sha256": "4364792fc2938f2227aeb82de3c1b59680bdb7c82780dd1a7ee5314babdeb511",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/warmup/crypto-warmup20-warmup-24-newton-logloss-sparse-2026-10-18-22a8351c/artifacts/fit/fits.json"
+      },
+      "warmup:m38": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/warmup-38.json",
+        "sha256": "85a0a6e5a88ef1372686c53fca17d1eee7dd4ee02477fd646d50a52b8413958c",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/warmup-38-predictions-crypto-warmup20-warmup-38-bayesian-newton-2026-10-18-b36ab5b8.jsonl",
+          "sha256": "10c1835926314b55ebba257cd1d13ee39c7bc3dbcab729ffe2b30529e5ac0f03",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-warmup-38-bayesian-newton.json",
+        "config_sha256": "baa761c98be7800ab015675ecdd8b29cf237582ad754e43db8c1226a4537fee6",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/warmup/crypto-warmup20-warmup-38-bayesian-newton-2026-10-18-b36ab5b8/artifacts/fit/fits.json"
+      },
+      "warmup:m44": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/warmup-44.json",
+        "sha256": "a700fb81d72abdffb2bc904a43df90380296ead5fa8f41af09c3a43e94ee6381",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/warmup-44-predictions-crypto-warmup20-warmup-44-interaction-sparse-newton-2026-10-18-f1d098d9.jsonl",
+          "sha256": "2876601fe7f3b1fef88a863e5ce02f1787994be19897a984d3948eb8f729974e",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-warmup-44-interaction-sparse-newton.json",
+        "config_sha256": "88045bf90b44e83371c3d5f03b9ecc4a41ad085c6165b71e672c11e029eaf45f",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/warmup/crypto-warmup20-warmup-44-interaction-sparse-newton-2026-10-18-f1d098d9/artifacts/fit/fits.json"
+      },
+      "warmup:m45": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/warmup-45.json",
+        "sha256": "c5c3c1795a96e4e9ba60a64ecc07fea6e06158c207b8bb881ae46b461e76643a",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/warmup-45-predictions-crypto-warmup20-warmup-45-market-only-newton-2026-10-18-0d613a43.jsonl",
+          "sha256": "f4dfe3b2c9c4bd84277b2b609fb456778fd5d9221c255248b45c3abdc108fb61",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-warmup-45-market-only-newton.json",
+        "config_sha256": "5768a05037e36efefd613484735519a3617f9c347e4c44c2154174eb41673747",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/warmup/crypto-warmup20-warmup-45-market-only-newton-2026-10-18-0d613a43/artifacts/fit/fits.json"
+      },
+      "warmup:m46": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/warmup-46.json",
+        "sha256": "1a81380ea6f3203bbfa9e37f2b7fd0597f354a7f4ef51267ea048f0dfd1c4645",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/warmup-46-predictions-crypto-warmup20-warmup-46-no-gru-newton-2026-10-18-d8c736ae.jsonl",
+          "sha256": "956846859a86e332b5816edd3266095717fc8429422f1aa7e39f5349b82875ba",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-warmup-46-no-gru-newton.json",
+        "config_sha256": "5ef4d619ff6f673ebc0a259baaaf8b1d97921a53bda848cf119b0669bc3cdb80",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/warmup/crypto-warmup20-warmup-46-no-gru-newton-2026-10-18-d8c736ae/artifacts/fit/fits.json"
+      },
+      "warmup:m47": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/warmup-47.json",
+        "sha256": "02fdbe0dbf0d3e2cf879b5538e96b3d77f2923388983392753db18b8bc34beb6",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/warmup-47-predictions-crypto-warmup20-warmup-47-disagreement-only-newton-2026-10-18-fc881bba.jsonl",
+          "sha256": "842d145ae4d2117c54170aa9d3f96108674c483c8e23a0dcfbc0b9ae672b6d5e",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-warmup-47-disagreement-only-newton.json",
+        "config_sha256": "9f300d4168d8c9c30c06911009b4ec39665d9bea6172565517c4c3183b03d467",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/warmup/crypto-warmup20-warmup-47-disagreement-only-newton-2026-10-18-fc881bba/artifacts/fit/fits.json"
+      },
+      "warmup:m48": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/warmup-48.json",
+        "sha256": "7605c0a3e04eb5aeb3cbdcb5194956a8989097db0e50924bf15a923e52fbd140",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/warmup-48-predictions-crypto-warmup20-warmup-48-volatility-expert-newton-2026-10-18-301d5c9f.jsonl",
+          "sha256": "5c2a67fddd135a4ff469bbd65b3ffea9b6db4323ef09d84953b3ad97e8ebe74c",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-warmup-48-volatility-expert-newton.json",
+        "config_sha256": "9cd327b05e21fb8a1eea17e85d4cef215b3b28d75051c1dcb2b0e43fc594ba0d",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/warmup/crypto-warmup20-warmup-48-volatility-expert-newton-2026-10-18-301d5c9f/artifacts/fit/fits.json"
+      },
+      "warmup:s03": {
+        "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/warmup-03.json",
+        "sha256": "d2a1edb9be67f02fb6f00c861d12d462eb6d18f3b7fbaaf48bdfc44bec3e7501",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/results/warmup-03-predictions-crypto-pocket-tuning-warmup-03-p24-strength-075-2026-10-18-c7131edf.jsonl",
+          "sha256": "c7279cc31997e45a434e4a5ced3f37cb986de3d7170940b4529e852b76348d44",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-pocket-tuning-warmup-03-p24-strength-075.json",
+        "config_sha256": "ab81aa131892bef8d4e4a04bb7ce828d1817ad26fe407c800e583a92ca8f3d1e",
+        "fits": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/warmup/crypto-pocket-tuning-warmup-03-p24-strength-075-2026-10-18-c7131edf/artifacts/fit/fits.json"
+      },
+      "warmup:s06": {
+        "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/warmup-06.json",
+        "sha256": "11c58b7bb59208f489c7067a910133c5243856cfe3f8199ff6628d513d7df84c",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/results/warmup-06-predictions-crypto-pocket-tuning-warmup-06-p48-strength-075-2026-10-18-f1231816.jsonl",
+          "sha256": "42f7f4d7a1ded0a7301c39bdb0a34faf7d4d945b9b15fd63fe13a693b98714fa",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-pocket-tuning-warmup-06-p48-strength-075.json",
+        "config_sha256": "f9682503c108c0827167d8f33fe493fd34f13b3cd82c9cc67106250873756402",
+        "fits": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/warmup/crypto-pocket-tuning-warmup-06-p48-strength-075-2026-10-18-f1231816/artifacts/fit/fits.json"
+      },
+      "warmup:s09": {
+        "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/warmup-09.json",
+        "sha256": "76ccb8a14374571dbe7181b682fc14576d603fbbe55c5536fc004f4a603efce6",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/results/warmup-09-predictions-crypto-pocket-tuning-warmup-09-p44-strength-075-2026-10-18-d3eea708.jsonl",
+          "sha256": "fc082d65b49893b04ef574ff51755050b26811a1586cbb4c858c00358fceeb1c",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-pocket-tuning-warmup-09-p44-strength-075.json",
+        "config_sha256": "ce293166904d40cafc02fcb3c428bfe2ea6e719d1dd402d3fb8b2a362b2ed64f",
+        "fits": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/warmup/crypto-pocket-tuning-warmup-09-p44-strength-075-2026-10-18-d3eea708/artifacts/fit/fits.json"
+      },
+      "warmup:s12": {
+        "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/warmup-12.json",
+        "sha256": "e43971b0aeff27ef1394bffeaed7036faf99c634379b60aa718635afe495b0f6",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/results/warmup-12-predictions-crypto-pocket-tuning-warmup-12-p38-strength-075-2026-10-18-7c1d302b.jsonl",
+          "sha256": "3dc95c5452cb616d71f68e9465e294f37130814e45d5a59b7a42985b65501ea6",
+          "rows": 52999
+        },
+        "config": "children/crypto_trading/configs/run-pocket-tuning-warmup-12-p38-strength-075.json",
+        "config_sha256": "08abf2d462419f147d1202a209e008fac9b4ac74c5c420dd822703a39b6725d1",
+        "fits": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/warmup/crypto-pocket-tuning-warmup-12-p38-strength-075-2026-10-18-7c1d302b/artifacts/fit/fits.json"
+      },
+      "validation:m02": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/validation-02.json",
+        "sha256": "a0fedaac9f8da26d38efbf8cbf73538b0bdf5f1653e05e50af1fa18b233fcf86",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-2-predictions-crypto-warmup20-validation-02-isotonic-calibration-2026-10-18-7cbcdd18.jsonl",
+          "sha256": "7be70b97bf8d7211ec5fddf2649582f2a861c18b18982c59d189afb6daa924f5",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-validation-02-isotonic-calibration.json",
+        "config_sha256": "c433caaeee1ff95c218475017bd44d4868941c6edd533f13b5e63f106fa3af36",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation/crypto-warmup20-validation-02-isotonic-calibration-2026-10-18-7cbcdd18/artifacts/fit/fits.json"
+      },
+      "validation:m24": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/validation-24.json",
+        "sha256": "9031181b849f4dab16581f64a11a74adc5dbb5f9789347c0551ab3204bd89a14",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-24-predictions-crypto-warmup20-validation-24-newton-logloss-sparse-2026-10-18-772b413b.jsonl",
+          "sha256": "fe4797480c7f378e895c7a900a143e521b74bfaa4957556d8bc4f5e83cfedc7d",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-validation-24-newton-logloss-sparse.json",
+        "config_sha256": "970371f389778ca8b189bea3847897677ce48445ce613563e70cf3da2fe96040",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation/crypto-warmup20-validation-24-newton-logloss-sparse-2026-10-18-772b413b/artifacts/fit/fits.json"
+      },
+      "validation:m38": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/validation-38.json",
+        "sha256": "bd1d00f67fb822a3e3eea95e58a486e22d6b2880be86f33e4066a7207030b7d7",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-38-predictions-crypto-warmup20-validation-38-bayesian-newton-2026-10-18-d07bae31.jsonl",
+          "sha256": "bb209a2ea9c7ca24a5278beaa091c24f658b43fb49548fef4a5d8043da1d879b",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-validation-38-bayesian-newton.json",
+        "config_sha256": "49c252c718b256d1db60eb7d48127f49d41e1a2097279ff8e4b09ceb63f6e3ee",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation/crypto-warmup20-validation-38-bayesian-newton-2026-10-18-d07bae31/artifacts/fit/fits.json"
+      },
+      "validation:m44": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/validation-44.json",
+        "sha256": "414679fe49ba1cc324accc17c09d892c6265c2def7243592a036b53b10ce3f41",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-44-predictions-crypto-warmup20-validation-44-interaction-sparse-newton-2026-10-18-5cbadd55.jsonl",
+          "sha256": "ed2bd2e25f50dfc244b2dfde78816030c104f4973884cd512d28c3615c70d0cf",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-validation-44-interaction-sparse-newton.json",
+        "config_sha256": "0fc7d9310eeb062816a9c8cb3849d3d641fd39da132bae31c81626b1f4c94451",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation/crypto-warmup20-validation-44-interaction-sparse-newton-2026-10-18-5cbadd55/artifacts/fit/fits.json"
+      },
+      "validation:m45": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/validation-45.json",
+        "sha256": "b64eb70650665ccc05875bf5d8f4e6b171434f4acb3eee6d5668fae7e4f34f09",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-45-predictions-crypto-warmup20-validation-45-market-only-newton-2026-10-18-0a4fe62c.jsonl",
+          "sha256": "b78e6ce7eb5d3a5af715a10e876eafa907c97221caf579718fd8c555a0097c71",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-validation-45-market-only-newton.json",
+        "config_sha256": "6b176bbdb95e16ab8775bc7801a330e7826d239db4344e650e51479f24a7baf0",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation/crypto-warmup20-validation-45-market-only-newton-2026-10-18-0a4fe62c/artifacts/fit/fits.json"
+      },
+      "validation:m46": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/validation-46.json",
+        "sha256": "1ae00feda9b5c14b5f47cb38020168102f77f69f43c277221015136fe056ceab",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-46-predictions-crypto-warmup20-validation-46-no-gru-newton-2026-10-18-3cf58e3d.jsonl",
+          "sha256": "6447480128c506509e0d35d926a62e4ce744a89273e68396a3fcf13b0b810a61",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-validation-46-no-gru-newton.json",
+        "config_sha256": "2ac4b6e8cf7b66dbff35d06ffc81eb4214a7dcb0d6e110163861ed2aa9052de3",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation/crypto-warmup20-validation-46-no-gru-newton-2026-10-18-3cf58e3d/artifacts/fit/fits.json"
+      },
+      "validation:m47": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/validation-47.json",
+        "sha256": "4ab4eed43c4f638a0106c328ada466ffa5f1537f5df99526935d567f81a325fc",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-47-predictions-crypto-warmup20-validation-47-disagreement-only-newton-2026-10-18-967c8150.jsonl",
+          "sha256": "4dd96879a20741cb7be8c875a8df2a1c87660e068a31767ac5d25828b4016ed5",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-validation-47-disagreement-only-newton.json",
+        "config_sha256": "87a3f2d3ca889b7861fb38c03f0116e923e1094b91c2dcc299bd3bd9608daaa8",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation/crypto-warmup20-validation-47-disagreement-only-newton-2026-10-18-967c8150/artifacts/fit/fits.json"
+      },
+      "validation:m48": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/validation-48.json",
+        "sha256": "f45ca526a54d4e2bbf53eab1b9ef602b78264cfe1ccb0cd65f7d743f3b5cdbb2",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-48-predictions-crypto-warmup20-validation-48-volatility-expert-newton-2026-10-18-2b3d0da2.jsonl",
+          "sha256": "2e903e6beb9175cbe799630e474380d65ad42c555e2a08d00642684d790681f8",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-warmup20-validation-48-volatility-expert-newton.json",
+        "config_sha256": "d187b0f55c00c944a38ed2537b256c83ff011416ae79ea835d1fd9e9f00ddb68",
+        "fits": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation/crypto-warmup20-validation-48-volatility-expert-newton-2026-10-18-2b3d0da2/artifacts/fit/fits.json"
+      },
+      "validation:s03": {
+        "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/validation-03.json",
+        "sha256": "38400c9935d4b1edd8c9aae161ece348254ab2d586314c1d0d5a352cba814b80",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/results/validation-03-predictions-crypto-pocket-tuning-validation-03-p24-strength-075-2026-10-18-ba45b062.jsonl",
+          "sha256": "53348ca318bdd136443c7de7d555acd741e9c183a424c8454164b4ec3cf7b313",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-pocket-tuning-validation-03-p24-strength-075.json",
+        "config_sha256": "fdf36a0ca6987ed9128175e53445f48ee681f97351c84e09edca6de06e59701e",
+        "fits": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/validation/crypto-pocket-tuning-validation-03-p24-strength-075-2026-10-18-ba45b062/artifacts/fit/fits.json"
+      },
+      "validation:s06": {
+        "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/validation-06.json",
+        "sha256": "abc09d0d3636c3973ebfc5e81b743aa55a6e3a2688ce9dbb2928dd633f9c76c2",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/results/validation-06-predictions-crypto-pocket-tuning-validation-06-p48-strength-075-2026-10-18-39df3d81.jsonl",
+          "sha256": "5ab5f3f22d9f4bad294dbb28f24499e5f614bc0f7e8e1c5586a189db0ac40825",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-pocket-tuning-validation-06-p48-strength-075.json",
+        "config_sha256": "275486a8811327f4d1860680c3b32c80c4a5363bef96dc741473a77e36c82dc6",
+        "fits": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/validation/crypto-pocket-tuning-validation-06-p48-strength-075-2026-10-18-39df3d81/artifacts/fit/fits.json"
+      },
+      "validation:s09": {
+        "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/validation-09.json",
+        "sha256": "f2b215f718a23a17091c4f5dd88ab4efbf1acba1809ff45a1015b975c190ccf6",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/results/validation-09-predictions-crypto-pocket-tuning-validation-09-p44-strength-075-2026-10-18-56b9cc53.jsonl",
+          "sha256": "73a70ad5b76c7747228d767b44df3006b3b1382ed9baa4cb1f514b40bf93d4bc",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-pocket-tuning-validation-09-p44-strength-075.json",
+        "config_sha256": "4e0c27cab132e6f862e405f2188b379dfe53d6b0c4d656327c66b193d1abcc1a",
+        "fits": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/validation/crypto-pocket-tuning-validation-09-p44-strength-075-2026-10-18-56b9cc53/artifacts/fit/fits.json"
+      },
+      "validation:s12": {
+        "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/validation-12.json",
+        "sha256": "13e4d5325717d43c405f8dab42f7c0f34610d427ca16dd7ed33529f756a77d56",
+        "forecast": {
+          "path": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/results/validation-12-predictions-crypto-pocket-tuning-validation-12-p38-strength-075-2026-10-18-d01b16e1.jsonl",
+          "sha256": "ab02ef03da7385e1862a91cca935b808a6f1ed54799f1b0efdaf9df9bb32664f",
+          "rows": 84728
+        },
+        "config": "children/crypto_trading/configs/run-pocket-tuning-validation-12-p38-strength-075.json",
+        "config_sha256": "6eadc020666e9cdb6042d704dd55dc83329130f71a0772d46db9f2df069e6090",
+        "fits": "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/validation/crypto-pocket-tuning-validation-12-p38-strength-075-2026-10-18-d01b16e1/artifacts/fit/fits.json"
+      }
+    }
+  }
+}
