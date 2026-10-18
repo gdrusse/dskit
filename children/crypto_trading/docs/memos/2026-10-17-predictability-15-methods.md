@@ -126,7 +126,7 @@ PYTHONPATH=../.. /home/russell/dskit/.venv/bin/python -m dskit.pipeline run conf
 ```
 The two source registration JSONs, retained preparation script and manifest reproduce the bounded panel. Existing runs intentionally refuse overwrite; choose a new output run root and unused writer locations for another execution.
 
-Verification: all 15 run/document identities, all 90 output hashes/counts, identical scored rows and calibration predictions, every training cutoff/count, independent row-loss calculations and cell means checked. **167 focused tests passed; Ruff passed.** The full suite was not run. Package versions and source hashes are retained. Independent review and integration receipts follow after closure.
+Verification: all 15 run/document identities, all 90 output hashes/counts, identical scored rows and calibration predictions, every training cutoff/count, independent row-loss calculations and cell means checked. **167 focused tests passed; Ruff passed.** The full suite was not run. Package versions and source hashes are retained. Two independent final reviews passed; see the closure receipt below.
 
 ## Method sources
 
@@ -136,3 +136,25 @@ Verification: all 15 run/document identities, all 90 output hashes/counts, ident
 - [scikit-learn: forests and boosting](https://scikit-learn.org/stable/modules/ensemble).
 - [scikit-learn: nearest neighbors](https://scikit-learn.org/stable/modules/neighbors.html).
 - [LightGBM: monotonic constraints and penalties](https://lightgbm.readthedocs.io/en/latest/Parameters.html).
+
+
+## Closure receipt
+
+Reviewed candidate: f6857cb031f8e0d5b866012567e823a99c8a9726, based on 834f2c47.
+Two fresh GPT-6 reviewers independently covered correctness/statistics/authority
+and tests/integration/reproducibility. Both reported zero Critical, Major, Minor
+and Nit findings. Actual reports, identities, commands and coverage limits are
+embedded in the evidence packet; local originals are review-correctness.md and
+review-integration.md in the artifact directory.
+
+The second reviewer independently verified all 90 outputs, all grouped views,
+common forecast cohorts, causal fit counts, run identities and global statistics,
+and reran the 167 focused tests successfully. No full suite or model rerun was
+needed. Post-review edits only record this evidence and update the handoff:
+model/source configurations, tests, dependencies, scientific results and the
+statistical contract remain unchanged from the reviewed candidate.
+
+The completed study is ready for the authorized repository wrap. Retain local
+data and research scripts for reproduction; the evidence packet alone does not
+contain the full source dataset. The next research action is the existing frozen
+confirmation read, not another historical search.
