@@ -9271,8 +9271,274 @@
       }
     },
     "checks": "5 focused amendment tests passed; verify all27866positive source coordinates exactly, all prior supports,600unique rows,75side-unassigned entries and original numerical CSV identity. No heavy job/refit repeated.",
-    "reviews": [],
-    "status": "candidate_pending_two_fresh_independent_reviews",
-    "limitations": "Register is retrospective inclusion/disposition, not new evidence of profit or completion of future replication.300native non-BTC entries are inventory only. Existing COR-1 deferredMinor unchanged."
+    "reviews": [
+      {
+        "file": "/home/russell/data/crypto_trading/research/executable-cells-20261018/review-candidate-followup-correctness.json",
+        "sha256": "431e49d49100d9798c5f5a985912310c1b381c52b5404d7ec7c4e202cb8e0a08",
+        "report": {
+          "reviewer": "GPT-6 Astra",
+          "lens": "Fresh independent correctness/authority review of complete-candidate follow-up amendment",
+          "candidate": "0f24d8f9f189bd496a954c5f3fcb84c06bf72368",
+          "base_commit": "c2e064f06c0f54d1546847defee8136e4302bc0a",
+          "reviewed_at_utc": "2026-10-18T22:54:17.846963+00:00",
+          "verdict": "PASS_WITH_MINOR_BACKLOG",
+          "scope": "Memo, additive all_candidate_amendment evidence, and 600-row candidate register; frozen source tables are dependencies, no runtime/refit/replay change.",
+          "contract_sha256": "6ea2d2a20caa6309e33a64abcf29d9aadba209113a0b15c473d0fa9eb4e775d1",
+          "matrix_sha256": "24b01a20e9c2b9f2fbf05a268804ced0120215c6105fe757dc63afe752fe1e0f",
+          "dependency_sha256": {
+            "2026-10-18-executable-cells-coverage-ledger.csv": "1d555a1687e6b0c1a47298b7699e27a40e0a49ba813aa7775db877dd569350ee",
+            "2026-10-18-candidate-inventory-cells.csv": "e6a38c3090a653b5931e9fac40da99894e5273c7c74d159077c26bfd58a92467",
+            "2026-10-18-polymarket-predictability-inventory.csv": "4a0b4adcbc6f05ffb788ff002039ddf184b92df5db005fc493c7d75237168d5d",
+            "2026-10-18-executable-cells-poly-prediction-cells.csv": "7d1f3a5c01c2d3d790a755d08db6e620eac8463c6453dc04e799be5eb5dcf854",
+            "2026-10-18-executable-cells-kalshi-cost-scenarios.csv": "d08e112baed61ecb60517e9907634b1086e227394bdd89094d027ecd84a31341",
+            "2026-10-18-executable-cells-poly-execution-scenarios.csv": "395876c4ae1d923222664ba7b9fe1edd256b83c633abdec731a4fcab70f5244e"
+          },
+          "procedure_sha256": {
+            "all_candidate_followup.py": "1fc4d8424763693af8a4660d4115b41a47139734d0ea01b515103b0e31f3ca2b",
+            "test_candidate_followup.py": "71276d336335af0bff80438bf58ef98befd456fa55d2063812054da8f98193e6"
+          },
+          "reviewed_blobs": {
+            "candidate-followup.csv": "eecb741a140be0736145f6a5860026150bc90e93",
+            "evidence.json": "a0f4f501a41f9f587578f695be53f1d14124be9f",
+            "memo.md": "53348f6422cd5dd941d367e7c33c5b727c9d6af8"
+          },
+          "matrix_results": [
+            {
+              "invariant": "Exhaustive union of all prior selection/raw/cal support, persistent gaps and all finite positive side scenarios including sparse/alternate policies",
+              "result": "PASS"
+            },
+            {
+              "invariant": "Complete600entry grid with candidate hypotheses distinct from blocked inventory and no-current-support controls",
+              "result": "PASS"
+            },
+            {
+              "invariant": "Exact venue/asset/lead/bin/side, original model namespaces, and positive-row provenance retained",
+              "result": "PASS"
+            },
+            {
+              "invariant": "Probability-only cell evidence remains side-unassigned; unconditional diagnostic not model support",
+              "result": "PASS"
+            },
+            {
+              "invariant": "Every candidate has completed tests,limitations,next applicable test or explicit blocker; priority never discards",
+              "result": "PASS"
+            },
+            {
+              "invariant": "No numerical outputs,configs,model fits,protected periods or ownerPath changed",
+              "result": "PASS"
+            }
+          ],
+          "checks": [
+            {
+              "command": "WSL /home/russell/dskit/.venv/bin/python -m pytest -q -p no:cacheprovider /home/russell/data/crypto_trading/research/executable-cells-20261018/test_candidate_followup.py",
+              "result": "5 passed in 1.12s; exact positive coordinate equality for 27,866 source records, 600 unique rows, prior support preservation, side scope, frozen CSV identity."
+            },
+            {
+              "command": "Independent read-only WSL Python stdin audit: compare six dependency SHA256s, output SHA256, embedded procedure bytes and hashes; reconstruct native positive logloss-gain method sets and persistent-sign gaps; compare every row policy/count/sparse/tail/reason relationship.",
+              "result": "PASS. All native raw/cal gains retained on both side inventory entries; missing gap values handled as unsupported, no diagnostic-only row falsely described as score-only. Initial audit harness rejected an empty gap string; corrected harness treats missing as NaN, consistent with source semantics."
+            },
+            {
+              "command": "Independent read-only WSL Python namespace audit: transform aligned-XX to alignedXX and tuning-XX to tunedXX, require every prior support ID in frozen Kalshi scenario policy universe. Compare old evidence keys against git-show base.",
+              "result": "PASS; all 57 aligned and 20 tuned namespaces resolve, raw/logistic remain distinct. Every pre-existing evidence key is unchanged."
+            },
+            {
+              "command": "git diff base candidate; git ls-tree candidate; git status --short",
+              "result": "Only three authorized documents changed; immutable blobs recorded and clean worktree observed."
+            },
+            {
+              "command": "Manual full matrix review of memo and all_candidate_followup.py, including next_decisive_test/completed_tests/limitations branches and stop rules.",
+              "result": "PASS. 298 candidates across150 groups,223 side-cost and75 side-unassigned,300 blocked native inventory and2 unsupported controls. No top-k/adequacy/primary-only filter. All model/controls preserved and applicable testing or blockers retained; prioritization orders work without discarding candidates."
+            }
+          ],
+          "findings": [
+            {
+              "id": "COR-1",
+              "severity": "Minor",
+              "invariant": "Scenario freshness must cover the UP predictor book as well as the purchased side book.",
+              "location": "/home/russell/data/crypto_trading/research/executable-cells-20261018/analyze_transfer.py: merged forecast columns and eligibility construction",
+              "entry_points": [
+                "all 20 native model policies",
+                "raw/cal controls",
+                "unconditional diagnostic",
+                "all 18 latency/age/size scenarios"
+              ],
+              "reproducer": "Join prediction age_s to both token legs by ticker/lead; reconstruct decision-only signal and current per-leg eligibility for every policy/scenario; count selected rows with age_s*1000>age_cap_ms. All model and raw/cal counts are zero. Unconditional has one row at latency1/cap2000 for each size1/10/100: btc-updown-15m-1789850700, lead8, Down; UP age2733ms, DOWN decision age852ms, entry age1683ms.",
+              "consequence": "Three unconditional aggregate diagnostic cells include one forecast/cell assignment whose source exceeds their advertised freshness cap. No selected model or raw/cal entry is affected in this immutable candidate; no demonstrated material result violation. The omitted cross-leg gate remains a future-data correctness risk.",
+              "family": "Cross-leg probability-source freshness",
+              "disposition": "Deferred Minor permitted for this candidate; recommended batch correction retains predictor age, applies each scenario cap to both source and purchased token, and adds regression test. Behavioral correction resets final candidate reviews.",
+              "correction_commit": null,
+              "review_status": "Pre-existing retained finding; underlying frozen numerical outputs and prior evidence unchanged. Not independently replayed during this amendment review."
+            }
+          ],
+          "new_findings": [],
+          "unresolved_counts": {
+            "Critical": 0,
+            "Major": 0,
+            "Minor": 1,
+            "Nit": 0
+          },
+          "new_unresolved_counts": {
+            "Critical": 0,
+            "Major": 0,
+            "Minor": 0,
+            "Nit": 0
+          },
+          "untested_limits": [
+            "No model refits, heavy original replay, live fills, external source revalidation or full suite run.",
+            "Original scenario numerical correctness and COR-1 reproduction remain supported by retained earlier review; this review verifies their unchanged identity and amendment-level claims.",
+            "An admissible untouched replication interval and native non-BTC settled/training data are not established; the register does not claim these tests completed."
+          ],
+          "uncovered_matrix_rows": [],
+          "disposition": "Amendment correctness lens complete with zero new findings and zero unresolved Critical/Major. Carry existing diagnostic-only COR-1 Minor; require its correction/regression before new-data reuse. No deployment authorization."
+        }
+      },
+      {
+        "file": "/home/russell/data/crypto_trading/research/executable-cells-20261018/review-candidate-followup-integration.json",
+        "sha256": "c94325cdfd7b5a941fa00b490e91ec0bc73bdea543905d6f7c580171fe5f126f",
+        "report": {
+          "reviewer": "GPT-6 Astra",
+          "lens": "Independent tests/integration/reproducibility",
+          "candidate_commit": "0f24d8f9f189bd496a954c5f3fcb84c06bf72368",
+          "base_commit": "c2e064f06c0f54d1546847defee8136e4302bc0a",
+          "reviewed_at_utc": "2026-10-18T22:56:25.482416+00:00",
+          "verdict": "PASS: assigned amendment matrix completed; zero new findings and zero unresolved Critical/Major",
+          "scope": "All-candidate inclusion/disposition amendment only; immutable CSV register, memo, evidence procedures/summary and six frozen input tables. No heavy research rerun, refit, full suite or candidate edit.",
+          "contract": "Inclusive union of prior warmup selection, two-period raw/calibration score support, prior material Kalshi or persistent-sign Poly mean gaps, native transfer raw/calibrated score gains, and any strictly positive saved side/policy scenario with n>0 at any declared size/age/lag/period. No adequacy/top-k/model cutoff. Unconditional diagnostics separately marked; probability-only evidence duplicated across side inventory is not side-specific evidence. Blocked native assets remain inventory, not positive hypotheses. All600grid entries retained.",
+          "matrix": [
+            "Exhaustive union of all prior selection/raw/cal support, persistent gaps and all finite positive side scenarios including sparse/alternate policies",
+            "Complete600entry grid with candidate hypotheses distinct from blocked inventory and no-current-support controls",
+            "Exact venue/asset/lead/bin/side, original model namespaces, and positive-row provenance retained",
+            "Probability-only cell evidence remains side-unassigned; unconditional diagnostic not model support",
+            "Every candidate has completed tests,limitations,next applicable test or explicit blocker; priority never discards",
+            "No numerical outputs,configs,model fits,protected periods or ownerPath changed"
+          ],
+          "reviewed_blobs": {
+            "-candidate-followup.csv": "eecb741a140be0736145f6a5860026150bc90e93",
+            "-evidence.json": "a0f4f501a41f9f587578f695be53f1d14124be9f",
+            ".md": "53348f6422cd5dd941d367e7c33c5b727c9d6af8"
+          },
+          "dependency_sha256": {
+            "2026-10-18-executable-cells-coverage-ledger.csv": "1d555a1687e6b0c1a47298b7699e27a40e0a49ba813aa7775db877dd569350ee",
+            "2026-10-18-candidate-inventory-cells.csv": "e6a38c3090a653b5931e9fac40da99894e5273c7c74d159077c26bfd58a92467",
+            "2026-10-18-polymarket-predictability-inventory.csv": "4a0b4adcbc6f05ffb788ff002039ddf184b92df5db005fc493c7d75237168d5d",
+            "2026-10-18-executable-cells-poly-prediction-cells.csv": "7d1f3a5c01c2d3d790a755d08db6e620eac8463c6453dc04e799be5eb5dcf854",
+            "2026-10-18-executable-cells-kalshi-cost-scenarios.csv": "d08e112baed61ecb60517e9907634b1086e227394bdd89094d027ecd84a31341",
+            "2026-10-18-executable-cells-poly-execution-scenarios.csv": "395876c4ae1d923222664ba7b9fe1edd256b83c633abdec731a4fcab70f5244e"
+          },
+          "procedure_sha256": {
+            "all_candidate_followup.py": "1fc4d8424763693af8a4660d4115b41a47139734d0ea01b515103b0e31f3ca2b",
+            "test_candidate_followup.py": "71276d336335af0bff80438bf58ef98befd456fa55d2063812054da8f98193e6"
+          },
+          "commands_and_results": [
+            {
+              "command": "WSL /home/russell/dskit/.venv/bin/python -m pytest -q -p no:cacheprovider /home/russell/data/crypto_trading/research/executable-cells-20261018/test_candidate_followup.py",
+              "result": "5 passed in 1.13s"
+            },
+            {
+              "command": "WSL Python stdin independent inclusive-union reconstruction (standard library only; not importing generator)",
+              "result": "PASS exact selection-reason sets, all five support/model lineage fields, roles, multiset of scenario coordinates with n/mean/adequacy/tail payload, per-record positive/sparse/tail counts, dispositions, input/output/procedure hashes and clean candidate HEAD."
+            },
+            {
+              "command": "WSL Python stdin in-memory execution of retained generator with only output sinks replaced by StringIO/no-op",
+              "result": "PASS byte-for-byte register reproduction and exact summary equality; no files written."
+            },
+            {
+              "command": "WSL Python stdin baseline evidence equality and Markdown relative-link resolution",
+              "result": "PASS all existing evidence top-level values unchanged; only all_candidate_amendment added. All19 relative memo links resolve."
+            },
+            {
+              "command": "git diff --name-only c2e064f06c0f54d1546847defee8136e4302bc0a 0f24d8f9f189bd496a954c5f3fcb84c06bf72368; git status --short; git rev-parse HEAD",
+              "result": "Only three authorized amendment files changed; clean worktree; exact candidate HEAD. Thus all frozen numerical outputs, configs, models, protected protocol and owner Path remain unchanged."
+            }
+          ],
+          "independent_checks": [
+            {
+              "invariant": "Exhaustive union of all prior selection/raw/cal support, persistent gaps and all finite positive side scenarios including sparse/alternate policies",
+              "result": "PASS independently rebuilt full prior selection/raw/cal union, material Kalshi gap, persistent-sign native gap, native transfer raw/cal gains, and n>0 finite strictly-positive scenario union. Exact reason sets prove no extra or omitted candidate. Native-score inputs contain no infinities. No adequacy/top-k/primary-only cutoff."
+            },
+            {
+              "invariant": "Complete600entry grid with candidate hypotheses distinct from blocked inventory and no-current-support controls",
+              "result": "PASS600unique keys:298candidate side entries/150groups,300blocked non-BTC native entries,2unsupported Kalshi BTC14m extreme purchased-side entries."
+            },
+            {
+              "invariant": "Exact venue/asset/lead/bin/side, original model namespaces, and positive-row provenance retained",
+              "result": "PASS exact five support-ID fields per row, preserving prior IDs and model01\u201320 mapping. Counter comparison (not merely set) proves exact positive scenario multiplicity and payload. Stage/size or lag/age/size plus venue/asset/lead/bin/side/policy uniquely preserves provenance."
+            },
+            {
+              "invariant": "Probability-only cell evidence remains side-unassigned; unconditional diagnostic not model support",
+              "result": "PASS223positive-side-cost candidates and75side-unassigned entries. Unconditional excluded from matched policies and counters; remains separately tagged. Native blocked inventory has no substituted model/support."
+            },
+            {
+              "invariant": "Every candidate has completed tests,limitations,next applicable test or explicit blocker; priority never discards",
+              "result": "PASS all600rows have completed tests, limitations, disposition and next test/blocker. Memo explicitly enumerates all group/side exceptions, preserves scheduling-only priority and distinguishes existing sensitivity coverage from unperformed independent replication."
+            },
+            {
+              "invariant": "No numerical outputs,configs,model fits,protected periods or ownerPath changed",
+              "result": "PASS candidate diff and byte-level focused baseline checks; no numeric/config/model or other tracked artifact changes."
+            }
+          ],
+          "counts": {
+            "grid": 600,
+            "candidate_side_entries": 298,
+            "candidate_groups": 150,
+            "candidate_with_side_cost": 223,
+            "candidate_score_or_gap_only": 75,
+            "blocked": 300,
+            "unsupported": 2,
+            "source_kalshi_scenarios": 94800,
+            "source_native_scenarios": 41400,
+            "positive_coordinates_including_diagnostic": 27866,
+            "positive_inadequate_coordinates_including_diagnostic": 24213,
+            "positive_tail_warning_coordinates_including_diagnostic": 15389
+          },
+          "findings": [],
+          "new_unresolved_counts": {
+            "Critical": 0,
+            "Major": 0,
+            "Minor": 0,
+            "Nit": 0
+          },
+          "existing_backlog": [
+            {
+              "id": "COR-1",
+              "severity": "Minor",
+              "family": "Original diagnostic cross-leg freshness",
+              "disposition": "Deferred unchanged in original reviewed analysis; amend register repeats disclosure and requires regression before procedure reuse.",
+              "invariant": "Both probability-source and purchased-token freshness should hold for future execution reuse.",
+              "location": "Original execution procedure; unconditional DOWN8m diagnostic at three sizes.",
+              "reproducer": "Original retained correctness review exhaustive replay; not rerun here. Amendment changes no numeric procedure/output.",
+              "consequence": "Known diagnostic-only stale-UP source observation; original review established zero affected selected model/raw/cal entries. Amendment does not promote it to model evidence."
+            }
+          ],
+          "unresolved_counts_including_existing_backlog": {
+            "Critical": 0,
+            "Major": 0,
+            "Minor": 1,
+            "Nit": 0
+          },
+          "limits": [
+            "Review establishes exact coverage and faithful reproducibility relative to frozen source exports, not independently confirmed profitability.",
+            "No heavy replay/refit, raw-data revalidation, or full test suite; those unchanged original dependencies retain their existing reviews and known COR-1 limitation.",
+            "Generator is retained research procedure with fixed declared input schema; no arbitrary hostile-CSV compatibility contract was inferred.",
+            "Remote rendering not opened; all19 memo relative links checked locally and current memo text inspected in full.",
+            "Existing original review closure refers to c909ef6a; amendment correctly remains pending its own two fresh reviews in evidence."
+          ],
+          "correction_commit": null
+        }
+      }
+    ],
+    "status": "closed_two_fresh_independent_reviews_zero_unresolved_critical_major",
+    "limitations": "Register is retrospective inclusion/disposition, not new evidence of profit or completion of future replication.300native non-BTC entries are inventory only. Existing COR-1 deferredMinor unchanged.",
+    "candidate_lock": {
+      "candidate": "0f24d8f9f189bd496a954c5f3fcb84c06bf72368",
+      "register_sha256": "5b3b0eb03214838331738cac4bbf691feed9455dff8267eba28516c4a044448b",
+      "unchanged_identities": [
+        "summary",
+        "matrix",
+        "procedures"
+      ],
+      "post_review_edits": "Only evidence closure and re-entry/archive handoff; memo,register,procedures,tests,source dependencies and numerical outputs unchanged.",
+      "minor_backlog": "Prior COR-1 diagnostic-only freshness limitation remains disclosed; no new amendment findings."
+    }
   }
 }
