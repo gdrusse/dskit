@@ -8718,5 +8718,561 @@
     "minor_backlog": "COR-1: cross-leg UP probability source freshness omitted from execution eligibility; independent exhaustive replay finds no model/raw/cal selected row affected; one unconditional diagnostic row appears in three size aggregates. Correct gate and add regression before reusing procedure on new data.",
     "deployment_authority": "Research only; no live trading, automation or protected-period changes."
   },
-  "documentation_checks": "tests/docs/test_budgets.py: 4 passed before review; repeated after handoff editorial changes."
+  "documentation_checks": "tests/docs/test_budgets.py: 4 passed before review; repeated after handoff editorial changes.",
+  "all_candidate_amendment": {
+    "base_commit": "c2e064f06c0f54d1546847defee8136e4302bc0a",
+    "owner_request": "Consider every candidate lead; priority orders work only. Explicitly authorized complete follow-up register.",
+    "summary": {
+      "counts": {
+        "candidate_hypothesis": 298,
+        "full_grid_no_current_support": 2,
+        "blocked_native_inventory": 300
+      },
+      "groups": [
+        {
+          "venue": "Kalshi",
+          "asset": "BTC",
+          "roles": {
+            "candidate_hypothesis": 98,
+            "full_grid_no_current_support": 2
+          },
+          "candidate_groups": {
+            "2": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "5": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "8": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "11": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "14": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90"
+              ],
+              "YES": [
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            }
+          }
+        },
+        {
+          "venue": "Kalshi",
+          "asset": "ETH",
+          "roles": {
+            "candidate_hypothesis": 100
+          },
+          "candidate_groups": {
+            "2": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "5": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "8": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "11": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "14": {
+              "NO": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "YES": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            }
+          }
+        },
+        {
+          "venue": "Polymarket",
+          "asset": "BTC",
+          "roles": {
+            "candidate_hypothesis": 100
+          },
+          "candidate_groups": {
+            "2": {
+              "DOWN": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "UP": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "5": {
+              "DOWN": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "UP": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "8": {
+              "DOWN": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "UP": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "11": {
+              "DOWN": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "UP": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            },
+            "14": {
+              "DOWN": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ],
+              "UP": [
+                "00-10",
+                "10-20",
+                "20-30",
+                "30-40",
+                "40-50",
+                "50-60",
+                "60-70",
+                "70-80",
+                "80-90",
+                "90-100"
+              ]
+            }
+          }
+        },
+        {
+          "venue": "Polymarket",
+          "asset": "ETH",
+          "roles": {
+            "blocked_native_inventory": 100
+          },
+          "candidate_groups": {
+            "2": {
+              "DOWN": [],
+              "UP": []
+            },
+            "5": {
+              "DOWN": [],
+              "UP": []
+            },
+            "8": {
+              "DOWN": [],
+              "UP": []
+            },
+            "11": {
+              "DOWN": [],
+              "UP": []
+            },
+            "14": {
+              "DOWN": [],
+              "UP": []
+            }
+          }
+        },
+        {
+          "venue": "Polymarket",
+          "asset": "SOL",
+          "roles": {
+            "blocked_native_inventory": 100
+          },
+          "candidate_groups": {
+            "2": {
+              "DOWN": [],
+              "UP": []
+            },
+            "5": {
+              "DOWN": [],
+              "UP": []
+            },
+            "8": {
+              "DOWN": [],
+              "UP": []
+            },
+            "11": {
+              "DOWN": [],
+              "UP": []
+            },
+            "14": {
+              "DOWN": [],
+              "UP": []
+            }
+          }
+        },
+        {
+          "venue": "Polymarket",
+          "asset": "XRP",
+          "roles": {
+            "blocked_native_inventory": 100
+          },
+          "candidate_groups": {
+            "2": {
+              "DOWN": [],
+              "UP": []
+            },
+            "5": {
+              "DOWN": [],
+              "UP": []
+            },
+            "8": {
+              "DOWN": [],
+              "UP": []
+            },
+            "11": {
+              "DOWN": [],
+              "UP": []
+            },
+            "14": {
+              "DOWN": [],
+              "UP": []
+            }
+          }
+        }
+      ],
+      "candidate_with_side_cost": 223,
+      "candidate_probability_or_gap_only": 75,
+      "candidate_with_prior_selection": 80,
+      "positive_scenario_coordinates": 27866,
+      "inputs": {
+        "2026-10-18-executable-cells-coverage-ledger.csv": "1d555a1687e6b0c1a47298b7699e27a40e0a49ba813aa7775db877dd569350ee",
+        "2026-10-18-candidate-inventory-cells.csv": "e6a38c3090a653b5931e9fac40da99894e5273c7c74d159077c26bfd58a92467",
+        "2026-10-18-polymarket-predictability-inventory.csv": "4a0b4adcbc6f05ffb788ff002039ddf184b92df5db005fc493c7d75237168d5d",
+        "2026-10-18-executable-cells-poly-prediction-cells.csv": "7d1f3a5c01c2d3d790a755d08db6e620eac8463c6453dc04e799be5eb5dcf854",
+        "2026-10-18-executable-cells-kalshi-cost-scenarios.csv": "d08e112baed61ecb60517e9907634b1086e227394bdd89094d027ecd84a31341",
+        "2026-10-18-executable-cells-poly-execution-scenarios.csv": "395876c4ae1d923222664ba7b9fe1edd256b83c633abdec731a4fcab70f5244e"
+      },
+      "output": {
+        "file": "2026-10-18-executable-cells-candidate-followup.csv",
+        "sha256": "5b3b0eb03214838331738cac4bbf691feed9455dff8267eba28516c4a044448b"
+      },
+      "rule": "Inclusive union of prior warmup selection, two-period raw/calibration score support, prior material Kalshi or persistent-sign Poly mean gaps, native transfer raw/calibrated score gains, and any strictly positive saved side/policy scenario with n>0 at any declared size/age/lag/period. No adequacy/top-k/model cutoff. Unconditional diagnostics separately marked; probability-only evidence duplicated across side inventory is not side-specific evidence. Blocked native assets remain inventory, not positive hypotheses. All600grid entries retained.",
+      "numerical_outputs_changed": false
+    },
+    "matrix": [
+      "Exhaustive union of all prior selection/raw/cal support, persistent gaps and all finite positive side scenarios including sparse/alternate policies",
+      "Complete600entry grid with candidate hypotheses distinct from blocked inventory and no-current-support controls",
+      "Exact venue/asset/lead/bin/side, original model namespaces, and positive-row provenance retained",
+      "Probability-only cell evidence remains side-unassigned; unconditional diagnostic not model support",
+      "Every candidate has completed tests,limitations,next applicable test or explicit blocker; priority never discards",
+      "No numerical outputs,configs,model fits,protected periods or ownerPath changed"
+    ],
+    "procedures": {
+      "all_candidate_followup.py": {
+        "sha256": "1fc4d8424763693af8a4660d4115b41a47139734d0ea01b515103b0e31f3ca2b",
+        "source": "from pathlib import Path\nimport csv,json,hashlib,collections,math\nROOT=Path('/home/russell/wt/crypto-executable-cells-20261018')\nD=ROOT/'children/crypto_trading/docs/memos'\nP='2026-10-18-executable-cells'\ninputs={}\ndef read(name):\n p=D/name;inputs[name]=hashlib.sha256(p.read_bytes()).hexdigest()\n with p.open() as f:return list(csv.DictReader(f))\ndef ids(s):return set(s.split(';')) if s else set()\ndef number(s):\n try:return float(s)\n except:return float('nan')\ndef binstr(n):n=10*int(float(n));return f'{n:02d}-{n+10:02d}'\ndef key(v,a,l,b,s):return (v,a,int(float(l)),b,{'Up':'YES','Down':'NO'}.get(s,s))\nledger=read(P+'-coverage-ledger.csv')\nrecords={}\nfor r in ledger:\n k=key(r['venue'],r['asset'],r['lead_minutes'],r['up_probability_bin'],r['side'])\n records[k]={'base':r,'reasons':set(),'prior_selected':set(),'prior_raw':set(),'prior_cal':set(),'new_raw':set(),'new_cal':set(),'positive':collections.defaultdict(list),'gap':'','prediction_only':True}\nassert len(records)==600\nfor r in read('2026-10-18-candidate-inventory-cells.csv'):\n for side in ['YES','NO']:\n  z=records[key('Kalshi',r['asset'],r['lead'],r['bin'],side)]\n  for field,source,reason in [('prior_selected','preselected_ids','prior_warmup_selected'),('prior_raw','support_ids','two_period_raw_score_support'),('prior_cal','calibration_support_ids','two_period_calibrated_score_support')]:\n   z[field]=ids(r[source]);z['reasons'].update([reason] if z[field] else [])\n  if r['material_gap']=='True':z['reasons'].add('prior_persistent_material_mean_gap');z['gap']=r['gap_direction']+'; descriptive cell mean, not a side-specific model signal'\nfor r in read('2026-10-18-polymarket-predictability-inventory.csv'):\n for side in ['Up','Down']:\n  z=records[key('Polymarket','BTC',r['lead_minutes'],r['probability_bin'],side)]\n  for field,source,reason in [('prior_selected','warmup_selected_methods','prior_warmup_selected'),('prior_raw','two_period_raw_support_methods','two_period_raw_score_support'),('prior_cal','two_period_calibration_support_methods','two_period_calibrated_score_support')]:\n   z[field]={'model'+str(int(x)).zfill(2) for x in ids(r[source])};z['reasons'].update([reason] if z[field] else [])\n  if number(r['warmup_gap'])*number(r['validation_gap'])>0:\n   z['reasons'].add('persistent_same_direction_mean_gap');z['gap']='UP' if number(r['warmup_gap'])>0 else 'DOWN'\n   z['gap']+=' underpriced in both period means; descriptive, not a side-specific model signal'\nfor r in read(P+'-poly-prediction-cells.csv'):\n for side in ['Up','Down']:\n  z=records[key('Polymarket','BTC',r['lead'],binstr(r['bin']),side)]\n  for field,metric,reason in [('new_raw','market_ll_gain_mean','native_transfer_raw_score_gain'),('new_cal','cal_ll_gain_mean','native_transfer_calibrated_score_gain')]:\n   if number(r[metric])>0:z[field].add('model'+str(int(r['method'])).zfill(2));z['reasons'].add(reason)\nfor name,venue in [(P+'-kalshi-cost-scenarios.csv','Kalshi'),(P+'-poly-execution-scenarios.csv','Polymarket')]:\n for r in read(name):\n  if not (number(r['n'])>0 and math.isfinite(number(r['mean'])) and number(r['mean'])>0):continue\n  k=key(venue,r.get('asset','BTC'),r['lead'],binstr(r['bin']),r['side'])\n  z=records[k];policy=r.get('model',r.get('policy'))\n  # Exact output row coordinates, not winners or sample-size-filtered best settings.\n  if venue=='Kalshi':coord=f\"{r['stage']}/size={r['shares']}\"\n  else:coord=f\"lag={r['latency_s']}/age_ms={r['age_cap_ms']}/size={r['shares']}\"\n  z['positive'][policy].append({'row':coord,'n':int(float(r['n'])),'mean':number(r['mean']),'adequate':r['adequate'],'tail_warning':r['tail_warning']})\n  diagnostic=policy=='unconditional'\n  z['reasons'].add('positive_unconditional_diagnostic_only' if diagnostic else 'positive_side_matched_cost_scenario')\n  if not diagnostic:z['prediction_only']=False\nrows=[]\nfor k,z in records.items():\n v,a,l,b,s=k;r=z['base'];blocked=a!='BTC' and v=='Polymarket'\n if blocked:role='blocked_native_inventory';z['reasons'].add('native_pending_book_inventory_no_settled_training_panel')\n elif z['reasons']:role='candidate_hypothesis'\n else:role='full_grid_no_current_support'\n positive=z['positive']; matched=[x for p,xx in positive.items() if p!='unconditional' for x in xx]\n fields={f:';'.join(sorted(z[f])) for f in ['prior_selected','prior_raw','prior_cal','new_raw','new_cal']}\n if v=='Kalshi':\n  done='All77 saved model settings plus raw/logistic controls; both warmup/validation; both sides;1/10/100share cent-fee quote scenarios; matched original prediction losses; day/week uncertainty; multiplicity;0.5/1cent cost stress; sample/zero-loss flags. Historical candle scenarios are not delayed fills.'\n  nexttest='For EVERY listed model/cell, retain chronology and raw/cal controls; obtain same-window native exchange/availability-stamped depth and effective fees, or separately admitted causal feature/model history. Apply both-source freshness gates,1/5second delay,1/10/100share depth,2/10/60second age,fee/slippage sensitivity,day/week and halves,rare-loss audit. No replay possible from current minute-rounded October books.'\n  limitation=r['blocker']+' All dates reused; positive means are exploratory; cell-level score support is not side-specific profitability.'\n  disposition='candidate_execution_test_data_blocked' if role=='candidate_hypothesis' else 'retain_grid_existing_tests_complete_no_new_support'\n elif not blocked:\n  done='All20 fixed native models plus raw/cal controls and separate unconditional diagnostic;1/5second latency x2/10/60second age x1/10/100share depth; exact native outcomes; matched score/freshness comparisons; fee and0.5/1cent cost stress;day/week/multiplicity;fixed halves;zero-loss and added-loss stress. No omitted candidate-specific aggregation remains.'\n  nexttest='For EVERY listed model/cell, first audit admissible uninspected native history and correct COR-1 with regression; freeze same-model/control replication before labels. Repeat source+purchased-token freshness,fee vintage/per-match rounding,positive latency/depth,rare-loss,day/week/halves and overlap audit. If no admissible period exists, mark replication blocked; do not replace a failed cell or tune thresholds.'\n  limitation='Retrospective selection; displayed depth is not observed fills;fee-vintage/label-publication gaps. COR-1: only one unconditional Down8m row at3sizes affected, zero selected model/raw/cal rows. Sparse/all-win/alternate-only gains remain uncertain; no corrected profit confirmation.'\n  disposition='candidate_existing_sensitivity_tests_complete_independent_replication_unestablished' if role=='candidate_hypothesis' else 'retain_grid_existing_tests_complete_no_new_support'\n else:\n  done='Raw native book inventory:92pending markets,approximately22.5hours perasset;no retained terminal outcomes. No BTC/Kalshi model or label substituted.'\n  nexttest='Acquire native settled labels/rules,publication times and earlier causal native training history; verify exact token strings and book/fee vintages. Then freeze native baseline/model comparisons and run all declared freshness,latency,depth,cost,rare-loss/stability tests for this exact cell/side; do not infer a profitable hypothesis from inventory.'\n  limitation=r['blocker']+' No fitted native model or score/cost evidence.';disposition='native_training_and_settlement_data_blocked'\n if role=='full_grid_no_current_support':nexttest='Retain this exact cell/side in future eligible full-grid controls; existing tests show no union-screen support. This is not proof of impossibility. No further tuning on reused outcomes.'\n rows.append({'venue':v,'asset':a,'lead_minutes':l,'up_probability_bin':b,'side':('UP' if s=='YES' else 'DOWN') if v=='Polymarket' else s,'role':role,'selection_reasons':';'.join(sorted(z['reasons'])),**fields,'mean_gap_evidence':z['gap'],'side_matched_positive_policies':';'.join(sorted(p for p in positive if p!='unconditional')),'unconditional_diagnostic_positive':bool(positive.get('unconditional')),'positive_scenario_coordinates_json':json.dumps(positive,separators=(',',':'),sort_keys=True),'positive_side_scenarios':len(matched),'positive_sparse_side_scenarios':sum(x['adequate']!='True' for x in matched),'positive_tail_warning_side_scenarios':sum(x['tail_warning']=='True' for x in matched),'evidence_scope':'side-matched cost scenario plus separate cell-score evidence' if matched else ('cell probability score/mean-gap only; does not identify a profitable side' if role=='candidate_hypothesis' else 'inventory only' if blocked else 'no union-screen support'),'side_evidence_assignment':'matched purchased side for cost evidence; cell-score evidence remains side-unassigned' if matched else 'side-unassigned; both sides require testing' if role=='candidate_hypothesis' else 'inventory only','completed_tests':done,'limitations':limitation,'disposition':disposition,'next_decisive_test':nexttest,'minimum_data':r['minimum_data'],'established_profit':False,'sources':'2026-10-18-candidate-inventory-cells.csv' if v=='Kalshi' else '2026-10-18-polymarket-predictability-inventory.csv;'+P+'-poly-prediction-cells.csv' if not blocked else P+'-coverage-ledger.csv','side_cost_source':P+('-kalshi-cost-scenarios.csv' if v=='Kalshi' else '-poly-execution-scenarios.csv') if not blocked else ''})\np=D/(P+'-candidate-followup.csv')\nwith p.open('w',newline='') as f:w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)\ncounts=collections.Counter(r['role'] for r in rows)\ngroups=[]\nfor venue,asset in sorted({(r['venue'],r['asset']) for r in rows}):\n subset=[r for r in rows if (r['venue'],r['asset'])==(venue,asset)]\n groups.append({'venue':venue,'asset':asset,'roles':dict(collections.Counter(r['role'] for r in subset)),'candidate_groups':{str(lead):{side:sorted(r['up_probability_bin'] for r in subset if r['lead_minutes']==lead and r['side']==side and r['role']=='candidate_hypothesis') for side in sorted({r['side'] for r in subset})} for lead in [2,5,8,11,14]}})\nsummary={'counts':dict(counts),'groups':groups,'candidate_with_side_cost':sum(r['role']=='candidate_hypothesis' and r['positive_side_scenarios']>0 for r in rows),'candidate_probability_or_gap_only':sum(r['role']=='candidate_hypothesis' and r['positive_side_scenarios']==0 for r in rows),'candidate_with_prior_selection':sum(bool(r['prior_selected']) for r in rows),'positive_scenario_coordinates':sum(len(v) for z in records.values() for v in z['positive'].values()),'inputs':inputs,'output':{'file':p.name,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()},'rule':'Inclusive union of prior warmup selection, two-period raw/calibration score support, prior material Kalshi or persistent-sign Poly mean gaps, native transfer raw/calibrated score gains, and any strictly positive saved side/policy scenario with n>0 at any declared size/age/lag/period. No adequacy/top-k/model cutoff. Unconditional diagnostics separately marked; probability-only evidence duplicated across side inventory is not side-specific evidence. Blocked native assets remain inventory, not positive hypotheses. All600grid entries retained.','numerical_outputs_changed':False}\nPath('/home/russell/data/crypto_trading/research/executable-cells-20261018/candidate-followup-summary.json').write_text(json.dumps(summary,indent=2)+'\\n')\nprint(json.dumps({k:v for k,v in summary.items() if k not in ['inputs','groups']},indent=2))\nprint(json.dumps(groups,indent=2))\n"
+      },
+      "test_candidate_followup.py": {
+        "sha256": "71276d336335af0bff80438bf58ef98befd456fa55d2063812054da8f98193e6",
+        "source": "import csv,json,math,hashlib,subprocess\nfrom pathlib import Path\nD=Path('/home/russell/wt/crypto-executable-cells-20261018/children/crypto_trading/docs/memos')\nP='2026-10-18-executable-cells'\ndef read(n):return list(csv.DictReader((D/n).open()))\nR=read(P+'-candidate-followup.csv')\ndef k(r):return r['venue'],r['asset'],int(r['lead_minutes']),r['up_probability_bin'],r['side']\nM={k(r):r for r in R}\ndef test_complete_unique_dispositions():\n assert len(M)==len(R)==600\n assert sum(r['role']=='candidate_hypothesis' for r in R)==298\n assert sum(r['role']=='blocked_native_inventory' for r in R)==300\n assert sum(r['role']=='full_grid_no_current_support' for r in R)==2\n assert len({k(r)[:4] for r in R if r['role']=='candidate_hypothesis'})==150\n assert all(r['next_decisive_test'] and r['limitations'] and r['completed_tests'] for r in R)\n assert all(r['established_profit']=='False' for r in R)\ndef test_every_positive_scenario_preserved_exactly():\n expected=set()\n for venue,suffix in [('Kalshi','kalshi-cost-scenarios'),('Polymarket','poly-execution-scenarios')]:\n  for x in read(P+'-'+suffix+'.csv'):\n   n=float(x['n']);mean=float(x['mean']) if x['mean'] else math.nan\n   if not(n>0 and math.isfinite(mean) and mean>0):continue\n   low=10*int(x['bin']);side={'Up':'UP','Down':'DOWN'}.get(x['side'],x['side'])\n   key=(venue,x.get('asset','BTC'),int(x['lead']),f'{low:02d}-{low+10:02d}',side)\n   policy=x.get('model',x.get('policy'))\n   coord=f\"{x['stage']}/size={x['shares']}\" if venue=='Kalshi' else f\"lag={x['latency_s']}/age_ms={x['age_cap_ms']}/size={x['shares']}\"\n   expected.add((key,policy,coord,int(n),mean,x['adequate'],x['tail_warning']))\n actual={(k(r),policy,x['row'],x['n'],x['mean'],x['adequate'],x['tail_warning']) for r in R for policy,rows in json.loads(r['positive_scenario_coordinates_json']).items() for x in rows}\n assert actual==expected\n assert len(actual)==27866\n assert any(x[3]<200 for x in actual)\n assert any(x[5]=='False' for x in actual)\ndef test_side_scope_and_nonbtc_not_positive_claims():\n no_cost=[r for r in R if r['role']=='candidate_hypothesis' and int(r['positive_side_scenarios'])==0]\n assert len(no_cost)==75\n assert all(r['side_evidence_assignment']=='side-unassigned; both sides require testing' for r in no_cost)\n for r in R:\n  if r['role']=='blocked_native_inventory':\n   assert not r['side_matched_positive_policies'] and not r['prior_selected'] and not r['prior_raw'] and not r['prior_cal']\n  assert 'unconditional' not in r['side_matched_positive_policies'].split(';')\ndef test_prior_support_never_dropped():\n for x in read('2026-10-18-candidate-inventory-cells.csv'):\n  for side in ['YES','NO']:\n   r=M['Kalshi',x['asset'],int(x['lead']),x['bin'],side]\n   for target,source in [('prior_selected','preselected_ids'),('prior_raw','support_ids'),('prior_cal','calibration_support_ids')]:\n    assert set(filter(None,r[target].split(';')))==set(filter(None,x[source].split(';')))\n   if x['material_gap']=='True':assert 'prior_persistent_material_mean_gap' in r['selection_reasons']\n for x in read('2026-10-18-polymarket-predictability-inventory.csv'):\n  for side in ['UP','DOWN']:\n   r=M['Polymarket','BTC',int(x['lead_minutes']),x['probability_bin'],side]\n   for target,source in [('prior_selected','warmup_selected_methods'),('prior_raw','two_period_raw_support_methods'),('prior_cal','two_period_calibration_support_methods')]:\n    assert set(filter(None,r[target].split(';')))=={'model'+str(int(i)).zfill(2) for i in x[source].split(';') if i}\ndef test_original_numeric_outputs_unchanged():\n root=D.parents[3]\n for p in D.glob(P+'-*.csv'):\n  if p.name.endswith('-candidate-followup.csv'):continue\n  prior=subprocess.check_output(['git','show','c2e064f06c0f54d1546847defee8136e4302bc0a:'+str(p.relative_to(root))],cwd=root)\n  assert hashlib.sha256(prior).digest()==hashlib.sha256(p.read_bytes()).digest()\n"
+      }
+    },
+    "checks": "5 focused amendment tests passed; verify all27866positive source coordinates exactly, all prior supports,600unique rows,75side-unassigned entries and original numerical CSV identity. No heavy job/refit repeated.",
+    "reviews": [],
+    "status": "candidate_pending_two_fresh_independent_reviews",
+    "limitations": "Register is retrospective inclusion/disposition, not new evidence of profit or completion of future replication.300native non-BTC entries are inventory only. Existing COR-1 deferredMinor unchanged."
+  }
 }
