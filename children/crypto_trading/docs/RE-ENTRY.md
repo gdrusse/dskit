@@ -5,70 +5,71 @@ The replaced note is archived at docs/archive/re-entry/crypto_trading.md.
 
 ## Now
 
-- Focused follow-up to the 57-method aligned study completed: 20 settings
-  (16 perturbations and 4 exact controls), 40 JSON runs and 240 output files.
-  Complete 4,000 asset/lead/bin cells, 200 leads, 400 asset/leads and
-  2,000 calibration rows, plus forecasts and contract scores.
-- Parents 24/48/44/38: correction strength; ARD feature pruning; fixed
-  volatility regime boundaries. No new architecture or feature source.
-- Same causal warm-up February 19-April 19: 52,999 forecasts / 11,213 contracts.
-  Validation May 2-July 31: 84,728 forecasts / 17,158 contracts.
-  All correction/comparator fits freeze at May 2 with a one-day embargo.
-  Inherited GRU inputs retain their prior causal update schedule.
-- Warm-up stability selection was committed at ba43561f before validation:
-  4 global settings and 8 model/pocket pairs across 3 distinct regions.
-  Four global choices are all slightly worse than their exact parents.
-- All 8 pockets lower mean validation log loss versus raw/calibrated market;
-  7 retain raw-score gains in both validation halves. None passes the
-  daily or robust selected-cell screens against any comparator.
-- Best fixed local research lead: ETH / 11m / 10-20% market probability.
-  All four families selected it; both validation halves improve versus
-  raw market and each parent. 689 contracts, market YES 15.41%, actual 14.22%.
-  This remains tentative; no validated pocket or promoted tuned model.
-- Retain original method 24 as reference. Stop more strength/pruning/boundary
-  tuning on the same history. Exact controls reproduce the earlier predictions.
-- Candidate 32fe1853; review receipts in memo/evidence.
-  Deferred Minor: 16 JSON probability-node notes retain old 0.5 wording;
-  actual .25/.75 expressions, setting names and tested outputs are correct.
-  127 focused tests, six synthetic stability probes and Ruff passed.
-  Author audit checked all 240 outputs and 501 fit censuses.
-- One initial writer attempt failed because the results directory was absent.
-  Failed record retained; retry used unused placement. 40 completed runs.
-- Market baseline is the one-minute candle-midpoint proxy, Kalshi BTC/ETH only.
-  Dates were previously inspected; historical replication is not untouched
-  confirmation. Original source generation and GRU training were not rebuilt.
-- Artifacts: /home/russell/data/crypto_trading/research/pocket-tuning-20261018
-  Previous aligned study: sibling warmup20-20261018.
-- Separate dirty /home/russell/dskit-crypto-prew4-oos remains untouched.
+- Astra-directed attribution diagnostic completed on saved forecasts; no refit.
+- Nine contrasts frozen at a9a78467: global24 vs45/46/47 and48 vs24;
+  local setting03 vs raw/logistic/02/45/24 in fixed ETH11m10–20%.
+- Same warm-up February19–April19, 52,999 forecasts/11,213 contracts;
+  validation May2–July31, 84,728 forecasts/17,158 contracts.
+  Existing March21/June16 half splits and original training schedules retained.
+- All dates previously explored; diagnostic evidence, not untouched confirmation.
+- Reference24 improves means versus45/46/47 every validation month and half,
+  and after every omission of any three of14 week blocks.
+  Only24 vs47 passes the full day/week nine-comparison corrected screen.
+  Weekly adjusted p versus45=.1603 and versus46=.2639 remain inconclusive.
+- Do not replace24 with48: July and second-half differences reverse;
+  removing one week can eliminate its small validation mean advantage.
+- Fixed ETH11m10–20 setting03 improves means against all five controls
+  every validation month and after any three-week removal; none passes.
+  689 contracts,98 YES; raw loss difference−.003899.
+- Pocket raw gain is in488 narrow-spread observations (−.005712);
+ 201 wide-spread observations worsen (+.000505). All689 have positive volume.
+  Boundary is the warm-up median spread, approximately one probability point.
+  No new narrow-spread filter or pocket was selected.
+- All137,727 inputs match the acquired panel and original decision records.
+  Three saved GRU hashes verified; training-label reach precedes decisions
+  by at least23h31m. Source endpoints agree, but actual bid/ask update
+  timestamps are absent. No source regeneration or GRU refit was performed.
+- Complete2,800 cells,140 lead rows,280 asset/leads,1,400 calibration rows,
+  joined forecast/contract Parquets, monthly/quality and week-removal views.
+- Candidate1bcb02c2. Twelve focused tests and four doc-budget checks passed;
+  no full suite. Two Astra reviews: zero Critical/Major; one deferred Minor.
+  INT-1: add identical duplicate-cohort regression; runtime guard is correct.
+- First analysis attempt had an incorrect archive payload path; retained
+  failed log, then corrected retry. No completed outputs were overwritten.
+- Artifacts: /home/russell/data/crypto_trading/research/attribution-20261018.
+  Prior artifacts: sibling warmup20-20261018 and pocket-tuning-20261018.
 
 ## Next
 
-- Preserve the ETH 11m / 10-20% region and its settings if following it up.
-  Do not pick another setting from the full validation map.
-- Next useful investigation: decision-time probability quality and separately
-  timed information, then a fixed comparison on unexamined outcomes.
-  A new parameter sweep on this history does not resolve the uncertainty.
-- Legacy frozen forward protocol remains unchanged at January 15, 2027 UTC;
-  it was not required for the completed historical comparison. No automation.
+- Retain24; stop architecture/strength/pruning/boundary and local cell tuning
+  on these dates. Keep48 as a recorded sensitivity, not a replacement.
+- Next useful work is a data inventory for accurately timestamped historical
+  market probabilities and a documented unexamined, admissible interval.
+  Freeze candidates, controls, cohort, fits and bins before opening outcomes.
+- Keep the existing03 pocket rule fixed, without adding the observed spread
+  filter. If suitable data is unavailable, close this historical optimization
+  line as inconclusive; more models on the same rows do not resolve it.
+- The separate protected January15,2027 protocol remains unchanged.
+  It was not required for this completed historical diagnostic. No automation.
 
 ## Blocked / owner decisions
 
-- No blocker to completed study; no trading or production promotion.
-- Reproduction requires local acquired data and retained analysis artifacts.
-- Prior owner-only decisions and Path rows remain unchanged.
+- No blocker to completed study; exact quote freshness remains unresolvable
+  from these decision records. No unexamined interval has been established.
+- No trading, deployment, new acquisition or protected-outcome read.
+- Prior owner-only Path decisions remain unchanged.
 
 ## Read first
 
+- docs/memos/2026-10-18-attribution.md
+- docs/memos/2026-10-18-attribution-evidence.json
 - docs/memos/2026-10-18-pocket-tuning.md
-- docs/memos/2026-10-18-pocket-tuning-evidence.json
 - docs/memos/2026-10-18-warmup20-aligned-methods.md
-- configs/run-pocket-tuning-validation-03-p24-strength-075.json
-- docs/research/pocket-tuning/2026-10-18-synthesis.md
+- docs/research/attribution/2026-10-18-synthesis.md
 
 ## Do not
 
-- Read protected outcomes, change frozen protocols or retune on validation.
-- Treat consistent means or a frequency gap as established prediction edge.
-- Infer profitability, trade, deploy or promote an unvalidated model.
-- Hand-edit generated journals, Path rows or another session's checkout.
-- Overwrite completed outputs or discard the initial failed attempt.
+- Promote historical consistency or correlated models as established edge.
+- Read protected outcomes, change frozen protocols or select another pocket.
+- Hand-edit generated journals/Path rows or other sessions' checkouts.
+- Rerun completed output paths or discard the failed attempt evidence.

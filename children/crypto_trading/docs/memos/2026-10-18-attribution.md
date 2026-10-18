@@ -82,7 +82,11 @@ The initial focused test failed on the missing paired-mean implementation. After
 
 One first analysis attempt stopped before writing results because the archive payload subdirectory was omitted. The failure log and original script are retained; the corrected retry completed. No experiment was refitted and no completed output was overwritten. The concentration follow-up is explicitly post-primary descriptive work.
 
-Independent final reviews: pending. This memo is a candidate until those reviews close.
+Two fresh sequential GPT-6 Astra reviews completed on candidate1bcb02c2 with zero Critical/Major findings. The correctness reviewer independently reproduced all18 primary comparisons,204 breakdowns,5,382 week-removal means, all4,620 summary rows, every source join and the three state hashes. The integration reviewer reproduced all4,620 rows, checked source/fit/protocol identities, tested refusal-before-I/O and caught seven meaningful code mutants. Both reviewers passed the12 focused tests. Full actual reports and hashes are retained in the evidence packet.
+
+Deferred Minor INT-1: the permanent tests do not exercise identical duplicate identities on both sides of alignment. The existing runtime guard correctly rejects that case, independently verified by the reviewer; all actual cohorts are unique. Add that regression in a future test change. No current output is affected. Final unresolved counts: Critical0, Major0, Minor1 deferred, Nit0.
+
+All scripts, tests, protocol, scientific outputs and dependencies remain identical to the reviewed candidate. The results-view TypeScript check passes; the UI was not rendered as part of this audit. Four documentation-budget tests pass. This closure appends review receipts and handoff only.
 
 ## Reproducibility and handoff
 
