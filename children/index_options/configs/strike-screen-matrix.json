@@ -1,0 +1,63 @@
+{
+  "name": "strike-screen-matrix",
+  "notes": "ADR-0270 section 3-4 fractional design as pure data (PROPOSED; ZERO fits until the registration is approved). Each document is the strike-screen-experiment-template.json CDFExperiment with its arms restricted to `arm`, its candidates restricted to `candidates`, training.losses set to the named recipe, and training epochs/patience plus fold_table roles set by the stage. The pilot-root prepare script materializes them; this file never trains. Change the design here, never in code.",
+  "template": "strike-screen-experiment-template.json",
+  "seed": 11,
+  "regime": "pooled",
+  "losses": {
+    "notes": "One global + one local term per recipe (TorchCDF composite). Training losses are never compared across kinds; recipes are compared on the scored metrics only.",
+    "L1": [{"kind": "crps", "weight": 1.0}, {"kind": "tail_crps", "weight": 1.0}],
+    "L2": [{"kind": "nll", "weight": 1.0}, {"kind": "tail_crps", "weight": 1.0}],
+    "L3": [{"kind": "crps", "weight": 1.0}, {"kind": "decision_brier", "weight": 1.0}],
+    "L4": [{"kind": "crps", "weight": 1.0}, {"kind": "decision_log", "weight": 1.0}]
+  },
+  "documents": {
+    "notes": "D-L1T is the L1 recipe on the theta-augmented arm (sparse Theta coverage, disclosed as mostly fit-only median imputation).",
+    "D-L1": {"loss": "L1", "arm": "price_only", "candidates": ["patchtst_hf32", "mlp", "gru", "tcn", "dlinear"]},
+    "D-L1T": {"loss": "L1", "arm": "price_plus_volatility_skew_liquidity", "candidates": ["mlp", "patchtst_hf32"]},
+    "D-L2": {"loss": "L2", "arm": "price_only", "candidates": ["mlp", "patchtst_hf32"]},
+    "D-L3": {"loss": "L3", "arm": "price_only", "candidates": ["mlp", "patchtst_hf32"]},
+    "D-L4": {"loss": "L4", "arm": "price_only", "candidates": ["mlp", "patchtst_hf32"]}
+  },
+  "stages": {
+    "stage1": {
+      "notes": "Correctness and timing pilot: fixed epochs, no early stop, warm-up fold only. Stop rule: if max(seconds_per_epoch) * stage2.epochs * stage2 neural cells > stop_rule_seconds, drop stop_rule_drop_order from stage2 in that order before it starts.",
+      "folds": [2],
+      "roles": ["warmup"],
+      "epochs": 3,
+      "patience": null,
+      "order": ["D-L1"],
+      "stop_rule_seconds": 9000,
+      "stop_rule_drop_order": ["D-L4", "D-L2"]
+    },
+    "stage2": {
+      "notes": "Compact screen. Documents run in `order` so an interruption leaves complete recipes. A fit hitting the epoch ceiling while improving is a consumed, flagged 'ceiling' skip, never retried, and joins the audit set.",
+      "folds": [2, 3],
+      "roles": ["warmup", "scored"],
+      "epochs": 120,
+      "patience": 10,
+      "order": ["D-L1", "D-L1T", "D-L3", "D-L2", "D-L4"]
+    }
+  },
+  "promotion": {
+    "notes": "Fixed before any outcome (ADR-0270 section 4). Screening reports read only scored origins before screening_end_before; the masked slice is scored by every fit but opened only at the separately registered promotion rung.",
+    "eligibility": {"metric": "crps", "skill_vs": "horizon_empirical", "paired": true, "min_skill_exclusive": 0.0, "folds": [2, 3]},
+    "weighting_guard": {"recipes": ["L3", "L4"], "metric": "crps", "reference_recipe": "L1", "same_encoder": true, "max_relative_worsening": 0.005},
+    "ranking": {"metric": "weighted_crps", "skill_vs": "horizon_empirical", "primary_fold": 3, "secondary_fold": 2},
+    "uncertainty": {"bootstrap_blocks": [30, 60], "replicates": 1000, "seed": 829, "symbol_clustered": true},
+    "top_k": 3,
+    "audit_set": ["patchtst_hf32-L1", "mlp-L1", "one_ceiling_recipe_if_any"],
+    "screening_end_before": "2020-10-01",
+    "masked_slice": {"start": "2020-10-01", "end": "2020-11-30"}
+  },
+  "caps": {
+    "notes": "Per-packet resource caps. Disk and file-size caps are observational (du poll between documents, RLIMIT_FSIZE), not quotas. One CUDA process at a time; an interrupted cell is consumed.",
+    "wall_clock_seconds": 14400,
+    "new_output_bytes": 1000000000,
+    "file_max_bytes": 64000000,
+    "rss_incremental_bytes": 8589934592,
+    "vram_bytes": 12884901888,
+    "disk_floor_bytes": 32212254720,
+    "retries": 0
+  }
+}

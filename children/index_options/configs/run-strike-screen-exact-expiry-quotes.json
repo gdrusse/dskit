@@ -1,0 +1,207 @@
+{
+  "name": "strike-screen-exact-expiry-quotes",
+  "notes": "ADR-0270 section 5, market reference stage, document 2 of 2: the Theta quotes of exactly the market-request identities, in OptionPriceProxy's quote schema. ZERO fits. Holdout lock: the chain reader carries start 2019-01-01, end_before 2021-01-01 and sealed_from 2026-01-01. PREREQUISITE: requests.jsonl from run-strike-screen-market-requests.json onboarded with the localfiles connector as source theta-market-requests (stream requests) in the pilot root ob/ (README under documents/market/). Semi-join method: a quote row's (symbol, date, expiration) must be a request identity. attach-by-identity refuses a stream that repeats an identity (every contract of an expiry shares it) and join/keyby take one key field, so the composite match uses observation-tables, which attaches a keyed onboarded table onto a stream by a composite key: the request's expiry lands on every matching quote, null elsewhere, and the null rows are dropped. Gap disclosed: observation-tables reads the onboarded table through the observations seam, which has no manifest pin or end_before knob; its provenance records the table's row count and content digest, and the table was itself written under end_before 2021-01-01. Quality: OptionPriceProxy marks a whole identity invalid if ANY of its quotes has a non-positive price or a crossed market, so rows with a null or non-positive bid/ask/strike or ask < bid are dropped here (counted by the filter log), a declared cleaning convention. MEMORY (measured on AAPL, 989,120 rows: 812 bytes per projected row, plus 290 per usable row copied by observation-tables): the whole M24 window (Stage 0: 9,935,330 rows) projects to about 10 GiB peak, above the ADR-0270 8 GiB cap. A foreach per symbol does not help: the planner runs template-major (every symbol's rows before any filter), so all instances coexist. Do not run as one document; split by tercile (three documents, about 3.4 GiB each) or close gap G3 (a lazy composite-key semi-join over the chain source) first. Output is newline-JSON (gap G2: no Parquet writer kind). Run from the worktree root: python -m dskit.pipeline run children/index_options/configs/run-strike-screen-exact-expiry-quotes.json --asof 2020-12-31.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-strike-screen-20261018/market/pipeline-runs",
+    "notes": "Inside the pilot root; nothing is written under /home/russell/data/thetadata."
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/index_options/theta-strike-screen-20261018/export-frozen/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask"
+        ],
+        "symbols": [
+          "AAPL",
+          "ACN",
+          "AEO",
+          "ALB",
+          "AMC",
+          "AMD",
+          "APA",
+          "BA",
+          "BAC",
+          "BBY",
+          "BIDU",
+          "BP",
+          "CAT",
+          "CDE",
+          "CNC",
+          "COF",
+          "CRM",
+          "CSCO",
+          "ECHO",
+          "EPD",
+          "FCEL",
+          "FISV",
+          "GPRO",
+          "ISRG"
+        ],
+        "start": "2019-01-01",
+        "end_before": "2021-01-01",
+        "sealed_from": "2026-01-01"
+      },
+      "notes": "The frozen Theta export, read-only, M24 roots only (registration/cohorts.json key m24, pinned equal by the child test; isin pushed into the scan), the seven columns the proxy needs. A file whose footer window reaches 2026-01-01 refuses whole."
+    },
+    "rows": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$chain.records"
+      },
+      "params": {
+        "keep": [
+          "symbol",
+          "strike",
+          "bid",
+          "ask"
+        ],
+        "fields": {
+          "quote_date": {
+            "field": "date"
+          },
+          "settlement_date": {
+            "field": "expiration"
+          },
+          "type": {
+            "field": "right"
+          },
+          "available_at": {
+            "field": "date"
+          },
+          "spread": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "ask"
+              },
+              {
+                "field": "bid"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "type = right ('call'/'put', the proxy's vocabulary); available_at = date: an end-of-day quote is usable at the quote date's decision under the after-close indicative clock. settlement_date is the listed expiration, the key the requests match on."
+    },
+    "usable": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$rows.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "bid",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "strike",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "field": "spread",
+            "op": ">=",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "A null value fails its clause and drops (filter's sparse-record rule), so null bid/ask/strike drop with the zero bids and crossed markets."
+    },
+    "requested": {
+      "uses": "dskit.pipeline.libs.observation_tables:ObservationTables",
+      "inputs": {
+        "records": "$usable.records"
+      },
+      "params": {
+        "root": "/home/russell/data/index_options/theta-strike-screen-20261018/ob",
+        "key": [
+          "symbol",
+          "quote_date",
+          "settlement_date"
+        ],
+        "tables": {
+          "requests": {
+            "source": "theta-market-requests",
+            "stream": "requests",
+            "key_fields": [
+              "symbol",
+              "quote_date",
+              "settlement_date"
+            ],
+            "columns": {
+              "expiry": "expiry"
+            }
+          }
+        }
+      },
+      "notes": "Exact composite match on (symbol, quote_date, settlement_date); expiry (the panel expiry the proxy identity uses) attaches to matched quotes and is null elsewhere. The provenance counts matched and unmatched quote rows."
+    },
+    "matched": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$requested.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "expiry",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "The semi-join: only quotes of a request identity remain (Stage 0: 144,916 contract rows on the 1,990 eligible identities before this cleaning)."
+    },
+    "quotes": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$matched.records"
+      },
+      "params": {
+        "keep": [
+          "symbol",
+          "quote_date",
+          "expiry",
+          "settlement_date",
+          "strike",
+          "type",
+          "bid",
+          "ask",
+          "available_at"
+        ],
+        "fields": {
+          "decision_strike_z": {
+            "const": 0.0
+          }
+        }
+      },
+      "notes": "The proxy's quote schema plus the constant pilot decision strike, so every market record carries decision_strike_z = 0.0."
+    },
+    "write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$quotes.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/market/quotes/quotes.jsonl",
+        "overwrite": false,
+        "source": "ADR-0270 exact-expiry quotes: Theta end-of-day bid/ask of every usable contract on the market-request identities of M24"
+      },
+      "notes": "The directory holds only this file so a localfiles source over it has one stream, quotes."
+    }
+  }
+}

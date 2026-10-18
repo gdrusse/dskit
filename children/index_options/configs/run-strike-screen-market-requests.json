@@ -1,0 +1,482 @@
+{
+  "name": "strike-screen-market-requests",
+  "notes": "ADR-0270 section 5, market reference stage, document 1 of 2: one exact-expiry market request per M24 panel origin. ZERO fits. Holdout lock: every reader carries end_before 2021-01-01 and the Theta reader also sealed_from 2026-01-01 (2026 sealed forever). Spot is Theta underlying_price, the UNADJUSTED basis the strikes share; the panel's split-adjusted spot is not stored and is not used. Identities are restricted HERE to origins whose settlement_date equals a listed expiration on the quote date (the Friday-settlement subset; outcome independent), so the quotes document only has to keep the quotes of these identities. A quote date without a same-day DGS3MO print is a counted exclusion (join inner; the census is the join's matched output), never a filled value. BLOCKED (gap G1): DGS3MO is percent TEXT in the pinned rates artifact and ComputeFields treats a text operand as null_input, so growth is null on every row; OptionPriceProxy refuses a non-positive or null growth, so the chain fails closed at the proxy. Do not onboard requests.jsonl for the proxy until a numeric parse exists (proposal: a ComputeFields op that parses numeric text, '.' as null_input). Output is newline-JSON (records-write is the only row writer; there is no Parquet writer kind, gap G2). MEMORY: the chain reader is lazy, but calc is the only kind that accepts it and materializes the projected M24 chain (Stage 0: 9,935,330 rows); measured 0.73 GiB peak on AAPL+ALB (1,120,963 rows) projects to about 6.5 GiB, under the ADR-0270 8 GiB cap but above a 6 GiB guard: measure the first run. Run from the worktree root: python -m dskit.pipeline run children/index_options/configs/run-strike-screen-market-requests.json --asof 2020-12-31.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-strike-screen-20261018/market/pipeline-runs",
+    "notes": "Inside the pilot root; nothing is written under /home/russell/data/thetadata or any R5/R6 root."
+  },
+  "pipeline": {
+    "panel": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/theta-training-20261016/ob",
+            "source": "theta-augmented-panel-full-universe",
+            "stream": "files",
+            "snapshot": "fbd9d10b022e4d1ce3d4a4f68f0c4fd911e96da5e13030872537536b94943364",
+            "columns": {
+              "symbol": "symbol",
+              "quote_date": "quote_date",
+              "expiry": "expiry",
+              "settlement_date": "settlement_date",
+              "reference_scale": "reference_scale",
+              "actual_calendar_dte": "actual_calendar_dte"
+            },
+            "include": [
+              "panel.parquet"
+            ],
+            "read_bounds": {
+              "quote_date": {
+                "start": "2019-01-01",
+                "end_before": "2021-01-01"
+              },
+              "settlement_date": {
+                "end_before": "2021-01-01"
+              }
+            },
+            "where": [
+              {
+                "field": "symbol",
+                "op": "in",
+                "value": [
+                  "AAPL",
+                  "ACN",
+                  "AEO",
+                  "ALB",
+                  "AMC",
+                  "AMD",
+                  "APA",
+                  "BA",
+                  "BAC",
+                  "BBY",
+                  "BIDU",
+                  "BP",
+                  "CAT",
+                  "CDE",
+                  "CNC",
+                  "COF",
+                  "CRM",
+                  "CSCO",
+                  "ECHO",
+                  "EPD",
+                  "FCEL",
+                  "FISV",
+                  "GPRO",
+                  "ISRG"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "notes": "The onboarded fit panel (member panel.parquet sha256 bf110d49...b2b28961), projected to the request identity, scale and calendar DTE; no outcome column is read. Quote dates 2019-01-01..2020-12-31 (the panel ends 2020-11-30), settlement before 2021-01-01. symbol in M24 is registration/cohorts.json key m24, pinned equal by the child test."
+    },
+    "panel_basis": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "fields": {
+          "price_basis": {
+            "text": "theta_underlying_price_unadjusted"
+          }
+        }
+      },
+      "notes": "attach-by-identity requires a non-empty agree_fields list and the panel shares no natural column with the chain; both sides therefore declare the price basis they are on, and the attach refuses a row whose declarations differ."
+    },
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/index_options/theta-strike-screen-20261018/export-frozen/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "underlying_price"
+        ],
+        "symbols": [
+          "AAPL",
+          "ACN",
+          "AEO",
+          "ALB",
+          "AMC",
+          "AMD",
+          "APA",
+          "BA",
+          "BAC",
+          "BBY",
+          "BIDU",
+          "BP",
+          "CAT",
+          "CDE",
+          "CNC",
+          "COF",
+          "CRM",
+          "CSCO",
+          "ECHO",
+          "EPD",
+          "FCEL",
+          "FISV",
+          "GPRO",
+          "ISRG"
+        ],
+        "start": "2019-01-01",
+        "end_before": "2021-01-01",
+        "sealed_from": "2026-01-01"
+      },
+      "notes": "The frozen Theta export, read-only, M24 roots only (isin pushed into the scan), four projected columns. A file whose footer window reaches 2026-01-01 refuses whole. The tree's file plan is pinned by the node fingerprint at run time."
+    },
+    "chain_rows": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$chain.records"
+      },
+      "params": {
+        "keep": [
+          "symbol",
+          "underlying_price"
+        ],
+        "fields": {
+          "quote_date": {
+            "field": "date"
+          },
+          "settlement_date": {
+            "field": "expiration"
+          }
+        }
+      },
+      "notes": "Renames the chain's date and expiration to the request identity names (ISO text both sides). This is the only kind that accepts the lazy chain source; it materializes the projected rows."
+    },
+    "chain_priced": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$chain_rows.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "underlying_price",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      "notes": "groupby refuses a null under a numeric op; a contract row without a positive underlying_price carries no spot (Stage 0 probe: 198,067 such rows, one symbol-date with none at all, no symbol-date with two values)."
+    },
+    "spot_days": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$chain_priced.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "quote_date"
+        ],
+        "aggregates": {
+          "spot": {
+            "op": "min",
+            "field": "underlying_price"
+          },
+          "spot_values": {
+            "op": "nunique",
+            "field": "underlying_price"
+          }
+        }
+      },
+      "notes": "One spot per (symbol, quote_date). spot_values counts the distinct underlying prices that day; a day with more than one is excluded below, never averaged."
+    },
+    "spot_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$spot_days.records"
+      },
+      "params": {
+        "fields": {
+          "price_basis": {
+            "text": "theta_underlying_price_unadjusted"
+          }
+        }
+      },
+      "notes": "The agree field, as in panel_basis."
+    },
+    "listed_days": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$chain_rows.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "quote_date",
+          "settlement_date"
+        ],
+        "aggregates": {
+          "listed_contracts": {
+            "op": "count"
+          }
+        }
+      },
+      "notes": "The export's distinct (symbol, date, expiration) identities, with the contract-row count of each."
+    },
+    "listed_table": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$listed_days.records"
+      },
+      "params": {
+        "fields": {
+          "price_basis": {
+            "text": "theta_underlying_price_unadjusted"
+          }
+        }
+      },
+      "notes": "The agree field, as in panel_basis."
+    },
+    "with_spot": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$panel_basis.records",
+        "table": "$spot_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "quote_date"
+        ],
+        "agree_fields": [
+          "price_basis"
+        ],
+        "max_absent_fraction": 0.01,
+        "column_prefix": "mkt_",
+        "families": {
+          "spot": {
+            "fields": [
+              "spot",
+              "spot_values"
+            ],
+            "withheld_fields": {},
+            "clock_note": "Theta end-of-day underlying_price of the quote date: known after that day's close, indicative, not executable"
+          }
+        }
+      },
+      "notes": "Spot onto every panel origin. max_absent_fraction 0.01 tolerates the rare chain day with no priced row (Stage 0: one symbol-date) and refuses anything larger as a wrong source; absences are counted in the summary and dropped below."
+    },
+    "with_listing": {
+      "uses": "attach-by-identity",
+      "inputs": {
+        "records": "$with_spot.records",
+        "table": "$listed_table.records"
+      },
+      "params": {
+        "identity": [
+          "symbol",
+          "quote_date",
+          "settlement_date"
+        ],
+        "agree_fields": [
+          "price_basis"
+        ],
+        "max_absent_fraction": 1.0,
+        "column_prefix": "mkt_",
+        "families": {
+          "listed": {
+            "fields": [
+              "listed_contracts"
+            ],
+            "withheld_fields": {},
+            "clock_note": "the listed expirations quoted on the quote date"
+          }
+        }
+      },
+      "notes": "Exact-expiry restriction: an origin whose settlement_date is not a listed expiration that day is absent here (Stage 0: 1,990 of 6,524 M24 origins listed). max_absent_fraction 1.0 because absence IS the restriction; the summary counts it."
+    },
+    "census": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$with_listing.records"
+      },
+      "params": {
+        "keys": [
+          "mkt_spot_status",
+          "mkt_listed_status"
+        ],
+        "aggregates": {
+          "origins": {
+            "op": "count"
+          }
+        }
+      },
+      "notes": "The counted exclusions by reason (kept in carry.json): spot absent, expiration not listed."
+    },
+    "eligible": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$with_listing.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "mkt_spot_status",
+            "op": "==",
+            "value": "computed"
+          },
+          {
+            "field": "spot_values",
+            "op": "==",
+            "value": 1
+          },
+          {
+            "field": "mkt_listed_status",
+            "op": "==",
+            "value": "computed"
+          }
+        ]
+      },
+      "notes": "Market-eligible identities only: one unambiguous spot and a listed exact expiration."
+    },
+    "rates": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/theta-ml-prep-20261016/ob",
+            "source": "theta-rates-pre2026",
+            "stream": "files",
+            "snapshot": "2aaa82c2eab68a02506933326ae42bcbb672e226babb29a746e69358ca240422",
+            "columns": {
+              "observation_date": "observation_date",
+              "DGS3MO": "DGS3MO"
+            },
+            "include": [
+              "rates.parquet"
+            ],
+            "read_bounds": {
+              "observation_date": {
+                "start": "2019-01-01",
+                "end_before": "2021-01-01"
+              }
+            },
+            "iso_fields": [
+              "observation_date"
+            ],
+            "where": [
+              {
+                "field": "DGS3MO",
+                "op": "!=",
+                "value": "."
+              }
+            ]
+          }
+        ]
+      },
+      "notes": "ALFRED DGS3MO vintage 2025-12-31 (member rates.parquet sha256 d6301665...4137f5711), percent as TEXT, '.' on a holiday (dropped here: a '.' is not a rate)."
+    },
+    "rate_by_date": {
+      "uses": "keyby",
+      "inputs": {
+        "records": "$rates.records"
+      },
+      "params": {
+        "key": "observation_date",
+        "value": "DGS3MO"
+      },
+      "notes": "One print per observation date; a repeated date refuses."
+    },
+    "with_rate": {
+      "uses": "join",
+      "inputs": {
+        "records": "$eligible.records",
+        "dgs3mo": "$rate_by_date.table"
+      },
+      "params": {
+        "key": "quote_date",
+        "how": "inner"
+      },
+      "notes": "SAME-DAY rate (ADR-0270: an as-of join is not a flow kind). An origin with no same-day print is dropped and counted in the join's matched output (Stage 0: none among the 1,990 eligible)."
+    },
+    "requests": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "inputs": {
+        "records": "$with_rate.records"
+      },
+      "params": {
+        "keep": [
+          "symbol",
+          "quote_date",
+          "expiry",
+          "settlement_date",
+          "spot",
+          "reference_scale",
+          "actual_calendar_dte",
+          "dgs3mo"
+        ],
+        "fields": {
+          "growth": {
+            "op": "exp",
+            "args": [
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "op": "div",
+                    "args": [
+                      {
+                        "field": "dgs3mo"
+                      },
+                      {
+                        "const": 100
+                      }
+                    ]
+                  },
+                  {
+                    "op": "div",
+                    "args": [
+                      {
+                        "field": "actual_calendar_dte"
+                      },
+                      {
+                        "const": 365
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "available_at": {
+            "field": "quote_date"
+          },
+          "decision_at": {
+            "field": "quote_date"
+          },
+          "decision_strike_z": {
+            "const": 0.0
+          },
+          "clock": {
+            "text": "after_date_close_indicative_not_executable"
+          }
+        }
+      },
+      "notes": "growth = exp(DGS3MO/100 * actual_calendar_dte/365) (BLOCKED, gap G1: dgs3mo is text, so growth is null and counted as null_input in the summary). available_at = decision_at = quote_date under the declared clock. decision_strike_z = 0.0 is the ADR-0270 pilot decision strike (ATM standardized), a constant column so every downstream market record carries it. expiry stays the panel expiry (quote_date + 31) because the proxy, the paired scores and the pockets join on (symbol, quote_date, expiry); settlement_date is the listed expiration."
+    },
+    "write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$requests.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/market/requests/requests.jsonl",
+        "overwrite": false,
+        "source": "ADR-0270 market requests: M24 exact-expiry identities with Theta unadjusted spot, panel reference scale, same-day DGS3MO growth and quote-date clocks"
+      },
+      "notes": "Canonical newline-JSON; the directory holds only this file so a localfiles source over it has one stream, requests."
+    }
+  }
+}

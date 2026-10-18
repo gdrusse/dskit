@@ -240,3 +240,76 @@ def test_all_preparation_graphs_plan_and_share_exact_source_declarations():
     assert flow.path("panel", "admission") == panel["pipeline"]["admission"]["params"]["path"]
     for dte in (30, 90):
         assert flow.path("features", f"theta{dte}") == feature["pipeline"][f"write{dte}"]["params"]["path"]
+
+
+# ADR-0270 strike-region fast screen: no-fit contracts on the template and the matrix.
+
+def _screen():
+    return _read("strike-screen-experiment-template.json"), _read("strike-screen-matrix.json")
+
+
+def test_strike_screen_template_inherits_mixture_grid_and_pins_nothing():
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    template, _ = _screen()
+    base = _read("run-theta-mixture-grid.json")["pipeline"]["grid"]["params"]["base_config"]
+    assert set(template) == CDFExperiment.KEYS
+    assert template["arms"] == base["arms"] and template["capacity"] == base["capacity"]
+    strip = lambda study: {k: v for k, v in study.items() if k not in ("notes", "output")}
+    assert strip(template["study"]) == strip(base["study"])
+    assert "ADR-0270" in template["study"]["notes"]
+    assert template["panel_sha256"] == "0" * 64
+    assert template["source_hashes"] and set(template["source_hashes"].values()) == {"0" * 64}
+    assert template["dependencies"] and set(template["dependencies"].values()) == {"0" * 64}
+    assert sum(p.endswith("dskit/pipeline/libs/cdf_experiment.py") for p in template["source_hashes"]) == 1
+    assert any(p.endswith("dskit/pipeline/libs/parquet.py") for p in template["source_hashes"])
+    assert template["date_upper_exclusive"] == template["end_upper_exclusive"] == "2021-01-01"
+    assert template["study"]["fold_table"]["holdout_start"] == "2021-01-01"
+    assert len(template["tickers"]) == len(set(template["tickers"])) == 319
+
+
+def test_strike_screen_candidates_and_training_recipe():
+    from dskit.pipeline.libs.predictive_cdf import TorchCDF
+    template, matrix = _screen()
+    patch = _read("run-theta-mixture-grid.json")["pipeline"]["grid"]["params"][
+        "base_config"]["candidates"][0]["adapters"]["pooled"][0]
+    names = [c["name"] for c in template["candidates"]]
+    assert names == ["patchtst_hf32", "mlp", "gru", "tcn", "dlinear"]
+    for candidate in template["candidates"]:
+        pooled, unpooled = candidate["adapters"]["pooled"], candidate["adapters"]["unpooled"]
+        assert pooled == unpooled and len(pooled) == 1 and candidate["skip_reason"] is None
+        if candidate["name"] == "patchtst_hf32":
+            assert pooled[0] == patch
+        else:
+            assert pooled[0]["class"] == "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder"
+            assert pooled[0]["params"]["arch"] == candidate["name"]
+    training = template["training"]
+    assert (training["epochs"], training["patience"], training["seeds"]) == (120, 10, [11])
+    assert training["losses"] == matrix["losses"]["L1"]
+    for losses in matrix["losses"].values():
+        if isinstance(losses, list):
+            TorchCDF(encoder={"kind": "mlp"}, device="cpu", **{**training, "losses": losses})
+
+
+def test_strike_screen_matrix_is_the_registered_fractional_design():
+    template, matrix = _screen()
+    documents = {k: v for k, v in matrix["documents"].items() if k != "notes"}
+    names = {c["name"] for c in template["candidates"]}
+    for spec in documents.values():
+        assert spec["arm"] in template["arms"] and set(spec["candidates"]) <= names
+        assert spec["loss"] in matrix["losses"]
+    stage1, stage2 = matrix["stages"]["stage1"], matrix["stages"]["stage2"]
+    assert stage2["order"] == ["D-L1", "D-L1T", "D-L3", "D-L2", "D-L4"]
+    assert sum(len(documents[d]["candidates"]) for d in stage2["order"]) == 13
+    assert len(stage2["folds"]) * 13 == 26
+    assert (stage2["epochs"], stage2["patience"], stage2["folds"]) == (120, 10, [2, 3])
+    assert stage1["order"] == ["D-L1"] and len(documents["D-L1"]["candidates"]) == 5
+    assert (stage1["epochs"], stage1["patience"], stage1["folds"]) == (3, None, [2])
+    assert stage1["roles"] == ["warmup"] and stage2["roles"] == ["warmup", "scored"]
+    assert documents["D-L1T"]["arm"] == "price_plus_volatility_skew_liquidity"
+    assert matrix["seed"] == 11
+    assert matrix["promotion"]["weighting_guard"]["max_relative_worsening"] == 0.005
+    assert matrix["promotion"]["masked_slice"] == {"start": "2020-10-01", "end": "2020-11-30"}
+    assert {k for k in matrix["caps"] if k != "notes"} == {
+        "wall_clock_seconds", "new_output_bytes", "file_max_bytes", "rss_incremental_bytes",
+        "vram_bytes", "disk_floor_bytes", "retries"}
+    assert matrix["caps"]["retries"] == 0

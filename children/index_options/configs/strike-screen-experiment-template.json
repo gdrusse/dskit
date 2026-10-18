@@ -1,0 +1,999 @@
+{
+  "arms": {
+    "price_only": {
+      "context_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41
+      ],
+      "features": [
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "calendar_days_per_session",
+        "reference_scale",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "momentum_5",
+        "momentum_22",
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22",
+        "vl_log_volume_ratio_66",
+        "vl_log_volume_ratio",
+        "vl_log_dollar_volume",
+        "vl_amihud"
+      ],
+      "min_cal": 1,
+      "min_disjoint": 0,
+      "min_fit": 40,
+      "observed_columns": [],
+      "sequence_indices": [
+        [
+          27
+        ],
+        [
+          26
+        ],
+        [
+          25
+        ],
+        [
+          24
+        ],
+        [
+          23
+        ],
+        [
+          22
+        ],
+        [
+          21
+        ],
+        [
+          20
+        ],
+        [
+          19
+        ],
+        [
+          18
+        ],
+        [
+          17
+        ],
+        [
+          16
+        ],
+        [
+          15
+        ],
+        [
+          14
+        ],
+        [
+          13
+        ],
+        [
+          12
+        ],
+        [
+          11
+        ],
+        [
+          10
+        ],
+        [
+          9
+        ],
+        [
+          8
+        ],
+        [
+          7
+        ],
+        [
+          6
+        ]
+      ]
+    },
+    "price_plus_volatility_skew_liquidity": {
+      "context_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50
+      ],
+      "features": [
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "calendar_days_per_session",
+        "reference_scale",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "momentum_5",
+        "momentum_22",
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22",
+        "vl_log_volume_ratio_66",
+        "vl_log_volume_ratio",
+        "vl_log_dollar_volume",
+        "vl_amihud",
+        "theta_atm_iv_30",
+        "theta_atm_iv_90",
+        "theta_risk_reversal_30",
+        "theta_put_call_iv_spread_30",
+        "theta_term_slope_30",
+        "theta_half_spread_over_premium_30",
+        "theta_straddle_ratio_30",
+        "theta_volume_call_30",
+        "theta_volume_put_30"
+      ],
+      "min_cal": 1,
+      "min_disjoint": 0,
+      "min_fit": 40,
+      "observed_columns": [],
+      "sequence_indices": [
+        [
+          27
+        ],
+        [
+          26
+        ],
+        [
+          25
+        ],
+        [
+          24
+        ],
+        [
+          23
+        ],
+        [
+          22
+        ],
+        [
+          21
+        ],
+        [
+          20
+        ],
+        [
+          19
+        ],
+        [
+          18
+        ],
+        [
+          17
+        ],
+        [
+          16
+        ],
+        [
+          15
+        ],
+        [
+          14
+        ],
+        [
+          13
+        ],
+        [
+          12
+        ],
+        [
+          11
+        ],
+        [
+          10
+        ],
+        [
+          9
+        ],
+        [
+          8
+        ],
+        [
+          7
+        ],
+        [
+          6
+        ]
+      ]
+    }
+  },
+  "candidates": [
+    {
+      "adapters": {
+        "pooled": [
+          {
+            "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+            "params": {
+              "config": {
+                "attention_dropout": 0.1,
+                "d_model": 32,
+                "ff_dropout": 0.1,
+                "ffn_dim": 64,
+                "norm_type": "layernorm",
+                "num_attention_heads": 1,
+                "num_hidden_layers": 1,
+                "patch_length": 4,
+                "patch_stride": 3,
+                "scaling": null
+              },
+              "model": "PatchTST"
+            }
+          }
+        ],
+        "unpooled": [
+          {
+            "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+            "params": {
+              "config": {
+                "attention_dropout": 0.1,
+                "d_model": 32,
+                "ff_dropout": 0.1,
+                "ffn_dim": 64,
+                "norm_type": "layernorm",
+                "num_attention_heads": 1,
+                "num_hidden_layers": 1,
+                "patch_length": 4,
+                "patch_stride": 3,
+                "scaling": null
+              },
+              "model": "PatchTST"
+            }
+          }
+        ]
+      },
+      "name": "patchtst_hf32",
+      "skip_reason": null
+    },
+    {
+      "adapters": {
+        "pooled": [
+          {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "mlp",
+              "arch_params": {
+                "hidden_size": 32
+              },
+              "width": 16
+            }
+          }
+        ],
+        "unpooled": [
+          {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "mlp",
+              "arch_params": {
+                "hidden_size": 32
+              },
+              "width": 16
+            }
+          }
+        ]
+      },
+      "name": "mlp",
+      "skip_reason": null
+    },
+    {
+      "adapters": {
+        "pooled": [
+          {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "gru",
+              "arch_params": {
+                "hidden_size": 16,
+                "num_layers": 1
+              },
+              "width": 16
+            }
+          }
+        ],
+        "unpooled": [
+          {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "gru",
+              "arch_params": {
+                "hidden_size": 16,
+                "num_layers": 1
+              },
+              "width": 16
+            }
+          }
+        ]
+      },
+      "name": "gru",
+      "skip_reason": null
+    },
+    {
+      "adapters": {
+        "pooled": [
+          {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "tcn",
+              "arch_params": {
+                "dilations": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16
+                ],
+                "hidden_size": 16,
+                "kernel_size": 2
+              },
+              "width": 16
+            }
+          }
+        ],
+        "unpooled": [
+          {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "tcn",
+              "arch_params": {
+                "dilations": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16
+                ],
+                "hidden_size": 16,
+                "kernel_size": 2
+              },
+              "width": 16
+            }
+          }
+        ]
+      },
+      "name": "tcn",
+      "skip_reason": null
+    },
+    {
+      "adapters": {
+        "pooled": [
+          {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "dlinear",
+              "arch_params": {
+                "kernel_size": 3
+              },
+              "width": 16
+            }
+          }
+        ],
+        "unpooled": [
+          {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "dlinear",
+              "arch_params": {
+                "kernel_size": 3
+              },
+              "width": 16
+            }
+          }
+        ]
+      },
+      "name": "dlinear",
+      "skip_reason": null
+    }
+  ],
+  "capacity": {
+    "pooled": {
+      "absolute": 100000,
+      "batch_size": 512,
+      "device": "cuda",
+      "head_per_row": 4,
+      "head_widths": [
+        2
+      ],
+      "per_row": 0.25
+    },
+    "unpooled": {
+      "absolute": 8192,
+      "batch_size": 64,
+      "device": "cpu",
+      "head_widths": [
+        2
+      ],
+      "per_row": 4
+    }
+  },
+  "date_upper_exclusive": "2021-01-01",
+  "dependencies": {
+    "lightgbm": "0000000000000000000000000000000000000000000000000000000000000000",
+    "numpy": "0000000000000000000000000000000000000000000000000000000000000000",
+    "pandas": "0000000000000000000000000000000000000000000000000000000000000000",
+    "pyarrow": "0000000000000000000000000000000000000000000000000000000000000000",
+    "scikit-learn": "0000000000000000000000000000000000000000000000000000000000000000",
+    "torch": "0000000000000000000000000000000000000000000000000000000000000000",
+    "transformers": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "end_upper_exclusive": "2021-01-01",
+  "output": "/home/russell/data/index_options/theta-strike-screen-20261018/unresolved",
+  "panel": "/home/russell/data/index_options/theta-strike-screen-20261018/registered/panel.parquet",
+  "panel_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "source_hashes": {
+    "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "study": {
+    "bootstrap": {
+      "blocks": [
+        30,
+        60
+      ],
+      "replicates": 1000,
+      "seed": 829
+    },
+    "calibration_knots": 21,
+    "comparison_references": [
+      "horizon_empirical"
+    ],
+    "date": "quote_date",
+    "end": "settlement_date",
+    "features": [
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "calendar_days_per_session",
+      "reference_scale",
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "momentum_5",
+      "momentum_22",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "down_rv_5",
+      "down_rv_22",
+      "up_rv_5",
+      "up_rv_22",
+      "vl_log_volume_ratio_66",
+      "vl_log_volume_ratio",
+      "vl_log_dollar_volume",
+      "vl_amihud",
+      "theta_atm_iv_30",
+      "theta_atm_iv_90",
+      "theta_risk_reversal_30",
+      "theta_put_call_iv_spread_30",
+      "theta_term_slope_30",
+      "theta_half_spread_over_premium_30",
+      "theta_straddle_ratio_30",
+      "theta_volume_call_30",
+      "theta_volume_put_30"
+    ],
+    "fold_table": {
+      "cal_n": 40,
+      "holdout_start": "2021-01-01",
+      "notes": "R5 original2019warmup/2020scored only;2018uniformlycapacity-refused beforefits. Familyadmission remains original2018FIT. end_before2021-01-01.",
+      "path": "/home/russell/data/index_options/theta-training-20261016/registration/runnable-folds-r5.jsonl",
+      "roles": [
+        "warmup",
+        "scored"
+      ],
+      "sha256": "2992065c0a9528490da95cafa4b6646b160016c21b3ebb886c7a12e533e7365d"
+    },
+    "group": "symbol",
+    "horizon": "actual_calendar_dte",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "min_task_cal_rows": 1,
+    "min_task_fit_rows": 40,
+    "models": {
+      "horizon_empirical": {
+        "calibrate": false,
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 0,
+          "knots": 401,
+          "reference_index": 5
+        }
+      }
+    },
+    "notes": "ADR-0270 strike-region fast screen template (PROPOSED). ZERO fits until the registration is approved: panel, source and dependency pins are zero placeholders that _verify_provenance refuses; the pilot-root prepare script resolves one document per strike-screen-matrix.json entry. end_before 2021-01-01; 2026 sealed.",
+    "output": "/home/russell/data/index_options/theta-strike-screen-20261018/study-unused",
+    "reference": "reference_scale",
+    "reference_model": "horizon_empirical",
+    "samples": 201,
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 101,
+    "tail_weight": 1.0,
+    "target": "terminal_return",
+    "wing_metrics": false
+  },
+  "tickers": [
+    "AA",
+    "AAL",
+    "AAOI",
+    "AAPL",
+    "ABBV",
+    "ABT",
+    "ABUS",
+    "ACMR",
+    "ACN",
+    "ADBE",
+    "ADI",
+    "AEHR",
+    "AEO",
+    "AG",
+    "AGNC",
+    "AKAM",
+    "ALB",
+    "ALLY",
+    "AMAT",
+    "AMC",
+    "AMD",
+    "AMGN",
+    "AMKR",
+    "AMZN",
+    "ANET",
+    "APA",
+    "APH",
+    "APO",
+    "ASTS",
+    "ASX",
+    "AVAV",
+    "AVGO",
+    "AXP",
+    "AXTI",
+    "B",
+    "BA",
+    "BAC",
+    "BB",
+    "BBY",
+    "BE",
+    "BIDU",
+    "BKNG",
+    "BLK",
+    "BMY",
+    "BP",
+    "BSX",
+    "BTG",
+    "BX",
+    "BYND",
+    "C",
+    "CAG",
+    "CAPR",
+    "CARR",
+    "CAT",
+    "CCJ",
+    "CCL",
+    "CDE",
+    "CELH",
+    "CHTR",
+    "CHWY",
+    "CIEN",
+    "CIFR",
+    "CLF",
+    "CLOV",
+    "CLS",
+    "CLSK",
+    "CMCSA",
+    "CME",
+    "CMG",
+    "CNC",
+    "COF",
+    "COHR",
+    "COP",
+    "COST",
+    "CPB",
+    "CRM",
+    "CRWD",
+    "CSCO",
+    "CVE",
+    "CVNA",
+    "CVS",
+    "CVX",
+    "CYPH",
+    "DAL",
+    "DDOG",
+    "DE",
+    "DELL",
+    "DHR",
+    "DHT",
+    "DIS",
+    "DKNG",
+    "DKS",
+    "DOCU",
+    "DOW",
+    "DUK",
+    "DVN",
+    "ECHO",
+    "EIX",
+    "ELV",
+    "ENPH",
+    "EOG",
+    "EPD",
+    "EQT",
+    "EXPE",
+    "F",
+    "FCEL",
+    "FCX",
+    "FDX",
+    "FISV",
+    "FRO",
+    "FSLR",
+    "FSLY",
+    "FTNT",
+    "GAP",
+    "GE",
+    "GEO",
+    "GILD",
+    "GIS",
+    "GLW",
+    "GM",
+    "GME",
+    "GOOG",
+    "GOOGL",
+    "GPRO",
+    "GS",
+    "HAL",
+    "HD",
+    "HIMS",
+    "HL",
+    "HON",
+    "HPE",
+    "HPQ",
+    "HUM",
+    "HUT",
+    "IBM",
+    "IBRX",
+    "INTC",
+    "INTU",
+    "IOVA",
+    "ISRG",
+    "JBLU",
+    "JNJ",
+    "JPM",
+    "KEEL",
+    "KGC",
+    "KHC",
+    "KKR",
+    "KLAC",
+    "KMI",
+    "KO",
+    "KOD",
+    "KR",
+    "KSS",
+    "KTOS",
+    "LCID",
+    "LEN",
+    "LITE",
+    "LLY",
+    "LMND",
+    "LMT",
+    "LNG",
+    "LOW",
+    "LQDA",
+    "LRCX",
+    "LULU",
+    "LUMN",
+    "LUV",
+    "LVS",
+    "LYFT",
+    "M",
+    "MA",
+    "MARA",
+    "MAT",
+    "MCD",
+    "MCHP",
+    "MDB",
+    "MDT",
+    "MELI",
+    "META",
+    "MGM",
+    "MO",
+    "MOS",
+    "MP",
+    "MPC",
+    "MRK",
+    "MRNA",
+    "MRVL",
+    "MS",
+    "MSFT",
+    "MSTR",
+    "MU",
+    "NAT",
+    "NEE",
+    "NEM",
+    "NET",
+    "NFLX",
+    "NKE",
+    "NLY",
+    "NOK",
+    "NOW",
+    "NRG",
+    "NVAX",
+    "NVDA",
+    "NVO",
+    "O",
+    "OKTA",
+    "ON",
+    "OPEN",
+    "ORCL",
+    "OUST",
+    "OXY",
+    "P",
+    "PAAS",
+    "PACB",
+    "PANW",
+    "PBF",
+    "PBR",
+    "PCG",
+    "PCT",
+    "PDSB",
+    "PEP",
+    "PFE",
+    "PG",
+    "PINS",
+    "PLAY",
+    "PLTR",
+    "PLUG",
+    "PM",
+    "PNC",
+    "PSKY",
+    "PSX",
+    "PTON",
+    "PYPL",
+    "QCOM",
+    "QS",
+    "QUBT",
+    "QXO",
+    "RARE",
+    "RCAT",
+    "RCL",
+    "REGN",
+    "RIG",
+    "RIOT",
+    "RKT",
+    "RTX",
+    "RUN",
+    "RXT",
+    "SBET",
+    "SBUX",
+    "SCHW",
+    "SEDG",
+    "SHOE",
+    "SHOP",
+    "SIRI",
+    "SLB",
+    "SLS",
+    "SMCI",
+    "SMMT",
+    "SNAP",
+    "SNOW",
+    "SNPS",
+    "SO",
+    "SPCE",
+    "SPOT",
+    "STLA",
+    "STM",
+    "T",
+    "TE",
+    "TEAM",
+    "TER",
+    "TEVA",
+    "TGT",
+    "TJX",
+    "TLRY",
+    "TMO",
+    "TMUS",
+    "TRIP",
+    "TSLA",
+    "TSM",
+    "TTD",
+    "TTWO",
+    "TWLO",
+    "TXN",
+    "U",
+    "UAA",
+    "UAL",
+    "UAMY",
+    "UBER",
+    "UEC",
+    "UMC",
+    "UNH",
+    "UPS",
+    "USB",
+    "UUUU",
+    "V",
+    "VALE",
+    "VFC",
+    "VKTX",
+    "VLO",
+    "VRT",
+    "VRTX",
+    "VST",
+    "VZ",
+    "W",
+    "WBD",
+    "WDC",
+    "WEN",
+    "WFC",
+    "WHR",
+    "WMB",
+    "WMT",
+    "WU",
+    "WULF",
+    "WYNN",
+    "XOM",
+    "XP",
+    "XYZ",
+    "ZM",
+    "ZS"
+  ],
+  "training": {
+    "components": 3,
+    "deterministic": true,
+    "dropout": 0.1,
+    "epochs": 120,
+    "learning_rate": 0.0003,
+    "losses": [
+      {
+        "kind": "crps",
+        "weight": 1.0
+      },
+      {
+        "kind": "tail_crps",
+        "weight": 1.0
+      }
+    ],
+    "patience": 10,
+    "seeds": [
+      11
+    ],
+    "weight_decay": 0.01
+  }
+}
