@@ -34,7 +34,7 @@ Methods 01–05 are pooled sigmoid, pooled beta, pooled isotonic, lead-specific 
 
 Features are Polymarket probability, lead or source age and fixed transformations. No spot, volume, order-book depth, Kalshi forecast or GRU is substituted. This tests whether native probabilities can be recalibrated; it is **not** the full earlier 57-method feature/model experiment.
 
-Each [run JSON](../../configs/run-polymarket20-validation-02-pooled-beta.json) names the source and estimator/feature/target/anchoring parameters; all 40 are alongside it. Existing DSKit nodes train and score. Residual predictions are restrained toward market estimates; validation does not change that restraint.
+Each [run JSON](../../configs/run-polymarket20-validation-02-pooled-beta.json) names the source and estimator/feature/target/anchoring parameters; all 40 are alongside it. Existing DSKit nodes train and score. Lower log loss and Brier scores are better. Residual predictions are restrained toward market estimates; validation does not change that restraint.
 
 **Main lead's model 02:** pooled beta calibration fits sigmoid(a × log(p) + b × log(1−p) + c), using logistic regression with C=0.05, at most 500 iterations, and probabilities clipped to [0.000001,0.999999]. Coefficients are shared across leads, not fitted only to the attractive pocket. Labels are native UP settlements. The independent comparator fits a sigmoid to market log-odds separately for each lead.
 
@@ -48,10 +48,10 @@ Before validation execution, retain every warm-up method/cell with at least 200 
 
 - 152 method/cell pairs in 32 cells qualified.
 - 29 pairs in 13 cells retained required mean-score improvements in validation.
-- 23 cells have some two-period raw-price support, including calibration-only leads.
+- 25 cells have some two-period raw-price support, including calibration-only leads.
 - **Zero adequately sampled cells passed both day- and week-clustered significance after search correction.**
 
-The 13 cells with a previously selected surviving model are: lead 2 at 20–30, 30–40, 40–50, 50–60, 80–90 and 90–100%; lead 5 at 20–30 and 80–90%; lead 8 at 30–40, 50–60 and 90–100%; and lead 11 at 60–70%. No lead-14 cell retained the required two-period support. These share outcomes and are not 13 independent opportunities.
+The 13 cells with a previously selected surviving model are: lead 2 at 20–30, 30–40, 40–50, 50–60, 80–90 and 90–100%; lead 5 at 0–10, 20–30 and 80–90%; lead 8 at 30–40, 50–60 and 90–100%; and lead 11 at 60–70%. No lead-14 cell retained the required two-period support. These share outcomes and are not 13 independent opportunities.
 
 As a descriptive diagnostic, the method ranked best by warm-up calibrated-market log loss in each selected cell survived in 7 of 32 cells. That best-per-cell diagnostic was not a separately frozen strategy. All original selected sets and failures remain visible.
 
@@ -65,7 +65,7 @@ Post-validation diagnostics show improvement versus raw in both May 2–June 15 
 
 **Secondary: BTC, lead 2, UP 80–90%, model 02.** 605 validation contracts; market 85.33%, realized 86.78%; log-loss improvement 0.000753 versus raw and 0.000448 versus calibration. Raw-market log loss improves in both halves, but uncertainty is wide.
 
-**Lower-priority reserves:** lead 2 UP 90–100% with model 02 (2,485 contracts) and lead 8 UP 90–100% with Huber method 10 (615 contracts). Both full-period improvements reverse in the first validation half. Lead 11 UP 60–70% with method 10 has a tiny improvement and fails the second-half raw comparison. Other surviving cells remain documented but have weaker or unstable calibration-gap evidence.
+**Lower-priority reserves:** lead 5 UP 0–10% with pooled isotonic method 03 (1,509 contracts; market 4.81%, realized 4.44%; log-loss improvement 0.000335 versus raw and 0.000246 versus calibration). Also lead 2 UP 90–100% with model 02 (2,485 contracts) and lead 8 UP 90–100% with Huber method 10 (615 contracts). Both full-period improvements reverse in the first validation half. Lead 11 UP 60–70% with method 10 has a tiny improvement and fails the second-half raw comparison. Other surviving cells remain documented but have weaker or unstable calibration-gap evidence.
 
 ## Why this remains tentative
 
