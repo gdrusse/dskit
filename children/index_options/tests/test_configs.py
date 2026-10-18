@@ -362,6 +362,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-strike-screen-exact-expiry-quotes.json",
         "configs/run-strike-screen-market-requests.json",
         "configs/strike-screen-experiment-template.json", "configs/strike-screen-matrix.json",
+        "configs/strike-screen-protocol.json",
+        "docs/research/distribution-modeling/2026-10-18-model-architecture-size-testing.md",
         "docs/research/distribution-modeling/2026-10-18-market-implied-reference-and-baselines.md",
         "docs/research/distribution-modeling/2026-10-18-strike-screen-windows-lead-time-cells.md",
         "docs/research/distribution-modeling/2026-10-18-theta-chain-feature-engineering.md",
@@ -409,8 +411,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the owner-requested Amendment 6 execution/review memo = 549.
     # Plus the six ADR-0269 draft configs and their no-fit contract test = 556.
     # Plus the five market/pocket pipeline templates and explicit search calendar = 562.
-    # Plus ADR-0270's eight preparation files and the Theta exact-expiry converter, its document and test = 573.
-    assert len(actual) == 573
+    # Plus ADR-0270's eight preparation files, the protocol and architecture records, and the Theta exact-expiry converter, its document and test = 575.
+    assert len(actual) == 575
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
