@@ -1,0 +1,3553 @@
+{
+  "name": "crypto-warmup20-validation-20-hinge-logit-calibration",
+  "notes": "Aligned replay of previous method 20: A fixed piecewise-linear logit curve allows different tail slopes while sharing data across leads. Prior result: Method 19: log-loss difference versus raw market 0.002540167, versus recalibration 0.002761103, versus prior ARD 0.003344416. Proceed with the separately declared hypothesis in this method, retaining all failures and the cumulative 35-method screen. Validation replay: one fit at May2; no validation outcomes enter candidate or comparator fitting. Choices frozen before validation execution. Dates were previously explored, so not untouched confirmation.",
+  "pipeline": {
+    "data": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/crypto_trading/ob",
+        "source": "predictability15-panel-20261017",
+        "stream": "files",
+        "relpath_by_key": {
+          "panel": "decisions.parquet"
+        },
+        "key": "panel",
+        "columns": {
+          "ticker": "ticker",
+          "decision_ms": "decision_ms",
+          "settlement_ms": "settlement_ms",
+          "label": "label",
+          "lead_minutes": "lead_minutes",
+          "asset": "asset",
+          "day": "day",
+          "band": "band",
+          "mid": "mid",
+          "fair_gru": "fair_gru",
+          "log_moneyness": "log_moneyness",
+          "rv_rms_60": "rv_rms_60",
+          "rv_ewma_30": "rv_ewma_30",
+          "spread": "spread",
+          "candle_volume": "candle_volume",
+          "candle_open_interest": "candle_open_interest"
+        },
+        "read_bounds": {
+          "day": {
+            "start": "2025-12-10",
+            "end_before": "2026-08-01"
+          }
+        }
+      },
+      "notes": "Hash-verified acquired panel; source date predicate excludes all post-July labels before materialization."
+    },
+    "features": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "known_ms": {
+            "op": "add",
+            "args": [
+              {
+                "field": "settlement_ms"
+              },
+              {
+                "const": 86400000
+              }
+            ]
+          },
+          "residual": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "label"
+              },
+              {
+                "field": "mid"
+              }
+            ]
+          },
+          "m": {
+            "op": "div",
+            "args": [
+              {
+                "op": "log",
+                "args": [
+                  {
+                    "op": "div",
+                    "args": [
+                      {
+                        "op": "min",
+                        "args": [
+                          {
+                            "const": 0.999999
+                          },
+                          {
+                            "op": "max",
+                            "args": [
+                              {
+                                "const": 1e-06
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "mid"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "const": 4
+              }
+            ]
+          },
+          "g": {
+            "op": "div",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "op": "log",
+                    "args": [
+                      {
+                        "op": "div",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "fair_gru"
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "fair_gru"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "log",
+                    "args": [
+                      {
+                        "op": "div",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "mid"
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "mid"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "const": 4
+              }
+            ]
+          },
+          "log_mid": {
+            "op": "log",
+            "args": [
+              {
+                "op": "min",
+                "args": [
+                  {
+                    "const": 0.999999
+                  },
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 1e-06
+                      },
+                      {
+                        "field": "mid"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "log_no": {
+            "op": "log",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "const": 1
+                  },
+                  {
+                    "op": "min",
+                    "args": [
+                      {
+                        "const": 0.999999
+                      },
+                      {
+                        "op": "max",
+                        "args": [
+                          {
+                            "const": 1e-06
+                          },
+                          {
+                            "field": "mid"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "lead_scaled": {
+            "op": "div",
+            "args": [
+              {
+                "field": "lead_minutes"
+              },
+              {
+                "const": 14
+              }
+            ]
+          },
+          "confidence": {
+            "op": "abs",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "mid"
+                  },
+                  {
+                    "const": 0.5
+                  }
+                ]
+              }
+            ]
+          },
+          "money_z": {
+            "op": "div",
+            "args": [
+              {
+                "field": "log_moneyness"
+              },
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "field": "rv_rms_60"
+                  },
+                  {
+                    "op": "sqrt",
+                    "args": [
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "const": 60
+                          },
+                          {
+                            "field": "lead_minutes"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "vol_log": {
+            "op": "log",
+            "args": [
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "field": "rv_rms_60"
+                  },
+                  {
+                    "const": 0.0001
+                  }
+                ]
+              }
+            ]
+          },
+          "vol_ratio": {
+            "op": "log",
+            "args": [
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "field": "rv_ewma_30"
+                  },
+                  {
+                    "field": "rv_rms_60"
+                  }
+                ]
+              }
+            ]
+          },
+          "volume_log": {
+            "op": "div",
+            "args": [
+              {
+                "op": "log",
+                "args": [
+                  {
+                    "op": "add",
+                    "args": [
+                      {
+                        "const": 1
+                      },
+                      {
+                        "field": "candle_volume"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "const": 10
+              }
+            ]
+          },
+          "interest_log": {
+            "op": "div",
+            "args": [
+              {
+                "op": "log",
+                "args": [
+                  {
+                    "op": "add",
+                    "args": [
+                      {
+                        "const": 1
+                      },
+                      {
+                        "field": "candle_open_interest"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "const": 10
+              }
+            ]
+          },
+          "g_lead": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "op": "sub",
+                    "args": [
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "div",
+                            "args": [
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "fair_gru"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "sub",
+                                "args": [
+                                  {
+                                    "const": 1
+                                  },
+                                  {
+                                    "op": "min",
+                                    "args": [
+                                      {
+                                        "const": 0.999999
+                                      },
+                                      {
+                                        "op": "max",
+                                        "args": [
+                                          {
+                                            "const": 1e-06
+                                          },
+                                          {
+                                            "field": "fair_gru"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "div",
+                            "args": [
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "mid"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "sub",
+                                "args": [
+                                  {
+                                    "const": 1
+                                  },
+                                  {
+                                    "op": "min",
+                                    "args": [
+                                      {
+                                        "const": 0.999999
+                                      },
+                                      {
+                                        "op": "max",
+                                        "args": [
+                                          {
+                                            "const": 1e-06
+                                          },
+                                          {
+                                            "field": "mid"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "const": 4
+                  }
+                ]
+              },
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "field": "lead_minutes"
+                  },
+                  {
+                    "const": 14
+                  }
+                ]
+              }
+            ]
+          },
+          "m_lead": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "op": "log",
+                    "args": [
+                      {
+                        "op": "div",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "mid"
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "mid"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "const": 4
+                  }
+                ]
+              },
+              {
+                "op": "div",
+                "args": [
+                  {
+                    "field": "lead_minutes"
+                  },
+                  {
+                    "const": 14
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Fixed, causal transformations only. The target residual is label minus market probability and never enters features. known_ms imposes a full-day settlement-publication embargo.",
+      "inputs": {
+        "records": "$data.records"
+      }
+    },
+    "asset": {
+      "uses": "derive",
+      "params": {
+        "field": "eth",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "asset",
+                "op": "==",
+                "value": "ETH"
+              }
+            ],
+            "value": 1.0
+          },
+          {
+            "when": [],
+            "value": 0.0
+          }
+        ]
+      },
+      "notes": "Asset identity is available before settlement.",
+      "inputs": {
+        "records": "$features.records"
+      }
+    },
+    "fit": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "params": {
+        "estimator": "sklearn.linear_model.LogisticRegression",
+        "estimator_params": {
+          "C": 0.05,
+          "max_iter": 500
+        },
+        "features": [
+          {
+            "field": "m",
+            "transform": "identity"
+          },
+          {
+            "field": "hinge_low",
+            "transform": "identity"
+          },
+          {
+            "field": "hinge_high",
+            "transform": "identity"
+          },
+          {
+            "field": "eth",
+            "transform": "identity"
+          },
+          {
+            "field": "lead_scaled",
+            "transform": "identity"
+          },
+          {
+            "field": "m_lead",
+            "transform": "identity"
+          }
+        ],
+        "label": "label",
+        "predict_method": "predict_proba",
+        "time_field": "decision_ms",
+        "known_field": "known_ms",
+        "block_ms": 31536000000,
+        "block_origin_ms": 1746144000000,
+        "min_train_blocks": 1,
+        "output_field": "raw_prediction",
+        "seed": 20261017
+      },
+      "notes": "A fixed piecewise-linear logit curve allows different tail slopes while sharing data across leads. Prior result: Method 19: log-loss difference versus raw market 0.002540167, versus recalibration 0.002761103, versus prior ARD 0.003344416. Proceed with the separately declared hypothesis in this method, retaining all failures and the cumulative 35-method screen.",
+      "inputs": {
+        "records": "$weighted.records"
+      }
+    },
+    "calibration_baseline": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "params": {
+        "estimator": "sklearn.linear_model.LogisticRegression",
+        "estimator_params": {
+          "C": 0.05,
+          "max_iter": 500
+        },
+        "features": [
+          {
+            "field": "mid",
+            "transform": "logit",
+            "clip": 1e-06
+          }
+        ],
+        "label": "label",
+        "predict_method": "predict_proba",
+        "time_field": "decision_ms",
+        "known_field": "known_ms",
+        "block_ms": 31536000000,
+        "block_origin_ms": 1746144000000,
+        "min_train_blocks": 1,
+        "output_field": "cal_market",
+        "group_field": "lead_minutes",
+        "seed": 20261017
+      },
+      "notes": "Market-only logit recalibration distinguishes extra predictive information from correcting market calibration.",
+      "inputs": {
+        "records": "$prior_newton.records"
+      }
+    },
+    "eligible": {
+      "uses": "filter",
+      "params": {
+        "where": [
+          {
+            "field": "raw_prediction_status",
+            "op": "==",
+            "value": "ok"
+          },
+          {
+            "field": "cal_market_status",
+            "op": "==",
+            "value": "ok"
+          },
+          {
+            "field": "ard_raw_status",
+            "op": "==",
+            "value": "ok"
+          },
+          {
+            "field": "newton_raw_status",
+            "op": "==",
+            "value": "ok"
+          }
+        ]
+      },
+      "notes": "Exclude training warmup and failed fits by status; counts remain in fit evidence.",
+      "inputs": {
+        "records": "$calibration_baseline.records"
+      }
+    },
+    "probability": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "prediction": {
+            "op": "min",
+            "args": [
+              {
+                "const": 0.999999
+              },
+              {
+                "op": "max",
+                "args": [
+                  {
+                    "const": 1e-06
+                  },
+                  {
+                    "op": "add",
+                    "args": [
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "const": 0.5
+                          },
+                          {
+                            "field": "mid"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "const": 0.5
+                          },
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "raw_prediction"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "ard_market": {
+            "op": "add",
+            "args": [
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "const": 0.5
+                  },
+                  {
+                    "field": "mid"
+                  }
+                ]
+              },
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "const": 0.5
+                  },
+                  {
+                    "op": "min",
+                    "args": [
+                      {
+                        "const": 0.999999
+                      },
+                      {
+                        "op": "max",
+                        "args": [
+                          {
+                            "const": 1e-06
+                          },
+                          {
+                            "op": "add",
+                            "args": [
+                              {
+                                "field": "mid"
+                              },
+                              {
+                                "field": "ard_raw"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "newton_market": {
+            "op": "min",
+            "args": [
+              {
+                "const": 0.999999
+              },
+              {
+                "op": "max",
+                "args": [
+                  {
+                    "const": 1e-06
+                  },
+                  {
+                    "op": "div",
+                    "args": [
+                      {
+                        "const": 1
+                      },
+                      {
+                        "op": "add",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "op": "exp",
+                            "args": [
+                              {
+                                "op": "neg",
+                                "args": [
+                                  {
+                                    "op": "add",
+                                    "args": [
+                                      {
+                                        "op": "log",
+                                        "args": [
+                                          {
+                                            "op": "div",
+                                            "args": [
+                                              {
+                                                "op": "min",
+                                                "args": [
+                                                  {
+                                                    "const": 0.999999
+                                                  },
+                                                  {
+                                                    "op": "max",
+                                                    "args": [
+                                                      {
+                                                        "const": 1e-06
+                                                      },
+                                                      {
+                                                        "field": "mid"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "op": "sub",
+                                                "args": [
+                                                  {
+                                                    "const": 1
+                                                  },
+                                                  {
+                                                    "op": "min",
+                                                    "args": [
+                                                      {
+                                                        "const": 0.999999
+                                                      },
+                                                      {
+                                                        "op": "max",
+                                                        "args": [
+                                                          {
+                                                            "const": 1e-06
+                                                          },
+                                                          {
+                                                            "field": "mid"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "mul",
+                                        "args": [
+                                          {
+                                            "const": 0.5
+                                          },
+                                          {
+                                            "op": "min",
+                                            "args": [
+                                              {
+                                                "const": 1.0
+                                              },
+                                              {
+                                                "op": "max",
+                                                "args": [
+                                                  {
+                                                    "const": -1.0
+                                                  },
+                                                  {
+                                                    "op": "div",
+                                                    "args": [
+                                                      {
+                                                        "field": "newton_raw"
+                                                      },
+                                                      {
+                                                        "op": "sqrt",
+                                                        "args": [
+                                                          {
+                                                            "op": "max",
+                                                            "args": [
+                                                              {
+                                                                "const": 0.0001
+                                                              },
+                                                              {
+                                                                "op": "mul",
+                                                                "args": [
+                                                                  {
+                                                                    "field": "mid"
+                                                                  },
+                                                                  {
+                                                                    "op": "sub",
+                                                                    "args": [
+                                                                      {
+                                                                        "const": 1
+                                                                      },
+                                                                      {
+                                                                        "field": "mid"
+                                                                      }
+                                                                    ]
+                                                                  }
+                                                                ]
+                                                              }
+                                                            ]
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "keep": [
+          "ticker",
+          "decision_ms",
+          "settlement_ms",
+          "label",
+          "lead_minutes",
+          "asset",
+          "day",
+          "band",
+          "mid",
+          "cal_market"
+        ]
+      },
+      "notes": "direct construction, predeclared strength=0.5; final clip 1e-6. Newton logit correction is capped at +/-1 before shrinkage.",
+      "inputs": {
+        "records": "$eligible.records"
+      }
+    },
+    "losses": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "model_logloss": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "label"
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "prediction"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "field": "label"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "prediction"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "market_logloss": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "label"
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "mid"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "field": "label"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "mid"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "cal_logloss": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "label"
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "cal_market"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "field": "label"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "cal_market"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "model_brier": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "prediction"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "prediction"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              }
+            ]
+          },
+          "market_brier": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "mid"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "mid"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              }
+            ]
+          },
+          "cal_brier": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "cal_market"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "cal_market"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              }
+            ]
+          },
+          "ard_logloss": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "label"
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "ard_market"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "field": "label"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "ard_market"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "ard_brier": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "ard_market"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "ard_market"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              }
+            ]
+          },
+          "newton_logloss": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "label"
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "newton_market"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "field": "label"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "newton_market"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "newton_brier": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "newton_market"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "newton_market"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Proper scores evaluate the whole Bernoulli forecast. No payout, fee, spread hurdle, or trading rule.",
+      "inputs": {
+        "records": "$probability.records"
+      }
+    },
+    "paired": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "delta_logloss": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_logloss"
+              },
+              {
+                "field": "market_logloss"
+              }
+            ]
+          },
+          "delta_brier": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_brier"
+              },
+              {
+                "field": "market_brier"
+              }
+            ]
+          },
+          "delta_cal_logloss": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_logloss"
+              },
+              {
+                "field": "cal_logloss"
+              }
+            ]
+          },
+          "market_calibration_gap": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "label"
+              },
+              {
+                "field": "mid"
+              }
+            ]
+          },
+          "model_calibration_gap": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "label"
+              },
+              {
+                "field": "prediction"
+              }
+            ]
+          },
+          "calibrated_market_gap": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "label"
+              },
+              {
+                "field": "cal_market"
+              }
+            ]
+          },
+          "delta_cal_brier": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_brier"
+              },
+              {
+                "field": "cal_brier"
+              }
+            ]
+          },
+          "delta_ard_logloss": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_logloss"
+              },
+              {
+                "field": "ard_logloss"
+              }
+            ]
+          },
+          "delta_ard_brier": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_brier"
+              },
+              {
+                "field": "ard_brier"
+              }
+            ]
+          },
+          "delta_newton_logloss": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_logloss"
+              },
+              {
+                "field": "newton_logloss"
+              }
+            ]
+          },
+          "delta_newton_brier": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_brier"
+              },
+              {
+                "field": "newton_brier"
+              }
+            ]
+          }
+        }
+      },
+      "notes": "Negative paired score differences favor the model; positive calibration gap means more YES settlements than the market implied.",
+      "inputs": {
+        "records": "$losses.records"
+      }
+    },
+    "probability_bin": {
+      "uses": "derive",
+      "params": {
+        "field": "probability_bin",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.1
+              }
+            ],
+            "value": "00-10"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.2
+              }
+            ],
+            "value": "10-20"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.3
+              }
+            ],
+            "value": "20-30"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.4
+              }
+            ],
+            "value": "30-40"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.5
+              }
+            ],
+            "value": "40-50"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.6
+              }
+            ],
+            "value": "50-60"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.7
+              }
+            ],
+            "value": "60-70"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.8
+              }
+            ],
+            "value": "70-80"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.9
+              }
+            ],
+            "value": "80-90"
+          },
+          {
+            "when": [],
+            "value": "90-100"
+          }
+        ]
+      },
+      "notes": "Fixed market-probability bins; models cannot move a difficult row to a different cell.",
+      "inputs": {
+        "records": "$paired.records"
+      }
+    },
+    "cells": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "asset",
+          "lead_minutes",
+          "probability_bin"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "rows": {
+            "op": "count"
+          },
+          "markets": {
+            "op": "nunique",
+            "field": "ticker"
+          },
+          "days": {
+            "op": "nunique",
+            "field": "day"
+          },
+          "ard_market": {
+            "op": "mean",
+            "field": "ard_market"
+          },
+          "ard_logloss": {
+            "op": "mean",
+            "field": "ard_logloss"
+          },
+          "ard_brier": {
+            "op": "mean",
+            "field": "ard_brier"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "delta_ard_logloss": {
+            "op": "mean",
+            "field": "delta_ard_logloss"
+          },
+          "delta_ard_brier": {
+            "op": "mean",
+            "field": "delta_ard_brier"
+          },
+          "newton_market": {
+            "op": "mean",
+            "field": "newton_market"
+          },
+          "newton_logloss": {
+            "op": "mean",
+            "field": "newton_logloss"
+          },
+          "newton_brier": {
+            "op": "mean",
+            "field": "newton_brier"
+          },
+          "delta_newton_logloss": {
+            "op": "mean",
+            "field": "delta_newton_logloss"
+          },
+          "delta_newton_brier": {
+            "op": "mean",
+            "field": "delta_newton_brier"
+          }
+        }
+      },
+      "notes": "Aligned stage-only proper-score and calibration summaries; fixed market-defined bins.",
+      "inputs": {
+        "records": "$probability_bin.records"
+      }
+    },
+    "leads": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "lead_minutes"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "rows": {
+            "op": "count"
+          },
+          "markets": {
+            "op": "nunique",
+            "field": "ticker"
+          },
+          "days": {
+            "op": "nunique",
+            "field": "day"
+          },
+          "ard_market": {
+            "op": "mean",
+            "field": "ard_market"
+          },
+          "ard_logloss": {
+            "op": "mean",
+            "field": "ard_logloss"
+          },
+          "ard_brier": {
+            "op": "mean",
+            "field": "ard_brier"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "delta_ard_logloss": {
+            "op": "mean",
+            "field": "delta_ard_logloss"
+          },
+          "delta_ard_brier": {
+            "op": "mean",
+            "field": "delta_ard_brier"
+          },
+          "newton_market": {
+            "op": "mean",
+            "field": "newton_market"
+          },
+          "newton_logloss": {
+            "op": "mean",
+            "field": "newton_logloss"
+          },
+          "newton_brier": {
+            "op": "mean",
+            "field": "newton_brier"
+          },
+          "delta_newton_logloss": {
+            "op": "mean",
+            "field": "delta_newton_logloss"
+          },
+          "delta_newton_brier": {
+            "op": "mean",
+            "field": "delta_newton_brier"
+          }
+        }
+      },
+      "notes": "Aligned stage-only proper-score and calibration summaries; fixed market-defined bins.",
+      "inputs": {
+        "records": "$paired.records"
+      }
+    },
+    "asset_leads": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "asset",
+          "lead_minutes"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "rows": {
+            "op": "count"
+          },
+          "markets": {
+            "op": "nunique",
+            "field": "ticker"
+          },
+          "days": {
+            "op": "nunique",
+            "field": "day"
+          },
+          "ard_market": {
+            "op": "mean",
+            "field": "ard_market"
+          },
+          "ard_logloss": {
+            "op": "mean",
+            "field": "ard_logloss"
+          },
+          "ard_brier": {
+            "op": "mean",
+            "field": "ard_brier"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "delta_ard_logloss": {
+            "op": "mean",
+            "field": "delta_ard_logloss"
+          },
+          "delta_ard_brier": {
+            "op": "mean",
+            "field": "delta_ard_brier"
+          },
+          "newton_market": {
+            "op": "mean",
+            "field": "newton_market"
+          },
+          "newton_logloss": {
+            "op": "mean",
+            "field": "newton_logloss"
+          },
+          "newton_brier": {
+            "op": "mean",
+            "field": "newton_brier"
+          },
+          "delta_newton_logloss": {
+            "op": "mean",
+            "field": "delta_newton_logloss"
+          },
+          "delta_newton_brier": {
+            "op": "mean",
+            "field": "delta_newton_brier"
+          }
+        }
+      },
+      "notes": "Aligned stage-only proper-score and calibration summaries; fixed market-defined bins.",
+      "inputs": {
+        "records": "$paired.records"
+      }
+    },
+    "calibration": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "lead_minutes",
+          "probability_bin"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "rows": {
+            "op": "count"
+          },
+          "markets": {
+            "op": "nunique",
+            "field": "ticker"
+          },
+          "days": {
+            "op": "nunique",
+            "field": "day"
+          },
+          "ard_market": {
+            "op": "mean",
+            "field": "ard_market"
+          },
+          "ard_logloss": {
+            "op": "mean",
+            "field": "ard_logloss"
+          },
+          "ard_brier": {
+            "op": "mean",
+            "field": "ard_brier"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "delta_ard_logloss": {
+            "op": "mean",
+            "field": "delta_ard_logloss"
+          },
+          "delta_ard_brier": {
+            "op": "mean",
+            "field": "delta_ard_brier"
+          },
+          "newton_market": {
+            "op": "mean",
+            "field": "newton_market"
+          },
+          "newton_logloss": {
+            "op": "mean",
+            "field": "newton_logloss"
+          },
+          "newton_brier": {
+            "op": "mean",
+            "field": "newton_brier"
+          },
+          "delta_newton_logloss": {
+            "op": "mean",
+            "field": "delta_newton_logloss"
+          },
+          "delta_newton_brier": {
+            "op": "mean",
+            "field": "delta_newton_brier"
+          }
+        }
+      },
+      "notes": "Aligned stage-only proper-score and calibration summaries; fixed market-defined bins.",
+      "inputs": {
+        "records": "$probability_bin.records"
+      }
+    },
+    "markets": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "ticker",
+          "day",
+          "asset",
+          "band"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "ard_market": {
+            "op": "mean",
+            "field": "ard_market"
+          },
+          "ard_logloss": {
+            "op": "mean",
+            "field": "ard_logloss"
+          },
+          "ard_brier": {
+            "op": "mean",
+            "field": "ard_brier"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "delta_ard_logloss": {
+            "op": "mean",
+            "field": "delta_ard_logloss"
+          },
+          "delta_ard_brier": {
+            "op": "mean",
+            "field": "delta_ard_brier"
+          },
+          "newton_market": {
+            "op": "mean",
+            "field": "newton_market"
+          },
+          "newton_logloss": {
+            "op": "mean",
+            "field": "newton_logloss"
+          },
+          "newton_brier": {
+            "op": "mean",
+            "field": "newton_brier"
+          },
+          "delta_newton_logloss": {
+            "op": "mean",
+            "field": "delta_newton_logloss"
+          },
+          "delta_newton_brier": {
+            "op": "mean",
+            "field": "delta_newton_brier"
+          }
+        }
+      },
+      "notes": "Aligned stage-only proper-score and calibration summaries; fixed market-defined bins.",
+      "inputs": {
+        "records": "$paired.records"
+      }
+    },
+    "write_predictions": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-20-predictions-{run}.jsonl",
+        "source": "Predictability study: chronological settlement forecasts and paired proper scores; no trading evaluation.",
+        "expect": 84728
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$probability_bin.records"
+      }
+    },
+    "write_cells": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-20-cells-{run}.jsonl",
+        "source": "Predictability study: chronological settlement forecasts and paired proper scores; no trading evaluation.",
+        "expect": 100
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$cells.records"
+      }
+    },
+    "write_markets": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-20-markets-{run}.jsonl",
+        "source": "Predictability study: chronological settlement forecasts and paired proper scores; no trading evaluation.",
+        "expect": 17158
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$markets.records"
+      }
+    },
+    "write_leads": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-20-leads-{run}.jsonl",
+        "source": "Predictability study: chronological settlement forecasts and paired proper scores; no trading evaluation.",
+        "expect": 5
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$leads.records"
+      }
+    },
+    "write_asset_leads": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-20-asset_leads-{run}.jsonl",
+        "source": "Predictability study: chronological settlement forecasts and paired proper scores; no trading evaluation.",
+        "expect": 10
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$asset_leads.records"
+      }
+    },
+    "write_calibration": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/warmup20-20261018/results/validation-20-calibration-{run}.jsonl",
+        "source": "Predictability study: chronological settlement forecasts and paired proper scores; no trading evaluation.",
+        "expect": 50
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$calibration.records"
+      }
+    },
+    "extended": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "one": {
+            "const": 1
+          },
+          "known_week_ms": {
+            "op": "add",
+            "args": [
+              {
+                "field": "settlement_ms"
+              },
+              {
+                "const": 604800000
+              }
+            ]
+          },
+          "standard_residual": {
+            "op": "div",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "label"
+                  },
+                  {
+                    "field": "mid"
+                  }
+                ]
+              },
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "soft_label": {
+            "op": "add",
+            "args": [
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "const": 0.8
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "const": 0.2
+                  },
+                  {
+                    "field": "mid"
+                  }
+                ]
+              }
+            ]
+          },
+          "hinge_low": {
+            "op": "max",
+            "args": [
+              {
+                "const": 0
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "m"
+                  },
+                  {
+                    "const": -0.35
+                  }
+                ]
+              }
+            ]
+          },
+          "hinge_high": {
+            "op": "max",
+            "args": [
+              {
+                "const": 0
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "m"
+                  },
+                  {
+                    "const": 0.35
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "inputs": {
+        "records": "$asset.records"
+      },
+      "notes": "Fixed features and training targets; no fitted preprocessing and no future label feature."
+    },
+    "weighted": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "w_one": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "one"
+              }
+            ]
+          },
+          "w_m": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "m"
+              }
+            ]
+          },
+          "w_g": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "g"
+              }
+            ]
+          },
+          "w_lead_scaled": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "lead_scaled"
+              }
+            ]
+          },
+          "w_eth": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "eth"
+              }
+            ]
+          },
+          "w_confidence": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "confidence"
+              }
+            ]
+          },
+          "w_spread": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "spread"
+              }
+            ]
+          },
+          "w_money_z": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "money_z"
+              }
+            ]
+          },
+          "w_vol_log": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "vol_log"
+              }
+            ]
+          },
+          "w_vol_ratio": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "vol_ratio"
+              }
+            ]
+          },
+          "w_volume_log": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "volume_log"
+              }
+            ]
+          },
+          "w_interest_log": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "interest_log"
+              }
+            ]
+          },
+          "w_g_lead": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "g_lead"
+              }
+            ]
+          },
+          "w_m_lead": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sqrt",
+                "args": [
+                  {
+                    "op": "max",
+                    "args": [
+                      {
+                        "const": 0.0001
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "field": "mid"
+                          },
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "field": "mid"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "field": "m_lead"
+              }
+            ]
+          }
+        }
+      },
+      "inputs": {
+        "records": "$extended.records"
+      },
+      "notes": "Bernoulli curvature weighting for a single regularized Newton step. Variance floor 1e-4 is fixed."
+    },
+    "prior_ard": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "params": {
+        "estimator": "sklearn.linear_model.ARDRegression",
+        "estimator_params": {
+          "max_iter": 300,
+          "threshold_lambda": 10000.0
+        },
+        "features": [
+          {
+            "field": "m",
+            "transform": "identity"
+          },
+          {
+            "field": "g",
+            "transform": "identity"
+          },
+          {
+            "field": "lead_scaled",
+            "transform": "identity"
+          },
+          {
+            "field": "eth",
+            "transform": "identity"
+          },
+          {
+            "field": "confidence",
+            "transform": "identity"
+          },
+          {
+            "field": "spread",
+            "transform": "identity"
+          },
+          {
+            "field": "money_z",
+            "transform": "identity"
+          },
+          {
+            "field": "vol_log",
+            "transform": "identity"
+          },
+          {
+            "field": "vol_ratio",
+            "transform": "identity"
+          },
+          {
+            "field": "volume_log",
+            "transform": "identity"
+          },
+          {
+            "field": "interest_log",
+            "transform": "identity"
+          },
+          {
+            "field": "g_lead",
+            "transform": "identity"
+          },
+          {
+            "field": "m_lead",
+            "transform": "identity"
+          }
+        ],
+        "label": "residual",
+        "predict_method": "predict",
+        "time_field": "decision_ms",
+        "known_field": "known_ms",
+        "block_ms": 31536000000,
+        "block_origin_ms": 1746144000000,
+        "min_train_blocks": 1,
+        "output_field": "ard_raw"
+      },
+      "notes": "Exact previously completed pooled ARD method 05, independently refitted on its original causal schedule.",
+      "inputs": {
+        "records": "$fit.records"
+      }
+    },
+    "prior_newton": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "params": {
+        "estimator": "sklearn.linear_model.ARDRegression",
+        "estimator_params": {
+          "max_iter": 300,
+          "fit_intercept": false
+        },
+        "features": [
+          {
+            "field": "w_one",
+            "transform": "identity"
+          },
+          {
+            "field": "w_m",
+            "transform": "identity"
+          },
+          {
+            "field": "w_g",
+            "transform": "identity"
+          },
+          {
+            "field": "w_lead_scaled",
+            "transform": "identity"
+          },
+          {
+            "field": "w_eth",
+            "transform": "identity"
+          },
+          {
+            "field": "w_confidence",
+            "transform": "identity"
+          },
+          {
+            "field": "w_spread",
+            "transform": "identity"
+          },
+          {
+            "field": "w_money_z",
+            "transform": "identity"
+          },
+          {
+            "field": "w_vol_log",
+            "transform": "identity"
+          },
+          {
+            "field": "w_vol_ratio",
+            "transform": "identity"
+          },
+          {
+            "field": "w_volume_log",
+            "transform": "identity"
+          },
+          {
+            "field": "w_interest_log",
+            "transform": "identity"
+          },
+          {
+            "field": "w_g_lead",
+            "transform": "identity"
+          },
+          {
+            "field": "w_m_lead",
+            "transform": "identity"
+          }
+        ],
+        "label": "standard_residual",
+        "predict_method": "predict",
+        "time_field": "decision_ms",
+        "known_field": "known_ms",
+        "block_ms": 31536000000,
+        "block_origin_ms": 1746144000000,
+        "min_train_blocks": 1,
+        "output_field": "newton_raw"
+      },
+      "notes": "Previous method24 under the same stage-specific train cutoff as every candidate.",
+      "inputs": {
+        "records": "$prior_ard.records"
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "/home/russell/data/crypto_trading/research/warmup20-20261018/runs/validation"
+  }
+}
