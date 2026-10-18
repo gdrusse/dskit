@@ -8370,6 +8370,353 @@
     "Unsupported ETH/SOL/XRP native model/data coverage",
     "Zero-loss t-statistics retainflags but cannot prove low rareloss risk"
   ],
-  "reviews": [],
-  "status": "candidate_pending_two_independent_reviews"
+  "reviews": [
+    {
+      "file": "/home/russell/data/crypto_trading/research/executable-cells-20261018/review-correctness.json",
+      "sha256": "233525adfcdb262a8d8de02d7e8b64e2445346c82a00e27bcffce867dc421433",
+      "report": {
+        "reviewer": "GPT-6 Astra",
+        "lens": "Independent correctness/scientific invariants",
+        "candidate": "c909ef6aea959e10f8fb15b25bf8c26e30649044",
+        "base_commit": "5b43b5e178720561b0ff9c64c9354fec98f8a12b",
+        "reviewed_at_utc": "2026-10-18T21:26:07.158553+00:00",
+        "verdict": "PASS_WITH_MINOR_BACKLOG",
+        "unresolved_counts": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 1,
+          "Nit": 0
+        },
+        "contract_sha256": "6d7281139aedd5f879fa125fc5887f747de378f03db6cee29b94b0bd3863a198",
+        "matrix_sha256": "aa3dab60f15645bb597f60a662204f99510d4ca9ccfbdd0ee1f4a8f197a5c219",
+        "procedure_sha256": {
+          "analyze_transfer.py": "32a7f630f14e44a1afffd9e2b59ea038a7cda9422261d48e9fe5fb243be9cdaf",
+          "run_transfer.py": "f496fd6be8e1fab8898f433cd5c6385295b7aeff5edadd6a844e4e92abf56089",
+          "score_freshness.py": "37c5a28f55865c3eefbd4895cf41732ad8b05478e90ad0efe5b62f6084d35b30",
+          "inventory_poly_live.py": "aa3f5616b93d66479f767fe43928d15f5a7a18e2099a4e12f639ac58e8fe0024",
+          "build_transfer.py": "b493c31c5ba788ba6054ec80b106dd4624745ed77dcdc5845fa651c7f027c4aa",
+          "package_results.py": "3dda41f02f9af259f75008de110a86af596a2562724d0695c2a03f44884052a0",
+          "extract_poly.py": "21eb9c8a92d8acda6242145c672f55699d609bebbe89920c753b413c2aed4ead",
+          "kalshi_bounds.py": "fec68d3a70bf743ad39eb2cddcc89683b60e98e9b419be25fec0d76735595ae7",
+          "test_research.py": "1d1dbf30496bf12414bff19864a49ab5e51e2ae2c742820d22cb7eebecca9fb2",
+          "inventory_kalshi.py": "df7d49c553912385a32435d7390f438fbab0cca5672c75f1944b40237e951b7f",
+          "finalize_inference.py": "e7937954d0a9d479286ee96c1d56d552ebf7667f37f3c7c6b49f685ecddc0a14",
+          "kalshi_controls.py": "c597bac9bfc011c8e1fa3f12969c9777b4722cca5f65a385a6262a8c417c9be3"
+        },
+        "findings": [
+          {
+            "id": "COR-1",
+            "severity": "Minor",
+            "invariant": "Scenario freshness must cover the UP predictor book as well as the purchased side book.",
+            "location": "/home/russell/data/crypto_trading/research/executable-cells-20261018/analyze_transfer.py: merged forecast columns and eligibility construction",
+            "entry_points": [
+              "all 20 native model policies",
+              "raw/cal controls",
+              "unconditional diagnostic",
+              "all 18 latency/age/size scenarios"
+            ],
+            "reproducer": "Join prediction age_s to both token legs by ticker/lead; reconstruct decision-only signal and current per-leg eligibility for every policy/scenario; count selected rows with age_s*1000>age_cap_ms. All model and raw/cal counts are zero. Unconditional has one row at latency1/cap2000 for each size1/10/100: btc-updown-15m-1789850700, lead8, Down; UP age2733ms, DOWN decision age852ms, entry age1683ms.",
+            "consequence": "Three unconditional aggregate diagnostic cells include one forecast/cell assignment whose source exceeds their advertised freshness cap. No selected model or raw/cal entry is affected in this immutable candidate; no demonstrated material result violation. The omitted cross-leg gate remains a future-data correctness risk.",
+            "family": "Cross-leg probability-source freshness",
+            "disposition": "Deferred Minor permitted for this candidate; recommended batch correction retains predictor age, applies each scenario cap to both source and purchased token, and adds regression test. Behavioral correction resets final candidate reviews.",
+            "correction_commit": null
+          }
+        ],
+        "checks": [
+          {
+            "command": "WSL /home/russell/dskit/.venv/bin/python -m pytest -q -p no:cacheprovider test_research.py, with PYTHONPATH=/home/russell/wt/crypto-executable-cells-20261018 and PYTHONDONTWRITEBYTECODE=1",
+            "result": "11 passed in 2.45s; no full suite or fit rerun"
+          },
+          {
+            "command": "Read-only independent Python audit across all 20 prediction files, 18 scenarios, both sides, model/control/unconditional policies",
+            "result": "Zero stale-UP selected model/raw/cal entries; one unconditional row across three sizes, COR-1."
+          },
+          {
+            "command": "Read-only full CSV arithmetic and multiplicity audit",
+            "result": "41400 Poly and94800 Kalshi rows reconcile return=realized-price-fee; contracts=n for every row. Poly scenario p=min(1,max(day_p,week_p)*1069200); primary day p family59400. 79 Kalshi policy labels,600 ledger entries."
+          },
+          {
+            "command": "Read-only source/event and artifact identity audit",
+            "result": "All8 repository output hashes and9 local evidence hashes match; all12 procedure texts exactly match retained evidence. All64830 extracted token/slug/side/label combinations match exact-string native event metadata, event hash matches."
+          },
+          {
+            "command": "Review all20 JSON feature definitions and focused training identity tests",
+            "result": "No outcome/known/settlement fields are predictor features; 60226 training records identical to original, original fit/probability/loss params unchanged and fit cutoff May2 verified by existing tests."
+          }
+        ],
+        "matrix_disposition": [
+          {
+            "row": "All600declared side/cells retained including sparse/blocked",
+            "result": "Coverage counts and no per-contract duplication checked; blocked non-BTC native assets explicitly retained."
+          },
+          {
+            "row": "All77Kalshi and20nativePolymarket methods; no new HPO",
+            "result": "Both historical Kalshi stages and77 methods inspected via bounds inventory and CSV; all20 transfer JSON feature definitions inspected."
+          },
+          {
+            "row": "Exact source and prediction hashes, original stringtoken identities",
+            "result": "Artifact and event identities verified as above; bulk raw hashes not all independently recomputed."
+          },
+          {
+            "row": "Frozen training parameters and60226native training rows; cutoffMay2",
+            "result": "Focused exact training identity/parameter/cutoff tests passed; no refitting performed."
+          },
+          {
+            "row": "Decision-only signals; positive1/5s latency; independent side depth;2/10/60s source age",
+            "result": "Side depth and positive latency inspected; future receipt refusal tests pass; COR-1 freshness gap retained."
+          },
+          {
+            "row": "Fees/spreads/size and extra0.5/1cent sensitivity; cost scenarios distinguished from actualfills",
+            "result": "Fee mechanics/depth weighted arithmetic reviewed and aggregate net identities verified; fee vintage uncertainty explicitly disclosed."
+          },
+          {
+            "row": "Matched properlosses vsraw/calibrated; day/week clusters; fullfamily and zero-loss tail audit",
+            "result": "Matched prediction scoring and cluster implementation reviewed; final family arithmetic and zero-loss diagnostic verified."
+          },
+          {
+            "row": "Native venue outcomes only; lineage gaps and publication timing explicit",
+            "result": "Native event metadata independently joined exactly; actual historical publication times remain disclosed assumption."
+          },
+          {
+            "row": "No ownerPath/protectedperiod/production changes",
+            "result": "Candidate scope and memo disclaimers reviewed; no production/protected-period operations performed."
+          }
+        ],
+        "scientific_assessment": "The memo correctly distinguishes historical candle/scalar gaps and displayed-depth scenarios from observed fills or profit. It preserves all-win t-flags but rejects their promotion, labels retrospective selection and fixed-calendar stability limits, and does not pool overlapping opportunities. The independent all-win bound is explicitly a simplifying diagnostic, not dependence-robust confirmation. No additional proven correctness finding emerged within this assigned scope.",
+        "untested_limits": [
+          "Did not recompute all1632 native raw file hashes or all154 Kalshi prediction input hashes; author-attested inventory retained and procedures reviewed.",
+          "Did not independently rerun fitting, full aggregation, original historical model studies, or full test suite.",
+          "Did not validate actual historical fee vintages, settlement publication timestamps, individual wire receipt or between-snapshot liquidity; source evidence cannot establish these and memo discloses them.",
+          "Native non-BTC modeling remains blocked by lack of settled history, not reviewed as executable performance."
+        ],
+        "environment_notes": [
+          "Initial focused test collection without candidate PYTHONPATH failed to import fee_mechanics; candidate PYTHONPATH fixes collection and all11 tests pass. This was an invocation/environment issue, not a candidate defect."
+        ],
+        "candidate_mutated": false
+      }
+    },
+    {
+      "file": "/home/russell/data/crypto_trading/research/executable-cells-20261018/review-integration.json",
+      "sha256": "2e45be001c42686b274fa518874ce505f4597333fd189feb8e3def87318d9788",
+      "report": {
+        "reviewer": "GPT-6 Astra",
+        "lens": "Independent tests, integration, reproducibility skeptic",
+        "candidate": "c909ef6aea959e10f8fb15b25bf8c26e30649044",
+        "base_commit": "5b43b5e178720561b0ff9c64c9354fec98f8a12b",
+        "reviewed_at_utc": "2026-10-18T21:30:09.002396+00:00",
+        "verdict": "PASS_WITH_MINOR_BACKLOG",
+        "unresolved_counts": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 1,
+          "Nit": 0
+        },
+        "new_findings_count": 0,
+        "contract_sha256": "2e296c077202caf3c5b62475519141c5570fdd3e9baf2ecff8514284ff54c1ca",
+        "matrix_sha256": "aa3dab60f15645bb597f60a662204f99510d4ca9ccfbdd0ee1f4a8f197a5c219",
+        "reviewed_candidate_blobs": {
+          "children/crypto_trading/configs/run-executable-transfer-01.json": "7573f3363edd42c393d6a5d5fc2ab39fa8cabdb5",
+          "children/crypto_trading/configs/run-executable-transfer-02.json": "575e74fa607a7c2edc9ce623f1edc953c89a760b",
+          "children/crypto_trading/configs/run-executable-transfer-03.json": "2cab34bad6c02c0bf71469696ff99f28c025f03b",
+          "children/crypto_trading/configs/run-executable-transfer-04.json": "67a8c7c6f4f6612f305728056cf510f493259bdd",
+          "children/crypto_trading/configs/run-executable-transfer-05.json": "bf6d6f3416addebb61dac6c0cb3594b5846afb0d",
+          "children/crypto_trading/configs/run-executable-transfer-06.json": "701b0b4f60b4049ec0022578666ce9754bdbbadf",
+          "children/crypto_trading/configs/run-executable-transfer-07.json": "d258eeefbf54337c407537d69618cfa7662a6cd9",
+          "children/crypto_trading/configs/run-executable-transfer-08.json": "c0396af8033b0726337d922b19b5cc612f88037f",
+          "children/crypto_trading/configs/run-executable-transfer-09.json": "62bb5a50b43dfc9858da41c91f4948114bea357b",
+          "children/crypto_trading/configs/run-executable-transfer-10.json": "9fdec6e6baad53b67dbc451b6da33d81fefeeb64",
+          "children/crypto_trading/configs/run-executable-transfer-11.json": "3ea1459c50776b11d08abef3dd164d6c2b645d45",
+          "children/crypto_trading/configs/run-executable-transfer-12.json": "28f430b952f7f2a746cfa8389dbfe176eec66896",
+          "children/crypto_trading/configs/run-executable-transfer-13.json": "d47bf3a30d46ae36997f1f6b199b192759ce5f00",
+          "children/crypto_trading/configs/run-executable-transfer-14.json": "1656c2dc162c724d57a04247751c95ea1428b241",
+          "children/crypto_trading/configs/run-executable-transfer-15.json": "6ca377145d8a38b0e9f800dce4d680d5228b2606",
+          "children/crypto_trading/configs/run-executable-transfer-16.json": "b5b4c31602b5bdf9dd585d3261d3282ecad3ce63",
+          "children/crypto_trading/configs/run-executable-transfer-17.json": "8ca360244ed4b3db51067632bedf9a3c2306fbd9",
+          "children/crypto_trading/configs/run-executable-transfer-18.json": "5114f8361f67a12033bf7b53ce0e8731cc2a207d",
+          "children/crypto_trading/configs/run-executable-transfer-19.json": "a2be6c9141d6d4edc7cfb678ac33e77b06003bba",
+          "children/crypto_trading/configs/run-executable-transfer-20.json": "518dd84e82038d3a5b8dab3ee8ef0ed956a36e5e",
+          "children/crypto_trading/configs/source-executable-cells-transfer.json": "3d10e89805d2cf0d4a241069b6c71a9d93d69cb9",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-coverage-ledger.csv": "48ccd5f3a1038004083410bf205ac340ed013845",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-evidence.json": "40fe3b44225d6c5ca6c04f8ef88eb1b5c5abb49a",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-kalshi-cost-primary.csv": "c7f282dec22e064d071fb449235c57a398586871",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-kalshi-cost-scenarios.csv": "28a840c593d750a28400bbfc21a5e41573527962",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-kalshi-prediction-cells.csv": "644356309fc413a343402a33800097b67eed35cd",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-poly-execution-primary.csv": "e480c35d9509b7f704dbb281bf79199161604064",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-poly-execution-scenarios.csv": "9119bb1bc5d52b22b7f3466027a4202d94a2c69e",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-poly-prediction-cells.csv": "b4b55ada5feabbc0b6ce57d2297d99e7eaa2c7e3",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-poly-prediction-freshness.csv": "02326410ac5077f9d959ecac831353e307505505",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells-raw-inventory.json": "174b2cab24a927529eff15ececb0b6c4d0f577d7",
+          "children/crypto_trading/docs/memos/2026-10-18-executable-cells.md": "d99b3fb0bbd99dfc34675c54b90cb7019e49db2f"
+        },
+        "dependency_identity": {
+          "dskit_tree": "1bf362a98ef2eea5afc03a8576ba8756a3610914",
+          "child_code_tree": "ad329c0eab7b362ff0f99e340a6dceb7d52f460c",
+          "evidence_sha256": "0ed3af9bb0179e2ccdaaa5fe024b464ec61a59a1b850340f3dc4a9286415a5db",
+          "interpreter": "/home/russell/dskit/.venv/bin/python",
+          "execution": "All commands through wsl.exe -e bash -lc; no model refits, full suite, or heavy concurrent jobs"
+        },
+        "procedure_sha256": {
+          "analyze_transfer.py": "32a7f630f14e44a1afffd9e2b59ea038a7cda9422261d48e9fe5fb243be9cdaf",
+          "run_transfer.py": "f496fd6be8e1fab8898f433cd5c6385295b7aeff5edadd6a844e4e92abf56089",
+          "score_freshness.py": "37c5a28f55865c3eefbd4895cf41732ad8b05478e90ad0efe5b62f6084d35b30",
+          "inventory_poly_live.py": "aa3f5616b93d66479f767fe43928d15f5a7a18e2099a4e12f639ac58e8fe0024",
+          "build_transfer.py": "b493c31c5ba788ba6054ec80b106dd4624745ed77dcdc5845fa651c7f027c4aa",
+          "package_results.py": "3dda41f02f9af259f75008de110a86af596a2562724d0695c2a03f44884052a0",
+          "extract_poly.py": "21eb9c8a92d8acda6242145c672f55699d609bebbe89920c753b413c2aed4ead",
+          "kalshi_bounds.py": "fec68d3a70bf743ad39eb2cddcc89683b60e98e9b419be25fec0d76735595ae7",
+          "test_research.py": "1d1dbf30496bf12414bff19864a49ab5e51e2ae2c742820d22cb7eebecca9fb2",
+          "inventory_kalshi.py": "df7d49c553912385a32435d7390f438fbab0cca5672c75f1944b40237e951b7f",
+          "finalize_inference.py": "e7937954d0a9d479286ee96c1d56d552ebf7667f37f3c7c6b49f685ecddc0a14",
+          "kalshi_controls.py": "c597bac9bfc011c8e1fa3f12969c9777b4722cca5f65a385a6262a8c417c9be3"
+        },
+        "findings": [
+          {
+            "id": "COR-1",
+            "severity": "Minor",
+            "invariant": "Scenario freshness must cover the UP predictor book as well as the purchased side book.",
+            "location": "/home/russell/data/crypto_trading/research/executable-cells-20261018/analyze_transfer.py: merged forecast columns and eligibility construction",
+            "entry_points": [
+              "all 20 native model policies",
+              "raw/cal controls",
+              "unconditional diagnostic",
+              "all 18 latency/age/size scenarios"
+            ],
+            "reproducer": "Join prediction age_s to both token legs by ticker/lead; reconstruct decision-only signal and current per-leg eligibility for every policy/scenario; count selected rows with age_s*1000>age_cap_ms. All model and raw/cal counts are zero. Unconditional has one row at latency1/cap2000 for each size1/10/100: btc-updown-15m-1789850700, lead8, Down; UP age2733ms, DOWN decision age852ms, entry age1683ms.",
+            "consequence": "Three unconditional aggregate diagnostic cells include one forecast/cell assignment whose source exceeds their advertised freshness cap. No selected model or raw/cal entry is affected in this immutable candidate; no demonstrated material result violation. The omitted cross-leg gate remains a future-data correctness risk.",
+            "family": "Cross-leg probability-source freshness",
+            "disposition": "Deferred Minor permitted for this candidate; recommended batch correction retains predictor age, applies each scenario cap to both source and purchased token, and adds regression test. Behavioral correction resets final candidate reviews.",
+            "correction_commit": null
+          }
+        ],
+        "finding_assessment": "COR-1 independently reproduced across all20models,raw,cal,unconditional and18scenarios: zero stale-UP selected strategy entries, three unconditional occurrences (one observation at three sizes). Agree with deferred Minor for immutable candidate; no additional proven integration defect. The memo/evidence must disclose this limited freshness exception before closure. This is a shared finding, not a second defect.",
+        "checks": [
+          {
+            "command": "PYTHONPATH=<candidate>:<OUT> /home/russell/dskit/.venv/bin/python -m pytest -q <OUT>/test_research.py",
+            "result": "11 passed in2.59s. Includes training60226row identity, all20 fit/probability/loss parameter equivalence, May2 cutoff, depth/invalid-book tests, timestamps, grids, adjusted tests/tail warning."
+          },
+          {
+            "command": "Read-only streaming SHA256 audit of every native_source_files and kalshi_forecast_inputs record from evidence.json, all output/local-evidence/procedure identities, event/book artifacts, control inputs",
+            "result": "1632 native files (5758947047bytes),154Kalshi forecast inputs (12884165602bytes),2control inputs,8 paired local/repository exports, all retained local evidence and12 procedure texts verified. Native event and extracted book hashes verified."
+          },
+          {
+            "command": "For each20transfer_runs: load_document(config), RunAttestation.completed(), binds_document_identity(hash), attested_output(write_predictions,path,hash), output SHA256 and load_document(run/config.json).hash equality",
+            "result": "All20 pass. Initial raw dictionary equality assertion failed because run/config.json materializes defaults; normalized load_document hashes establish exact semantic identity. Not a candidate failure."
+          },
+          {
+            "command": "Independent read-only NumPy/pandas/SciPy audit: read all20 JSONL outputs; recompute proper losses and cell means; join own-leg books by ticker/lead; reconstruct decision signals, freshness/depth eligibility, delayed cost/fee returns, clustered residual sums, t standard errors/pvalues for every policy/scenario",
+            "result": "41400 scenario rows independently reconstructed: selected n and means, populated day/week standard errors and pvalues agree (1e-12 arithmetic,1e-10 p tolerance). All1000prediction cell means/counts and20x30383row proper losses agree; each output30383forecasts,6446contracts,72days. Independently reproduces COR-1:0strategy affected,3unconditional occurrences."
+          },
+          {
+            "command": "Independent historical cost reconstruction for aligned24,aligned26,tuned20,raw,logistic in warmup/validation, both sides,1/10/100shares; direct0.07 quadratic/cent ceiling formula and native base prices",
+            "result": "6000Kalshi model/control aggregate rows independently reconstructed; n and means agree to1e-12. All154input hashes verified, but full cost recomputation intentionally sampled methods."
+          },
+          {
+            "command": "Exact primary-to-scenario frame equality; complete unique600ledger keys; blocked asset/no-profit invariants; memo numeric reserve/count verification; git diff/status scope audit",
+            "result": "Both primary exports are exact declared slices.600unique sidecells,100pervenue/asset,300nonBTC Poly sidecells explicitly blocked. Huber10 primary324contracts/68days/291wins/33losses,0.0336985556return,0.8690897732forecast,0.8558585185price,0.0085910741fee; temporal144/180 and pvalues match.8positive adequate Poly cells;288positive two-period Kalshi pairs across26regions.32changed paths only configs/memos, clean checkout, no toolkit/production/ownerPath/protected changes."
+          }
+        ],
+        "matrix_disposition": [
+          {
+            "row": "All600declared side/cells retained including sparse/blocked",
+            "result": "PASS:600 unique full-grid keys; sparse/empty/blocked and no-profit dispositions explicit; counts reconcile."
+          },
+          {
+            "row": "All77Kalshi and20nativePolymarket methods; no new HPO",
+            "result": "PASS:20semantic config/run attestations and77x2hashed Kalshi inputs; all forecast/cost grids complete. No fitting performed by reviewer."
+          },
+          {
+            "row": "Exact source and prediction hashes, original stringtoken identities",
+            "result": "PASS:full native/forecast/control hashes recomputed; exact token string type checked by focused tests; event/book chain hashes verified."
+          },
+          {
+            "row": "Frozen training parameters and60226native training rows; cutoffMay2",
+            "result": "PASS:focused exact training dataframe equality, all20 fixed parameters and May2cutoff; original availability assumption disclosed."
+          },
+          {
+            "row": "Decision-only signals; positive1/5s latency; independent side depth;2/10/60s source age",
+            "result": "PASS WITH COR-1 Minor:all scenario aggregates independently reproduced; signal only decision costs; delayed prices retain adverse moves; cross-leg age omission quantitatively bounded."
+          },
+          {
+            "row": "Fees/spreads/size and extra0.5/1cent sensitivity; cost scenarios distinguished from actualfills",
+            "result": "PASS:depth/fee focused checks; historical direct fee recomputation; native all scenario arithmetic reconstructed; scenario-vs-fill and vintage limitations explicit."
+          },
+          {
+            "row": "Matched properlosses vsraw/calibrated; day/week clusters; fullfamily and zero-loss tail audit",
+            "result": "PASS:all row proper scores and full Poly clustered statistics independently reconstructed; family/tail focused checks; retained zero-loss flags explicitly reject profitability inference."
+          },
+          {
+            "row": "Native venue outcomes only; lineage gaps and publication timing explicit",
+            "result": "PASS within available evidence:native string/outcome chain retained; scalar-to-midpoint and label availability distribution assumptions explicit, nonBTC blocked."
+          },
+          {
+            "row": "No ownerPath/protectedperiod/production changes",
+            "result": "PASS:32 candidate paths only allowed configs/memos; no modified protected interfaces; reviewer performed read-only audits plus this report."
+          }
+        ],
+        "untested_limits": [
+          "No model refits or full test suite, as instructed; no independent reconstruction of fitted estimator parameters from training.",
+          "All6000sampled Kalshi cost rows reconstructed, not all94800; all154source forecast hashes and complete grid/test arithmetic checked.",
+          "Did not regenerate native raw extraction over all5.76GB of books; all1632hashes, extracted timestamp/depth invariants, outcome/book hashes and downstream aggregation checked.",
+          "Did not re-run inventory acquisition against remote venues or establish historical fee vintages, actual settlement publication, individual wire receipt, queue/cancellations or real fills; memo correctly states these limitations.",
+          "Focused tests do not regression-pin cross-leg predictor freshness; COR-1 should be fixed with adversarial test in a new behavioral candidate.",
+          "Earlier Kalshi/predictability research and upstream raw-provider provenance not independently re-audited; retained study dependencies and disclosed limits remain."
+        ],
+        "scientific_assessment": "No material false reporting promise established. Memo separates forecast cost allowance from retrospective return, explicitly rejects all-win t-flags as proof, retains failed cells, uses conservative family correction, reports dependence/retrospective scope, and treats Kalshi candles as bounded costs rather than executable delayed fills. Incorporate COR-1 disclosure without changing reviewed behavior; scoped research closure is not deployment approval.",
+        "candidate_mutated": false,
+        "report_path": "/home/russell/data/crypto_trading/research/executable-cells-20261018/review-integration.json"
+      }
+    }
+  ],
+  "status": "closed_two_independent_reviews_zero_unresolved_critical_major_minor_COR1_deferred",
+  "candidate_lock": {
+    "candidate": "c909ef6aea959e10f8fb15b25bf8c26e30649044",
+    "base_commit": "5b43b5e178720561b0ff9c64c9354fec98f8a12b",
+    "reviewed_blobs": {
+      "children/crypto_trading/configs/run-executable-transfer-01.json": "7573f3363edd42c393d6a5d5fc2ab39fa8cabdb5",
+      "children/crypto_trading/configs/run-executable-transfer-02.json": "575e74fa607a7c2edc9ce623f1edc953c89a760b",
+      "children/crypto_trading/configs/run-executable-transfer-03.json": "2cab34bad6c02c0bf71469696ff99f28c025f03b",
+      "children/crypto_trading/configs/run-executable-transfer-04.json": "67a8c7c6f4f6612f305728056cf510f493259bdd",
+      "children/crypto_trading/configs/run-executable-transfer-05.json": "bf6d6f3416addebb61dac6c0cb3594b5846afb0d",
+      "children/crypto_trading/configs/run-executable-transfer-06.json": "701b0b4f60b4049ec0022578666ce9754bdbbadf",
+      "children/crypto_trading/configs/run-executable-transfer-07.json": "d258eeefbf54337c407537d69618cfa7662a6cd9",
+      "children/crypto_trading/configs/run-executable-transfer-08.json": "c0396af8033b0726337d922b19b5cc612f88037f",
+      "children/crypto_trading/configs/run-executable-transfer-09.json": "62bb5a50b43dfc9858da41c91f4948114bea357b",
+      "children/crypto_trading/configs/run-executable-transfer-10.json": "9fdec6e6baad53b67dbc451b6da33d81fefeeb64",
+      "children/crypto_trading/configs/run-executable-transfer-11.json": "3ea1459c50776b11d08abef3dd164d6c2b645d45",
+      "children/crypto_trading/configs/run-executable-transfer-12.json": "28f430b952f7f2a746cfa8389dbfe176eec66896",
+      "children/crypto_trading/configs/run-executable-transfer-13.json": "d47bf3a30d46ae36997f1f6b199b192759ce5f00",
+      "children/crypto_trading/configs/run-executable-transfer-14.json": "1656c2dc162c724d57a04247751c95ea1428b241",
+      "children/crypto_trading/configs/run-executable-transfer-15.json": "6ca377145d8a38b0e9f800dce4d680d5228b2606",
+      "children/crypto_trading/configs/run-executable-transfer-16.json": "b5b4c31602b5bdf9dd585d3261d3282ecad3ce63",
+      "children/crypto_trading/configs/run-executable-transfer-17.json": "8ca360244ed4b3db51067632bedf9a3c2306fbd9",
+      "children/crypto_trading/configs/run-executable-transfer-18.json": "5114f8361f67a12033bf7b53ce0e8731cc2a207d",
+      "children/crypto_trading/configs/run-executable-transfer-19.json": "a2be6c9141d6d4edc7cfb678ac33e77b06003bba",
+      "children/crypto_trading/configs/run-executable-transfer-20.json": "518dd84e82038d3a5b8dab3ee8ef0ed956a36e5e",
+      "children/crypto_trading/configs/source-executable-cells-transfer.json": "3d10e89805d2cf0d4a241069b6c71a9d93d69cb9",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-coverage-ledger.csv": "48ccd5f3a1038004083410bf205ac340ed013845",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-evidence.json": "40fe3b44225d6c5ca6c04f8ef88eb1b5c5abb49a",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-kalshi-cost-primary.csv": "c7f282dec22e064d071fb449235c57a398586871",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-kalshi-cost-scenarios.csv": "28a840c593d750a28400bbfc21a5e41573527962",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-kalshi-prediction-cells.csv": "644356309fc413a343402a33800097b67eed35cd",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-poly-execution-primary.csv": "e480c35d9509b7f704dbb281bf79199161604064",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-poly-execution-scenarios.csv": "9119bb1bc5d52b22b7f3466027a4202d94a2c69e",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-poly-prediction-cells.csv": "b4b55ada5feabbc0b6ce57d2297d99e7eaa2c7e3",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-poly-prediction-freshness.csv": "02326410ac5077f9d959ecac831353e307505505",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells-raw-inventory.json": "174b2cab24a927529eff15ececb0b6c4d0f577d7",
+      "children/crypto_trading/docs/memos/2026-10-18-executable-cells.md": "d99b3fb0bbd99dfc34675c54b90cb7019e49db2f"
+    },
+    "unchanged_behavioral_identities": [
+      "protocol",
+      "matrix",
+      "procedure",
+      "outputs",
+      "transfer_runs",
+      "kalshi_forecast_inputs",
+      "native_source_files"
+    ],
+    "post_review_changes": "Only reviewer evidence and explicit Minor disclosure, plus re-entry/archive handoff; no result, config, procedure, test, protocol, matrix, or dependency change.",
+    "minor_backlog": "COR-1: cross-leg UP probability source freshness omitted from execution eligibility; independent exhaustive replay finds no model/raw/cal selected row affected; one unconditional diagnostic row appears in three size aggregates. Correct gate and add regression before reusing procedure on new data.",
+    "deployment_authority": "Research only; no live trading, automation or protected-period changes."
+  },
+  "documentation_checks": "tests/docs/test_budgets.py: 4 passed before review; repeated after handoff editorial changes."
 }

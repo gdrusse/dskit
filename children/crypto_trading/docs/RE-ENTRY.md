@@ -1,71 +1,67 @@
 # RE-ENTRY — crypto_trading
 
-Updated: 2026-10-18 Eastern by GPT-6.
-The replaced note is archived at docs/archive/re-entry/crypto_trading.md.
+Updated: 2026-10-18 Eastern by GPT-6 Astra.
+Replaced note archived at docs/archive/re-entry/crypto_trading.md.
 
 ## Now
 
-- Owner requested the same prediction analysis using existing Polymarket data.
-- Completed 20 native BTC calibration/model variants, 40 JSONs, 240 attested outputs.
-  Same calendar as Kalshi: warmup February19–April19; validation May2–July31.
-  Training starts December15; fit dates February19/March21/May2.
-  One-day scheduled-close embargo is assumed, not proven label publication.
-- Warm-up: 28,724 forecasts / 5,758 contracts; validation: 43,482 / 8,714.
-  Native scalar price and UP outcome only; no Kalshi probabilities/labels,
-  ETH panel or GRU transfer. Not a full57-method feature replication.
-- All 50 potential BTC lead/decile cells published;46/47populated by stage.
-  Warm-up selected 152 method/cell pairs in 32 cells; 29 pairs in 13 survive.
- 25 cells show two-period raw-score support. Zero adequately sampled cells
-  pass full 1,000-comparison day AND week significance requirements.
-- Main tentative lead: BTC5mUP80–90%, pooled beta model02.
-  Validation884contracts: market85.24%, model86.25%, realized88.57%.
-  LLgain .002416 vsraw and .000493 vslead-logistic; both validation halves
-  improve vsraw. Secondary: BTC2mUP80–90%. All reserves/failures retained.
-- Median historical price age49seconds. Main cell882/884prices31–60s old;
-  fresh-price advantage unproven. Historical scalar p is not proven midpoint.
-  Original downloader/raw-response hashes incomplete; six official metadata
-  spotchecks agree on original tokens, outcomes and scheduled close.
-- Prior historical periods already inspected: no untouched validation claim.
-  Existing August–October native BTC WebSocket books located but not mixed in.
-- Independent reconstruction reproduces all60 method/fit blocks within1e-10.
- 72 focused refit tests, 2 inventory regressions and 4 doc-budget tests pass.
-  No full suite. Source/fit/output hashes retained in published evidence.
-- Initial review caught zero-decile label mismatch; corrected0-10/00-10
-  inventory/support count and omitted lead5survivor, without model reruns.
-  Reviewed candidate 6e33211d; two fresh Astra lenses passed with zero
-  unresolved Critical/Major; full reports retained in evidence packet.
-- Known minor: unused prepared numeric token_id loses precision. Never join
-  on it; original stringtokens and canonical slugs remain exact. No model,
-  grouping or label join uses it. MLP reached its fixed100iteration cap.
-- Previous Kalshi all100-cell inventory/attribution remains available;
-  method24 reference, existing attribution Minor INT-1 deferred unchanged.
-- Artifacts: /home/russell/data/crypto_trading/research/polymarket-predictability-20261018.
+- Complete retrospective profitability follow-up; no established profitable cell.
+- All77 saved Kalshi methods/settings, both periods, both sides and3sizes:
+  92,400 model cost rows plus2,400 matched raw/logistic controls.
+- All20 native Polymarket BTC models transferred unchanged to Aug7–Oct17:
+  30,383 forecasts,6,446 contracts,72days;41,400 execution-scenario rows.
+- Full600-side/cell ledger retains sparse/empty/blocked outcomes. Native
+  Polymarket ETH/SOL/XRP each has92pending markets, no retained settled panel.
+- Primary scenario: own-token depth,1second delay,2second age cap,10shares.
+  It is displayed-depth modeling, not observed fills or realized trading profit.
+- New retrospective reserve: Huber10/BTC11mUP80–90,324entries,33losses,
+  mean net3.370cents, forecast-based extra-cost allowance only0.464cent.
+  Neither return nor prediction result passes search-wide correction.
+- Former beta02/BTC5mUP80–90 yields only2primary entries; fresh-score gain
+  versus lead calibration is negative. Stop default promotion of this favorite.
+- All alternate-scenario t-flags are all-win samples; rare-loss audit rejects
+  promotion. Kalshi26regions retain positive two-period quote scenarios,
+  but historical candle data cannot establish delayed executable entries.
+- Final conservative net family59,400;18scenario family1,069,200.
+- Kalshi raw books/trades/outcomes/spot located; October books have minute
+  capture times, no exchange timestamps, no Feb–Jul forecast overlap.
+  Two empty payloads violate declared hashes; neither feeds these results.
+- Candidate c909ef6a reviewed by two fresh independent Astra lenses:
+  zero unresolved Critical/Major;11 focused research tests,4doc checks pass.
+  Config/run/output/source hashes and complete native aggregates checked.
+- Minor COR-1 deferred: missing UP-input freshness gate on DOWN joins affects
+  only one unconditional diagnostic row at3sizes; no selected model/control
+  entry in any scenario. Fix with regression before reusing on new data.
+- Procedures, raw inventory, hashes, actual reports and limits in evidence.
+  Local artifacts: /home/russell/data/crypto_trading/research/executable-cells-20261018.
 
 ## Next
 
-- Narrow replication: fixed model02, primaryBTC5mUP80–90%, secondary2m80–90%.
-  Test against timestamp-aligned actual midpoint/native settlements in existing
-  fresh WebSocket data; later researched dates remain retrospective transfer.
-- Align venue-specific oracle targets before adding spot/GRU models or ETH.
-- If gain disappears with fresh quotes or remains unstable, stop calibration-only
-  expansion. No more broad architecture/hyperparameter search on these dates.
-- Protected January15,2027 protocol unchanged. No automation or live orders.
+- First inventory whether any admissible uninspected interval exists.
+- Then one fixed native-book replication of Huber10/11m80–90 with raw and
+  calibrated controls, plus separately declared5m90–100 rare-loss stress.
+- No further tuning on reused dates. Close hypothesis if fresh prediction
+  advantage or forecast-based cost allowance fails; no hindsight replacement.
+- Kalshi needs same-window exchange/receipt-stamped depth and fee vintages,
+  or longer separately admitted causal feature/model history.
 
 ## Blocked / owner decisions
 
-- Completed study is not blocked. Original price semantics, complete label
-  availability and untouched confirmation remain unestablished.
-- Owner-only Path decisions unchanged. No profitability claim.
+- Research complete; no live deployment authorized or supported.
+- Native non-BTC settled/training history, original price provenance, actual
+  label-publication times and untouched confirmation remain unestablished.
+- Owner-only Path and protected January15,2027 protocol unchanged.
 
 ## Read first
 
-- docs/memos/2026-10-18-polymarket-predictability.md
-- docs/memos/2026-10-18-polymarket-predictability-inventory.csv
-- docs/memos/2026-10-18-polymarket-predictability-evidence.json
-- docs/memos/2026-10-18-candidate-inventory.md
+- docs/memos/2026-10-18-executable-cells.md
+- docs/memos/2026-10-18-executable-cells-coverage-ledger.csv
+- docs/memos/2026-10-18-executable-cells-evidence.json
+- docs/explanations/market-model-training-and-validation.md
 
 ## Do not
 
-- Count overlapping cells/models as independent evidence or gaps as profit.
-- Substitute Kalshi labels/probabilities, or numeric prepared token IDs for strings.
-- Rerun finalized models, change protected protocols or edit owner Path rows.
+- Treat candle gaps, all-win t-statistics or scenario fills as proven profit.
+- Double-count overlapping contracts/cells or substitute native labels.
+- Use rounded numeric token IDs; exact original strings only.
+- Refit finalized models, change protected protocols, or edit owner Path.
