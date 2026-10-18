@@ -11077,7 +11077,230 @@
     "Unused prepared token_id was inferred as float by pandas. Do not use for venue joins. Canonical ticker remains exact, original string tokens retained in raw snapshot and6sampled original tokens match Gamma. No feature/group/label join uses this column.",
     "MLP fixed100iteration cap emitted convergence warning; no validation-based tuning."
   ],
-  "reviews": [],
+  "reviews": [
+    {
+      "agent": "/root/polymarket_correctness_final",
+      "sha256": "27ba3c7df3ef26abb8446a698fd0fbe0f95d40c5453285072ea74e854ade9ec3",
+      "report": {
+        "reviewer": "GPT-6 Astra",
+        "lens": "Fresh final correctness/provenance skeptic",
+        "candidate": "6e33211d4a17407d02655c735041af51e34cd6ea",
+        "base": "22d6935abc779cdf64e165ef7f8f28bd4836f527",
+        "reviewed_at": "2026-10-18T18:14:04.098324+00:00",
+        "verdict": "PASS_WITH_DISCLOSED_LIMITATIONS",
+        "unresolved_counts": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 0,
+          "Nit": 0
+        },
+        "findings": [],
+        "prior_findings": [
+          {
+            "id": "COR-01",
+            "severity": "Major",
+            "disposition": "RESOLVED on reviewed candidate",
+            "proof": "Independent enumeration of 50 canonical keys, every populated/empty count and day count, all raw-support sets and selected-survivor sets agrees with inventory. First decile 00-10 now includes lead5 survivors3/4/15. Exact totals152selected,29survivors/13cells,25raw-supported cells. Correction changes only three evidence/inventory/memo files; manifests,60audit blocks, selection, protocol and preparation are identical to prior candidate."
+          }
+        ],
+        "matrix": [
+          {
+            "invariant": "Input lineage and chronology",
+            "status": "PASS_WITH_DISCLOSED_LIMITS",
+            "evidence": "Verified acquired raw and panel payload hashes with payload_files(verify=True). All103713 prepared rows match raw native UP price,label,source timestamp,decision and end exactly by canonical slug/lead. No duplicate slug/lead, labels consistent per slug, all BTC native slugs, source<=decision, end-decision=lead*60, known=end+24h. Independently verified6 Gamma source observations: native outcome, scheduled end and original string UP token all agree. Actual publication, historical scalar midpoint construction and original downloader provenance remain unproven and explicitly disclosed."
+          },
+          {
+            "invariant": "Same train/score windows and row identities for all20methods",
+            "status": "PASS",
+            "evidence": "All40 configs and240 output hashes verified. Across20 methods in each stage, exact sorted ticker/lead/raw price/native label/calibrated comparator equality. Read config fit and comparator parameters; shared known/time fields, cutoffs and eligible windows; no label-derived feature or token_id used. Independently reconstructed60 audit training sets using strict known<cutoff:31018/45376/60226 rows and6213/9092/12068 contracts at Feb19/Mar21/May2. Read engine bisect_left cutoff implementation."
+          },
+          {
+            "invariant": "Warmup-only selection lock before new validation executions",
+            "status": "PASS_WITH_DISCLOSED_LIMITS",
+            "evidence": "All40 selection config hashes,20 warmup report hashes and protocol hash verify. Independently derived152 warmup qualifiers exactly equal frozen selection. Retained lock created17:54:37.374541UTC, earliest of20 validation execution entries17:54:38.091101UTC. Historical periods already inspected; no untouched-confirmation inference."
+          },
+          {
+            "invariant": "Paired raw and lead-logistic losses in every populated cell and lead",
+            "status": "PASS",
+            "evidence": "Independently recalculated all prediction rows model/raw/calibrated log loss and Brier, plus all four paired differences within1e-12. Every populated cell in both stages and all20 methods matches published CSV count,days and ten means within1e-12. Lead outputs covered by hashes; paired scores for their underlying rows independently verified."
+          },
+          {
+            "invariant": "All50cells inventoried including empty ones",
+            "status": "PASS",
+            "evidence": "All50 canonical lead/decile keys exactly match inventory, including00-10 and empty cells; every warmup/validation cell count/day count agrees. Exact25two-period raw-supported cells and29selected surviving pairs in13cells. Lead5/00-10 now represented with methods3/4/15. Two focused census/support regressions pass."
+          },
+          {
+            "invariant": "Day/week clustering and1000method-cell multiplicity",
+            "status": "PASS_WITH_DISCLOSED_LIMITS",
+            "evidence": "Recomputed14880 cell statistic combinations (1860 populated method/stage/cells x4 paired metrics x2 clusters) from predictions. One-sided clustered t p-values match1e-10; corrected values equal min(1,1000*p). Independently verified no adequately sampled validation cell passes both day/week raw log-loss corrected tests. Bonferroni is appropriate without independent-cell assumption; cluster t and limited weeks are explicitly qualified; earlier project searches not fully counted."
+          },
+          {
+            "invariant": "Reconstruction of all60 model/fit blocks and training losses",
+            "status": "PASS_RETAINED_RECONSTRUCTION",
+            "evidence": "Read retained audit reconstruction script and all60 training audit blocks; max retained model prediction error1.1102230246251565e-16. Independently rederived training eligibility/counts, inspected configuration features and probability/score construction. All audit blocks and prediction-output hashes unchanged from prior candidate. No model reconstruction rerun per instruction."
+          },
+          {
+            "invariant": "No unsupported current-market, ETH, GRU or profitability claim",
+            "status": "PASS",
+            "evidence": "Read complete memo and contract; clearly limits study to20native BTC calibration variants, scalar history, prior-inspected dates, no GRU/ETH transfer and no profit/current-market claim. Primary method02 lead5/80-90 values are within independently verified populated-cell CSV. First-decile survivor and25 raw-supported count are corrected. Source age, assumed label timing, lack of original downloader hashes and numeric token limitation disclosed."
+          }
+        ],
+        "tests_and_checks": [
+          {
+            "command": "WSL /home/russell/dskit/.venv/bin/python -m pytest -q /home/russell/data/crypto_trading/research/polymarket-predictability-20261018/test_inventory.py",
+            "result": "2 passed in0.14s"
+          },
+          {
+            "command": "WSL independent stdin verification using pandas/numpy/scipy, native JSON and SHA256",
+            "result": "240 output hashes;40 configurations;103713 native-row mappings;14880 clustered statistics;152selected/29surviving pairs/13cells/25raw-supported cells; all assertions passed"
+          },
+          {
+            "command": "git diff 0c275184..6e33211d --stat and JSON comparison",
+            "result": "Only evidence,inventory,memo changed; all model manifests/audit/selection/protocol/preparation identical"
+          }
+        ],
+        "disclosed_backlog": [
+          {
+            "severity": "Minor",
+            "issue": "Unused numeric prepared token_id loses precision",
+            "disposition": "Accepted disclosed limitation for this research contract: canonical slug and raw string tokens remain exact; no model/group/label join/score uses numeric token. Must not use it for token joins."
+          },
+          {
+            "severity": "Minor",
+            "issue": "Method20 fixed100-iteration convergence warning",
+            "disposition": "Disclosed exploratory-model limitation, no validation tuning or claim of optimized neural result."
+          }
+        ],
+        "limits": [
+          "No model fits, full suite, production actions, acquisitions or candidate edits performed.",
+          "Retained60-block estimator reconstruction was inspected, not rerun. Fresh review independently reconstructed losses/statistics and eligibility, not learned weights.",
+          "Original downloader/raw-response history, actual full-history label publication and true contemporaneous midpoint semantics cannot be recovered from retained export.",
+          "Six official metadata spotchecks do not validate all contracts; prior inspected periods and limited weekly clusters preclude confirmatory profitability conclusions."
+        ],
+        "candidate_unchanged": true
+      }
+    },
+    {
+      "agent": "/root/polymarket_integration_final",
+      "sha256": "66ce271f7156085187b247cf4db9b35492b832b2d58ddc0269f3e24eae01e428",
+      "report": {
+        "reviewer": "GPT-6 (Codex), independent subagent /root/polymarket_integration_final",
+        "lens": "Fresh final test-quality/integration and adversarial whole-slice review",
+        "candidate": "6e33211d4a17407d02655c735041af51e34cd6ea",
+        "base": "22d6935abc779cdf64e165ef7f8f28bd4836f527",
+        "reviewed_at": "2026-10-18T18:18:14.741195+00:00",
+        "verdict": "PASS_WITH_DISCLOSED_LIMITATIONS",
+        "unresolved_counts": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 0,
+          "Nit": 0
+        },
+        "findings": [],
+        "prior_findings": [
+          {
+            "id": "INT-1 / COR-01",
+            "severity": "Major",
+            "family": "inconsistent zero-decile identity",
+            "disposition": "RESOLVED",
+            "proof": "Canonical00-10 census and all support/survivor sets pass both regression tests on immutable candidate. All50 inventory cells retained,25raw-supportedcells,29selectedsurvivors/13cells including lead5/00-10. Only evidence/inventory/memo changed since initial candidate; manifests,audit,selection,protocol,preparation unchanged."
+          }
+        ],
+        "matrix": [
+          {
+            "invariant": "Input lineage and chronology",
+            "status": "PASS_WITH_DISCLOSED_LIMITS",
+            "evidence": "Fresh payload_files(verify=True) checks of acquired raw and panel snapshots agree with preparation/audit manifests. Prepared103713 rows unique by ticker/lead; allnativeBTC,source<=decision,known=end+24h. Source configs and prepare/audit scripts reviewed. Full original raw-response lineage and actual full-history label publication unavailable, expressly disclosed; six metadata observations do not claim full-history proof."
+          },
+          {
+            "invariant": "Same train/score windows and row identities for all20methods",
+            "status": "PASS",
+            "evidence": "Fresh plan success for40documents; every config file hash/document hash matches manifest; all40attestations completed and bind identity. All20predictiontables per stage have exact sorted ticker/lead,label,raw probability,calibrated comparator and day equality, no duplicates. All40configs use native source and same comparator. Independently counted strict known<cut training rows31018/45376/60226 atFeb19/Mar21/May2. Reviewed features exclude labels,targets,known/end times andnumeric token."
+          },
+          {
+            "invariant": "Warmup-only selection lock before new validation executions",
+            "status": "PASS_WITH_DISCLOSED_LIMITS",
+            "evidence": "Verified40lockedconfig hashes,20warmupreporthashes andprotocolhash. Independently reconstructed all152warmupqualifiers, exact set equality. Lock timestamp precedes first validation iteration. Memo correctly states historical dates previously inspected; this is not untouched confirmation."
+          },
+          {
+            "invariant": "Paired raw and lead-logistic losses in every populated cell and lead",
+            "status": "PASS",
+            "evidence": "Compared all920warmup and940validation CSVcellrows to retained native reports: counts,days,10means,all4paired metrics,daySE/dayp/dayadjustedp/weekadjustedp agree within export precision. All100leadrows per stage match native output. All40overallmethod rows and60traininglossrows match retained manifests/audit. Underlying240outputhashes andlinecounts independently verified."
+          },
+          {
+            "invariant": "All50cells inventoried including empty ones",
+            "status": "PASS",
+            "evidence": "Fresh all-cell census/support regressions2passed; canonical configured key cross-product50cells; total counts equal predictions. Complete native support and survivor sets match exports, including lead5/00-10. Summary152selectedpairs,29survivors/13cells,25raw-supportedcells agrees."
+          },
+          {
+            "invariant": "Day/week clustering and1000method-cell multiplicity",
+            "status": "PASS_WITH_DISCLOSED_LIMITS",
+            "evidence": "Read stat/analysis implementation: paired one-sided cluster t,day andfixedseven-day blocks;1000Bonferroni family. Allcell exported statistics match retained reports. Independently enumerated adequate validation raw-score day/week corrected passes:zero. This integration lens did not independently recompute every clustered standarderror; fresh correctness lens retains that arithmetic verification. Limitedweeks/approximation/priorsearches clearly disclosed."
+          },
+          {
+            "invariant": "Reconstruction of all60model/fit blocks and training losses",
+            "status": "PASS_RETAINED_RECONSTRUCTION",
+            "evidence": "Read complete audit implementation and retained60-block audit; independently verified training eligibility/counts and training CSV serialization. Audit reconstructs estimator parameters/features/seed and scores held-out rows, maximum prediction difference below1e-10. No refits repeated under task prohibition."
+          },
+          {
+            "invariant": "No unsupported current-market,ETH,GRU or profitability claim",
+            "status": "PASS",
+            "evidence": "Entire memo read. BTCcalibration-only,scalarhistory semantics,oldprices,previouslyinspected dates,assumedpublicationtiming,incompleteproviderprovenance,limitedmetadata sample,fixedMLPcap andnumeric-token issue clearly stated. No trading/profit/current-market claim; futurefresh-midpoint replication is only proposal."
+          },
+          {
+            "invariant": "Integration and authority boundaries,journal,links,runnable plans",
+            "status": "PASS",
+            "evidence": "Whole56file diff scoped to40newrunconfigs,3sources,7CSVs,memo/evidence andjournal/index bookkeeping. No engine,execution,serve,protectedprotocol orownerPath change. Journal oldbytes exactprefix ofcandidate,43newrows retain40completedrunpaths andfailedsmokes. Memo/index/candidate-inventory local links resolve. All40plans runnable withWSLprojectPython; localdata dependence explicitly disclosed. Reviewed script node kinds are research reads,estimators,purecomputes/grouping andoutputwriters."
+          }
+        ],
+        "tests_and_checks": [
+          {
+            "command": "WSL /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline_libs/test_sklearn_expanding_refit.py",
+            "result": "72passed in1.61s"
+          },
+          {
+            "command": "WSL /home/russell/dskit/.venv/bin/python -m pytest -q tests/docs/test_budgets.py",
+            "result": "4passed in0.10s"
+          },
+          {
+            "command": "WSL /home/russell/dskit/.venv/bin/python -m pytest -q /home/russell/data/crypto_trading/research/polymarket-predictability-20261018/test_inventory.py",
+            "result": "2passed in0.16s"
+          },
+          {
+            "command": "Independent WSL stdin scripts: nativeJSON,hashlib,pandas,numpy,RunAttestation,load_document,payload_files,40separate dskit.pipeline plan invocations",
+            "result": "40plans,240attestedoutputpaths/hashes/counts,9embeddedscript hashes,7CSVhashes,all40rowalignments,1860cellrows,200leadrows,60trainingrows,40methodrows,selectionchronology andjournal/links:PASS"
+          }
+        ],
+        "disclosed_minor_backlog": [
+          {
+            "severity": "Minor",
+            "issue": "Unused prepared numeric token_id precision loss",
+            "disposition": "Explicitly disclosed existing research limitation. Raw string tokens and canonical slugs preserved; no joins,features,groups orscores use the numeric column. Repair before future token-based reuse."
+          },
+          {
+            "severity": "Minor",
+            "issue": "Method20 reaches fixed100iteration cap",
+            "disposition": "Explicitly disclosed exploratory estimator limitation; not represented as optimized neural result. No validation tuning requested/performed."
+          }
+        ],
+        "limits": [
+          "No full suite,modelrefits,acquisitions,trades,automation,protectedperiod reads orcandidate edits performed.",
+          "No independent reconstruction of fitted weights in this lens; inspected retained60-block audit. All output/export identities and semantic pairings checked freshly.",
+          "Historical scalar price is not proven contemporary midpoint; labelknown=end+24h remains assumption; original downloader provenance cannot be restored by hashes of derived export.",
+          "Six external metadata checks retained, not reacquired; no claim of allcontracts validated. Dates previously researched,so no confirmatory claim.",
+          "Runnable plans require retained local data and configured paths; memo explicitly says data remainslocal. Embedded scripts plusversionedconfig andhashes support reconstruction from acquiredexports,not originalprovideracquisition.",
+          "Final report is only file written outside candidate; no commit."
+        ],
+        "candidate_unchanged": true,
+        "new_findings_counts": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 0,
+          "Nit": 0
+        }
+      }
+    }
+  ],
   "correction": {
     "finding": "COR-01 zero-bin identity mismatch",
     "from_candidate": "0c275184d4ca96e73e62cb486a83335ade9ccbda",
@@ -18321,5 +18544,14 @@
   "cell_census": {
     "warmup": 46,
     "validation": 47
+  },
+  "closure": {
+    "reviewed_candidate": "6e33211d4a17407d02655c735041af51e34cd6ea",
+    "base_commit": "22d6935abc779cdf64e165ef7f8f28bd4836f527",
+    "closed_at": "2026-10-18T18:18:45.076922+00:00",
+    "status": "Two fresh independent Astra lenses passed; zero unresolved Critical/Major.",
+    "identity_check": "Reviewed configuration, code, tests, contract, input and output artifacts unchanged. Closure edits append review evidence and rewrite handoff documentation only.",
+    "tests": "72 expanding-refit tests, 2 zero-bin inventory regressions, 4 documentation-budget tests passed; 40 pipeline plans and 240 attested outputs verified. No full-suite run.",
+    "remaining_limits": "See reviewer disclosed backlog and memo; no confirmed prediction edge, profitability, ETH or GRU replication claim."
   }
 }

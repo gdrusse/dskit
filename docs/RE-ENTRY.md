@@ -8,7 +8,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 |---|---|---|
 | dskit core | "Core" below | 2026-10-16: ADR-0268 perf sweep landed 471dd655 (26 units, two clean lenses each); owner purges remote branches |
 | index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-16: R6seed29 packet reviewed;44tests,107pins; exactmanifest/order approval pending; no training/R5retry |
-| crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-18: all100-cell inventory on Git;19 detailed regions,70 exploratory support; Polymarket untested track added; two clean reviews, no confirmed profitable pocket |
+| crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-18: Polymarket BTC 20 methods/40 JSONs complete; 29 pairs in 13 cells retain score gains, none passes search-wide test; two clean reviews; fresh-quote retest next |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
 | intraday_equities | `children/intraday_equities/docs/RE-ENTRY.md` | 2026-10-12: fill-window relabel: next-bar-fill IC 0.01-0.02 (5-min rows), 0.002-0.005 (1-min rows); no fill-reachable edge |
