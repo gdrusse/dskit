@@ -6,7 +6,7 @@ No preselected pocket passes the declared raw-market robustness screen. Tuning h
 
 Retain method 24 as the reference. Treat settings below as historical research candidates, not established replacements. Parent choices and both periods were already inspected; this is a robustness check on reused history.
 
-**Most useful local follow-up:** preserve the already selected ETH / 11m / 10-20% market-probability region as a fixed research lead. All four parent families selected it on warm-up. On validation it contains 689 contracts, with mean market YES 15.41% and realized YES 14.22%; all four tuned models improve mean log loss versus market and their own parent in both validation halves. None passes the corrected uncertainty tests. This is consistent direction, not a validated pocket or a reason to select a new winning setting from validation.
+**Most useful local follow-up:** preserve the already selected ETH / 11m / 10-20% market-probability region as a fixed research lead. All four parent families selected it on warm-up. On validation it contains 689 contracts, with mean market YES 15.41% and realized YES 14.22%; all four tuned models improve mean log loss versus market and their own parent in both validation halves. None passes the corrected uncertainty tests. This is consistent direction, not a validated pocket or a reason to select a new winning setting from validation. These four comparisons share the same 689 validation contracts and are correlated; they are not four independent confirmations.
 
 Completed twenty settings (sixteen perturbations and four exact controls), each on warm-up and validation: forty pipeline JSONs, 240 output files and 4,000 asset/lead/bin cell rows. The warm-up lock selected 4 global settings and 8 pockets before validation execution.
 
@@ -125,7 +125,7 @@ Warm-up setting 01 initially stopped at the first writer because the requested r
 
 ## Completed verification and reproducibility
 
-All forty completed runs have six outputs. The full author audit verified 240 output hashes/counts, 501 causal training/prediction censuses, exact shared cohorts and benchmark predictions, all five proper-score series, and every aggregate field. All four controls reproduce the previous study exactly. The focused suite passed 127 tests; six synthetic stability probes and Ruff passed. The full suite was not run. Independent reviews are pending.
+All forty completed runs have six outputs. The full author audit verified 240 output hashes/counts, 501 causal training/prediction censuses, exact shared cohorts and benchmark predictions, all five proper-score series, and every aggregate field. All four controls reproduce the previous study exactly. The focused suite passed 127 tests; six synthetic stability probes and Ruff passed. The full suite was not run. Two fresh independent reviews completed on candidate 32fe1853b18826e21ea9e18f0758218b195f48e3 with zero Critical/Major findings and one shared deferred documentation Minor, detailed below.
 
 One initial warm-up attempt failed at output writing because the results directory was absent. It is retained separately and excluded from the forty completed experiments. Its retry changed output placement only. No failed or partial experiment counts as success.
 
@@ -141,3 +141,11 @@ Artifacts: /home/russell/data/crypto_trading/research/pocket-tuning-20261018. Re
 - [Per-lead outputs](/home/russell/data/crypto_trading/research/pocket-tuning-20261018/all-leads.csv)
 - [Calibration outputs](/home/russell/data/crypto_trading/research/pocket-tuning-20261018/all-calibration.csv)
 - [Frozen warm-up selection](/home/russell/data/crypto_trading/research/pocket-tuning-20261018/selection-lock.json)
+
+## Independent review closure and erratum
+
+Both sequential independent lenses passed the scoped historical research deliverable. The correctness lens independently recomputed all selected and exploratory statistics and passed 56 focused tests. The integration lens verified all forty plans/run identities, all 240 outputs, 501 fit censuses, 5,880 aggregate-field comparisons, selector edge cases, changed-lock refusals and exact control reproduction; 128 focused tests passed. The full reports and their hashes are retained under review_closure in the evidence packet.
+
+Deferred Minor M1 / PT-INT-01: probability-node notes in settings 01, 03, 04, 06, 07, 09, 10 and 12, in both stages (16 JSONs), retain copied 0.5-strength wording. The setting names, executable expressions, numerical tests and reported results correctly use 0.25 for 01/04/07/10 and 0.75 for 03/06/09/12. Use those expressions and names as authoritative. Frozen files are preserved; future configuration generation should update the explanatory notes when changing strength. This prose issue changes no execution or result.
+
+Final distinct unresolved counts: Critical 0, Major 0, Minor 1 deferred, Nit 0. Code, tests, all forty configurations, six analysis scripts, dependencies, selection rules and scientific results remain unchanged from the reviewed candidate. Closure appends review evidence, the prose erratum, the shared-contract clarification and handoff notes only. No full suite, additional training or protected-outcome read was performed.
