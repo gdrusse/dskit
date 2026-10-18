@@ -1,0 +1,14 @@
+{
+  "path": "/home/russell/data/crypto_trading",
+  "as_of": "2026-10-08T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "research/prew4-oos/runs/w1-fold12/decision-crypto-prew4-oos-w1-fold12-2025-12-21-44bf870a.jsonl",
+    "research/prew4-oos/runs/w1-fold13/decision-crypto-prew4-oos-w1-fold13-2026-02-19-97c4f122.jsonl",
+    "research/prew4-oos/runs/w1-fold14/decision-crypto-prew4-oos-w1-fold14-2026-04-20-bca35109.jsonl",
+    "research/prew4-oos/runs/w2-block1/decision-crypto-prew4-oos-w2-block1-2026-07-01-a1f61f56.jsonl",
+    "research/prew4-oos/runs/w2-block2/decision-crypto-prew4-oos-w2-block2-2026-08-01-0b022fa6.jsonl",
+    "w5-blend/decision_features-crypto-w5-blend-2026-10-08-0aa3e2c8.jsonl"
+  ],
+  "notes": "Historical development decision tables only. Existing GRU predictions are chronological features, never refitted here. Exact original files are acquired and hashed before preparing the study table. No forward data."
+}

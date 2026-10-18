@@ -1,0 +1,10 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/predictability15-20261017",
+  "as_of": "2026-10-08T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "decisions.parquet",
+    "preparation.json"
+  ],
+  "notes": "Derived bounded historical decision panel. Source provenance, filters and hashes are recorded in preparation.json. Only leads 2,5,8,11,14, complete common features, settlement before 2026-10-08. No learned preprocessing."
+}
