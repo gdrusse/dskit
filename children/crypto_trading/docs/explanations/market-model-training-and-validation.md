@@ -141,9 +141,9 @@ Let **p** be market YES probability, **q** GRU YES probability, **y** settlement
 5. ETH indicator.
 6. abs(p − 0.5).
 7. Bid/ask spread in probability units.
-8. Log moneyness / [60-second RMS volatility × sqrt(60L)].
-9. log(60-second RMS volatility / 0.0001).
-10. log(30-second EWMA volatility / 60-second RMS volatility).
+8. Log moneyness / [60-minute RMS volatility × sqrt(60L)].
+9. log(60-minute RMS volatility / 0.0001).
+10. log(EWMA volatility with a 30-minute half-life (300-minute lookback) / 60-minute RMS volatility).
 11. log(1 + candle volume) / 10.
 12. log(1 + candle open interest) / 10.
 13. Term 3 × term 4.

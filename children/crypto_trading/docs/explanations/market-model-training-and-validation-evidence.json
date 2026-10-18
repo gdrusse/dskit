@@ -35,7 +35,7 @@
     "/home/russell/data/crypto_trading/research/training-explanation-20261018/gru-curves.csv": "9937d6979d11700bb4dcad7802509d44622178a1c3b487dcf6deb520ab323037",
     "/home/russell/data/crypto_trading/research/training-explanation-20261018/selection-quarters.csv": "28a3c61c4ed400ac10151e59398e33e3b7c5490a6694606fa9a5ab8497696007",
     "/mnt/c/Users/russe/.cursor/projects/empty-window/canvases/crypto-training-validation.canvas.tsx": "10dbc47ac2653e830e497ae4f96ec05a08f9aad184963ce244f9971213d6a04f",
-    "children/crypto_trading/docs/explanations/market-model-training-and-validation.md": "35499490e94e61554088402f06d4043ee26321b07e666535da32bf43bc213422"
+    "children/crypto_trading/docs/explanations/market-model-training-and-validation.md": "853ab143047605365d9967f5da29de92f443ed994872a816311d37b0dd0576cb"
   },
   "input_hashes": {
     "/home/russell/data/crypto_trading/research/predictability15-20261017/decisions.parquet": "a80c1508a79d8484168985eb7d31dce377aa816969b812769e9d53f0aa694a4b",
@@ -49,7 +49,8 @@
     "/home/russell/data/crypto_trading/batch-zoo-w1/gru-crps_tail-pooled/runs/gru-crps_tail-pooled/zoo-gru-crps_tail-pooled-wf-2026-02-19-2026-05-01-20359fe0/artifacts/fit/training_curve.json": "38d213049c06bf8b079b8eeacb4e96fa89b2f80f7642e8dbaa6445a30695bb69",
     "/home/russell/data/crypto_trading/production/models/gru-crps_tail-pooled/block-1-2026-05-02/training_curve.json": "1f5a771e7e7c8ca44f060a8897591e0a6f6acd1885835a4379cb5dce823a9dd7",
     "/home/russell/data/crypto_trading/production/models/gru-crps_tail-pooled/block-2-2026-07-01/training_curve.json": "b23dff5839ea2410ec051cc4b5461fe8192a6a80f5d30a03102280b914a2f6b3",
-    "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/selection-lock.json": "a835e9a00c8c13916a3d30ecc2cb9ec703c6c8aaefe75c8e6680addf7474b6d2"
+    "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/selection-lock.json": "a835e9a00c8c13916a3d30ecc2cb9ec703c6c8aaefe75c8e6680addf7474b6d2",
+    "/home/russell/data/crypto_trading/research/attribution-20261018/analysis.json": "cd5da2c515fea6ee1f93c0bcb0e8899248160256828e8e9f0104c4d623efb397"
   },
   "verification": [
     {
@@ -103,8 +104,51 @@
     "canvas": "TypeScript 5.9.3 strict check passed; embedded data equals results; all selectors populated; visual rendering not verified",
     "doc_budgets": "4 passed",
     "full_suite": "Not run; no implementation code changed",
-    "verification_retry": "First canvas JSON extraction assumed one newline and failed before modifying evidence; corrected to JSON raw_decode, passed."
+    "verification_retry": "First canvas JSON extraction assumed one newline and failed before modifying evidence; corrected to JSON raw_decode, passed.",
+    "independent_accuracy": "All 12 training and120 OOS groups, six model/fit reconstructions and3 training windows/objectives independently verified",
+    "independent_integration": "48 displayed OOS groups independently computed; builder read-only prefix matches132 metrics/windows/coefficients; links/selectors and data pass",
+    "correction_scope": "Only three volatility feature descriptions changed; all numeric artifacts, canvas, contract and matrix identical to reviewed candidate. Added one missing source hash."
   },
-  "reviews": [],
-  "status": "Awaiting scoped independent accuracy reviews"
+  "reviews": [
+    {
+      "lens": "correctness/provenance",
+      "reviewer": "GPT-6 Astra",
+      "path": "/home/russell/data/crypto_trading/research/training-explanation-20261018/review-accuracy.md",
+      "sha256": "ef6164c36953b1868931fc0eeaf546b6ea5e046b266094f961057d78fa62173a",
+      "critical": 0,
+      "major": 0,
+      "minor": 1,
+      "nit": 0
+    },
+    {
+      "lens": "test quality/integration",
+      "reviewer": "GPT-6 Astra",
+      "path": "/home/russell/data/crypto_trading/research/training-explanation-20261018/review-integration.md",
+      "sha256": "1ea403b45dedd6f0ac4334c8259a716234313318b8ed2a36b4ebb4eb221ba526",
+      "critical": 0,
+      "major": 0,
+      "minor": 2,
+      "nit": 0
+    }
+  ],
+  "status": "Closed: two independent lenses, zero unresolved Critical/Major; both unique Minor findings corrected editorially/evidence-only",
+  "review_candidate": "e7858350cf113f7764015e594c0bf214d9803f85",
+  "corrections": [
+    {
+      "finding": "ACC-1 / integration shared Minor",
+      "disposition": "Corrected volatility history labels: RMS 60 one-minute bars; EWMA half-life30/lookback300 one-minute bars. Output per-sqrt(second) units and sqrt(60L) formula unchanged.",
+      "kind": "Editorial accuracy; no numeric or behavioral change"
+    },
+    {
+      "finding": "Integration lineage hash Minor",
+      "disposition": "Pinned analysis.json lineage source in this evidence input_hashes, as accepted by integration reviewer. Original completed results/build remain unchanged; their embedded input list omitted this dependency.",
+      "kind": "Evidence append only"
+    }
+  ],
+  "unresolved_current_findings": {
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  }
 }
