@@ -1,5 +1,7 @@
 # Complete candidate inventory: Kalshi evidence and Polymarket follow-up
 
+**Polymarket update:** Existing BTC history was located and reused. The [20-method native-data replication](2026-10-18-polymarket-predictability.md) now supplies aligned training/validation and all 50 BTC lead/decile cells. The venue-status discussion below records the earlier inventory, before this replication.
+
 ## TL;DR
 
 There are multiple historical leads beyond ETH / 11m / YES 10–20%: six previously selected regions retain some same-model score support across warm-up and validation, and eleven additional regions show a persistent mean-probability gap of at least one percentage point. A deliberately broad scan finds some two-period model support in 70 of 100 regions, but **no adequately sampled region passes both full-scan day and week uncertainty checks**; none of this inventory establishes after-fee profitability. Polymarket belongs in the research scope as a separate, untested venue using the same modeling framework and its own prices, labels and costs.

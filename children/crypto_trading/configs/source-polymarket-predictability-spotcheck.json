@@ -1,0 +1,12 @@
+{
+  "slugs": [
+    "btc-updown-15m-1765755900",
+    "btc-updown-15m-1771458300",
+    "btc-updown-15m-1774050300",
+    "btc-updown-15m-1776555900",
+    "btc-updown-15m-1777679100",
+    "btc-updown-15m-1785455100"
+  ],
+  "retries": 3,
+  "notes": "Six deterministic calendar-boundary metadata spot checks of existing saved Polymarket decisions. This audit does not replace missing full original API response lineage or establish publication times for unsampled contracts."
+}

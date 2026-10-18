@@ -1,0 +1,1372 @@
+{
+  "name": "crypto-polymarket20-warmup-19-forest-brier",
+  "notes": "Bagging tests nonparametric calibration under large-leaf shrinkage. Same calendar as prior Kalshi study; BTC only, no GRU. End+24h label timing is assumed. Warmup selection only.",
+  "pipeline": {
+    "data": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/crypto_trading/ob",
+        "source": "polymarket-predictability-panel-20261018",
+        "stream": "files",
+        "relpath_by_key": {
+          "panel": "decisions.parquet"
+        },
+        "key": "panel",
+        "columns": {
+          "age_s": "age_s",
+          "decision_ts": "decision_ts",
+          "end_ts": "end_ts",
+          "lead_minutes": "lead_minutes",
+          "market_id": "market_id",
+          "mid": "mid",
+          "label": "label",
+          "side": "side",
+          "ticker": "ticker",
+          "source_ts": "source_ts",
+          "token_id": "token_id",
+          "day": "day",
+          "decision_ms": "decision_ms",
+          "settlement_ms": "settlement_ms",
+          "known_ms": "known_ms",
+          "asset": "asset",
+          "band": "band",
+          "log_mid": "log_mid",
+          "log_no": "log_no",
+          "m": "m",
+          "lead_scaled": "lead_scaled",
+          "confidence": "confidence",
+          "m_lead": "m_lead",
+          "age_scaled": "age_scaled",
+          "m_age": "m_age",
+          "m2": "m2",
+          "m3": "m3",
+          "one": "one",
+          "spline0": "spline0",
+          "radial0": "radial0",
+          "spline1": "spline1",
+          "radial1": "radial1",
+          "spline2": "spline2",
+          "radial2": "radial2",
+          "spline3": "spline3",
+          "radial3": "radial3",
+          "spline4": "spline4",
+          "radial4": "radial4",
+          "sqrtv": "sqrtv",
+          "residual": "residual",
+          "standard_residual": "standard_residual",
+          "w_one": "w_one",
+          "w_m": "w_m",
+          "w_lead_scaled": "w_lead_scaled",
+          "w_confidence": "w_confidence",
+          "w_m_lead": "w_m_lead",
+          "w_age_scaled": "w_age_scaled",
+          "w_m_age": "w_m_age",
+          "w_m2": "w_m2",
+          "w_m3": "w_m3",
+          "w_spline0": "w_spline0",
+          "w_spline1": "w_spline1",
+          "w_spline2": "w_spline2",
+          "w_spline3": "w_spline3",
+          "w_spline4": "w_spline4",
+          "w_radial0": "w_radial0",
+          "w_radial1": "w_radial1",
+          "w_radial2": "w_radial2",
+          "w_radial3": "w_radial3",
+          "w_radial4": "w_radial4"
+        },
+        "read_bounds": {
+          "day": {
+            "start": "2025-12-15",
+            "end_before": "2026-04-20"
+          }
+        }
+      },
+      "notes": "Verified Polymarket-only panel; validation labels excluded before warmup materialization. Scalar p semantics and end+24h label-availability assumption disclosed in protocol."
+    },
+    "fit": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "params": {
+        "estimator": "sklearn.ensemble.RandomForestRegressor",
+        "estimator_params": {
+          "n_estimators": 60,
+          "max_depth": 5,
+          "min_samples_leaf": 1000,
+          "n_jobs": 2
+        },
+        "features": [
+          {
+            "field": "m",
+            "transform": "identity"
+          },
+          {
+            "field": "lead_scaled",
+            "transform": "identity"
+          },
+          {
+            "field": "confidence",
+            "transform": "identity"
+          },
+          {
+            "field": "m_lead",
+            "transform": "identity"
+          }
+        ],
+        "label": "residual",
+        "predict_method": "predict",
+        "time_field": "decision_ms",
+        "known_field": "known_ms",
+        "block_ms": 2592000000,
+        "block_origin_ms": 1766275200000,
+        "min_train_blocks": 2,
+        "output_field": "raw_prediction",
+        "seed": 20261018
+      },
+      "notes": "Bagging tests nonparametric calibration under large-leaf shrinkage.",
+      "inputs": {
+        "records": "$data.records"
+      }
+    },
+    "calibration_baseline": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "params": {
+        "estimator": "sklearn.linear_model.LogisticRegression",
+        "estimator_params": {
+          "C": 0.05,
+          "max_iter": 500
+        },
+        "features": [
+          {
+            "field": "mid",
+            "transform": "logit",
+            "clip": 1e-06
+          }
+        ],
+        "label": "label",
+        "predict_method": "predict_proba",
+        "time_field": "decision_ms",
+        "known_field": "known_ms",
+        "block_ms": 2592000000,
+        "block_origin_ms": 1766275200000,
+        "min_train_blocks": 2,
+        "output_field": "cal_market",
+        "group_field": "lead_minutes",
+        "seed": 20261017
+      },
+      "notes": "Market-only logit recalibration distinguishes extra predictive information from correcting market calibration.",
+      "inputs": {
+        "records": "$fit.records"
+      }
+    },
+    "eligible": {
+      "uses": "filter",
+      "params": {
+        "where": [
+          {
+            "field": "raw_prediction_status",
+            "op": "==",
+            "value": "ok"
+          },
+          {
+            "field": "cal_market_status",
+            "op": "==",
+            "value": "ok"
+          }
+        ]
+      },
+      "notes": "Exclude training warmup and failed fits by status; counts remain in fit evidence.",
+      "inputs": {
+        "records": "$calibration_baseline.records"
+      }
+    },
+    "probability": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "prediction": {
+            "op": "min",
+            "args": [
+              {
+                "const": 0.999999
+              },
+              {
+                "op": "max",
+                "args": [
+                  {
+                    "const": 1e-06
+                  },
+                  {
+                    "op": "add",
+                    "args": [
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "const": 0.75
+                          },
+                          {
+                            "field": "mid"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "const": 0.25
+                          },
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "op": "add",
+                                    "args": [
+                                      {
+                                        "field": "mid"
+                                      },
+                                      {
+                                        "field": "raw_prediction"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "inputs": {
+        "records": "$eligible.records"
+      },
+      "notes": "Bagging tests nonparametric calibration under large-leaf shrinkage. Fixed anchoring strength 0.25."
+    },
+    "losses": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "model_logloss": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "label"
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "prediction"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "field": "label"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "prediction"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "model_brier": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "prediction"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "prediction"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              }
+            ]
+          },
+          "market_logloss": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "label"
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "mid"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "field": "label"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "mid"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "market_brier": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "mid"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "mid"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              }
+            ]
+          },
+          "cal_logloss": {
+            "op": "neg",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "field": "label"
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "min",
+                            "args": [
+                              {
+                                "const": 0.999999
+                              },
+                              {
+                                "op": "max",
+                                "args": [
+                                  {
+                                    "const": 1e-06
+                                  },
+                                  {
+                                    "field": "cal_market"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "op": "sub",
+                        "args": [
+                          {
+                            "const": 1
+                          },
+                          {
+                            "field": "label"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "log",
+                        "args": [
+                          {
+                            "op": "sub",
+                            "args": [
+                              {
+                                "const": 1
+                              },
+                              {
+                                "op": "min",
+                                "args": [
+                                  {
+                                    "const": 0.999999
+                                  },
+                                  {
+                                    "op": "max",
+                                    "args": [
+                                      {
+                                        "const": 1e-06
+                                      },
+                                      {
+                                        "field": "cal_market"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "cal_brier": {
+            "op": "mul",
+            "args": [
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "cal_market"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              },
+              {
+                "op": "sub",
+                "args": [
+                  {
+                    "field": "cal_market"
+                  },
+                  {
+                    "field": "label"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "inputs": {
+        "records": "$probability.records"
+      },
+      "notes": "Same rows and proper scoring rules for model, raw scalar market, and independent lead-logistic baseline."
+    },
+    "paired": {
+      "uses": "dskit.pipeline.kinds_compute:ComputeFields",
+      "params": {
+        "fields": {
+          "delta_logloss": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_logloss"
+              },
+              {
+                "field": "market_logloss"
+              }
+            ]
+          },
+          "delta_brier": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_brier"
+              },
+              {
+                "field": "market_brier"
+              }
+            ]
+          },
+          "delta_cal_logloss": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_logloss"
+              },
+              {
+                "field": "cal_logloss"
+              }
+            ]
+          },
+          "delta_cal_brier": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "model_brier"
+              },
+              {
+                "field": "cal_brier"
+              }
+            ]
+          },
+          "market_calibration_gap": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "label"
+              },
+              {
+                "field": "mid"
+              }
+            ]
+          },
+          "model_calibration_gap": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "label"
+              },
+              {
+                "field": "prediction"
+              }
+            ]
+          },
+          "calibrated_market_gap": {
+            "op": "sub",
+            "args": [
+              {
+                "field": "label"
+              },
+              {
+                "field": "cal_market"
+              }
+            ]
+          }
+        }
+      },
+      "inputs": {
+        "records": "$losses.records"
+      },
+      "notes": "Negative proper-score differences favor model. Positive label-minus-probability gap means more UP than priced."
+    },
+    "probability_bin": {
+      "uses": "derive",
+      "params": {
+        "field": "probability_bin",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.1
+              }
+            ],
+            "value": "00-10"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.2
+              }
+            ],
+            "value": "10-20"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.3
+              }
+            ],
+            "value": "20-30"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.4
+              }
+            ],
+            "value": "30-40"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.5
+              }
+            ],
+            "value": "40-50"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.6
+              }
+            ],
+            "value": "50-60"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.7
+              }
+            ],
+            "value": "60-70"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.8
+              }
+            ],
+            "value": "70-80"
+          },
+          {
+            "when": [
+              {
+                "field": "mid",
+                "op": "<",
+                "value": 0.9
+              }
+            ],
+            "value": "80-90"
+          },
+          {
+            "when": [],
+            "value": "90-100"
+          }
+        ]
+      },
+      "notes": "Fixed market-probability bins; models cannot move a difficult row to a different cell.",
+      "inputs": {
+        "records": "$paired.records"
+      }
+    },
+    "cells": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "asset",
+          "lead_minutes",
+          "probability_bin"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "rows": {
+            "op": "count"
+          },
+          "markets": {
+            "op": "nunique",
+            "field": "ticker"
+          },
+          "days": {
+            "op": "nunique",
+            "field": "day"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "age_s": {
+            "op": "mean",
+            "field": "age_s"
+          }
+        }
+      },
+      "notes": "All fixed native BTC lead/decile groups, including losses versus raw and lead-logistic probabilities.",
+      "inputs": {
+        "records": "$probability_bin.records"
+      }
+    },
+    "leads": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "lead_minutes"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "rows": {
+            "op": "count"
+          },
+          "markets": {
+            "op": "nunique",
+            "field": "ticker"
+          },
+          "days": {
+            "op": "nunique",
+            "field": "day"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "age_s": {
+            "op": "mean",
+            "field": "age_s"
+          }
+        }
+      },
+      "notes": "All fixed native BTC lead/decile groups, including losses versus raw and lead-logistic probabilities.",
+      "inputs": {
+        "records": "$paired.records"
+      }
+    },
+    "asset_leads": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "asset",
+          "lead_minutes"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "rows": {
+            "op": "count"
+          },
+          "markets": {
+            "op": "nunique",
+            "field": "ticker"
+          },
+          "days": {
+            "op": "nunique",
+            "field": "day"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "age_s": {
+            "op": "mean",
+            "field": "age_s"
+          }
+        }
+      },
+      "notes": "All fixed native BTC lead/decile groups, including losses versus raw and lead-logistic probabilities.",
+      "inputs": {
+        "records": "$paired.records"
+      }
+    },
+    "calibration": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "lead_minutes",
+          "probability_bin"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "rows": {
+            "op": "count"
+          },
+          "markets": {
+            "op": "nunique",
+            "field": "ticker"
+          },
+          "days": {
+            "op": "nunique",
+            "field": "day"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "age_s": {
+            "op": "mean",
+            "field": "age_s"
+          }
+        }
+      },
+      "notes": "All fixed native BTC lead/decile groups, including losses versus raw and lead-logistic probabilities.",
+      "inputs": {
+        "records": "$probability_bin.records"
+      }
+    },
+    "markets": {
+      "uses": "groupby",
+      "params": {
+        "keys": [
+          "ticker",
+          "day",
+          "asset",
+          "band"
+        ],
+        "aggregates": {
+          "label": {
+            "op": "mean",
+            "field": "label"
+          },
+          "mid": {
+            "op": "mean",
+            "field": "mid"
+          },
+          "prediction": {
+            "op": "mean",
+            "field": "prediction"
+          },
+          "model_logloss": {
+            "op": "mean",
+            "field": "model_logloss"
+          },
+          "market_logloss": {
+            "op": "mean",
+            "field": "market_logloss"
+          },
+          "cal_logloss": {
+            "op": "mean",
+            "field": "cal_logloss"
+          },
+          "model_brier": {
+            "op": "mean",
+            "field": "model_brier"
+          },
+          "market_brier": {
+            "op": "mean",
+            "field": "market_brier"
+          },
+          "delta_logloss": {
+            "op": "mean",
+            "field": "delta_logloss"
+          },
+          "delta_brier": {
+            "op": "mean",
+            "field": "delta_brier"
+          },
+          "delta_cal_logloss": {
+            "op": "mean",
+            "field": "delta_cal_logloss"
+          },
+          "market_calibration_gap": {
+            "op": "mean",
+            "field": "market_calibration_gap"
+          },
+          "model_calibration_gap": {
+            "op": "mean",
+            "field": "model_calibration_gap"
+          },
+          "calibrated_market_gap": {
+            "op": "mean",
+            "field": "calibrated_market_gap"
+          },
+          "cal_market": {
+            "op": "mean",
+            "field": "cal_market"
+          },
+          "cal_brier": {
+            "op": "mean",
+            "field": "cal_brier"
+          },
+          "delta_cal_brier": {
+            "op": "mean",
+            "field": "delta_cal_brier"
+          },
+          "age_s": {
+            "op": "mean",
+            "field": "age_s"
+          }
+        }
+      },
+      "notes": "All fixed native BTC lead/decile groups, including losses versus raw and lead-logistic probabilities.",
+      "inputs": {
+        "records": "$paired.records"
+      }
+    },
+    "write_predictions": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/polymarket-predictability-20261018/results/warmup-19-predictions-{run}.jsonl",
+        "source": "Polymarket-native BTC predictability study; exploratory scalar prices, no execution or profit claim.",
+        "expect": 28724
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$probability_bin.records"
+      }
+    },
+    "write_markets": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/polymarket-predictability-20261018/results/warmup-19-markets-{run}.jsonl",
+        "source": "Polymarket-native BTC predictability study; exploratory scalar prices, no execution or profit claim.",
+        "expect": 5758
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$markets.records"
+      }
+    },
+    "write_cells": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/polymarket-predictability-20261018/results/warmup-19-cells-{run}.jsonl",
+        "source": "Polymarket-native BTC predictability study; exploratory scalar prices, no execution or profit claim.",
+        "expect": 46
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$cells.records"
+      }
+    },
+    "write_leads": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/polymarket-predictability-20261018/results/warmup-19-leads-{run}.jsonl",
+        "source": "Polymarket-native BTC predictability study; exploratory scalar prices, no execution or profit claim.",
+        "expect": 5
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$leads.records"
+      }
+    },
+    "write_asset_leads": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/polymarket-predictability-20261018/results/warmup-19-asset_leads-{run}.jsonl",
+        "source": "Polymarket-native BTC predictability study; exploratory scalar prices, no execution or profit claim.",
+        "expect": 5
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$asset_leads.records"
+      }
+    },
+    "write_calibration": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "params": {
+        "path": "/home/russell/data/crypto_trading/research/polymarket-predictability-20261018/results/warmup-19-calibration-{run}.jsonl",
+        "source": "Polymarket-native BTC predictability study; exploratory scalar prices, no execution or profit claim.",
+        "expect": 46
+      },
+      "notes": "Durable run-named evidence, with content hash recorded by the standard writer.",
+      "inputs": {
+        "records": "$calibration.records"
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "/home/russell/data/crypto_trading/research/polymarket-predictability-20261018/runs/warmup"
+  }
+}

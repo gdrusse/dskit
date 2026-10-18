@@ -1,0 +1,11 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/polymarket-predictability-20261018",
+  "as_of": "2026-10-18T00:00:00Z",
+  "stream": "files",
+  "include": [
+    "decisions.parquet",
+    "preparation.json",
+    "protocol.json"
+  ],
+  "notes": "Polymarket BTC native price history and saved UP settlement labels. Fixed causal scalar-price features only. Scheduled end plus24h is assumed label availability, not measured publication. Exact Kalshi study calendar and five leads; original raw-response provenance and scalar-price semantics remain limitations."
+}
