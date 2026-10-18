@@ -17,7 +17,7 @@ CUT = 1777680000000
 DAY = 86400000
 
 
-def test_complete_twenty_pairs():
+def test_complete_aligned_pairs():
     assert len(PATHS) == 114
 
 
