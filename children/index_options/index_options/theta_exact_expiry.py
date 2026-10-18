@@ -18,6 +18,12 @@ adds no model, no fit and no market read beyond the reader's declared bounds.
     prices/index_daily/<SYMBOL>.parquet   the split-adjusted daily bars (the panel's price_source)
     manifest.json                         counts, refusals, definitions, provenance, sha256 of each file
 
+The prices shard holds EVERY bar the bars reader supplies (from its own start, a warm-up for the
+backward-only volatility and lag features), while surface, archive and own_iv start at ``start``.
+``open``/``high``/``low`` are written only if every bar of the symbol has all three, finite and positive
+(``IndexCloseRows`` refuses a row with some of them); otherwise all three are dropped for that symbol and
+the manifest says ``prices_ohlc: dropped_incomplete``.
+
 ``own_iv/`` and ``prices/`` are ``localtables`` directory layouts (``layout`` "directory",
 ``stamp_stem_as`` "symbol", ``effective_field`` "date"); acquiring each as a source gives
 ``IndexCloseRows(source=..., symbol=...)`` its ``index_daily`` stream (``symbol``, ``date``,
@@ -31,7 +37,7 @@ every Theta price to the bars' basis (the split-adjusted ``close``; ``adjusted_c
 dividend-adjusted, which would make the labels total returns and the ratio drift, so it is not the
 default). Per symbol, the day's ratio ``C/U`` (bar close over the median vendor underlying) is
 constant inside each segment between the bars' split dates; the segment's factor ``f`` is the
-median ratio, snapped to the nearest simple fraction ONLY when it equals the measured median to 1e-6
+median ratio, snapped to the nearest simple fraction ONLY when it equals the measured median to 1e-8
 (a 4:1 split gives exactly 0.25; any other ratio keeps its measured median, ``snapped`` false). A day whose
 ratio is more than ``basis_tolerance`` from its segment's ``f``, or with no bar or no underlying,
 is refused (listed in the manifest) so a stale vendor underlying never rescales a day. SCALED by
@@ -91,8 +97,8 @@ days) are outside the horizon and counted, not refused.
 
 **own_iv.** One row per symbol and quote date: ``close`` is the ``chain_atm_iv`` of the kept expiry
 whose DTE is nearest ``own_iv_target_dte`` (ties go to the shorter), provided it lies within
-``own_iv_max_gap_days`` and is finite. The unit is a decimal annualized vol (0.18 is 18 vol
-points), not VIX points. ``source_expiry`` and ``source_dte`` record which expiry served.
+``own_iv_max_gap_days`` and is finite. The unit is VIX-style POINTS, the surface's decimal ATM IV x 100
+(0.18 is written 18.0), because every existing own_iv consumer (strata at 20 and 30, entry_iv) is in points. ``source_expiry`` and ``source_dte`` record which expiry served.
 
 **Bounds.** ``start`` and ``end_before`` are declared by the reader AND here; the node refuses a
 source whose bounds differ and any chunk with a date outside them. The reader's ``sealed_from``
@@ -139,18 +145,21 @@ DEFAULT_MIN_TWO_SIDED_STRIKES = 2
 #: The tenor, in calendar days, the own_iv series follows, and the farthest it may stray from it.
 DEFAULT_OWN_IV_TARGET_DTE = 30
 DEFAULT_OWN_IV_MAX_GAP_DAYS = 15
+#: own_iv is written in VIX-style points (decimal ATM IV x 100), the unit every own_iv consumer
+#: (strata at 20 and 30, entry_iv) was built on.
+OWN_IV_POINTS = 100.0
 #: Rows buffered before a chunk is processed (cut at the last complete date).
 DEFAULT_FLUSH_ROWS = 1_000_000
 #: The bar field the adjusted basis follows (split-adjusted, NOT dividend-adjusted), and how far a day's
 #: vendor-underlying-to-close ratio may stray from its split segment's factor before the day is refused.
 DEFAULT_BAR_PRICE_FIELD = "close"
 DEFAULT_BASIS_TOLERANCE = 0.01
-#: The most a split factor's reciprocal may need in its denominator when snapping (4:1, 3:2, 5:4 ...).
-_SNAP_DENOMINATOR = 20
+#: The most a split factor's reciprocal may need in its denominator when snapping (4:1, 3:2, 5:4, 50:49 ...; 50 so odd cumulative factors still reduce).
+_SNAP_DENOMINATOR = 50
 #: How exact a measured segment ratio must be to snap to a simple fraction: a true split gives the
 #: fraction to machine precision (the bars ARE the raw prices divided by it), so anything looser is a
 #: non-split factor and keeps its measured median.
-SNAP_TOLERANCE = 1e-6
+SNAP_TOLERANCE = 1e-8
 
 #: The exact_expiry_surface columns, in the consumer's order.
 SURFACE_COLUMNS = (
@@ -196,8 +205,8 @@ DEFINITIONS = {
     "mark": "(bid+ask)/2 for a valid quote (bid>0, ask>=bid), else null",
     "basis_factor": "split-segment factor f taking raw Theta prices to the bars' split-adjusted basis; "
                     "strike, underlying_price, bid, ask, mark and vega are multiplied by f, gamma by 1/f, strike_raw is not",
-    "own_iv.close": "chain_atm_iv of the kept expiry nearest own_iv_target_dte calendar days, "
-                    "within own_iv_max_gap_days; decimal annualized vol",
+    "own_iv.close": "chain_atm_iv x 100 (VIX-style POINTS, 0.18 -> 18.0) of the kept expiry nearest "
+                    "own_iv_target_dte calendar days, within own_iv_max_gap_days",
 }
 
 _SYMBOL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -267,7 +276,7 @@ class _PriceBasis:
     cut the dates into segments inside which the ratio must be one constant (the cumulative split
     factor, 1 when none). Each segment's factor is its median ratio, snapped to the nearest simple
     fraction (``Fraction.limit_denominator``) ONLY when that fraction equals the measured median to
-    :data:`SNAP_TOLERANCE` (true splits do), so the adjusted strike grid is exact (140 x 1/4 = 35) and a
+    :data:`SNAP_TOLERANCE` (1e-8: true splits do, and 0.50505 must not become 50/99), so the adjusted strike grid is exact (140 x 1/4 = 35) and a
     non-split ratio such as 0.9267 is never forced onto the nearby simple fraction. A day whose own ratio differs from its
     segment's factor by more than ``tolerance`` is refused: a stale or mis-timed vendor underlying
     never silently rescales a day. A day with no bar or no usable underlying is refused too.
@@ -730,7 +739,7 @@ class _SymbolPass:
         within = best[best["gap"] <= limit]
         series = pd.DataFrame({
             "symbol": self.symbol, "date": within["quote_date"].to_numpy(),
-            "close": within["chain_atm_iv"].to_numpy(dtype=float),
+            "close": within["chain_atm_iv"].to_numpy(dtype=float) * OWN_IV_POINTS,
             "source_expiry": within["expiry"].to_numpy(), "source_dte": within["dte"].to_numpy("int64")})
         counts = {"rows": int(len(series)), "days_beyond_gap": int(len(best) - len(within)),
                   "days_without_atm": int(surface["quote_date"].nunique() - len(best))}
@@ -914,12 +923,14 @@ class ThetaExactExpiryTables(Node):
         work.mkdir()
         try:
             manifest = self._build(source, symbols, bars, ignored, work)
+            atomic_write(str(work / "run.json"), (json.dumps(
+                {"output_root": str(output), "seconds": round(self.seconds, 3)}, indent=2) + "\n").encode())
             os.rename(work, output)
         except BaseException:
             shutil.rmtree(work, ignore_errors=True)
             raise
         totals = manifest["totals"]
-        return {"summary": {"output_root": str(output), **totals,
+        return {"summary": {"output_root": str(output), "seconds": round(self.seconds, 3), **totals,
                             "refused_symbols": sorted(manifest["refused_symbols"])}, "manifest": manifest}
 
     def _check_bounds(self, source):
@@ -982,6 +993,13 @@ class ThetaExactExpiryTables(Node):
         symbols = list(source.symbols())
         if not symbols:
             raise ValueError(f"{self.key}: the source holds no symbol")
+        folded = {}
+        for name in symbols:
+            folded.setdefault(name.lower(), []).append(name)
+        clash = sorted(v for v in folded.values() if len(v) > 1)
+        if clash:
+            raise ValueError(f"{self.key}: symbols {clash[:5]} are equal ignoring case and would share one "
+                             "archive file (archive_relpath lowercases the symbol)")
         bad = [s for s in symbols if not _SYMBOL.match(s)]
         if bad:
             raise ValueError(f"{self.key}: symbol(s) {bad[:5]} cannot name a file (letters, digits, '.', '_' "
@@ -996,6 +1014,26 @@ class ThetaExactExpiryTables(Node):
             basis.add(_source_table(self.key, table))
         basis.resolve()
         return basis
+
+    def _ohlc(self, rows, dates, field):
+        """Return ``{name: values}`` of open/high/low, or None unless EVERY bar has all three, positive.
+
+        ``IndexCloseRows`` refuses a row carrying some of the three or a non-positive one, so a symbol
+        with one incomplete bar drops all three columns (the close series is unaffected). A basis other
+        than the split-adjusted ``close`` never carries OHLC.
+        """
+        import math
+
+        if field != "close":
+            return None
+        out = {}
+        for number, name in enumerate(self._BAR_EXTRAS[:3]):
+            values = [rows[d][2][number] for d in dates]
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0
+                   for v in values):
+                return None
+            out[name] = [float(v) for v in values]
+        return out
 
     def _write_prices(self, work, symbol, bars):
         """Write the symbol's bars as an ``index_daily`` shard (adjusted close, no split column).
@@ -1013,14 +1051,17 @@ class ThetaExactExpiryTables(Node):
         field = self.params.get("bar_price_field", DEFAULT_BAR_PRICE_FIELD)
         dates = sorted(rows)
         frame = pd.DataFrame({"symbol": symbol, "date": dates, "close": [rows[d][0] for d in dates]})
+        ohlc = self._ohlc(rows, dates, field)
         for number, name in enumerate(self._BAR_EXTRAS):
-            if name in ("open", "high", "low") and field != "close":
-                continue                                      # another basis's OHLC is never mixed in
+            if name in ("open", "high", "low"):
+                if ohlc is not None:
+                    frame[name] = ohlc[name]
+                continue
             values = [rows[d][2][number] for d in dates]
-            if name in ("open", "high", "low") and any(v is None for v in values):
-                continue                                      # IndexCloseRows takes all three or none
             if any(v is not None for v in values):
                 frame[name] = pd.to_numeric(pd.Series(values), errors="coerce")
+        self.ohlc_status[symbol] = "kept" if ohlc is not None else (
+            "absent" if field != "close" else "dropped_incomplete")
         target = work / "prices" / "index_daily" / f"{symbol}.parquet"
         target.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(target, index=False)
@@ -1029,6 +1070,7 @@ class ThetaExactExpiryTables(Node):
     def _build(self, source, symbols, bars, ignored, work):
         """Run every symbol with bars, merge the pieces, write the manifest and return it."""
         started = time.monotonic()
+        self.ohlc_status = {}
         refused = {symbol: "no_bar_rows" for symbol in symbols if symbol not in bars}
         info = {}
         for number, symbol in enumerate(s for s in symbols if s in bars):
@@ -1045,9 +1087,12 @@ class ThetaExactExpiryTables(Node):
             info[symbol]["reader"] = json.loads(json.dumps(one.report(), default=str))
             info[symbol]["contributing_files"] = [list(item) for item in one.contributing(symbol)]
         self._merge(work, len(info))
+        for symbol, status in self.ohlc_status.items():
+            info[symbol]["prices_ohlc"] = status
         manifest = self._manifest(source, bars, ignored, refused, work, info, time.monotonic() - started)
         atomic_write(str(work / "manifest.json"),
                      (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode())
+        self.seconds = time.monotonic() - started
         return manifest
 
     @staticmethod
@@ -1076,12 +1121,13 @@ class ThetaExactExpiryTables(Node):
         totals = {key: sum(entry[key] for entry in info.values()) for key in keys}
         totals["symbols"] = len(info)
         return {
-            "kind": "ThetaExactExpiryTables", "version": 1, "params": dict(self.params),
+            "kind": "ThetaExactExpiryTables", "version": 1,
+            "params": {k: v for k, v in self.params.items() if k != "output_root"},
+            "own_iv_unit": "vix_points",
             "definitions": DEFINITIONS,
             "source": {"identity": json.loads(json.dumps(source.identity(), default=str)),
                        "symbols": list(info), "chain_symbols": list(source.symbols())},
             "refused_symbols": refused,
             "bars": {"symbols": len(bars), "symbols_ignored": ignored,
                      "price_field": self.params.get("bar_price_field", DEFAULT_BAR_PRICE_FIELD)},
-            "files": files, "symbols": info, "totals": totals,
-            "run": {"seconds": round(seconds, 3)}}
+            "files": files, "symbols": info, "totals": totals}

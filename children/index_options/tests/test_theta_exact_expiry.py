@@ -581,9 +581,11 @@ def test_own_iv_is_the_atm_iv_of_the_expiry_nearest_thirty_days(built):
             gap = (today.dte - DEFAULT_OWN_IV_TARGET_DTE).abs()
             chosen = today.loc[gap.sort_values(kind="mergesort").index[0]] if len(today) else None
             assert chosen is not None
-            assert row.close == pytest.approx(chosen.chain_atm_iv) and row.source_expiry == chosen.expiry
+            assert row.close == pytest.approx(100 * chosen.chain_atm_iv) and row.source_expiry == chosen.expiry
             assert row.source_dte == chosen.dte
     aaa = pd.read_parquet(out / "own_iv" / "index_daily" / "AAA.parquet")
+    # VIX-style POINTS like every existing own_iv consumer (bands at 20 and 30): 2017-03-01's ATM IV 0.291 is 29.1
+    assert aaa.loc[aaa.date == "2017-03-01", "close"].item() == pytest.approx(29.1)
     # 2017-02-28: only E1 (17 dte) is in range and E3 is beyond; the nearest to 30 is E1.
     assert aaa.loc[aaa.date == "2017-02-28", "source_expiry"].item() == "2017-03-17"
     # 2017-03-02: E1 (15), E2 (50) in range: nearest 30 is E1 (gap 15) over E2 (gap 20).
@@ -869,6 +871,52 @@ def test_rows_the_consumer_will_drop_are_counted(built):
         assert result["manifest"]["symbols"][symbol]["archive_rows_unusable"] == int(frame.mark.isna().sum())
 
 
+# -- review round 2 (Lens A) ---------------------------------------------------------------------
+
+
+def test_ohlc_is_all_or_none_per_symbol_and_the_shard_reads_through_index_close_rows(tree, tmp_path):
+    from dskit.onboarding import OnboardingRoot
+    from index_options.observations import IndexCloseRows
+    bars = [dict(r) for r in BARS]
+    aaa = [r for r in bars if r["symbol"] == "AAA"]
+    aaa[10]["high"] = None                                     # ONE null high on ONE row
+    result = build(tree, tmp_path / "o", bars=bars)
+    shard = lambda sym: pd.read_parquet(tmp_path / "o" / "prices" / "index_daily" / f"{sym}.parquet")  # noqa: E731
+    assert not {"open", "high", "low"} & set(shard("AAA").columns)         # all three dropped, not just high
+    assert {"open", "high", "low"} <= set(shard("BBB").columns)
+    info = result["manifest"]["symbols"]
+    assert info["AAA"]["prices_ohlc"] == "dropped_incomplete" and info["BBB"]["prices_ohlc"] == "kept"
+    root = OnboardingRoot.create(str(tmp_path / "ob"))
+    registry = root.registry()
+    onboard(root, registry, "px", tmp_path / "o" / "prices")
+    for symbol in ("AAA", "BBB"):                                          # the real reader accepts both shards
+        rows = IndexCloseRows("p", {"root": root.root, "source": "px", "symbol": symbol}).run(None, {})["records"]
+        assert len(rows) == len(shard(symbol))
+        assert ("open" in rows[0]) == (symbol == "BBB")
+
+
+def test_ohlc_with_a_non_positive_value_is_dropped_too(tree, tmp_path):
+    bars = [dict(r, low=0.0) if (r["symbol"] == "BBB" and r["date"] == "2017-01-04") else r for r in BARS]
+    result = build(tree, tmp_path / "o", bars=bars)
+    assert result["manifest"]["symbols"]["BBB"]["prices_ohlc"] == "dropped_incomplete"
+
+
+def test_a_factor_beyond_denominator_twenty_snaps_when_exact(tree, tmp_path):
+    scale = 50 / 99
+    bars = [dict(r, close=r["close"] * scale) if r["symbol"] == "AAA" else r for r in BARS]
+    segment = build(tree, tmp_path / "o", bars=bars)["manifest"]["symbols"]["AAA"]["basis"]["segments"][0]
+    assert segment["snapped"] is True and segment["factor"] == scale
+
+
+def test_symbols_equal_ignoring_case_are_refused(tmp_path):
+    directory = tmp_path / "theta"
+    write_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", chain_rows("AAA"))
+    write_snapshot(directory, "20260101T000002Z-backfill-bbbbbbbb", [dict(r, symbol="aaa") for r in chain_rows("AAA")])
+    with pytest.raises(ValueError, match="case"):
+        build(directory, tmp_path / "o")
+    assert not (tmp_path / "o").exists()
+
+
 # -- provenance, determinism, refusals ---------------------------------------------------------
 
 
@@ -880,7 +928,10 @@ def test_manifest_lists_every_file_with_its_sha256_and_counts(built):
     out, result = built
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest == json.loads(json.dumps(result["manifest"]))
-    on_disk = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()} - {"manifest.json"}
+    on_disk = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()} - {"manifest.json", "run.json"}
+    run = json.loads((out / "run.json").read_text())
+    assert run["output_root"] == str(out) and run["seconds"] >= 0 and "run" not in manifest
+    assert manifest["own_iv_unit"] == "vix_points" and "output_root" not in manifest["params"]
     assert set(manifest["files"]) == on_disk
     for rel, entry in manifest["files"].items():
         assert entry["sha256"] == sha(out / rel)
@@ -903,6 +954,7 @@ def test_the_outputs_are_reproducible_byte_for_byte(tree, tmp_path):
     a = build(tree, tmp_path / "a")["manifest"]["files"]
     b = build(tree, tmp_path / "b")["manifest"]["files"]
     assert a == b
+    assert (tmp_path / "a" / "manifest.json").read_bytes() == (tmp_path / "b" / "manifest.json").read_bytes()
 
 
 def test_chunk_boundaries_do_not_change_the_outputs(tree, tmp_path):
