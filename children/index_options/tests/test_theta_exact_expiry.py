@@ -29,7 +29,7 @@ from index_options.theta_exact_expiry import (
     ARCHIVE_COLUMNS, ARCHIVE_EXTRA_COLUMNS, BAR_FIELDS, DEFAULT_ATM_BAND, DEFAULT_BAR_PRICE_FIELD,
     DEFAULT_BASIS_TOLERANCE, DEFAULT_FLUSH_ROWS, DEFAULT_MIN_TWO_SIDED_STRIKES,
     DEFAULT_OWN_IV_MAX_GAP_DAYS, DEFAULT_OWN_IV_TARGET_DTE, DEFAULT_WING_DELTA,
-    DEFAULT_WING_WIDTH, LIFECYCLE_COLUMNS, SOURCE_FIELDS, SURFACE_COLUMNS,
+    DEFAULT_WING_WIDTH, LIFECYCLE_COLUMNS, LIFECYCLE_EXTRA_COLUMNS, SOURCE_FIELDS, SURFACE_COLUMNS,
     ThetaExactExpiryTables)
 
 CTX = NodeContext(name="t", asof="2023-12-31", run_dir="/nonexistent")
@@ -43,6 +43,7 @@ SURFACE_EXPECTED = [
     "chain_put_call_oi", "chain_put_call_volume", "chain_open_interest", "chain_volume",
     "chain_quote_depth", "chain_underlying_price"]
 LIFECYCLE_EXPECTED = ["symbol", "quote_date", "expiry", "first_seen_date"]
+LIFECYCLE_EXTRAS = ["first_seen_censored"]
 ARCHIVE_EXPECTED = [
     "symbol", "date", "expiration", "strike", "type", "mark", "bid", "ask", "bid_size",
     "ask_size", "open_interest", "volume", "implied_volatility", "delta", "gamma", "vega"]
@@ -134,6 +135,7 @@ def raw_rows(symbol):
             for name in ("strike", "bid", "ask", "underlying_price"):
                 if r[name] is not None:
                     r[name] = r[name] * k
+            r["gamma"], r["vega"] = r["gamma"] / k, r["vega"] * k      # per-$ greeks follow the price scale
         if (symbol, date) == ("AAA", "2017-03-06"):
             r["underlying_price"] = r["underlying_price"] * STALE
         rows.append(r)
@@ -303,6 +305,7 @@ def test_defaults_are_named_once_and_match_the_documented_legacy_definitions():
     assert DEFAULT_OWN_IV_MAX_GAP_DAYS >= 1 and DEFAULT_FLUSH_ROWS >= 1
     assert list(SURFACE_COLUMNS) == SURFACE_EXPECTED
     assert list(LIFECYCLE_COLUMNS) == LIFECYCLE_EXPECTED
+    assert list(LIFECYCLE_EXTRA_COLUMNS) == LIFECYCLE_EXTRAS
     assert list(ARCHIVE_COLUMNS) == ARCHIVE_EXPECTED
     assert list(SOURCE_FIELDS) == READER_FIELDS
     assert list(ARCHIVE_EXTRA_COLUMNS) == ARCHIVE_EXTRAS
@@ -331,6 +334,8 @@ def test_defaults_are_named_once_and_match_the_documented_legacy_definitions():
     ({"bar_price_field": ""}, "bar_price_field"),
     ({"basis_tolerance": 0}, "basis_tolerance"),
     ({"basis_tolerance": 1.2}, "basis_tolerance"),
+    ({"lifecycle_start": "2017-3-1"}, "lifecycle_start"),
+    ({"lifecycle_start": "2017-03-01"}, "lifecycle_start"),         # after start
 ])
 def test_validate_params_is_default_deny(tmp_path, bad, fragment):
     problems = ThetaExactExpiryTables.validate_params(node_params(tmp_path / "o", **bad))
@@ -347,7 +352,8 @@ def test_required_params_are_required(tmp_path, missing):
 def test_a_complete_param_set_validates(tmp_path):
     full = node_params(tmp_path / "o", atm_band=0.03, wing_delta=0.25, wing_delta_width=0.1,
                        min_two_sided_strikes=3, own_iv_target_dte=45, own_iv_max_gap_days=7,
-                       flush_rows=10, bar_price_field="close", basis_tolerance=0.02)
+                       flush_rows=10, bar_price_field="close", basis_tolerance=0.02,
+                       lifecycle_start="2017-02-01")
     assert ThetaExactExpiryTables.validate_params(full) == []
 
 
@@ -443,7 +449,8 @@ def test_a_stricter_threshold_refuses_more(tree, tmp_path):
 def test_lifecycle_schema_and_one_to_one_with_the_surface(built):
     out, _ = built
     lifecycle, surface = lifecycle_of(out), surface_of(out)
-    assert list(lifecycle.columns) == LIFECYCLE_EXPECTED
+    assert list(lifecycle.columns) == LIFECYCLE_EXPECTED + LIFECYCLE_EXTRAS
+    assert lifecycle.first_seen_censored.dtype == bool
     keys = ["symbol", "quote_date", "expiry"]
     assert not lifecycle.duplicated(keys).any()
     merged = surface.merge(lifecycle, on=keys, validate="one_to_one")     # the consumer's own merge
@@ -699,7 +706,8 @@ def test_a_stale_underlying_day_and_a_day_without_a_bar_are_refused(built):
     assert not archive_of(out, "AAA").date.isin(["2017-03-06", "2017-03-07"]).any()
     # their listings still count toward first_seen, and their rows are counted refused, not lost
     info = result["manifest"]["symbols"]["AAA"]
-    assert info["rows_read"] == info["rows_outside_dte"] + info["rows_refused"] + info["rows_archived"]
+    assert info["rows_read"] == (info["rows_before_start"] + info["rows_outside_dte"]
+                                 + info["rows_refused"] + info["rows_archived"])
     assert info["rows_refused"] >= 2 * 2 * 2 * len(REL_STRIKE)
 
 
@@ -733,10 +741,13 @@ def test_price_shards_are_the_adjusted_bars_without_a_split_column(built):
         assert result["manifest"]["symbols"][symbol]["prices_rows"] == len(series)
     assert (out / "prices" / "index_daily" / "BBB.parquet").exists() and not (
         out / "prices" / "index_daily" / "CCC.parquet").exists()
-    assert result["manifest"]["bars"]["symbols"] == 2
+    assert result["manifest"]["bars"]["symbols"] == 2 and result["manifest"]["bars"]["symbols_ignored"] == 0
 
 
 def test_the_bars_input_is_validated(tree, tmp_path):
+    for number, bad in enumerate((None, 0, -3.0, float('nan'))):
+        with pytest.raises(ValueError, match='close'):
+            build(tree, tmp_path / f'bad{number}', bars=[dict(BARS[0], close=bad)] + BARS[1:])
     with pytest.raises(ValueError, match="split_coefficient"):
         build(tree, tmp_path / "a", bars=[{k: v for k, v in BARS[0].items() if k != "split_coefficient"}])
     with pytest.raises(ValueError, match="duplicate"):
@@ -746,6 +757,116 @@ def test_the_bars_input_is_validated(tree, tmp_path):
     with pytest.raises(ValueError, match="nope"):
         build(tree, tmp_path / "d", bar_price_field="nope")
     assert not any((tmp_path / n).exists() for n in "abcd")
+    assert not any((tmp_path / f"bad{n}").exists() for n in range(4))
+
+
+# -- review round 1 (Lens 1): exact snapping, greek basis, censored listings, intake, cohort -----
+
+
+@pytest.mark.parametrize("scale, near", [(0.9267, 0.9444), (0.50505, 0.5)])
+def test_a_factor_that_is_not_an_exact_split_fraction_is_never_snapped(tree, tmp_path, scale, near):
+    bars = [dict(r, close=r["close"] * scale) if r["symbol"] == "AAA" else r for r in BARS]
+    result = build(tree, tmp_path / "o", bars=bars)
+    segment = result["manifest"]["symbols"]["AAA"]["basis"]["segments"][0]
+    assert segment["factor"] == pytest.approx(scale, rel=1e-12) and segment["snapped"] is False
+    assert abs(segment["factor"] / near - 1) > 1e-3 and segment["residual"] == 0.0
+    archive = archive_of(tmp_path / "o", "AAA")
+    assert np.allclose(archive.basis_factor, scale, rtol=1e-12, atol=0)
+
+
+def test_true_splits_still_snap_and_report_a_residual(built):
+    _, result = built
+    for symbol, factors in (("BBB", [0.5, 1.0]), ("AAA", [1.0])):
+        segments = result["manifest"]["symbols"][symbol]["basis"]["segments"]
+        assert [g["factor"] for g in segments] == factors and all(g["snapped"] for g in segments)
+        assert all(g["residual"] <= 1e-6 for g in segments)
+
+
+def test_gamma_and_vega_follow_the_price_basis_so_exposures_have_no_level_shift_at_a_split(built, tmp_path):
+    from index_options.cdf_study import RawChainFeatureBuilder
+    out, _ = built
+    frame = archive_of(out, "BBB")
+    assert np.allclose(frame.gamma, 0.01) and np.allclose(frame.vega, 0.1)
+    assert (frame.delta.abs() <= 1).all()                      # delta and IV are scale free: untouched
+    meta = surface_of(out)
+    meta = meta[meta.symbol == "BBB"]
+    builder = RawChainFeatureBuilder(nodes=5, moneyness_bounds=[-.25, .25], max_node_gap=.1,
+                                     proxy_probabilities=[.1, .25, .5, .75, .9], min_wing_nodes=2,
+                                     max_inner_gap=.15, max_outer_gap=.3)
+    features = builder.transform(frame, meta).set_index(["quote_date", "expiry"])
+    before, after = features.loc[("2017-03-01", "2017-03-17")], features.loc[("2017-03-03", "2017-03-17")]
+    for name in ("chain_log_gamma_oi", "chain_log_vega_oi", "chain_log_delta_oi"):
+        assert np.isfinite(before[name]) and before[name] == pytest.approx(after[name]), name
+
+
+def test_the_consumer_reads_a_lifecycle_with_the_censoring_flag(built, tmp_path):
+    """The extra boolean rides through _meta_rows' one_to_one merge; first_seen_date keeps a real date."""
+    from index_options.cdf_study import ExactExpiryCDFPanel
+    out, _ = built
+    panel = ExactExpiryCDFPanel({"root": "x", "surface": str(out / "surface.parquet"),
+                                 "lifecycle": str(out / "lifecycle.parquet"), "symbols": {"AAA": "AAA"},
+                                 "price_source": "p", "iv_source": "i", "since": "2016-10-01", "max_dte": MAX_DTE,
+                                 "lags": 22, "windows": [1, 5, 22, 66], "feature_gap_days": 7,
+                                 "reference_floor": .001, "spot_tolerance": .02})
+    from index_options.datafiles import DataFiles
+    panel.conventions = panel._resolve_conventions()
+    meta = panel._meta_rows(DataFiles("x"))
+    assert "first_seen_censored" in meta and meta.first_seen_date.notna().all()
+
+
+def test_listings_are_scanned_from_lifecycle_start_before_the_window(tree, tmp_path):
+    result = build(tree, tmp_path / "o", reader_over={"start": "2017-02-28"}, start="2017-03-01",
+                   lifecycle_start="2017-02-28")
+    surface, lifecycle = surface_of(tmp_path / "o"), lifecycle_of(tmp_path / "o")
+    assert surface.quote_date.min() == "2017-03-01"                  # nothing before start is emitted
+    assert archive_of(tmp_path / "o", "AAA").date.min() == "2017-03-01"
+    row = lifecycle[(lifecycle.symbol == "AAA") & (lifecycle.expiry == "2017-03-17")].iloc[0]
+    assert row.first_seen_date == "2017-02-28" and bool(row.first_seen_censored)     # listed before start
+    e0 = lifecycle[(lifecycle.symbol == "AAA") & (lifecycle.expiry == "2017-03-03")].iloc[0]
+    assert e0.first_seen_date == "2017-03-01" and not bool(e0.first_seen_censored)   # a real first listing
+    info = result["manifest"]["symbols"]["AAA"]
+    assert info["rows_before_start"] > 0 and info["first_scanned_date"] == "2017-02-28"
+    assert info["left_censored_expiries"] == 1
+    assert info["rows_read"] == (info["rows_before_start"] + info["rows_outside_dte"]
+                                 + info["rows_refused"] + info["rows_archived"])
+
+
+def test_censoring_flags_follow_the_first_scanned_date(built):
+    out, _ = built
+    lifecycle = lifecycle_of(out)
+    flagged = lifecycle[lifecycle.first_seen_censored]
+    assert set(flagged.expiry) == {"2017-03-17"} and set(flagged.symbol) == {"AAA", "BBB"}
+    assert (flagged.first_seen_date == "2017-02-28").all()
+
+
+def test_the_reader_start_must_equal_lifecycle_start(tree, tmp_path):
+    with pytest.raises(ValueError, match="lifecycle_start"):
+        build(tree, tmp_path / "o", reader_over={"start": "2017-03-01"}, start="2017-03-01",
+              lifecycle_start="2017-02-28")                       # the reader skips the scan-only days
+
+
+def test_a_chain_symbol_without_bars_is_refused_by_name_and_skipped(tree, tmp_path):
+    result = build(tree, tmp_path / "o", bars=[r for r in BARS if r["symbol"] != "BBB"])
+    assert result["manifest"]["refused_symbols"] == {"BBB": "no_bar_rows"}
+    assert result["summary"]["refused_symbols"] == ["BBB"]
+    assert set(surface_of(tmp_path / "o").symbol) == {"AAA"} and set(lifecycle_of(tmp_path / "o").symbol) == {"AAA"}
+    assert "BBB" not in result["manifest"]["symbols"]
+    assert not (tmp_path / "o" / "archive" / "bbb").exists()
+    assert not (tmp_path / "o" / "own_iv" / "index_daily" / "BBB.parquet").exists()
+
+
+def test_bars_of_symbols_without_a_chain_are_ignored_and_not_held(tree, tmp_path):
+    extra = [dict(r, symbol="ZZZ") for r in BARS if r["symbol"] == "AAA"]
+    result = build(tree, tmp_path / "o", bars=BARS + extra)
+    assert result["manifest"]["bars"]["symbols_ignored"] == 1
+    assert not (tmp_path / "o" / "prices" / "index_daily" / "ZZZ.parquet").exists()
+
+
+def test_rows_the_consumer_will_drop_are_counted(built):
+    out, result = built
+    for symbol in ("AAA", "BBB"):
+        frame = archive_of(out, symbol)
+        assert result["manifest"]["symbols"][symbol]["archive_rows_unusable"] == int(frame.mark.isna().sum())
 
 
 # -- provenance, determinism, refusals ---------------------------------------------------------
@@ -772,7 +893,8 @@ def test_manifest_lists_every_file_with_its_sha256_and_counts(built):
         for year, counts in by_year.items():
             path = out / "archive" / archive_relpath(symbol, year)
             assert counts["archive_rows"] == pq.read_metadata(path).num_rows
-        assert info["rows_read"] == (info["rows_outside_dte"] + info["rows_refused"] + info["rows_archived"])
+        assert info["rows_read"] == (info["rows_before_start"] + info["rows_outside_dte"]
+                                     + info["rows_refused"] + info["rows_archived"])
     assert manifest["definitions"] and manifest["source"]["identity"]["end_before"] == END_BEFORE
     assert manifest["symbols"]["AAA"]["contributing_files"]
 
@@ -933,7 +1055,7 @@ def test_shipped_document_plans_and_pins_the_sealed_bound():
     pipeline = json.loads(CONFIG.read_text())["pipeline"]
     chain, tables = pipeline["chain"]["params"], pipeline["tables"]["params"]
     assert chain["fields"] == READER_FIELDS
-    assert chain["end_before"] == tables["end_before"] and chain["start"] == tables["start"]
+    assert chain["end_before"] == tables["end_before"] and chain["start"] == tables["lifecycle_start"]
     assert "sealed_from" not in chain          # the export's files straddle the sealed date; end_before is the seal
     assert chain["end_before"] <= "2024-01-01"
     assert ThetaExactExpiryTables.validate_params(tables) == []
@@ -943,3 +1065,8 @@ def test_shipped_document_plans_and_pins_the_sealed_bound():
         assert source["read_bounds"]["date"]["end_before"] == chain["end_before"]   # one sealed date, said twice
         assert "adjusted_close" not in source["columns"] and "split_coefficient" in source["columns"]
     assert tables["bar_price_field"] == "close"
+    assert tables["lifecycle_start"] == chain["start"] == "2016-01-04" and tables["start"] == "2017-01-03"
+    assert len(chain["symbols"]) == 118 and chain["symbols"] == sorted(set(chain["symbols"]))
+    cohorts = Path("/home/russell/data/index_options/theta-strike-screen-20261018/registration/cohorts.json")
+    if cohorts.exists():
+        assert chain["symbols"] == sorted(json.loads(cohorts.read_text())["eligible"])

@@ -31,12 +31,14 @@ every Theta price to the bars' basis (the split-adjusted ``close``; ``adjusted_c
 dividend-adjusted, which would make the labels total returns and the ratio drift, so it is not the
 default). Per symbol, the day's ratio ``C/U`` (bar close over the median vendor underlying) is
 constant inside each segment between the bars' split dates; the segment's factor ``f`` is the
-median ratio snapped to the nearest simple fraction (a 4:1 split gives exactly 0.25). A day whose
+median ratio, snapped to the nearest simple fraction ONLY when it equals the measured median to 1e-6
+(a 4:1 split gives exactly 0.25; any other ratio keeps its measured median, ``snapped`` false). A day whose
 ratio is more than ``basis_tolerance`` from its segment's ``f``, or with no bar or no underlying,
 is refused (listed in the manifest) so a stale vendor underlying never rescales a day. SCALED by
-``f``: ``strike``, ``underlying_price``, ``bid``, ``ask`` (hence ``mark``). NOT scaled: sizes,
-open interest, volume, IV, delta, gamma and vega (so the gamma/vega exposures of rows before a split
-stay in raw-share units; delta and IV are scale free). The archive keeps ``strike_raw``, the adjusted
+``f``: ``strike``, ``underlying_price``, ``bid``, ``ask`` (hence ``mark``), ``vega`` (times ``f``,
+it is a price per vol) and ``gamma`` (times ``1/f``, a price over a price squared), so the
+consumer's ``log1p(sum|gamma or vega| x open_interest)`` has no level shift at a split. NOT scaled:
+sizes, open interest, volume, IV and delta (dimensionless); theta and rho are not read. The archive keeps ``strike_raw``, the adjusted
 ``underlying_price`` and ``basis_factor`` as columns after the sixteen the consumers read, and the
 manifest records ``f`` for every accepted symbol-day.
 
@@ -58,14 +60,21 @@ computed over the rows of one (symbol, quote_date, expiry), the unit the reader'
 - ``chain_rel_spread``: mean ``(ask - bid) / mid`` over rows with a finite quote, ``ask >= bid``
   and ``mid > 0`` (a zero-bid row counts: the legacy mean did).
 - ``chain_put_call_oi`` / ``chain_put_call_volume``: put total over call total; NaN unless BOTH
-  totals are positive (the consumer logs the ratio). The legacy archive carried no usable volume
-  (its column was all zeros and the ratio all missing); Theta's is real, so these are now filled.
+  totals are positive (the consumer logs the ratio). The legacy raw archive
+  DID carry volume (IWM 2017-03-01 has nonzero volumes), but the legacy SURFACE it was derived into
+  held ``chain_volume`` zero and ``chain_put_call_volume`` missing throughout: a build artifact of the
+  legacy derivation, not a vendor gap. Theta fills both from the real column, so models trained on
+  the legacy surface never saw these two columns populated.
 - ``chain_open_interest`` / ``chain_volume``: sums over all rows (missing counts as 0).
 - ``chain_quote_depth``: the sum of ``bid_size + ask_size`` over all rows (missing counts as 0).
 - ``chain_underlying_price``: the median vendor ``underlying_price`` of the rows.
 - ``first_seen_date``: the first date, among the processed ones, on which ANY row lists the
-  expiry (whatever its DTE or quality, so a refused day still counts). It is left-censored at the
-  symbol's first processed date; the manifest counts those expiries.
+  expiry (whatever its DTE or quality, so a refused day still counts), scanned from ``lifecycle_start``
+  (rows between it and ``start`` feed only this column). An expiry whose first_seen equals the
+  symbol's first SCANNED date may have been listed earlier: it is left-censored, ``first_seen_censored``
+  (a boolean column AFTER the legacy four) is true, and the manifest counts them. The date is kept,
+  not nulled, because ``ExactExpiryCDFPanel`` turns a null into negative session ages and life
+  fractions above 1 without refusing (checked); a model should treat a censored age as a lower bound.
 
 **Archive rows.** Every row of a kept expiry-day is written, in the consumers' vocabulary
 (``right`` -> ``type``, ``implied_vol`` -> ``implied_volatility``), so provenance is whole. ``mark``
@@ -75,8 +84,9 @@ a test) and null otherwise, so the builder's ``_usable_quotes`` masks crossed, z
 missing quotes by itself.
 
 **Refusals** (counted in the manifest, never emitted): an expiry with fewer than
-``min_two_sided_strikes`` strikes carrying a valid quote, and every expiry of a quote day on which
-no kept-horizon row carries a valid quote. Rows with ``dte < 1`` or ``dte > max_dte`` (calendar
+``min_two_sided_strikes`` strikes carrying a valid (two-sided: bid > 0, ask >= bid) quote on either
+right, and every expiry of a quote day on which no kept-horizon row carries a valid quote. A chain
+symbol with no bar rows is refused whole (``refused_symbols`` in the manifest and the summary). Rows with ``dte < 1`` or ``dte > max_dte`` (calendar
 days) are outside the horizon and counted, not refused.
 
 **own_iv.** One row per symbol and quote date: ``close`` is the ``chain_atm_iv`` of the kept expiry
@@ -86,8 +96,12 @@ points), not VIX points. ``source_expiry`` and ``source_dte`` record which expir
 
 **Bounds.** ``start`` and ``end_before`` are declared by the reader AND here; the node refuses a
 source whose bounds differ and any chunk with a date outside them. The reader's ``sealed_from``
-refuses a whole file reaching the sealed date. Memory is bounded: one symbol at a time, in chunks
-of about ``flush_rows`` rows cut only at complete dates.
+refuses a whole file reaching the sealed date. Memory is bounded by: the bars of the chain
+symbols (seven values per symbol-day, held for the whole run; the other bar symbols are dropped on
+intake), plus one symbol's chunk of about ``flush_rows`` rows cut only at complete dates, plus that
+symbol's surface rows (about one per expiry-day). The manifest holds one factor per symbol-day.
+``archive_rows_unusable`` counts archived rows the builder's ``_usable_quotes`` drops for a row-local
+reason (invalid quote, non-finite size, open interest or IV, IV <= 0); duplicates are not counted.
 
 Heavy imports (pyarrow, pandas, numpy) are inside the methods that need them.
 """
@@ -109,7 +123,7 @@ __all__ = [
     "ARCHIVE_COLUMNS", "ARCHIVE_EXTRA_COLUMNS", "BAR_FIELDS", "DEFAULT_ATM_BAND",
     "DEFAULT_BAR_PRICE_FIELD", "DEFAULT_BASIS_TOLERANCE", "DEFAULT_FLUSH_ROWS", "DEFAULT_MIN_TWO_SIDED_STRIKES",
     "DEFAULT_OWN_IV_MAX_GAP_DAYS", "DEFAULT_OWN_IV_TARGET_DTE", "DEFAULT_WING_DELTA",
-    "DEFAULT_WING_WIDTH", "DEFINITIONS", "LIFECYCLE_COLUMNS", "SOURCE_FIELDS", "SURFACE_COLUMNS",
+    "DEFAULT_WING_WIDTH", "DEFINITIONS", "LIFECYCLE_COLUMNS", "LIFECYCLE_EXTRA_COLUMNS", "SOURCE_FIELDS", "SURFACE_COLUMNS",
     "ThetaExactExpiryTables", "quotes_valid"]
 
 #: No node kind is registered: a document names ``index_options.theta_exact_expiry:ThetaExactExpiryTables``.
@@ -133,6 +147,10 @@ DEFAULT_BAR_PRICE_FIELD = "close"
 DEFAULT_BASIS_TOLERANCE = 0.01
 #: The most a split factor's reciprocal may need in its denominator when snapping (4:1, 3:2, 5:4 ...).
 _SNAP_DENOMINATOR = 20
+#: How exact a measured segment ratio must be to snap to a simple fraction: a true split gives the
+#: fraction to machine precision (the bars ARE the raw prices divided by it), so anything looser is a
+#: non-split factor and keeps its measured median.
+SNAP_TOLERANCE = 1e-6
 
 #: The exact_expiry_surface columns, in the consumer's order.
 SURFACE_COLUMNS = (
@@ -142,6 +160,8 @@ SURFACE_COLUMNS = (
     "chain_quote_depth", "chain_underlying_price")
 #: The date_expiry_lifecycle columns.
 LIFECYCLE_COLUMNS = ("symbol", "quote_date", "expiry", "first_seen_date")
+#: Extra lifecycle column after the legacy four: true when first_seen_date is a scan-start date, not a listing.
+LIFECYCLE_EXTRA_COLUMNS = ("first_seen_censored",)
 #: The columns ``RawChainFeatureBuilder.build_archive`` reads from the chain archive.
 ARCHIVE_COLUMNS = (
     "symbol", "date", "expiration", "strike", "type", "mark", "bid", "ask", "bid_size", "ask_size",
@@ -170,10 +190,12 @@ DEFINITIONS = {
     "chain_volume": "sum of volume over all rows (missing = 0)",
     "chain_quote_depth": "sum of bid_size + ask_size over all rows (missing = 0)",
     "chain_underlying_price": "median vendor underlying_price of the rows",
-    "first_seen_date": "first processed date on which any row lists the expiry (left-censored)",
+    "first_seen_date": "first scanned date (from lifecycle_start) on which any row lists the expiry",
+    "first_seen_censored": "true when first_seen_date is the symbol's first scanned date (listed earlier, unknown)",
+    "chain_volume_note": "legacy surface held zeros/missing for the volume columns (build artifact); filled here",
     "mark": "(bid+ask)/2 for a valid quote (bid>0, ask>=bid), else null",
     "basis_factor": "split-segment factor f taking raw Theta prices to the bars' split-adjusted basis; "
-                    "strike, underlying_price, bid, ask and mark are multiplied by f, strike_raw is not",
+                    "strike, underlying_price, bid, ask, mark and vega are multiplied by f, gamma by 1/f, strike_raw is not",
     "own_iv.close": "chain_atm_iv of the kept expiry nearest own_iv_target_dte calendar days, "
                     "within own_iv_max_gap_days; decimal annualized vol",
 }
@@ -244,14 +266,15 @@ class _PriceBasis:
     the bar close ``C(d)`` the day's ratio is ``C/U``. Splits seen in the bars' ``split_coefficient``
     cut the dates into segments inside which the ratio must be one constant (the cumulative split
     factor, 1 when none). Each segment's factor is its median ratio, snapped to the nearest simple
-    fraction (``Fraction.limit_denominator``) when that lies within the tolerance of the median, so
-    the adjusted strike grid is exact (140 x 1/4 = 35). A day whose own ratio differs from its
+    fraction (``Fraction.limit_denominator``) ONLY when that fraction equals the measured median to
+    :data:`SNAP_TOLERANCE` (true splits do), so the adjusted strike grid is exact (140 x 1/4 = 35) and a
+    non-split ratio such as 0.9267 is never forced onto the nearby simple fraction. A day whose own ratio differs from its
     segment's factor by more than ``tolerance`` is refused: a stale or mis-timed vendor underlying
     never silently rescales a day. A day with no bar or no usable underlying is refused too.
     """
 
-    def __init__(self, bars, tolerance):
-        self.bars, self.tolerance = bars, tolerance
+    def __init__(self, bars, tolerance, start):
+        self.bars, self.tolerance, self.start = bars, tolerance, start
         self.dates, self.under = set(), {}
         self.factors, self.segments = {}, []
         self.refused = {"no_underlying": [], "no_bar": [], "basis_deviation": []}
@@ -261,6 +284,7 @@ class _PriceBasis:
         import numpy as np
 
         frame = table.select(["date", "underlying_price"]).to_pandas()
+        frame = frame[frame["date"] >= self.start]            # earlier dates only feed the listings
         self.dates.update(str(d) for d in frame["date"].unique())
         values = frame["underlying_price"].to_numpy(dtype=float)
         good = frame[np.isfinite(values) & (values > 0)]
@@ -288,23 +312,29 @@ class _PriceBasis:
         for number in sorted(grouped):
             days = grouped[number]
             median = float(np.median([r for _, r in days]))
-            factor, snapped = self._snap(median)
+            factor, snapped, residual = self._snap(median)
             kept = [(d, r) for d, r in days if abs(r / factor - 1) <= self.tolerance]
             self.refused["basis_deviation"].extend(d for d, r in days if abs(r / factor - 1) > self.tolerance)
             self.factors.update({d: factor for d, _ in kept})
             self.segments.append({"from": days[0][0], "to": days[-1][0], "median_ratio": median,
-                                  "factor": factor, "snapped": snapped, "days": len(days),
+                                  "factor": factor, "snapped": snapped, "residual": residual, "days": len(days),
                                   "days_refused": len(days) - len(kept)})
         self.refused["basis_deviation"].sort()
 
-    def _snap(self, median):
-        """Return ``(factor, snapped)``: the nearest simple fraction within tolerance, else the median."""
+    @staticmethod
+    def _snap(median):
+        """Return ``(factor, snapped, residual)``: the nearest simple fraction only if exact, else the median.
+
+        ``residual`` is the relative distance between the factor used and the measured median (0 for
+        an unsnapped median, at most :data:`SNAP_TOLERANCE` for a snapped one).
+        """
         from fractions import Fraction
 
-        simple = 1 / Fraction(1 / median).limit_denominator(_SNAP_DENOMINATOR)
-        if abs(float(simple) / median - 1) <= self.tolerance:
-            return float(simple), True
-        return median, False
+        simple = float(1 / Fraction(1 / median).limit_denominator(_SNAP_DENOMINATOR))
+        residual = abs(simple / median - 1)
+        if residual <= SNAP_TOLERANCE:
+            return simple, True, residual
+        return median, False, 0.0
 
 
 class _SurfaceAggregator:
@@ -405,8 +435,10 @@ class _SymbolPass:
         self.aggregator = _SurfaceAggregator(params.get("atm_band", DEFAULT_ATM_BAND), low, high)
         self.min_strikes = params.get("min_two_sided_strikes", DEFAULT_MIN_TWO_SIDED_STRIKES)
         self.flush_rows = params.get("flush_rows", DEFAULT_FLUSH_ROWS)
+        self.floor = params.get("lifecycle_start", params["start"])
         self.buffer, self.buffered = [], 0
         self.first_date = self.last_date = None
+        self.rows_before_start = self.archive_unusable = 0
         self.first_seen, self.surface, self.writers = {}, [], {}
         self.rows_read = self.rows_outside_dte = self.rows_refused = 0
         self.refused_days, self.expiries_no_valid_day, self.expiries_few = [], 0, 0
@@ -448,9 +480,9 @@ class _SymbolPass:
     def _check_chunk(self, table, df):
         """Refuse a chunk outside the declared bounds, out of date order or with an unknown right."""
         low, high = df["date"].min(), df["date"].max()
-        if low < self.p["start"] or high >= self.p["end_before"]:
+        if low < self.floor or high >= self.p["end_before"]:
             raise ValueError(f"{self.key}: {self.symbol} has rows dated {low}..{high}, outside "
-                             f"[start {self.p['start']}, end_before {self.p['end_before']}); "
+                             f"[{self.floor}, end_before {self.p['end_before']}); "
                              "the reader's bound was not applied")
         if self.last_date is not None and low <= self.last_date:
             raise ValueError(f"{self.key}: {self.symbol} dates are not ascending ({low} after {self.last_date})")
@@ -482,11 +514,13 @@ class _SymbolPass:
         self.rows_read += len(df)
         self._note_listings(df)
         dte = self._ordinals(df["expiration"]) - self._ordinals(df["date"])
+        window = (df["date"] >= self.p["start"]).to_numpy()
         in_range = (dte >= 1) & (dte <= self.p["max_dte"])
         factor = df["date"].map(self.basis.factors).to_numpy(dtype=float)
-        usable = in_range & np.isfinite(factor)
-        self.rows_outside_dte += int((~in_range).sum())
-        self.rows_refused += int((in_range & ~usable).sum())
+        usable = window & in_range & np.isfinite(factor)
+        self.rows_before_start += int((~window).sum())
+        self.rows_outside_dte += int((window & ~in_range).sum())
+        self.rows_refused += int((window & in_range & ~usable).sum())
         positions = np.flatnonzero(usable)
         if not len(positions):
             return
@@ -497,6 +531,7 @@ class _SymbolPass:
         if not kept.any():
             return
         chosen = rows[kept]
+        self.archive_unusable += self._unusable(chosen, valid[kept])
         piece = self.aggregator.aggregate(chosen).reset_index().rename(
             columns={"date": "quote_date", "expiration": "expiry"})
         piece["dte"] = self._ordinals(piece["expiry"]) - self._ordinals(piece["quote_date"])
@@ -506,17 +541,38 @@ class _SymbolPass:
 
     @staticmethod
     def _adjusted(rows, factor):
-        """Return ``rows`` in the adjusted basis: strike, underlying, bid and ask times the factor.
+        """Return ``rows`` in the adjusted basis.
 
-        Nothing else is scaled (sizes, open interest, volume, IV and the greeks stay the vendor's);
-        the RAW strike is kept as ``strike_raw`` and the factor as ``basis_factor``.
+        Scaled by the factor ``f``: strike, underlying, bid and ask (price units), vega (``dP/d sigma``
+        is a price: times ``f``) and gamma (``d2P/dS2`` is a price over a price squared: times
+        ``1/f``), so ``log1p(|greek| x open_interest)`` has no level shift at a split. Unscaled:
+        sizes, open interest, volume, IV and delta (dimensionless). Theta and rho are not read. The RAW
+        strike is kept as ``strike_raw`` and the factor as ``basis_factor``.
         """
         rows = rows.copy()
         rows["strike_raw"] = rows["strike"].to_numpy(dtype=float)
         rows["basis_factor"] = factor
-        for name in ("strike", "underlying_price", "bid", "ask"):
+        for name in ("strike", "underlying_price", "bid", "ask", "vega"):
             rows[name] = rows[name].to_numpy(dtype=float) * factor
+        rows["gamma"] = rows["gamma"].to_numpy(dtype=float) / factor
         return rows
+
+    @staticmethod
+    def _unusable(chosen, valid):
+        """Count archived rows ``RawChainFeatureBuilder._usable_quotes`` would drop for a row-local reason.
+
+        An invalid quote (null mark), a non-finite strike, size, open interest or IV, or an IV not above
+        zero. Duplicate contracts are decided across rows and are not counted, so this is a lower bound.
+        """
+        import numpy as np
+
+        finite = np.ones(len(chosen), dtype=bool)
+        for name in ("strike", "bid_size", "ask_size", "open_interest", "implied_vol"):
+            finite &= np.isfinite(chosen[name].to_numpy(dtype=float))
+        iv = chosen["implied_vol"].to_numpy(dtype=float)
+        with np.errstate(invalid="ignore"):
+            usable = valid & finite & (iv > 0) & (chosen["strike"].to_numpy(dtype=float) > 0)
+        return int((~usable).sum())
 
     def _kept_rows(self, rows, valid):
         """Return the mask of rows whose expiry-day survives the refusal rules (counting the refused)."""
@@ -611,6 +667,7 @@ class _SymbolPass:
         surface = surface.sort_values(["quote_date", "expiry"], kind="mergesort").reset_index(drop=True)
         lifecycle = surface[["symbol", "quote_date", "expiry"]].assign(
             first_seen_date=surface["expiry"].map(self.first_seen))
+        lifecycle["first_seen_censored"] = (lifecycle["first_seen_date"] == self.first_date).astype(bool)
         own_iv, own_counts = self._own_iv(surface)
         pieces = self.work / _PIECES
         pieces.mkdir(exist_ok=True)
@@ -626,12 +683,12 @@ class _SymbolPass:
                    for year in sorted(set(years) | set(self.archive_rows))}
         archived = sum(self.archive_rows.values())
         return {
-            "rows_read": self.rows_read, "rows_outside_dte": self.rows_outside_dte,
+            "rows_read": self.rows_read, "rows_before_start": self.rows_before_start,
+            "rows_outside_dte": self.rows_outside_dte, "archive_rows_unusable": self.archive_unusable,
             "rows_refused": self.rows_refused, "rows_archived": int(archived),
             "surface_rows": int(len(surface)), "by_year": by_year,
-            "first_date": self.first_date, "last_date": self.last_date,
-            "left_censored_expiries": int(lifecycle.drop_duplicates("expiry")["first_seen_date"]
-                                          .eq(self.first_date).sum()),
+            "first_scanned_date": self.first_date, "last_date": self.last_date,
+            "left_censored_expiries": int(lifecycle.drop_duplicates("expiry")["first_seen_censored"].sum()),
             "basis": {"price_field": self.p.get("bar_price_field", DEFAULT_BAR_PRICE_FIELD),
                       "tolerance": self.basis.tolerance, "segments": self.basis.segments,
                       "factors": dict(sorted(self.basis.factors.items()))},
@@ -693,7 +750,8 @@ def _lifecycle_schema():
     """Return the Arrow schema of ``lifecycle.parquet``."""
     import pyarrow as pa
 
-    return pa.schema([(name, pa.string()) for name in LIFECYCLE_COLUMNS])
+    return pa.schema([*[(name, pa.string()) for name in LIFECYCLE_COLUMNS],
+                      *[(name, pa.bool_()) for name in LIFECYCLE_EXTRA_COLUMNS]])
 
 
 def _own_iv_schema():
@@ -721,14 +779,17 @@ class ThetaExactExpiryTables(Node):
     params : dict
         ``output_root`` (str, REQUIRED): the directory to create; an existing one is refused.
         ``max_dte`` (int >= 1, REQUIRED): the farthest expiry, in calendar days, that is emitted.
-        ``start`` and ``end_before`` (ISO dates, REQUIRED): the reader's bounds, declared again and
+        ``start`` and ``end_before`` (ISO dates, REQUIRED): the emitted window; ``end_before`` and
+        ``lifecycle_start`` (``start`` when absent) are the reader's bounds, declared again and
         checked equal to the source's. ``atm_band`` (float in (0, 1), default 0.025),
         ``wing_delta`` (float in (0, 1), default 0.25), ``wing_delta_width`` (float > 0, default
         0.05; the band must stay inside (0, 1]), ``min_two_sided_strikes`` (int >= 1, default 2),
         ``own_iv_target_dte`` (int >= 1 and <= ``max_dte``, default 30), ``own_iv_max_gap_days``
         (int >= 0, default 15), ``flush_rows`` (int >= 1, default 1,000,000), ``bar_price_field``
         (non-empty str, default ``"close"``: the split-adjusted close, not ``adjusted_close``),
-        ``basis_tolerance`` (float in (0, 1), default 0.01).
+        ``basis_tolerance`` (float in (0, 1), default 0.01), ``lifecycle_start`` (ISO date <= ``start``,
+        default ``start``: the first date scanned for expiry listings; rows from it up to ``start``
+        feed ``first_seen_date`` only, and the reader's ``start`` must equal it).
 
     Examples
     --------
@@ -745,7 +806,8 @@ class ThetaExactExpiryTables(Node):
     outputs = ("summary", "manifest")
     _PARAMS = ("output_root", "max_dte", "start", "end_before", "atm_band", "wing_delta",
                "wing_delta_width", "min_two_sided_strikes", "own_iv_target_dte",
-               "own_iv_max_gap_days", "flush_rows", "bar_price_field", "basis_tolerance")
+               "own_iv_max_gap_days", "flush_rows", "bar_price_field", "basis_tolerance",
+               "lifecycle_start")
 
     @classmethod
     def validate_params(cls, params):
@@ -774,6 +836,14 @@ class ThetaExactExpiryTables(Node):
         if all(dates.values()) and dates["start"] >= dates["end_before"]:
             problems.append("start must be before end_before")
         cls._float_problems(problems, params)
+        if "lifecycle_start" in params:
+            first = _iso(params["lifecycle_start"])
+            if first is None:
+                problems.append(f"lifecycle_start must be an ISO date text YYYY-MM-DD, got "
+                                f"{params['lifecycle_start']!r}")
+            elif dates["start"] and first > dates["start"]:
+                problems.append(f"lifecycle_start {first} is after start {dates['start']}: listings are "
+                                "scanned from before the window, never after it")
         field = params.get("bar_price_field", DEFAULT_BAR_PRICE_FIELD)
         if not isinstance(field, str) or not field:
             problems.append(f"bar_price_field must be a non-empty string, got {field!r}")
@@ -830,7 +900,8 @@ class ThetaExactExpiryTables(Node):
         """
         source = inputs["records"]
         self._check_bounds(source)
-        bars = self._bars(inputs["bars"])
+        symbols = self._symbols(source)
+        bars, ignored = self._bars(inputs["bars"], set(symbols))
         output = Path(self.params["output_root"])
         work = output.parent / f".{output.name}.partial"
         if output.exists():
@@ -842,36 +913,48 @@ class ThetaExactExpiryTables(Node):
         output.parent.mkdir(parents=True, exist_ok=True)
         work.mkdir()
         try:
-            manifest = self._build(source, bars, work)
+            manifest = self._build(source, symbols, bars, ignored, work)
             os.rename(work, output)
         except BaseException:
             shutil.rmtree(work, ignore_errors=True)
             raise
         totals = manifest["totals"]
-        return {"summary": {"output_root": str(output), **totals}, "manifest": manifest}
+        return {"summary": {"output_root": str(output), **totals,
+                            "refused_symbols": sorted(manifest["refused_symbols"])}, "manifest": manifest}
 
     def _check_bounds(self, source):
         """Refuse a source whose declared bounds differ from this node's (one bound, said twice)."""
         identity = source.identity()
-        for name in ("end_before", "start"):
-            if identity.get(name) != self.params[name]:
-                raise ValueError(f"{self.key}: {name} {self.params[name]!r} differs from the reader's "
+        declared = {"end_before": self.params["end_before"],
+                    "start": self.params.get("lifecycle_start", self.params["start"])}
+        for name, value in declared.items():
+            if identity.get(name) != value:
+                label = "lifecycle_start (start when absent)" if name == "start" else name
+                raise ValueError(f"{self.key}: {label} {value!r} differs from the reader's {name} "
                                  f"{identity.get(name)!r}; the two declarations must agree")
 
-    def _bars(self, rows):
-        """Index the bar rows by symbol and date; refuse a missing field, a duplicate or a sealed date.
+    #: The optional bar fields carried to the price shard, in column order.
+    _BAR_EXTRAS = ("open", "high", "low", "volume", "dividend_amount")
+
+    def _bars(self, rows, wanted):
+        """Index the bar rows of the ``wanted`` symbols by symbol and date, refusing bad rows at intake.
+
+        Every row is checked for its fields and its date (ISO and before ``end_before``); only the
+        wanted symbols' rows are kept, as small tuples, so memory is the chain symbols' bars (one
+        tuple of seven values per symbol-day), not the whole bar universe. A kept row with a null,
+        non-finite or non-positive price, or a duplicate (symbol, date), is refused.
 
         Returns
         -------
-        dict
-            ``{symbol: {date: (price, split_coefficient, row)}}`` with the price from
-            ``bar_price_field``.
+        tuple
+            ``({symbol: {date: (price, split_coefficient, extras)}}, ignored)`` where ``extras`` is the
+            :attr:`_BAR_EXTRAS` values and ``ignored`` counts the symbols of the bars with no chain.
         """
-        import numpy as np
+        import math
 
         field = self.params.get("bar_price_field", DEFAULT_BAR_PRICE_FIELD)
         needed = [field if name == "close" else name for name in BAR_FIELDS]
-        bars = {}
+        bars, unused = {}, set()
         for row in rows:
             missing = [name for name in needed if name not in row]
             if missing:
@@ -880,12 +963,19 @@ class ThetaExactExpiryTables(Node):
             if _iso(date) is None or date >= self.params["end_before"]:
                 raise ValueError(f"{self.key}: bar {symbol} {date!r} is not an ISO date before end_before "
                                  f"{self.params['end_before']}; bound the bars' reader")
+            if symbol not in wanted:
+                unused.add(symbol)
+                continue
+            price, split = row[field], row["split_coefficient"]
+            if (isinstance(price, bool) or not isinstance(price, (int, float))
+                    or not math.isfinite(price) or price <= 0):
+                raise ValueError(f"{self.key}: bar {symbol} {date} has {field} {price!r}; a bar price must be "
+                                 "a finite positive number")
             if date in bars.setdefault(symbol, {}):
                 raise ValueError(f"{self.key}: duplicate bar for {symbol} on {date}")
-            price, split = row[field], row["split_coefficient"]
-            bars[symbol][date] = (float(price) if price is not None else np.nan,
-                                  float(split) if split is not None else None, row)
-        return bars
+            bars[symbol][date] = (float(price), float(split) if split is not None else None,
+                                  tuple(row.get(name) for name in self._BAR_EXTRAS))
+        return bars, len(unused)
 
     def _symbols(self, source):
         """Return the source's symbols, each usable as one path segment."""
@@ -901,7 +991,7 @@ class ThetaExactExpiryTables(Node):
     def _basis(self, one, symbol, bars):
         """Run pass 1 over one symbol and return its resolved :class:`_PriceBasis`."""
         basis = _PriceBasis({d: (price, split) for d, (price, split, _) in bars.get(symbol, {}).items()},
-                            self.params.get("basis_tolerance", DEFAULT_BASIS_TOLERANCE))
+                            self.params.get("basis_tolerance", DEFAULT_BASIS_TOLERANCE), self.params["start"])
         for table in one.batches():
             basis.add(_source_table(self.key, table))
         basis.resolve()
@@ -921,12 +1011,14 @@ class ThetaExactExpiryTables(Node):
         if not rows:
             return 0
         field = self.params.get("bar_price_field", DEFAULT_BAR_PRICE_FIELD)
-        extra = [n for n in ("open", "high", "low") if all(r.get(n) is not None for _, _, r in rows.values())]
-        extra = extra if len(extra) == 3 and field == "close" else []
-        frame = pd.DataFrame({"symbol": symbol, "date": sorted(rows)})
-        frame["close"] = [rows[d][0] for d in frame["date"]]
-        for name in (*extra, "volume", "dividend_amount"):
-            values = [rows[d][2].get(name) for d in frame["date"]]
+        dates = sorted(rows)
+        frame = pd.DataFrame({"symbol": symbol, "date": dates, "close": [rows[d][0] for d in dates]})
+        for number, name in enumerate(self._BAR_EXTRAS):
+            if name in ("open", "high", "low") and field != "close":
+                continue                                      # another basis's OHLC is never mixed in
+            values = [rows[d][2][number] for d in dates]
+            if name in ("open", "high", "low") and any(v is None for v in values):
+                continue                                      # IndexCloseRows takes all three or none
             if any(v is not None for v in values):
                 frame[name] = pd.to_numeric(pd.Series(values), errors="coerce")
         target = work / "prices" / "index_daily" / f"{symbol}.parquet"
@@ -934,12 +1026,12 @@ class ThetaExactExpiryTables(Node):
         frame.to_parquet(target, index=False)
         return len(frame)
 
-    def _build(self, source, bars, work):
-        """Run every symbol, merge the pieces, write the manifest and return it."""
+    def _build(self, source, symbols, bars, ignored, work):
+        """Run every symbol with bars, merge the pieces, write the manifest and return it."""
         started = time.monotonic()
-        symbols = self._symbols(source)
+        refused = {symbol: "no_bar_rows" for symbol in symbols if symbol not in bars}
         info = {}
-        for number, symbol in enumerate(symbols):
+        for number, symbol in enumerate(s for s in symbols if s in bars):
             one = source.select([symbol])
             basis = self._basis(one, symbol, bars)
             run = _SymbolPass(self.key, self.params, symbol, work, number, basis)
@@ -952,8 +1044,8 @@ class ThetaExactExpiryTables(Node):
             info[symbol]["prices_rows"] = self._write_prices(work, symbol, bars)
             info[symbol]["reader"] = json.loads(json.dumps(one.report(), default=str))
             info[symbol]["contributing_files"] = [list(item) for item in one.contributing(symbol)]
-        self._merge(work, len(symbols))
-        manifest = self._manifest(source, bars, work, info, time.monotonic() - started)
+        self._merge(work, len(info))
+        manifest = self._manifest(source, bars, ignored, refused, work, info, time.monotonic() - started)
         atomic_write(str(work / "manifest.json"),
                      (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode())
         return manifest
@@ -970,7 +1062,7 @@ class ThetaExactExpiryTables(Node):
                     writer.write_table(pq.read_table(pieces / f"{name}-{number:06d}.parquet", schema=schema))
         shutil.rmtree(pieces)
 
-    def _manifest(self, source, bars, work, info, seconds):
+    def _manifest(self, source, bars, ignored, refused, work, info, seconds):
         """Return the manifest: params, definitions, source identity, files with digests, counts."""
         import pyarrow.parquet as pq
 
@@ -979,15 +1071,17 @@ class ThetaExactExpiryTables(Node):
             files[path.relative_to(work).as_posix()] = {
                 "sha256": _sha256(path), "bytes": path.stat().st_size,
                 "rows": int(pq.read_metadata(path).num_rows)}
-        keys = ("rows_read", "rows_outside_dte", "rows_refused", "rows_archived", "surface_rows")
+        keys = ("rows_read", "rows_before_start", "rows_outside_dte", "rows_refused", "rows_archived",
+                "surface_rows", "archive_rows_unusable")
         totals = {key: sum(entry[key] for entry in info.values()) for key in keys}
         totals["symbols"] = len(info)
         return {
             "kind": "ThetaExactExpiryTables", "version": 1, "params": dict(self.params),
             "definitions": DEFINITIONS,
             "source": {"identity": json.loads(json.dumps(source.identity(), default=str)),
-                       "symbols": list(info)},
-            "bars": {"symbols": len(bars), "symbols_without_chain": len(set(bars) - set(info)),
+                       "symbols": list(info), "chain_symbols": list(source.symbols())},
+            "refused_symbols": refused,
+            "bars": {"symbols": len(bars), "symbols_ignored": ignored,
                      "price_field": self.params.get("bar_price_field", DEFAULT_BAR_PRICE_FIELD)},
             "files": files, "symbols": info, "totals": totals,
             "run": {"seconds": round(seconds, 3)}}
