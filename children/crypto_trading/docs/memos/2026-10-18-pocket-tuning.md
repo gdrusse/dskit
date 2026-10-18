@@ -42,3 +42,7 @@ Initial RED: the focused tests correctly failed because the forty requested docu
 - [ARD coefficient pruning parameter](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.ARDRegression.html)
 - [Previous aligned study](2026-10-18-warmup20-aligned-methods.md)
 - Artifacts: /home/russell/data/crypto_trading/research/pocket-tuning-20261018.
+
+### Operational retry before selection
+
+Warm-up setting 01 initially stopped at the first writer because the requested results directory was absent. Its model fit completed, but no completed six-output result existed. The failed run and original log are retained; only output placement for its retry changed. The folder was explicitly created, and the retry uses a new run root without overwriting the failure. This is a recorded execution failure, not a completed experiment or a statistical-plan change.
