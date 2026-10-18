@@ -7342,8 +7342,31 @@
     "links": "All new memo local links resolve",
     "remote_csv": "Tracked CSV byte-identical to full100-cell output",
     "new_runs": "No training, outcome acquisition, trading or source replay",
-    "tests": "Four documentation budget tests passed; no full suite"
+    "tests": "Four documentation budget tests passed; no full suite",
+    "final_lock": "Memo, CSV, procedure, numerical outputs, contract and matrix unchanged from reviewed candidate; only review evidence and lane handoff appended"
   },
-  "reviews": [],
-  "status": "Awaiting two independent scoped reviews"
+  "reviews": [
+    {
+      "reviewer": "GPT-6 Astra",
+      "lens": "correctness/provenance",
+      "path": "/home/russell/data/crypto_trading/research/candidate-inventory-20261018/review-accuracy.md",
+      "sha256": "06b607128929dc4151afaeebff1099315ac9792d244f894ac77a96be5223b6c0",
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    {
+      "reviewer": "GPT-6 Astra",
+      "lens": "integration/test quality",
+      "path": "/home/russell/data/crypto_trading/research/candidate-inventory-20261018/review-integration.md",
+      "sha256": "cac934a792c2ee25ef486a03944f900672c2990fe07d2fec5b2e0678a6e339d7",
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    }
+  ],
+  "status": "Closed: two independent scoped reviews, zero unresolved findings",
+  "review_candidate": "105455fce21e77714af90dc709048375a14c679f"
 }
