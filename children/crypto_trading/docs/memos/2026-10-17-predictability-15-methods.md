@@ -1,5 +1,7 @@
 # Fifteen methods for predicting crypto settlement better than the market
 
+> Recommendation update, October 18: use the [aligned warm-up/validation reassessment](2026-10-18-warmup20-aligned-methods.md). The original results below remain a record of combined-period historical exploration.
+
 ## TL;DR
 
 **All 15 methods are complete:** each has a runnable JSON, chronological training, forecast scores, 100 asset/lead/bin cells, and separate lead and calibration outputs. Four improve on a fitted market-only calibration benchmark overall in historical development data; no cell establishes an incremental improvement beyond that benchmark after the 1,500-cell screen.

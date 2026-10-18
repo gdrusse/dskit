@@ -1,5 +1,7 @@
 # Twenty-two further tests of local crypto market calibration
 
+> Recommendation update, October 18: use the [aligned warm-up/validation reassessment](2026-10-18-warmup20-aligned-methods.md). The original results below remain a record of combined-period historical exploration.
+
 ## TL;DR
 
 **All 22 additional tests are complete: 37 methods across both batches.** The new batch has 22 runnable JSONs and 132 output files: 2,200 asset/lead/bin cells, 110 lead rows, 220 asset/lead rows and 1,100 calibration rows, plus every forecast and contract score.
