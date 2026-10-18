@@ -1,0 +1,110 @@
+{
+  "base_commit": "81c0e2eb64fb99af1477f37543864c7e410b3ac3",
+  "owner": "GPT-6",
+  "contract": "Explain existing model training, selection and validation; reconstruct saved-fit training scores without fitting or selecting new rules.",
+  "allowed_paths": [
+    "children/crypto_trading/docs/explanations/market-model-training-and-validation.md",
+    "children/crypto_trading/docs/explanations/market-model-training-and-validation-evidence.json",
+    "children/crypto_trading/docs/RE-ENTRY.md",
+    "docs/RE-ENTRY.md",
+    "docs/archive/re-entry/crypto_trading.md",
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018",
+    "/mnt/c/Users/russe/.cursor/projects/empty-window/canvases/crypto-training-validation.canvas.tsx"
+  ],
+  "non_goals": [
+    "No fitting or new rule",
+    "No toolkit/config/production changes",
+    "No protected outcome access",
+    "No trading claims"
+  ],
+  "matrix": [
+    "Saved coefficients reproduce 137727 forecasts per model",
+    "Training eligibility/counts and actual timestamps match fits",
+    "Training, GRU internal calibration, warm-up and validation distinguished",
+    "Prior validation exposure disclosed",
+    "Matched-row metrics with explicit units and averaging",
+    "Canvas matches results and SDK types; links resolve"
+  ],
+  "artifacts": {
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018/build.py": "a131069e3c0e813754cfc52e9f201bb1cbc8358ca71a2b007b70227bf43d5df4",
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018/results.json": "f140470565594d15746094d54c5db555d79e598368a6304c16c02dacb3d7942b",
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018/metrics.csv": "a4faa907469f0b1a6277e3921e6ccccaf8ada4449fd05ce93541698c0d9670c9",
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018/fit-windows.csv": "3787854327af89ca8d48fe51534c7ede68b0a9dbce7e3ab273e8c07fece5d874",
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018/training-objective.csv": "0f49dbe8dc195be0853d199f33346f8c1a8c38060630c8db067f0dbcb0b94915",
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018/coefficients.csv": "843dd9bce0df537c80f3d1bf92ad801178ef47181f8d55170a8ac52976216dcc",
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018/gru-curves.csv": "9937d6979d11700bb4dcad7802509d44622178a1c3b487dcf6deb520ab323037",
+    "/home/russell/data/crypto_trading/research/training-explanation-20261018/selection-quarters.csv": "28a3c61c4ed400ac10151e59398e33e3b7c5490a6694606fa9a5ab8497696007",
+    "/mnt/c/Users/russe/.cursor/projects/empty-window/canvases/crypto-training-validation.canvas.tsx": "10dbc47ac2653e830e497ae4f96ec05a08f9aad184963ce244f9971213d6a04f",
+    "children/crypto_trading/docs/explanations/market-model-training-and-validation.md": "35499490e94e61554088402f06d4043ee26321b07e666535da32bf43bc213422"
+  },
+  "input_hashes": {
+    "/home/russell/data/crypto_trading/research/predictability15-20261017/decisions.parquet": "a80c1508a79d8484168985eb7d31dce377aa816969b812769e9d53f0aa694a4b",
+    "/home/russell/wt/crypto-predictability-15-20261017/children/crypto_trading/configs/run-pocket-tuning-validation-03-p24-strength-075.json": "fdf36a0ca6987ed9128175e53445f48ee681f97351c84e09edca6de06e59701e",
+    "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/warmup-03.json": "d2a1edb9be67f02fb6f00c861d12d462eb6d18f3b7fbaaf48bdfc44bec3e7501",
+    "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/warmup/crypto-pocket-tuning-warmup-03-p24-strength-075-2026-10-18-c7131edf/artifacts/fit/fits.json": "34f7340f2179b4dcbd07a7a78b1a9a993dd84ec50cd087b80654d5610cf547c7",
+    "/home/russell/data/crypto_trading/research/attribution-20261018/warmup-forecasts.parquet": "a461fdef4bd2f4a88175520b08c815d3bd1238b94f1570e95cd159655201214f",
+    "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/validation-03.json": "38400c9935d4b1edd8c9aae161ece348254ab2d586314c1d0d5a352cba814b80",
+    "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/runs/validation/crypto-pocket-tuning-validation-03-p24-strength-075-2026-10-18-ba45b062/artifacts/fit/fits.json": "241ae161b9fc25508332c8884afd6369a912ec229e44ce02d6f2dd54b0ef07ee",
+    "/home/russell/data/crypto_trading/research/attribution-20261018/validation-forecasts.parquet": "38e133f101ab15e9710ed38241931eb26a44ac22a4417c1b0095268b9a1e49c1",
+    "/home/russell/data/crypto_trading/batch-zoo-w1/gru-crps_tail-pooled/runs/gru-crps_tail-pooled/zoo-gru-crps_tail-pooled-wf-2026-02-19-2026-05-01-20359fe0/artifacts/fit/training_curve.json": "38d213049c06bf8b079b8eeacb4e96fa89b2f80f7642e8dbaa6445a30695bb69",
+    "/home/russell/data/crypto_trading/production/models/gru-crps_tail-pooled/block-1-2026-05-02/training_curve.json": "1f5a771e7e7c8ca44f060a8897591e0a6f6acd1885835a4379cb5dce823a9dd7",
+    "/home/russell/data/crypto_trading/production/models/gru-crps_tail-pooled/block-2-2026-07-01/training_curve.json": "b23dff5839ea2410ec051cc4b5461fe8192a6a80f5d30a03102280b914a2f6b3",
+    "/home/russell/data/crypto_trading/research/pocket-tuning-20261018/selection-lock.json": "a835e9a00c8c13916a3d30ecc2cb9ec703c6c8aaefe75c8e6680addf7474b6d2"
+  },
+  "verification": [
+    {
+      "stage": "warmup",
+      "fit_date": "2026-02-19",
+      "model": "m24",
+      "matched_rows": 25406,
+      "max_abs_probability_error": 2.220446049250313e-16
+    },
+    {
+      "stage": "warmup",
+      "fit_date": "2026-02-19",
+      "model": "s03",
+      "matched_rows": 25406,
+      "max_abs_probability_error": 2.220446049250313e-16
+    },
+    {
+      "stage": "warmup",
+      "fit_date": "2026-03-21",
+      "model": "m24",
+      "matched_rows": 27593,
+      "max_abs_probability_error": 2.220446049250313e-16
+    },
+    {
+      "stage": "warmup",
+      "fit_date": "2026-03-21",
+      "model": "s03",
+      "matched_rows": 27593,
+      "max_abs_probability_error": 2.220446049250313e-16
+    },
+    {
+      "stage": "validation",
+      "fit_date": "2026-05-02",
+      "model": "m24",
+      "matched_rows": 84728,
+      "max_abs_probability_error": 2.220446049250313e-16
+    },
+    {
+      "stage": "validation",
+      "fit_date": "2026-05-02",
+      "model": "s03",
+      "matched_rows": 84728,
+      "max_abs_probability_error": 2.220446049250313e-16
+    }
+  ],
+  "new_fits": 0,
+  "checks": {
+    "saved_probability_reconstruction": "6 fit/model checks; 137727 rows per model; max discrepancy 2.220446049250313e-16",
+    "links": "All explanation local links exist",
+    "artifact_hashes": "All input/output hashes verified",
+    "canvas": "TypeScript 5.9.3 strict check passed; embedded data equals results; all selectors populated; visual rendering not verified",
+    "doc_budgets": "4 passed",
+    "full_suite": "Not run; no implementation code changed",
+    "verification_retry": "First canvas JSON extraction assumed one newline and failed before modifying evidence; corrected to JSON raw_decode, passed."
+  },
+  "reviews": [],
+  "status": "Awaiting scoped independent accuracy reviews"
+}
