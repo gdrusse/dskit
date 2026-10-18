@@ -576,6 +576,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # theta-earnings-labels-2016-2020.json (dev-period announcement dates)
                            # run-theta-exact-expiry-tables.json (ADR-0270: the frozen Theta export through
                            # ThetaExactExpiryTables into surface/lifecycle/archive/own_iv; new output_root per run)
+                           # run-strike-screen-arms.json + strike-screen-folds-screen.jsonl (ADR-0270: the executable 8-candidate arms
+                           # screen, pinned to strike-screen-protocol.json by tests/test_strike_screen_arms.py; no fit until registered)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner
@@ -599,7 +601,7 @@ docs/research/              # README.md, .gitkeep; distribution-modeling/, real-
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
-                           # quote_backtest, debit_backtest, ledger_studies, theta_exact_expiry (.py)
+                           # quote_backtest, debit_backtest, ledger_studies, theta_exact_expiry, strike_screen_arms (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or

@@ -1,0 +1,3239 @@
+{
+  "notes": "ADR-0270 executable strike-screen study (arms screen): 2 arms x 2 encoders x 2 losses = 8 pooled TorchCDF candidates on the 118-name Theta cohort, every value pinned to configs/strike-screen-protocol.json where the owners can express it (tests/test_strike_screen_arms.py enforces the pins and lists what they cannot). FIT BUDGET IS ZERO until the registration is approved: nothing runs; every manifest_sha256 below is a 64-zero placeholder the store refuses and experiment.expected_cells is an unresolved census. Run only from children/index_options through python -m index_options.cdf_study CONFIG --stage search --partition pooled, then --stage select, --stage evaluate --partition development then later, --stage report (the panel stage refuses a document with a decision context: its panel cannot be cached). The invocation, the pin replacement and the caps are in $ROOT/documents/study/README.md, outside the repo. Warm-up fold: 2019 origins select; scored fold: 2020-2023 origins evaluate; the holdout from holdout_start is never read.",
+  "data": {
+    "root": "/home/russell/data/index_options/theta-strike-screen-20261018/ob",
+    "surface": {
+      "source": "theta-exact-expiry-tables",
+      "stream": "files",
+      "relpath": "surface.parquet",
+      "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "lifecycle": {
+      "source": "theta-exact-expiry-tables",
+      "stream": "files",
+      "relpath": "lifecycle.parquet",
+      "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "archive_root": {
+      "source": "theta-exact-expiry-archive",
+      "stream": "files",
+      "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "chain_features": {
+      "source": "theta-raw-chain-features",
+      "stream": "files",
+      "relpath": "raw_chain_features.parquet",
+      "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "raw_chain": {
+      "nodes": 9,
+      "moneyness_bounds": [
+        -0.3,
+        0.3
+      ],
+      "max_node_gap": 0.04,
+      "proxy_probabilities": [
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.15,
+        0.2,
+        0.25,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.75,
+        0.8,
+        0.85,
+        0.9,
+        0.95,
+        0.975,
+        0.99
+      ],
+      "min_wing_nodes": 5,
+      "max_inner_gap": 0.05,
+      "max_outer_gap": 0.1
+    },
+    "symbols": {
+      "AAPL": "AAPL",
+      "ABBV": "ABBV",
+      "ABT": "ABT",
+      "ABUS": "ABUS",
+      "ACN": "ACN",
+      "ADBE": "ADBE",
+      "ADI": "ADI",
+      "AEO": "AEO",
+      "AG": "AG",
+      "AGNC": "AGNC",
+      "AKAM": "AKAM",
+      "ALB": "ALB",
+      "ALLY": "ALLY",
+      "AMAT": "AMAT",
+      "AMC": "AMC",
+      "AMD": "AMD",
+      "AMGN": "AMGN",
+      "AMKR": "AMKR",
+      "AMZN": "AMZN",
+      "ANET": "ANET",
+      "APA": "APA",
+      "APH": "APH",
+      "APO": "APO",
+      "AVAV": "AVAV",
+      "AVGO": "AVGO",
+      "AXP": "AXP",
+      "AXTI": "AXTI",
+      "BA": "BA",
+      "BAC": "BAC",
+      "BBY": "BBY",
+      "BIDU": "BIDU",
+      "BLK": "BLK",
+      "BMY": "BMY",
+      "BP": "BP",
+      "BSX": "BSX",
+      "BX": "BX",
+      "C": "C",
+      "CAG": "CAG",
+      "CAT": "CAT",
+      "CCJ": "CCJ",
+      "CCL": "CCL",
+      "CDE": "CDE",
+      "CHTR": "CHTR",
+      "CIEN": "CIEN",
+      "CLF": "CLF",
+      "CLS": "CLS",
+      "CMCSA": "CMCSA",
+      "CME": "CME",
+      "CMG": "CMG",
+      "CNC": "CNC",
+      "COF": "COF",
+      "COHR": "COHR",
+      "COP": "COP",
+      "COST": "COST",
+      "CPB": "CPB",
+      "CRM": "CRM",
+      "CSCO": "CSCO",
+      "CVE": "CVE",
+      "CVS": "CVS",
+      "CVX": "CVX",
+      "DAL": "DAL",
+      "DE": "DE",
+      "DHR": "DHR",
+      "DHT": "DHT",
+      "DIS": "DIS",
+      "DKS": "DKS",
+      "DUK": "DUK",
+      "DVN": "DVN",
+      "ECHO": "ECHO",
+      "EIX": "EIX",
+      "ENPH": "ENPH",
+      "EOG": "EOG",
+      "EPD": "EPD",
+      "EQT": "EQT",
+      "EXPE": "EXPE",
+      "F": "F",
+      "FCEL": "FCEL",
+      "FCX": "FCX",
+      "FDX": "FDX",
+      "FISV": "FISV",
+      "FRO": "FRO",
+      "FSLR": "FSLR",
+      "FTNT": "FTNT",
+      "GE": "GE",
+      "GEO": "GEO",
+      "GILD": "GILD",
+      "GIS": "GIS",
+      "GLW": "GLW",
+      "GM": "GM",
+      "GME": "GME",
+      "GOOG": "GOOG",
+      "GOOGL": "GOOGL",
+      "GPRO": "GPRO",
+      "GS": "GS",
+      "HAL": "HAL",
+      "HD": "HD",
+      "HL": "HL",
+      "HON": "HON",
+      "HPE": "HPE",
+      "HPQ": "HPQ",
+      "HUM": "HUM",
+      "IBM": "IBM",
+      "INTC": "INTC",
+      "INTU": "INTU",
+      "ISRG": "ISRG",
+      "JBLU": "JBLU",
+      "JNJ": "JNJ",
+      "JPM": "JPM",
+      "KGC": "KGC",
+      "KHC": "KHC",
+      "KKR": "KKR",
+      "KLAC": "KLAC",
+      "KMI": "KMI",
+      "KO": "KO",
+      "KR": "KR",
+      "KSS": "KSS",
+      "KTOS": "KTOS",
+      "LLY": "LLY"
+    },
+    "keyed_tables": {
+      "key": [
+        "symbol",
+        "quote_date"
+      ],
+      "age_suffix": "_age_days",
+      "missing_suffix": "_missing",
+      "tables": {
+        "volume22": {
+          "root": "/home/russell/data/index_options/ob",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "vl_log_volume_ratio": "vl_log_volume_ratio",
+            "vl_log_dollar_volume": "vl_log_dollar_volume",
+            "vl_amihud": "vl_amihud"
+          },
+          "max_age_days": 0,
+          "strict_prior": false,
+          "source": "universe-liquidity-20261008",
+          "stream": "volume22"
+        },
+        "volume66": {
+          "root": "/home/russell/data/index_options/ob",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "vl_log_volume_ratio_66": "vl_log_volume_ratio_66"
+          },
+          "max_age_days": 0,
+          "strict_prior": false,
+          "source": "universe-liquidity-20261008",
+          "stream": "volume66"
+        }
+      }
+    },
+    "price_source": "theta-prices-index-daily",
+    "iv_source": "theta-own-iv-index-daily",
+    "since": "2016-01-04",
+    "max_dte": 60,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02,
+    "surface_features": true,
+    "decision_regions": {
+      "archive_root": {
+        "source": "theta-exact-expiry-archive",
+        "stream": "files",
+        "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "max_chain_rows": 300000000,
+      "panel_years": [
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023
+      ],
+      "clock": "after_date_close_indicative_not_executable",
+      "limits": {
+        "max_seconds": 1800,
+        "max_resident_mib": 6144
+      },
+      "chain_rule": {
+        "max_abs_log_moneyness": 0.3,
+        "region": "span"
+      }
+    },
+    "notes": "Sources are registered in the pilot-root onboarding store ($ROOT/ob) from the converter outputs: theta-exact-expiry-tables (surface.parquet, lifecycle.parquet), theta-exact-expiry-archive (the archive tree: read by the raw-chain prepare stage and by the decision contexts), theta-raw-chain-features (the prepare stage output with its .sources.json sidecar), theta-prices-index-daily and theta-own-iv-index-daily (localtables index_daily streams: price_source and iv_source; symbols maps every name to its OWN own_iv series, in VIX-style points). price_source and iv_source name a source and have no manifest pin knob: their identity rides in the panel provenance (reader fingerprints). raw_chain: nodes 9, moneyness_bounds +-0.3 and max_node_gap 0.04 are run-predictive-cdf-risk-neutral.json's; proxy_probabilities (19 levels), min_wing_nodes 5, max_inner_gap 0.05 and max_outer_gap 0.10 are the proxy defaults proposed in docs/research/distribution-modeling/2026-10-18-market-implied-reference-and-baselines.md item 6 (its min_forward_pairs 5 is not a RawChainFeatureBuilder knob). keyed_tables: the four vl_ features read the existing universe-liquidity-20261008 source of the main store (volume22 and volume66 streams, max_age_days 0). dividend_field is absent: the label is the protocol's split-adjusted close return, dividends known zero. decision_regions: chain_rule is the span region (every quotable out-of-the-money strike) with max_abs_log_moneyness 0.3, equal to the raw-chain node bound so the listed strikes reach the +-3 z grid at long horizons (older documents use 0.1); panel_years 2017-2023 are the development and validation origins; limits are the owner maxima (1800 s and 6144 MiB for the whole process, validated by DecisionRegionContextBuilder); max_chain_rows 300000000 is a refusal cap, twice a smoke-extrapolated 150 million matching rows."
+  },
+  "diagnostic": {
+    "strikes_z": [
+      -3,
+      -2.5,
+      -2,
+      -1.5,
+      -1,
+      -0.5,
+      0,
+      0.5,
+      1,
+      1.5,
+      2,
+      2.5,
+      3
+    ],
+    "integration_points": 101
+  },
+  "study": {
+    "features": [
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "calendar_days_per_session",
+      "reference_scale",
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "momentum_5",
+      "momentum_22",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "down_rv_5",
+      "down_rv_22",
+      "up_rv_5",
+      "up_rv_22",
+      "vl_log_volume_ratio_66",
+      "vl_log_volume_ratio",
+      "vl_log_dollar_volume",
+      "vl_amihud",
+      "own_iv",
+      "chain_log_atm_iv",
+      "chain_log_skew25",
+      "chain_log_curvature25",
+      "chain_log_rel_spread",
+      "chain_log_put_call_oi",
+      "chain_log_contracts",
+      "chain_log_open_interest",
+      "chain_log_quote_depth",
+      "chain_has_25d_pair",
+      "chain_has_put_call_oi",
+      "chain_node_00_log_moneyness",
+      "chain_node_00_iv",
+      "chain_node_00_log_rel_spread",
+      "chain_node_00_log_oi",
+      "chain_node_00_log_depth",
+      "chain_node_00_mask",
+      "chain_node_01_log_moneyness",
+      "chain_node_01_iv",
+      "chain_node_01_log_rel_spread",
+      "chain_node_01_log_oi",
+      "chain_node_01_log_depth",
+      "chain_node_01_mask",
+      "chain_node_02_log_moneyness",
+      "chain_node_02_iv",
+      "chain_node_02_log_rel_spread",
+      "chain_node_02_log_oi",
+      "chain_node_02_log_depth",
+      "chain_node_02_mask",
+      "chain_node_03_log_moneyness",
+      "chain_node_03_iv",
+      "chain_node_03_log_rel_spread",
+      "chain_node_03_log_oi",
+      "chain_node_03_log_depth",
+      "chain_node_03_mask",
+      "chain_node_04_log_moneyness",
+      "chain_node_04_iv",
+      "chain_node_04_log_rel_spread",
+      "chain_node_04_log_oi",
+      "chain_node_04_log_depth",
+      "chain_node_04_mask",
+      "chain_node_05_log_moneyness",
+      "chain_node_05_iv",
+      "chain_node_05_log_rel_spread",
+      "chain_node_05_log_oi",
+      "chain_node_05_log_depth",
+      "chain_node_05_mask",
+      "chain_node_06_log_moneyness",
+      "chain_node_06_iv",
+      "chain_node_06_log_rel_spread",
+      "chain_node_06_log_oi",
+      "chain_node_06_log_depth",
+      "chain_node_06_mask",
+      "chain_node_07_log_moneyness",
+      "chain_node_07_iv",
+      "chain_node_07_log_rel_spread",
+      "chain_node_07_log_oi",
+      "chain_node_07_log_depth",
+      "chain_node_07_mask",
+      "chain_node_08_log_moneyness",
+      "chain_node_08_iv",
+      "chain_node_08_log_rel_spread",
+      "chain_node_08_log_oi",
+      "chain_node_08_log_depth",
+      "chain_node_08_mask",
+      "rn_proxy_eligible",
+      "rn_forward_ratio",
+      "rn_projection_distance",
+      "rn_interior_mass",
+      "rn_q_0100",
+      "rn_q_0250",
+      "rn_q_0500",
+      "rn_q_1000",
+      "rn_q_1500",
+      "rn_q_2000",
+      "rn_q_2500",
+      "rn_q_3000",
+      "rn_q_4000",
+      "rn_q_5000",
+      "rn_q_6000",
+      "rn_q_7000",
+      "rn_q_7500",
+      "rn_q_8000",
+      "rn_q_8500",
+      "rn_q_9000",
+      "rn_q_9500",
+      "rn_q_9750",
+      "rn_q_9900",
+      "chain_log_volume",
+      "chain_put_call_volume_imbalance",
+      "chain_log_delta_oi",
+      "chain_log_gamma_oi",
+      "chain_log_vega_oi",
+      "chain_volume_weighted_rel_spread",
+      "chain_log_lag_open_interest",
+      "chain_log_lag_oi_change",
+      "rn_median",
+      "rn_iqr",
+      "rn_left_width",
+      "rn_right_width",
+      "chain_log_atm_iv_change_1",
+      "chain_log_atm_iv_change_5",
+      "chain_log_atm_iv_change_22",
+      "chain_log_skew25_change_1",
+      "chain_log_skew25_change_5",
+      "chain_log_skew25_change_22",
+      "chain_log_curvature25_change_1",
+      "chain_log_curvature25_change_5",
+      "chain_log_curvature25_change_22",
+      "chain_liquidity_asymmetry",
+      "implied_minus_realized_variance",
+      "term_slope_prev",
+      "term_slope_next",
+      "rn_mean",
+      "rn_variance",
+      "rn_skewness",
+      "rn_kurtosis",
+      "rn_left_tail_integral",
+      "rn_right_tail_integral",
+      "is_AAPL",
+      "is_ABBV",
+      "is_ABT",
+      "is_ABUS",
+      "is_ACN",
+      "is_ADBE",
+      "is_ADI",
+      "is_AEO",
+      "is_AG",
+      "is_AGNC",
+      "is_AKAM",
+      "is_ALB",
+      "is_ALLY",
+      "is_AMAT",
+      "is_AMC",
+      "is_AMD",
+      "is_AMGN",
+      "is_AMKR",
+      "is_AMZN",
+      "is_ANET",
+      "is_APA",
+      "is_APH",
+      "is_APO",
+      "is_AVAV",
+      "is_AVGO",
+      "is_AXP",
+      "is_AXTI",
+      "is_BA",
+      "is_BAC",
+      "is_BBY",
+      "is_BIDU",
+      "is_BLK",
+      "is_BMY",
+      "is_BP",
+      "is_BSX",
+      "is_BX",
+      "is_C",
+      "is_CAG",
+      "is_CAT",
+      "is_CCJ",
+      "is_CCL",
+      "is_CDE",
+      "is_CHTR",
+      "is_CIEN",
+      "is_CLF",
+      "is_CLS",
+      "is_CMCSA",
+      "is_CME",
+      "is_CMG",
+      "is_CNC",
+      "is_COF",
+      "is_COHR",
+      "is_COP",
+      "is_COST",
+      "is_CPB",
+      "is_CRM",
+      "is_CSCO",
+      "is_CVE",
+      "is_CVS",
+      "is_CVX",
+      "is_DAL",
+      "is_DE",
+      "is_DHR",
+      "is_DHT",
+      "is_DIS",
+      "is_DKS",
+      "is_DUK",
+      "is_DVN",
+      "is_ECHO",
+      "is_EIX",
+      "is_ENPH",
+      "is_EOG",
+      "is_EPD",
+      "is_EQT",
+      "is_EXPE",
+      "is_F",
+      "is_FCEL",
+      "is_FCX",
+      "is_FDX",
+      "is_FISV",
+      "is_FRO",
+      "is_FSLR",
+      "is_FTNT",
+      "is_GE",
+      "is_GEO",
+      "is_GILD",
+      "is_GIS",
+      "is_GLW",
+      "is_GM",
+      "is_GME",
+      "is_GOOG",
+      "is_GOOGL",
+      "is_GPRO",
+      "is_GS",
+      "is_HAL",
+      "is_HD",
+      "is_HL",
+      "is_HON",
+      "is_HPE",
+      "is_HPQ",
+      "is_HUM",
+      "is_IBM",
+      "is_INTC",
+      "is_INTU",
+      "is_ISRG",
+      "is_JBLU",
+      "is_JNJ",
+      "is_JPM",
+      "is_KGC",
+      "is_KHC",
+      "is_KKR",
+      "is_KLAC",
+      "is_KMI",
+      "is_KO",
+      "is_KR",
+      "is_KSS",
+      "is_KTOS",
+      "is_LLY"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "decision_context": "decision_region_context",
+    "wing_metrics": true,
+    "fold_table": {
+      "path": "configs/strike-screen-folds-screen.jsonl",
+      "sha256": "d6014ad468bececa14334a6013ec231ddd50c1a7b8236f5d83dc38722f9c97c8",
+      "holdout_start": "2024-01-01",
+      "cal_n": 74,
+      "roles": [
+        "warmup",
+        "scored"
+      ]
+    },
+    "output": "/home/russell/data/index_options/theta-strike-screen-20261018/study/arms/unused",
+    "samples": 201,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 101,
+    "calibration_knots": 21,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical",
+      "scaled_empirical"
+    ],
+    "bootstrap": {
+      "blocks": [
+        30,
+        60
+      ],
+      "replicates": 1000,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 0,
+          "reference_index": 5,
+          "knots": 401
+        },
+        "calibrate": false
+      },
+      "scaled_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF",
+        "params": {
+          "alpha": 10,
+          "floor": 0.02,
+          "knots": 401
+        },
+        "calibrate": false
+      }
+    },
+    "notes": "features = 42 price/calendar columns (protocol inputs.sequence + inputs.context, in the order of the earlier strike-screen template) + own_iv + 118 chain columns (10 surface scalars, 85 RawChainFeatureBuilder columns, 4 panel rn_ shape columns, 19 surface dynamics) + 118 symbol one-hots (task_features needs them in this list; no candidate reads them: pooled, one shared head, so feature_indices exclude them) = 279. own_iv is derived from the same chain (ATM IV nearest 30 days), so it travels with the chain arm, not the price-only arm: the protocol's price_only context does not list it. tail_weight and weighted_crps are NOT declared: ChronologicalCDFStudy refuses a model that trains on tail_crps under a decision_context (its wings, not tail_intervals, would be integrated), and L3 needs the decision_context. Consequence: L1's tail_crps term integrates the decision wings, and weighted_crps is derived from the scored crps and tail_crps columns at report time. fold_table: the protocol's screen rows (configs/strike-screen-folds-screen.jsonl, sha256 pinned); cal_n 74 is the protocol's value (its derivation string evaluates to 82). models: the references only; scaled_empirical (ridge on every feature, no feature_indices knob) is the precedent run-predictive-cdf-hpo.json recipe, not a protocol item. calibrate is false on every candidate: the owner refuses a calibration map on rows that steer patience (the monitor band)."
+  },
+  "experiment": {
+    "output": "/home/russell/data/index_options/theta-strike-screen-20261018/study/arms",
+    "max_candidates": 8,
+    "candidates": {
+      "price_only__mlp__L1": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "external",
+            "adapter": {
+              "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+              "params": {
+                "arch": "mlp",
+                "width": 16,
+                "arch_params": {
+                  "hidden_size": 32
+                }
+              }
+            },
+            "sequence_indices": [
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41
+            ]
+          },
+          "losses": [
+            {
+              "kind": "crps",
+              "weight": 1.0
+            },
+            {
+              "kind": "tail_crps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            8
+          ],
+          "dropout": 0.1,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.01,
+          "batch_size": 512,
+          "epochs": 120,
+          "patience": 10,
+          "seeds": [
+            11
+          ],
+          "training_telemetry": true,
+          "device": "cuda",
+          "deterministic": true,
+          "max_parameters": 100000,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "price_only__mlp__L3": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "external",
+            "adapter": {
+              "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+              "params": {
+                "arch": "mlp",
+                "width": 16,
+                "arch_params": {
+                  "hidden_size": 32
+                }
+              }
+            },
+            "sequence_indices": [
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41
+            ]
+          },
+          "losses": [
+            {
+              "kind": "crps",
+              "weight": 1.0
+            },
+            {
+              "kind": "decision_brier",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            8
+          ],
+          "dropout": 0.1,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.01,
+          "batch_size": 512,
+          "epochs": 120,
+          "patience": 10,
+          "seeds": [
+            11
+          ],
+          "training_telemetry": true,
+          "device": "cuda",
+          "deterministic": true,
+          "max_parameters": 100000,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "price_only__patchtst_hf32__L1": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "external",
+            "adapter": {
+              "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+              "params": {
+                "model": "PatchTST",
+                "config": {
+                  "attention_dropout": 0.1,
+                  "d_model": 32,
+                  "ff_dropout": 0.1,
+                  "ffn_dim": 64,
+                  "norm_type": "layernorm",
+                  "num_attention_heads": 1,
+                  "num_hidden_layers": 1,
+                  "patch_length": 4,
+                  "patch_stride": 3,
+                  "scaling": null
+                }
+              }
+            },
+            "sequence_indices": [
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41
+            ]
+          },
+          "losses": [
+            {
+              "kind": "crps",
+              "weight": 1.0
+            },
+            {
+              "kind": "tail_crps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            8
+          ],
+          "dropout": 0.1,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.01,
+          "batch_size": 512,
+          "epochs": 120,
+          "patience": 10,
+          "seeds": [
+            11
+          ],
+          "training_telemetry": true,
+          "device": "cuda",
+          "deterministic": true,
+          "max_parameters": 100000,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "price_only__patchtst_hf32__L3": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "external",
+            "adapter": {
+              "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+              "params": {
+                "model": "PatchTST",
+                "config": {
+                  "attention_dropout": 0.1,
+                  "d_model": 32,
+                  "ff_dropout": 0.1,
+                  "ffn_dim": 64,
+                  "norm_type": "layernorm",
+                  "num_attention_heads": 1,
+                  "num_hidden_layers": 1,
+                  "patch_length": 4,
+                  "patch_stride": 3,
+                  "scaling": null
+                }
+              }
+            },
+            "sequence_indices": [
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41
+            ]
+          },
+          "losses": [
+            {
+              "kind": "crps",
+              "weight": 1.0
+            },
+            {
+              "kind": "decision_brier",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            8
+          ],
+          "dropout": 0.1,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.01,
+          "batch_size": 512,
+          "epochs": 120,
+          "patience": 10,
+          "seeds": [
+            11
+          ],
+          "training_telemetry": true,
+          "device": "cuda",
+          "deterministic": true,
+          "max_parameters": 100000,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "price_plus_chain__mlp__L1": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "external",
+            "adapter": {
+              "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+              "params": {
+                "arch": "mlp",
+                "width": 16,
+                "arch_params": {
+                  "hidden_size": 32
+                }
+              }
+            },
+            "sequence_indices": [
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63,
+              64,
+              65,
+              66,
+              67,
+              68,
+              69,
+              70,
+              71,
+              72,
+              73,
+              74,
+              75,
+              76,
+              77,
+              78,
+              79,
+              80,
+              81,
+              82,
+              83,
+              84,
+              85,
+              86,
+              87,
+              88,
+              89,
+              90,
+              91,
+              92,
+              93,
+              94,
+              95,
+              96,
+              97,
+              98,
+              99,
+              100,
+              101,
+              102,
+              103,
+              104,
+              105,
+              106,
+              107,
+              108,
+              109,
+              110,
+              111,
+              112,
+              113,
+              114,
+              115,
+              116,
+              117,
+              118,
+              119,
+              120,
+              121,
+              122,
+              123,
+              124,
+              125,
+              126,
+              127,
+              128,
+              129,
+              130,
+              131,
+              132,
+              133,
+              134,
+              135,
+              136,
+              137,
+              138,
+              139,
+              140,
+              141,
+              142,
+              143,
+              144,
+              145,
+              146,
+              147,
+              148,
+              149,
+              150,
+              151,
+              152,
+              153,
+              154,
+              155,
+              156,
+              157,
+              158,
+              159,
+              160
+            ]
+          },
+          "losses": [
+            {
+              "kind": "crps",
+              "weight": 1.0
+            },
+            {
+              "kind": "tail_crps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            8
+          ],
+          "dropout": 0.1,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.01,
+          "batch_size": 512,
+          "epochs": 120,
+          "patience": 10,
+          "seeds": [
+            11
+          ],
+          "training_telemetry": true,
+          "device": "cuda",
+          "deterministic": true,
+          "max_parameters": 100000,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125,
+            126,
+            127,
+            128,
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135,
+            136,
+            137,
+            138,
+            139,
+            140,
+            141,
+            142,
+            143,
+            144,
+            145,
+            146,
+            147,
+            148,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154,
+            155,
+            156,
+            157,
+            158,
+            159,
+            160
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "price_plus_chain__mlp__L3": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "external",
+            "adapter": {
+              "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+              "params": {
+                "arch": "mlp",
+                "width": 16,
+                "arch_params": {
+                  "hidden_size": 32
+                }
+              }
+            },
+            "sequence_indices": [
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63,
+              64,
+              65,
+              66,
+              67,
+              68,
+              69,
+              70,
+              71,
+              72,
+              73,
+              74,
+              75,
+              76,
+              77,
+              78,
+              79,
+              80,
+              81,
+              82,
+              83,
+              84,
+              85,
+              86,
+              87,
+              88,
+              89,
+              90,
+              91,
+              92,
+              93,
+              94,
+              95,
+              96,
+              97,
+              98,
+              99,
+              100,
+              101,
+              102,
+              103,
+              104,
+              105,
+              106,
+              107,
+              108,
+              109,
+              110,
+              111,
+              112,
+              113,
+              114,
+              115,
+              116,
+              117,
+              118,
+              119,
+              120,
+              121,
+              122,
+              123,
+              124,
+              125,
+              126,
+              127,
+              128,
+              129,
+              130,
+              131,
+              132,
+              133,
+              134,
+              135,
+              136,
+              137,
+              138,
+              139,
+              140,
+              141,
+              142,
+              143,
+              144,
+              145,
+              146,
+              147,
+              148,
+              149,
+              150,
+              151,
+              152,
+              153,
+              154,
+              155,
+              156,
+              157,
+              158,
+              159,
+              160
+            ]
+          },
+          "losses": [
+            {
+              "kind": "crps",
+              "weight": 1.0
+            },
+            {
+              "kind": "decision_brier",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            8
+          ],
+          "dropout": 0.1,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.01,
+          "batch_size": 512,
+          "epochs": 120,
+          "patience": 10,
+          "seeds": [
+            11
+          ],
+          "training_telemetry": true,
+          "device": "cuda",
+          "deterministic": true,
+          "max_parameters": 100000,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125,
+            126,
+            127,
+            128,
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135,
+            136,
+            137,
+            138,
+            139,
+            140,
+            141,
+            142,
+            143,
+            144,
+            145,
+            146,
+            147,
+            148,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154,
+            155,
+            156,
+            157,
+            158,
+            159,
+            160
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "price_plus_chain__patchtst_hf32__L1": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "external",
+            "adapter": {
+              "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+              "params": {
+                "model": "PatchTST",
+                "config": {
+                  "attention_dropout": 0.1,
+                  "d_model": 32,
+                  "ff_dropout": 0.1,
+                  "ffn_dim": 64,
+                  "norm_type": "layernorm",
+                  "num_attention_heads": 1,
+                  "num_hidden_layers": 1,
+                  "patch_length": 4,
+                  "patch_stride": 3,
+                  "scaling": null
+                }
+              }
+            },
+            "sequence_indices": [
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63,
+              64,
+              65,
+              66,
+              67,
+              68,
+              69,
+              70,
+              71,
+              72,
+              73,
+              74,
+              75,
+              76,
+              77,
+              78,
+              79,
+              80,
+              81,
+              82,
+              83,
+              84,
+              85,
+              86,
+              87,
+              88,
+              89,
+              90,
+              91,
+              92,
+              93,
+              94,
+              95,
+              96,
+              97,
+              98,
+              99,
+              100,
+              101,
+              102,
+              103,
+              104,
+              105,
+              106,
+              107,
+              108,
+              109,
+              110,
+              111,
+              112,
+              113,
+              114,
+              115,
+              116,
+              117,
+              118,
+              119,
+              120,
+              121,
+              122,
+              123,
+              124,
+              125,
+              126,
+              127,
+              128,
+              129,
+              130,
+              131,
+              132,
+              133,
+              134,
+              135,
+              136,
+              137,
+              138,
+              139,
+              140,
+              141,
+              142,
+              143,
+              144,
+              145,
+              146,
+              147,
+              148,
+              149,
+              150,
+              151,
+              152,
+              153,
+              154,
+              155,
+              156,
+              157,
+              158,
+              159,
+              160
+            ]
+          },
+          "losses": [
+            {
+              "kind": "crps",
+              "weight": 1.0
+            },
+            {
+              "kind": "tail_crps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            8
+          ],
+          "dropout": 0.1,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.01,
+          "batch_size": 512,
+          "epochs": 120,
+          "patience": 10,
+          "seeds": [
+            11
+          ],
+          "training_telemetry": true,
+          "device": "cuda",
+          "deterministic": true,
+          "max_parameters": 100000,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125,
+            126,
+            127,
+            128,
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135,
+            136,
+            137,
+            138,
+            139,
+            140,
+            141,
+            142,
+            143,
+            144,
+            145,
+            146,
+            147,
+            148,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154,
+            155,
+            156,
+            157,
+            158,
+            159,
+            160
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "price_plus_chain__patchtst_hf32__L3": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "external",
+            "adapter": {
+              "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+              "params": {
+                "model": "PatchTST",
+                "config": {
+                  "attention_dropout": 0.1,
+                  "d_model": 32,
+                  "ff_dropout": 0.1,
+                  "ffn_dim": 64,
+                  "norm_type": "layernorm",
+                  "num_attention_heads": 1,
+                  "num_hidden_layers": 1,
+                  "patch_length": 4,
+                  "patch_stride": 3,
+                  "scaling": null
+                }
+              }
+            },
+            "sequence_indices": [
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63,
+              64,
+              65,
+              66,
+              67,
+              68,
+              69,
+              70,
+              71,
+              72,
+              73,
+              74,
+              75,
+              76,
+              77,
+              78,
+              79,
+              80,
+              81,
+              82,
+              83,
+              84,
+              85,
+              86,
+              87,
+              88,
+              89,
+              90,
+              91,
+              92,
+              93,
+              94,
+              95,
+              96,
+              97,
+              98,
+              99,
+              100,
+              101,
+              102,
+              103,
+              104,
+              105,
+              106,
+              107,
+              108,
+              109,
+              110,
+              111,
+              112,
+              113,
+              114,
+              115,
+              116,
+              117,
+              118,
+              119,
+              120,
+              121,
+              122,
+              123,
+              124,
+              125,
+              126,
+              127,
+              128,
+              129,
+              130,
+              131,
+              132,
+              133,
+              134,
+              135,
+              136,
+              137,
+              138,
+              139,
+              140,
+              141,
+              142,
+              143,
+              144,
+              145,
+              146,
+              147,
+              148,
+              149,
+              150,
+              151,
+              152,
+              153,
+              154,
+              155,
+              156,
+              157,
+              158,
+              159,
+              160
+            ]
+          },
+          "losses": [
+            {
+              "kind": "crps",
+              "weight": 1.0
+            },
+            {
+              "kind": "decision_brier",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            8
+          ],
+          "dropout": 0.1,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.01,
+          "batch_size": 512,
+          "epochs": 120,
+          "patience": 10,
+          "seeds": [
+            11
+          ],
+          "training_telemetry": true,
+          "device": "cuda",
+          "deterministic": true,
+          "max_parameters": 100000,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125,
+            126,
+            127,
+            128,
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135,
+            136,
+            137,
+            138,
+            139,
+            140,
+            141,
+            142,
+            143,
+            144,
+            145,
+            146,
+            147,
+            148,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154,
+            155,
+            156,
+            157,
+            158,
+            159,
+            160
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      }
+    },
+    "candidate_groups": {
+      "pooled": [
+        "price_only__mlp__L1",
+        "price_only__mlp__L3",
+        "price_only__patchtst_hf32__L1",
+        "price_only__patchtst_hf32__L3",
+        "price_plus_chain__mlp__L1",
+        "price_plus_chain__mlp__L3",
+        "price_plus_chain__patchtst_hf32__L1",
+        "price_plus_chain__patchtst_hf32__L3"
+      ]
+    },
+    "search_partitions": {
+      "pooled": [
+        "price_only__mlp__L1",
+        "price_only__mlp__L3",
+        "price_only__patchtst_hf32__L1",
+        "price_only__patchtst_hf32__L3",
+        "price_plus_chain__mlp__L1",
+        "price_plus_chain__mlp__L3",
+        "price_plus_chain__patchtst_hf32__L1",
+        "price_plus_chain__patchtst_hf32__L3"
+      ]
+    },
+    "task_features": {
+      "AAPL": "is_AAPL",
+      "ABBV": "is_ABBV",
+      "ABT": "is_ABT",
+      "ABUS": "is_ABUS",
+      "ACN": "is_ACN",
+      "ADBE": "is_ADBE",
+      "ADI": "is_ADI",
+      "AEO": "is_AEO",
+      "AG": "is_AG",
+      "AGNC": "is_AGNC",
+      "AKAM": "is_AKAM",
+      "ALB": "is_ALB",
+      "ALLY": "is_ALLY",
+      "AMAT": "is_AMAT",
+      "AMC": "is_AMC",
+      "AMD": "is_AMD",
+      "AMGN": "is_AMGN",
+      "AMKR": "is_AMKR",
+      "AMZN": "is_AMZN",
+      "ANET": "is_ANET",
+      "APA": "is_APA",
+      "APH": "is_APH",
+      "APO": "is_APO",
+      "AVAV": "is_AVAV",
+      "AVGO": "is_AVGO",
+      "AXP": "is_AXP",
+      "AXTI": "is_AXTI",
+      "BA": "is_BA",
+      "BAC": "is_BAC",
+      "BBY": "is_BBY",
+      "BIDU": "is_BIDU",
+      "BLK": "is_BLK",
+      "BMY": "is_BMY",
+      "BP": "is_BP",
+      "BSX": "is_BSX",
+      "BX": "is_BX",
+      "C": "is_C",
+      "CAG": "is_CAG",
+      "CAT": "is_CAT",
+      "CCJ": "is_CCJ",
+      "CCL": "is_CCL",
+      "CDE": "is_CDE",
+      "CHTR": "is_CHTR",
+      "CIEN": "is_CIEN",
+      "CLF": "is_CLF",
+      "CLS": "is_CLS",
+      "CMCSA": "is_CMCSA",
+      "CME": "is_CME",
+      "CMG": "is_CMG",
+      "CNC": "is_CNC",
+      "COF": "is_COF",
+      "COHR": "is_COHR",
+      "COP": "is_COP",
+      "COST": "is_COST",
+      "CPB": "is_CPB",
+      "CRM": "is_CRM",
+      "CSCO": "is_CSCO",
+      "CVE": "is_CVE",
+      "CVS": "is_CVS",
+      "CVX": "is_CVX",
+      "DAL": "is_DAL",
+      "DE": "is_DE",
+      "DHR": "is_DHR",
+      "DHT": "is_DHT",
+      "DIS": "is_DIS",
+      "DKS": "is_DKS",
+      "DUK": "is_DUK",
+      "DVN": "is_DVN",
+      "ECHO": "is_ECHO",
+      "EIX": "is_EIX",
+      "ENPH": "is_ENPH",
+      "EOG": "is_EOG",
+      "EPD": "is_EPD",
+      "EQT": "is_EQT",
+      "EXPE": "is_EXPE",
+      "F": "is_F",
+      "FCEL": "is_FCEL",
+      "FCX": "is_FCX",
+      "FDX": "is_FDX",
+      "FISV": "is_FISV",
+      "FRO": "is_FRO",
+      "FSLR": "is_FSLR",
+      "FTNT": "is_FTNT",
+      "GE": "is_GE",
+      "GEO": "is_GEO",
+      "GILD": "is_GILD",
+      "GIS": "is_GIS",
+      "GLW": "is_GLW",
+      "GM": "is_GM",
+      "GME": "is_GME",
+      "GOOG": "is_GOOG",
+      "GOOGL": "is_GOOGL",
+      "GPRO": "is_GPRO",
+      "GS": "is_GS",
+      "HAL": "is_HAL",
+      "HD": "is_HD",
+      "HL": "is_HL",
+      "HON": "is_HON",
+      "HPE": "is_HPE",
+      "HPQ": "is_HPQ",
+      "HUM": "is_HUM",
+      "IBM": "is_IBM",
+      "INTC": "is_INTC",
+      "INTU": "is_INTU",
+      "ISRG": "is_ISRG",
+      "JBLU": "is_JBLU",
+      "JNJ": "is_JNJ",
+      "JPM": "is_JPM",
+      "KGC": "is_KGC",
+      "KHC": "is_KHC",
+      "KKR": "is_KKR",
+      "KLAC": "is_KLAC",
+      "KMI": "is_KMI",
+      "KO": "is_KO",
+      "KR": "is_KR",
+      "KSS": "is_KSS",
+      "KTOS": "is_KTOS",
+      "LLY": "is_LLY"
+    },
+    "selection_metric": "crps",
+    "resolutions": {
+      "screen_samples": 201,
+      "final_samples": 201,
+      "tail_points": 101,
+      "integration_points": 101,
+      "audit_samples": [
+        101,
+        201,
+        401
+      ],
+      "audit_rows": 16
+    },
+    "expected_cells": {
+      "development": {},
+      "evaluation": {}
+    },
+    "notes": "8 candidates = 2 arms x 2 encoders x 2 losses, named <arm>__<encoder>__<loss>; one search partition 'pooled' holds all 8 (candidate_groups grammar: the axes/candidate_labels/final_seeds/screen_seed keys belong to the Cartesian MixtureMLP grammar and are refused beside TorchCDF candidates; seeds live in each candidate's params, [11] for the screen, and the protocol's promotion seeds [11, 29, 47] have no key here). Selection takes ONE winner per partition (lowest mean crps ratio to horizon_empirical on the warm-up fold, raw or calibrated variant); the scored fold then evaluates that winner plus the references. selection_guard is absent: its tolerance is absolute and per symbol, while the protocol's 0.5% guard is relative CRPS of an L3 candidate to the same-arm L1 candidate. expected_cells are a census of the built panel, unresolved (empty) until derived: development[symbol] = sorted distinct actual_calendar_dte over that symbol's rows with quote_date in the warm-up validation window (2019-01-02..2019-12-31) whose settlement_date precedes the scored start 2020-01-02; evaluation[symbol] = the same over quote_date 2020-01-02..2023-12-31 and settlement before holdout_start; both only for symbols the fold admits (plan.expected). A mismatch refuses before any fit. Caps (protocol): 14400 s wall in total, 1e9 output bytes, 8 GiB host RSS increment, 12 GiB VRAM, one GPU process, no retries; enforced by the invocation, not by this document."
+  }
+}

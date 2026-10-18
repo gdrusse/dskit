@@ -370,6 +370,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         "tests/test_strike_screen_market_configs.py",
         "configs/run-theta-exact-expiry-tables.json", "index_options/theta_exact_expiry.py",
         "tests/test_theta_exact_expiry.py",
+        # ADR-0270: the executable arms-screen study document, its fold table and the pins test.
+        "configs/run-strike-screen-arms.json", "configs/strike-screen-folds-screen.jsonl",
+        "tests/test_strike_screen_arms.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -412,7 +415,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the six ADR-0269 draft configs and their no-fit contract test = 556.
     # Plus the five market/pocket pipeline templates and explicit search calendar = 562.
     # Plus ADR-0270's eight preparation files, the protocol and architecture records, and the Theta exact-expiry converter, its document and test = 575.
-    assert len(actual) == 575
+    # Plus the executable strike-screen arms study, its screen fold table and the pins test = 578.
+    assert len(actual) == 578
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
