@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import sys
 
 import numpy as np
 import pandas as pd
@@ -4206,6 +4207,165 @@ def test_torch_cdf_without_heads_fits_byte_identically_to_before_the_zoo(kind, d
     # Recorded on base f9f2f905, before heads, lstm/cnn and the recurrent base
     # existed (CPU, one thread): every fitted tensor is unchanged.
     assert model._equivalence_state() == digest
+
+
+# ---- ADR-0270 speed-ups: every one must leave the fitted bytes untouched -------
+
+_EXTERNAL_ENCODER = {"kind": "external", **_ZOO_SEQUENCE, "adapter": {
+    "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+    "params": {"arch": "gru", "width": 4}}}
+#: Recorded on base c83aa44d (CPU, one thread, before any speed-up): the per-epoch
+#: losses and the sha256 of every seed's sorted state_dict bytes.
+_SPEED_PINS = {
+    "mlp": ([[1.3091473666333842, 1.3049739031367495, 1.3019186828110527],
+             [1.3128058534211762, 1.3109710680262852, 1.3087437731631102]],
+            "7c656e03c303e4eb0f3ffde4f7fe526e75b1f91d4df39683cbd6b2838d7ec5ed"),
+    "gru": ([[1.4052899377607344, 1.4002157826481774, 1.3971967542763675],
+             [1.3586016313482354, 1.3539249324509721, 1.349007240616059]],
+            "0a02403b656a4972d0e7d93ec4dd287839fa0d21f9e7564d8314d68505764b39"),
+    "lstm": ([[1.2261541191839176, 1.2226429400811334, 1.2210103064547633],
+              [1.498999836325016, 1.4949377068966587, 1.4911351392748675]],
+             "6d3ec490261d1971f5d8d9c8d81659f306fa01cabfd8ef9d7756ca337a39f4af"),
+    "cnn": ([[1.278551148390374, 1.2755845259650187, 1.2737046414621747],
+             [1.220251486143427, 1.2171794541636298, 1.2165721849718345]],
+            "a98558f3a2d00914581c99bbf250c63965ddbb2a898a01c17a05175d28395e32"),
+    "external": ([[1.2147017215244074, 1.2123763449394427, 1.2096619643570319],
+                  [1.4290597648481682, 1.4151967242319947, 1.406708342440859]],
+                 "dc663ca928c6bb9bd4f6bd71a86f2825c6b2a34ab8c9834923d7392798d76af3"),
+}
+
+
+def _speed_fit(kind, device="cpu", **settings):
+    """Fit the pinned crps + tail_crps model on 14 rows (a partial last batch of 4)."""
+    rng = np.random.default_rng(3)
+    x, y = rng.normal(size=(14, 4)), rng.normal(size=14)
+    cal = np.random.default_rng(4)
+    cal_x, cal_y = cal.normal(size=(9, 4)), 3*cal.normal(size=9)
+    encoder = copy.deepcopy(_EXTERNAL_ENCODER if kind == "external" else _ZOO_ENCODERS[kind])
+    model = predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES, **{
+        "components": 2, "hidden": [4], "epochs": 3, "batch_size": 5, "seeds": [7, 8],
+        "device": device, "deterministic": True, **settings})
+    model.fit_decision_context(_zoo_context(14), _zoo_context(9, "c"))
+    return model.fit(x, y, cal_x, cal_y)
+
+
+def _weights_sha256(model):
+    digest = hashlib.sha256()
+    for module in model.models:
+        for name, value in sorted(module.state_dict().items()):
+            digest.update(name.encode()+value.detach().cpu().numpy().tobytes())
+    return digest.hexdigest()
+
+
+@pytest.mark.parametrize("kind", sorted(_SPEED_PINS))
+def test_torch_cdf_fit_matches_the_recorded_losses_and_weights_before_the_speed_ups(kind):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    model = _speed_fit(kind)
+    losses, digest = _SPEED_PINS[kind]
+    assert model.losses == losses
+    assert _weights_sha256(model) == digest
+
+
+def test_torch_cdf_patience_fit_matches_the_recorded_monitor_history():
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    model = _speed_fit("mlp", epochs=60, patience=2, learning_rate=.05, seeds=[7],
+                       training_telemetry=True)
+    assert model.losses == [[
+        1.293962551162133, 1.1681953477719629, 1.1289322101016641, 1.1279736467667474,
+        1.1241441378700046, 1.1229623244403473, 1.114967363999451]]
+    assert model.monitor_losses == [[
+        2.8828016036281334, 2.717049938913472, 2.6473900145277667, 2.5774690723593716,
+        2.5557242414106747, 2.5638564477836163, 2.5782657431035014]]
+    assert model.best_epochs == [5]
+    assert _weights_sha256(model) == (
+        "201274c34552ae8b3874558fed97cf578fcb2e42a9901455d00c6e09394465c1")
+    diagnostics = model.training_diagnostics[0]
+    assert (diagnostics["parameters"], diagnostics["optimizer_steps"]) == (50, 21)
+    assert diagnostics["parameter_delta_l2"] == 1.8799848864233686
+    assert diagnostics["epoch_zero_monitor_loss"] == 3.1380678117522347
+    assert diagnostics["finite_gradients"] is True
+
+
+def test_torch_cdf_population_counts_are_computed_once_per_fit_not_per_step():
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    calls = []
+    original = predictive_cdf._CDFLossTerm.population_count
+
+    def spy(self, context):
+        calls.append(1)
+        return original(self, context)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(predictive_cdf._CDFLossTerm, "population_count", spy)
+        _speed_fit("mlp", epochs=1, seeds=[7])
+        one_epoch = len(calls)
+        calls.clear()
+        _speed_fit("mlp", epochs=4, seeds=[7])
+    assert len(calls) == one_epoch
+
+
+def test_torch_cdf_training_reads_the_host_once_per_epoch_not_per_step():
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+
+    def host_reads(epochs):
+        reads = []
+        patches = {}
+        for name in ("item", "__bool__", "__float__"):
+            original = getattr(torch.Tensor, name)
+
+            def wrapper(self, *args, __original=original, **kwargs):
+                # Only reads the CDF module itself makes; the optimizer's own are not its.
+                if sys._getframe(1).f_code.co_filename == predictive_cdf.__file__:
+                    reads.append(1)
+                return __original(self, *args, **kwargs)
+            patches[name] = original
+            setattr(torch.Tensor, name, wrapper)
+        try:
+            _speed_fit("mlp", epochs=epochs, seeds=[7])
+        finally:
+            for name, original in patches.items():
+                setattr(torch.Tensor, name, original)
+        return len(reads)
+    one, four = host_reads(1), host_reads(4)
+    # Three steps per epoch: a per-step read would add at least 3 per extra epoch.
+    assert four - one <= 2*3
+
+
+@pytest.mark.parametrize(("poison", "message"), [
+    ("loss", "nonfinite mixture likelihood"), ("gradient", "nonfinite mixture gradient")])
+def test_torch_cdf_refuses_a_nonfinite_step_within_its_epoch(poison, message, monkeypatch):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    steps = []
+    if poison == "loss":
+        original = predictive_cdf.TorchCDF._objective_loss
+
+        def objective(self, *args):
+            loss = original(self, *args)
+            steps.append(1)
+            return loss*float("nan") if len(steps) == 2 else loss
+        monkeypatch.setattr(predictive_cdf.TorchCDF, "_objective_loss", objective)
+    else:
+        original = torch.nn.utils.clip_grad_norm_
+
+        def clip(*args, **kwargs):
+            norm = original(*args, **kwargs)
+            steps.append(1)
+            return norm*float("inf") if len(steps) == 2 else norm
+        monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", clip)
+    model = predictive_cdf.TorchCDF(
+        encoder={"kind": "mlp"}, losses=_ZOO_LOSSES, components=2, hidden=[4], epochs=5,
+        batch_size=5, seeds=[7], device="cpu", deterministic=True)
+    model.fit_decision_context(_zoo_context(14), _zoo_context(9, "c"))
+    rng = np.random.default_rng(3)
+    with pytest.raises(ValueError, match=message):
+        model.fit(rng.normal(size=(14, 4)), rng.normal(size=14),
+                  rng.normal(size=(9, 4)), rng.normal(size=9))
+    assert len(steps) <= 3 + 3  # the epoch (3 batches) that holds step 2, at most
+    assert model._checkpoint_ready is False
 
 
 @pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])

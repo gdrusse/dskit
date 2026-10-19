@@ -3143,6 +3143,28 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         import torch
         return torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
 
+    #: What ``_refuse_fault`` says for each fault code ``_train_batch`` reports.
+    _FAULTS = {1: "nonfinite mixture likelihood", 2: "nonfinite mixture gradient"}
+
+    def _train_batch(self, model, optimizer, tensors, ix, context):
+        """Run one mini-batch's forward, loss, backward and clip; return (loss, fault code)."""
+        import torch
+        xx, yy, hh = tensors
+        logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
+        loss = self._objective_loss(yy[ix], logw, mu, sigma, ix, context)
+        optimizer.zero_grad()
+        loss.backward()
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
+        # The first fault of an epoch is read once at its end: no host sync per step.
+        code = torch.where(torch.isfinite(loss), torch.where(torch.isfinite(norm), 0, 2), 1)
+        return loss, code
+
+    def _refuse_fault(self, fault):
+        """Raise the first non-finite fault an epoch recorded (a zero code is clean)."""
+        code = int(fault.item())
+        if code:
+            raise ValueError(self._FAULTS[code])
+
     def _fit(self, x, y, cal_x, cal_y):
         import gc
         import torch
@@ -3180,23 +3202,19 @@ class MixtureMLPCDF(_MixtureParameterCDF):
             stop = None if monitor is None else _PatienceStop(self.patience)
             for _ in range(self.epochs):
                 order = torch.randperm(len(xx), device=self.device)
-                total = 0.
+                # Epoch sums stay on the device: one host read per epoch, not three per step.
+                total = torch.zeros((), dtype=torch.float64, device=self.device)
+                fault = torch.zeros((), dtype=torch.int64, device=self.device)
                 for start in range(0, len(xx), self.batch_size):
                     ix = order[start:start+self.batch_size]
-                    logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
-                    loss = self._objective_loss(
-                        yy[ix], logw, mu, sigma, ix, training_context)
-                    if not torch.isfinite(loss):
-                        raise ValueError("nonfinite mixture likelihood")
-                    optimizer.zero_grad()
-                    loss.backward()
-                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
-                    if not torch.isfinite(norm):
-                        raise ValueError("nonfinite mixture gradient")
+                    loss, code = self._train_batch(
+                        model, optimizer, (xx, yy, hh), ix, training_context)
                     optimizer.step()
                     steps += 1
-                    total += loss.item()*len(ix)
-                losses.append(total/len(xx))
+                    total += loss.detach().double()*len(ix)
+                    fault = torch.where(fault == 0, code, fault)
+                self._refuse_fault(fault)
+                losses.append(total.item()/len(xx))
                 if stop is not None and stop.exhausted(self._monitor_loss(model, monitor), model):
                     break
             else:
@@ -3218,7 +3236,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
-        del xx, yy, hh, optimizer, order, logw, mu, sigma, loss, ix
+        del xx, yy, hh, optimizer, order, loss, ix
         gc.collect()
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
@@ -4287,6 +4305,7 @@ class _CompositeLossCDF:
             return super().fit(x, y, cal_x, cal_y)
         finally:
             self._fit_context = self._cal_context = None
+            self._normalization_cache = {}
 
     def _target_tensor(self, y):
         import torch
@@ -4312,16 +4331,29 @@ class _CompositeLossCDF:
         return self._context_tensors(getattr(self, "_cal_context", None), cal_x,
                                      "calibration", "calibration")
 
+    def _normalizations(self, context):
+        """Return each term's full-population scale for a context, counted once per context.
+
+        Uniform minibatches estimate the full-population objective, including
+        batches with no locally eligible observations. The count depends only on
+        the immutable full context, so it is cached by identity (the context is
+        held, so its id cannot be reused) and released with the fit's contexts.
+        """
+        cache = self.__dict__.setdefault("_normalization_cache", {})
+        held = cache.get(id(context))
+        if held is None or held[0] is not context:
+            rows = len(context["weights"])
+            held = cache[id(context)] = (
+                context, [rows/term.population_count(context) for term in self._terms])
+        return held[1]
+
     def _objective_loss(self, y, logw, mu, sigma, indices, context):
         import torch
         local = {key: value[indices] for key, value in context.items()}
-        rows = len(context["weights"])
         total = mu.sum()*0.
-        for term_config, term in zip(self.loss_config, self._terms):
+        for term_config, term, normalization in zip(
+                self.loss_config, self._terms, self._normalizations(context)):
             values, eligible = term.values(y, logw, mu, sigma, local)
-            # Uniform minibatches estimate the full-population objective,
-            # including batches with no locally eligible observations.
-            normalization = rows/term.population_count(context)
             # A mask, not values[eligible]: boolean indexing syncs the host every step.
             masked = torch.where(eligible, values, torch.zeros_like(values))
             total = total + term_config["weight"]*masked.sum()/len(y)*normalization
