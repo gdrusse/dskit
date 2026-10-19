@@ -3734,6 +3734,14 @@ class _CDFSequenceEncoder(ABC):
     def _module(self, owner, sequence, context):
         """Return the torch module, before it is moved to the owner's device."""
 
+    @staticmethod
+    def _register_indices(module, sequence, context):
+        """Hold the gather indices as long buffers, outside the state dict, moved with the module."""
+        import torch
+        for name, indices in (("sequence_index", sequence), ("context_index", context)):
+            module.register_buffer(
+                name, torch.tensor(indices, dtype=torch.long), persistent=False)
+
     def build(self, owner, features):
         config = self.config
         sequence, context = config["sequence_indices"], config["context_indices"]
@@ -3768,11 +3776,12 @@ class _CDFRecurrentEncoder(_CDFSequenceEncoder):
                                 config["num_layers"], batch_first=True)
                 self.head = MixtureMLPCDF._build_module(
                     owner, config["hidden_size"] + len(context))
+                _CDFSequenceEncoder._register_indices(self, sequence, context)
 
             def forward(self, x):
-                sequence_output, _ = self.rnn(x[:, sequence])
+                sequence_output, _ = self.rnn(x[:, self.sequence_index])
                 return self.head(torch.cat(
-                    [sequence_output[:, -1], x[:, context]], dim=1))
+                    [sequence_output[:, -1], x[:, self.context_index]], dim=1))
         return Module()
 
 
@@ -3820,12 +3829,13 @@ class _CDFCNNEncoder(_CDFSequenceEncoder):
                     for a, b, d in zip(widths, widths[1:], dilations))
                 self.activation = activation()
                 self.head = MixtureMLPCDF._build_module(owner, widths[-1] + len(context))
+                _CDFSequenceEncoder._register_indices(self, sequence, context)
 
             def forward(self, x):
-                h = x[:, sequence].transpose(1, 2)
+                h = x[:, self.sequence_index].transpose(1, 2)
                 for conv, d in zip(self.convs, dilations):
                     h = self.activation(conv(torch.nn.functional.pad(h, ((kernel-1)*d, 0))))
-                return self.head(torch.cat([pool(h), x[:, context]], dim=1))
+                return self.head(torch.cat([pool(h), x[:, self.context_index]], dim=1))
         return Module()
 
 
@@ -3861,12 +3871,13 @@ class _CDFExternalEncoder(_CDFSequenceEncoder):
             def __init__(self):
                 super().__init__()
                 self.encoder, self.head = encoder, head
+                _CDFSequenceEncoder._register_indices(self, sequence, context)
 
             def forward(self, x):
-                h = self.encoder(x[:, sequence])
+                h = self.encoder(x[:, self.sequence_index])
                 if h.ndim != 2 or h.shape != (len(x), width):
                     raise ValueError("external encoder violated row/width contract")
-                return self.head(torch.cat([h, x[:, context]], dim=1))
+                return self.head(torch.cat([h, x[:, self.context_index]], dim=1))
         return Module()
 
 

@@ -4368,6 +4368,40 @@ def test_torch_cdf_refuses_a_nonfinite_step_within_its_epoch(poison, message, mo
     assert model._checkpoint_ready is False
 
 
+@pytest.mark.parametrize("kind", ["gru", "lstm", "cnn", "external"])
+def test_sequence_encoders_gather_with_index_tensors_built_once_and_kept_out_of_the_weights(kind):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    model = _speed_fit(kind, seeds=[7], epochs=1)
+    module = model.models[0]
+    sequence, context = _ZOO_SEQUENCE["sequence_indices"], _ZOO_SEQUENCE["context_indices"]
+    assert module.sequence_index.tolist() == sequence and module.sequence_index.dtype == torch.long
+    assert module.context_index.tolist() == context and module.context_index.dtype == torch.long
+    assert not [k for k in module.state_dict() if k.endswith("_index")]
+    assert module.sequence_index.device == next(module.parameters()).device
+
+
+def test_sequence_encoder_index_tensors_live_on_the_cuda_device(monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    module = _speed_fit("external", device="cuda", seeds=[7], epochs=1).models[0]
+    assert module.sequence_index.is_cuda and module.context_index.is_cuda
+
+
+def test_sequence_encoder_with_no_context_columns_still_gathers_an_empty_context():
+    torch = pytest.importorskip("torch")
+    encoder = {"kind": "gru", "sequence_indices": [[3], [2], [1], [0]], "context_indices": [],
+               "hidden_size": 4, "num_layers": 1}
+    model = predictive_cdf.TorchCDF(
+        encoder=encoder, losses=_ZOO_LOSSES, components=2, hidden=[4], epochs=1,
+        batch_size=5, seeds=[7], device="cpu", deterministic=True)
+    module = model._build_module(4)
+    assert module.context_index.shape == (0,)
+    assert module(torch.zeros(3, 4)).shape == (3, 6)
+
+
 @pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])
 def test_torch_cdf_task_heads_share_one_encoder_and_route_each_row_to_its_head(kind):
     torch = pytest.importorskip("torch")
