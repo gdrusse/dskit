@@ -2989,6 +2989,271 @@ def test_option_price_cdf_parity_forwards_are_the_step_the_estimate_uses():
     assert predictive_cdf.OptionPriceCDF.parity_forwards(only) is None
 
 
+class _ReferenceOptionPriceCDF(predictive_cdf.OptionPriceCDF):
+    """The pre-vectorization ``parity_forwards`` and ``estimate``, kept verbatim as the oracle (ADR-0270).
+
+    The pandas ``pivot_table`` / ``groupby`` implementations ``OptionPriceCDF`` had before the
+    numpy rewrite; the property tests below compare the live methods against them.
+    """
+
+    @staticmethod
+    def parity_forwards(rows, growth=1.0):
+        """Return the per-strike parity forwards ``strike + growth * (call - put)`` (ADR-0213).
+
+        The ONE forward step: ``estimate`` takes its median, and the option-chain
+        features (ADR-0265) take theirs, so the two can never disagree.
+
+        Parameters
+        ----------
+        rows : pandas.DataFrame
+            ``strike``, ``type`` (``"call"`` / ``"put"``) and ``mark`` columns of
+            validated, positive, finite numbers; duplicates are medians per side.
+        growth : float
+            ``exp(rate * years)``, the factor that undoes discounting in the call-put difference
+            (ADR-0265); the default 1.0 is the undiscounted parity this class has always used.
+
+        Returns
+        -------
+        numpy.ndarray or None
+            The finite positive forwards, one per strike quoted on both sides
+            (possibly empty); ``None`` when no strike has both sides.
+        """
+        import numpy as np
+        paired = rows.pivot_table(index="strike", columns="type", values="mark",
+                                  aggfunc="median").dropna()
+        if paired.empty or not {"call", "put"}.issubset(paired.columns):
+            return None
+        forwards = paired.index.to_numpy()+growth*(paired.call.to_numpy()-paired.put.to_numpy())
+        return forwards[np.isfinite(forwards) & (forwards > 0)]
+
+    def estimate(self, rows, spot, growth=1.0):
+        """Recover a proxy using consistently undiscounted option prices.
+
+        Parameters
+        ----------
+        rows : pandas.DataFrame
+            Validated strike, type and discounted mark observations.
+        spot : float
+            Positive underlying price on the same share basis.
+        growth : float, default 1.0
+            Positive finite exp(rate * years). Applied once to marks before
+            parity and price-slope recovery; one preserves legacy behavior.
+
+        Returns
+        -------
+        dict
+            Eligible proxy diagnostics, or explicit rejection reasons.
+        """
+        import numpy as np
+        from numbers import Real
+        if (isinstance(growth, (bool, np.bool_)) or not isinstance(growth, Real)
+                or not np.isfinite(growth) or growth <= 0):
+            return {"eligible": False, "reasons": ["invalid_growth"]}
+        clean = rows.copy()
+        if (not {"strike", "type", "mark"}.issubset(clean.columns)
+                or not len(clean)):
+            return {"eligible": False, "reasons": ["missing_price_rows"]}
+        try:
+            numeric = clean[["strike", "mark"]].to_numpy(dtype=float)
+        except (TypeError, ValueError):
+            return {"eligible": False, "reasons": ["nonnumeric_prices"]}
+        if (not np.isfinite(numeric).all()
+                or not (numeric > 0).all()
+                or not clean.type.isin(["call", "put"]).all()
+                or clean.duplicated(["strike", "type"]).any()):
+            return {"eligible": False, "reasons": ["invalid_or_duplicate_prices"]}
+        from numbers import Real
+        if (isinstance(spot, (bool, np.bool_)) or not isinstance(spot, Real)
+                or not np.isfinite(spot) or spot <= 0):
+            return {"eligible": False, "reasons": ["invalid_spot"]}
+        if np.max(numeric[:, 0]) > np.finfo(float).max*min(float(spot), 1.):
+            return {"eligible": False, "reasons": ["nonfinite_return_coordinates"]}
+        with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+            numeric[:, 1] *= growth
+        if not np.isfinite(numeric).all() or not (numeric[:, 1] > 0).all():
+            return {"eligible": False, "reasons": ["invalid_grown_prices"]}
+        clean[["strike", "mark"]] = numeric
+        forwards = self.parity_forwards(clean)
+        if forwards is None:
+            return {"eligible": False, "reasons": ["missing_forward_pairs"]}
+        if len(forwards) < self.min_forward_pairs:
+            return {"eligible": False, "reasons": ["insufficient_forward_pairs"]}
+        forward = float(np.median(forwards))
+        if not np.isfinite(forward):
+            return {"eligible": False, "reasons": ["nonfinite_forward"]}
+        dispersion = float(np.subtract(*np.percentile(forwards, [75, 25]))/spot)
+        clean["call_equivalent"] = np.where(clean.type.eq("call"), clean.mark,
+                                             clean.mark+forward-clean.strike)
+        otm = clean[((clean.type == "put") & (clean.strike <= forward))
+                    | ((clean.type == "call") & (clean.strike >= forward))]
+        calls = otm.groupby("strike", as_index=False).call_equivalent.median().sort_values("strike")
+        strike, price = calls.strike.to_numpy(), calls.call_equivalent.to_numpy()
+        if not np.isfinite(price).all():
+            return {"eligible": False, "reasons": ["nonfinite_call_equivalents"]}
+        if len(strike) < 2*self.min_wing_nodes+1:
+            return {"eligible": False, "reasons": ["insufficient_strikes"]}
+        left, right = strike < forward, strike > forward
+        logk = np.log(strike/forward)
+        if not np.isfinite(logk).all():
+            return {"eligible": False, "reasons": ["nonfinite_strike_geometry"]}
+        if (left.sum() < self.min_wing_nodes or right.sum() < self.min_wing_nodes
+                or -logk[left].max() > self.max_inner_gap
+                or logk[right].min() > self.max_inner_gap
+                or (np.diff(logk) > self.max_outer_gap).any()):
+            return {"eligible": False, "reasons": ["inadequate_wing_support"]}
+        raw_slope = np.diff(price)/np.diff(strike)
+        if not np.isfinite(raw_slope).all():
+            return {"eligible": False, "reasons": ["nonfinite_price_slopes"]}
+        from sklearn.isotonic import IsotonicRegression
+        slope = IsotonicRegression(increasing=True, y_min=-1., y_max=0.,
+                                   out_of_bounds="clip").fit_transform(
+                                       (strike[:-1]/2+strike[1:]/2), raw_slope,
+                                       sample_weight=np.diff(strike))
+        cdf = np.clip(1+slope, 0, 1)
+        if not (np.isfinite(cdf).all() and (np.diff(cdf) >= -1e-12).all()):
+            return {"eligible": False, "reasons": ["invalid_cdf"]}
+        informative = np.flatnonzero((cdf > 1e-4) & (cdf < 1-1e-4))
+        if len(informative) < 3:
+            return {"eligible": False, "reasons": ["insufficient_interior_knots"]}
+        first, last = informative[0], informative[-1]
+        cdf = cdf[first:last+1]
+        midpoint = (strike[:-1]/2+strike[1:]/2)
+        midpoint = midpoint[first:last+1]
+        p = np.r_[0., cdf, 1.]
+        values = np.r_[np.log(strike[first]/spot), np.log(midpoint/spot),
+                       np.log(strike[last+1]/spot)]
+        # Flat probability stretches are atoms; np.interp requires a stable
+        # increasing inverse grid, so retain the first occurrence explicitly.
+        keep = np.r_[True, np.diff(p) > 1e-12]
+        p, values = p[keep], values[keep]
+        if p[-1] < 1:
+            p, values = np.r_[p, 1.], np.r_[values, np.log(strike[-1]/spot)]
+        quantiles = np.interp(self.proxy_probabilities, p, values)
+        projected = price[0]+np.r_[0., np.cumsum(slope*np.diff(strike))]
+        distance = float(np.sqrt(np.mean((projected-price)**2))/spot)
+        if (not np.isfinite([distance, dispersion, forward/spot]).all()
+                or not np.isfinite(values).all() or not np.isfinite(quantiles).all()):
+            return {"eligible": False, "reasons": ["nonfinite_curve_diagnostics"]}
+        reasons = []
+        for name, value, limit in (
+                ("projection_distance", distance, self.max_projection_distance),
+                ("forward_dispersion", dispersion, self.max_forward_dispersion)):
+            if limit is not None and value > limit:
+                reasons.append(name+"_exceeded")
+        return {"eligible": not reasons, "reasons": reasons,
+                "forward_ratio": forward/spot, "projection_distance": distance,
+                "forward_dispersion": dispersion, "forward_pairs": len(forwards),
+                "mass": float(cdf[-1]-cdf[0]), "quantiles": quantiles.tolist(),
+                "probabilities": p.tolist(), "log_returns": values.tolist(),
+                "raw_projected_probabilities": (1+slope).tolist(),
+                "raw_midpoint_log_returns": np.log(
+                    (strike[:-1]/2+strike[1:]/2)/spot).tolist(),
+                "tail_completion": "finite_support_endpoint_completion"}
+
+
+
+def _random_option_rows(rng):
+    """Return ``(rows, spot, growth)`` of one random, often invalid, option chain."""
+    from scipy.stats import norm
+    spot = float(rng.choice([100., 50., 3000.]))
+    sigma, rate = rng.uniform(.1, .4), rng.uniform(-.01, .03)
+    strikes = spot*np.exp(np.sort(rng.choice(np.linspace(-.3, .3, 61), rng.integers(0, 50), replace=False)))
+    forward = spot*np.exp(rate)
+    d1 = (np.log(forward/strikes)+sigma**2/2)/sigma
+    call = np.exp(-rate)*(forward*norm.cdf(d1)-strikes*norm.cdf(d1-sigma))
+    put = call-np.exp(-rate)*(forward-strikes)
+    rows = pd.DataFrame({"strike": np.r_[strikes, strikes], "type": ["call"]*len(strikes)+["put"]*len(strikes),
+                         "mark": np.r_[call, put]})
+    rows["mark"] = np.maximum(rows.mark*(1+rng.normal(0, rng.choice([0, 1e-4, 1e-2]), len(rows))), 1e-6)
+    rows = rows.iloc[rng.permutation(len(rows))].reset_index(drop=True)
+    flaw = rng.choice(["none", "none", "none", "duplicate", "nan_mark", "nonpositive", "odd_type", "int_strike",
+                       "empty", "no_mark_column", "string_mark", "huge_strike", "one_sided", "nan_strike"])
+    if flaw == "duplicate" and len(rows):
+        rows = pd.concat([rows, rows.iloc[:2]], ignore_index=True)
+    elif flaw == "nan_mark" and len(rows):
+        rows.loc[rng.integers(len(rows)), "mark"] = np.nan
+    elif flaw == "nan_strike" and len(rows):
+        rows.loc[rng.integers(len(rows)), "strike"] = np.nan
+    elif flaw == "nonpositive" and len(rows):
+        rows.loc[rng.integers(len(rows)), rng.choice(["strike", "mark"])] = rng.choice([0., -1.])
+    elif flaw == "odd_type" and len(rows):
+        rows.loc[rng.integers(len(rows)), "type"] = "other"
+    elif flaw == "int_strike":
+        rows["strike"] = np.round(rows.strike).astype(int)
+    elif flaw == "empty":
+        rows = rows.iloc[:0]
+    elif flaw == "no_mark_column":
+        rows = rows.drop(columns="mark")
+    elif flaw == "string_mark" and len(rows):
+        rows["mark"] = rows.mark.astype(str)
+    elif flaw == "huge_strike" and len(rows):
+        rows.loc[0, "strike"] = 1e308
+    elif flaw == "one_sided":
+        rows = rows[rows.type == "call"]
+    growth = float(rng.choice([1., 1., np.exp(rate), np.nan, 0., -1., 1e308]))
+    spot = float(rng.choice([spot]*6+[np.nan, 0., -5.]))
+    return rows, spot, growth
+
+
+def _assert_estimates_equal(live, reference):
+    """Assert two ``estimate`` results agree: reasons and flags exactly, numbers to 1e-12."""
+    assert live.keys() == reference.keys()
+    for key, expected in reference.items():
+        if key != "reasons" and isinstance(expected, (list, float)):
+            np.testing.assert_allclose(live[key], expected, rtol=1e-12, atol=0, equal_nan=True, err_msg=key)
+        else:
+            assert live[key] == expected, key
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_option_price_cdf_estimate_equals_the_pre_vectorization_reference(seed):
+    rng = np.random.default_rng(seed)
+    params = dict(_option_curve_params(), min_forward_pairs=int(rng.integers(1, 5)),
+                  max_projection_distance=rng.choice([None, 1e-3, 1.]),
+                  max_forward_dispersion=rng.choice([None, 1e-4, 1.]))
+    live = predictive_cdf.OptionPriceCDF(**params)
+    reference = _ReferenceOptionPriceCDF(**params)
+    for _ in range(12):
+        rows, spot, growth = _random_option_rows(rng)
+        before = rows.copy()
+        expected = reference.estimate(rows, spot, growth)
+        _assert_estimates_equal(live.estimate(rows, spot, growth), expected)
+        pd.testing.assert_frame_equal(rows, before)            # the caller's frame is never touched
+
+
+def test_random_option_rows_reach_the_full_solve_and_the_refusals():
+    reference = _ReferenceOptionPriceCDF(**_option_curve_params())
+    results = [reference.estimate(*_random_option_rows(np.random.default_rng(seed))[:2])
+               for seed in range(150)]
+    reasons = {reason for result in results for reason in result["reasons"]}
+    assert sum(result["eligible"] for result in results) >= 15
+    assert {"missing_price_rows", "invalid_or_duplicate_prices", "missing_forward_pairs",
+            "insufficient_strikes"} <= reasons
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_option_price_cdf_parity_forwards_equal_the_reference_with_duplicate_medians(seed):
+    rng = np.random.default_rng(1000+seed)
+    strikes = rng.choice(np.arange(80., 121., 2.5), 14)
+    rows = pd.DataFrame({"strike": np.repeat(strikes, rng.integers(1, 5, 14)),
+                         "type": "call"})
+    rows["mark"] = rng.uniform(.5, 20, len(rows))
+    puts = rows.assign(type="put", mark=rng.uniform(.5, 20, len(rows)))
+    rows = pd.concat([rows, puts.iloc[rng.permutation(len(puts))[:len(puts)-int(rng.integers(0, 6))]]])
+    if seed % 4 == 0:
+        rows.loc[rows.index[::7], "mark"] = np.nan
+    if seed % 8 == 1:
+        rows["type"] = rows.type.where(rng.random(len(rows)) > .2, "other")
+    growth = float(rng.choice([1., .97, 1.03]))
+    expected = _ReferenceOptionPriceCDF.parity_forwards(rows, growth)
+    got = predictive_cdf.OptionPriceCDF.parity_forwards(rows, growth)
+    if expected is None:
+        assert got is None
+    else:
+        np.testing.assert_allclose(got, expected, rtol=1e-12, atol=0)
+        assert got.dtype == expected.dtype
+
+
 def test_option_price_cdf_admission_and_optional_guards():
     frame = _priced_options()
     helper = predictive_cdf.OptionPriceCDF(**_option_curve_params())

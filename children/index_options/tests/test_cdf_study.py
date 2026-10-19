@@ -862,6 +862,296 @@ def test_raw_chain_builder_masks_crossed_and_duplicate_contracts_deterministical
     pd.testing.assert_frame_equal(first, clean)
 
 
+# ---- The pre-vectorization oracle (ADR-0270 amendment) --------------------------------------
+# ``RawChainFeatureBuilder._usable_quotes`` / ``_proxy`` / ``transform`` exactly as they were
+# when they cleaned and solved one (symbol, date, expiration) group at a time in pandas. The
+# vectorized ``transform`` must equal this on every chain; ``self`` is the builder.
+
+def _reference_usable_quotes(rows):
+    """Mask invalid, crossed and duplicate contracts deterministically."""
+    import numpy as np
+    duplicate = rows.duplicated(["strike", "type"], keep=False)
+    finite = np.isfinite(rows[["strike", "mark", "bid", "ask", "bid_size",
+                               "ask_size", "open_interest",
+                               "implied_volatility"]]).all(axis=1)
+    valid = (finite & ~duplicate & (rows.strike > 0) & (rows.mark > 0)
+             & (rows.bid >= 0) & (rows.ask >= rows.bid)
+             & (rows.mark >= rows.bid) & (rows.mark <= rows.ask)
+             & (rows.bid_size >= 0) & (rows.ask_size >= 0)
+             & (rows.open_interest >= 0) & (rows.implied_volatility > 0))
+    return rows.loc[valid].sort_values(["strike", "type"], kind="mergesort").copy()
+
+
+def _reference_proxy(self, rows, spot, usable=False):
+    from dskit.pipeline.libs.predictive_cdf import OptionPriceCDF
+    # ``usable``: the rows already passed _usable_quotes, whose second pass is a no-op.
+    proxy = OptionPriceCDF(
+        self.proxy_probabilities, 1, self.min_wing_nodes,
+        self.max_inner_gap, self.max_outer_gap).estimate(
+            rows if usable else _reference_usable_quotes(rows), spot)
+    if not proxy["eligible"]:
+        return None
+    import numpy as np
+    return {k: np.asarray(proxy[k]) if k == "quantiles" else proxy[k]
+            for k in ("forward_ratio", "projection_distance", "mass", "quantiles")}
+
+
+def _reference_transform(self, chain, meta):
+    """Return one fixed tensor/proxy row for every requested chain key."""
+    import numpy as np
+    import pandas as pd
+    required = {"symbol", "date", "expiration", "strike", "type", "mark",
+                "bid", "ask", "bid_size", "ask_size", "open_interest",
+                "implied_volatility"}
+    if required-set(chain) or {"symbol", "quote_date", "expiry",
+                               "chain_underlying_price"}-set(meta):
+        raise ValueError("missing raw-chain or metadata columns")
+    keys = ["symbol", "quote_date", "expiry"]
+    lookup = {(r.symbol, r.quote_date, r.expiry): r.chain_underlying_price
+              for r in meta[keys+["chain_underlying_price"]].itertuples(index=False)}
+    grouped = {(a, b, c): g for (a, b, c), g in
+               chain.groupby(["symbol", "date", "expiration"], sort=False)}
+    centers = np.linspace(*self.bounds, self.nodes)
+    records = []
+    for key in sorted(lookup):
+        spot = float(lookup[key]); rows = grouped.get(key)
+        record = dict(zip(keys, key)); proxy = None
+        if rows is not None and np.isfinite(spot) and spot > 0:
+            rows = _reference_usable_quotes(rows)
+            rows["log_moneyness"] = np.log(rows.strike/spot)
+            rows["depth"] = rows.bid_size.fillna(0)+rows.ask_size.fillna(0)
+            rows["open_interest"] = rows.open_interest.fillna(0)
+            rows["rel_spread"] = (rows.ask-rows.bid)/rows.mark
+            proxy = _reference_proxy(self, rows, spot, usable=True)
+            # Each right's node candidates once per key, not once per node.
+            base = rows.implied_volatility.gt(0) & rows.mark.gt(0) & rows.rel_spread.ge(0)
+            sides = {}
+            for right in ("put", "call"):
+                side = rows[(rows.type == right) & base]
+                # Per column, so each field keeps its own dtype.
+                sides[right] = (side.log_moneyness.to_numpy(), [
+                    side[name].to_numpy() for name in (
+                        "log_moneyness", "implied_volatility", "rel_spread",
+                        "open_interest", "depth")])
+        else:
+            rows = None
+        for i, center in enumerate(centers):
+            chosen = None
+            if rows is not None:
+                moneyness, fields = sides["put" if center < 0 else "call"]
+                if len(moneyness):
+                    distance = np.abs(moneyness-center)
+                    # argmin takes the first minimum, as the stable sort's head did.
+                    nearest = int(np.argmin(distance))
+                    if distance[nearest] <= self.max_node_gap:
+                        chosen = [column[nearest] for column in fields]
+            values = ([chosen[0], chosen[1], np.log1p(chosen[2]),
+                       np.log1p(max(chosen[3], 0)), np.log1p(max(chosen[4], 0))]
+                      if chosen is not None else [np.nan]*len(self.NODE_FIELDS))
+            for field, value in zip(self.NODE_FIELDS, values):
+                record[f"chain_node_{i:02d}_{field}"] = value
+            record[f"chain_node_{i:02d}_mask"] = int(chosen is not None)
+        record["rn_proxy_eligible"] = int(proxy is not None)
+        record["rn_forward_ratio"] = proxy["forward_ratio"] if proxy else np.nan
+        record["rn_projection_distance"] = proxy["projection_distance"] if proxy else np.nan
+        record["rn_interior_mass"] = proxy["mass"] if proxy else np.nan
+        for j, probability in enumerate(self.proxy_probabilities):
+            record[self._qname(probability)] = proxy["quantiles"][j] if proxy else np.nan
+        if rows is not None:
+            volume = (pd.to_numeric(rows.get("volume"), errors="coerce")
+                      if "volume" in rows else pd.Series(np.nan, index=rows.index))
+            volume = volume.where(np.isfinite(volume) & volume.ge(0))
+            put_volume = float(volume[rows.type.eq("put")].sum(min_count=1))
+            call_volume = float(volume[rows.type.eq("call")].sum(min_count=1))
+            total_volume = put_volume+call_volume
+            record["chain_log_volume"] = (np.log1p(total_volume)
+                                            if np.isfinite(total_volume) else np.nan)
+            record["chain_put_call_volume_imbalance"] = (
+                (put_volume-call_volume)/total_volume
+                if np.isfinite(total_volume) and total_volume > 0 else np.nan)
+            record["chain_total_oi_snapshot"] = float(rows.open_interest.sum())
+            for greek in ("delta", "gamma", "vega"):
+                values = (pd.to_numeric(rows.get(greek), errors="coerce")
+                          if greek in rows else pd.Series(np.nan, index=rows.index))
+                valid = np.isfinite(values)
+                exposure = (abs(values[valid])*rows.loc[valid, "open_interest"]).sum(
+                    min_count=1)
+                record[f"chain_log_{greek}_oi"] = (
+                    np.log1p(float(exposure)) if np.isfinite(exposure) else np.nan)
+            weights = volume.where(volume > 0)
+            record["chain_volume_weighted_rel_spread"] = (
+                float(np.average(rows.loc[weights.notna(), "rel_spread"],
+                                 weights=weights.dropna()))
+                if weights.notna().any() else np.nan)
+        else:
+            for name in ("chain_log_volume", "chain_put_call_volume_imbalance",
+                         "chain_total_oi_snapshot", "chain_log_delta_oi",
+                         "chain_log_gamma_oi", "chain_log_vega_oi",
+                         "chain_volume_weighted_rel_spread"):
+                record[name] = np.nan
+        records.append(record)
+    result = pd.DataFrame(records).sort_values(keys).reset_index(drop=True)
+    group = result.groupby(["symbol", "expiry"], sort=False)
+    lag_oi = group.chain_total_oi_snapshot.shift(1)
+    lag2_oi = group.chain_total_oi_snapshot.shift(2)
+    result["chain_log_lag_open_interest"] = np.log1p(lag_oi)
+    result["chain_log_lag_oi_change"] = np.log1p(lag_oi)-np.log1p(lag2_oi)
+    return result.drop(columns=["chain_total_oi_snapshot"])
+
+
+def _random_raw_chain(seed):
+    """Return ``(chain, meta)``: several symbols, dates and expiries of messy quotes, in random order.
+
+    Mixed valid, crossed, zero-bid, duplicate and NaN quotes; optional volume and greek
+    columns; one-sided and empty groups; groups missing from the chain or from the metadata;
+    an unusable underlying price; strikes that tie in distance from a node center.
+    """
+    from scipy.stats import norm
+    rng = np.random.default_rng(seed)
+    symbols = [f"S{i}" for i in range(int(rng.integers(1, 4)))]
+    dates = [f"2020-01-{day:02d}" for day in range(2, 2+int(rng.integers(1, 5)))]
+    expiries = [f"2020-0{month}-21" for month in range(2, 2+int(rng.integers(1, 4)))]
+    columns = ["symbol", "date", "expiration", "strike", "type", "mark", "bid", "ask", "bid_size",
+               "ask_size", "open_interest", "implied_volatility"]
+    optional = [name for name in ("volume", "delta", "gamma", "vega") if rng.random() < .8]
+    frames, meta = [], []
+    for symbol in symbols:
+        for date in dates:
+            for expiry in expiries:
+                spot = float(rng.choice([100., 100., 250., 37.5]))
+                sigma = rng.uniform(.1, .5)
+                grid = rng.choice(["fine", "coarse", "ties", "one_sided", "empty"], p=[.5, .15, .1, .1, .15])
+                if grid == "empty":
+                    strikes = np.array([])
+                elif grid == "ties":      # strikes at spot/2 and 2 spot tie |log-moneyness| for center 0
+                    strikes = spot*np.array([.5, 2., .8, 1.25, 1., 1.05, .95])
+                else:
+                    steps = np.linspace(-.35, .35, 71 if grid == "fine" else 15)
+                    strikes = np.round(spot*np.exp(rng.choice(steps, int(rng.integers(2, len(steps))),
+                                                              replace=False)), 2)
+                d1 = (np.log(spot/strikes)+sigma**2/2)/sigma
+                call = spot*norm.cdf(d1)-strikes*norm.cdf(d1-sigma)
+                put = call-spot+strikes
+                strike = np.r_[strikes, strikes]
+                right = np.array(["call"]*len(strikes)+["put"]*len(strikes), dtype=object)
+                mark = np.maximum(np.r_[call, put], .01)
+                if grid == "one_sided":
+                    right[:] = rng.choice(["call", "put"])
+                n = len(strike)
+                half = rng.uniform(.01, .2, n)
+                bid, ask = np.maximum(mark-half, 0), mark+half
+                if grid == "ties":
+                    mark = np.where(strike == spot*2., np.maximum(mark, .5), mark)
+                    bid, ask = np.maximum(mark-half, 0), mark+half
+                frame = pd.DataFrame({
+                    "symbol": symbol, "date": date, "expiration": expiry, "strike": strike,
+                    "type": right, "mark": mark, "bid": bid, "ask": ask,
+                    "bid_size": rng.integers(0, 50, n).astype(float),
+                    "ask_size": rng.integers(0, 50, n).astype(float),
+                    "open_interest": rng.integers(0, 5000, n).astype(float),
+                    "implied_volatility": np.full(n, sigma)*rng.uniform(.9, 1.1, n),
+                    "volume": rng.integers(0, 300, n).astype(float),
+                    "delta": rng.uniform(-1, 1, n), "gamma": rng.uniform(0, .1, n),
+                    "vega": rng.uniform(0, 30, n)})
+                if n:
+                    flaws = rng.random(n)
+                    frame.loc[flaws < .04, "bid"] = frame.ask+1                  # crossed
+                    frame.loc[(flaws >= .04) & (flaws < .07), "bid"] = 0.        # zero bid: usable
+                    frame.loc[(flaws >= .07) & (flaws < .10), "mark"] = np.nan
+                    frame.loc[(flaws >= .10) & (flaws < .12), "implied_volatility"] = 0.
+                    frame.loc[(flaws >= .12) & (flaws < .14), "bid_size"] = np.nan
+                    frame.loc[(flaws >= .14) & (flaws < .16), "open_interest"] = np.nan
+                    frame.loc[(flaws >= .16) & (flaws < .18), "strike"] = -1.
+                    frame.loc[(flaws >= .18) & (flaws < .20), "volume"] = np.nan
+                    frame.loc[(flaws >= .20) & (flaws < .22), "volume"] = -3.
+                    frame.loc[(flaws >= .22) & (flaws < .24), "delta"] = np.nan
+                    frame.loc[(flaws >= .24) & (flaws < .26), "implied_volatility"] = np.inf
+                    frame = pd.concat([frame, frame.iloc[rng.integers(0, n, int(rng.integers(0, 4)))]])
+                    if seed % 7 == 0:
+                        frame.loc[frame.index[:2], "type"] = "other"
+                if rng.random() < .1:
+                    frame = frame.iloc[:0]                  # the group is absent from the chain
+                frames.append(frame)
+                price = (float(rng.choice([np.nan, 0., -4.])) if rng.random() < .08 else spot)
+                if rng.random() < .93:
+                    meta.append({"symbol": symbol, "quote_date": date, "expiry": expiry,
+                                 "chain_underlying_price": price})
+    chain = pd.concat(frames, ignore_index=True)
+    chain = chain.iloc[rng.permutation(len(chain))].reset_index(drop=True)
+    chain = chain[columns+optional]
+    if "volume" in optional and seed % 3 == 0:
+        chain["volume"] = chain.volume.astype(object).where(chain.volume.notna(), None)
+    extra = pd.DataFrame({"symbol": ["ZZZ"], "date": [dates[0]], "expiration": [expiries[0]]})
+    chain = pd.concat([chain, extra.reindex(columns=chain.columns)], ignore_index=True)  # not requested
+    meta = pd.DataFrame(meta, columns=["symbol", "quote_date", "expiry", "chain_underlying_price"])
+    if len(meta) and seed % 5 == 0:                          # a repeated key: the last price wins
+        meta = pd.concat([meta, meta.iloc[:1].assign(chain_underlying_price=meta.chain_underlying_price.iloc[0]+1)],
+                         ignore_index=True)
+    return chain, meta
+
+
+_BUILDERS = (
+    dict(nodes=9, moneyness_bounds=[-.3, .3], max_node_gap=.04,
+         proxy_probabilities=[.01, .05, .1, .25, .5, .75, .9, .95, .99], min_wing_nodes=3,
+         max_inner_gap=.08, max_outer_gap=.12),
+    dict(nodes=5, moneyness_bounds=[-.9, .9], max_node_gap=1.2, proxy_probabilities=[.1, .5, .9],
+         min_wing_nodes=1, max_inner_gap=.5, max_outer_gap=.8),
+)
+
+
+def _assert_features_equal(live, reference):
+    """Assert two feature frames agree: columns, dtypes, identities, masks exactly, floats to 1e-12."""
+    assert list(live.columns) == list(reference.columns)
+    assert live.dtypes.equals(reference.dtypes)
+    assert len(live) == len(reference)
+    for name in reference.columns:
+        if reference[name].dtype.kind == "f":
+            np.testing.assert_allclose(live[name].to_numpy(), reference[name].to_numpy(),
+                                       rtol=1e-12, atol=0, equal_nan=True, err_msg=name)
+        else:
+            assert live[name].tolist() == reference[name].tolist(), name
+
+
+@pytest.mark.parametrize("seed", range(30))
+@pytest.mark.parametrize("contract", range(len(_BUILDERS)))
+def test_raw_chain_transform_equals_the_pre_vectorization_reference(seed, contract):
+    chain, meta = _random_raw_chain(seed)
+    builder = RawChainFeatureBuilder(**_BUILDERS[contract])
+    frozen = chain.copy()
+    expected = _reference_transform(builder, chain, meta)
+    _assert_features_equal(builder.transform(chain, meta), expected)
+    pd.testing.assert_frame_equal(chain, frozen)                # the caller's chain is never touched
+
+
+def test_random_raw_chains_reach_every_branch_of_the_reference():
+    builder = RawChainFeatureBuilder(**_BUILDERS[0])
+    out = pd.concat([_reference_transform(builder, *_random_raw_chain(seed)) for seed in range(30)])
+    masks = [name for name in out if name.endswith("_mask")]
+    assert out.rn_proxy_eligible.sum() > 20 and (out.rn_proxy_eligible == 0).sum() > 20
+    assert out[masks].to_numpy().sum() > 100 and (out[masks].to_numpy() == 0).any()
+    for name in ("chain_log_volume", "chain_put_call_volume_imbalance", "chain_volume_weighted_rel_spread",
+                 "chain_log_delta_oi", "chain_log_lag_oi_change"):
+        assert out[name].notna().sum() > 20 and out[name].isna().sum() > 5, name
+
+
+def test_raw_chain_transform_breaks_a_node_tie_to_the_lower_strike():
+    rows = [(strike, right) for strike in (50., 200.) for right in ("call", "put")]
+    chain = pd.DataFrame({
+        "symbol": "SPY", "date": "2020-01-02", "expiration": "2020-02-21",
+        "strike": [r[0] for r in rows], "type": [r[1] for r in rows],
+        "mark": 10., "bid": 9.9, "ask": 10.1, "bid_size": 5., "ask_size": 5.,
+        "open_interest": [10., 20., 30., 40.], "implied_volatility": [.2, .3, .4, .5]})
+    meta = pd.DataFrame({"symbol": ["SPY"], "quote_date": ["2020-01-02"], "expiry": ["2020-02-21"],
+                         "chain_underlying_price": [100.]})
+    builder = RawChainFeatureBuilder(nodes=3, moneyness_bounds=[-1., 1.], max_node_gap=2.,
+                                     proxy_probabilities=[.1, .5, .9], min_wing_nodes=1,
+                                     max_inner_gap=2., max_outer_gap=2.)
+    out = builder.transform(chain, meta)
+    # centre 0 takes calls: log(50/100) and log(200/100) are equidistant, the 50 strike wins
+    assert out.chain_node_01_log_moneyness.iloc[0] == np.log(.5) and out.chain_node_01_iv.iloc[0] == .2
+    _assert_features_equal(out, _reference_transform(builder, chain, meta))
+
+
 def test_raw_chain_archive_cache_is_bound_to_annual_file_content(tmp_path):
     archive = tmp_path/'archive'; (archive/'spy').mkdir(parents=True)
     source = archive/'spy'/'options_2020.parquet'
