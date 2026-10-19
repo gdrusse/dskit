@@ -13,14 +13,14 @@ Previous note archived at docs/archive/re-entry/crypto_trading.md.
 - Historical 10-share candle-cost means for ETH NO were +1.25c/506 W4 and +0.97c/269 W5; BTC NO +1.37c/175 W4 and +1.66c/117 W5. BTC W4/W5 selected counts miss the frozen 200-contract floor.
 - **These are retrospective later-set results, not an untouched holdout, verified delayed fills, or production approval.** The two original protected tests use different frozen rules and cannot be repurposed to validate this recommendation.
 - Polymarket model 10 / BTC 11m / UP 80-90% is a separate research reserve: +3.37c on 324 primary displayed-book selections, but no distinct later settled outcome set and no corrected pass. No Polymarket cell is in this immediate recommendation.
-- Complete historical audit: 77/77 Kalshi and 20/20 native BTC fixed runs; all 600 registered side/cells retained; 219 positive modeled scenarios among 300 assessable entries; zero corrected after-cost passes. Branch remains unmerged.
-- The staged JSON records these two cells, later retained comparisons, and sparse adverse October evidence. Frozen machine-specific study configs now live as byte-identical archive evidence under `docs/memos/retained-history-configs-2026-10-19/`; the checkpoint evidence JSON retains the amendment bridge and final manifests. Final review of this corrected candidate is pending.
+- Complete historical audit: 77/77 Kalshi and 20/20 native BTC fixed runs; all 600 registered side/cells retained; 219 positive modeled scenarios among 300 assessable entries; zero corrected after-cost passes. Final independent reviews passed on `f3dc1bca`.
+- The staged JSON records these two cells, later retained comparisons, and sparse adverse October evidence. Frozen machine-specific study configs now live as byte-identical archive evidence under `docs/memos/retained-history-configs-2026-10-19/`; the checkpoint evidence JSON retains the amendment bridge and final manifests. Two fresh independent reviews of `f3dc1bca` found zero unresolved Critical/Major/Minor/Nit issues; three focused config failures reproduce on unchanged main.
 
 ## Next
 
 - Keep work on the two method-24 Kalshi cells. Freeze a distinct future evaluation interval and exact source, executable-ask, fee, depth, delay, size, overlap and failure rules before its outcomes.
 - Preserve the original overnight Oct 12-Nov 11/read Nov 11 and predictive Oct 17-Jan 15/read Jan 15 protocols; their overlap still needs owner reconciliation. Neither is an interim selector.
-- Obtain two fresh independent final correctness/integration reviews before merging. The three focused crypto config failures reproduce on unchanged main; documentation budget checks passed 4/4. Do not rerun the full suite without relevant code changes or owner instruction.
+- The next work is a separately frozen prospective test of these two cells. The three focused crypto config failures reproduce on unchanged main; documentation budget checks passed 4/4. Do not rerun the full suite without relevant code changes or owner instruction.
 
 ## Blocked / owner decisions
 

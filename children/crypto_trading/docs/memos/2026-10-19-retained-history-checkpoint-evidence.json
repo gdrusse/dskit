@@ -10399,6 +10399,44 @@
         ]
       }
     },
-    "final_review_round": "pending"
+    "final_review_round": {
+      "reviewed_candidate_commit": "f3dc1bca70598c1e89d630eabbff624e8b14cd6b",
+      "reviewed_protocol_sha256": "c4afe94e7165a69318e95b4d2cea6dfc8501d54b8cbc3af9788c7e55f472a6d8",
+      "reviewed_focus_json_sha256": "6fc1a10040a96bca52fa4e8444ce03f1f1a596608726080b296a057d7be75e88",
+      "reviewers": [
+        {
+          "task": "/root/correctness_final",
+          "model": "gpt-6-astra",
+          "lens": "correctness/authority",
+          "critical": 0,
+          "major": 0,
+          "minor": 0,
+          "nit": 0,
+          "report": "Final correctness review: clean. Candidate f3dc1bca has 0 Critical, 0 Major, 0 Minor, and 0 Nit findings. Hashes, protected boundaries, 77/20 runs, 600 dispositions, zero corrected passes, and the two-cell October caveats reconciled. I did not recompute every aggregate from raw forecasts."
+        },
+        {
+          "task": "/root/integration_final",
+          "model": "gpt-6-astra",
+          "lens": "test-quality/integration",
+          "critical": 0,
+          "major": 0,
+          "minor": 0,
+          "nit": 0,
+          "report": "Final integration review of f3dc1bca: no proven findings. Archived hashes, published tables, manifests, protocol, and 600-row register reconcile. Focused tests: 129 passed, three failures also present on unchanged main. Full suite and model reruns were outside this review."
+        }
+      ],
+      "checks": {
+        "docs": "4 passed",
+        "crypto_config": "125 passed, 3 failed identically on unchanged origin/main",
+        "archive_and_tables": "112 config hashes, 77 completed runs, 2 published gzip/source hashes verified",
+        "diff_check": "clean"
+      },
+      "unresolved_critical": 0,
+      "unresolved_major": 0,
+      "unresolved_minor": 0,
+      "unresolved_nit": 0,
+      "recorded_utc": "2026-10-19T20:04:13.770606+00:00",
+      "limits": "Historical research only; raw forecasts and model artifacts remain machine-local, no verified fills, no prospective or production approval."
+    }
   }
 }
