@@ -2972,3 +2972,53 @@ def test_held_out_rho_run_threads_edge_padded_to_primary_and_sensitivity_support
         assert support["date_count"] == 6
         assert set(month[horizon]["upper_bounds"]) == set(params["rho_grid"])
         assert all(v is not None for v in month[horizon]["upper_bounds"].values())
+
+
+@pytest.mark.parametrize("order", [("IWM", "SPY", "QQQ"), ("SPY", "IWM", "QQQ"), ("SPY", "QQQ", "IWM")])
+def test_panel_one_hots_follow_the_configured_order_and_a_name_without_rows_is_an_all_zero_column(
+        tmp_path, monkeypatch, order):
+    """The one-hot block is built as one matrix (ADR-0270): its columns follow ``symbols`` as configured,
+    never a sorted or category-code order, and a configured name with no surviving rows keeps an all-zero
+    int64 column (lens B: the earlier fixture had two already-sorted, complete names)."""
+    import exchange_calendars as xc
+    dates = xc.get_calendar("XNYS").sessions_in_range("2023-01-03", "2023-07-10")
+    prices = {d.strftime("%Y-%m-%d"): 100+i*.1+np.sin(i)*.7 for i, d in enumerate(dates)}
+
+    class Reader:
+        def __init__(self, key, params):
+            self.symbol = params["symbol"]
+
+        def run(self, ctx, inputs):
+            return {"records": [
+                {"date": d, "close": 20. if self.symbol in ("RVX", "VIX") else price*(1+(self.symbol == "SPY")),
+                 "asof_ms": int(pd.Timestamp(d).timestamp()*1000), "instrument": self.symbol,
+                 "contract": self.symbol, "group": self.symbol, "dividend_amount": None}
+                for d, price in prices.items()]}
+
+        def fingerprint(self):
+            return {"sha256": "fixture"}
+
+    monkeypatch.setattr("index_options.cdf_study.IndexCloseRows", Reader)
+    quotes = ["2023-06-26", "2023-06-27", "2023-06-28", "2023-06-29"]
+    frames = [pd.DataFrame({"symbol": s, "quote_date": quotes,
+                            "expiry": ["2023-06-30", "2023-06-30", "2023-07-03", "2023-07-03"],
+                            "chain_underlying_price": [prices[d]*scale for d in quotes]})
+              for s, scale in (("IWM", 1), ("SPY", 2))]
+    rows = pd.concat(frames, ignore_index=True)
+    surface, lifecycle = tmp_path/"s.parquet", tmp_path/"l.parquet"
+    rows.to_parquet(surface)
+    rows[["symbol", "quote_date", "expiry"]].assign(first_seen_date="2023-06-01").to_parquet(lifecycle)
+    config = {"root": "fixture", "surface": str(surface), "lifecycle": str(lifecycle),
+              "symbols": {s: "RVX" if s != "SPY" else "VIX" for s in order},
+              "price_source": "fixture", "iv_source": "fixture", "since": "2023-01-01", "max_dte": 45,
+              "lags": 22, "windows": [1, 5, 22, 66], "feature_gap_days": 7, "reference_floor": .001,
+              "spot_tolerance": .02, "market_symbols": {"market_vix9d": {"symbol": "VIX9D", "max_age_days": 7}}}
+    out = ExactExpiryCDFPanel(config).read()
+    one_hots = [c for c in out.columns if c.startswith("is_")]
+    assert one_hots == [f"is_{s}" for s in order]
+    assert len(out) and (out[one_hots].sum(axis=1) == 1).all()
+    for s in order:
+        assert str(out[f"is_{s}"].dtype) == "int64"
+        assert (out[f"is_{s}"] == (out.symbol == s).astype(int)).all(), s
+    assert int(out["is_QQQ"].sum()) == 0
+    assert out.columns.get_loc("is_QQQ") < out.columns.get_loc("market_vix9d")
