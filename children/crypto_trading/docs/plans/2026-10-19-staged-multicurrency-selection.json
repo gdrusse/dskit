@@ -1,0 +1,826 @@
+{
+  "name": "staged-multicurrency-crypto-model-and-cell-selection",
+  "status": "kickoff_inventory_complete_stage_windows_unassigned",
+  "notes": "Owner-requested JSON-only design. This does not amend either protected protocol or authorize a run, refit, outcome read, service, order, or merge.",
+  "base_commit": "62ce962fd0a49a9b94f36913a18c45525f30405c",
+  "evidence": {
+    "kalshi_methods": "children/crypto_trading/docs/memos/2026-10-18-warmup20-aligned-methods.md",
+    "kalshi_tuning": "children/crypto_trading/docs/memos/2026-10-18-pocket-tuning.md",
+    "polymarket_methods": "children/crypto_trading/docs/memos/2026-10-18-polymarket-predictability.md",
+    "candidate_register": "children/crypto_trading/docs/memos/2026-10-18-executable-cells-candidate-followup.csv",
+    "latest_study": "children/crypto_trading/docs/memos/2026-10-19-retained-history-study.md"
+  },
+  "question": "Can a method fitted across eligible cryptocurrencies be selected on one chronological period, then have its cells selected on a later period, then beat native market and calibration controls on a final untouched period after realistic costs?",
+  "universe": {
+    "venues": [
+      "Kalshi",
+      "Polymarket"
+    ],
+    "venue_model_policy": "Select one pooled method per eligible venue. Do not pool labels or prices across venues with different settlement rules and quote construction.",
+    "kalshi": {
+      "eligible_assets": [
+        "BTC",
+        "ETH"
+      ],
+      "methods": "Existing aligned-01 through aligned-57 and tuning-01 through tuning-20, with saved configurations unchanged",
+      "reference": "aligned-24",
+      "pocket_candidate": "tuning-03",
+      "multicurrency_status": "eligible"
+    },
+    "polymarket": {
+      "eligible_assets": [
+        "BTC"
+      ],
+      "blocked_assets": [
+        "ETH",
+        "SOL",
+        "XRP"
+      ],
+      "methods": "Existing model01 through model20, with saved configurations unchanged",
+      "reference": "model02",
+      "multicurrency_status": "blocked_until_another_native_asset_has_settled_labels_rules_books_and_prior_training_history"
+    },
+    "cell_register": {
+      "candidate_entries": 298,
+      "blocked_native_entries": 300,
+      "no_current_support_controls": 2,
+      "retention": "Preserve all 600 entries and every prior positive lead. Selection is a separate result; priority changes order, not inclusion."
+    }
+  },
+  "chronology": {
+    "order": [
+      "fit_history",
+      "warmup_screen",
+      "method_validation",
+      "cell_validation",
+      "final_evaluation"
+    ],
+    "stage_windows": {
+      "warmup_screen": null,
+      "method_validation": null,
+      "cell_validation": null,
+      "final_evaluation": null
+    },
+    "isolation": "Use disjoint contract settlements. All leads of one contract remain in one stage. Every fit or selector uses only labels actually published before its cutoff with at least the existing one-day embargo.",
+    "window_gate": "Freeze exact UTC intervals, source hashes, market IDs, availability timestamps, and prior-access status before eligible outcomes are opened.",
+    "prior_exposure": "February-April warm-up, May-July validation, W4/W5, and retained October extension were previously examined. Replaying them is retrospective and cannot be called independent confirmation.",
+    "protected_protocols": [
+      {
+        "name": "overnight_forward",
+        "kalshi_market_close_start_utc": "2026-10-12T00:00:00Z",
+        "kalshi_market_close_end_before_utc": "2026-11-11T00:00:00Z",
+        "earliest_protocol_read_utc": "2026-11-11T00:00:00Z"
+      },
+      {
+        "name": "predictive_forward",
+        "start_utc": "2026-10-17T00:00:00Z",
+        "end_before_utc": "2027-01-15T00:00:00Z",
+        "earliest_protocol_read_utc": "2027-01-15T00:00:00Z"
+      }
+    ],
+    "protection": "Neither protocol releases the other. Do not use either as an interim selector. Keep the union closed until their overlap is reconciled by the owner under the original terms."
+  },
+  "stages": {
+    "warmup_screen": {
+      "purpose": "Retain plausible existing methods without choosing cells using later outcomes.",
+      "input": "Causal out-of-fit predictions from every eligible saved method on identical venue-specific contracts.",
+      "rule": "Retain every method with lower contract-weighted log loss and non-worse Brier than raw native market and fitted market-only calibration in each warm-up half. Audit failures too; no later replacement.",
+      "fallback": "If none qualifies, retain the fixed reference only as a negative control and mark selection failed.",
+      "sample_floor_per_asset": {
+        "contracts": 200,
+        "distinct_utc_days": 20,
+        "contracts_per_chronological_half": 50,
+        "days_per_chronological_half": 5
+      },
+      "feature_role": "Screen fixed feature-family-plus-method configurations; save every family's outcome. No feature family may be added using later outcomes."
+    },
+    "method_validation": {
+      "purpose": "Choose one pooled method per eligible venue before cell-validation outcomes are opened.",
+      "metric": "Equal-asset-weighted contract log-loss improvement over the stronger of raw native market and market-only calibration.",
+      "eligibility": "Positive improvement and non-worse Brier in every eligible asset; require prespecified minimum contracts and independent days per asset.",
+      "ranking": "Maximize worst-asset improvement; tie-break by equal-asset mean improvement, lower complexity, then stable method ID. Apply day and seven-day uncertainty checks over the full method family.",
+      "output": "One frozen method ID, exact config and fit/source hashes per venue, or explicit no-selection. A BTC-only Polymarket choice is single-asset, not multicurrency.",
+      "sample_floor_per_asset": {
+        "contracts": 200,
+        "distinct_utc_days": 20,
+        "contracts_per_chronological_half": 50,
+        "days_per_chronological_half": 5
+      },
+      "multiplicity_family": {
+        "Kalshi": 77,
+        "Polymarket": 20,
+        "rule": "Include every existing fixed method even when unavailable; Bonferroni adjusted one-sided day and seven-day cluster p below 0.05 is required."
+      },
+      "feature_role": "Rank only methods and feature recipes frozen by warm-up. No new engineering or feature selection in this period."
+    },
+    "cell_validation": {
+      "purpose": "With the method fixed, select all qualifying cells across assets and sides on a later period.",
+      "identity": [
+        "venue",
+        "asset",
+        "lead_minutes",
+        "native_up_probability_bin",
+        "purchased_side"
+      ],
+      "bins": "Ten fixed 10-point bins of raw native decision-time UP/YES probability, not model probability or outcome.",
+      "prediction_gate": "Paired-cell log loss below and Brier no worse than raw native market and market-only calibration in both chronological halves, with prespecified sample and day floors.",
+      "side_gate": "YES/UP or NO/DOWN must follow a frozen model-versus-executable-ask-plus-fee rule known at decision time. A mean probability gap alone is side-unassigned.",
+      "execution_gate": "Require native fee vintage, source and purchased-side freshness, positive delay, nonnegative clocks, valid depth, and positive modeled net mean in both halves. Kalshi candle-close scenarios remain diagnostics until timestamped books exist.",
+      "uncertainty": "Correct over the complete declared venue/asset/lead/bin/side/method/scenario family, including empty and losing cells; require day and seven-day checks. Sparse and all-win samples remain unresolved.",
+      "output": "Freeze every qualifying cell, side, method, signal threshold, cost assumptions, and source hashes. Preserve the failed-cell ledger. No top-k cutoff or replacement after final outcomes.",
+      "sample_floor_per_cell": {
+        "contracts": 200,
+        "distinct_utc_days": 20,
+        "contracts_per_chronological_half": 50,
+        "days_per_chronological_half": 5
+      },
+      "multiplicity_family": {
+        "minimum_side_cells": 600,
+        "rule": "Do not shrink the family after viewing results; preserve the previous 43,200,000-coordinate family if the same 100 labels, 18 scenarios, 8 windows, and 5 endpoints are used, or freeze a larger family before evaluation."
+      },
+      "feature_role": "Choose cells using the already frozen method and feature recipe; no feature changes."
+    },
+    "final_evaluation": {
+      "purpose": "Measure frozen venue methods and cells on a later untouched cohort.",
+      "no_selection": true,
+      "comparators": [
+        "raw_native_market",
+        "market_only_calibration",
+        "frozen_selected_model"
+      ],
+      "reports": [
+        "contract_weighted_log_loss",
+        "Brier",
+        "asset_and_cell_counts",
+        "net_return_after_native_costs",
+        "forecast_based_extra_cost_allowance",
+        "day_and_seven_day_cluster_uncertainty",
+        "rare_loss_sensitivity",
+        "calendar_stability",
+        "overlap_adjusted_combined_policy"
+      ],
+      "decision": "Report pass, fail, or inconclusive under frozen multiplicity and data-quality rules. No model, cell, threshold, venue, or time-window replacement.",
+      "feature_role": "Read-only scoring of the frozen feature recipe, method, and cells."
+    }
+  },
+  "blockers": [
+    "Exact disjoint eligible stage windows and prior-access status are not established",
+    "Protected Kalshi windows are unavailable for this design",
+    "Polymarket ETH/SOL/XRP lack native settled causal training and validation data",
+    "Historical Kalshi candle quotes lack execution-quality timestamps and depth"
+  ],
+  "execution_status": {
+    "json_design_created": true,
+    "new_stages_run": false,
+    "new_model_fits": 0,
+    "new_outcome_reads": 0,
+    "final_confirmation_available": false,
+    "metadata_inventory_completed": true,
+    "completed_runs_identified": 97,
+    "runs_reexecuted": 0
+  },
+  "feature_plan": {
+    "goal": "Test whether information from other cryptocurrencies adds predictive value beyond the venue's own market price and the target asset's history.",
+    "baseline_families": {
+      "Kalshi": "Retain the saved price-anchored BTC/ETH method-24 family, GRU input, and market-only controls with their original feature definitions.",
+      "Polymarket": "Retain the saved 20 native BTC probability, lead, and source-age methods and their market-only calibration control."
+    },
+    "new_candidate_families": [
+      {
+        "id": "native_market_only",
+        "inputs": [
+          "native decision-time UP/YES midpoint",
+          "lead minutes",
+          "source age"
+        ],
+        "role": "minimum comparator",
+        "kickoff_status": "ready_from_saved_venue_outputs"
+      },
+      {
+        "id": "own_asset_context",
+        "inputs": [
+          "causal own-asset spot returns",
+          "realized volatility",
+          "volume or taker share where available"
+        ],
+        "role": "test information beyond native price",
+        "kickoff_status": "Kalshi_existing_GRU_context_only__Polymarket_requires_new_point_in_time_spot_join"
+      },
+      {
+        "id": "cross_asset_context",
+        "inputs": [
+          "causal normalized BTC return and volatility",
+          "causal normalized ETH return and volatility",
+          "relative BTC-versus-ETH movement"
+        ],
+        "role": "test whether another cryptocurrency helps the target asset",
+        "kickoff_status": "deferred_new_data_only__prior_W1_xasset_ablation_dropped"
+      },
+      {
+        "id": "venue_microstructure",
+        "inputs": [
+          "native bid/ask spread",
+          "source and purchased-side quote age",
+          "displayed depth and imbalance where timestamped"
+        ],
+        "role": "venue-specific candidate, never assumed interchangeable",
+        "kickoff_status": "decision_time_book_coverage_and_fee_vintage_gate"
+      }
+    ],
+    "construction_rules": [
+      "All features must be timestamped and available strictly before the prediction instant; use the last fully closed spot bar and preserve a source-availability clock.",
+      "Normalize returns and volatility within each asset using parameters fitted only on pre-stage training data; include asset identity so a pooled model can learn different baselines.",
+      "Use Polymarket native rules, UP/DOWN tokens, and books for Polymarket; use Kalshi native YES/NO, strike, and basis handling for Kalshi. Never substitute a price, oracle, or label across venues.",
+      "Missing or stale values remain explicit missingness with an eligibility count; do not fill them with future or opposite-venue observations.",
+      "A feature family that lacks point-in-time coverage for an asset or stage is blocked for that comparison, not silently trained on a smaller favorable cohort."
+    ],
+    "selection_timing": "Define and compute candidate feature families on fit history. Use warm-up only to screen fixed feature-family-plus-method configurations. Freeze the surviving feature recipes, transformations, and source hashes before method validation. Do not add features after seeing method, cell, or final-evaluation outcomes.",
+    "warmup_screen": "Retain a feature family only if its paired score improves over its nested simpler family and native market-only calibration under the declared warm-up rule in every eligible asset; preserve all failed families.",
+    "ablation_reports": [
+      "native market only",
+      "own-asset context added",
+      "cross-asset context added",
+      "venue microstructure added where eligible",
+      "each cross-asset input removed in turn"
+    ],
+    "polymarket_gate": "Cross-asset spot or book features are proposals, not features of the 20 completed Polymarket models. They require separately verified synchronized historical inputs and sufficient native settled multi-asset labels before a multicurrency result can be claimed.",
+    "kalshi_gate": "Existing GRU and spot features are available for BTC/ETH research, but historical candle quotes cannot establish execution-quality spread, age, or depth inputs.",
+    "prior_cross_asset_evidence": {
+      "source": "children/crypto_trading/docs/memos/2026-10-11-zoo-w1-selection-and-model-pick.md",
+      "result": "The prior BTC/ETH W1 feature ablation dropped the xasset family for both tabular and sequence classes; the selected pooled GRU kept volatility and clock context, not that cross-asset family.",
+      "reuse_rule": "Do not repeat that ablation on the same W1 folds as a new discovery. A new cross-asset candidate needs a changed, justified venue-linked feature question and a later eligible evaluation."
+    }
+  },
+  "kickoff_audit": {
+    "date_local": "2026-10-19",
+    "mode": "read_only_metadata_and_existing_results",
+    "completed_fixed_runs": {
+      "Kalshi": 77,
+      "Polymarket_BTC": 20
+    },
+    "local_panel_inventory": [
+      {
+        "venue": "Kalshi",
+        "source": "predictability15-panel-20261017",
+        "rows": 189761,
+        "schema_columns": 16,
+        "sha256": "a80c1508a79d8484168985eb7d31dce377aa816969b812769e9d53f0aa694a4b",
+        "observed_predictor_fields": [
+          "mid",
+          "fair_gru",
+          "log_moneyness",
+          "rv_rms_60",
+          "rv_ewma_30",
+          "spread",
+          "candle_volume",
+          "candle_open_interest",
+          "asset",
+          "lead_minutes"
+        ],
+        "cross_asset_feature_columns_present": false,
+        "note": "Existing saved Kalshi model comparison panel; prior W1 upstream feature ablation is separate."
+      },
+      {
+        "venue": "Polymarket",
+        "source": "polymarket-predictability-panel-20261018",
+        "rows": 103713,
+        "schema_columns": 62,
+        "sha256": "2c18bcbaeaf7c8cce9953497e263f1065fdcb01fc6c527b24ec6982fcd48b2e5",
+        "observed_predictor_fields": [
+          "mid",
+          "age_s",
+          "lead_minutes",
+          "source_ts",
+          "asset"
+        ],
+        "spot_or_cross_asset_feature_columns_present": false,
+        "note": "BTC native probability panel; numerous other columns are transformations of price, lead, and age, not independent spot or cross-currency inputs."
+      }
+    ],
+    "readiness": {
+      "warmup_rehearsal": "Existing February-April outputs can be reused without rerunning models, but were previously examined.",
+      "method_validation_rehearsal": "Existing May-July outputs can be reused without rerunning models, but were previously examined.",
+      "cell_validation": "No separately admitted, sufficiently long, venue-aligned period is established for both venues.",
+      "final_evaluation": "No untouched eligible final period is established; protected windows remain closed."
+    },
+    "next_bounded_work": "Reconcile available unprotected source and outcome chronology, then freeze exact stage windows and feature availability in this JSON before any new fitting or scoring. Reuse saved model outputs for retrospective rehearsal; do not duplicate the 97 completed fixed runs.",
+    "work_started": [
+      "Matched the 77 completed Kalshi and 20 completed native BTC runs to saved run manifests; no run was repeated.",
+      "Inspected existing panel schemas and input hashes without reading any protected outcomes.",
+      "Reconciled the prior pooled BTC/ETH GRU feature selection: xasset was tested and dropped on W1.",
+      "Separated features available now from features requiring new native point-in-time data."
+    ],
+    "next_executable_step": "Use already saved warm-up and method-validation scores to rehearse the frozen method selector without refitting; label the result retrospective. Do not perform cell selection until a later eligible stage is assigned and attested.",
+    "retrospective_reference_comparison": {
+      "source": "saved May-July contract-level validation outputs, read without refitting",
+      "status": "descriptive_not_new_method_selection",
+      "contracts_per_asset": 8579,
+      "Kalshi_method24": {
+        "BTC_model_minus_raw_logloss": -0.0008805,
+        "ETH_model_minus_raw_logloss": -0.00066996
+      },
+      "Kalshi_method48": {
+        "BTC_model_minus_raw_logloss": -0.0008522,
+        "ETH_model_minus_raw_logloss": -0.00072913
+      },
+      "interpretation": "Both outperform raw market in these historical asset averages. Method 48 is better on ETH and worse on BTC than method 24; the later attribution check found no stable significant replacement of method 24. Preserve method 24 as the reference."
+    }
+  },
+  "alignment_check": {
+    "earlier_best_method": "Kalshi method 24 remains the research reference; method 48 has no established incremental advantage. The new staged selector has not yet chosen a method on independent data.",
+    "earlier_cells": "All six previously selected Kalshi regions, eleven persistent mean-gap leads, all other reserves, and the native Polymarket BTC leads remain in the 600-entry register. No cell is dropped because another looks stronger.",
+    "later_historical_evidence": "The retained historical audit has 219 of 300 assessable side/cells with at least one positive modeled cost scenario, but zero supported corrected primary or alternative scenarios. The ETH 11-minute 10-20 percent Kalshi prediction lead reverses between W4 and W5; the Polymarket beta02 5-minute 80-90 percent lead produces only two primary native-book entries.",
+    "profitability_statement": "The evidence aligns with keeping the earlier method and potential leads under study. It does not affirm that any cell is profitable or that the proposed staged strategy has passed a fresh holdout."
+  },
+  "priority_policy": {
+    "primary_question": "Does the selected pooled method improve native market probabilities and yield positive after-cost signals in the earlier promising regions?",
+    "first_wave_region_count": 32,
+    "first_wave_regions": [
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 11,
+        "up_probability_bin": "10-20",
+        "reason": "kalshi_preselected_repeated_score",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [
+          "aligned-22",
+          "tuning-03",
+          "tuning-06",
+          "tuning-09",
+          "tuning-12"
+        ],
+        "prior_mean_gap_side": null,
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 14,
+        "up_probability_bin": "70-80",
+        "reason": "kalshi_preselected_repeated_score",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [
+          "tuning-06",
+          "tuning-09"
+        ],
+        "prior_mean_gap_side": null,
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 11,
+        "up_probability_bin": "20-30",
+        "reason": "kalshi_preselected_repeated_score",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [
+          "tuning-03",
+          "tuning-12"
+        ],
+        "prior_mean_gap_side": null,
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 5,
+        "up_probability_bin": "20-30",
+        "reason": "kalshi_preselected_repeated_score",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [
+          "aligned-05",
+          "aligned-22",
+          "aligned-24",
+          "aligned-38",
+          "aligned-44",
+          "aligned-48"
+        ],
+        "prior_mean_gap_side": null,
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "up_probability_bin": "30-40",
+        "reason": "kalshi_preselected_repeated_score",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [
+          "aligned-05",
+          "aligned-44",
+          "aligned-48"
+        ],
+        "prior_mean_gap_side": null,
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "BTC",
+        "lead_minutes": 2,
+        "up_probability_bin": "10-20",
+        "reason": "kalshi_preselected_repeated_score",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [
+          "aligned-05",
+          "aligned-44",
+          "aligned-48"
+        ],
+        "prior_mean_gap_side": null,
+        "reference_side_matched_positive_scenarios": [
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "BTC",
+        "lead_minutes": 8,
+        "up_probability_bin": "20-30",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "NO underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "BTC",
+        "lead_minutes": 11,
+        "up_probability_bin": "70-80",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "YES underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 2,
+        "up_probability_bin": "80-90",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "YES underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 5,
+        "up_probability_bin": "10-20",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "NO underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 5,
+        "up_probability_bin": "30-40",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "NO underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 5,
+        "up_probability_bin": "60-70",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "YES underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 5,
+        "up_probability_bin": "90-100",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "YES underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 8,
+        "up_probability_bin": "50-60",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "NO underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 8,
+        "up_probability_bin": "90-100",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "YES underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES",
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 11,
+        "up_probability_bin": "70-80",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "YES underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "YES"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 14,
+        "up_probability_bin": "30-40",
+        "reason": "kalshi_persistent_mean_gap",
+        "model_reference": "aligned-24",
+        "historically_selected_methods": [],
+        "prior_mean_gap_side": "NO underpriced in both period means",
+        "reference_side_matched_positive_scenarios": [
+          "NO"
+        ],
+        "side_rule": "No side assigned from score or mean gap; use decision-time modeled edge against side-specific ask plus native costs."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 2,
+        "up_probability_bin": "20-30",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model03",
+          "model20"
+        ],
+        "side_matched_positive_scenarios": [],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 2,
+        "up_probability_bin": "30-40",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model20"
+        ],
+        "side_matched_positive_scenarios": [],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 2,
+        "up_probability_bin": "40-50",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model02",
+          "model05"
+        ],
+        "side_matched_positive_scenarios": [],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 2,
+        "up_probability_bin": "50-60",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model20"
+        ],
+        "side_matched_positive_scenarios": [],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 2,
+        "up_probability_bin": "80-90",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model02",
+          "model12",
+          "model13",
+          "model14"
+        ],
+        "side_matched_positive_scenarios": [
+          "UP"
+        ],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 2,
+        "up_probability_bin": "90-100",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model02",
+          "model03",
+          "model10",
+          "model14",
+          "model15"
+        ],
+        "side_matched_positive_scenarios": [
+          "UP"
+        ],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "up_probability_bin": "00-10",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model03",
+          "model04",
+          "model15"
+        ],
+        "side_matched_positive_scenarios": [
+          "DOWN"
+        ],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "up_probability_bin": "20-30",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model11",
+          "model17"
+        ],
+        "side_matched_positive_scenarios": [],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "up_probability_bin": "80-90",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model02"
+        ],
+        "side_matched_positive_scenarios": [
+          "UP"
+        ],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 8,
+        "up_probability_bin": "30-40",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model06",
+          "model07",
+          "model09",
+          "model11",
+          "model16"
+        ],
+        "side_matched_positive_scenarios": [],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 8,
+        "up_probability_bin": "50-60",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model16"
+        ],
+        "side_matched_positive_scenarios": [],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 8,
+        "up_probability_bin": "90-100",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model10"
+        ],
+        "side_matched_positive_scenarios": [
+          "UP"
+        ],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 11,
+        "up_probability_bin": "60-70",
+        "reason": "polymarket_warmup_selected_and_validation_score_survivor",
+        "historically_selected_methods": [
+          "model10"
+        ],
+        "side_matched_positive_scenarios": [],
+        "side_rule": "No side assigned from score alone; use native executable ask and fixed model signal."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 11,
+        "up_probability_bin": "80-90",
+        "reason": "polymarket_native_book_research_lead",
+        "focus_model": "model10",
+        "focus_model_positive_sides": [
+          "UP"
+        ],
+        "side_rule": "Keep the native-book signal and rare-loss caveats; no profitability claim."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "up_probability_bin": "90-100",
+        "reason": "polymarket_native_book_research_lead",
+        "focus_model": "model07",
+        "focus_model_positive_sides": [
+          "UP"
+        ],
+        "side_rule": "Keep the native-book signal and rare-loss caveats; no profitability claim."
+      }
+    ],
+    "scheduling_only": "Evaluate these regions first when an eligible later stage is available; the 600-row register stays intact and every other positive side-matched scenario remains in the follow-up universe. Do not use first-wave status as statistical preselection after viewing new outcomes.",
+    "comparison": "For each first-wave cell, compare the selected venue method, the region's original supporting model IDs, raw market, and market-only calibration on identical contracts. Report both sides separately; use native executable asks and fees for trade signals.",
+    "failure_rule": "A failed first-wave model or cell stays failed in the ledger. Do not swap in a better-looking method or side from the same validation outcomes."
+  }
+}
