@@ -6,34 +6,30 @@
       "min_cal": 1,
       "min_disjoint": 0,
       "features": [
-        "calendar_dte",
-        "sessions_to_expiry",
-        "log_calendar_dte",
+        "ret_lag_21",
+        "ret_lag_20",
+        "ret_lag_19",
+        "ret_lag_18",
+        "ret_lag_17",
+        "ret_lag_16",
+        "ret_lag_15",
+        "ret_lag_14",
+        "ret_lag_13",
+        "ret_lag_12",
+        "ret_lag_11",
+        "ret_lag_10",
+        "ret_lag_9",
+        "ret_lag_8",
+        "ret_lag_7",
+        "ret_lag_6",
+        "ret_lag_5",
+        "ret_lag_4",
+        "ret_lag_3",
+        "ret_lag_2",
+        "ret_lag_1",
+        "ret_lag_0",
         "log_sessions_to_expiry",
         "calendar_days_per_session",
-        "reference_scale",
-        "ret_lag_0",
-        "ret_lag_1",
-        "ret_lag_2",
-        "ret_lag_3",
-        "ret_lag_4",
-        "ret_lag_5",
-        "ret_lag_6",
-        "ret_lag_7",
-        "ret_lag_8",
-        "ret_lag_9",
-        "ret_lag_10",
-        "ret_lag_11",
-        "ret_lag_12",
-        "ret_lag_13",
-        "ret_lag_14",
-        "ret_lag_15",
-        "ret_lag_16",
-        "ret_lag_17",
-        "ret_lag_18",
-        "ret_lag_19",
-        "ret_lag_20",
-        "ret_lag_21",
         "momentum_5",
         "momentum_22",
         "rv_1",
@@ -51,75 +47,79 @@
       ],
       "sequence_indices": [
         [
-          27
+          0
         ],
         [
-          26
+          1
         ],
         [
-          25
+          2
         ],
         [
-          24
+          3
         ],
         [
-          23
+          4
         ],
         [
-          22
+          5
         ],
         [
-          21
-        ],
-        [
-          20
-        ],
-        [
-          19
-        ],
-        [
-          18
-        ],
-        [
-          17
-        ],
-        [
-          16
-        ],
-        [
-          15
-        ],
-        [
-          14
-        ],
-        [
-          13
-        ],
-        [
-          12
-        ],
-        [
-          11
-        ],
-        [
-          10
-        ],
-        [
-          9
-        ],
-        [
-          8
+          6
         ],
         [
           7
         ],
         [
-          6
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
         ]
       ],
       "context_indices": [
-        3,
-        4,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
         28,
         29,
         30,
@@ -129,11 +129,7 @@
         34,
         35,
         36,
-        37,
-        38,
-        39,
-        40,
-        41
+        37
       ]
     },
     "context_chain": {
@@ -142,34 +138,30 @@
       "min_cal": 1,
       "min_disjoint": 0,
       "features": [
-        "calendar_dte",
-        "sessions_to_expiry",
-        "log_calendar_dte",
+        "ret_lag_21",
+        "ret_lag_20",
+        "ret_lag_19",
+        "ret_lag_18",
+        "ret_lag_17",
+        "ret_lag_16",
+        "ret_lag_15",
+        "ret_lag_14",
+        "ret_lag_13",
+        "ret_lag_12",
+        "ret_lag_11",
+        "ret_lag_10",
+        "ret_lag_9",
+        "ret_lag_8",
+        "ret_lag_7",
+        "ret_lag_6",
+        "ret_lag_5",
+        "ret_lag_4",
+        "ret_lag_3",
+        "ret_lag_2",
+        "ret_lag_1",
+        "ret_lag_0",
         "log_sessions_to_expiry",
         "calendar_days_per_session",
-        "reference_scale",
-        "ret_lag_0",
-        "ret_lag_1",
-        "ret_lag_2",
-        "ret_lag_3",
-        "ret_lag_4",
-        "ret_lag_5",
-        "ret_lag_6",
-        "ret_lag_7",
-        "ret_lag_8",
-        "ret_lag_9",
-        "ret_lag_10",
-        "ret_lag_11",
-        "ret_lag_12",
-        "ret_lag_13",
-        "ret_lag_14",
-        "ret_lag_15",
-        "ret_lag_16",
-        "ret_lag_17",
-        "ret_lag_18",
-        "ret_lag_19",
-        "ret_lag_20",
-        "ret_lag_21",
         "momentum_5",
         "momentum_22",
         "rv_1",
@@ -215,75 +207,79 @@
       ],
       "sequence_indices": [
         [
-          27
+          0
         ],
         [
-          26
+          1
         ],
         [
-          25
+          2
         ],
         [
-          24
+          3
         ],
         [
-          23
+          4
         ],
         [
-          22
+          5
         ],
         [
-          21
-        ],
-        [
-          20
-        ],
-        [
-          19
-        ],
-        [
-          18
-        ],
-        [
-          17
-        ],
-        [
-          16
-        ],
-        [
-          15
-        ],
-        [
-          14
-        ],
-        [
-          13
-        ],
-        [
-          12
-        ],
-        [
-          11
-        ],
-        [
-          10
-        ],
-        [
-          9
-        ],
-        [
-          8
+          6
         ],
         [
           7
         ],
         [
-          6
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
         ]
       ],
       "context_indices": [
-        3,
-        4,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
         28,
         29,
         30,
@@ -321,11 +317,7 @@
         62,
         63,
         64,
-        65,
-        66,
-        67,
-        68,
-        69
+        65
       ]
     }
   },
@@ -870,7 +862,7 @@
         "calibrate": false
       }
     },
-    "notes": "ADR-0270 strike-screen FIT document for loss L1: a CDFExperiment queue (python -m dskit.pipeline.libs.cdf_experiment DOC --regime pooled), NOT a CDFHyperparameterStudy; the execution-path decision in docs/architecture/decision-log.md moved the fits here (every recipe scored on the whole validation window, resumable cells, per-epoch learning curves). A CDFExperiment document has no top-level notes key (its keys are exactly CDFExperiment.KEYS), so the explanations live in this study block. SHARED with its sibling documents (a test pins it): study, arms, candidates, capacity, training except the losses and the output. panel: the cached frame the panel stage of configs/strike-screen-panel-source.json writes (<its experiment.output>/panel-cache/frame.parquet); panel_sha256 is a 64-zero PLACEHOLDER: the registration step replaces it with that frame's sha256 (record.json frame_sha256) in a resolved copy, never in this file. source_hashes and dependencies are EMPTY placeholders: the registration step resolves them exactly as the R6 prepare did (sha256 of the eight anchors dskit/__init__.py, dskit/pipeline/__init__.py, dskit/pipeline/libs/__init__.py and dskit/pipeline/libs/{cdf_experiment,predictive_cdf,parquet,torch_ts,transformers}.py under the executing checkout, which must include parquet.py and exactly one cdf_experiment.py anchor; and the installed versions of lightgbm, numpy, pandas, pyarrow, scikit-learn, torch and transformers). Empty means unpinned: do not run before they are filled. features = the 279 columns of the panel source in its order: 42 price/calendar (ret_lag_0..21 at positions 6..27), own_iv, 118 chain columns, 118 symbol one-hots. The ARMS read the first 42 (price_only) and the first 161 (price_plus_chain); the experiment queue appends the 118 pooled one-hots itself (head_features), so the arms never list is_<SYM>. observed_columns is empty for both arms: the two arms then admit identical rows and groups, so their differences are the inputs, not the sample (a non-empty list would drop rows lacking every listed column from that arm). Pooled regime only; the queue adds one output head per ticker to the shared encoder trunk (118 heads, about 9.6k parameters; protocol revision 3 states this, and a single shared head is a promotion-rung axis), read from the learning curves. No decision_context and wing_metrics false: the queue trains the contexts as the fixed wings of tail_intervals (thresholds -2.5, -0.5, 0.5, 2.5, equal weights), so L1's tail_crps integrates tail_intervals and L3's decision_brier is the Brier at the wing edges; the strike-level assessment at the row's LISTED strikes is StrikeRegionScores (run-strike-region-scores*.json), not this queue. tail_weight 1.0 is required by the queue's weighted_crps column. horizon_empirical is the paired baseline (the queue overrides horizon_index 0 and reference_index 1 on its own two-column input; the declared indices are those of calendar_dte and reference_scale in features). The queue's capacity: max_parameters = min(100000, 0.25 x fit rows), head width 8 with the head under 4 parameters per fit row of every group; a cell that fits no configuration is a recorded skip, consumed. unpooled capacity is the mixture grid's and is never run. Caps (protocol, enforced by the invocation): 14400 s wall in total, 1e9 output bytes, 8 GiB host RSS increment, 12 GiB VRAM, one GPU process, no retries. Holdout: date_upper_exclusive = end_upper_exclusive = fold_table.holdout_start = 2024-01-01; within the revision-3 runbook, rows at or after 2024-01-01 are never returned, emitted, written or used (protocol windows.holdout.read_guard states the exact seal). MATRIX document (ADR-0270 rebase, 2026-10-19): the first screen as the 2026-10-18 model record specifies it, on the executable path. Arms: context (22 raw daily returns as the sequence; 16 context scalars: log sessions and calendar days per session as the DTE terms, momentum, realized-vol levels, up/down semivariance, liquidity) and context_chain (the same plus the market quantile function rn_q_* in z units, 19 values, and 9 chain scalars). Encoders: mlp, gru, tcn, dlinear, patchtst_hf32. DEVIATIONS from the record, each needing code and not yet built: sequence in raw returns (not asinh of return over rv_22); the chain branch is the rn_q quantile function, not the 13 logit differences; the queue adds one head per ticker (no shared head).",
+    "notes": "ADR-0270 strike-screen FIT document for loss L1: a CDFExperiment queue (python -m dskit.pipeline.libs.cdf_experiment DOC --regime pooled), NOT a CDFHyperparameterStudy; the execution-path decision in docs/architecture/decision-log.md moved the fits here (every recipe scored on the whole validation window, resumable cells, per-epoch learning curves). A CDFExperiment document has no top-level notes key (its keys are exactly CDFExperiment.KEYS), so the explanations live in this study block. SHARED with its sibling documents (a test pins it): study, arms, candidates, capacity, training except the losses and the output. panel: the cached frame the panel stage of configs/strike-screen-panel-source.json writes (<its experiment.output>/panel-cache/frame.parquet); panel_sha256 is a 64-zero PLACEHOLDER: the registration step replaces it with that frame's sha256 (record.json frame_sha256) in a resolved copy, never in this file. source_hashes and dependencies are EMPTY placeholders: the registration step resolves them exactly as the R6 prepare did (sha256 of the eight anchors dskit/__init__.py, dskit/pipeline/__init__.py, dskit/pipeline/libs/__init__.py and dskit/pipeline/libs/{cdf_experiment,predictive_cdf,parquet,torch_ts,transformers}.py under the executing checkout, which must include parquet.py and exactly one cdf_experiment.py anchor; and the installed versions of lightgbm, numpy, pandas, pyarrow, scikit-learn, torch and transformers). Empty means unpinned: do not run before they are filled. features = the 279 columns of the panel source in its order: 42 price/calendar (ret_lag_0..21 at positions 6..27), own_iv, 118 chain columns, 118 symbol one-hots. The ARMS read the first 42 (price_only) and the first 161 (price_plus_chain); the experiment queue appends the 118 pooled one-hots itself (head_features), so the arms never list is_<SYM>. observed_columns is empty for both arms: the two arms then admit identical rows and groups, so their differences are the inputs, not the sample (a non-empty list would drop rows lacking every listed column from that arm). Pooled regime only; the queue adds one output head per ticker to the shared encoder trunk (118 heads, about 9.6k parameters; protocol revision 3 states this, and a single shared head is a promotion-rung axis), read from the learning curves. No decision_context and wing_metrics false: the queue trains the contexts as the fixed wings of tail_intervals (thresholds -2.5, -0.5, 0.5, 2.5, equal weights), so L1's tail_crps integrates tail_intervals and L3's decision_brier is the Brier at the wing edges; the strike-level assessment at the row's LISTED strikes is StrikeRegionScores (run-strike-region-scores*.json), not this queue. tail_weight 1.0 is required by the queue's weighted_crps column. horizon_empirical is the paired baseline (the queue overrides horizon_index 0 and reference_index 1 on its own two-column input; the declared indices are those of calendar_dte and reference_scale in features). The queue's capacity: max_parameters = min(100000, 0.25 x fit rows), head width 8 with the head under 4 parameters per fit row of every group; a cell that fits no configuration is a recorded skip, consumed. unpooled capacity is the mixture grid's and is never run. Caps (protocol, enforced by the invocation): 14400 s wall in total, 1e9 output bytes, 8 GiB host RSS increment, 12 GiB VRAM, one GPU process, no retries. Holdout: date_upper_exclusive = end_upper_exclusive = fold_table.holdout_start = 2024-01-01; within the revision-3 runbook, rows at or after 2024-01-01 are never returned, emitted, written or used (protocol windows.holdout.read_guard states the exact seal). MATRIX document (ADR-0270 rebase, 2026-10-19): the first screen as the 2026-10-18 model record specifies it, on the executable path. Arms: context (22 raw daily returns as the sequence; 16 context scalars: log sessions and calendar days per session as the DTE terms, momentum, realized-vol levels, up/down semivariance, liquidity) and context_chain (the same plus the market quantile function rn_q_* in z units, 19 values, and 9 chain scalars). Encoders: mlp, gru, tcn, dlinear, patchtst_hf32. DEVIATIONS from the record, each needing code and not yet built: sequence in raw returns (not asinh of return over rv_22); the chain branch is the rn_q quantile function, not the 13 logit differences; the queue adds one head per ticker (no shared head). CORRECTION (first launch skipped all 20 cells in 45 s: the external seam requires sequence and context positions to partition the arm's features exactly): arm feature lists are now exactly the 22 lags (oldest first) plus the context scalars (plus the chain columns).",
     "output": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/L1/unused",
     "reference": "reference_scale",
     "reference_model": "horizon_empirical",
