@@ -4238,18 +4238,27 @@ _SPEED_PINS = {
 }
 
 
-def _speed_fit(kind, device="cpu", **settings):
-    """Fit the pinned crps + tail_crps model on 14 rows (a partial last batch of 4)."""
-    rng = np.random.default_rng(3)
-    x, y = rng.normal(size=(14, 4)), rng.normal(size=14)
-    cal = np.random.default_rng(4)
-    cal_x, cal_y = cal.normal(size=(9, 4)), 3*cal.normal(size=9)
+def _speed_model(kind, device="cpu", **settings):
+    """Return the unfitted pinned crps + tail_crps model (batch 5, two seeds, 3 epochs)."""
     encoder = copy.deepcopy(_EXTERNAL_ENCODER if kind == "external" else _ZOO_ENCODERS[kind])
-    model = predictive_cdf.TorchCDF(encoder=encoder, **{
+    return predictive_cdf.TorchCDF(encoder=encoder, **{
         "components": 2, "hidden": [4], "epochs": 3, "batch_size": 5, "seeds": [7, 8],
         "device": device, "deterministic": True, "losses": _ZOO_LOSSES, **settings})
+
+
+def _speed_rows(target_scale=1.):
+    """Return 14 training rows (a partial last batch of 4) and 9 calibration rows."""
+    rng = np.random.default_rng(3)
+    x, y = rng.normal(size=(14, 4)), target_scale*rng.normal(size=14)
+    cal = np.random.default_rng(4)
+    return x, y, cal.normal(size=(9, 4)), 3*target_scale*cal.normal(size=9)
+
+
+def _speed_fit(kind, device="cpu", target_scale=1., **settings):
+    """Fit the pinned model on the pinned rows."""
+    model = _speed_model(kind, device, **settings)
     model.fit_decision_context(_zoo_context(14), _zoo_context(9, "c"))
-    return model.fit(x, y, cal_x, cal_y)
+    return model.fit(*_speed_rows(target_scale))
 
 
 def _weights_sha256(model):
@@ -4403,6 +4412,28 @@ def test_sequence_encoder_with_no_context_columns_still_gathers_an_empty_context
     module = model._build_module(4)
     assert module.context_index.shape == (0,)
     assert module(torch.zeros(3, 4)).shape == (3, 6)
+
+
+#: Recorded on base c83aa44d, on this CUDA host (deterministic, CUBLAS_WORKSPACE_CONFIG=:4096:8),
+#: dropout .25: the eager loop's losses and weights, which the graph path must reproduce.
+_CUDA_SPEED_PINS = {
+    "mlp": ([[1.294210297612375, 1.343161981249635, 1.365307945740081],
+             [1.2605658677508285, 1.2435619389899597, 1.3120699208326838]],
+            "13541ec226d55625a872c5a7f8143aa77ebcb25ed09b9c7301036140df504643"),
+    "external": ([[1.1757442280708972, 1.2178181549880223, 1.2246420176566646],
+                  [1.4210244021650726, 1.407562251093061, 1.4141844152463874]],
+                 "d3c005056d480e9dc20c22fd1ebad90b828e925cd70624dc099203dd86094f31"),
+}
+#: Clipping engaged (every step's gradient norm far above 5): nll + tail_crps on targets of scale 10.
+_CLIP_LOSSES = [{"kind": "nll", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]
+_CLIP_PINS = {
+    "cpu": ([[88.12247020081239, 87.06240953940967, 86.22521688388555],
+             [118.99454117060067, 117.83393482620055, 116.29175854970082]],
+            "1d397b7ea70cea580b0c884f5168c89916b289ef54e96acb9c68471ccac855ac"),
+    "cuda": ([[88.0216864463036, 87.09371405605134, 86.36568482607322],
+              [119.06394028550233, 117.60575390095141, 116.27192051436292]],
+             "247c03527113f018691a69a69ee7fc359b2867d9cdf848225075cada3fdf99c6"),
+}
 
 
 def _cuda_or_skip(monkeypatch):
@@ -4644,6 +4675,141 @@ def test_the_graph_equivalence_check_leaves_the_fit_rng_stream_unchanged(monkeyp
     eager, graph = _eager_and_graph(monkeypatch, "mlp", dropout=.25)
     assert graph.step_paths == ["cuda_graph"]*2
     _assert_same_fit(eager, graph)
+
+
+@pytest.mark.parametrize("kind", sorted(_CUDA_SPEED_PINS))
+def test_cuda_graph_fit_reproduces_the_base_codes_eager_losses_and_weights(kind, monkeypatch):
+    _cuda_or_skip(monkeypatch)
+    model = _speed_fit(kind, device="cuda", dropout=.25)
+    assert model.step_paths == ["cuda_graph"]*2  # the pin exercises the graph
+    losses, digest = _CUDA_SPEED_PINS[kind]
+    assert model.losses == losses
+    assert _weights_sha256(model) == digest
+
+
+def _norm_recorder(monkeypatch):
+    torch = pytest.importorskip("torch")
+    norms = []
+    original = torch.nn.utils.clip_grad_norm_
+
+    def clip(*args, **kwargs):
+        norm = original(*args, **kwargs)
+        norms.append(norm)
+        return norm
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", clip)
+    return norms
+
+
+def test_clipping_engages_and_the_cpu_fit_matches_the_base_code(monkeypatch):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    norms = _norm_recorder(monkeypatch)
+    model = _speed_fit("mlp", target_scale=10., losses=_CLIP_LOSSES)
+    assert min(float(n) for n in norms) > 5.  # every step is clipped to the threshold
+    losses, digest = _CLIP_PINS["cpu"]
+    assert model.losses == losses
+    assert _weights_sha256(model) == digest
+
+
+def test_clipping_engages_and_the_cuda_graph_matches_eager_and_the_base_code(monkeypatch):
+    _cuda_or_skip(monkeypatch)
+    norms = _norm_recorder(monkeypatch)
+    eager, graph = _eager_and_graph(monkeypatch, "mlp", target_scale=10., losses=_CLIP_LOSSES)
+    assert graph.step_paths == ["cuda_graph"]*2
+    assert min(float(n) for n in norms) > 5.
+    _assert_same_fit(eager, graph)
+    losses, digest = _CLIP_PINS["cuda"]
+    assert graph.losses == losses
+    assert _weights_sha256(graph) == digest
+
+
+def _poisoned_cuda_fit(monkeypatch, poison, graph):
+    """Fit on CUDA with the step holding row 9 poisoned; return (message, epochs begun, replays)."""
+    torch = _cuda_or_skip(monkeypatch)
+    original = predictive_cdf.TorchCDF._objective_loss
+
+    def objective(self, y, logw, mu, sigma, indices, context):
+        loss = original(self, y, logw, mu, sigma, indices, context)
+        hit = (indices == 9).any()  # data-dependent: only the batch that holds row 9
+        if poison == "loss":
+            return loss*torch.where(hit, float("nan"), 1.)
+        # sqrt has an infinite slope at 0: a finite loss with a non-finite gradient.
+        return loss + torch.sqrt(mu.sum()*0. + torch.where(hit, 0., 1.))*0.
+    monkeypatch.setattr(predictive_cdf.TorchCDF, "_objective_loss", objective)
+    epochs, replays = [], []
+    permutation = torch.randperm
+
+    def counted(*args, **kwargs):
+        epochs.append(1)
+        return permutation(*args, **kwargs)
+    monkeypatch.setattr(torch, "randperm", counted)
+    replay = predictive_cdf._GraphedBatch.run
+
+    def counting_run(self, ix):
+        replays.append(1)
+        return replay(self, ix)
+    monkeypatch.setattr(predictive_cdf._GraphedBatch, "run", counting_run)
+    if not graph:
+        monkeypatch.setattr(predictive_cdf.MixtureMLPCDF, "_graph_capable",
+                            lambda self, model: False)
+    with pytest.raises(ValueError) as error:
+        _speed_fit("mlp", device="cuda", epochs=5, seeds=[7], batch_size=7)
+    return str(error.value), len(epochs), len(replays)
+
+
+@pytest.mark.parametrize(("poison", "message"), [
+    ("loss", "nonfinite mixture likelihood"), ("gradient", "nonfinite mixture gradient")])
+def test_cuda_graph_detects_a_nonfinite_step_in_its_epoch_exactly_as_eager_does(
+        poison, message, monkeypatch):
+    with monkeypatch.context() as patch:
+        eager = _poisoned_cuda_fit(patch, poison, graph=False)
+    with monkeypatch.context() as patch:
+        graph = _poisoned_cuda_fit(patch, poison, graph=True)
+    assert eager == (message, 1, 0)  # refused at the end of the first epoch, no graph built
+    assert graph[:2] == (message, 1) and graph[2] >= 1  # the same, from inside replayed steps
+
+
+def _holed_context(n, prefix, nulls):
+    """Fixed-wing records, with every ``nulls``-th row carrying no interval (a null row)."""
+    return [_wing_record(f"{prefix}{i}", [] if i % nulls == 0 else [-2.5, -.5, .5, 2.5],
+                         [] if i % nulls == 0 else WINGS) for i in range(n)]
+
+
+def test_a_second_fit_on_one_instance_uses_its_own_populations_not_the_firsts():
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+
+    def fit(model, nulls):
+        model.fit_decision_context(_holed_context(14, "r", nulls), _holed_context(9, "c", nulls))
+        return model.fit(*_speed_rows())
+    reused = _speed_model("mlp")
+    fit(reused, 3)  # 9 of 14 rows eligible for tail_crps
+    second = fit(reused, 2)  # 7 of 14 rows eligible: a different population, same row counts
+    fresh = fit(_speed_model("mlp"), 2)
+    assert second.losses == fresh.losses
+    assert _weights_sha256(second) == _weights_sha256(fresh)
+    assert reused.losses != fit(_speed_model("mlp"), 3).losses  # the populations do matter
+
+
+def test_the_population_cache_tells_the_training_and_monitor_contexts_apart(monkeypatch):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    x, y, _, _ = _speed_rows()
+
+    def fit():
+        model = _speed_model("mlp", training_telemetry=True)
+        # Same row count, different eligible populations (9 and 7 of 14).
+        model.fit_decision_context(_holed_context(14, "r", 3), _holed_context(14, "c", 2))
+        return model.fit(x, y, x, y)
+    cached = fit()
+    with monkeypatch.context() as patch:
+        patch.setattr(predictive_cdf.TorchCDF, "_normalizations",
+                      lambda self, context: self._population_scales(context))
+        uncached = fit()
+    assert cached.losses == uncached.losses
+    assert _weights_sha256(cached) == _weights_sha256(uncached)
+    assert ([d["epoch_zero_monitor_loss"] for d in cached.training_diagnostics]
+            == [d["epoch_zero_monitor_loss"] for d in uncached.training_diagnostics])
 
 
 @pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])
