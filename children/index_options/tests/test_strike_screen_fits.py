@@ -33,6 +33,7 @@ HF = "dskit.pipeline.libs.transformers:HFSequenceEncoder"
 ARMS = ("price_only", "price_plus_chain")
 CANDIDATES = ("mlp", "patchtst_hf32")
 PREPARE = PILOT / "prepare"
+WORKTREE = CONFIGS.parents[2]
 #: Every spelling of "the holdout is never read/decoded" the seal statement replaced (Arrow may decode a straddling row group).
 OVERCLAIM = re.compile(r"(?i)never (be )?(read|decoded|reads)\b|\bis decoded\b|ever decoded|not decoded")
 
@@ -630,6 +631,7 @@ def _module(name):
 
 def test_the_seal_statement_is_exact_and_no_repo_document_overclaims_it(proto):
     guard = proto["windows"]["holdout"]["read_guard"]
+    assert guard.startswith("within the revision-3 runbook, rows at or after 2024-01-01")
     for phrase in ("rows at or after 2024-01-01 are never returned, emitted, written or used", "straddling row group",
                    "the only step whose inputs contain holdout rows", "bounded at 2024-01-01 by the converter",
                    "row-group pruning by footer statistics is a recorded gap"):
@@ -644,8 +646,23 @@ def test_the_registration_texts_state_the_same_seal():
         text = path.read_text()
         assert OVERCLAIM.search(text) is None, (path.name, OVERCLAIM.search(text).group(0))
         assert "never returned, emitted, written or used" in text and "straddling row group" in text, path.name
+        assert "within the revision-3 runbook" in text.lower(), path.name
     for script in ("make_block_shift_panel.py", "synthetic_recoverability.py", "stop_rules.py"):
         assert OVERCLAIM.search(_pilot("prepare", script).read_text()) is None, script
+
+
+def test_nothing_in_the_superseded_documents_contradicts_the_seal():
+    for path in sorted(_pilot("documents", "superseded").rglob("*")):
+        if path.is_file() and path.suffix in (".json", ".md"):
+            assert OVERCLAIM.search(path.read_text()) is None, (str(path), OVERCLAIM.search(path.read_text()).group(0))
+
+
+def test_a_skipped_l1_cell_does_not_block_l3_and_a_failed_l1_queue_does(proto):
+    rule = proto["verification_before_any_ranking"]["l1_skips_and_l3"]
+    assert "skipped" in rule and "recorded outcome" in rule and "independent" in rule and "does not block L3" in rule
+    assert "non-zero exit" in rule and "blocks L3" in rule
+    readme = _pilot("documents", "study", "README.md").read_text()
+    assert "A skipped L1 cell does not block L3" in readme and "independent fits" in readme
 
 
 def test_the_recoverability_settings_and_gates_are_machine_readable_in_the_protocol(proto):
@@ -655,16 +672,89 @@ def test_the_recoverability_settings_and_gates_are_machine_readable_in_the_proto
 
 
 @pytest.mark.parametrize("flag", ["--tickers", "--seed", "--learning-rate", "--epochs", "--patience", "--crps-tolerance", "--max-ks-d",
-                                  "--max-reliability-gap", "--fit-document", "--ks-alpha"])
+                                  "--max-reliability-gap", "--fit-document", "--ks-alpha", "--protocol", "--registration", "--inventory"])
 def test_the_recoverability_script_refuses_every_override(flag, tmp_path):
-    result = _run(_pilot("prepare", "synthetic_recoverability.py"), flag, "3", "--work", str(tmp_path / "w"), "--output", str(tmp_path / "o.json"))
+    result = _run(_pilot("prepare", "synthetic_recoverability.py"), "--worktree", str(WORKTREE), flag, "3", "--work", str(tmp_path / "w"),
+                  "--output", str(tmp_path / "o.json"))
     assert result.returncode == 2 and "unrecognized arguments" in result.stderr
     assert not (tmp_path / "w").exists() and not (tmp_path / "o.json").exists()
 
 
+def _fake_worktree(tmp_path, protocol_text=None, with_fit_document=True):
+    configs = tmp_path / "worktree" / "children" / "index_options" / "configs"
+    configs.mkdir(parents=True)
+    (configs / PROTOCOL).write_text(protocol_text if protocol_text is not None else (CONFIGS / PROTOCOL).read_text())
+    if with_fit_document:
+        (configs / FITS["L1"]).write_text((CONFIGS / FITS["L1"]).read_text())
+    return tmp_path / "worktree"
+
+
+def _pin_registration(tmp_path, worktree):
+    registration = tmp_path / "registration"
+    registration.mkdir()
+    protocol = worktree / "children" / "index_options" / "configs" / PROTOCOL
+    sha = hashlib.sha256(protocol.read_bytes()).hexdigest()
+    (registration / "inventory-draft.json").write_text(json.dumps({"documents": {PROTOCOL: {"file_sha256": sha}}}))
+    return registration, sha
+
+
+def test_the_pin_in_the_inventory_is_the_repo_protocol_sha():
+    inv = json.loads(_pilot("registration", "inventory-draft.json").read_text())
+    assert inv["documents"][PROTOCOL]["file_sha256"] == hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("case", ["different-protocol", "missing-protocol", "copy-but-foreign-code"])
+def test_the_recoverability_script_refuses_a_worktree_that_is_not_the_pinned_one(case, tmp_path):
+    protocol_text = (CONFIGS / PROTOCOL).read_text().replace('"max_ks_d": 0.02', '"max_ks_d": 0.5') if case == "different-protocol" else None
+    worktree = _fake_worktree(tmp_path, protocol_text)
+    if case == "missing-protocol":
+        (worktree / "children" / "index_options" / "configs" / PROTOCOL).unlink()
+    result = _run(_pilot("prepare", "synthetic_recoverability.py"), "--worktree", str(worktree), "--work", str(tmp_path / "w"), "--output", str(tmp_path / "o.json"))
+    assert result.returncode == 2, result.stderr
+    expected = {"different-protocol": "does not equal the sha256 pinned", "missing-protocol": "no strike-screen-protocol.json",
+                "copy-but-foreign-code": "not the code being executed"}[case]
+    assert expected in result.stderr, result.stderr
+    assert not (tmp_path / "w").exists() and not (tmp_path / "o.json").exists()
+
+
+@pytest.fixture(scope="module")
+def recoverability_module():
+    return _module("synthetic_recoverability")
+
+
+def _tiny_run(module, tmp_path, monkeypatch, protocol_text=None):
+    monkeypatch.setattr(module, "HORIZONS", (7,))               # one horizon: 6,120 validation rows, a few seconds
+    worktree = _fake_worktree(tmp_path, protocol_text)
+    registration, sha = _pin_registration(tmp_path, worktree)
+    code = module.run(worktree, registration, tmp_path / "work", tmp_path / "out.json")
+    return code, json.loads((tmp_path / "out.json").read_text()), sha
+
+
+def test_the_thresholds_the_script_applies_are_the_protocols_at_a_tiny_size(recoverability_module, tmp_path, monkeypatch, proto):
+    code, result, sha = _tiny_run(recoverability_module, tmp_path, monkeypatch)
+    gates = proto["verification_before_any_ranking"]["synthetic_recoverability_settings"]["gates"]
+    assert result["thresholds"] == gates == {"crps_tolerance": 0.05, "max_ks_d": 0.02, "max_reliability_gap": 0.02}
+    assert result["protocol_sha256"] == sha and result["rows_validation"] == 24 * 255   # 24 tickers x the 255 sessions of 2019 at one horizon
+    assert result["gates"] == {"crps_within_tolerance": abs(result["model_over_oracle_crps_minus_1"]) <= gates["crps_tolerance"],
+                               "pit_ks_statistic_within_max": result["pit_ks_statistic"] <= gates["max_ks_d"],
+                               "max_reliability_gap_within_max": result["max_abs_reliability_gap"] <= gates["max_reliability_gap"]}
+    assert code == (0 if result["passed"] else 3)
+
+
+def test_a_threshold_edited_in_the_pinned_protocol_is_the_one_applied(recoverability_module, tmp_path, monkeypatch):
+    edited = json.loads((CONFIGS / PROTOCOL).read_text())
+    edited["verification_before_any_ranking"]["synthetic_recoverability_settings"]["gates"] = {
+        "crps_tolerance": 1e-9, "max_ks_d": 0.5, "max_reliability_gap": 0.5}
+    code, result, _ = _tiny_run(recoverability_module, tmp_path, monkeypatch, json.dumps(edited, indent=1))
+    assert result["thresholds"] == {"crps_tolerance": 1e-9, "max_ks_d": 0.5, "max_reliability_gap": 0.5}
+    assert result["gates"] == {"crps_within_tolerance": False, "pit_ks_statistic_within_max": True, "max_reliability_gap_within_max": True}
+    assert code == 3 and result["passed"] is False
+
+
 def _recoverability_files():
     return {"superseded-gate-change": _pilot("stage0", "recoverability-superseded-gate-change.json"),
-            "rev3a": _pilot("stage0", "recoverability-rev3a.json"), "current": _pilot("stage0", "recoverability.json")}
+            "rev3a": _pilot("stage0", "recoverability-rev3a.json"), "rev3b": _pilot("stage0", "recoverability-rev3b.json"),
+            "current": _pilot("stage0", "recoverability.json")}
 
 
 def test_a_recorded_recoverability_result_recomputes_from_its_values_and_the_protocol(proto):
@@ -678,9 +768,10 @@ def test_a_recorded_recoverability_result_recomputes_from_its_values_and_the_pro
     gaps = result["reliability_gap_by_threshold"]
     assert len(gaps) == 13 and max(abs(v) for v in gaps.values()) == result["max_abs_reliability_gap"]
     assert result["gates"] == {
-        "crps_within_5pct_of_oracle": abs(result["model_over_oracle_crps_minus_1"]) <= 0.05,
-        "pit_ks_statistic_at_most_0.02": result["pit_ks_statistic"] <= 0.02,
-        "max_reliability_gap_at_most_0.02": result["max_abs_reliability_gap"] <= 0.02}
+        "crps_within_tolerance": abs(result["model_over_oracle_crps_minus_1"]) <= 0.05,
+        "pit_ks_statistic_within_max": result["pit_ks_statistic"] <= 0.02,
+        "max_reliability_gap_within_max": result["max_abs_reliability_gap"] <= 0.02}
+    assert result["worktree"] == str(WORKTREE)
     assert result["model_over_oracle_crps_minus_1"] == pytest.approx(result["model_mean_crps"] / result["oracle_mean_crps"] - 1.0, rel=1e-12)
     assert result["passed"] == all(result["gates"].values())
     assert result["oracle_pit_ks_statistic"] <= 0.02 and result["pit_ks_p"] > 0 and 0 < result["oracle_pit_ks_p"] <= 1
@@ -695,7 +786,9 @@ def test_the_kept_recoverability_files_are_pinned_by_sha256_in_the_inventory():
         assert pinned[key]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest(), key
         assert pinned[key]["file"] == "stage0/" + path.name
     assert pinned["current"]["protocol_sha256"] == hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
-    assert json.loads(files["superseded-gate-change"].read_text())["gates"] and json.loads(files["rev3a"].read_text())["gates"]
+    for key in ("superseded-gate-change", "rev3a", "rev3b"):
+        assert json.loads(files[key].read_text())["gates"], key
+    assert pinned["rev3b"]["protocol_sha256"] != pinned["current"]["protocol_sha256"]
 
 
 def test_the_pilot_drafts_that_predate_the_protocol_moved_to_superseded():
@@ -830,17 +923,23 @@ def test_the_control_verdict_is_incomplete_when_a_cell_has_no_completed_marker(t
     assert result.returncode == 2
 
 
-def _timing(tmp_path, elapsed=0.6, ratio=1.5, rss_kb=2_000_000, vram_mib=3000, recovered=True, missing=False):
+PINNED = "a" * 64
+
+
+def _timing(tmp_path, elapsed=0.6, ratio=1.5, rss_kb=2_000_000, vram_mib=3000, recovered=True, missing=False, rec_sha=PINNED, inventory=True,
+            time_log=None):
     fits = tmp_path / "timing-fits"
     for arm in ARMS:
         for candidate in CANDIDATES:
             if not (missing and (arm, candidate) == ("price_only", "mlp")):
                 _write_cell(fits, arm, candidate, 1, elapsed=elapsed)
     log, csv, rec = tmp_path / "time.log", tmp_path / "vram.csv", tmp_path / "recoverability.json"
-    log.write_text(f"\tCommand being timed: x\n\tMaximum resident set size (kbytes): {rss_kb}\n")
+    log.write_text(time_log if time_log is not None else f"\tCommand being timed: x\n\tMaximum resident set size (kbytes): {rss_kb}\n")
     csv.write_text(f"timestamp, memory.used [MiB]\n2026/10/18 12:00:00.000, {vram_mib // 2} MiB\n2026/10/18 12:00:05.000, {vram_mib} MiB\n")
-    rec.write_text(json.dumps({"passed": recovered}))
+    rec.write_text(json.dumps({"passed": recovered, "protocol_sha256": rec_sha}))
     (tmp_path / "registration").mkdir(exist_ok=True)
+    if inventory:
+        (tmp_path / "registration" / "inventory-draft.json").write_text(json.dumps({"documents": {PROTOCOL: {"file_sha256": PINNED}}}))
     result = _run(_pilot("prepare", "stop_rules.py"), "timing", "--fits-dir", str(fits), "--time-log", str(log), "--vram-csv", str(csv),
                   "--fold-ratio", str(ratio), "--recoverability", str(rec), "--registration", str(tmp_path / "registration"))
     path = tmp_path / "registration" / "stop-rules.json"
@@ -860,6 +959,43 @@ def test_the_timing_verdict_projects_the_screen_from_seconds_per_epoch(tmp_path)
 def test_the_timing_verdict_halts_on_each_proposed_stop_condition(tmp_path, kwargs, reason):
     result, rules = _timing(tmp_path, **kwargs)
     assert result.returncode == 1 and rules["timing"]["outcome"] == "halt" and reason in rules["timing"]["halted_by"]
+
+
+def test_the_timing_verdict_honours_passed_only_for_the_pinned_protocol(tmp_path):
+    (tmp_path / "foreign").mkdir()
+    result, rules = _timing(tmp_path / "foreign", rec_sha="b" * 64)
+    verdict = rules["timing"]
+    assert result.returncode == 2 and verdict["outcome"] == "incomplete" and "foreign" in verdict["reason"]
+    assert verdict["recoverability_protocol_sha256"] == "b" * 64 and verdict["pinned_protocol_sha256"] == PINNED
+    (tmp_path / "ok").mkdir()
+    result, rules = _timing(tmp_path / "ok")
+    assert result.returncode == 0 and rules["timing"]["pinned_protocol_sha256"] == PINNED
+
+
+def test_the_timing_verdict_without_a_pin_is_incomplete(tmp_path):
+    result, rules = _timing(tmp_path, inventory=False)
+    assert result.returncode == 2 and rules["timing"]["outcome"] == "incomplete" and "inventory" in rules["timing"]["reason"]
+
+
+def test_an_unexpected_error_exits_3_and_records_an_error_outcome_that_gate_ok_refuses(tmp_path):
+    result, rules = _timing(tmp_path, time_log="no resident set line here\n")
+    assert result.returncode == 3 and "Maximum resident set size" in result.stderr
+    assert rules["timing"]["outcome"] == "error" and "ValueError" in rules["timing"]["error"]
+    fits = tmp_path / "ctl"
+    for fold in (1, 2):
+        for arm in ARMS:
+            for candidate in CANDIDATES:
+                _write_cell(fits, arm, candidate, fold)
+    bad = next((fits / "pooled").rglob("scores.parquet"))
+    bad.write_bytes(b"not a parquet file")
+    verdict = _run(_pilot("prepare", "stop_rules.py"), "control", "--fits-dir", str(fits), "--registration", str(tmp_path / "registration"))
+    assert verdict.returncode == 3
+    assert json.loads((tmp_path / "registration" / "stop-rules.json").read_text())["control"]["outcome"] == "error"
+
+
+def test_the_exit_codes_are_distinct():
+    module = _module("stop_rules")
+    assert module.EXIT == {"pass": 0, "halt": 1, "incomplete": 2, "error": 3} and len(set(module.EXIT.values())) == 4
 
 
 def test_the_timing_verdict_is_incomplete_without_all_four_cells_and_keeps_the_control_entry(tmp_path):
