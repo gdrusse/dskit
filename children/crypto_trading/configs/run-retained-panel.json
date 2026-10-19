@@ -8,19 +8,19 @@
         "root": "/home/russell/data/crypto_trading/ob",
         "streams": {
           "BTC_klines": {
-            "source": "binance-btcusdt-1m",
+            "source": "retained-history-binance-btcusdt-1m-20261019",
             "stream": "files"
           },
           "BTC_bvol": {
-            "source": "binance-btcbvol",
+            "source": "retained-history-binance-btcbvol-20261019",
             "stream": "files"
           },
           "ETH_klines": {
-            "source": "binance-ethusdt-1m",
+            "source": "retained-history-binance-ethusdt-1m-20261019",
             "stream": "files"
           },
           "ETH_bvol": {
-            "source": "binance-ethbvol",
+            "source": "retained-history-binance-ethbvol-20261019",
             "stream": "files"
           }
         }
@@ -40,21 +40,21 @@
         "assets": {
           "BTC": {
             "klines": {
-              "source": "binance-btcusdt-1m",
+              "source": "retained-history-binance-btcusdt-1m-20261019",
               "stream": "files"
             },
             "bvol": {
-              "source": "binance-btcbvol",
+              "source": "retained-history-binance-btcbvol-20261019",
               "stream": "files"
             }
           },
           "ETH": {
             "klines": {
-              "source": "binance-ethusdt-1m",
+              "source": "retained-history-binance-ethusdt-1m-20261019",
               "stream": "files"
             },
             "bvol": {
-              "source": "binance-ethbvol",
+              "source": "retained-history-binance-ethbvol-20261019",
               "stream": "files"
             }
           }

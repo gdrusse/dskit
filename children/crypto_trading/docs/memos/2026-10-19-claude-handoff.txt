@@ -1,0 +1,7 @@
+Continue DSKit crypto from the existing WSL2 checkout /home/russell/wt/crypto-retained-audit-20261019 (branch codex/crypto-retained-audit-20261019). Use /home/russell/dskit/.venv/bin/python.
+
+Read AGENTS.md, the crypto RE-ENTRY note and children/crypto_trading/docs/memos/2026-10-19-retained-history-checkpoint.md first. Use targeted reads; do not dump large evidence JSONs into context. Do not recreate the checkout or rerun completed work. Keep scope and usage visible; no subagents or additional paid API work without my approval.
+
+Resume the unfinished historical study covering all298 candidates,300 native blockers and2 controls. All20 native BTC models and corrected analyses are complete. Kalshi bounded sources, feature panel and Oct8–12 decision features are complete. O=/home/russell/data/crypto_trading/research/retained-history-20261019. Exact blocker: O/prepare.py expects settlement_ms, but native decision records use close_ms. Verify both input schemas, repair the mapping with focused tests, preserve the frozen causal/time rules, and resume all77 Kalshi configurations. Finish exhaustive results, blockers, memo and required final reviews.
+
+Preserve both protected protocols and their unresolved overlap; no Kalshi outcomes closing at/afterOct12. W4/W5 and the extension are retrospective, not untouched confirmation. Do not rerun freeze.py, narrow candidates, launch shadow/live trading, edit owner Path or merge unfinished/unreviewed work.
