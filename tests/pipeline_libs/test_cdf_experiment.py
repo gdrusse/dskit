@@ -698,3 +698,39 @@ def test_scores_without_an_unseen_horizon_equal_the_unmapped_behaviour(experimen
         scores, link = _shard(scores_root, ticker)
         assert_frame_equal(scores, _shard(previous_root, ticker)[0], check_exact=True)
         assert link["baseline_unseen_horizon_rows"] == 0 and link["baseline_unseen_horizon_max_distance"] == 0
+
+
+def test_two_unseen_horizons_in_one_name_map_separately_and_another_names_fit_band_does_not_count(
+        experiment_config, monkeypatch):
+    """AAA's fit band lacks 3 and 9 (BBB's holds 3): AAA's rows at 3 and 9 map to 2 and 5 (two rows, max distance 4,
+    not the mean 2.5); BBB's row at 3 is seen in its OWN band and is not mapped (lens B)."""
+    s = experiment_config["study"]
+
+    def edit(frame):
+        fit = frame["quote_date"] < "2001-02-01"
+        for symbol, cycle in (("AAA", [1., 2., 5.]), ("BBB", [1., 2., 5., 3.])):
+            rows = fit & (frame["symbol"] == symbol)
+            frame.loc[rows, "actual_calendar_dte"] = [cycle[i % len(cycle)] for i in range(int(rows.sum()))]
+        frame.loc[~fit, "actual_calendar_dte"] = 1.
+        for symbol, date, horizon in (("AAA", "2001-02-01", 3.), ("AAA", "2001-02-02", 9.), ("BBB", "2001-02-01", 3.)):
+            frame.loc[(frame["symbol"] == symbol) & (frame["quote_date"] == date), "actual_calendar_dte"] = horizon
+        return frame
+    _rewrite_panel(experiment_config, edit)
+    exp, scores_root, seen = _run_recording_baseline(experiment_config, monkeypatch)
+    scores, link = _shard(scores_root, "AAA")
+    other, other_link = _shard(scores_root, "BBB")
+    assert (link["baseline_unseen_horizon_rows"], link["baseline_unseen_horizon_max_distance"]) == (2, 4.0)
+    assert (other_link["baseline_unseen_horizon_rows"], other_link["baseline_unseen_horizon_max_distance"]) == (0, 0)
+    assert scores.sort_values("quote_date")[s["horizon"]].tolist() == [3., 9., 1.]
+    assert other.sort_values("quote_date")[s["horizon"]].tolist() == [3., 1., 1.]
+    baseline, sent = seen[0]
+    assert sent[:, 0].tolist() == [2., 5., 1.]
+    assert seen[1][1][:, 0].tolist() == [3., 1., 1.]
+    panel = exp.load_panel()
+    truth = panel[panel[s["group"]] == "AAA"].set_index(list(s["identity"]))
+    y = (truth[s["target"]]/truth[s["reference"]]).loc[list(map(tuple, scores[list(s["identity"])].to_numpy()))].to_numpy()
+    values, _ = exp.study.scores(baseline.curve(sent), y, s["samples"], s["tail_intervals"], s["tail_points"])
+    for metric in ("crps", "tail_crps"):
+        np.testing.assert_array_equal(scores["baseline_"+metric].to_numpy(), values[metric])
+    np.testing.assert_array_equal(scores["baseline_weighted_crps"].to_numpy(),
+                                  values["crps"]+s["tail_weight"]*values["tail_crps"])

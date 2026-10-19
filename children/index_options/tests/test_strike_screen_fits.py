@@ -609,7 +609,8 @@ def test_the_study_readme_orders_the_steps_and_applies_the_caps():
              "## 9. Stop rule", "## 10. L1", "## 11. StrikeRegionScores", "## 12. Report"]
     positions = [text.index(h) for h in order]
     assert positions == sorted(positions)
-    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "evidence tables", "strike-screen-protocol-rev4.json", "convenience", "provisional", "market_calibrated",
+    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "evidence tables", "strike-screen-protocol-rev4.json",
+                   "--recoverability $ROOT/stage0/recoverability-rev4.json", "convenience", "provisional", "market_calibrated",
                    "documents/superseded", "excluding the stores",
                    "observational", "refuse", "empty source_hashes", "expected_cells", "must never"):
         assert phrase in text, phrase
