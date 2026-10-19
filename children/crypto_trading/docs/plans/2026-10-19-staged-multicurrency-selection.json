@@ -824,8 +824,8 @@
     "failure_rule": "A failed first-wave model or cell stays failed in the ledger. Do not swap in a better-looking method or side from the same validation outcomes."
   },
   "narrowed_research_focus": {
-    "status": "retrospective_shortlist_for_future_pre_registration_only",
-    "notes": "Focus is based on already inspected historical periods. It narrows the next data-quality and prospective-test design work, not the 600-entry retained audit or the formal staged method/cell selection. No production approval or forward-window reassignment is implied.",
+    "status": "two_kalshi_cells_with_later_retained_score_support",
+    "notes": "The only immediate recommendation is pooled Kalshi method 24 in two exact 15-minute market cells. Both beat raw and calibrated market log loss in W4 and W5, which were already inspected; neither is an untouched confirmation or production approval. Polymarket model 10 is a research reserve, not a validated production cell. The 600-entry retrospective register remains intact.",
     "market_scope": {
       "kalshi": [
         "KXETH15M",
@@ -896,7 +896,9 @@
         },
         "reason": "Positive assumed-cost candle means and better raw-market forecast scores in W4 and W5; retains BTC exposure in the pooled BTC/ETH method.",
         "critical_gap": "W4/W5 selected counts are below the frozen adequacy floor; no verified delayed fill or depth."
-      },
+      }
+    ],
+    "reserves": [
       {
         "venue": "Polymarket",
         "asset": "BTC",
@@ -914,11 +916,9 @@
           "day_adjusted_p": 1.0,
           "week_adjusted_p": 1.0
         },
-        "reason": "Largest named native-book primary lead with a nontrivial selected sample; venue model remains BTC-only.",
+        "reason": "Native-book lead only; no separate later settled outcome set has validated this exact method/cell. Keep as Polymarket research reserve.",
         "critical_gap": "Modeled return is much larger than forecast allowance and fails corrected uncertainty; displayed depth does not prove a fill."
-      }
-    ],
-    "reserves": [
+      },
       {
         "venue": "Kalshi",
         "asset": "BTC",
@@ -988,9 +988,53 @@
         "reason": "The +1.38-cent alternate scenario had 271 wins and no losses; rare-loss risk prevents promotion."
       }
     ],
-    "next_gate": "Freeze a new eligible prospective period and exact signal, quote, fee, delay, depth, size, overlap and inference rules before reading its outcomes. Preserve all 600 registered entries; no replacement from the same final period.",
+    "next_gate": "Freeze a distinct future evaluation interval, exact two-cell side-specific executable-ask/fee/depth/delay rules, and failure criteria before outcomes. The protected overnight and predictive protocols test different frozen rules and cannot be repurposed. Do not claim these W4/W5 results were untouched.",
     "stage_windows_assigned": false,
     "new_outcome_reads": 0,
-    "production_approved": false
+    "production_approved": false,
+    "later_retained_forecast_comparison": [
+      {
+        "asset": "ETH",
+        "market": "KXETH15M",
+        "lead_minutes": 5,
+        "native_up_probability_bin": "00-10",
+        "purchased_side": "NO",
+        "method_reference": "aligned-24",
+        "metric": "contract-level binary log loss, lower is better",
+        "w4": {
+          "contracts": 902,
+          "model": 0.1511480814,
+          "raw_market": 0.1535240337,
+          "calibrated_market": 0.1528591791
+        },
+        "w5": {
+          "contracts": 478,
+          "model": 0.1581242132,
+          "raw_market": 0.160514068,
+          "calibrated_market": 0.1621259676
+        }
+      },
+      {
+        "asset": "BTC",
+        "market": "KXBTC15M",
+        "lead_minutes": 8,
+        "native_up_probability_bin": "00-10",
+        "purchased_side": "NO",
+        "method_reference": "aligned-24",
+        "metric": "contract-level binary log loss, lower is better",
+        "w4": {
+          "contracts": 287,
+          "model": 0.2166122989,
+          "raw_market": 0.217844064,
+          "calibrated_market": 0.2173525946
+        },
+        "w5": {
+          "contracts": 167,
+          "model": 0.20555491,
+          "raw_market": 0.2085292514,
+          "calibrated_market": 0.2076068907
+        }
+      }
+    ]
   }
 }

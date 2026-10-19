@@ -5,54 +5,36 @@ Previous note archived at docs/archive/re-entry/crypto_trading.md.
 
 ## Now
 
-- Owner requested a wrap and Claude handoff after cost concerns. Research is
-  unfinished; no final approval or merge. Do not restart paid agents.
-- Branch codex/crypto-retained-audit-20261019, isolated checkout
-  /home/russell/wt/crypto-retained-audit-20261019.
-- Base main a60f1dcc; frozen pre-outcome protocol/configs dc654f9d.
-- Research O=/home/russell/data/crypto_trading/research/retained-history-20261019.
-- All 298 candidates, 300 native blockers and two controls retained.
-- Metadata audit: 33 retained sources, 42,044 manifests; later native events
-  pending. No certified untouched confirmation was established.
-- All 20 native BTC models completed: 30,393 forecasts each, including ten
-  forecasts on two additional contracts. Corrected execution tables saved.
-- Primary native corrected model flags: zero. Alternative t-flags need rare-loss
-  interpretation. Nothing is approved for production.
-- Bounded Kalshi sources, full-history feature panel and Oct8–12 decision
-  features completed. None of the 77 Kalshi model extensions ran.
-- Exact stop: O/prepare.py KeyError settlement_ms. Raw records have close_ms;
-  prepared panel expects settlement_ms. Preserve all causal/time predicates.
-- No task process remained at wrap inspection; no shadow/live launch.
+- **Recommendation: one pooled Kalshi BTC/ETH model, aligned-24 (method 24), and exactly two cells for the next prospective test.**
+- KXETH15M: five minutes before close, native YES midpoint 00-10%, buy NO only under the frozen model-versus-executable-NO-ask-plus-fee signal.
+- KXBTC15M: eight minutes before close, native YES midpoint 00-10%, buy NO under that same side-specific rule.
+- On later retained W4 and W5, method 24 beat both raw and calibrated market log loss in both cells. ETH: W4 0.151148 vs raw 0.153524 (902 contracts), W5 0.158124 vs 0.160514 (478). BTC: W4 0.216612 vs 0.217844 (287), W5 0.205555 vs 0.208529 (167). The staged JSON retains exact calibrated scores.
+- Historical 10-share candle-cost means for ETH NO were +1.25c/506 W4 and +0.97c/269 W5; BTC NO +1.37c/175 W4 and +1.66c/117 W5. BTC W4/W5 selected counts miss the frozen 200-contract floor.
+- **These are retrospective later-set results, not an untouched holdout, verified delayed fills, or production approval.** The two original protected tests use different frozen rules and cannot be repurposed to validate this recommendation.
+- Polymarket model 10 / BTC 11m / UP 80-90% is a separate research reserve: +3.37c on 324 primary displayed-book selections, but no distinct later settled outcome set and no corrected pass. No Polymarket cell is in this immediate recommendation.
+- Complete historical audit: 77/77 Kalshi and 20/20 native BTC fixed runs; all 600 registered side/cells retained; 219 positive modeled scenarios among 300 assessable entries; zero corrected after-cost passes. Branch remains unmerged.
+- Existing staged JSON now records these two cells and later retained score comparisons. Latest pre-wrap branch candidate was 27a47d61; no final independent reviews have approved the study.
 
 ## Next
 
-- Read the checkpoint memo; use targeted reads, not giant evidence dumps.
-- Verify the close_ms-to-settlement_ms mapping in both raw input schemas,
-  test it, record the technical repair, then resume existing step markers.
-- Complete all77 fixed Kalshi runs and all cell/scenario aggregations.
-- Preserve prior native work; finish the exhaustive600-entry disposition
-  register, final memo and two independent final reviews before merging.
-- Keep cost/context small; no agents or extra paid API work without approval.
+- Keep work on the two method-24 Kalshi cells. Freeze a distinct future evaluation interval and exact source, executable-ask, fee, depth, delay, size, overlap and failure rules before its outcomes.
+- Preserve the original overnight Oct 12-Nov 11/read Nov 11 and predictive Oct 17-Jan 15/read Jan 15 protocols; their overlap still needs owner reconciliation. Neither is an interim selector.
+- Obtain two independent final correctness/integration reviews and resolve material findings before merging. Focused crypto checks had 125 passed/3 known failures; documentation budget checks passed 4/4. Do not rerun the full suite without relevant code changes or owner instruction.
 
 ## Blocked / owner decisions
 
-- Both protected protocols remain: overnight Oct12–Nov11/readNov11 and
-  predictive Oct17–Jan15/readJan15. Their overlap needs explicit future owner
-  reconciliation; current safe union excludes Kalshi closes >=Oct12.
-- W4/W5 already tested; Oct8–9 computation-exposed; later gap uncertain.
-- Native ETH/SOL/XRP lack settled causal training/validation; later BTC books
-  lack terminal labels. Historical Kalshi candles do not establish fills.
-- Saved protocol review and source audit exist; final study reviews do not.
+- No certified untouched period is assigned to the two-cell test. W4/W5 and Oct 8-12 were inspected.
+- Kalshi historical candles lack decision/entry timestamps and standing depth needed to verify fills; model forecast allowances are small.
+- Polymarket ETH/SOL/XRP lack settled native labels and earlier training history; Polymarket BTC lead remains a reserve.
+- No subagents or extra paid model/API work without owner approval. No shadow service or live trading.
 
 ## Read first
 
-- docs/memos/2026-10-19-retained-history-checkpoint.md
+- docs/plans/2026-10-19-staged-multicurrency-selection.json
+- docs/memos/2026-10-19-retained-history-study.md
+- docs/memos/2026-10-18-executable-cells.md
 - docs/memos/2026-10-19-retained-history-protocol.json
-- docs/memos/2026-10-19-retained-history-checkpoint-evidence.json
-- docs/memos/2026-10-18-executable-cells-candidate-followup.csv
-- docs/memos/2026-10-19-claude-handoff.txt
 
 ## Do not
 
-- Re-freeze after outcomes, drop candidates, claim untouched confirmation,
-  override protection, edit owner Path, launch services/orders, or merge WIP.
+- Claim these two cells are independently validated or profitable, drop the 600-entry audit, override protected reads, refit on protected outcomes, launch services/orders, or merge before required reviews.
