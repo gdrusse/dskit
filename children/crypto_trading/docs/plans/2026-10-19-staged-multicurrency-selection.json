@@ -825,7 +825,7 @@
   },
   "narrowed_research_focus": {
     "status": "two_kalshi_cells_with_later_retained_score_support",
-    "notes": "The only immediate recommendation is pooled Kalshi method 24 in two exact 15-minute market cells. Both beat raw and calibrated market log loss in W4 and W5, which were already inspected; neither is an untouched confirmation or production approval. Polymarket model 10 is a research reserve, not a validated production cell. The 600-entry retrospective register remains intact.",
+    "notes": "The only immediate recommendation is pooled Kalshi method 24 in two exact 15-minute market cells. Both beat raw and calibrated market log loss in W4 and W5, which were already inspected; neither is an untouched confirmation or production approval. Polymarket model 10 is a research reserve, not a validated production cell. The 600-entry retrospective register remains intact. The sparse inspected Oct 8–12 slice is adverse on BTC score and ETH calibrated-market score; it is disclosed per cell below.",
     "market_scope": {
       "kalshi": [
         "KXETH15M",
@@ -866,7 +866,16 @@
           }
         },
         "reason": "The same method/side/cell has positive assumed-cost candle means in all four inspected periods, with adequate counts in each; W4/W5 cell forecast scores also improved over raw market.",
-        "critical_gap": "Candle quote is not a timestamped delayed executable ask; forecast cost allowance was only about 0.22-0.32 cent per share."
+        "critical_gap": "Candle quote is not a timestamped delayed executable ask; forecast cost allowance was only about 0.22-0.32 cent per share.",
+        "oct08_12_inspected": {
+          "contracts": 73,
+          "model_logloss": 0.106888432200162,
+          "raw_market_logloss": 0.1099792638679662,
+          "calibrated_market_logloss": 0.1055187714578704,
+          "no_selected_contracts": 32,
+          "no_mean_net_cents": 3.8094,
+          "interpretation": "Model beats raw market but loses to calibrated market; positive candle-cost mean is sparse and fill-unverified."
+        }
       },
       {
         "venue": "Kalshi",
@@ -895,7 +904,16 @@
           }
         },
         "reason": "Positive assumed-cost candle means and better raw-market forecast scores in W4 and W5; retains BTC exposure in the pooled BTC/ETH method.",
-        "critical_gap": "W4/W5 selected counts are below the frozen adequacy floor; no verified delayed fill or depth."
+        "critical_gap": "W4/W5 selected counts are below the frozen adequacy floor; no verified delayed fill or depth.",
+        "oct08_12_inspected": {
+          "contracts": 31,
+          "model_logloss": 0.1415783828666212,
+          "raw_market_logloss": 0.1385424670123805,
+          "calibrated_market_logloss": 0.1323002080874637,
+          "no_selected_contracts": 18,
+          "no_mean_net_cents": -0.0667,
+          "interpretation": "Model loses to both market baselines; candle-cost mean is negative. Sparse retrospective slice, not decisive."
+        }
       }
     ],
     "reserves": [
