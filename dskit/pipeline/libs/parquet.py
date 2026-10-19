@@ -153,8 +153,9 @@ class DateBoundedParquet:
             predicates are ranked by the bounded minimum and maximum of that column (one pass over the
             column alone), read in that order and each sorted by it before it is sliced into batches,
             so the physical row order of the file (an export written newest first, say) never reaches
-            the caller. Two row groups whose bounded ranges interleave cannot be ordered this way and
-            refuse by name. One row group is held at a time.
+            the caller. The column must be null-free among the kept rows, and two row groups whose
+            bounded ranges interleave cannot be ordered this way: both refuse by name. One row group is
+            held at a time.
 
         Yields
         ------
@@ -185,6 +186,8 @@ class DateBoundedParquet:
         for piece in dataset.get_fragments(filter=predicate):
             for fragment in piece.split_by_row_group(filter=predicate, schema=dataset.schema):
                 column = fragment.to_table(columns=[name], filter=predicate).column(name)
+                if column.null_count:
+                    raise ValueError(f"{self.path}: order_by column {name!r} holds nulls; a null has no place in order")
                 if column.length():
                     ranked.append((pc.min(column).as_py(), pc.max(column).as_py(), fragment))
         ranked.sort(key=lambda item: (item[0], item[1]))

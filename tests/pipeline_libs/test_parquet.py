@@ -738,3 +738,14 @@ def test_a_row_group_shared_by_two_entities_is_ranked_by_the_rows_the_predicate_
         got = [v for b in reader.batches(where=ds.field("who") == who, order_by="when")
                for v in b.column("px").to_pylist()]
         assert got == want
+
+
+def test_a_null_in_the_order_column_refuses_instead_of_sorting_around_it(tmp_path):
+    import datetime as dt
+
+    path = tmp_path / "nulls.parquet"
+    when = pa.array([None, dt.date(2024, 1, 2), dt.date(2024, 1, 1)], type=pa.date32())
+    pq.write_table(pa.table({"when": when, "day": ["2024-01-01"] * 3, "px": [0.0, 2.0, 1.0]}), path, row_group_size=2)
+    reader = pack.DateBoundedParquet(str(path), ["when", "px"], {"day": {"end_before": "2024-02-01"}})
+    with pytest.raises(ValueError, match="holds nulls"):
+        list(reader.batches(order_by="when"))
