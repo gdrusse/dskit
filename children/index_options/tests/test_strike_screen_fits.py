@@ -23,6 +23,7 @@ import pytest
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 PILOT = Path("/home/russell/data/index_options/theta-strike-screen-20261018")
 REV3_PROTOCOL_SHA = "94de290ee8498d40cb5833534577fad6b00e7a9e09061b0a4713d7df40999bea"   # revision 3, superseded by the nearest-horizon baseline rule
+REV4_PROTOCOL_SHA = "a2cde66b32fee6cf4c9a969e116706a1fee145cf472aa48c8ece3ace0b074982"   # revision 4, superseded by the 2,500 s L1/L3 ceilings
 FOLDS, PROTOCOL, SOURCE = "strike-screen-folds-screen.jsonl", "strike-screen-protocol.json", "strike-screen-panel-source.json"
 FITS = {"L1": "run-strike-screen-fits-L1.json", "L3": "run-strike-screen-fits-L3.json"}
 TIMING, CONTROL = "run-strike-screen-fits-timing.json", "run-strike-screen-fits-control.json"
@@ -444,8 +445,9 @@ def test_each_loss_trains_on_the_fixed_wing_contexts_the_documents_describe(expe
 # -- protocol revision 3: the contract the documents execute ------------------------------------------------------
 
 
-def test_the_protocol_is_revision_4_with_a_change_log_that_discloses_the_gate_sequence(proto):
-    assert proto["revision"] == 4 and set(proto["change_log"]) >= {"1", "2", "3", "4"}
+def test_the_protocol_is_revision_5_with_a_change_log_that_discloses_the_gate_sequence(proto):
+    assert proto["revision"] == 5 and set(proto["change_log"]) >= {"1", "2", "3", "4", "5"}
+    assert all(phrase in proto["change_log"]["5"] for phrase in ("4,860", "2,500", "5,000", "16,100", "14,400"))
     log = proto["change_log"]["3"]
     assert len(log) > 400 and "75b1c81b" in log and "committed after" in log and "superseded" in log
     for phrase in ("Stage 0", "evidence tables", "market_calibrated", "SUPERSEDED", "null", "power harness"):
@@ -575,7 +577,8 @@ def test_the_inventory_draft_matches_the_documents_and_the_protocol(proto):
     assert (inv["stage_1_control"]["epochs"], inv["stage_1_control"]["patience"]) == (120, 10)
     assert inv["stage_2_screen"]["neural"] == 16 and inv["totals"]["neural"] == 28 == 4 + 8 + 16
     ceilings = inv["caps"]["step_ceilings_seconds"]
-    assert ceilings["control"] == 2100 and ceilings["sum"] == sum(v for k, v in ceilings.items() if k != "sum" and k != "scoring_each") + 2 * ceilings["scoring_each"]
+    assert (ceilings["control"], ceilings["L1"], ceilings["L3"], ceilings["sum"]) == (2100, 2500, 2500, 16100)
+    assert ceilings["sum"] == sum(v for k, v in ceilings.items() if k != "sum" and k != "scoring_each") + 2 * ceilings["scoring_each"]
     assert (ceilings["sum"] > inv["caps"]["wall_seconds_total"]) == ("above" in inv["caps"]["note"] and "approval b" in inv["caps"]["note"].lower())
     assert "(fold, symbol)" in inv["stage_2_screen"]["empirical_unit"]
     assert inv["caps"]["store_ceiling_bytes"] == proto["caps"]["store_ceiling_bytes"]
@@ -590,13 +593,14 @@ def test_the_inventory_draft_matches_the_documents_and_the_protocol(proto):
         assert inv["documents"][name]["file_sha256"] == hashlib.sha256((CONFIGS / name).read_bytes()).hexdigest()
     repo_sha = hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
     entry = inv["documents"]["strike-screen-protocol.json"]
-    assert entry["file_sha256"] == entry["registration_copy_sha256"] == repo_sha and entry["revision"] == 4
-    assert entry["registration_copy"].endswith("strike-screen-protocol-rev4.json")
+    assert entry["file_sha256"] == entry["registration_copy_sha256"] == repo_sha and entry["revision"] == 5
+    assert entry["registration_copy"].endswith("strike-screen-protocol-rev5.json")
 
 
 def test_the_registration_copy_of_the_protocol_is_a_byte_copy_of_the_repo_file():
-    copy_ = _pilot("registration", "strike-screen-protocol-rev4.json")
+    copy_ = _pilot("registration", "strike-screen-protocol-rev5.json")
     assert copy_.read_bytes() == (CONFIGS / PROTOCOL).read_bytes()
+    assert hashlib.sha256(_pilot("registration", "strike-screen-protocol-rev4.json").read_bytes()).hexdigest() == REV4_PROTOCOL_SHA   # superseded, kept
     assert _pilot("registration", "strike-screen-protocol-rev3.json").exists()      # superseded, kept
     assert hashlib.sha256(_pilot("registration", "strike-screen-protocol-rev3.json").read_bytes()).hexdigest() == REV3_PROTOCOL_SHA
     assert not (PILOT / "registration" / "strike-screen-protocol-rev2.json").exists()
@@ -609,8 +613,8 @@ def test_the_study_readme_orders_the_steps_and_applies_the_caps():
              "## 9. Stop rule", "## 10. L1", "## 11. StrikeRegionScores", "## 12. Report"]
     positions = [text.index(h) for h in order]
     assert positions == sorted(positions)
-    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "evidence tables", "strike-screen-protocol-rev4.json",
-                   "--recoverability $ROOT/stage0/recoverability-rev4.json", "convenience", "provisional", "market_calibrated",
+    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "evidence tables", "strike-screen-protocol-rev5.json",
+                   "--recoverability $ROOT/stage0/recoverability-rev5.json", "convenience", "provisional", "market_calibrated",
                    "documents/superseded", "excluding the stores",
                    "observational", "refuse", "empty source_hashes", "expected_cells", "must never"):
         assert phrase in text, phrase
@@ -758,12 +762,12 @@ def test_a_threshold_edited_in_the_pinned_protocol_is_the_one_applied(recoverabi
 def _recoverability_files():
     return {"superseded-gate-change": _pilot("stage0", "recoverability-superseded-gate-change.json"),
             "rev3a": _pilot("stage0", "recoverability-rev3a.json"), "rev3b": _pilot("stage0", "recoverability-rev3b.json"),
-            "rev3": _pilot("stage0", "recoverability.json"),
-            "current": _pilot("stage0", "recoverability-rev4.json")}
+            "rev3": _pilot("stage0", "recoverability.json"), "rev4": _pilot("stage0", "recoverability-rev4.json"),
+            "current": _pilot("stage0", "recoverability-rev5.json")}
 
 
 def test_a_recorded_recoverability_result_recomputes_from_its_values_and_the_protocol(proto):
-    result = json.loads(_pilot("stage0", "recoverability-rev4.json").read_text())
+    result = json.loads(_pilot("stage0", "recoverability-rev5.json").read_text())
     settings = proto["verification_before_any_ranking"]["synthetic_recoverability_settings"]
     assert result["protocol_sha256"] == hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
     assert result["protocol_revision"] == proto["revision"]
@@ -791,11 +795,13 @@ def test_the_kept_recoverability_files_are_pinned_by_sha256_in_the_inventory():
         assert pinned[key]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest(), key
         assert pinned[key]["file"] == "stage0/" + path.name
     assert pinned["current"]["protocol_sha256"] == hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
-    for key in ("superseded-gate-change", "rev3a", "rev3b", "rev3"):
+    for key in ("superseded-gate-change", "rev3a", "rev3b", "rev3", "rev4"):
         assert json.loads(files[key].read_text())["gates"], key
     assert pinned["rev3b"]["protocol_sha256"] != pinned["current"]["protocol_sha256"]
     assert pinned["rev3"]["protocol_sha256"] == REV3_PROTOCOL_SHA != pinned["current"]["protocol_sha256"]   # the revision 3 run, superseded
     assert json.loads(files["rev3"].read_text())["protocol_sha256"] == REV3_PROTOCOL_SHA
+    assert pinned["rev4"]["protocol_sha256"] == REV4_PROTOCOL_SHA != pinned["current"]["protocol_sha256"]   # the revision 4 run, superseded
+    assert json.loads(files["rev4"].read_text())["protocol_sha256"] == REV4_PROTOCOL_SHA
     assert "never repeated in place" in _pilot("documents", "study", "README.md").read_text()
 
 
@@ -1007,11 +1013,20 @@ def _timing(tmp_path, elapsed=0.6, ratio=1.5, rss_kb=2_000_000, vram_mib=3000, r
     return result, (json.loads(path.read_text()) if path.exists() else {})
 
 
+def test_the_timing_projection_ceiling_is_the_l1_and_l3_ceilings_together_in_the_script_and_the_inventory():
+    inv = json.loads(_pilot("registration", "inventory-draft.json").read_text())
+    ceilings = inv["caps"]["step_ceilings_seconds"]
+    constant = _module("stop_rules").PROJECTED_CEILING_SECONDS
+    assert constant == inv["stop_rules"]["timing_ceiling_seconds"] == ceilings["L1"] + ceilings["L3"] == 5000
+    assert "5,000 s (L1 + L3 ceilings)" in inv["stop_rule_proposed"]
+    assert "5,000 s (the L1 and L3 ceilings together)" in _pilot("documents", "study", "README.md").read_text()
+
+
 def test_the_timing_verdict_projects_the_screen_from_seconds_per_epoch(tmp_path):
     result, rules = _timing(tmp_path)                      # 0.2 s/epoch x 120 x (1 + 1.5) x 4 cells x 2 documents = 480 s
     verdict = rules["timing"]
     assert result.returncode == 0 and verdict["outcome"] == "pass"
-    assert verdict["projected_seconds"] == pytest.approx(480.0) and verdict["ceiling_seconds"] == 4200
+    assert verdict["projected_seconds"] == pytest.approx(480.0) and verdict["ceiling_seconds"] == 5000
     assert verdict["peak_rss_gib"] == pytest.approx(2_000_000 / 1024 ** 2) and verdict["peak_vram_mib"] == 3000
 
 
