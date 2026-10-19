@@ -5866,3 +5866,22 @@ def test_grid_moments_uniform_and_atom():
     mean, sd = curve.moments()
     np.testing.assert_allclose(mean, [1., 3.])
     np.testing.assert_allclose(sd, [np.sqrt(1/3), 0.])
+
+
+def test_a_strike_quoted_exactly_at_the_forward_belongs_to_both_wings():
+    """Equal call and put marks at the forward strike are the ordinary case in a real chain: the put at
+    ``strike <= forward`` and the call at ``strike >= forward`` both stay (ADR-0270 lens B)."""
+    strikes = [80., 90., 100., 110., 120.]
+    rows = pd.DataFrame({"strike": strikes*2, "type": ["put"]*5+["call"]*5,
+                         "mark": [1., 2., 5., 11., 21.]+[21., 12., 5., 1., 1.]})
+    probabilities = [0.1, 0.25, 0.5, 0.75, 0.9]
+    live = predictive_cdf.OptionPriceCDF(probabilities, 1, 2, 1.0, 1.0)
+    reference = _ReferenceOptionPriceCDF(probabilities, 1, 2, 1.0, 1.0)
+    forwards = live.parity_forwards(rows)
+    assert np.array_equal(forwards, reference.parity_forwards(rows)) and float(np.median(forwards)) == 100.
+    got, want = live.estimate(rows, 100.), reference.estimate(rows, 100.)
+    assert got["eligible"] and want["eligible"]
+    assert np.array_equal(got["quantiles"], want["quantiles"])
+    # Dropping the forward strike from either wing changes the recovered curve: a strict bound is caught.
+    without = reference.estimate(rows[rows.strike != 100.], 100.)
+    assert not without["eligible"] or not np.array_equal(without["quantiles"], got["quantiles"])

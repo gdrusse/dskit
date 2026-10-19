@@ -2371,6 +2371,9 @@ def test_raw_chain_archive_parts_are_byte_identical_for_any_worker_count(tmp_pat
     assert outputs[1].read_bytes() == outputs[3].read_bytes()
     assert (Path(str(outputs[1])+'.sources.json').read_text()
             == Path(str(outputs[3])+'.sources.json').read_text())
+    frame = pd.read_parquet(outputs[3])
+    keys = frame[['symbol', 'quote_date', 'expiry']]
+    assert keys.equals(keys.sort_values(['symbol', 'quote_date', 'expiry']).reset_index(drop=True))   # key order, not completion order
     for one, three in zip(sorted(Path(str(outputs[1])+'.parts').glob('*/*.parquet')),
                           sorted(Path(str(outputs[3])+'.parts').glob('*/*.parquet'))):
         assert one.name == three.name and one.parent.name == three.parent.name   # workers is not in the identity
