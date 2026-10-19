@@ -2264,35 +2264,240 @@ class RawChainFeatureBuilder:
         return f"rn_q_{int(round(10000*probability)):04d}"
 
     @staticmethod
-    def _usable_quotes(rows):
-        """Mask invalid, crossed and duplicate contracts deterministically."""
+    def _usable_mask(rows, within=()):
+        """Mark valid, uncrossed contracts that are not duplicated (strike, type) within ``within`` columns."""
         import numpy as np
-        duplicate = rows.duplicated(["strike", "type"], keep=False)
+        duplicate = rows.duplicated([*within, "strike", "type"], keep=False)
         finite = np.isfinite(rows[["strike", "mark", "bid", "ask", "bid_size",
                                    "ask_size", "open_interest",
                                    "implied_volatility"]]).all(axis=1)
-        valid = (finite & ~duplicate & (rows.strike > 0) & (rows.mark > 0)
-                 & (rows.bid >= 0) & (rows.ask >= rows.bid)
-                 & (rows.mark >= rows.bid) & (rows.mark <= rows.ask)
-                 & (rows.bid_size >= 0) & (rows.ask_size >= 0)
-                 & (rows.open_interest >= 0) & (rows.implied_volatility > 0))
+        return (finite & ~duplicate & (rows.strike > 0) & (rows.mark > 0)
+                & (rows.bid >= 0) & (rows.ask >= rows.bid)
+                & (rows.mark >= rows.bid) & (rows.mark <= rows.ask)
+                & (rows.bid_size >= 0) & (rows.ask_size >= 0)
+                & (rows.open_interest >= 0) & (rows.implied_volatility > 0))
+
+    @staticmethod
+    def _usable_quotes(rows):
+        """Mask invalid, crossed and duplicate contracts deterministically.
+
+        A contract is a duplicate when its (strike, type) repeats within one
+        (symbol, date, expiration), so a frame of one group or of many cleans alike.
+        """
+        within = [name for name in ("symbol", "date", "expiration") if name in rows]
+        valid = RawChainFeatureBuilder._usable_mask(rows, within)
         return rows.loc[valid].sort_values(["strike", "type"], kind="mergesort").copy()
 
-    def _proxy(self, rows, spot, usable=False):
-        from dskit.pipeline.libs.predictive_cdf import OptionPriceCDF
-        # ``usable``: the rows already passed _usable_quotes, whose second pass is a no-op.
-        proxy = OptionPriceCDF(
-            self.proxy_probabilities, 1, self.min_wing_nodes,
-            self.max_inner_gap, self.max_outer_gap).estimate(
-                rows if usable else self._usable_quotes(rows), spot)
+    @staticmethod
+    def _group_codes(chain, ordered):
+        """Return each chain row's index in the sorted requested keys, -1 when the key is not requested."""
+        import pandas as pd
+        rows = pd.MultiIndex.from_arrays([chain["symbol"], chain["date"], chain["expiration"]])
+        return pd.MultiIndex.from_tuples(ordered).get_indexer(rows)
+
+    @staticmethod
+    def _numeric(frame, name):
+        """Return a column as floats, coercing what is not a number to NaN; all NaN when absent."""
+        import numpy as np
+        import pandas as pd
+        if name not in frame:
+            return np.full(len(frame), np.nan)
+        return pd.to_numeric(frame[name], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+
+    @staticmethod
+    def _nearest(center, count, group, moneyness, first, start, stop, max_gap):
+        """Return each group's row index nearest ``center`` (the lower strike on a tie), -1 when none is near.
+
+        ``moneyness`` is ascending within each group's rows ``start:stop``; ``first`` is the
+        first row of each run of equal moneyness, where the first minimum of the distance sat.
+        """
+        import numpy as np
+        if not len(moneyness):
+            return np.full(count, -1)
+        below = np.bincount(group[moneyness < center], minlength=count)
+        cut = start+below
+        has_low, has_high = below > 0, cut < stop
+        low = np.clip(cut-1, 0, len(moneyness)-1)
+        high = np.clip(cut, 0, len(moneyness)-1)
+        gap_low, gap_high = np.abs(moneyness[low]-center), np.abs(moneyness[high]-center)
+        use_low = has_low & (~has_high | (gap_low <= gap_high))
+        use_high = has_high & ~use_low
+        near = np.where(use_low, gap_low, gap_high) <= max_gap
+        return np.where((use_low | use_high) & near, np.where(use_low, first[low], high), -1)
+
+    def _node_columns(self, count, group, kind, quotes):
+        """Return the node columns: every group's nearest contract to each center, and its mask.
+
+        ``quotes`` holds the cleaned rows' arrays (``moneyness``, ``iv``, ``rel_spread``,
+        ``open_interest``, ``depth``), ordered by (group, strike).
+        """
+        import numpy as np
+        base = (quotes["iv"] > 0) & (quotes["mark"] > 0) & (quotes["rel_spread"] >= 0)
+        sides = {}
+        for right in ("put", "call"):
+            pick = np.flatnonzero(base & (kind == right))
+            owner, moneyness = group[pick], quotes["moneyness"][pick]
+            same = np.zeros(len(pick), dtype=bool)
+            same[1:] = (owner[1:] == owner[:-1]) & (moneyness[1:] == moneyness[:-1])
+            head = np.flatnonzero(~same)
+            first = head[np.cumsum(~same)-1] if len(pick) else head
+            groups = np.arange(count)
+            sides[right] = (pick, owner, moneyness, first,
+                            np.searchsorted(owner, groups, "left"),
+                            np.searchsorted(owner, groups, "right"))
+        columns = {}
+        for i, center in enumerate(np.linspace(*self.bounds, self.nodes)):
+            pick, owner, moneyness, first, start, stop = sides["put" if center < 0 else "call"]
+            index = self._nearest(center, count, owner, moneyness, first, start, stop,
+                                  self.max_node_gap)
+            found = index >= 0
+            row = pick[np.where(found, index, 0)] if len(pick) else index
+            values = ([quotes["moneyness"], quotes["iv"], np.log1p(quotes["rel_spread"]),
+                       np.log1p(np.maximum(quotes["open_interest"], 0)),
+                       np.log1p(np.maximum(quotes["depth"], 0))] if len(pick) else [None]*5)
+            for field, column in zip(self.NODE_FIELDS, values):
+                columns[f"chain_node_{i:02d}_{field}"] = (
+                    np.where(found, column[row], np.nan) if column is not None
+                    else np.full(count, np.nan))
+            columns[f"chain_node_{i:02d}_mask"] = found.astype(int)
+        return columns
+
+    @staticmethod
+    def _flow_columns(count, active, group, kind, quotes):
+        """Return the per-group volume, imbalance, open-interest snapshot, greek-exposure and spread columns.
+
+        One weighted ``bincount`` per quantity over the cleaned rows; a group with no valid
+        input of a quantity is NaN, a present group's empty open-interest snapshot is 0.
+        """
+        import numpy as np
+
+        def total(select, weights):
+            return (np.bincount(group[select], weights=weights[select], minlength=count),
+                    np.bincount(group[select], minlength=count))
+
+        def sums(select, weights):
+            summed, seen = total(select, weights)
+            return np.where(seen > 0, summed, np.nan)
+
+        volume = quotes["volume"]
+        counted = np.isfinite(volume) & (volume >= 0)
+        put_volume = sums(counted & (kind == "put"), volume)
+        call_volume = sums(counted & (kind == "call"), volume)
+        total_volume = put_volume+call_volume
+        columns = {"chain_log_volume": np.where(np.isfinite(total_volume),
+                                                np.log1p(np.where(np.isfinite(total_volume),
+                                                                  total_volume, 0.)), np.nan)}
+        usable = np.isfinite(total_volume) & (total_volume > 0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            columns["chain_put_call_volume_imbalance"] = np.where(
+                usable, (put_volume-call_volume)/np.where(usable, total_volume, 1.), np.nan)
+        snapshot = np.bincount(group, weights=quotes["open_interest"], minlength=count)
+        columns["chain_total_oi_snapshot"] = np.where(active, snapshot, np.nan)
+        for greek in ("delta", "gamma", "vega"):
+            values = quotes[greek]
+            exposure = sums(np.isfinite(values), np.abs(np.where(np.isfinite(values), values, 0.))
+                            * quotes["open_interest"])
+            columns[f"chain_log_{greek}_oi"] = np.where(
+                np.isfinite(exposure), np.log1p(np.where(np.isfinite(exposure), exposure, 0.)),
+                np.nan)
+        weighted = counted & (volume > 0)
+        mass, seen = total(weighted, volume)
+        spread, _ = total(weighted, quotes["rel_spread"]*volume)
+        columns["chain_volume_weighted_rel_spread"] = np.where(
+            seen > 0, spread/np.where(seen > 0, mass, 1.), np.nan)
+        return columns
+
+    def _proxy(self, estimator, rows, spot):
+        """Return the eligible option-implied proxy of one group's cleaned rows, else ``None``."""
+        proxy = estimator.estimate(rows, spot)
         if not proxy["eligible"]:
             return None
         import numpy as np
         return {k: np.asarray(proxy[k]) if k == "quantiles" else proxy[k]
                 for k in ("forward_ratio", "projection_distance", "mass", "quantiles")}
 
+    def _proxy_columns(self, count, spot, group, kind, quotes):
+        """Return the proxy columns, one ``estimate`` call per group on its cleaned rows."""
+        import numpy as np
+        import pandas as pd
+        from dskit.pipeline.libs.predictive_cdf import OptionPriceCDF
+        estimator = OptionPriceCDF(self.proxy_probabilities, 1, self.min_wing_nodes,
+                                   self.max_inner_gap, self.max_outer_gap)
+        eligible = np.zeros(count, dtype=int)
+        scalars = {name: np.full(count, np.nan) for name in
+                   ("forward_ratio", "projection_distance", "mass")}
+        quantiles = np.full((count, len(self.proxy_probabilities)), np.nan)
+        bounds = np.r_[0, np.cumsum(np.bincount(group, minlength=count))]
+        for i in np.flatnonzero(np.diff(bounds)):
+            part = slice(bounds[i], bounds[i+1])
+            rows = pd.DataFrame({"strike": quotes["strike"][part], "type": kind[part],
+                                 "mark": quotes["mark"][part]})
+            proxy = self._proxy(estimator, rows, spot[i])
+            if proxy is not None:
+                eligible[i] = 1
+                for name in scalars:
+                    scalars[name][i] = proxy[name]
+                quantiles[i] = proxy["quantiles"]
+        columns = {"rn_proxy_eligible": eligible, "rn_forward_ratio": scalars["forward_ratio"],
+                   "rn_projection_distance": scalars["projection_distance"],
+                   "rn_interior_mass": scalars["mass"]}
+        for j, probability in enumerate(self.proxy_probabilities):
+            columns[self._qname(probability)] = quantiles[:, j]
+        return columns
+
+    def _clean_arrays(self, chain, group, spot):
+        """Return the cleaned rows' group index, side and numeric arrays, ordered by (group, strike, side).
+
+        Quotes are cleaned once for the whole frame (:meth:`_usable_mask`, duplicates within
+        a group), then derived columns are computed against each row's own group spot.
+        """
+        import numpy as np
+        import pandas as pd
+        names = [name for name in ("strike", "type", "mark", "bid", "ask", "bid_size", "ask_size",
+                                   "open_interest", "implied_volatility", "volume", "delta",
+                                   "gamma", "vega") if name in chain]
+        frame = chain[names].reset_index(drop=True)
+        frame["_group"] = group
+        frame = frame.loc[self._usable_mask(frame, ("_group",))]
+        owner, kind = frame["_group"].to_numpy(), frame["type"].to_numpy()
+        quotes = {"strike": frame["strike"].to_numpy(dtype=float),
+                  **{name: frame[name].to_numpy(dtype=float) for name in
+                     ("mark", "bid", "ask", "bid_size", "ask_size", "open_interest")},
+                  "iv": frame["implied_volatility"].to_numpy(dtype=float),
+                  **{name: self._numeric(frame, name) for name in
+                     ("volume", "delta", "gamma", "vega")}}
+        order = np.lexsort((pd.factorize(frame["type"], sort=True)[0], quotes["strike"], owner))
+        owner, kind = owner[order], kind[order]
+        quotes = {name: column[order] for name, column in quotes.items()}
+        quotes["moneyness"] = np.log(quotes["strike"]/spot[owner])
+        quotes["depth"] = quotes["bid_size"]+quotes["ask_size"]
+        quotes["rel_spread"] = (quotes["ask"]-quotes["bid"])/quotes["mark"]
+        return owner, kind, quotes
+
     def transform(self, chain, meta):
-        """Return one fixed tensor/proxy row for every requested chain key."""
+        """Return one fixed tensor/proxy row for every requested chain key.
+
+        The quotes are cleaned once for the whole frame and every group's nodes and
+        aggregates come from sorted arrays and one ``bincount`` per quantity; only the
+        proxy solve runs once per group.
+
+        Parameters
+        ----------
+        chain : pandas.DataFrame
+            Raw quotes: ``symbol``, ``date``, ``expiration``, ``strike``, ``type``, ``mark``,
+            ``bid``, ``ask``, ``bid_size``, ``ask_size``, ``open_interest`` and
+            ``implied_volatility``; ``volume``, ``delta``, ``gamma`` and ``vega`` when present.
+        meta : pandas.DataFrame
+            ``symbol``, ``quote_date``, ``expiry`` and ``chain_underlying_price`` of every
+            requested key (the last price wins for a repeated key).
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per requested key, sorted by key: node tensors and masks, the proxy
+            columns, the flow and exposure aggregates and the lagged open interest. A key
+            with no chain rows or no positive finite price is all NaN with empty masks.
+        """
         import numpy as np
         import pandas as pd
         required = {"symbol", "date", "expiration", "strike", "type", "mark",
@@ -2304,88 +2509,25 @@ class RawChainFeatureBuilder:
         keys = ["symbol", "quote_date", "expiry"]
         lookup = {(r.symbol, r.quote_date, r.expiry): r.chain_underlying_price
                   for r in meta[keys+["chain_underlying_price"]].itertuples(index=False)}
-        grouped = {(a, b, c): g for (a, b, c), g in
-                   chain.groupby(["symbol", "date", "expiration"], sort=False)}
-        centers = np.linspace(*self.bounds, self.nodes)
-        records = []
-        for key in sorted(lookup):
-            spot = float(lookup[key]); rows = grouped.get(key)
-            record = dict(zip(keys, key)); proxy = None
-            if rows is not None and np.isfinite(spot) and spot > 0:
-                rows = self._usable_quotes(rows)
-                rows["log_moneyness"] = np.log(rows.strike/spot)
-                rows["depth"] = rows.bid_size.fillna(0)+rows.ask_size.fillna(0)
-                rows["open_interest"] = rows.open_interest.fillna(0)
-                rows["rel_spread"] = (rows.ask-rows.bid)/rows.mark
-                proxy = self._proxy(rows, spot, usable=True)
-                # Each right's node candidates once per key, not once per node.
-                base = rows.implied_volatility.gt(0) & rows.mark.gt(0) & rows.rel_spread.ge(0)
-                sides = {}
-                for right in ("put", "call"):
-                    side = rows[(rows.type == right) & base]
-                    # Per column, so each field keeps its own dtype.
-                    sides[right] = (side.log_moneyness.to_numpy(), [
-                        side[name].to_numpy() for name in (
-                            "log_moneyness", "implied_volatility", "rel_spread",
-                            "open_interest", "depth")])
-            else:
-                rows = None
-            for i, center in enumerate(centers):
-                chosen = None
-                if rows is not None:
-                    moneyness, fields = sides["put" if center < 0 else "call"]
-                    if len(moneyness):
-                        distance = np.abs(moneyness-center)
-                        # argmin takes the first minimum, as the stable sort's head did.
-                        nearest = int(np.argmin(distance))
-                        if distance[nearest] <= self.max_node_gap:
-                            chosen = [column[nearest] for column in fields]
-                values = ([chosen[0], chosen[1], np.log1p(chosen[2]),
-                           np.log1p(max(chosen[3], 0)), np.log1p(max(chosen[4], 0))]
-                          if chosen is not None else [np.nan]*len(self.NODE_FIELDS))
-                for field, value in zip(self.NODE_FIELDS, values):
-                    record[f"chain_node_{i:02d}_{field}"] = value
-                record[f"chain_node_{i:02d}_mask"] = int(chosen is not None)
-            record["rn_proxy_eligible"] = int(proxy is not None)
-            record["rn_forward_ratio"] = proxy["forward_ratio"] if proxy else np.nan
-            record["rn_projection_distance"] = proxy["projection_distance"] if proxy else np.nan
-            record["rn_interior_mass"] = proxy["mass"] if proxy else np.nan
-            for j, probability in enumerate(self.proxy_probabilities):
-                record[self._qname(probability)] = proxy["quantiles"][j] if proxy else np.nan
-            if rows is not None:
-                volume = (pd.to_numeric(rows.get("volume"), errors="coerce")
-                          if "volume" in rows else pd.Series(np.nan, index=rows.index))
-                volume = volume.where(np.isfinite(volume) & volume.ge(0))
-                put_volume = float(volume[rows.type.eq("put")].sum(min_count=1))
-                call_volume = float(volume[rows.type.eq("call")].sum(min_count=1))
-                total_volume = put_volume+call_volume
-                record["chain_log_volume"] = (np.log1p(total_volume)
-                                                if np.isfinite(total_volume) else np.nan)
-                record["chain_put_call_volume_imbalance"] = (
-                    (put_volume-call_volume)/total_volume
-                    if np.isfinite(total_volume) and total_volume > 0 else np.nan)
-                record["chain_total_oi_snapshot"] = float(rows.open_interest.sum())
-                for greek in ("delta", "gamma", "vega"):
-                    values = (pd.to_numeric(rows.get(greek), errors="coerce")
-                              if greek in rows else pd.Series(np.nan, index=rows.index))
-                    valid = np.isfinite(values)
-                    exposure = (abs(values[valid])*rows.loc[valid, "open_interest"]).sum(
-                        min_count=1)
-                    record[f"chain_log_{greek}_oi"] = (
-                        np.log1p(float(exposure)) if np.isfinite(exposure) else np.nan)
-                weights = volume.where(volume > 0)
-                record["chain_volume_weighted_rel_spread"] = (
-                    float(np.average(rows.loc[weights.notna(), "rel_spread"],
-                                     weights=weights.dropna()))
-                    if weights.notna().any() else np.nan)
-            else:
-                for name in ("chain_log_volume", "chain_put_call_volume_imbalance",
-                             "chain_total_oi_snapshot", "chain_log_delta_oi",
-                             "chain_log_gamma_oi", "chain_log_vega_oi",
-                             "chain_volume_weighted_rel_spread"):
-                    record[name] = np.nan
-            records.append(record)
-        result = pd.DataFrame(records).sort_values(keys).reset_index(drop=True)
+        ordered = sorted(lookup)
+        count = len(ordered)
+        spot = np.array([lookup[key] for key in ordered], dtype=float)
+        group = self._group_codes(chain, ordered) if count else np.zeros(len(chain), dtype=int)-1
+        present = np.bincount(group[group >= 0], minlength=count) > 0
+        active = present & np.isfinite(spot) & (spot > 0)
+        take = (group >= 0) & active[np.maximum(group, 0)]
+        if take.any():
+            owner, kind, quotes = self._clean_arrays(chain.loc[take], group[take], spot)
+        else:
+            owner, kind = np.zeros(0, dtype=int), np.zeros(0, dtype=object)
+            quotes = {name: np.zeros(0) for name in (
+                "strike", "mark", "bid", "ask", "bid_size", "ask_size", "open_interest", "iv",
+                "volume", "delta", "gamma", "vega", "moneyness", "depth", "rel_spread")}
+        data = {name: [key[i] for key in ordered] for i, name in enumerate(keys)}
+        data.update(self._node_columns(count, owner, kind, quotes))
+        data.update(self._proxy_columns(count, spot, owner, kind, quotes))
+        data.update(self._flow_columns(count, active, owner, kind, quotes))
+        result = pd.DataFrame(data).sort_values(keys).reset_index(drop=True)
         group = result.groupby(["symbol", "expiry"], sort=False)
         lag_oi = group.chain_total_oi_snapshot.shift(1)
         lag2_oi = group.chain_total_oi_snapshot.shift(2)
