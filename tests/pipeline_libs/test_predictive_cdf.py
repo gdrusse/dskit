@@ -25,6 +25,7 @@ from dskit.pipeline.libs.predictive_cdf import (
     DecisionWeightedMixtureMLPCDF, DecisionWeightedMonotoneCDF,
 )
 from dskit.pipeline.libs import predictive_cdf
+from dskit.pipeline.libs.torch_ts import SequenceEncoderAdapter
 
 
 def _decision_context(identity=("SPY", "2020-01-02", "2020-02-21")):
@@ -4217,9 +4218,19 @@ def test_torch_cdf_without_heads_fits_byte_identically_to_before_the_zoo(kind, d
 _EXTERNAL_ENCODER = {"kind": "external", **_ZOO_SEQUENCE, "adapter": {
     "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
     "params": {"arch": "gru", "width": 4}}}
+_HF_ENCODER = {"kind": "external", **_ZOO_SEQUENCE, "adapter": {
+    "class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
+    "params": {"model": "PatchTST", "config": {
+        "d_model": 8, "patch_length": 2, "patch_stride": 1, "num_hidden_layers": 1,
+        "num_attention_heads": 1, "ffn_dim": 8, "attention_dropout": .1, "ff_dropout": .1,
+        "norm_type": "layernorm", "scaling": None}}}}
+_SPEED_ENCODERS = {**_ZOO_ENCODERS, "external": _EXTERNAL_ENCODER, "hf": _HF_ENCODER}
 #: Recorded on base c83aa44d (CPU, one thread, before any speed-up): the per-epoch
 #: losses and the sha256 of every seed's sorted state_dict bytes.
 _SPEED_PINS = {
+    "hf": ([[1.4460871297149855, 1.4394778415214458, 1.4342028192696046],
+            [1.292168810717612, 1.287908544310881, 1.2832124889615082]],
+           "1da4e7d612a430feb89d3f415ac0df6366a12d7ff7065e0033b79d014d5e8320"),
     "mlp": ([[1.3091473666333842, 1.3049739031367495, 1.3019186828110527],
              [1.3128058534211762, 1.3109710680262852, 1.3087437731631102]],
             "7c656e03c303e4eb0f3ffde4f7fe526e75b1f91d4df39683cbd6b2838d7ec5ed"),
@@ -4240,8 +4251,7 @@ _SPEED_PINS = {
 
 def _speed_model(kind, device="cpu", **settings):
     """Return the unfitted pinned crps + tail_crps model (batch 5, two seeds, 3 epochs)."""
-    encoder = copy.deepcopy(_EXTERNAL_ENCODER if kind == "external" else _ZOO_ENCODERS[kind])
-    return predictive_cdf.TorchCDF(encoder=encoder, **{
+    return predictive_cdf.TorchCDF(encoder=copy.deepcopy(_SPEED_ENCODERS[kind]), **{
         "components": 2, "hidden": [4], "epochs": 3, "batch_size": 5, "seeds": [7, 8],
         "device": device, "deterministic": True, "losses": _ZOO_LOSSES, **settings})
 
@@ -4272,6 +4282,8 @@ def _weights_sha256(model):
 @pytest.mark.parametrize("kind", sorted(_SPEED_PINS))
 def test_torch_cdf_fit_matches_the_recorded_losses_and_weights_before_the_speed_ups(kind):
     torch = pytest.importorskip("torch")
+    if kind == "hf":
+        pytest.importorskip("transformers")
     torch.set_num_threads(1)
     model = _speed_fit(kind)
     losses, digest = _SPEED_PINS[kind]
@@ -4417,6 +4429,9 @@ def test_sequence_encoder_with_no_context_columns_still_gathers_an_empty_context
 #: Recorded on base c83aa44d, on this CUDA host (deterministic, CUBLAS_WORKSPACE_CONFIG=:4096:8),
 #: dropout .25: the eager loop's losses and weights, which the graph path must reproduce.
 _CUDA_SPEED_PINS = {
+    "hf": ([[1.4725884219720229, 1.4117794952873557, 1.4281792500412422],
+            [1.300127794256967, 1.2872012269983562, 1.2969100490224719]],
+           "5657ef4635547790e214efcbc7c9f10c3ae5c385df0812d770a70243c436e796"),
     "mlp": ([[1.294210297612375, 1.343161981249635, 1.365307945740081],
              [1.2605658677508285, 1.2435619389899597, 1.3120699208326838]],
             "13541ec226d55625a872c5a7f8143aa77ebcb25ed09b9c7301036140df504643"),
@@ -4680,11 +4695,43 @@ def test_the_graph_equivalence_check_leaves_the_fit_rng_stream_unchanged(monkeyp
 @pytest.mark.parametrize("kind", sorted(_CUDA_SPEED_PINS))
 def test_cuda_graph_fit_reproduces_the_base_codes_eager_losses_and_weights(kind, monkeypatch):
     _cuda_or_skip(monkeypatch)
+    if kind == "hf":
+        pytest.importorskip("transformers")
     model = _speed_fit(kind, device="cuda", dropout=.25)
     assert model.step_paths == ["cuda_graph"]*2  # the pin exercises the graph
     losses, digest = _CUDA_SPEED_PINS[kind]
     assert model.losses == losses
     assert _weights_sha256(model) == digest
+
+
+class _UnusedParameterAdapter(SequenceEncoderAdapter):
+    """A sequence encoder that owns a parameter its forward never reads (it gets no gradient)."""
+
+    def output_width(self, channels):
+        return 3
+
+    def build_module(self, sequence_length, channels):
+        import torch
+
+        class Encoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.read = torch.nn.Linear(sequence_length*channels, 3)
+                self.unread = torch.nn.Parameter(torch.ones(2))
+
+            def forward(self, sequence):
+                return self.read(sequence.flatten(1))
+        return Encoder()
+
+
+def test_a_parameter_that_gets_no_gradient_does_not_stop_the_graph_path(monkeypatch):
+    pytest.importorskip("torch")
+    encoder = {"kind": "external", **_ZOO_SEQUENCE, "adapter": {
+        "class": f"{__name__}:_UnusedParameterAdapter", "params": {}}}
+    monkeypatch.setitem(_SPEED_ENCODERS, "unused", encoder)
+    eager, graph = _eager_and_graph(monkeypatch, "unused")
+    assert graph.step_paths == ["cuda_graph"]*2
+    _assert_same_fit(eager, graph)
 
 
 def _norm_recorder(monkeypatch):

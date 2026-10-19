@@ -2830,14 +2830,18 @@ class _GraphedBatch(_EagerBatch):
         torch.set_rng_state(generators[0])
         self.graph.replay()
         torch.cuda.synchronize(device)
-        replayed = (self.loss.clone(), self.code.clone(), [p.grad.clone() for p in self.parameters])
+        # A parameter the forward never reads has no gradient (None) on both sides.
+        replayed = (self.loss.clone(), self.code.clone(),
+                    [None if p.grad is None else p.grad.clone() for p in self.parameters])
         static = [p.grad for p in self.parameters]
         torch.cuda.set_rng_state(generators[1], device)
         torch.set_rng_state(generators[0])
         loss, code = self._eager(self.index)
         torch.cuda.synchronize(device)
         same = (torch.equal(replayed[0], loss) and torch.equal(replayed[1], code)
-                and all(torch.equal(a, p.grad) for a, p in zip(replayed[2], self.parameters)))
+                and all((a is None and p.grad is None)
+                        or (a is not None and p.grad is not None and torch.equal(a, p.grad))
+                        for a, p in zip(replayed[2], self.parameters)))
         for parameter, gradient in zip(self.parameters, static):
             parameter.grad = gradient
         if not same:
