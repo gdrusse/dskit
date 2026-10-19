@@ -13,6 +13,7 @@ import importlib
 import json
 from pathlib import Path
 import time
+import warnings
 
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import date_problem
@@ -2748,6 +2749,10 @@ class _EagerBatch:
             self.model, self.optimizer, self.tensors, ix, self.context)
 
 
+class _GraphStepDiffers(RuntimeError):
+    """The replayed graph and the eager step disagreed by at least one bit."""
+
+
 class _GraphedBatch(_EagerBatch):
     """The same step replayed from one CUDA graph for full batches (ADR-0270).
 
@@ -2758,9 +2763,13 @@ class _GraphedBatch(_EagerBatch):
     launches, so the losses and weights are bit-identical. Capture runs a few
     warm-up steps, then restores the weights, buffers and random generators it
     touched, so the training that follows starts exactly where the eager path would.
+    Before use, one replay is compared bit for bit with one eager step on the same
+    rows and random stream; the build is undone if they differ.
 
     Raises
     ------
+    _GraphStepDiffers
+        When that check finds any difference.
     Exception
         Whatever warm-up or capture raises (an operation that cannot be captured,
         out of memory): the caller then trains eagerly.
@@ -2772,25 +2781,75 @@ class _GraphedBatch(_EagerBatch):
     def __init__(self, owner, model, optimizer, tensors, context):
         super().__init__(owner, model, optimizer, tensors, context)
         import torch
+        device = tensors[0].device
         self.batch = owner.batch_size
         self.parameters = list(model.parameters())
-        self.index = torch.arange(self.batch, device=tensors[0].device)
-        saved = {k: v.detach().clone() for k, v in model.state_dict().items()}
-        generators = (torch.get_rng_state(), torch.cuda.get_rng_state(tensors[0].device))
-        captured = False
-        try:
-            self._capture()
-            captured = True
-        finally:
-            if not captured:
-                self._heal_generator(tensors[0].device)
-            with torch.no_grad():
-                for key, value in model.state_dict().items():
-                    value.copy_(saved[key])
-            torch.set_rng_state(generators[0])
-            torch.cuda.set_rng_state(generators[1], tensors[0].device)
+        # Streams, the capture and the replay belong to the device the data lives on.
+        with torch.cuda.device(device):
+            self.index = torch.arange(self.batch, device=device)
+            saved = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            generators = (torch.get_rng_state(), torch.cuda.get_rng_state(device))
+            captured = built = False
+            try:
+                self._capture()
+                captured = True
+                self._verify(generators, device)
+                built = True
+            finally:
+                try:
+                    if not captured:
+                        self._heal_generator(device)
+                finally:
+                    self._restore(saved, generators, device, built)
         self.gradients = [p.grad for p in self.parameters]
         self._detached = False
+
+    def _restore(self, saved, generators, device, built):
+        """Put back the weights, buffers and generators capture touched; drop dead gradients."""
+        import torch
+        with torch.no_grad():
+            for key, value in self.model.state_dict().items():
+                value.copy_(saved[key])
+        torch.set_rng_state(generators[0])
+        torch.cuda.set_rng_state(generators[1], device)
+        if not built:
+            # A failed build can leave gradients pointing into a freed graph pool.
+            for parameter in self.parameters:
+                parameter.grad = None
+
+    def _verify(self, generators, device):
+        """Replay once and compare with one eager step on the same rows and random stream.
+
+        Raises
+        ------
+        _GraphStepDiffers
+            When the replayed loss, fault code or any gradient differs by one bit.
+        """
+        import torch
+        torch.cuda.set_rng_state(generators[1], device)
+        torch.set_rng_state(generators[0])
+        self.graph.replay()
+        torch.cuda.synchronize(device)
+        replayed = (self.loss.clone(), self.code.clone(), [p.grad.clone() for p in self.parameters])
+        static = [p.grad for p in self.parameters]
+        torch.cuda.set_rng_state(generators[1], device)
+        torch.set_rng_state(generators[0])
+        loss, code = self._eager(self.index)
+        torch.cuda.synchronize(device)
+        same = (torch.equal(replayed[0], loss) and torch.equal(replayed[1], code)
+                and all(torch.equal(a, p.grad) for a, p in zip(replayed[2], self.parameters)))
+        for parameter, gradient in zip(self.parameters, static):
+            parameter.grad = gradient
+        if not same:
+            raise _GraphStepDiffers("graph_step_differs")
+
+    def _eager(self, ix):
+        """Run the eager step on the main stream; its autograd nodes were made on the side one."""
+        with warnings.catch_warnings():
+            # The mismatch is benign here (autograd syncs the two streams) and torch
+            # warns about it on every first eager step after a side-stream capture.
+            warnings.filterwarnings("ignore", message=".*AccumulateGrad node")
+            return super().run(ix)
 
     @staticmethod
     def _heal_generator(device):
@@ -2822,7 +2881,7 @@ class _GraphedBatch(_EagerBatch):
         """Replay the graph for a full batch; run any other size eagerly."""
         if len(ix) != self.batch:
             self._detached = True
-            return super().run(ix)
+            return self._eager(ix)
         if self._detached:
             for parameter, gradient in zip(self.parameters, self.gradients):
                 parameter.grad = gradient
@@ -3294,7 +3353,9 @@ class MixtureMLPCDF(_MixtureParameterCDF):
             return _GraphedBatch(*arguments)
         except Exception as error:
             stepper = _EagerBatch(*arguments)
-            stepper.fallback = f"{type(error).__name__}: {error}"
+            # A fixed code and the exception class only: no message reaches a hashed file.
+            stepper.fallback = ("graph_step_differs" if isinstance(error, _GraphStepDiffers)
+                                else f"capture_failed: {type(error).__name__}")
             return stepper
 
     def _refuse_fault(self, fault):
@@ -4389,6 +4450,8 @@ class _CompositeLossCDF:
                "decision_log": _CDFDecisionLog, "wing_twcrps": _CDFWingTwCRPS,
                "tail_crps": _CDFTailCRPS}
     _WING_KEYS = _CDFWingTwCRPS.context_keys
+    #: The per-fit population-scale cache; ``None`` (no caching) outside a fit.
+    _normalization_cache = None
 
     @staticmethod
     def _scopes_ok(scopes):
@@ -4454,11 +4517,12 @@ class _CompositeLossCDF:
         self
             The fitted estimator.
         """
+        self._normalization_cache = {}
         try:
             return super().fit(x, y, cal_x, cal_y)
         finally:
             self._fit_context = self._cal_context = None
-            self._normalization_cache = {}
+            self._normalization_cache = None
 
     def _target_tensor(self, y):
         import torch
@@ -4485,20 +4549,26 @@ class _CompositeLossCDF:
                                      "calibration", "calibration")
 
     def _normalizations(self, context):
-        """Return each term's full-population scale for a context, counted once per context.
+        """Return each term's full-population scale for a context.
 
         Uniform minibatches estimate the full-population objective, including
         batches with no locally eligible observations. The count depends only on
-        the immutable full context, so it is cached by identity (the context is
-        held, so its id cannot be reused) and released with the fit's contexts.
+        the immutable full context, so while a fit has armed ``_normalization_cache``
+        it is counted once per context (held by identity, so its id cannot be
+        reused); outside a fit, every call counts afresh and keeps nothing.
         """
-        cache = self.__dict__.setdefault("_normalization_cache", {})
+        cache = self._normalization_cache
+        if cache is None:
+            return self._population_scales(context)
         held = cache.get(id(context))
         if held is None or held[0] is not context:
-            rows = len(context["weights"])
-            held = cache[id(context)] = (
-                context, [rows/term.population_count(context) for term in self._terms])
+            held = cache[id(context)] = (context, self._population_scales(context))
         return held[1]
+
+    def _population_scales(self, context):
+        """Count each term's eligible rows in a full context: rows over the count."""
+        rows = len(context["weights"])
+        return [rows/term.population_count(context) for term in self._terms]
 
     def _objective_loss(self, y, logw, mu, sigma, indices, context):
         import torch
@@ -5278,6 +5348,10 @@ class StudentMixtureMLPCDF(MixtureMLPCDF):
         Finite, above two; scale is not standard deviation.
     **settings : dict
         MixtureMLPCDF settings, including optional task heads.
+
+    On a non-finite training step this estimator raises torch's own ``ValueError``
+    (the Student distribution validates its arguments) rather than the base
+    class's "nonfinite mixture likelihood"; both are ``ValueError``.
 
     Examples
     --------

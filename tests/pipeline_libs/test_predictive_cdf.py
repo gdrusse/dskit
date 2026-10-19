@@ -3,7 +3,10 @@
 import copy
 import hashlib
 import json
+import re
+import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -4465,7 +4468,8 @@ def test_graph_path_matches_eager_across_model_settings_and_batch_shapes(setting
 def test_student_family_builds_constants_per_step_so_it_trains_eagerly_and_identically(monkeypatch):
     eager, fallen = _eager_and_graph(monkeypatch, "mlp", family=dict(_STUDENT))
     assert fallen.step_paths == ["eager"]*2
-    assert all("CUDA graph capture" in d["step_path_fallback"] for d in fallen.training_diagnostics)
+    assert all(d["step_path_fallback"].startswith("capture_failed: ")
+               for d in fallen.training_diagnostics)
     _assert_same_fit(eager, fallen)
 
 
@@ -4526,10 +4530,120 @@ def test_a_loss_that_cannot_be_captured_falls_back_to_eager_and_records_why(monk
         fallen = _speed_fit("mlp", device="cuda", training_telemetry=True)
     assert fallen.step_paths == ["eager", "eager"]
     reasons = [d["step_path_fallback"] for d in fallen.training_diagnostics]
-    assert len(reasons) == 2 and all(isinstance(r, str) and r for r in reasons)
+    # A fixed code plus the exception CLASS: the message (paths, sizes) never reaches a hashed file.
+    assert len(reasons) == 2 and all(re.fullmatch(r"capture_failed: \w+", r) for r in reasons)
     _assert_same_fit(eager, fallen)
     again = _speed_fit("mlp", device="cuda", training_telemetry=True)  # CUDA is still usable
     assert again.step_paths == ["cuda_graph"]*2 and torch.cuda.is_available()
+
+
+def test_a_bare_loss_spec_keeps_no_population_cache_across_calls():
+    torch = pytest.importorskip("torch")
+    spec = _spec([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}],
+                 tail_intervals=WINGS)
+    for _ in range(500):
+        y, logw, mu, sigma = _flat_batch()
+        spec.loss(y, logw, mu, sigma)
+    assert not spec.__dict__.get("_normalization_cache")
+    assert torch.is_tensor(spec.loss(y, logw, mu, sigma))
+
+
+def test_the_population_cache_is_released_when_a_fit_ends_even_by_error(monkeypatch):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    model = _speed_fit("mlp", seeds=[7], epochs=1)
+    assert not model.__dict__.get("_normalization_cache")
+    original = predictive_cdf.TorchCDF._objective_loss
+
+    def refuse(self, *args):
+        assert self._normalization_cache is not None  # armed while a fit runs
+        original(self, *args)
+        raise ValueError("stop")
+    monkeypatch.setattr(predictive_cdf.TorchCDF, "_objective_loss", refuse)
+    with pytest.raises(ValueError, match="stop"):
+        _speed_fit("mlp", seeds=[7], epochs=1)
+
+
+def _speed_cuda_args(monkeypatch):
+    _cuda_or_skip(monkeypatch)
+    return {"device": "cuda", "seeds": [7], "epochs": 2, "training_telemetry": True}
+
+
+def test_a_failed_capture_whose_heal_also_fails_still_restores_weights_and_rng(monkeypatch):
+    torch = _cuda_or_skip(monkeypatch)
+    with monkeypatch.context() as patch:
+        patch.setattr(predictive_cdf.MixtureMLPCDF, "_graph_capable", lambda self, model: False)
+        eager = _speed_fit("mlp", device="cuda", training_telemetry=True, dropout=.25)
+    original = predictive_cdf._CDFCRPS.values
+    healed = predictive_cdf._GraphedBatch._heal_generator
+
+    def syncing(self, y, logw, mu, sigma, context):
+        values, eligible = original(self, y, logw, mu, sigma, context)
+        values.sum().item()
+        return values, eligible
+
+    def heal_then_raise(device):
+        healed(device)
+        raise RuntimeError("heal failed")
+    with monkeypatch.context() as patch:
+        patch.setattr(predictive_cdf._CDFCRPS, "values", syncing)
+        patch.setattr(predictive_cdf._GraphedBatch, "_heal_generator",
+                      staticmethod(heal_then_raise))
+        fallen = _speed_fit("mlp", device="cuda", training_telemetry=True, dropout=.25)
+    assert fallen.step_paths == ["eager", "eager"] and torch.cuda.is_available()
+    _assert_same_fit(eager, fallen)
+
+
+def test_graph_construction_runs_on_the_cuda_device_the_data_lives_on(monkeypatch):
+    torch = _cuda_or_skip(monkeypatch)
+    entered = []
+    original = torch.cuda.device
+
+    class Recording(original):
+        def __init__(self, device):
+            entered.append(str(device))
+            super().__init__(device)
+    monkeypatch.setattr(torch.cuda, "device", Recording)
+    model = _speed_fit("mlp", device="cuda:0", seeds=[7], epochs=1)
+    assert model.step_paths == ["cuda_graph"]
+    assert "cuda:0" in entered
+
+
+def test_the_graph_path_raises_no_autograd_stream_warning(monkeypatch):
+    _cuda_or_skip(monkeypatch)
+    # torch warns once per process, so a fresh interpreter with the warning promoted to an error.
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); import test_predictive_cdf as T; "
+            "m = T._speed_fit('mlp', device='cuda', seeds=[7], epochs=2); "
+            "sys.exit(0 if m.step_paths == ['cuda_graph'] else 3)")
+    run = subprocess.run(
+        [sys.executable, "-W", "error:The AccumulateGrad node:UserWarning", "-c", code,
+         str(Path(__file__).parent)], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stderr[-800:]
+
+
+def test_a_graph_whose_step_differs_from_the_eager_step_falls_back_to_eager(monkeypatch):
+    _cuda_or_skip(monkeypatch)
+    state = {"scale": 1.}
+    original = predictive_cdf.TorchCDF._objective_loss
+
+    def scaled(self, *args):
+        return original(self, *args)*state["scale"]
+    monkeypatch.setattr(predictive_cdf.TorchCDF, "_objective_loss", scaled)
+    capture = predictive_cdf._GraphedBatch._capture
+
+    def capture_then_drift(self):
+        capture(self)
+        state["scale"] = 1.5  # the captured graph froze 1.0; the eager check now sees 1.5
+    monkeypatch.setattr(predictive_cdf._GraphedBatch, "_capture", capture_then_drift)
+    model = _speed_fit("mlp", device="cuda", seeds=[7], epochs=1, training_telemetry=True)
+    assert model.step_paths == ["eager"]
+    assert model.training_diagnostics[0]["step_path_fallback"] == "graph_step_differs"
+
+
+def test_the_graph_equivalence_check_leaves_the_fit_rng_stream_unchanged(monkeypatch):
+    eager, graph = _eager_and_graph(monkeypatch, "mlp", dropout=.25)
+    assert graph.step_paths == ["cuda_graph"]*2
+    _assert_same_fit(eager, graph)
 
 
 @pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])
