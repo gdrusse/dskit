@@ -838,6 +838,7 @@ def test_the_arrow_block_shift_equals_the_pandas_reference_on_a_gapped_multi_sym
     assert 0 < dropped < len(source)
     old = tmp_path / "old.parquet"
     reference.to_parquet(old, index=False)
+    module.SLICE_ROWS = 3                                                 # several writer slices on this fixture
     assert module.main(["--panel", str(panel), "--output-dir", str(tmp_path / "new"), "--shift", str(shift)]) == 0
     new = pd.read_parquet(tmp_path / "new" / "frame.parquet")
     assert_frame_equal(new, pd.read_parquet(old), check_exact=True, check_index_type=True)
@@ -846,6 +847,22 @@ def test_the_arrow_block_shift_equals_the_pandas_reference_on_a_gapped_multi_sym
     assert (record["rows_in"], record["rows_out"], record["rows_dropped"]) == (len(source), len(new), dropped)
     assert set(record) == {"source_panel", "source_sha256", "shift_sessions", "rows_in", "rows_out", "rows_dropped",
                            "frame_sha256", "holdout_excluded_from"}
+
+
+def test_the_block_shift_script_refuses_a_holdout_row_that_the_bounded_reader_let_through(tmp_path, monkeypatch):
+    pd = pytest.importorskip("pandas")
+    pq = pytest.importorskip("pyarrow.parquet")
+    from dskit.pipeline.libs.parquet import DateBoundedParquet
+    module = _module("make_block_shift_panel")
+    rows = [{"symbol": "AAA", "quote_date": d, "expiry": "2024-01-05", "settlement_date": "2024-01-05",
+             "actual_calendar_dte": 3., "terminal_return": 0.01, "reference_scale": 1.0}
+            for d in ("2023-12-28", "2023-12-29", "2024-01-02")]
+    panel = tmp_path / "panel.parquet"
+    pd.DataFrame(rows).to_parquet(panel, index=False)
+    monkeypatch.setattr(DateBoundedParquet, "read", lambda self: pq.read_table(self.path, columns=self.columns))
+    with pytest.raises(ValueError, match="holdout"):
+        module.main(["--panel", str(panel), "--output-dir", str(tmp_path / "new"), "--shift", "1"])
+    assert not (tmp_path / "new").exists()
 
 
 def _wall_functions(readme):

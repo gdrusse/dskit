@@ -553,7 +553,11 @@ def test_lean_load_panel_equals_the_reference_body_on_mixed_dtypes_order_and_a_f
         frame[feature] = (frame[feature] * 100).round().astype("int64")     # an integer feature column
         foreign = frame.iloc[:3].copy()
         foreign["symbol"] = "ZZZ"                                           # not in config["tickers"]
-        frame = pd.concat([frame, foreign], ignore_index=True)
+        later = frame.copy()                                                # a second expiry on every (symbol, quote_date):
+        later["expiry"] = later["settlement_date"] = (                      # the third identity key breaks the tie
+            pd.to_datetime(later["expiry"]) + pd.Timedelta(days=1)).dt.strftime("%Y-%m-%d")
+        later["actual_calendar_dte"] = 2.
+        frame = pd.concat([frame, foreign, later], ignore_index=True)
         return frame.sample(frac=1.0, random_state=7).reset_index(drop=True)   # unsorted, integer labels = file order
     _rewrite_panel(experiment_config, edit)
     expected = _reference_load_panel(CDFExperiment(experiment_config))
@@ -561,6 +565,7 @@ def test_lean_load_panel_equals_the_reference_body_on_mixed_dtypes_order_and_a_f
     assert not expected.index.equals(pd.RangeIndex(len(expected))) and "ZZZ" not in set(actual["symbol"])
     assert_frame_equal(actual, expected, check_exact=True, check_index_type=True)
     assert actual.index.equals(expected.index) and list(actual.columns) == list(expected.columns)
+    assert actual.duplicated(["symbol", "quote_date"]).any()               # the tie-break rows survived the filter
     assert actual[feature].dtype == "int64" and actual["symbol"].dtype == expected["symbol"].dtype
     actual[feature] = 0                              # the zero-copy read is not exposed: callers get a writable frame
     actual.iloc[0, actual.columns.get_loc("terminal_return")] = 1.0
@@ -587,3 +592,22 @@ def test_lean_load_panel_keeps_the_two_integrity_messages(experiment_config):
     _rewrite_panel(experiment_config, lambda f: f.assign(**{first: ["x"] * len(f)}))
     with pytest.raises(IntegrityError, match="^invalid panel data contract$"):
         CDFExperiment(experiment_config).load_panel()
+
+
+def test_lean_load_panel_checks_every_arm_and_the_observed_columns(experiment_config):
+    """An inf in a feature only the SECOND arm reads, or in an observed-only column, is still refused (lens B)."""
+    import numpy as np
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment, IntegrityError
+    base = experiment_config["arms"]["base"]
+    experiment_config["arms"]["chain"] = dict(base, features=[*base["features"][:3], "extra_feat"],
+                                              observed_columns=["obs_only"])
+    import shutil
+    original = experiment_config["panel"]
+    _rewrite_panel(experiment_config, lambda f: f.assign(extra_feat=1.5, obs_only=0.5))
+    shutil.copy(original, original + ".good")
+    assert len(CDFExperiment(experiment_config).load_panel())
+    for column in ("extra_feat", "obs_only"):
+        shutil.copy(original + ".good", original)
+        _rewrite_panel(experiment_config, lambda f, c=column: f.assign(**{c: np.where(f.index == 2, np.inf, f[c])}))
+        with pytest.raises(IntegrityError, match="^invalid panel labels, horizons, features or reference scales$"):
+            CDFExperiment(experiment_config).load_panel()
