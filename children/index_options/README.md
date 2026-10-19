@@ -554,6 +554,9 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258);
                            # theta_exact_expiry.py (ADR-0270: ThetaExactExpiryTables, the frozen Theta chains -> the
                            # exact-expiry surface, lifecycle, chain archive and own_iv series; no model)
+                           # strike_region_scores.py (ADR-0270: StrikeRegionScores, saved CDFExperiment fits scored on fit and
+                           # validation rows around the listed strikes: model, horizon_empirical baseline and market-implied curves;
+                           # rows/cells/curves/summary; no fit, no dskit change)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
@@ -578,6 +581,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # ThetaExactExpiryTables into surface/lifecycle/archive/own_iv; new output_root per run)
                            # run-strike-screen-arms.json + strike-screen-folds-screen.jsonl (ADR-0270: the executable 8-candidate arms
                            # screen, pinned to strike-screen-protocol.json by tests/test_strike_screen_arms.py; no fit until registered)
+                           # run-strike-region-scores.json (ADR-0270: StrikeRegionScores over one CDFExperiment output; placeholder paths,
+                           # copy per loss)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner
@@ -601,7 +606,7 @@ docs/research/              # README.md, .gitkeep; distribution-modeling/, real-
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
-                           # quote_backtest, debit_backtest, ledger_studies, theta_exact_expiry, strike_screen_arms (.py)
+                           # quote_backtest, debit_backtest, ledger_studies, theta_exact_expiry, strike_screen_arms, strike_region_scores (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or
