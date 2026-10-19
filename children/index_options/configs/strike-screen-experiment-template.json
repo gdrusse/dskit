@@ -629,7 +629,7 @@
         }
       }
     },
-    "notes": "ADR-0270 strike-region fast screen template (PROPOSED). ZERO fits until the registration is approved: panel, source and dependency pins are zero placeholders that _verify_provenance refuses; the pilot-root prepare script resolves one document per strike-screen-matrix.json entry. end_before 2021-01-01; 2026 sealed.",
+    "notes": "SUPERSEDED by run-strike-screen-fits-L1.json, run-strike-screen-fits-L3.json and run-strike-screen-fits-timing.json (protocol revision 3): this R5-era CDFExperiment template (2021 holdout, five candidates, other arms) is kept only as the source of the candidate adapters those documents copy; do not run it. ADR-0270 strike-region fast screen template (PROPOSED). ZERO fits until the registration is approved: panel, source and dependency pins are zero placeholders that _verify_provenance refuses; the pilot-root prepare script resolves one document per strike-screen-matrix.json entry. end_before 2021-01-01; 2026 sealed.",
     "output": "/home/russell/data/index_options/theta-strike-screen-20261018/study-unused",
     "reference": "reference_scale",
     "reference_model": "horizon_empirical",

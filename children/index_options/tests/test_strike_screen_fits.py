@@ -295,8 +295,8 @@ def test_training_and_capacity_equal_the_protocol(docs, proto):
                           "seeds", "weight_decay"}
         assert p["components"] == a["components"][0] == 3 and p["deterministic"] is True
         assert p["dropout"] == t["regularization"]["dropout"] == 0.1
-        assert t["regularization"]["weight_decay"] == t["weight_decay"] == [0.01, 0.3]
-        assert p["weight_decay"] in t["weight_decay"] and p["learning_rate"] == t["learning_rate"] == 0.0003
+        assert t["regularization"]["weight_decay"] == t["weight_decay"]["screen"] == p["weight_decay"] == 0.01
+        assert t["weight_decay"]["promotion_axis"] == [0.01, 0.3] and p["learning_rate"] == t["learning_rate"] == 0.0003
         assert p["seeds"] == t["seeds"]["screen"] == [11]
         epochs, patience = (3, None) if tag == "timing" else (t["early_stopping"]["epoch_ceiling"]["screen"],
                                                               t["early_stopping"]["patience"]["screen"])
@@ -351,9 +351,10 @@ def test_the_only_hex_values_are_the_panel_placeholder_and_the_fold_pin(docs):
 def test_the_notes_say_what_the_registration_step_must_fill(docs):
     notes = docs["L1"]["study"]["notes"]
     for phrase in ("panel_sha256", "source_hashes", "dependencies", "R6 prepare", "cdf_experiment", "parquet", "predictive_cdf",
-                   "torch_ts", "transformers", "EMPTY placeholders", "observed_columns is empty", "per-ticker head",
+                   "torch_ts", "transformers", "EMPTY placeholders", "observed_columns is empty", "one output head per ticker", "protocol revision 3",
                    "tail_weight 1.0", "wing_metrics false", "StrikeRegionScores"):
         assert phrase in notes, phrase
+    assert "shared-head intent" not in notes
 
 
 # -- the queue's own arithmetic: capacity, encoders, and the contexts each loss trains on -------------------------
@@ -425,13 +426,23 @@ def test_each_loss_trains_on_the_fixed_wing_contexts_the_documents_describe(expe
         assert {t["kind"] for t in params["losses"]} == ({"crps", "tail_crps"} if tag == "L1" else {"crps", "decision_brier"})
 
 
-# -- protocol revision 2: the contract the documents execute ------------------------------------------------------
+# -- protocol revision 3: the contract the documents execute ------------------------------------------------------
 
 
-def test_the_protocol_is_revision_2_with_a_change_log(proto):
-    assert proto["revision"] == 2 and isinstance(proto["change_log"], dict) and set(proto["change_log"]) >= {"2"}
-    assert len(proto["change_log"]["2"]) > 200
+def test_the_protocol_is_revision_3_with_a_change_log_that_discloses_the_gate_sequence(proto):
+    assert proto["revision"] == 3 and set(proto["change_log"]) >= {"1", "2", "3"}
+    log = proto["change_log"]["3"]
+    assert len(log) > 400 and "75b1c81b" in log and "committed after" in log and "superseded" in log
+    for phrase in ("Stage 0", "evidence tables", "market_calibrated", "SUPERSEDED", "null", "power harness"):
+        assert phrase in log, phrase
     assert "run-strike-screen-arms" not in json.dumps(proto)
+
+
+@pytest.mark.parametrize("name", ["strike-screen-experiment-template.json", "strike-screen-matrix.json"])
+def test_the_earlier_design_files_are_marked_superseded_first(name):
+    document = _json(name)
+    notes = document["notes"] if "notes" in document else document["study"]["notes"]
+    assert notes.startswith("SUPERSEDED") and "run-strike-screen-fits" in notes[:400]
 
 
 def test_the_monitor_band_is_82_by_its_own_derivation(proto):
@@ -460,21 +471,57 @@ def test_the_chain_input_is_the_representation_the_panel_emits_and_is_pinned_by_
 def test_the_verification_steps_name_their_scripts_and_documents(proto):
     v = proto["verification_before_any_ranking"]
     recover, shift = v["synthetic_recoverability"], v["block_shift_label_control"]
-    assert "prepare/synthetic_recoverability.py" in recover and "5%" in recover
+    assert "prepare/synthetic_recoverability.py" in recover and "5%" in recover and "Stage 0" in recover
     assert "D <= 0.02" in recover and "reliability" in recover and "13 grid thresholds" in recover and "information only" in recover
+    for pinned in ("learning rate 0.003", "per_row 1000", "head_per_row 1000", "24 synthetic tickers", "seed 2027"):
+        assert pinned in recover, pinned
     assert "p above" not in recover and "KS p >" not in recover
     assert "prepare/make_block_shift_panel.py" in shift and CONTROL in shift and "120 sessions" in shift and "no skill" in shift
-    assert "epochs 120" in shift and "8 cells" in shift and "0.5%" in shift and "weighted_crps" in shift and "halt before L1" in shift
-    assert v["order"].index("synthetic recoverability + null + power harness") < v["order"].index("block-shift label control") \
-        < v["order"].index("per-epoch curves")
+    assert "epochs 120" in shift and "8 cells" in shift and "0.5%" in shift and "halt before L1" in shift
+    assert "1 - mean(model_weighted_crps) / mean(baseline_weighted_crps)" in shift
+    for approximation in ("regime persistence", "purge on its own settlement", "uncalibrated"):
+        assert approximation in shift, approximation
 
 
-def test_the_caps_separate_stores_from_fit_outputs(proto):
+def test_the_null_and_the_power_harness_are_the_two_executable_checks(proto):
+    v = proto["verification_before_any_ranking"]
+    assert "no_information_control" not in v and "scale-only" not in json.dumps(v) and "calendar/scale" not in json.dumps(v)
+    text = v["null_and_power"]
+    assert "block-shift control IS the null" in text and "synthetic recoverability IS the power harness" in text
+    assert "external encoder requires a return sequence" in text
+    order = v["order"]
+    assert "synthetic recoverability + null + power harness" not in order
+    assert order.index("synthetic recoverability (Stage 0; the power harness)") < order.index("block-shift label control (the null)") \
+        < order.index("per-epoch curves")
+
+
+def test_the_caps_separate_stores_and_evidence_from_fit_outputs(proto):
     caps = proto["caps"]
-    assert caps["new_output_bytes"] == 1_000_000_000 and "excluding" in caps["new_output_scope"]
+    assert caps["new_output_bytes"] == 1_000_000_000 and "excluding" in caps["new_output_scope"] and "evidence tables" in caps["new_output_scope"]
     assert caps["store_ceiling_bytes"] == 8_000_000_000
-    assert caps["per_file_write_bytes"] == {"fits_and_scoring": 67_108_864, "data_preparation": 2_147_483_648}
+    assert caps["per_file_write_bytes"] == {"fits": 67_108_864, "data_preparation": 2_147_483_648, "evidence_tables": 2_147_483_648}
+    evidence = caps["evidence_tables"]
+    assert evidence["files"] == ["rows.parquet", "cells.parquet"] and evidence["ceiling_bytes"] == 4_000_000_000
+    assert evidence["excluded_from_new_output_cap"] is True and "957 B/row" in evidence["synthetic_evidence"]
+    assert "unmeasured" in evidence["real_size_estimate"] and "first scoring document" in evidence["ceiling_status"]
+    assert "min(ceiling, remaining" in caps["wall_rule"]
     assert caps["host_rss_vram_enforcement"] == "observational (logged); wall clock is enforced"
+
+
+def test_the_promising_cell_rule_is_provisional_until_the_market_stage(proto):
+    rule = proto["cells"]["promising_cell_rule"]
+    assert set(rule) == {"provisional", "final", "status"}
+    assert "market_raw" in rule["provisional"] and "market_calibrated" not in rule["provisional"] and "StrikeRegionScores" in rule["provisional"]
+    assert "market_calibrated" in rule["final"] and "market stage" in rule["final"] and "2017-2023" in rule["final"]
+    assert "provisional" in rule["status"] and "Holm" in rule["provisional"] + rule["final"]
+
+
+def test_the_screen_inventory_and_defenses_are_in_the_protocol(proto):
+    assert "16 cells" in proto["arms_and_candidates"]["screen_fits"]
+    inventory = proto["inventory"]
+    assert inventory["synthetic_recoverability_stage0"] == 1 and inventory["timing_neural_cells"] == 4
+    assert inventory["control_neural_cells"] == 8 and inventory["screen_neural_cells"] == 16
+    assert "after load" in proto["windows"]["holdout"]["read_guard"] and "pushdown" in proto["windows"]["holdout"]["read_guard"]
 
 
 def test_fit_band_sampling_and_ticker_groups_are_recorded(proto):
@@ -518,29 +565,51 @@ def test_the_inventory_draft_matches_the_documents_and_the_protocol(proto):
     assert "(fold, symbol)" in inv["stage_2_screen"]["empirical_unit"]
     assert inv["caps"]["store_ceiling_bytes"] == proto["caps"]["store_ceiling_bytes"]
     assert inv["caps"]["per_file_write_bytes"] == proto["caps"]["per_file_write_bytes"]
-    assert inv["approval_points"].keys() == {"A", "B"}
+    assert inv["caps"]["evidence_tables"] == proto["caps"]["evidence_tables"]["ceiling_bytes"]
+    assert inv["approval_points"].keys() == {"A", "B"} and "real-data fits only" in inv["approval_points"]["B"]
+    assert inv["stage_0"]["synthetic_recoverability"] == inv["synthetic_recoverability"]["script"] and "Stage 0" in inv["synthetic_recoverability"]["classification"]
+    assert "gate change" in inv["synthetic_recoverability"]["sequence_disclosure"] and "superseded" in inv["synthetic_recoverability"]["sequence_disclosure"]
+    assert "provisional" in inv["promising_cells"] and "market_calibrated" in inv["promising_cells"]
+    assert inv["totals"]["synthetic_recoverability"] == 1 and "excluding" in inv["caps"]["new_output_scope"]
     for name in (CONTROL, FITS["L1"], FITS["L3"], TIMING):
         assert inv["documents"][name]["file_sha256"] == hashlib.sha256((CONFIGS / name).read_bytes()).hexdigest()
-    assert inv["documents"]["strike-screen-protocol.json"]["file_sha256"] == hashlib.sha256(
-        (CONFIGS / PROTOCOL).read_bytes()).hexdigest()
+    repo_sha = hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
+    entry = inv["documents"]["strike-screen-protocol.json"]
+    assert entry["file_sha256"] == entry["registration_copy_sha256"] == repo_sha and entry["revision"] == 3
+    assert entry["registration_copy"].endswith("strike-screen-protocol-rev3.json")
+
+
+def test_the_registration_copy_of_the_protocol_is_a_byte_copy_of_the_repo_file():
+    copy_ = _pilot("registration", "strike-screen-protocol-rev3.json")
+    assert copy_.read_bytes() == (CONFIGS / PROTOCOL).read_bytes()
+    assert not (PILOT / "registration" / "strike-screen-protocol-rev2.json").exists()
 
 
 def test_the_study_readme_orders_the_steps_and_applies_the_caps():
     text = _pilot("documents", "study", "README.md").read_text()
     order = ["APPROVAL POINT A", "## 1. Converter", "## 2. Onboard", "## 3. Replace", "## 4. Raw-chain", "## 5. The panel stage",
-             "## 6. Registration", "APPROVAL POINT B", "## 7. Timing", "## 8. Block-shift", "## 9. Synthetic recoverability",
-             "## 10. Stop rule", "## 11. L1", "## 12. StrikeRegionScores", "## 13. Report"]
+             "## 6. Registration", "### 6b. Synthetic recoverability", "APPROVAL POINT B", "## 7. Timing", "## 8. Block-shift",
+             "## 9. Stop rule", "## 10. L1", "## 11. StrikeRegionScores", "## 12. Report"]
     positions = [text.index(h) for h in order]
     assert positions == sorted(positions)
-    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "documents/superseded", "excluding the stores",
+    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "evidence tables", "strike-screen-protocol-rev3.json", "convenience", "provisional", "market_calibrated",
+                   "documents/superseded", "excluding the stores",
                    "observational", "refuse", "empty source_hashes", "expected_cells", "must never"):
         assert phrase in text, phrase
     assert _pilot("prepare", "synthetic_recoverability.py").exists() and _pilot("prepare", "make_block_shift_panel.py").exists()
 
 
+def test_the_superseded_recoverability_run_is_kept_and_the_fresh_one_is_recorded():
+    old = json.loads(_pilot("stage0", "recoverability-superseded-gate-change.json").read_text())
+    assert old["gates"] and old["seed"] == 2027
+    for suffix in ("recoverability-superseded-work",):
+        assert _pilot("stage0", suffix).is_dir()
+
+
 def test_a_recorded_recoverability_result_has_pass_or_fail_per_gate():
     result = json.loads(_pilot("stage0", "recoverability.json").read_text())
     gates = result["gates"]
+    assert result["protocol_revision"] == 3 and result["tickers"] == 24 and result["seed"] == 2027
     assert set(gates) == {"crps_within_5pct_of_oracle", "pit_ks_statistic_at_most_0.02", "max_reliability_gap_at_most_0.02"}
     assert all(isinstance(v, bool) for v in gates.values()) and result["passed"] == all(gates.values())
     assert {"oracle_pit_ks_statistic", "pit_ks_p", "oracle_pit_ks_p", "max_abs_reliability_gap", "oracle_max_abs_reliability_gap"} <= set(result)

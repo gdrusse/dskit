@@ -1,6 +1,6 @@
 {
   "name": "strike-screen-matrix",
-  "notes": "ADR-0270 section 3-4 fractional design as pure data (PROPOSED; ZERO fits until the registration is approved). Each document is the strike-screen-experiment-template.json CDFExperiment with its arms restricted to `arm`, its candidates restricted to `candidates`, training.losses set to the named recipe, and training epochs/patience plus fold_table roles set by the stage. The pilot-root prepare script materializes them; this file never trains. Change the design here, never in code.",
+  "notes": "SUPERSEDED by run-strike-screen-fits-L1.json and run-strike-screen-fits-L3.json (protocol revision 3): the fractional design below was the pre-execution-path plan; the executable screen is the full 2 arms x 2 encoders x 2 losses x 2 folds grid of those documents. Kept for the record; do not run. ADR-0270 section 3-4 fractional design as pure data (PROPOSED; ZERO fits until the registration is approved). Each document is the strike-screen-experiment-template.json CDFExperiment with its arms restricted to `arm`, its candidates restricted to `candidates`, training.losses set to the named recipe, and training epochs/patience plus fold_table roles set by the stage. The pilot-root prepare script materializes them; this file never trains. Change the design here, never in code.",
   "template": "strike-screen-experiment-template.json",
   "seed": 11,
   "regime": "pooled",

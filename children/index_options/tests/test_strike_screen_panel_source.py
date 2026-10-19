@@ -189,7 +189,7 @@ def test_the_fold_table_is_the_protocols_screen_rows_and_pinned(doc, proto):
 def test_the_candidates_are_the_declared_grid_and_the_protocol_training(doc, proto):
     t, a, candidates = proto["training"], proto["arms_and_candidates"], doc["experiment"]["candidates"]
     assert len(candidates) == doc["experiment"]["max_candidates"] == 8
-    assert "2 arms x 2 encoders x 2 losses = 8" in a["screen_fits"]
+    assert "2 arms x 2 encoders x 2 losses x 2 folds = 16 cells" in a["screen_fits"]
     names = {_parts(n) for n in candidates}
     assert names == {(arm, enc, loss) for arm in a["arms"] for enc in a["encoders"] for loss in a["losses"]}
     capacity = int(re.search(r"min\((\d+),", t["capacity"]).group(1))
@@ -198,7 +198,7 @@ def test_the_candidates_are_the_declared_grid_and_the_protocol_training(doc, pro
         assert spec["class"] == CLASS["torch"] and spec["pooled"] is True and spec["calibrate"] is False
         assert p["losses"] == _losses(a["losses"][loss])
         assert p["components"] == a["components"][0] == 3 and p["hidden"] == [8]
-        assert p["dropout"] == t["regularization"]["dropout"] and p["weight_decay"] in t["regularization"]["weight_decay"]
+        assert p["dropout"] == t["regularization"]["dropout"] and p["weight_decay"] == t["regularization"]["weight_decay"]
         assert p["learning_rate"] == t["learning_rate"] and p["batch_size"] == t["batch_size"]
         assert p["epochs"] == t["early_stopping"]["epoch_ceiling"]["screen"] == 120
         assert p["patience"] == t["early_stopping"]["patience"]["screen"] == 10

@@ -1,11 +1,12 @@
 {
  "name": "strike-screen-protocol",
- "revision": 2,
+ "revision": 3,
  "change_log": {
   "1": "ADR-0270 preregistered procedure, written for the CDFHyperparameterStudy path.",
-  "2": "Execution-path revision (before any fit): the screen's fits are CDFExperiment queues (run-strike-screen-fits-L1/L3.json), the arms study document is the panel source only. (1) sharing states what the queue does: one output head per ticker. (2) the chain input is the representation the panel emits, pinned by name in appendix.chain_columns; the logit-CDF vector is deferred. (3) verification gains the recoverability script, the block-shift control document and their place before any fit of the screen. (4) caps separate the stores (own ceiling, larger per-file limit) from fit outputs. (5) cal_n is 82, the value of its own derivation (was 74). (6) fit-band scores are a deterministic stride sample; liquidity tercile groups are deferred to registration. (7) fold_tables.notes describes the queue, with no selection stage. (8) weight_decay range unified to [0.01, 0.3]; head width 8 declared. (9) the recoverability gates are magnitudes (D <= 0.02, max reliability gap <= 0.02, CRPS within 5%) with KS p-values information only; the block-shift control is the L1 document on the shifted panel (8 cells) with a stop rule of paired weighted_crps skill above 0.5% on either fold."
+  "2": "Execution-path revision (before any fit): the screen's fits are CDFExperiment queues (run-strike-screen-fits-L1/L3.json), the arms study document is the panel source only. (1) sharing states what the queue does: one output head per ticker. (2) the chain input is the representation the panel emits, pinned by name in appendix.chain_columns; the logit-CDF vector is deferred. (3) verification gains the recoverability script, the block-shift control document and their place before any fit of the screen. (4) caps separate the stores (own ceiling, larger per-file limit) from fit outputs. (5) cal_n is 82, the value of its own derivation (was 74). (6) fit-band scores are a deterministic stride sample; liquidity tercile groups are deferred to registration. (7) fold_tables.notes describes the queue, with no selection stage. (8) weight_decay range unified to [0.01, 0.3]; head width 8 declared. (9) the recoverability gates are magnitudes (D <= 0.02, max reliability gap <= 0.02, CRPS within 5%) with KS p-values information only; the block-shift control is the L1 document on the shifted panel (8 cells) with a stop rule of paired weighted_crps skill above 0.5% on either fold.",
+  "3": "Before any fit of the screen. (1) Sequence disclosure: the owner instructed the replacement of the PIT KS p-value gate by magnitude gates before the first recoverability run, but the change was committed after that run (75b1c81b); the run's result is kept as stage0/recoverability-superseded-gate-change.json (superseded) and the check is re-run fresh under these committed gates. (2) The synthetic recoverability check is Stage 0 (synthetic data, no real-data fit); approval B covers real-data fits only. (3) A third write class, evidence tables (rows.parquet, cells.parquet of StrikeRegionScores), with a 2 GiB per-file limit and its own 4 GB ceiling, excluded from the 1 GB new-output cap; the 64 MiB limit is for fit logs, JSON, checkpoints and score shards. (4) The no-information arm and the power harness are merged into the two executable checks: the block-shift control IS the null and the synthetic recoverability IS the power harness. (5) market_calibrated: the promising-cell rule is split into a provisional screen rule (market_raw and the empirical references) and a final rule that adds market_calibrated once the market stage lands. (6) strike-screen-experiment-template.json and strike-screen-matrix.json are SUPERSEDED by the run-strike-screen-fits-* documents. (7) Recoverability settings pinned; screen_fits text corrected to 16 cells and the attempt inventory added; weight_decay 0.01 is the screen value, [0.01, 0.3] the promotion axis; the wall rule min(ceiling, remaining budget) is stated in caps; the block-shift null's approximations and the skill formula are stated; the read-guard note for readers that bound after load is added."
  },
- "notes": "ADR-0270 preregistered training/validation PROCEDURE for the strike screen (revision 2, see change_log). Pure data: the executable documents (strike-screen-panel-source.json, run-strike-screen-fits-L1/L3/timing/control.json, run-strike-region-scores*.json) must pin every value here, enforced by children/index_options/tests. Predictability only: proper scores and calibration; nothing about trading. Every number below is fixed BEFORE any outcome of the validation window is read; a change is a new revision of this file with its own identity hash and ADR line.",
+ "notes": "ADR-0270 preregistered training/validation PROCEDURE for the strike screen (revision 3, see change_log). Pure data: the executable documents (strike-screen-panel-source.json, run-strike-screen-fits-L1/L3/timing/control.json, run-strike-region-scores*.json) must pin every value here, enforced by children/index_options/tests. Predictability only: proper scores and calibration; nothing about trading. Every number below is fixed BEFORE any outcome of the validation window is read; a change is a new revision of this file with its own identity hash and ADR line.",
  "formulation": {
   "data_point": "(symbol, quote_date)",
   "row": "(symbol, quote_date, expiry) for every listed expiry with 1 <= dte <= max_dte",
@@ -234,7 +235,8 @@
     "2024-01-02",
     "2025-11-28"
    ],
-   "status": "SEALED; fit documents carry holdout_start 2024-01-01; opened once for promoted recipes trained through 2023"
+   "status": "SEALED; fit documents carry holdout_start 2024-01-01; opened once for promoted recipes trained through 2023",
+   "read_guard": "defense in depth: the converter stops at 2024-01-01 and its pushdown is the seal; the raw-chain prepare, the panel and the archive readers bound rows after loading a file's row groups, not by pushdown, and rely on the converter's output holding no row at or after 2024-01-01; the fit-queue and scoring readers push the bound into the scan (DateBoundedParquet)"
   },
   "purge": "a label whose settlement >= the next window start is dropped (label_reaches); no row of one window informs another",
   "sealed_forever": "2026"
@@ -332,10 +334,7 @@
   },
   "regularization": {
    "dropout": 0.1,
-   "weight_decay": [
-    0.01,
-    0.3
-   ]
+   "weight_decay": 0.01
   },
   "seeds": {
    "screen": [
@@ -360,10 +359,13 @@
   ],
   "learning_rate": 0.0003,
   "batch_size": 512,
-  "weight_decay": [
-   0.01,
-   0.3
-  ],
+  "weight_decay": {
+   "screen": 0.01,
+   "promotion_axis": [
+    0.01,
+    0.3
+   ]
+  },
   "sharing": "pooled regime of CDFExperiment: shared encoder/trunk with one output head per ticker (118 heads, ~9.6k parameters); a single shared head is a promotion-rung axis, not available in the screen",
   "size_tiers": {
    "S1_mlp": "~1.8k parameters in the encoder; measured pooled totals with the 118 heads: 11,118 (price_only) and 12,070 (price_plus_chain)",
@@ -376,15 +378,14 @@
   ]
  },
  "verification_before_any_ranking": {
-  "synthetic_recoverability": "simulate z from a known conditional 2-component mixture driven by two features (pilot-root script prepare/synthetic_recoverability.py): the REAL CDFExperiment with the mlp candidate (cpu, epochs 30, patience 5) and StrikeRegionScores must pass three magnitude gates on the validation band: CRPS within 5% of the oracle mixture's CRPS, PIT Kolmogorov-Smirnov statistic D <= 0.02, and the largest |reliability gap| (mean F(z) against the realized frequency of y <= z) over the 13 grid thresholds <= 0.02. The oracle's own D and the KS p-values are information only (with thousands of rows a p-value tests sample size, not usefulness); writes stage0/recoverability.json with pass or fail per gate",
-  "no_information_control": "no-information arm (calendar/scale only) must not beat the empirical reference",
+  "synthetic_recoverability": "Stage 0 (synthetic data, no real-data fit). Simulate z from a known conditional 2-component mixture driven by two features (pilot-root script prepare/synthetic_recoverability.py; settings pinned: 24 synthetic tickers, seed 2027, 17,880 validation rows, the L1 document's price_only arm and mlp candidate, cpu, epochs 30, patience 5, learning rate 0.003 (synthetic scale, fixed budget; the document's is 0.0003), per_row 1000, head_per_row 1000): the REAL CDFExperiment and StrikeRegionScores must pass three magnitude gates on the validation band: CRPS within 5% of the oracle mixture's CRPS, PIT Kolmogorov-Smirnov statistic D <= 0.02, and the largest |reliability gap| (mean F(z) against the realized frequency of y <= z) over the 13 grid thresholds <= 0.02. The oracle's own D and the KS p-values are information only (with thousands of rows a p-value tests sample size, not usefulness); writes stage0/recoverability.json with pass or fail per gate",
   "learning_curves": "train vs monitor loss per epoch for every fit; 'best epoch 1' = no learning, reported",
   "train_and_validation_scores": "every score below computed on fit rows AND validation rows; a validation gain without a training gain is a flag",
   "overfit_signature": "train score improves while monitor/validation worsens after the best epoch",
   "order": [
    "contract gates",
-   "synthetic recoverability + null + power harness",
-   "block-shift label control",
+   "synthetic recoverability (Stage 0; the power harness)",
+   "block-shift label control (the null)",
    "per-epoch curves",
    "PIT/reliability on train and validation",
    "strike Brier vs market/empirical/pooled with clustered intervals",
@@ -392,7 +393,8 @@
    "seed floor (two seed-29 duplicates)",
    "cheap-rung rank agreement"
   ],
-  "block_shift_label_control": "prepare/make_block_shift_panel.py copies the materialized panel with terminal_return shifted by 120 sessions within each symbol (labels misaligned, features intact); run-strike-screen-fits-control.json is the L1 document (epochs 120, patience 10, both folds, 8 cells: a real arm's budget) on that panel; the expected outcome is no skill versus horizon_empirical; a paired weighted_crps skill versus horizon_empirical above 0.5% on either fold means leakage: halt before L1 and L3"
+  "block_shift_label_control": "prepare/make_block_shift_panel.py copies the materialized panel with terminal_return shifted by 120 sessions within each symbol (labels misaligned, features intact); run-strike-screen-fits-control.json is the L1 document (epochs 120, patience 10, both folds, 8 cells: a real arm's budget) on that panel; the expected outcome is no skill versus horizon_empirical; skill = 1 - mean(model_weighted_crps) / mean(baseline_weighted_crps), paired on the control shards per fold; a skill above 0.5% on either fold means leakage: halt before L1 and L3. Approximations of this null: regime persistence (a 120-session shift keeps volatility regimes partly aligned, so a small positive skill can be real), the purge on its own settlement (the bands purge on each row's own settlement date, not on the shifted label's), and the 0.5% threshold is uncalibrated (no null distribution of the skill has been simulated).",
+  "null_and_power": "The earlier plan's no-information arm and power harness are merged into the two executable checks. The block-shift control IS the null: labels are misaligned, so any skill is leakage. The synthetic recoverability IS the power harness: a known effect is recovered within 5% of the oracle. An arm without a return sequence is not expressible: TorchCDF's external encoder requires a return sequence."
  },
  "scores": {
   "global": [
@@ -467,7 +469,11 @@
    "paired differences with symbol- and date-clustered intervals",
    "support: rows, dates, expiries, symbols"
   ],
-  "promising_cell_rule": "paired region-Brier improvement vs market_calibrated AND vs the empirical reference with interval excluding zero, support >= 30 events, >= 20 expiries, >= 20 symbols per year, same sign in >= 3 of 4 validation years; Holm within the primary family; never the best cell by score",
+  "promising_cell_rule": {
+   "provisional": "the screen rule, evaluated on what StrikeRegionScores produces (market_raw and the empirical references): paired region-Brier improvement vs market_raw AND vs the empirical reference with interval excluding zero, support >= 30 events, >= 20 expiries, >= 20 symbols per year, same sign in >= 3 of 4 validation years; Holm within the primary family; never the best cell by score",
+   "final": "the provisional rule with market_calibrated added (improvement vs market_calibrated as well), evaluated only when the market stage lands: its own registration, windows 2017-2023, the admitted groups G1/G2 unblocked; market_calibrated is joined to the cells by identity",
+   "status": "cells pass to promotion as provisional until the final rule has been evaluated"
+  },
   "decision_point": "cells of interest and any rule are written to this file's next revision AFTER the validation screen and BEFORE any promotion refit or holdout read"
  },
  "arms_and_candidates": {
@@ -486,7 +492,7 @@
   "components": [
    3
   ],
-  "screen_fits": "2 arms x 2 encoders x 2 losses = 8 fits on the screen fold",
+  "screen_fits": "2 arms x 2 encoders x 2 losses x 2 folds = 16 cells (8 per loss document); 4 timing cells and 8 control cells are charged beside them",
   "promotion": "top 2 recipes + {price_only mlp L1} audit, 4 refits x 3 seeds each",
   "weighting_guard": "L3 rejected if global crps > 0.5% relative worse than same-arm L1",
   "eligibility": "paired crps skill vs horizon_empirical > 0 on validation",
@@ -500,13 +506,27 @@
   "c_free_floor_gib": 30,
   "retries": 0,
   "gpu_processes": 1,
-  "new_output_scope": "new fit, control and scoring outputs under the pilot root, excluding the stores (onboarding store, converter output, raw-chain prepare, panel cache and control panel), polled with du between steps; observational, not a quota",
+  "new_output_scope": "new fit, control and scoring-summary outputs under the pilot root, excluding the stores (onboarding store, converter output, raw-chain prepare, panel cache and control panel) and the evidence tables, polled with du between steps; observational, not a quota",
   "store_ceiling_bytes": 8000000000,
   "per_file_write_bytes": {
-   "fits_and_scoring": 67108864,
-   "data_preparation": 2147483648
+   "fits": 67108864,
+   "data_preparation": 2147483648,
+   "evidence_tables": 2147483648
   },
-  "host_rss_vram_enforcement": "observational (logged); wall clock is enforced"
+  "host_rss_vram_enforcement": "observational (logged); wall clock is enforced",
+  "evidence_tables": {
+   "files": [
+    "rows.parquet",
+    "cells.parquet"
+   ],
+   "per_file_bytes": 2147483648,
+   "ceiling_bytes": 4000000000,
+   "ceiling_status": "declared; measured after the first scoring document",
+   "excluded_from_new_output_cap": true,
+   "synthetic_evidence": "957 B/row (rows.parquet of the synthetic recoverability run: 19,799 rows, 232 columns, 18.9 MB)",
+   "real_size_estimate": "unmeasured; at 957 B/row each million rows is about 0.96 GB, and the real row count (the whole validation band plus a 25,000-row fit-band sample per cell) is a Stage 0 count"
+  },
+  "wall_rule": "a step's timeout is min(ceiling, remaining packet wall budget): min(ceiling, remaining) is the rule, so the ceilings' sum may exceed wall_seconds_total and the cap still holds"
  },
  "pins_to_fill_before_launch": [
   "converter outputs (surface, lifecycle, archive, closes, own_iv) manifest sha256",
@@ -636,5 +656,14 @@
    "rn_left_tail_integral",
    "rn_right_tail_integral"
   ]
+ },
+ "inventory": {
+  "synthetic_recoverability_stage0": 1,
+  "timing_neural_cells": 4,
+  "control_neural_cells": 8,
+  "screen_neural_cells": 16,
+  "neural_total_real_data": 28,
+  "empirical_refits": "one horizon_empirical per (cell, fold, symbol); counted at registration from G1 and G2",
+  "retries": 0
  }
 }
