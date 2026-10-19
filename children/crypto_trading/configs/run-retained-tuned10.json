@@ -1253,7 +1253,15 @@
           "day",
           "band",
           "mid",
-          "cal_market"
+          "cal_market",
+          "yes_bid",
+          "yes_ask",
+          "candle_age_ms",
+          "spot_age_ms",
+          "basis_age_ms",
+          "strike_known_ms",
+          "two_sided",
+          "quote_missing"
         ]
       },
       "notes": "Learn one shared Bayesian coefficient precision rather than independent ARD shrinkage. Fixed market anchoring strength 0.5.",
