@@ -9540,5 +9540,19 @@
       "post_review_edits": "Only evidence closure and re-entry/archive handoff; memo,register,procedures,tests,source dependencies and numerical outputs unchanged.",
       "minor_backlog": "Prior COR-1 diagnostic-only freshness limitation remains disclosed; no new amendment findings."
     }
+  },
+  "next_session_handoff": {
+    "recorded_at_utc": "2026-10-19T01:38:11.364804+00:00",
+    "base_commit": "f19b0447c22317fbc9ed847ca62099ca5bad99c0",
+    "owner_instruction": "Wrap before further testing; next session audit remaining data and test every eligible frozen candidate.",
+    "work_this_packet": "Read existing protocol/memo/config text only. No new outcomes, acquisitions, model runs or candidate tests.",
+    "preliminary_findings": [
+      "W4 and W5 previously scored; W5 September15\u2013October8 became development after October12 read.",
+      "holdout-forward.json begins October12; overnight preregistration one-read November11 for October12\u2013November11 window.",
+      "Separate October16 predictive preregistration referenced by main memos has January15,2027 endpoint; original scope still to locate/reconcile.",
+      "October8\u201312 and Polymarket retained history afterOctober17 remain unaudited, not certified untouched."
+    ],
+    "remaining": "Complete metadata/exposure audit, reconcile protection, freeze all candidate evaluations, test eligible existing data, reviewed publication.",
+    "identity": "All pre-existing evidence fields, code/config/result blobs and reviewed contracts unchanged; editorial handoff only."
   }
 }
