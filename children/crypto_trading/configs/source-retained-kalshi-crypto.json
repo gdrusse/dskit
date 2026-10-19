@@ -1,0 +1,13 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/retained-history-20261019/bounded-inputs/kalshi-crypto",
+  "layout": "file",
+  "formats": [
+    "jsonl"
+  ],
+  "streams": [
+    "markets"
+  ],
+  "effective_field": "close_time",
+  "effective_unit": "iso",
+  "notes": "Bounded retained data only; opaque JSON projection excludes closes/times at or after Oct12 before Python outcome decoding. Original native values preserved."
+}

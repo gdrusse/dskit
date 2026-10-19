@@ -1,0 +1,13 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/retained-history-20261019",
+  "as_of": "2026-10-19T00:00:00Z",
+  "stream": "files",
+  "include": [
+    "transfer-panel.parquet",
+    "transfer-preparation.json",
+    "poly-books.parquet",
+    "native-preparation.json",
+    "protocol.json"
+  ],
+  "notes": "Original60226 training rows beforeMay2; original native BTC transfer plus completed new hour. Exact original fixed20models."
+}
