@@ -134,7 +134,7 @@ class DateBoundedParquet:
         return ds.dataset(self.path, format="parquet").to_table(
             columns=columns, filter=predicate)
 
-    def batches(self, where=None, batch_size=65536):
+    def batches(self, where=None, batch_size=65536, order_by=None):
         """Yield the bounded rows as Arrow record batches, optionally narrowed by one more predicate.
 
         The same temporal verification and bounds as :meth:`read`, but the table is never held whole:
@@ -148,6 +148,13 @@ class DateBoundedParquet:
             An extra predicate; its columns need not be in ``columns``.
         batch_size : int
             Rows per batch (the last of a row group may be shorter).
+        order_by : str, optional
+            A projected column the stream must not decrease in. The row groups that survive the
+            predicates are ranked by the bounded minimum and maximum of that column (one pass over the
+            column alone), read in that order and each sorted by it before it is sliced into batches,
+            so the physical row order of the file (an export written newest first, say) never reaches
+            the caller. Two row groups whose bounded ranges interleave cannot be ordered this way and
+            refuse by name. One row group is held at a time.
 
         Yields
         ------
@@ -159,9 +166,33 @@ class DateBoundedParquet:
         columns, predicate = self._predicate()
         if where is not None:
             predicate = where if predicate is None else predicate & where
-        scanner = ds.dataset(self.path, format="parquet").scanner(
-            columns=columns, filter=predicate, batch_size=batch_size)
-        yield from scanner.to_batches()
+        dataset = ds.dataset(self.path, format="parquet")
+        if order_by is None:
+            yield from dataset.scanner(columns=columns, filter=predicate, batch_size=batch_size).to_batches()
+            return
+        if order_by not in columns:
+            raise ValueError(f"order_by must name a projected column: {order_by!r} is not in {columns}")
+        for _, _, fragment in self._ranked_groups(dataset, predicate, order_by):
+            table = fragment.to_table(columns=columns, filter=predicate).sort_by([(order_by, "ascending")])
+            for start in range(0, table.num_rows, batch_size):
+                yield from table.slice(start, batch_size).combine_chunks().to_batches()
+
+    def _ranked_groups(self, dataset, predicate, name):
+        """Return ``(min, max, fragment)`` of every non-empty row group, ranked by its bounded range of ``name``."""
+        import pyarrow.compute as pc
+
+        ranked = []
+        for piece in dataset.get_fragments(filter=predicate):
+            for fragment in piece.split_by_row_group(filter=predicate, schema=dataset.schema):
+                column = fragment.to_table(columns=[name], filter=predicate).column(name)
+                if column.length():
+                    ranked.append((pc.min(column).as_py(), pc.max(column).as_py(), fragment))
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        for (_, high, _), (low, _, _) in zip(ranked, ranked[1:]):
+            if high > low:
+                raise ValueError(f"{self.path}: row groups interleave in {name!r} ({high} after {low}); "
+                                 "a file sorted neither way cannot be streamed in order")
+        return ranked
 
 
 class ParquetRows(Node):

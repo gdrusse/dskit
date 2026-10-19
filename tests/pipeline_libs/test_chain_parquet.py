@@ -594,3 +594,40 @@ def test_the_report_names_declared_roots_absent_from_the_data_and_pending_entrie
                                                {"old": "OLD3", "new": "NEW3", "note": "y"}])
     report = source(directory, **stitch).report()["stitch"]
     assert report == {"renames": 1, "breaks": 0, "absent": ["NEW1", "OLD1"], "pending": 2, "pending_landed": ["OLD2"]}
+
+
+def write_descending_snapshot(directory, acq_id, rows, row_group_size=2):
+    """The export's real layout: a symbol's rows newest date first, several row groups, windows in the footer."""
+    rows = sorted(rows, key=lambda r: (r["symbol"], r["date"], r["strike"], r["right"]), reverse=True)
+    rows = sorted(rows, key=lambda r: r["symbol"])
+    found = {}
+    for r in rows:
+        lo, hi = found.get(r["symbol"], (r["date"], r["date"]))
+        found[r["symbol"]] = (min(lo, r["date"]), max(hi, r["date"]))
+    windows = {s: [a.isoformat(), b.isoformat()] for s, (a, b) in found.items()}
+    table = pa.Table.from_pylist(rows, schema=SCHEMA).replace_schema_metadata({
+        "dskit.export.acq_id": acq_id, "dskit.export.manifest_sha256": "m" * 63 + acq_id[-1],
+        "dskit.export.snapshot_hash": "s" * 63 + acq_id[-1], "dskit.export.windows": json.dumps(windows),
+        "dskit.export.missing_fields": "{}"})
+    directory.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, directory / f"{acq_id}.parquet", row_group_size=row_group_size)
+
+
+def test_a_file_written_newest_first_still_yields_each_symbols_dates_ascending(tmp_path):
+    directory = tmp_path / "theta"
+    write_descending_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa",
+                              [chain_row("AAA", f"2020-03-0{n}", k) for n in (2, 3, 4, 5, 6) for k in (90.0, 100.0)]
+                              + [chain_row("BBB", f"2020-03-0{n}") for n in (3, 4, 5)])
+    write_descending_snapshot(directory, "20260101T000002Z-backfill-bbbbbbbb",
+                              [chain_row("AAA", f"2020-02-2{n}", k) for n in (6, 7, 8) for k in (90.0, 100.0)])
+    rows = source(directory, end_before="2020-03-06", batch_size=3)
+    got = list(rows)
+    assert [r["symbol"] for r in got] == ["AAA"] * 14 + ["BBB"] * 3
+    assert dates(got, "AAA") == sorted(dates(got, "AAA"))
+    assert dates(got, "AAA")[::2] == ["2020-02-26", "2020-02-27", "2020-02-28", "2020-03-02", "2020-03-03",
+                                       "2020-03-04", "2020-03-05"]
+    assert dates(got, "BBB") == ["2020-03-03", "2020-03-04", "2020-03-05"]
+    assert rows.report()["rows"] == 17 and rows.report()["units"] == 10
+    for table in rows.batches():
+        column = table.column("date").to_pylist()
+        assert column == sorted(column)

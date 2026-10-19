@@ -686,3 +686,55 @@ def test_the_where_date_guard_looks_past_leading_nulls(blob_store, tmp_path):
                    "where": [{"field": "expiry", "op": ">=", "value": "2020-01-01"}]}
     with pytest.raises(ValueError, match="iso_fields"):
         ParquetStreamRows("p", {"sources": [declaration]}).run(_ctx(tmp_path), {})
+
+
+def _descending_file(path, kind):
+    """Three row groups written newest first, one date straddling two groups (the export's layout)."""
+    import datetime as dt
+
+    days = ["2024-01-05", "2024-01-04", "2024-01-04", "2024-01-03", "2024-01-02", "2024-01-01"]
+    column = days if kind == "text" else pa.array([dt.date.fromisoformat(d) for d in days], type=pa.date32())
+    pq.write_table(pa.table({"when": column, "px": [5.0, 4.5, 4.0, 3.0, 2.0, 1.0]}), path, row_group_size=2)
+    return path
+
+
+@pytest.mark.parametrize("kind", ["text", "date32"])
+def test_batches_ordered_by_a_column_ascend_whatever_the_physical_row_group_order(tmp_path, kind):
+    path = _descending_file(tmp_path / "desc.parquet", kind)
+    reader = pack.DateBoundedParquet(str(path), ["when", "px"], {"when": {"end_before": "2024-01-05"}})
+    plain = [v for b in reader.batches(batch_size=2) for v in b.column("px").to_pylist()]
+    assert plain == [4.5, 4.0, 3.0, 2.0, 1.0]
+    ordered = list(reader.batches(batch_size=2, order_by="when"))
+    assert [v for b in ordered for v in b.column("px").to_pylist()] == [1.0, 2.0, 3.0, 4.0, 4.5]
+    assert all(b.num_rows <= 2 for b in ordered)
+    assert [b.schema.names for b in ordered] == [["when", "px"]] * len(ordered)
+
+
+def test_order_by_must_name_a_projected_column(tmp_path):
+    path = _descending_file(tmp_path / "desc.parquet", "text")
+    reader = pack.DateBoundedParquet(str(path), ["px"], {"when": {"end_before": "2024-01-05"}})
+    with pytest.raises(ValueError, match="order_by"):
+        list(reader.batches(order_by="when"))
+
+
+def test_row_groups_that_interleave_in_the_order_column_refuse_by_name(tmp_path):
+    path = tmp_path / "mixed.parquet"
+    pq.write_table(pa.table({"when": ["2024-01-01", "2024-01-03", "2024-01-02", "2024-01-04"],
+                             "px": [1.0, 3.0, 2.0, 4.0]}), path, row_group_size=2)
+    reader = pack.DateBoundedParquet(str(path), ["when", "px"], {"when": {"end_before": "2024-02-01"}})
+    with pytest.raises(ValueError, match="interleave"):
+        list(reader.batches(order_by="when"))
+
+
+def test_a_row_group_shared_by_two_entities_is_ranked_by_the_rows_the_predicate_keeps(tmp_path):
+    import pyarrow.dataset as ds
+
+    path = tmp_path / "shared.parquet"
+    pq.write_table(pa.table({"who": ["A", "A", "A", "B", "B", "B"],
+                             "when": ["2024-01-03", "2024-01-02", "2024-01-01", "2024-01-09", "2024-01-08", "2024-01-07"],
+                             "px": [3.0, 2.0, 1.0, 9.0, 8.0, 7.0]}), path, row_group_size=2)
+    reader = pack.DateBoundedParquet(str(path), ["who", "when", "px"], {"when": {"end_before": "2024-02-01"}})
+    for who, want in (("A", [1.0, 2.0, 3.0]), ("B", [7.0, 8.0, 9.0])):
+        got = [v for b in reader.batches(where=ds.field("who") == who, order_by="when")
+               for v in b.column("px").to_pylist()]
+        assert got == want

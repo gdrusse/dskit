@@ -1,7 +1,7 @@
 """The Parquet-tree source of the chain nodes: columnar reads, the same rows (ADR-0265 Amendment 3).
 
 A daily option-chain snapshot export (``dskit.onboarding.libs.parquet_export``) lands ONE immutable
-Parquet file per committed snapshot, named by its acquisition id, sorted by symbol then date, with the date
+Parquet file per committed snapshot, named by its acquisition id, grouped by symbol, with the date
 window of every symbol in the file's footer (``dskit.export.windows``). :class:`ParquetChainRows` reads such a
 tree the way :class:`~dskit.pipeline.libs.observations.ObservationUnitRows` reads the gzip snapshots: it yields
 the same row dicts (dates as ISO text, the vendor's own field names) and keeps the same rule that the
@@ -11,10 +11,12 @@ reads only the declared columns, in Arrow batches, with the symbol and date pred
 groups, so a root scan is limited by decoding, not by parsing JSON text.
 
 **Order.** Rows come SYMBOL by SYMBOL (sorted by output name), and within a symbol file by file in window
-order, so a root's dates ascend and a root is never split by another root's rows. The gzip reader's member order
-(newest acquisition first) can interleave roots whose history spans several snapshots; this reader never does,
-which is what the ``symbol_contiguous`` features need. The census and the features are order independent
-outputs, so nothing else changes.
+order with each file's row groups read in the order of their footer date minima and sorted by date
+(:meth:`DateBoundedParquet.batches` ``order_by``), so a root's dates never decrease whatever the physical row
+order of a file (the export writes a pull's snapshots newest first and sorts nothing) and a root is never split by
+another root's rows. The gzip reader's member order (newest acquisition first) can interleave roots whose history
+spans several snapshots; this reader never does, which is what the ``symbol_contiguous`` features need. The census
+and the features are order independent outputs, so nothing else changes.
 
 **Dedup by footer windows.** Two files of one symbol whose windows are disjoint need no deduplication and cost
 nothing. Only when windows overlap (a re-pulled batch after a crash) are the date columns of the two files read,
@@ -300,7 +302,8 @@ class ChainRowSource:
         p = self._params
         for part, where in self._runs(symbol):
             self._members.add(part.file.name)
-            for batch in self._bounded(part).batches(where=where, batch_size=p["batch_size"]):
+            for batch in self._bounded(part).batches(where=where, batch_size=p["batch_size"],
+                                                     order_by=p["date_field"]):
                 if not batch.num_rows:
                     continue
                 dates = batch.column(batch.schema.get_field_index(p["date_field"]))

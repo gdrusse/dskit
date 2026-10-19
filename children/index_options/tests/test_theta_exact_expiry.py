@@ -1122,3 +1122,42 @@ def test_shipped_document_plans_and_pins_the_sealed_bound():
     cohorts = Path("/home/russell/data/index_options/theta-strike-screen-20261018/registration/cohorts.json")
     if cohorts.exists():
         assert chain["symbols"] == sorted(json.loads(cohorts.read_text())["eligible"])
+
+
+def write_descending_snapshot(directory, acq_id, rows, row_group_size=16):
+    """The frozen export's real layout: a symbol's rows newest date first over several row groups."""
+    rows = sorted(rows, key=lambda r: (r["date"], r["expiration"], r["strike"], r["right"]), reverse=True)
+    rows = sorted(rows, key=lambda r: r["symbol"])
+    found = {}
+    for r in rows:
+        lo, hi = found.get(r["symbol"], (r["date"], r["date"]))
+        found[r["symbol"]] = (min(lo, r["date"]), max(hi, r["date"]))
+    table = pa.Table.from_pylist(rows, schema=SCHEMA).replace_schema_metadata({
+        "dskit.export.acq_id": acq_id, "dskit.export.manifest_sha256": "m" * 63 + acq_id[-1],
+        "dskit.export.snapshot_hash": "s" * 63 + acq_id[-1],
+        "dskit.export.windows": json.dumps({s: [a.isoformat(), b.isoformat()] for s, (a, b) in found.items()}),
+        "dskit.export.missing_fields": "{}"})
+    directory.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, directory / f"{acq_id}.parquet", row_group_size=row_group_size)
+
+
+def test_an_export_written_newest_first_builds_the_same_outputs_as_one_written_oldest_first(tree, tmp_path):
+    directory = tmp_path / "theta-desc"
+    write_descending_snapshot(directory, "20260101T000001Z-backfill-aaaaaaaa", raw_rows("AAA"))
+    write_descending_snapshot(directory, "20260101T000002Z-backfill-bbbbbbbb", raw_rows("BBB"))
+    ascending = build(tree, tmp_path / "asc")["manifest"]
+    whole = ThetaExactExpiryTables("tables", node_params(tmp_path / "desc")).run(
+        CTX, {"records": reader(directory), "bars": BARS})["manifest"]
+    archives = {k: v for k, v in ascending["files"].items() if k.startswith("archive/")}
+    assert {k: v for k, v in whole["files"].items() if k.startswith("archive/")} == archives   # byte-identical
+    assert {k: v["rows"] for k, v in whole["files"].items()} == {k: v["rows"] for k, v in ascending["files"].items()}
+    surface = pd.read_parquet(tmp_path / "asc" / "surface.parquet")
+    pd.testing.assert_frame_equal(surface, pd.read_parquet(tmp_path / "desc" / "surface.parquet"))
+    chunked = ThetaExactExpiryTables("tables", node_params(tmp_path / "desc-chunked", flush_rows=40)).run(
+        CTX, {"records": reader(directory, batch_size=10), "bars": BARS})["manifest"]
+    assert chunked["symbols"]["AAA"]["rows_read"] == ascending["symbols"]["AAA"]["rows_read"]
+    for name in ("surface", "lifecycle"):
+        pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "asc" / f"{name}.parquet"),
+                                      pd.read_parquet(tmp_path / "desc-chunked" / f"{name}.parquet"))
+    for symbol in ("AAA", "BBB"):
+        pd.testing.assert_frame_equal(archive_of(tmp_path / "asc", symbol), archive_of(tmp_path / "desc-chunked", symbol))
