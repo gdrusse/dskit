@@ -124,25 +124,27 @@ def test_the_cached_frame_lands_where_the_fit_documents_read_it(doc):
     assert str(frame) == str(PILOT / "panel" / "panel-cache" / "frame.parquet")
 
 
-@pytest.mark.parametrize("change", [
-    lambda d: d["study"].update(tail_weight=1.0),                         # trains tail_crps under a decision context
-    lambda d: d["experiment"].update(final_seeds=[11, 29, 47]),            # Cartesian-grammar key
-    lambda d: d["experiment"].update(screen_seed=11),
-    lambda d: d["experiment"].update(axes={}),
-    lambda d: d["experiment"].update(candidate_labels={}),
-    lambda d: d["experiment"]["candidates"]["price_only__mlp__L1"].update(calibrate=True),   # patience steers the band
-    lambda d: d["study"]["fold_table"].update(sha256="1" * 64),             # not the pinned file
-    lambda d: d["study"]["fold_table"].update(holdout_start="2023-06-01"),  # validation would reach the holdout
-    lambda d: d["experiment"]["search_partitions"].update(pooled=["price_only__mlp__L1"]),
-    lambda d: d["experiment"].update(max_candidates=7),
-    lambda d: d["experiment"]["resolutions"].update(final_samples=401),
-    lambda d: d["experiment"]["candidates"]["price_only__mlp__L1"]["params"].update(unknown_knob=1),
+@pytest.mark.parametrize("change, error, message", [
+    (lambda d: d["study"].update(tail_weight=1.0), ValueError, "invalid primary selection metric"),   # trains tail_crps under a decision context
+    (lambda d: d["experiment"].update(final_seeds=[11, 29, 47]), ValueError, "unknown or missing experiment keys"),
+    (lambda d: d["experiment"].update(screen_seed=11), ValueError, "unknown or missing experiment keys"),
+    (lambda d: d["experiment"].update(axes={}), ValueError, "unknown or missing experiment keys"),
+    (lambda d: d["experiment"].update(candidate_labels={}), ValueError, "unknown or missing experiment keys"),
+    (lambda d: d["experiment"]["candidates"]["price_only__mlp__L1"].update(calibrate=True), ValueError,
+     "estimator consumes calibration labels"),                                                             # patience steers the band
+    (lambda d: d["study"]["fold_table"].update(sha256="1" * 64), ValueError, "fold table sha256 mismatch"),   # not the pinned file
+    (lambda d: d["study"]["fold_table"].update(holdout_start="2023-06-01"), ValueError, "on or after holdout_start 2023-06-01"),
+    (lambda d: d["experiment"]["search_partitions"].update(pooled=["price_only__mlp__L1"]), ValueError, "must exactly partition inventory"),
+    (lambda d: d["experiment"].update(max_candidates=7), ValueError, "candidate count 8 exceeds max_candidates 7"),
+    (lambda d: d["experiment"]["resolutions"].update(final_samples=401), ValueError, "invalid or mixed scoring resolution"),
+    (lambda d: d["experiment"]["candidates"]["price_only__mlp__L1"]["params"].update(unknown_knob=1), TypeError,
+     "unexpected keyword argument 'unknown_knob'"),
 ], ids=["tail_weight", "final_seeds", "screen_seed", "axes", "labels", "calibrate", "fold_sha", "holdout",
         "partition", "cap", "resolution", "unknown_param"])
-def test_a_bad_document_refuses_at_construction(fresh, change):
+def test_a_bad_document_refuses_at_construction(fresh, change, error, message):
     from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy
     change(fresh)
-    with pytest.raises((ValueError, TypeError)):
+    with pytest.raises(error, match=message):
         CDFHyperparameterStudy(_resolved(fresh))
 
 

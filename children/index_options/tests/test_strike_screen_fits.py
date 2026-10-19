@@ -9,9 +9,13 @@ Every value is compared with ``strike-screen-protocol.json`` and the panel-sourc
 """
 import copy
 import hashlib
+import importlib.util
 import json
 import math
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +31,10 @@ HOLDOUT = "2024-01-01"
 MLP = "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder"
 HF = "dskit.pipeline.libs.transformers:HFSequenceEncoder"
 ARMS = ("price_only", "price_plus_chain")
+CANDIDATES = ("mlp", "patchtst_hf32")
+PREPARE = PILOT / "prepare"
+#: Every spelling of "the holdout is never read/decoded" the seal statement replaced (Arrow may decode a straddling row group).
+OVERCLAIM = re.compile(r"(?i)never (be )?(read|decoded|reads)\b|\bis decoded\b|ever decoded|not decoded")
 
 
 def _json(name):
@@ -77,7 +85,7 @@ def _constructible(document, tmp_path):
     from dskit.pipeline.libs.cdf_experiment import AtomicFitStore
     document = copy.deepcopy(document)
     stand_in = tmp_path / "panel.parquet"
-    stand_in.write_bytes(b"placeholder, never read")
+    stand_in.write_bytes(b"placeholder panel bytes")
     document["panel"], document["panel_sha256"] = str(stand_in), AtomicFitStore.file_hash(stand_in)
     document["study"]["fold_table"]["path"] = str(CONFIGS / FOLDS)
     return document
@@ -111,12 +119,15 @@ def test_the_real_owner_constructs_each_document(docs, tag, tmp_path):
 
 def test_the_unresolved_documents_refuse_to_run_until_registered(docs):
     """Zero panel_sha256 and empty pins are placeholders: the owner refuses the unresolved copy (no panel file yet)."""
-    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment, IntegrityError
     pytest.importorskip("torch")
     for doc in docs.values():
         assert doc["panel_sha256"] == ZERO and doc["source_hashes"] == {} and doc["dependencies"] == {}
         if not Path(doc["panel"]).exists():
-            with pytest.raises(Exception):
+            with pytest.raises(FileNotFoundError):
+                CDFExperiment(doc)
+        else:
+            with pytest.raises(IntegrityError, match="panel hash mismatch"):
                 CDFExperiment(doc)
 
 
@@ -351,9 +362,11 @@ def test_the_only_hex_values_are_the_panel_placeholder_and_the_fold_pin(docs):
 def test_the_notes_say_what_the_registration_step_must_fill(docs):
     notes = docs["L1"]["study"]["notes"]
     for phrase in ("panel_sha256", "source_hashes", "dependencies", "R6 prepare", "cdf_experiment", "parquet", "predictive_cdf",
-                   "torch_ts", "transformers", "EMPTY placeholders", "observed_columns is empty", "one output head per ticker", "protocol revision 3",
-                   "tail_weight 1.0", "wing_metrics false", "StrikeRegionScores"):
+                   "torch_ts", "transformers", "EMPTY placeholders", "one output head per ticker", "protocol revision 3", "StrikeRegionScores"):
         assert phrase in notes, phrase
+    study = docs["L1"]["study"]       # the values the notes describe are asserted, not their prose
+    assert (study["tail_weight"], study["wing_metrics"]) == (1.0, False)
+    assert all(arm["observed_columns"] == [] for arm in docs["L1"]["arms"].values())
     assert "shared-head intent" not in notes
 
 
@@ -599,21 +612,269 @@ def test_the_study_readme_orders_the_steps_and_applies_the_caps():
     assert _pilot("prepare", "synthetic_recoverability.py").exists() and _pilot("prepare", "make_block_shift_panel.py").exists()
 
 
-def test_the_superseded_recoverability_run_is_kept_and_the_fresh_one_is_recorded():
-    old = json.loads(_pilot("stage0", "recoverability-superseded-gate-change.json").read_text())
-    assert old["gates"] and old["seed"] == 2027
-    for suffix in ("recoverability-superseded-work",):
-        assert _pilot("stage0", suffix).is_dir()
+# -- seal wording, runbook enforcement and the pilot scripts (F1-F10) -----------------------------------------------------
 
 
-def test_a_recorded_recoverability_result_has_pass_or_fail_per_gate():
+def _run(script, *args):
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    return subprocess.run([sys.executable, "-B", str(script), *args], capture_output=True, text=True, env=env, timeout=600)
+
+
+def _module(name):
+    path = _pilot("prepare", name + ".py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_seal_statement_is_exact_and_no_repo_document_overclaims_it(proto):
+    guard = proto["windows"]["holdout"]["read_guard"]
+    for phrase in ("rows at or after 2024-01-01 are never returned, emitted, written or used", "straddling row group",
+                   "the only step whose inputs contain holdout rows", "bounded at 2024-01-01 by the converter",
+                   "row-group pruning by footer statistics is a recorded gap"):
+        assert phrase in guard, phrase
+    for name in (PROTOCOL, SOURCE, *FITS.values(), TIMING, CONTROL, *SCORES.values()):
+        match = OVERCLAIM.search((CONFIGS / name).read_text())
+        assert match is None, (name, match and match.group(0))
+
+
+def test_the_registration_texts_state_the_same_seal():
+    for path in (_pilot("documents", "study", "README.md"), _pilot("registration", "inventory-draft.json")):
+        text = path.read_text()
+        assert OVERCLAIM.search(text) is None, (path.name, OVERCLAIM.search(text).group(0))
+        assert "never returned, emitted, written or used" in text and "straddling row group" in text, path.name
+    for script in ("make_block_shift_panel.py", "synthetic_recoverability.py", "stop_rules.py"):
+        assert OVERCLAIM.search(_pilot("prepare", script).read_text()) is None, script
+
+
+def test_the_recoverability_settings_and_gates_are_machine_readable_in_the_protocol(proto):
+    settings = proto["verification_before_any_ranking"]["synthetic_recoverability_settings"]
+    assert settings == {"tickers": 24, "seed": 2027, "learning_rate": 0.003, "epochs": 30, "patience": 5, "per_row": 1000,
+                        "head_per_row": 1000, "gates": {"crps_tolerance": 0.05, "max_ks_d": 0.02, "max_reliability_gap": 0.02}}
+
+
+@pytest.mark.parametrize("flag", ["--tickers", "--seed", "--learning-rate", "--epochs", "--patience", "--crps-tolerance", "--max-ks-d",
+                                  "--max-reliability-gap", "--fit-document", "--ks-alpha"])
+def test_the_recoverability_script_refuses_every_override(flag, tmp_path):
+    result = _run(_pilot("prepare", "synthetic_recoverability.py"), flag, "3", "--work", str(tmp_path / "w"), "--output", str(tmp_path / "o.json"))
+    assert result.returncode == 2 and "unrecognized arguments" in result.stderr
+    assert not (tmp_path / "w").exists() and not (tmp_path / "o.json").exists()
+
+
+def _recoverability_files():
+    return {"superseded-gate-change": _pilot("stage0", "recoverability-superseded-gate-change.json"),
+            "rev3a": _pilot("stage0", "recoverability-rev3a.json"), "current": _pilot("stage0", "recoverability.json")}
+
+
+def test_a_recorded_recoverability_result_recomputes_from_its_values_and_the_protocol(proto):
     result = json.loads(_pilot("stage0", "recoverability.json").read_text())
-    gates = result["gates"]
-    assert result["protocol_revision"] == 3 and result["tickers"] == 24 and result["seed"] == 2027
-    assert set(gates) == {"crps_within_5pct_of_oracle", "pit_ks_statistic_at_most_0.02", "max_reliability_gap_at_most_0.02"}
-    assert all(isinstance(v, bool) for v in gates.values()) and result["passed"] == all(gates.values())
-    assert {"oracle_pit_ks_statistic", "pit_ks_p", "oracle_pit_ks_p", "max_abs_reliability_gap", "oracle_max_abs_reliability_gap"} <= set(result)
-    assert result["learning_rate"] == 0.003 and result["epochs"] == 30 and result["patience"] == 5
+    settings = proto["verification_before_any_ranking"]["synthetic_recoverability_settings"]
+    assert result["protocol_sha256"] == hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
+    assert result["protocol_revision"] == proto["revision"]
+    assert result["thresholds"] == settings["gates"] == {"crps_tolerance": 0.05, "max_ks_d": 0.02, "max_reliability_gap": 0.02}
+    assert {k: result["settings"][k] for k in settings if k != "gates"} == {k: v for k, v in settings.items() if k != "gates"}
+    assert result["tickers"] == 24 and result["seed"] == 2027
+    gaps = result["reliability_gap_by_threshold"]
+    assert len(gaps) == 13 and max(abs(v) for v in gaps.values()) == result["max_abs_reliability_gap"]
+    assert result["gates"] == {
+        "crps_within_5pct_of_oracle": abs(result["model_over_oracle_crps_minus_1"]) <= 0.05,
+        "pit_ks_statistic_at_most_0.02": result["pit_ks_statistic"] <= 0.02,
+        "max_reliability_gap_at_most_0.02": result["max_abs_reliability_gap"] <= 0.02}
+    assert result["model_over_oracle_crps_minus_1"] == pytest.approx(result["model_mean_crps"] / result["oracle_mean_crps"] - 1.0, rel=1e-12)
+    assert result["passed"] == all(result["gates"].values())
+    assert result["oracle_pit_ks_statistic"] <= 0.02 and result["pit_ks_p"] > 0 and 0 < result["oracle_pit_ks_p"] <= 1
+
+
+def test_the_kept_recoverability_files_are_pinned_by_sha256_in_the_inventory():
+    inv = json.loads(_pilot("registration", "inventory-draft.json").read_text())
+    pinned = inv["synthetic_recoverability"]["kept_results"]
+    files = _recoverability_files()
+    assert set(pinned) == set(files)
+    for key, path in files.items():
+        assert pinned[key]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest(), key
+        assert pinned[key]["file"] == "stage0/" + path.name
+    assert pinned["current"]["protocol_sha256"] == hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
+    assert json.loads(files["superseded-gate-change"].read_text())["gates"] and json.loads(files["rev3a"].read_text())["gates"]
+
+
+def test_the_pilot_drafts_that_predate_the_protocol_moved_to_superseded():
+    superseded = _pilot("documents", "superseded")
+    for name in ("strike-screen-protocol.json", "contract-draft.json"):
+        assert (superseded / name).exists() and not (PILOT / "registration" / name).exists(), name
+    readme = (superseded / "README.md").read_text()
+    assert "registration/strike-screen-protocol.json" in readme and "registration/contract-draft.json" in readme
+    assert "revision" not in json.loads((superseded / "strike-screen-protocol.json").read_text())
+
+
+def test_the_block_shift_is_120_sessions_in_the_script_the_runbook_and_the_record():
+    module = _module("make_block_shift_panel")
+    assert module.DEFAULT_SHIFT == 120 and "default=DEFAULT_SHIFT" in _pilot("prepare", "make_block_shift_panel.py").read_text()
+    readme = _pilot("documents", "study", "README.md").read_text()
+    invocation = [line for line in readme.splitlines() if "make_block_shift_panel.py" in line and "--panel" in line]
+    assert len(invocation) == 1 and "--shift 120" in invocation[0]
+    assert "shift_sessions" in readme and "== 120" in readme
+    record = PILOT / "control" / "block-shift" / "record.json"
+    if record.exists():
+        assert json.loads(record.read_text())["shift_sessions"] == 120
+
+
+def _wall_functions(readme):
+    start, end = readme.index("# BEGIN wall-budget"), readme.index("# END wall-budget")
+    return "\n".join(line[4:] if line.startswith("    ") else line for line in readme[start:end].splitlines())
+
+
+def _bash(functions, wall, body):
+    script = f'ROOT=/nonexistent; CAP="timeout --signal=TERM --kill-after=60"\n{functions}\nWALL={wall}\n{body}\n'
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=120)
+
+
+@pytest.mark.parametrize("lines, group, ceiling, expected", [
+    ([], "converter", 3000, 3000),                                         # nothing used: the ceiling
+    (["converter converter 2900"], "converter", 3000, 100),                 # the group's own remainder is smaller
+    (["onboarding a 100", "onboarding b 200"], "onboarding", 600, 300),     # a group's commands share one ceiling
+    (["panel panel 14000"], "L1", 2100, 364),                               # the packet budget is smaller: 14400 - 36 - 14000
+    (["panel panel 14364"], "L1", 2100, None),                              # exhausted: refused
+    (["panel panel 14400"], "L1", 2100, None),
+    (["converter converter 3000"], "converter", 3000, None),                # the group's ceiling is spent
+])
+def test_the_runbook_computes_every_timeout_from_the_wall_tally(lines, group, ceiling, expected, tmp_path):
+    functions = _wall_functions(_pilot("documents", "study", "README.md").read_text())
+    wall = tmp_path / "wall.txt"
+    wall.write_text("".join(line + "\n" for line in lines))
+    result = _bash(functions, wall, f"budget {group} {ceiling}")
+    if expected is None:
+        assert result.returncode == 1 and "exhausted" in result.stderr and result.stdout.strip() == ""
+    else:
+        assert result.returncode == 0 and int(result.stdout) == expected
+
+
+def test_a_timed_step_appends_its_elapsed_seconds_and_returns_the_commands_status(tmp_path):
+    functions = _wall_functions(_pilot("documents", "study", "README.md").read_text())
+    wall = tmp_path / "wall.txt"
+    ok = _bash(functions, wall, "timed grp step 60 true; echo rc=$?")
+    bad = _bash(functions, wall, "timed grp other 60 false; echo rc=$?")
+    assert "rc=0" in ok.stdout and "rc=1" in bad.stdout
+    assert [line.split()[:2] for line in wall.read_text().splitlines()] == [["grp", "step"], ["grp", "other"]]
+    refused = _bash(functions, wall, "echo 'grp used 14400' >> $WALL; timed grp late 60 true; echo rc=$?")
+    assert "rc=1" in refused.stdout and "late" not in wall.read_text()
+
+
+def test_the_runbook_chains_the_gates_so_a_failed_or_halted_step_stops_the_screen():
+    readme = _pilot("documents", "study", "README.md").read_text()
+    gate = [line for line in readme.splitlines() if "run_doc" in line and "run-strike-screen-fits-L1.json" in line and "&&" in line]
+    assert len(gate) == 1 and re.search(r"gate_ok timing control && run_doc \S+L1\.json .* && run_doc \S+L3\.json", gate[0]), gate
+    assert "||" not in gate[0] and "stop-rules.json" in readme
+    assert "stop_rules.py control" in readme and "stop_rules.py timing" in readme
+
+
+_ROWS = 4
+
+
+def _write_cell(root, arm, candidate, fold, skill=0.0, elapsed=None, complete=True):
+    import pandas as pd
+    cell = Path(root) / "pooled" / arm / candidate / str(fold) / "pooled"
+    (cell / "scores" / "AAA").mkdir(parents=True)
+    pd.DataFrame({"baseline_weighted_crps": [1.0] * _ROWS, "model_weighted_crps": [1.0 - skill] * _ROWS}).to_parquet(
+        cell / "scores" / "AAA" / "scores.parquet")
+    (cell / "fit").mkdir()
+    (cell / "fit" / "metadata.json").write_text(json.dumps({"elapsed_seconds": elapsed or 1.0}))
+    if complete:
+        (cell / "completed").mkdir()
+        (cell / "completed" / "summary.json").write_text(json.dumps({"total_epochs": [3]}))
+
+
+def _control(tmp_path, skills, missing=()):
+    fits = tmp_path / "fits"
+    for fold in (1, 2):
+        for arm in ARMS:
+            for candidate in CANDIDATES:
+                if (fold, arm, candidate) not in missing:
+                    _write_cell(fits, arm, candidate, fold, skill=skills[fold])
+    registration = tmp_path / "registration"
+    registration.mkdir(exist_ok=True)
+    result = _run(_pilot("prepare", "stop_rules.py"), "control", "--fits-dir", str(fits), "--registration", str(registration))
+    rules = json.loads((registration / "stop-rules.json").read_text()) if (registration / "stop-rules.json").exists() else {}
+    return result, rules
+
+
+@pytest.mark.parametrize("skills, code, outcome, leaking", [
+    ({1: -0.02, 2: 0.0}, 0, "pass", []),                  # no skill is the expected result
+    ({1: 0.005, 2: 0.005}, 0, "pass", []),                # exactly 0.5% is not above it
+    ({1: 0.0, 2: 0.0051}, 1, "halt", [2]),                # leakage on the scored fold alone
+    ({1: 0.0051, 2: 0.0}, 1, "halt", [1]),                # ... or the warm-up fold alone
+    ({1: 0.02, 2: 0.03}, 1, "halt", [1, 2]),
+])
+def test_the_control_verdict_halts_on_leakage_and_records_it(tmp_path, skills, code, outcome, leaking):
+    result, rules = _control(tmp_path, skills)
+    assert result.returncode == code, result.stderr
+    verdict = rules["control"]
+    assert verdict["outcome"] == outcome and verdict["leakage_folds"] == leaking and verdict["threshold"] == 0.005
+    assert verdict["skill_by_fold"]["1"] == pytest.approx(skills[1]) and verdict["skill_by_fold"]["2"] == pytest.approx(skills[2])
+
+
+def test_the_control_verdict_is_incomplete_when_a_fold_cell_is_missing(tmp_path):
+    result, rules = _control(tmp_path, {1: 0.0, 2: 0.0}, missing={(2, "price_plus_chain", "mlp")})
+    assert result.returncode == 2 and rules["control"]["outcome"] == "incomplete"
+    assert rules["control"]["missing"] == ["fold 2 price_plus_chain mlp"]
+
+
+def test_the_control_verdict_is_incomplete_when_a_cell_has_no_completed_marker(tmp_path):
+    fits = tmp_path / "fits"
+    for fold in (1, 2):
+        for arm in ARMS:
+            for candidate in CANDIDATES:
+                _write_cell(fits, arm, candidate, fold, complete=not (fold == 1 and arm == "price_only" and candidate == "mlp"))
+    (tmp_path / "registration").mkdir()
+    result = _run(_pilot("prepare", "stop_rules.py"), "control", "--fits-dir", str(fits), "--registration", str(tmp_path / "registration"))
+    assert result.returncode == 2
+
+
+def _timing(tmp_path, elapsed=0.6, ratio=1.5, rss_kb=2_000_000, vram_mib=3000, recovered=True, missing=False):
+    fits = tmp_path / "timing-fits"
+    for arm in ARMS:
+        for candidate in CANDIDATES:
+            if not (missing and (arm, candidate) == ("price_only", "mlp")):
+                _write_cell(fits, arm, candidate, 1, elapsed=elapsed)
+    log, csv, rec = tmp_path / "time.log", tmp_path / "vram.csv", tmp_path / "recoverability.json"
+    log.write_text(f"\tCommand being timed: x\n\tMaximum resident set size (kbytes): {rss_kb}\n")
+    csv.write_text(f"timestamp, memory.used [MiB]\n2026/10/18 12:00:00.000, {vram_mib // 2} MiB\n2026/10/18 12:00:05.000, {vram_mib} MiB\n")
+    rec.write_text(json.dumps({"passed": recovered}))
+    (tmp_path / "registration").mkdir(exist_ok=True)
+    result = _run(_pilot("prepare", "stop_rules.py"), "timing", "--fits-dir", str(fits), "--time-log", str(log), "--vram-csv", str(csv),
+                  "--fold-ratio", str(ratio), "--recoverability", str(rec), "--registration", str(tmp_path / "registration"))
+    path = tmp_path / "registration" / "stop-rules.json"
+    return result, (json.loads(path.read_text()) if path.exists() else {})
+
+
+def test_the_timing_verdict_projects_the_screen_from_seconds_per_epoch(tmp_path):
+    result, rules = _timing(tmp_path)                      # 0.2 s/epoch x 120 x (1 + 1.5) x 4 cells x 2 documents = 480 s
+    verdict = rules["timing"]
+    assert result.returncode == 0 and verdict["outcome"] == "pass"
+    assert verdict["projected_seconds"] == pytest.approx(480.0) and verdict["ceiling_seconds"] == 4200
+    assert verdict["peak_rss_gib"] == pytest.approx(2_000_000 / 1024 ** 2) and verdict["peak_vram_mib"] == 3000
+
+
+@pytest.mark.parametrize("kwargs, reason", [
+    ({"elapsed": 30.0}, "projected"), ({"rss_kb": 9 * 1024 ** 2}, "rss"), ({"vram_mib": 13 * 1024}, "vram"), ({"recovered": False}, "recoverability")])
+def test_the_timing_verdict_halts_on_each_proposed_stop_condition(tmp_path, kwargs, reason):
+    result, rules = _timing(tmp_path, **kwargs)
+    assert result.returncode == 1 and rules["timing"]["outcome"] == "halt" and reason in rules["timing"]["halted_by"]
+
+
+def test_the_timing_verdict_is_incomplete_without_all_four_cells_and_keeps_the_control_entry(tmp_path):
+    _control(tmp_path, {1: 0.0, 2: 0.0})
+    result, rules = _timing(tmp_path, missing=True)
+    assert result.returncode == 2 and rules["timing"]["outcome"] == "incomplete" and rules["control"]["outcome"] == "pass"
+
+
+def test_the_inventory_and_protocol_state_revision_3_and_restate_the_size_tiers(proto):
+    tiers = json.dumps(proto["training"]["size_tiers"])
+    assert "~1.8k" not in tiers and "~9.4k" not in tiers
+    for total in ("11,118", "12,070", "18,686", "19,638"):
+        assert total in tiers
+    inv = json.loads(_pilot("registration", "inventory-draft.json").read_text())
+    assert "protocol revision 3" in inv["adr"] and inv["caps"]["source"].endswith("(revision 3)")
 
 
 # -- the scoring documents ----------------------------------------------------------------------------------------
