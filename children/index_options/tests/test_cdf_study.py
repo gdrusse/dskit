@@ -1152,6 +1152,18 @@ def test_raw_chain_transform_breaks_a_node_tie_to_the_lower_strike():
     _assert_features_equal(out, _reference_transform(builder, chain, meta))
 
 
+@pytest.mark.parametrize("seed", range(12))
+def test_wanted_mask_equals_the_per_row_membership_test(seed):
+    rng = np.random.default_rng(seed)
+    dates = np.array(["2020-01-02", "2020-01-03", "2020-01-06", None], dtype=object)
+    frame = pd.DataFrame({"date": rng.choice(dates, 200), "expiration": rng.choice(dates[:3], 200)})
+    wanted = {(str(a), str(b)) for a, b in zip(rng.choice(dates[:3], 4), rng.choice(dates[:3], 4))}
+    for rows, keys in ((frame, wanted), (frame, set()), (frame.iloc[:0], wanted)):
+        expected = np.array([key in keys for key in zip(rows.date, rows.expiration)], dtype=bool)
+        got = cdf_study._wanted_mask(rows, keys)
+        assert got.dtype == bool and got.tolist() == expected.tolist()
+
+
 def test_raw_chain_archive_cache_is_bound_to_annual_file_content(tmp_path):
     archive = tmp_path/'archive'; (archive/'spy').mkdir(parents=True)
     source = archive/'spy'/'options_2020.parquet'
@@ -2326,6 +2338,96 @@ def test_raw_chain_archive_from_a_store_tree_equals_the_path_build(tmp_path, blo
     record, = files.provenance()
     assert new['store'] == {k: record[k] for k in ('source', 'stream', 'snapshot', 'manifest_sha256')}
     assert new['metadata_sha256'] == old['metadata_sha256']
+
+
+def _archive_fixture(tmp_path):
+    """Write a six-part chain archive (three symbols, two years) and return ``(archive, meta)``."""
+    chain, meta = _random_raw_chain(4)
+    chain = chain[chain.symbol != "ZZZ"]
+    archive = tmp_path/'archive'
+    chain_years, meta_years = [], []
+    for year in ('2020', '2021'):
+        chain_years.append(chain.assign(date=chain.date.str.replace('2020', year),
+                                        expiration=chain.expiration.str.replace('2020', year)))
+        meta_years.append(meta.assign(quote_date=meta.quote_date.str.replace('2020', year),
+                                      expiry=meta.expiry.str.replace('2020', year)))
+    chain, meta = pd.concat(chain_years), pd.concat(meta_years, ignore_index=True)
+    for (symbol, date), part in chain.groupby(['symbol', chain.date.str[:4]]):
+        (archive/symbol.lower()).mkdir(parents=True, exist_ok=True)
+        part.to_parquet(archive/symbol.lower()/f'options_{date}.parquet', index=False)
+    return archive, meta
+
+
+def test_raw_chain_archive_parts_are_byte_identical_for_any_worker_count(tmp_path):
+    archive, meta = _archive_fixture(tmp_path)
+    builder = RawChainFeatureBuilder(**_BUILDERS[0])
+    outputs = {}
+    for workers in (1, 3):
+        output = tmp_path/f'features{workers}.parquet'
+        builder.build_archive(meta, archive, output, workers=workers)
+        outputs[workers] = output
+        parts = sorted(Path(str(output)+'.parts').glob('*/*.parquet'))
+        assert len(parts) == 6
+    assert outputs[1].read_bytes() == outputs[3].read_bytes()
+    assert (Path(str(outputs[1])+'.sources.json').read_text()
+            == Path(str(outputs[3])+'.sources.json').read_text())
+    for one, three in zip(sorted(Path(str(outputs[1])+'.parts').glob('*/*.parquet')),
+                          sorted(Path(str(outputs[3])+'.parts').glob('*/*.parquet'))):
+        assert one.name == three.name and one.parent.name == three.parent.name   # workers is not in the identity
+        assert one.read_bytes() == three.read_bytes()
+
+
+def test_raw_chain_archive_workers_reuse_cached_parts_and_refuse_a_bad_count(tmp_path):
+    archive, meta = _archive_fixture(tmp_path)
+    builder = RawChainFeatureBuilder(**_BUILDERS[0])
+    output = tmp_path/'features.parquet'
+    first = builder.build_archive(meta, archive, output, workers=2)
+    parts = sorted(Path(str(output)+'.parts').glob('*/*.parquet'))
+    stamps = [p.stat().st_mtime_ns for p in parts]
+    again = builder.build_archive(meta, archive, output, workers=3)       # every part cached: no rebuild
+    assert [p.stat().st_mtime_ns for p in parts] == stamps
+    pd.testing.assert_frame_equal(first, again)
+    for bad in (0, -1, 1.5, True, '2'):
+        with pytest.raises(ValueError, match='workers'):
+            builder.build_archive(meta, archive, output, workers=bad)
+
+
+def test_prepare_workers_flag_is_a_positive_int_for_the_prepare_stage_only(tmp_path, monkeypatch):
+    import sys
+
+    path = tmp_path/'doc.json'
+    path.write_text('{}')
+    for argv in (['--stage', 'prepare', '--workers', '0'], ['--stage', 'prepare', '--workers', 'x'],
+                 ['--stage', 'panel', '--workers', '2'], ['--workers', '2']):
+        monkeypatch.setattr(sys, 'argv', ['cdf_study', str(path), *argv])
+        with pytest.raises(SystemExit):
+            cdf_study._main()
+
+
+def test_prepare_cli_workers_builds_the_same_bytes_as_one_process(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    archive, meta = _archive_fixture(tmp_path)
+    meta[['symbol', 'quote_date', 'expiry', 'chain_underlying_price']].to_parquet(
+        tmp_path/'surface.parquet', index=False)
+    meta[['symbol', 'quote_date', 'expiry']].assign(first_seen_date='2019-01-01').to_parquet(
+        tmp_path/'lifecycle.parquet', index=False)
+    outputs = {}
+    for workers in (1, 2):
+        outputs[workers] = tmp_path/f'features{workers}.parquet'
+        document = tmp_path/f'prepare{workers}.json'
+        document.write_text(json.dumps({'data': {
+            'surface': str(tmp_path/'surface.parquet'), 'lifecycle': str(tmp_path/'lifecycle.parquet'),
+            'archive_root': str(archive), 'chain_features': str(outputs[workers]),
+            'raw_chain': _BUILDERS[0]}}))
+        done = subprocess.run(
+            [sys.executable, '-B', '-m', 'index_options.cdf_study', str(document), '--stage', 'prepare',
+             '--workers', str(workers)], capture_output=True, text=True,
+            env={**os.environ, 'PYTHONPATH': os.pathsep.join(sys.path)})
+        assert done.returncode == 0, done.stderr
+    assert outputs[1].read_bytes() == outputs[2].read_bytes()
 
 
 def test_prepare_reads_store_references_and_writes_only_a_plain_output_path(

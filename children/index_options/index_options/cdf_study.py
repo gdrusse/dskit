@@ -44,10 +44,14 @@ __all__ = ["BLOCK_GEOMETRIES", "CorporateActionRule", "DEFAULT_BLOCK_GEOMETRY",
 def _wanted_mask(frame, wanted):
     """Return the boolean array of a chain batch's rows whose (date, expiration) is wanted."""
     import numpy as np
+    import pandas as pd
 
-    # A bool array, not a list: ``frame.loc`` takes it without re-validating every element.
-    return np.fromiter((key in wanted for key in zip(frame.date, frame.expiration)),
-                       dtype=bool, count=len(frame))
+    if not len(frame) or not wanted:
+        return np.zeros(len(frame), dtype=bool)
+    # One hashed pass over both columns, not a Python generator over the rows; a bool array,
+    # not a list, so ``frame.loc`` takes it without re-validating every element.
+    keys = pd.MultiIndex.from_arrays([frame["date"], frame["expiration"]])
+    return keys.isin(list(wanted))
 
 
 class _ColumnLog:
@@ -2234,6 +2238,44 @@ class RobustCorrectionStudy:
         return result
 
 
+_ARCHIVE_COLUMNS = ("symbol", "date", "expiration", "strike", "type", "mark", "bid", "ask",
+                    "bid_size", "ask_size", "open_interest", "volume", "implied_volatility",
+                    "delta", "gamma", "vega")
+
+
+def _build_part(builder, path, cached, requested):
+    """Scan one annual archive file, build its part and publish it atomically; return the part's path.
+
+    The unit of work ``RawChainFeatureBuilder.build_archive`` runs in this process or in a
+    pool worker: module-level so a pool can pickle it, and given only the file path, the
+    destination, the requested metadata slice and the (small) builder.
+    """
+    import pyarrow.parquet as pq
+    import pandas as pd
+
+    wanted = set(zip(requested.quote_date, requested.expiry))
+    selected = []
+    parquet = pq.ParquetFile(path)
+    available = set(parquet.schema_arrow.names)
+    required_columns = set(_ARCHIVE_COLUMNS[:11]+("implied_volatility",))
+    if required_columns-available:
+        raise ValueError(f"raw chain lacks required columns: "
+                         f"{sorted(required_columns-available)}")
+    selected_columns = [name for name in _ARCHIVE_COLUMNS if name in available]
+    for batch in parquet.iter_batches(columns=selected_columns, batch_size=250_000):
+        frame = batch.to_pandas()
+        mask = _wanted_mask(frame, wanted)
+        if mask.any():
+            selected.append(frame[mask])
+    chain = (pd.concat(selected, ignore_index=True) if selected
+             else pd.DataFrame(columns=list(_ARCHIVE_COLUMNS)))
+    part = builder.transform(chain, requested)
+    temporary = Path(cached).with_suffix(".tmp")
+    part.to_parquet(temporary, index=False)
+    temporary.replace(cached)
+    return str(cached)
+
+
 class RawChainFeatureBuilder:
     """Prepare order-invariant contract tensors and option-implied proxy quantiles."""
 
@@ -2535,23 +2577,45 @@ class RawChainFeatureBuilder:
         result["chain_log_lag_oi_change"] = np.log1p(lag_oi)-np.log1p(lag2_oi)
         return result.drop(columns=["chain_total_oi_snapshot"])
 
-    def build_archive(self, meta, archive_root, output):
+    def _build_missing_parts(self, tasks, workers):
+        """Build each ``(path, cached, requested)`` part: inline for one worker, else in a spawned pool."""
+        if workers == 1 or len(tasks) < 2:
+            for path, cached, requested in tasks:
+                _build_part(self, path, cached, requested)
+            return
+        import concurrent.futures
+        import multiprocessing
+        # Spawn, not fork: the parent has already used pyarrow's thread pool.
+        pool = concurrent.futures.ProcessPoolExecutor(
+            max_workers=min(workers, len(tasks)), mp_context=multiprocessing.get_context("spawn"))
+        try:
+            futures = [pool.submit(_build_part, self, str(path), str(cached), requested)
+                       for path, cached, requested in tasks]
+            for future in futures:
+                future.result()
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    def build_archive(self, meta, archive_root, output, workers=1):
         """Scan bounded annual parquet files and atomically publish features.
 
         ``archive_root`` is a legacy directory or a
         :class:`~index_options.datafiles.DataTree` (``DataFiles.tree`` resolves a store
         reference to one). A store tree takes its file digests from the snapshot manifest
         and names the snapshot in the ``.sources.json`` sidecar.
+
+        ``workers`` (an int >= 1, default 1) is an execution resource only: with more than
+        one, the uncached (symbol, year) parts are built in that many processes. Every part
+        is written atomically to the same cached path and read back in key order, so the
+        output and the sidecar are byte-identical for any ``workers``, which never enters
+        the cache identity.
         """
-        import pyarrow.parquet as pq
         import pandas as pd
 
+        if type(workers) is not int or workers < 1:
+            raise ValueError("workers must be an int >= 1")
         tree = (archive_root if isinstance(archive_root, DataTree)
                 else DataFiles().tree(archive_root))
-        columns = ["symbol", "date", "expiration", "strike", "type", "mark", "bid",
-                   "ask", "bid_size", "ask_size", "open_interest", "volume",
-                   "implied_volatility", "delta", "gamma", "vega"]
-        parts = []
         meta = meta.copy()
         metadata_columns = ["symbol", "quote_date", "expiry", "chain_underlying_price"]
         missing_metadata = set(metadata_columns)-set(meta)
@@ -2572,43 +2636,26 @@ class RawChainFeatureBuilder:
         }, sort_keys=True).encode()).hexdigest()[:16]
         cache = Path(str(output)+".parts")/identity
         cache.mkdir(parents=True, exist_ok=True)
-        source_hashes = {}
+        source_hashes, planned = {}, []
         for (symbol, year), requested in meta.groupby(["symbol", "year"]):
             relpath = archive_relpath(symbol, year)
             if not tree.has(relpath):
                 continue
-            path = tree.path(relpath)
             source_digest = tree.sha256(relpath)
             source_hashes[f"{symbol}-{year}"] = {
                 "path": tree.label(relpath), "sha256": source_digest,
             }
-            cached = cache/f"{symbol}-{year}-{source_digest[:16]}.parquet"
-            if cached.exists():
-                part = pd.read_parquet(cached)
-                expected = set(zip(requested.symbol, requested.quote_date, requested.expiry))
-                actual = set(zip(part.symbol, part.quote_date, part.expiry))
-                if actual != expected:
-                    raise ValueError("cached raw-chain identities disagree")
-                parts.append(part)
-                continue
-            wanted = set(zip(requested.quote_date, requested.expiry))
-            selected = []
-            parquet = pq.ParquetFile(path)
-            available = set(parquet.schema_arrow.names)
-            required_columns = set(columns[:11]+["implied_volatility"])
-            if required_columns-available:
-                raise ValueError(f"raw chain lacks required columns: "
-                                 f"{sorted(required_columns-available)}")
-            selected_columns = [name for name in columns if name in available]
-            for batch in parquet.iter_batches(columns=selected_columns, batch_size=250_000):
-                frame = batch.to_pandas()
-                mask = _wanted_mask(frame, wanted)
-                if mask.any():
-                    selected.append(frame[mask])
-            chain = pd.concat(selected, ignore_index=True) if selected else pd.DataFrame(columns=columns)
-            part = self.transform(chain, requested)
-            temporary = cached.with_suffix(".tmp")
-            part.to_parquet(temporary, index=False); temporary.replace(cached)
+            planned.append((tree.path(relpath),
+                            cache/f"{symbol}-{year}-{source_digest[:16]}.parquet",
+                            requested[metadata_columns]))
+        self._build_missing_parts([task for task in planned if not task[1].exists()], workers)
+        parts = []
+        for _, cached, requested in planned:
+            part = pd.read_parquet(cached)
+            expected = set(zip(requested.symbol, requested.quote_date, requested.expiry))
+            actual = set(zip(part.symbol, part.quote_date, part.expiry))
+            if actual != expected:
+                raise ValueError("cached raw-chain identities disagree")
             parts.append(part)
         result = pd.concat(parts, ignore_index=True)
         if len(result) != len(meta) or result.duplicated(["symbol", "quote_date", "expiry"]).any():
@@ -4532,7 +4579,11 @@ def _main():
     parser.add_argument("--partition")
     parser.add_argument("--decision-stage", choices=["prepare", "evaluate", "report"])
     parser.add_argument("--robust-stage", choices=["train", "select", "optimize", "report"])
+    parser.add_argument("--workers", type=int, help="processes building the prepare stage's "
+                        "(symbol, year) parts (default 1); an execution resource, never in an output")
     args = parser.parse_args()
+    if args.workers is not None and (args.stage != "prepare" or args.workers < 1):
+        parser.error("--workers is an int >= 1 and applies to --stage prepare only")
     config = json.loads(Path(args.config).read_text())
     if set(config) == {"decision_strike_diagnosis"}:
         if args.stage or args.partition or args.decision_stage or args.robust_stage:
@@ -4576,7 +4627,7 @@ def _main():
                              validate="one_to_one")
         builder = RawChainFeatureBuilder(**data["raw_chain"])
         rows = builder.build_archive(meta, files.tree(data["archive_root"]),
-                                     data["chain_features"])
+                                     data["chain_features"], workers=args.workers or 1)
         print("prepared raw-chain rows", len(rows), flush=True)
         return
     fold_table = config.get("study", {}).get("fold_table")
