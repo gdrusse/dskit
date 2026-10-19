@@ -370,12 +370,16 @@ def test_exact_manifest_and_agent_parity(child_root):
         "tests/test_strike_screen_market_configs.py",
         "configs/run-theta-exact-expiry-tables.json", "index_options/theta_exact_expiry.py",
         "tests/test_theta_exact_expiry.py",
-        # ADR-0270: the executable arms-screen study document, its fold table and the pins test.
-        "configs/run-strike-screen-arms.json", "configs/strike-screen-folds-screen.jsonl",
-        "tests/test_strike_screen_arms.py",
+        # ADR-0270: the panel-source document (the arms study repurposed to materialize the panel), its fold table and test.
+        "configs/strike-screen-panel-source.json", "configs/strike-screen-folds-screen.jsonl",
+        "tests/test_strike_screen_panel_source.py",
         # ADR-0270: the strike-level assessment node over saved CDFExperiment fits, its document and test.
         "configs/run-strike-region-scores.json", "index_options/strike_region_scores.py",
         "tests/test_strike_region_scores.py",
+        # ADR-0270: the CDFExperiment fit documents (L1, L3, timing pilot), the L3 scoring document and the fits test.
+        "configs/run-strike-screen-fits-L1.json", "configs/run-strike-screen-fits-L3.json",
+        "configs/run-strike-screen-fits-timing.json", "configs/run-strike-region-scores-L3.json",
+        "tests/test_strike_screen_fits.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -420,7 +424,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus ADR-0270's eight preparation files, the protocol and architecture records, and the Theta exact-expiry converter, its document and test = 575.
     # Plus the executable strike-screen arms study, its screen fold table and the pins test = 578.
     # Plus the strike-region scores node, its document and its test = 581.
-    assert len(actual) == 578 + 3
+    # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
+    # (the arms document and test were renamed to the panel source, a net zero).
+    assert len(actual) == 578 + 3 + 5
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

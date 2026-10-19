@@ -1,9 +1,13 @@
-"""No-fit contracts for the ADR-0270 strike-screen arms study document.
+"""No-fit contracts for the ADR-0270 strike-screen panel-source document.
 
-``configs/run-strike-screen-arms.json`` must equal ``configs/strike-screen-protocol.json`` wherever the
-owners can express the protocol. Nothing here opens a store, reads market data or fits: the real
-``CDFHyperparameterStudy`` is constructed on the document, and the feature list is derived from the owners'
-own code on a toy frame. The last block pins the named gaps, so an owner change that closes one fails here.
+``configs/strike-screen-panel-source.json`` (the earlier arms study document, repurposed) exists only to
+materialize the exact-expiry panel through ``python -m index_options.cdf_study CONFIG --stage panel``. It must
+still equal ``configs/strike-screen-protocol.json`` wherever the owners can express the protocol, because the
+fit documents read the columns it builds. Nothing here opens a store, reads market data or fits: the real
+``CDFHyperparameterStudy`` is constructed on the document (its relative fold-table path resolved against the
+configs directory, so the tests do not depend on the working directory), and the feature list is derived from
+the owners' own code on a toy frame. The last block pins the named gaps, so an owner change that closes one
+fails here.
 """
 import copy
 import hashlib
@@ -14,7 +18,7 @@ from pathlib import Path
 import pytest
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
-DOCUMENT, PROTOCOL = "run-strike-screen-arms.json", "strike-screen-protocol.json"
+DOCUMENT, PROTOCOL = "strike-screen-panel-source.json", "strike-screen-protocol.json"
 FOLDS = "strike-screen-folds-screen.jsonl"
 PILOT = Path("/home/russell/data/index_options/theta-strike-screen-20261018")
 ZERO, ISO = "0" * 64, re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -30,6 +34,18 @@ RECORD = ("docs/research/distribution-modeling/2026-10-18-market-implied-referen
 
 def _json(name):
     return json.loads((CONFIGS / name).read_text())
+
+
+def _resolved(document):
+    """Return a deep copy whose relative fold-table path is resolved against the configs directory.
+
+    The document keeps ``configs/<name>`` (it is run from the child root); the owners open that path relative
+    to the working directory, so every construction below goes through this copy.
+    """
+    document = copy.deepcopy(document)
+    spec = document["study"]["fold_table"]
+    spec["path"] = str(CONFIGS / Path(spec["path"]).name)
+    return document
 
 
 @pytest.fixture(scope="module")
@@ -76,20 +92,36 @@ def _parts(candidate):
 
 def test_the_real_owner_constructs_the_document_without_a_read(doc):
     from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy
-    study = CDFHyperparameterStudy(doc)
+    study = CDFHyperparameterStudy(_resolved(doc))
     assert study.development == [1] and study.later == [2] and study.cutoff == "2020-01-02"
     assert study.inventory.digest and set(study.partitions) == {"development", "later"}
 
 
-def test_the_panel_and_scoring_owners_accept_their_blocks(doc):
-    from index_options.cdf_study import (CondorCDFDiagnostic, DecisionRegionContextBuilder,
-                                         RawChainFeatureBuilder, panel_class)
+def test_the_panel_owners_accept_their_blocks(doc):
+    from index_options.cdf_study import CondorCDFDiagnostic, RawChainFeatureBuilder, panel_class
     data, holdout = doc["data"], doc["study"]["fold_table"]["holdout_start"]
     assert panel_class(data).__name__ == "ExactExpiryCDFPanel"
     panel_class(data)(data, holdout_start=holdout)
     CondorCDFDiagnostic(**doc["diagnostic"])
-    DecisionRegionContextBuilder(data["decision_regions"])
     RawChainFeatureBuilder(**data["raw_chain"])
+
+
+def test_the_document_is_only_a_panel_source(doc):
+    """The panel stage refuses a context column, and the notes say the document never searches or fits."""
+    assert "decision_regions" not in doc["data"]
+    notes = doc["notes"]
+    assert "--stage panel" in notes and "ONLY" in notes and "never runs search" in notes
+    assert "PARQUET PATH AND SHA256" in notes and "panel_sha256" in notes
+    assert "run-strike-screen-arms" not in json.dumps(doc)
+
+
+def test_the_cached_frame_lands_where_the_fit_documents_read_it(doc):
+    """The panel stage writes <experiment.output>/<PANEL_CACHE_DIR>/<ParquetFrameCache.FRAME> (owner constants)."""
+    from dskit.pipeline.libs.parquet import ParquetFrameCache
+    from index_options.cdf_study import PANEL_CACHE_DIR
+    assert doc["experiment"]["output"] == str(PILOT / "panel")
+    frame = Path(doc["experiment"]["output"]) / PANEL_CACHE_DIR / ParquetFrameCache.FRAME
+    assert str(frame) == str(PILOT / "panel" / "panel-cache" / "frame.parquet")
 
 
 @pytest.mark.parametrize("change", [
@@ -111,7 +143,7 @@ def test_a_bad_document_refuses_at_construction(fresh, change):
     from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy
     change(fresh)
     with pytest.raises((ValueError, TypeError)):
-        CDFHyperparameterStudy(fresh)
+        CDFHyperparameterStudy(_resolved(fresh))
 
 
 # -- the protocol pins ----------------------------------------------------------------------
@@ -140,8 +172,8 @@ def test_formulation_and_panel_values_equal_the_protocol(doc, proto):
         "audit_samples": [101, 201, 401], "audit_rows": 16}
 
 
-def test_the_fold_table_is_the_protocols_screen_rows_and_pinned(doc, proto, child_root):
-    spec, path = doc["study"]["fold_table"], child_root / doc["study"]["fold_table"]["path"]
+def test_the_fold_table_is_the_protocols_screen_rows_and_pinned(doc, proto):
+    spec, path = doc["study"]["fold_table"], CONFIGS / FOLDS
     assert spec["path"] == f"configs/{FOLDS}" and path.read_bytes() and hashlib.sha256(path.read_bytes()).hexdigest() == spec["sha256"]
     rows = [json.loads(line) for line in path.read_text().splitlines() if line]
     screen = proto["fold_tables"]["screen"]
@@ -152,7 +184,6 @@ def test_the_fold_table_is_the_protocols_screen_rows_and_pinned(doc, proto, chil
     dev, val = proto["windows"]["development"]["origins"], proto["windows"]["validation"]["origins"]
     assert (rows[0]["train_start"], rows[1]["train_end"]) == tuple(dev)
     assert (rows[1]["val_start"], rows[1]["val_end"]) == tuple(val)
-    assert doc["data"]["decision_regions"]["panel_years"] == list(range(int(dev[0][:4]), int(val[1][:4]) + 1))
 
 
 def test_the_candidates_are_the_declared_grid_and_the_protocol_training(doc, proto):
@@ -299,17 +330,16 @@ def test_the_cohort_equals_the_registered_eligible_list():
 def test_store_references_carry_zero_pins_and_agree(doc):
     data = doc["data"]
     refs = {name: data[name] for name in ("surface", "lifecycle", "chain_features", "archive_root")}
-    refs["decision_regions.archive_root"] = data["decision_regions"]["archive_root"]
     assert {r["source"] for r in refs.values()} == {
         "theta-exact-expiry-tables", "theta-raw-chain-features", "theta-exact-expiry-archive"}
     assert all(r["stream"] == "files" and r["manifest_sha256"] == ZERO for r in refs.values())
-    assert data["archive_root"] == data["decision_regions"]["archive_root"] and "relpath" not in data["archive_root"]
+    assert "relpath" not in data["archive_root"]
     assert (data["surface"]["relpath"], data["lifecycle"]["relpath"]) == ("surface.parquet", "lifecycle.parquet")
     assert data["chain_features"]["relpath"] == "raw_chain_features.parquet"
     assert (data["price_source"], data["iv_source"]) == ("theta-prices-index-daily", "theta-own-iv-index-daily")
     hexes = [s for s in _strings(doc) if re.fullmatch(r"[0-9a-f]{64}", s)]
     assert sorted(set(hexes)) == sorted({ZERO, doc["study"]["fold_table"]["sha256"]})
-    assert hexes.count(ZERO) == 5
+    assert hexes.count(ZERO) == 4
 
 
 def test_raw_chain_is_the_risk_neutral_template_plus_the_research_proxy_defaults(doc, child_root):
@@ -324,17 +354,6 @@ def test_raw_chain_is_the_risk_neutral_template_plus_the_research_proxy_defaults
     assert RECORD in doc["data"]["notes"]
     probabilities = raw["proxy_probabilities"]
     assert probabilities[len(probabilities) // 2] == 0.5                        # the panel's rn_median position
-
-
-def test_decision_regions_are_the_owner_grammar_and_tighter_than_the_protocol_caps(doc, proto):
-    block, caps = doc["data"]["decision_regions"], proto["caps"]
-    assert block["clock"] == "after_date_close_indicative_not_executable"
-    assert block["limits"]["max_seconds"] <= caps["wall_seconds_total"]
-    assert block["limits"]["max_resident_mib"] <= caps["host_rss_incremental_gib"] * 1024
-    assert block["chain_rule"] == {"max_abs_log_moneyness": doc["data"]["raw_chain"]["moneyness_bounds"][1],
-                                   "region": "span"}
-    assert max(proto["formulation"]["strike_grid_z"]) == 3                      # listed strikes must reach the grid
-    assert set(block) == {"archive_root", "max_chain_rows", "panel_years", "clock", "limits", "chain_rule"}
 
 
 def test_the_vl_features_come_from_the_existing_liquidity_source(doc):
@@ -361,7 +380,7 @@ def test_expected_cells_are_declared_unresolved(doc):
 
 
 def test_outputs_stay_under_the_pilot_study_root(doc):
-    assert doc["experiment"]["output"].endswith("theta-strike-screen-20261018/study/arms")
+    assert doc["experiment"]["output"].endswith("theta-strike-screen-20261018/panel")
     assert doc["study"]["output"] == doc["experiment"]["output"] + "/unused"
     assert doc["data"]["root"].endswith("theta-strike-screen-20261018/ob")
 
@@ -373,7 +392,7 @@ def test_gap_a_decision_context_and_tail_weight_cannot_share_a_document(fresh):
     """L1 trains tail_crps and L3 needs the decision context; the owner refuses the pair under tail_weight."""
     from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy
     l1 = fresh["experiment"]["candidates"]["price_only__mlp__L1"]
-    study = {**fresh["study"], "tail_weight": 1.0, "models": {"price_only__mlp__L1": l1}}
+    study = {**_resolved(fresh)["study"], "tail_weight": 1.0, "models": {"price_only__mlp__L1": l1}}
     with pytest.raises(ValueError, match="decision_context"):
         ChronologicalCDFStudy(study)
     assert fresh["study"]["decision_context"] and "tail_weight" not in fresh["study"]
@@ -383,7 +402,7 @@ def test_gap_b_the_group_grammar_has_no_seed_or_label_keys(fresh):
     from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy
     fresh["experiment"]["final_seeds"] = [11, 29, 47]
     with pytest.raises(ValueError, match="experiment keys"):
-        CDFHyperparameterStudy(fresh)
+        CDFHyperparameterStudy(_resolved(fresh))
 
 
 def test_gap_c_a_guard_cannot_state_the_relative_l3_versus_l1_rule(fresh):
@@ -393,6 +412,6 @@ def test_gap_c_a_guard_cannot_state_the_relative_l3_versus_l1_rule(fresh):
              "target": 0.0, "tolerance": 0.005}
     fresh["experiment"]["selection_guard"] = {**guard, "relative_to": "same_arm_l1"}
     with pytest.raises(ValueError, match="selection guard"):
-        CDFHyperparameterStudy(fresh)
+        CDFHyperparameterStudy(_resolved(fresh))
     fresh["experiment"]["selection_guard"] = guard
-    CDFHyperparameterStudy(fresh)           # constructs, but states an absolute per-symbol bound instead
+    CDFHyperparameterStudy(_resolved(fresh))           # constructs, but states an absolute per-symbol bound instead

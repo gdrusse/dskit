@@ -1,5 +1,5 @@
 {
-  "notes": "ADR-0270 executable strike-screen study (arms screen): 2 arms x 2 encoders x 2 losses = 8 pooled TorchCDF candidates on the 118-name Theta cohort, every value pinned to configs/strike-screen-protocol.json where the owners can express it (tests/test_strike_screen_arms.py enforces the pins and lists what they cannot). FIT BUDGET IS ZERO until the registration is approved: nothing runs; every manifest_sha256 below is a 64-zero placeholder the store refuses and experiment.expected_cells is an unresolved census. Run only from children/index_options through python -m index_options.cdf_study CONFIG --stage search --partition pooled, then --stage select, --stage evaluate --partition development then later, --stage report (the panel stage refuses a document with a decision context: its panel cannot be cached). The invocation, the pin replacement and the caps are in $ROOT/documents/study/README.md, outside the repo. Warm-up fold: 2019 origins select; scored fold: 2020-2023 origins evaluate; the holdout from holdout_start is never read.",
+  "notes": "ADR-0270 exact-expiry panel SOURCE for the strike screen: this document exists ONLY to materialize the 118-name exact-expiry panel through the HPO owner's panel cache, `python -m index_options.cdf_study CONFIG --stage panel` (run from children/index_options). It never runs search, select, evaluate or report: the screen's fits are the two CDFExperiment documents run-strike-screen-fits-L1.json and run-strike-screen-fits-L3.json (execution-path decision in docs/architecture/decision-log.md). The panel stage writes <experiment.output>/panel-cache/frame.parquet and record.json (ParquetFrameCache; PANEL_CACHE_DIR and ParquetFrameCache.FRAME name them): THE CACHED FRAME'S PARQUET PATH AND SHA256 (record.json frame_sha256, equal to the file's sha256) ARE WHAT THE FIT DOCUMENTS PIN as panel and panel_sha256, and what run-strike-region-scores*.json read. The panel stage refuses a context column, so data.decision_regions is absent (it is the only difference from the earlier arms document, b3050f4f); the strike-level contexts are scored afterwards from the converter's chain archive by StrikeRegionScores. Everything else is kept as it was so the panel columns (279 feature names in study.features; the arms of the fit documents read the first 42 and the first 161 of them, the 118 symbol one-hots are appended by the experiment queue itself) are exactly what the arms document pinned: tests/test_strike_screen_panel_source.py still enforces every protocol pin it can and constructs the real CDFHyperparameterStudy on this document. The study, candidates and experiment blocks below are retained only because the panel stage constructs the HPO owner on the whole document before it reads; their candidates are never trained. FIT BUDGET IS ZERO until the registration is approved; every manifest_sha256 is a 64-zero placeholder the store refuses until onboarding resolves it (documents/study/README.md in the pilot root has the invocation order).",
   "data": {
     "root": "/home/russell/data/index_options/theta-strike-screen-20261018/ob",
     "surface": {
@@ -232,33 +232,7 @@
     "reference_floor": 0.001,
     "spot_tolerance": 0.02,
     "surface_features": true,
-    "decision_regions": {
-      "archive_root": {
-        "source": "theta-exact-expiry-archive",
-        "stream": "files",
-        "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-      },
-      "max_chain_rows": 300000000,
-      "panel_years": [
-        2017,
-        2018,
-        2019,
-        2020,
-        2021,
-        2022,
-        2023
-      ],
-      "clock": "after_date_close_indicative_not_executable",
-      "limits": {
-        "max_seconds": 1800,
-        "max_resident_mib": 6144
-      },
-      "chain_rule": {
-        "max_abs_log_moneyness": 0.3,
-        "region": "span"
-      }
-    },
-    "notes": "Sources are registered in the pilot-root onboarding store ($ROOT/ob) from the converter outputs: theta-exact-expiry-tables (surface.parquet, lifecycle.parquet), theta-exact-expiry-archive (the archive tree: read by the raw-chain prepare stage and by the decision contexts), theta-raw-chain-features (the prepare stage output with its .sources.json sidecar), theta-prices-index-daily and theta-own-iv-index-daily (localtables index_daily streams: price_source and iv_source; symbols maps every name to its OWN own_iv series, in VIX-style points). price_source and iv_source name a source and have no manifest pin knob: their identity rides in the panel provenance (reader fingerprints). raw_chain: nodes 9, moneyness_bounds +-0.3 and max_node_gap 0.04 are run-predictive-cdf-risk-neutral.json's; proxy_probabilities (19 levels), min_wing_nodes 5, max_inner_gap 0.05 and max_outer_gap 0.10 are the proxy defaults proposed in docs/research/distribution-modeling/2026-10-18-market-implied-reference-and-baselines.md item 6 (its min_forward_pairs 5 is not a RawChainFeatureBuilder knob). keyed_tables: the four vl_ features read the existing universe-liquidity-20261008 source of the main store (volume22 and volume66 streams, max_age_days 0). dividend_field is absent: the label is the protocol's split-adjusted close return, dividends known zero. decision_regions: chain_rule is the span region (every quotable out-of-the-money strike) with max_abs_log_moneyness 0.3, equal to the raw-chain node bound so the listed strikes reach the +-3 z grid at long horizons (older documents use 0.1); panel_years 2017-2023 are the development and validation origins; limits are the owner maxima (1800 s and 6144 MiB for the whole process, validated by DecisionRegionContextBuilder); max_chain_rows 300000000 is a refusal cap, twice a smoke-extrapolated 150 million matching rows."
+    "notes": "Sources are registered in the pilot-root onboarding store ($ROOT/ob) from the converter outputs: theta-exact-expiry-tables (surface.parquet, lifecycle.parquet), theta-exact-expiry-archive (the archive tree: read by the raw-chain prepare stage and by the decision contexts), theta-raw-chain-features (the prepare stage output with its .sources.json sidecar), theta-prices-index-daily and theta-own-iv-index-daily (localtables index_daily streams: price_source and iv_source; symbols maps every name to its OWN own_iv series, in VIX-style points). price_source and iv_source name a source and have no manifest pin knob: their identity rides in the panel provenance (reader fingerprints). raw_chain: nodes 9, moneyness_bounds +-0.3 and max_node_gap 0.04 are run-predictive-cdf-risk-neutral.json's; proxy_probabilities (19 levels), min_wing_nodes 5, max_inner_gap 0.05 and max_outer_gap 0.10 are the proxy defaults proposed in docs/research/distribution-modeling/2026-10-18-market-implied-reference-and-baselines.md item 6 (its min_forward_pairs 5 is not a RawChainFeatureBuilder knob). keyed_tables: the four vl_ features read the existing universe-liquidity-20261008 source of the main store (volume22 and volume66 streams, max_age_days 0). dividend_field is absent: the label is the protocol's split-adjusted close return, dividends known zero. decision_regions is deliberately absent: the panel stage refuses a context column and the strike-level contexts are built later from the chain archive by StrikeRegionScores (its listed_strikes block)."
   },
   "diagnostic": {
     "strikes_z": [
@@ -587,7 +561,7 @@
         "scored"
       ]
     },
-    "output": "/home/russell/data/index_options/theta-strike-screen-20261018/study/arms/unused",
+    "output": "/home/russell/data/index_options/theta-strike-screen-20261018/panel/unused",
     "samples": 201,
     "tail_intervals": [
       [
@@ -634,10 +608,10 @@
         "calibrate": false
       }
     },
-    "notes": "features = 42 price/calendar columns (protocol inputs.sequence + inputs.context, in the order of the earlier strike-screen template) + own_iv + 118 chain columns (10 surface scalars, 85 RawChainFeatureBuilder columns, 4 panel rn_ shape columns, 19 surface dynamics) + 118 symbol one-hots (task_features needs them in this list; no candidate reads them: pooled, one shared head, so feature_indices exclude them) = 279. own_iv is derived from the same chain (ATM IV nearest 30 days), so it travels with the chain arm, not the price-only arm: the protocol's price_only context does not list it. tail_weight and weighted_crps are NOT declared: ChronologicalCDFStudy refuses a model that trains on tail_crps under a decision_context (its wings, not tail_intervals, would be integrated), and L3 needs the decision_context. Consequence: L1's tail_crps term integrates the decision wings, and weighted_crps is derived from the scored crps and tail_crps columns at report time. fold_table: the protocol's screen rows (configs/strike-screen-folds-screen.jsonl, sha256 pinned); cal_n 74 is the protocol's value (its derivation string evaluates to 82). models: the references only; scaled_empirical (ridge on every feature, no feature_indices knob) is the precedent run-predictive-cdf-hpo.json recipe, not a protocol item. calibrate is false on every candidate: the owner refuses a calibration map on rows that steer patience (the monitor band)."
+    "notes": "features = 42 price/calendar columns (protocol inputs.sequence + inputs.context) + own_iv + 118 chain columns (10 surface scalars, 85 RawChainFeatureBuilder columns, 4 panel rn_ shape columns, 19 surface dynamics) + 118 symbol one-hots = 279; own_iv is derived from the same chain, so it travels with the chain arm only. The decision_context and wing_metrics keys are retained for the HPO owner's construction of the L3 candidates; the panel stage never builds a context. tail_weight is not declared here (the HPO owner refuses tail_crps training under a decision_context). fold_table: the protocol's screen rows (configs/strike-screen-folds-screen.jsonl, sha256 pinned, resolved against the working directory children/index_options); cal_n 74 is the protocol's value. models: the references only. calibrate is false on every candidate (the owner refuses a calibration map on rows that steer patience)."
   },
   "experiment": {
-    "output": "/home/russell/data/index_options/theta-strike-screen-20261018/study/arms",
+    "output": "/home/russell/data/index_options/theta-strike-screen-20261018/panel",
     "max_candidates": 8,
     "candidates": {
       "price_only__mlp__L1": {
@@ -3234,6 +3208,6 @@
       "development": {},
       "evaluation": {}
     },
-    "notes": "8 candidates = 2 arms x 2 encoders x 2 losses, named <arm>__<encoder>__<loss>; one search partition 'pooled' holds all 8 (candidate_groups grammar: the axes/candidate_labels/final_seeds/screen_seed keys belong to the Cartesian MixtureMLP grammar and are refused beside TorchCDF candidates; seeds live in each candidate's params, [11] for the screen, and the protocol's promotion seeds [11, 29, 47] have no key here). Selection takes ONE winner per partition (lowest mean crps ratio to horizon_empirical on the warm-up fold, raw or calibrated variant); the scored fold then evaluates that winner plus the references. selection_guard is absent: its tolerance is absolute and per symbol, while the protocol's 0.5% guard is relative CRPS of an L3 candidate to the same-arm L1 candidate. expected_cells are a census of the built panel, unresolved (empty) until derived: development[symbol] = sorted distinct actual_calendar_dte over that symbol's rows with quote_date in the warm-up validation window (2019-01-02..2019-12-31) whose settlement_date precedes the scored start 2020-01-02; evaluation[symbol] = the same over quote_date 2020-01-02..2023-12-31 and settlement before holdout_start; both only for symbols the fold admits (plan.expected). A mismatch refuses before any fit. Caps (protocol): 14400 s wall in total, 1e9 output bytes, 8 GiB host RSS increment, 12 GiB VRAM, one GPU process, no retries; enforced by the invocation, not by this document."
+    "notes": "Panel materialization only: experiment.output is the HPO owner's panel cache root, so the cached frame lands at <output>/panel-cache/frame.parquet. The 8 candidates below (2 arms x 2 encoders x 2 losses, the earlier arms study) are kept so the HPO owner can construct this document and are NEVER trained here: do not run --stage search, select, evaluate or report on it. The trained candidates are the CDFExperiment documents'. The panel stage takes no --partition. expected_cells stay unresolved (a census of the built panel is not needed to materialize it). Caps (protocol): 14400 s wall in total, 1e9 output bytes, 8 GiB host RSS increment, 12 GiB VRAM, one GPU process, no retries; enforced by the invocation, not by this document."
   }
 }
