@@ -822,5 +822,175 @@
     "scheduling_only": "Evaluate these regions first when an eligible later stage is available; the 600-row register stays intact and every other positive side-matched scenario remains in the follow-up universe. Do not use first-wave status as statistical preselection after viewing new outcomes.",
     "comparison": "For each first-wave cell, compare the selected venue method, the region's original supporting model IDs, raw market, and market-only calibration on identical contracts. Report both sides separately; use native executable asks and fees for trade signals.",
     "failure_rule": "A failed first-wave model or cell stays failed in the ledger. Do not swap in a better-looking method or side from the same validation outcomes."
+  },
+  "narrowed_research_focus": {
+    "status": "retrospective_shortlist_for_future_pre_registration_only",
+    "notes": "Focus is based on already inspected historical periods. It narrows the next data-quality and prospective-test design work, not the 600-entry retained audit or the formal staged method/cell selection. No production approval or forward-window reassignment is implied.",
+    "market_scope": {
+      "kalshi": [
+        "KXETH15M",
+        "KXBTC15M"
+      ],
+      "polymarket": [
+        "native BTC Up or Down 15m"
+      ],
+      "deferred": [
+        "Polymarket ETH, SOL and XRP until native settled labels and earlier training history exist"
+      ]
+    },
+    "focused_hypotheses": [
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "market": "KXETH15M",
+        "lead_minutes": 5,
+        "native_up_probability_bin": "00-10",
+        "purchased_side": "NO",
+        "method_reference": "aligned-24",
+        "historical_quote_scenario": {
+          "warmup": {
+            "selected_contracts": 259,
+            "mean_net_cents": 0.431
+          },
+          "validation": {
+            "selected_contracts": 675,
+            "mean_net_cents": 0.481
+          },
+          "w4": {
+            "selected_contracts": 506,
+            "mean_net_cents": 1.25
+          },
+          "w5": {
+            "selected_contracts": 269,
+            "mean_net_cents": 0.97
+          }
+        },
+        "reason": "The same method/side/cell has positive assumed-cost candle means in all four inspected periods, with adequate counts in each; W4/W5 cell forecast scores also improved over raw market.",
+        "critical_gap": "Candle quote is not a timestamped delayed executable ask; forecast cost allowance was only about 0.22-0.32 cent per share."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "BTC",
+        "market": "KXBTC15M",
+        "lead_minutes": 8,
+        "native_up_probability_bin": "00-10",
+        "purchased_side": "NO",
+        "method_reference": "aligned-24",
+        "historical_quote_scenario": {
+          "warmup": {
+            "selected_contracts": 262,
+            "mean_net_cents": 0.131
+          },
+          "validation": {
+            "selected_contracts": 460,
+            "mean_net_cents": 0.962
+          },
+          "w4": {
+            "selected_contracts": 175,
+            "mean_net_cents": 1.37
+          },
+          "w5": {
+            "selected_contracts": 117,
+            "mean_net_cents": 1.66
+          }
+        },
+        "reason": "Positive assumed-cost candle means and better raw-market forecast scores in W4 and W5; retains BTC exposure in the pooled BTC/ETH method.",
+        "critical_gap": "W4/W5 selected counts are below the frozen adequacy floor; no verified delayed fill or depth."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "market": "native BTC Up or Down 15m",
+        "lead_minutes": 11,
+        "native_up_probability_bin": "80-90",
+        "purchased_side": "UP",
+        "method_reference": "model10",
+        "historical_primary_book_scenario": {
+          "selected_contracts": 324,
+          "wins": 291,
+          "losses": 33,
+          "mean_net_cents": 3.37,
+          "forecast_extra_cost_allowance_cents": 0.464,
+          "day_adjusted_p": 1.0,
+          "week_adjusted_p": 1.0
+        },
+        "reason": "Largest named native-book primary lead with a nontrivial selected sample; venue model remains BTC-only.",
+        "critical_gap": "Modeled return is much larger than forecast allowance and fails corrected uncertainty; displayed depth does not prove a fill."
+      }
+    ],
+    "reserves": [
+      {
+        "venue": "Kalshi",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "native_up_probability_bin": "00-10",
+        "purchased_side": "NO",
+        "method_reference": "aligned-24",
+        "reason": "Positive warmup, validation and W4 means, but W5 mean was -0.16 cent on 288 selections."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "native_up_probability_bin": "90-100",
+        "purchased_side": "YES",
+        "method_reference": "aligned-24",
+        "reason": "Positive warmup, validation and W4 means, but W5 mean was -0.82 cent on 362 selections."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 5,
+        "native_up_probability_bin": "90-100",
+        "purchased_side": "YES",
+        "method_reference": "aligned-24",
+        "reason": "Positive warmup, validation and W5 means, but W4 mean was -0.11 cent on 467 selections."
+      }
+    ],
+    "deprioritized_named_leads": [
+      {
+        "venue": "Kalshi",
+        "asset": "ETH",
+        "lead_minutes": 11,
+        "native_up_probability_bin": "10-20",
+        "purchased_side": "NO",
+        "method_references": [
+          "aligned-24",
+          "tuning-03"
+        ],
+        "reason": "Earlier forecast pocket, but modeled NO means were negative in W4/W5: method 24 about -3.78/-3.76 cents on 75/36 selections; tuning 03 about -4.56/-0.69 cents on 113/58."
+      },
+      {
+        "venue": "Kalshi",
+        "asset": "BTC",
+        "lead_minutes": 8,
+        "native_up_probability_bin": "70-80",
+        "purchased_side": "YES",
+        "method_reference": "aligned-24",
+        "reason": "About +6.85 cents on 141 earlier validation selections and +7.51 cents on 118 W4 selections, then -16.22 cents on 52 W5 selections."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "native_up_probability_bin": "80-90",
+        "purchased_side": "UP",
+        "method_reference": "model02",
+        "reason": "Earlier probability-score lead produced only two primary native-book UP entries."
+      },
+      {
+        "venue": "Polymarket",
+        "asset": "BTC",
+        "lead_minutes": 5,
+        "native_up_probability_bin": "90-100",
+        "purchased_side": "UP",
+        "method_reference": "model07",
+        "reason": "The +1.38-cent alternate scenario had 271 wins and no losses; rare-loss risk prevents promotion."
+      }
+    ],
+    "next_gate": "Freeze a new eligible prospective period and exact signal, quote, fee, delay, depth, size, overlap and inference rules before reading its outcomes. Preserve all 600 registered entries; no replacement from the same final period.",
+    "stage_windows_assigned": false,
+    "new_outcome_reads": 0,
+    "production_approved": false
   }
 }
