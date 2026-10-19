@@ -3731,18 +3731,28 @@ class ExactExpiryCDFPanel:
             good = rows.reference_scale.notna()
             refused[symbol]["missing_reference"] = int((~good).sum())
             refused[symbol]["iv_for_train_only_imputation"] = int(rows.own_iv.isna().sum())
-            panels.append(rows[good])
+            panels.append(rows[good].copy())
         self.refused = refused
         self.source_hashes = self._source_hashes(files)
         result = pd.concat(panels, ignore_index=True)
-        for symbol in c["symbols"]:
-            result[f"is_{symbol}"] = (result.symbol == symbol).astype(int)
+        # The metadata and per-name frames are dead weight from here; release them
+        # before the wide blocks are built (ADR-0270 amendment, one-pass tail).
+        del panels, meta
+        rows = None
+        symbols = list(c["symbols"])
+        one_hot = pd.DataFrame(
+            (result.symbol.to_numpy()[:, None] == np.asarray(symbols, dtype=object)[None, :]
+             ).astype(np.int64),
+            columns=[f"is_{symbol}" for symbol in symbols], index=result.index)
         lags = result[[f"ret_lag_{i}" for i in range(c["lags"])]].to_numpy()
+        directional = {}
         for window in conv["directional_windows"]:
             values = lags[:, :window]
-            result[f"momentum_{window}"] = values.sum(1)
-            result[f"down_rv_{window}"] = np.sqrt(np.mean(np.minimum(values, 0)**2, axis=1))
-            result[f"up_rv_{window}"] = np.sqrt(np.mean(np.maximum(values, 0)**2, axis=1))
+            directional[f"momentum_{window}"] = values.sum(1)
+            directional[f"down_rv_{window}"] = np.sqrt(np.mean(np.minimum(values, 0)**2, axis=1))
+            directional[f"up_rv_{window}"] = np.sqrt(np.mean(np.maximum(values, 0)**2, axis=1))
+        result = pd.concat([result, one_hot, pd.DataFrame(directional, index=result.index)],
+                           axis=1, copy=False)
         if c.get("market_symbols"):
             self.market_coverage = {}
             quotes = pd.DataFrame({"quote_date": sorted(result.quote_date.unique())})

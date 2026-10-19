@@ -1750,6 +1750,72 @@ def test_panel_never_reads_rows_dated_or_settling_at_the_holdout(tmp_path, monke
         ExactExpiryCDFPanel(config, holdout_start='2023-6-30')
 
 
+def _reference_panel_tail(result, symbols, windows, lags):
+    """Verbatim copy of the pre-ADR-0270-amendment one-at-a-time tail."""
+    result = result.copy()
+    for symbol in symbols:
+        result[f"is_{symbol}"] = (result.symbol == symbol).astype(int)
+    values_all = result[[f"ret_lag_{i}" for i in range(lags)]].to_numpy()
+    for window in windows:
+        values = values_all[:, :window]
+        result[f"momentum_{window}"] = values.sum(1)
+        result[f"down_rv_{window}"] = np.sqrt(np.mean(np.minimum(values, 0)**2, axis=1))
+        result[f"up_rv_{window}"] = np.sqrt(np.mean(np.maximum(values, 0)**2, axis=1))
+    return result
+
+
+def test_panel_tail_one_hot_and_directional_blocks_keep_order_dtype_and_values(tmp_path, monkeypatch):
+    import exchange_calendars as xc
+
+    dates = xc.get_calendar('XNYS').sessions_in_range('2023-01-03', '2023-07-10')
+    prices = {d.strftime('%Y-%m-%d'): 100+i*.1+np.sin(i)*.7 for i, d in enumerate(dates)}
+
+    class Reader:
+        def __init__(self, key, params):
+            self.symbol = params['symbol']
+
+        def run(self, ctx, inputs):
+            return {'records': [
+                {'date': d, 'close': 20. if self.symbol in ('RVX', 'VIX') else price*(1+(self.symbol == 'SPY')),
+                 'asof_ms': int(pd.Timestamp(d).timestamp()*1000), 'instrument': self.symbol,
+                 'contract': self.symbol, 'group': self.symbol, 'dividend_amount': None}
+                for d, price in prices.items()]}
+
+        def fingerprint(self):
+            return {'sha256': 'fixture'}
+
+    monkeypatch.setattr('index_options.cdf_study.IndexCloseRows', Reader)
+    quotes = ['2023-06-26', '2023-06-27', '2023-06-28', '2023-06-29']
+    frames = []
+    for symbol, scale in (('IWM', 1), ('SPY', 2)):
+        frames.append(pd.DataFrame({
+            'symbol': symbol, 'quote_date': quotes,
+            'expiry': ['2023-06-30', '2023-06-30', '2023-07-03', '2023-07-03'],
+            'chain_underlying_price': [prices[d]*scale for d in quotes]}))
+    rows = pd.concat(frames, ignore_index=True)
+    surface, lifecycle = tmp_path/'surface.parquet', tmp_path/'lifecycle.parquet'
+    rows.to_parquet(surface)
+    rows[['symbol', 'quote_date', 'expiry']].assign(first_seen_date='2023-06-01').to_parquet(lifecycle)
+    config = {'root': 'fixture', 'surface': str(surface), 'lifecycle': str(lifecycle),
+              'symbols': {'IWM': 'RVX', 'SPY': 'VIX'}, 'price_source': 'fixture',
+              'iv_source': 'fixture', 'since': '2023-01-01', 'max_dte': 45, 'lags': 22,
+              'windows': [1, 5, 22, 66], 'feature_gap_days': 7, 'reference_floor': .001,
+              'spot_tolerance': .02}
+    adapter = ExactExpiryCDFPanel(config)
+    out = adapter.read()
+    assert set(out.symbol) == {'IWM', 'SPY'}
+    tail = ['is_IWM', 'is_SPY', 'momentum_5', 'down_rv_5', 'up_rv_5',
+            'momentum_22', 'down_rv_22', 'up_rv_22']
+    assert adapter.conventions['directional_windows'] == (5, 22)
+    start = list(out.columns).index('is_IWM')
+    assert list(out.columns)[start:start+len(tail)] == tail
+    assert all(out[c].dtype == np.int64 for c in ('is_IWM', 'is_SPY'))
+    assert all(out[c].dtype == np.float64 for c in tail[2:])
+    reference = _reference_panel_tail(out.drop(columns=tail), ['IWM', 'SPY'], (5, 22), 22)
+    pd.testing.assert_frame_equal(out[tail], reference[tail], check_exact=True)
+    assert out[['is_IWM', 'is_SPY']].sum(axis=1).eq(1).all()
+
+
 def test_panel_exact_dte_keeps_only_the_actual_calendar_horizon(tmp_path, monkeypatch):
     import exchange_calendars as xc
     from index_options.cdf_study import ExactExpiryCDFPanel
