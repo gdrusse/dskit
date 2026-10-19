@@ -22,6 +22,7 @@ import pytest
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 PILOT = Path("/home/russell/data/index_options/theta-strike-screen-20261018")
+REV3_PROTOCOL_SHA = "94de290ee8498d40cb5833534577fad6b00e7a9e09061b0a4713d7df40999bea"   # revision 3, superseded by the nearest-horizon baseline rule
 FOLDS, PROTOCOL, SOURCE = "strike-screen-folds-screen.jsonl", "strike-screen-protocol.json", "strike-screen-panel-source.json"
 FITS = {"L1": "run-strike-screen-fits-L1.json", "L3": "run-strike-screen-fits-L3.json"}
 TIMING, CONTROL = "run-strike-screen-fits-timing.json", "run-strike-screen-fits-control.json"
@@ -443,8 +444,8 @@ def test_each_loss_trains_on_the_fixed_wing_contexts_the_documents_describe(expe
 # -- protocol revision 3: the contract the documents execute ------------------------------------------------------
 
 
-def test_the_protocol_is_revision_3_with_a_change_log_that_discloses_the_gate_sequence(proto):
-    assert proto["revision"] == 3 and set(proto["change_log"]) >= {"1", "2", "3"}
+def test_the_protocol_is_revision_4_with_a_change_log_that_discloses_the_gate_sequence(proto):
+    assert proto["revision"] == 4 and set(proto["change_log"]) >= {"1", "2", "3", "4"}
     log = proto["change_log"]["3"]
     assert len(log) > 400 and "75b1c81b" in log and "committed after" in log and "superseded" in log
     for phrase in ("Stage 0", "evidence tables", "market_calibrated", "SUPERSEDED", "null", "power harness"):
@@ -589,13 +590,15 @@ def test_the_inventory_draft_matches_the_documents_and_the_protocol(proto):
         assert inv["documents"][name]["file_sha256"] == hashlib.sha256((CONFIGS / name).read_bytes()).hexdigest()
     repo_sha = hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
     entry = inv["documents"]["strike-screen-protocol.json"]
-    assert entry["file_sha256"] == entry["registration_copy_sha256"] == repo_sha and entry["revision"] == 3
-    assert entry["registration_copy"].endswith("strike-screen-protocol-rev3.json")
+    assert entry["file_sha256"] == entry["registration_copy_sha256"] == repo_sha and entry["revision"] == 4
+    assert entry["registration_copy"].endswith("strike-screen-protocol-rev4.json")
 
 
 def test_the_registration_copy_of_the_protocol_is_a_byte_copy_of_the_repo_file():
-    copy_ = _pilot("registration", "strike-screen-protocol-rev3.json")
+    copy_ = _pilot("registration", "strike-screen-protocol-rev4.json")
     assert copy_.read_bytes() == (CONFIGS / PROTOCOL).read_bytes()
+    assert _pilot("registration", "strike-screen-protocol-rev3.json").exists()      # superseded, kept
+    assert hashlib.sha256(_pilot("registration", "strike-screen-protocol-rev3.json").read_bytes()).hexdigest() == REV3_PROTOCOL_SHA
     assert not (PILOT / "registration" / "strike-screen-protocol-rev2.json").exists()
 
 
@@ -606,7 +609,7 @@ def test_the_study_readme_orders_the_steps_and_applies_the_caps():
              "## 9. Stop rule", "## 10. L1", "## 11. StrikeRegionScores", "## 12. Report"]
     positions = [text.index(h) for h in order]
     assert positions == sorted(positions)
-    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "evidence tables", "strike-screen-protocol-rev3.json", "convenience", "provisional", "market_calibrated",
+    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "evidence tables", "strike-screen-protocol-rev4.json", "convenience", "provisional", "market_calibrated",
                    "documents/superseded", "excluding the stores",
                    "observational", "refuse", "empty source_hashes", "expected_cells", "must never"):
         assert phrase in text, phrase
@@ -754,11 +757,12 @@ def test_a_threshold_edited_in_the_pinned_protocol_is_the_one_applied(recoverabi
 def _recoverability_files():
     return {"superseded-gate-change": _pilot("stage0", "recoverability-superseded-gate-change.json"),
             "rev3a": _pilot("stage0", "recoverability-rev3a.json"), "rev3b": _pilot("stage0", "recoverability-rev3b.json"),
-            "current": _pilot("stage0", "recoverability.json")}
+            "rev3": _pilot("stage0", "recoverability.json"),
+            "current": _pilot("stage0", "recoverability-rev4.json")}
 
 
 def test_a_recorded_recoverability_result_recomputes_from_its_values_and_the_protocol(proto):
-    result = json.loads(_pilot("stage0", "recoverability.json").read_text())
+    result = json.loads(_pilot("stage0", "recoverability-rev4.json").read_text())
     settings = proto["verification_before_any_ranking"]["synthetic_recoverability_settings"]
     assert result["protocol_sha256"] == hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
     assert result["protocol_revision"] == proto["revision"]
@@ -786,9 +790,12 @@ def test_the_kept_recoverability_files_are_pinned_by_sha256_in_the_inventory():
         assert pinned[key]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest(), key
         assert pinned[key]["file"] == "stage0/" + path.name
     assert pinned["current"]["protocol_sha256"] == hashlib.sha256((CONFIGS / PROTOCOL).read_bytes()).hexdigest()
-    for key in ("superseded-gate-change", "rev3a", "rev3b"):
+    for key in ("superseded-gate-change", "rev3a", "rev3b", "rev3"):
         assert json.loads(files[key].read_text())["gates"], key
     assert pinned["rev3b"]["protocol_sha256"] != pinned["current"]["protocol_sha256"]
+    assert pinned["rev3"]["protocol_sha256"] == REV3_PROTOCOL_SHA != pinned["current"]["protocol_sha256"]   # the revision 3 run, superseded
+    assert json.loads(files["rev3"].read_text())["protocol_sha256"] == REV3_PROTOCOL_SHA
+    assert "never repeated in place" in _pilot("documents", "study", "README.md").read_text()
 
 
 def test_the_pilot_drafts_that_predate_the_protocol_moved_to_superseded():
