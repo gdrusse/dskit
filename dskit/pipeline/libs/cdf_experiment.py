@@ -232,6 +232,7 @@ class CDFExperiment:
             s["target"], s["reference"], s["horizon"],
             *(f for arm in c["arms"].values() for f in arm["features"]),
             *(f for arm in c["arms"].values() for f in arm["observed_columns"])]))
+        import pyarrow
         from dskit.pipeline.libs.parquet import DateBoundedParquet
         bounds = {s["date"]: {"end_before": c["date_upper_exclusive"]},
                   s["end"]: {"end_before": c["end_upper_exclusive"]}}
@@ -239,7 +240,12 @@ class CDFExperiment:
             bounds[s["date"]]["end_before"] = min(
                 c["date_upper_exclusive"], c["end_upper_exclusive"])
         try:
-            frame = DateBoundedParquet(c["panel"], columns, bounds).read().to_pandas()
+            table = DateBoundedParquet(c["panel"], columns, bounds).read()
+            # Lean (ADR-0270): the Arrow table is consumed as it converts, never held beside the frame, and
+            # the scan's retained buffers go back to the OS before the next phase allocates.
+            frame = table.to_pandas(self_destruct=True, split_blocks=True)
+            del table
+            pyarrow.default_memory_pool().release_unused()
         except (OSError, ValueError, TypeError, KeyError) as error:
             raise IntegrityError("invalid temporal predicate metadata or data") from error
         # Validate admitted data before model-specific exception handling.
@@ -252,8 +258,10 @@ class CDFExperiment:
                 pd.to_datetime(frame[key], format="%Y-%m-%d", errors="raise")
             features = list(dict.fromkeys(f for arm in c["arms"].values()
                                          for f in [*arm["features"], *arm["observed_columns"]]))
-            inputs = frame[features].to_numpy(dtype=float)
-            if (not np.isfinite(numeric).all() or np.isinf(inputs).any()
+            # One column at a time: the whole-matrix float copy was the load's largest allocation. Every
+            # column is cast (no short circuit), so a non-numeric column still raises as the matrix cast did.
+            has_inf = any([bool(np.isinf(frame[f].to_numpy(dtype=float)).any()) for f in features])
+            if (not np.isfinite(numeric).all() or has_inf
                     or (frame[s["reference"]] <= 0).any()
                     or (frame[s["horizon"]] <= 0).any()
                     or (frame[s["end"]] < frame[s["date"]]).any()):
@@ -261,7 +269,12 @@ class CDFExperiment:
             self.study.plan.lock(frame)
         except (ValueError, TypeError, KeyError) as error:
             raise IntegrityError("invalid panel data contract") from error
-        frame = frame[frame[s["group"]].isin(c["tickers"])].sort_values(s["identity"])
+        # Keep the ticker rows in identity order with ONE full copy: the order is decided on the identity
+        # columns alone (the same sort_values, so the same permutation) and the frame is taken once; the
+        # original integer labels travel with their rows.
+        kept = np.flatnonzero(frame[s["group"]].isin(c["tickers"]).to_numpy())
+        keys = frame[s["identity"]].iloc[kept].reset_index(drop=True)
+        frame = frame.take(kept[keys.sort_values(s["identity"]).index.to_numpy()])
         self.check_pairing(frame, frame, s["identity"])
         return frame
 

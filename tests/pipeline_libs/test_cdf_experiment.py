@@ -490,3 +490,100 @@ def test_bounded_reader_source_drift_invalidates_experiment_pin(experiment_confi
     experiment_config["source_hashes"] = pins
     with pytest.raises(runner.IntegrityError, match="executing source"):
         runner.CDFExperiment(experiment_config)
+
+
+def _reference_load_panel(self):
+    """The pre-ADR-0270-lean body of ``CDFExperiment.load_panel``, kept verbatim as the equality reference."""
+    import numpy as np
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import IntegrityError
+    c, s = self.config, self.config["study"]
+    columns = list(dict.fromkeys([*s["identity"], s["group"], s["date"], s["end"],
+        s["target"], s["reference"], s["horizon"],
+        *(f for arm in c["arms"].values() for f in arm["features"]),
+        *(f for arm in c["arms"].values() for f in arm["observed_columns"])]))
+    from dskit.pipeline.libs.parquet import DateBoundedParquet
+    bounds = {s["date"]: {"end_before": c["date_upper_exclusive"]},
+              s["end"]: {"end_before": c["end_upper_exclusive"]}}
+    if s["date"] == s["end"]:
+        bounds[s["date"]]["end_before"] = min(
+            c["date_upper_exclusive"], c["end_upper_exclusive"])
+    try:
+        frame = DateBoundedParquet(c["panel"], columns, bounds).read().to_pandas()
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise IntegrityError("invalid temporal predicate metadata or data") from error
+    required = list(dict.fromkeys([*s["identity"], s["group"], s["date"],
+                                   s["end"], s["horizon"]]))
+    self.check_pairing(frame, frame, required)
+    try:
+        numeric = frame[[s["target"], s["reference"], s["horizon"]]].to_numpy(dtype=float)
+        for key in (s["date"], s["end"]):
+            pd.to_datetime(frame[key], format="%Y-%m-%d", errors="raise")
+        features = list(dict.fromkeys(f for arm in c["arms"].values()
+                                     for f in [*arm["features"], *arm["observed_columns"]]))
+        inputs = frame[features].to_numpy(dtype=float)
+        if (not np.isfinite(numeric).all() or np.isinf(inputs).any()
+                or (frame[s["reference"]] <= 0).any()
+                or (frame[s["horizon"]] <= 0).any()
+                or (frame[s["end"]] < frame[s["date"]]).any()):
+            raise IntegrityError("invalid panel labels, horizons, features or reference scales")
+        self.study.plan.lock(frame)
+    except (ValueError, TypeError, KeyError) as error:
+        raise IntegrityError("invalid panel data contract") from error
+    frame = frame[frame[s["group"]].isin(c["tickers"])].sort_values(s["identity"])
+    self.check_pairing(frame, frame, s["identity"])
+    return frame
+
+
+def _rewrite_panel(config, edit):
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore
+    frame = edit(pd.read_parquet(config["panel"]))
+    frame.to_parquet(config["panel"])
+    config["panel_sha256"] = AtomicFitStore.file_hash(config["panel"])
+
+
+def test_lean_load_panel_equals_the_reference_body_on_mixed_dtypes_order_and_a_foreign_ticker(experiment_config):
+    import pandas as pd
+    from pandas.testing import assert_frame_equal
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    feature = experiment_config["arms"]["base"]["features"][0]
+
+    def edit(frame):
+        frame[feature] = (frame[feature] * 100).round().astype("int64")     # an integer feature column
+        foreign = frame.iloc[:3].copy()
+        foreign["symbol"] = "ZZZ"                                           # not in config["tickers"]
+        frame = pd.concat([frame, foreign], ignore_index=True)
+        return frame.sample(frac=1.0, random_state=7).reset_index(drop=True)   # unsorted, integer labels = file order
+    _rewrite_panel(experiment_config, edit)
+    expected = _reference_load_panel(CDFExperiment(experiment_config))
+    actual = CDFExperiment(experiment_config).load_panel()
+    assert not expected.index.equals(pd.RangeIndex(len(expected))) and "ZZZ" not in set(actual["symbol"])
+    assert_frame_equal(actual, expected, check_exact=True, check_index_type=True)
+    assert actual.index.equals(expected.index) and list(actual.columns) == list(expected.columns)
+    assert actual[feature].dtype == "int64" and actual["symbol"].dtype == expected["symbol"].dtype
+    actual[feature] = 0                              # the zero-copy read is not exposed: callers get a writable frame
+    actual.iloc[0, actual.columns.get_loc("terminal_return")] = 1.0
+
+
+def test_lean_load_panel_keeps_the_two_integrity_messages(experiment_config):
+    import numpy as np
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment, IntegrityError
+    feature = experiment_config["arms"]["base"]["features"][-1]
+    original = experiment_config["panel"]
+    import shutil
+    shutil.copy(original, original + ".good")
+    _rewrite_panel(experiment_config, lambda f: f.assign(**{feature: np.where(f.index == 3, np.inf, f[feature])}))
+    with pytest.raises(IntegrityError, match="^invalid panel labels, horizons, features or reference scales$"):
+        CDFExperiment(experiment_config).load_panel()
+    shutil.copy(original + ".good", original)
+    # a string feature that comes AFTER an inf feature must still win: the old whole-matrix cast raised first
+    first, last = experiment_config["arms"]["base"]["features"][0], feature
+    _rewrite_panel(experiment_config, lambda f: f.assign(**{
+        first: np.where(f.index == 3, np.inf, f[first]), last: ["x"] * len(f)}))
+    with pytest.raises(IntegrityError, match="^invalid panel data contract$"):
+        CDFExperiment(experiment_config).load_panel()
+    shutil.copy(original + ".good", original)
+    _rewrite_panel(experiment_config, lambda f: f.assign(**{first: ["x"] * len(f)}))
+    with pytest.raises(IntegrityError, match="^invalid panel data contract$"):
+        CDFExperiment(experiment_config).load_panel()
