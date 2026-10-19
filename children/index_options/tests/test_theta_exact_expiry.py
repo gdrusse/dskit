@@ -1152,23 +1152,23 @@ def test_an_export_written_newest_first_builds_the_same_outputs_as_one_written_o
     assert {k: v for k, v in whole["files"].items() if k.startswith("archive/")} == archives   # byte-identical
     assert {k: v["rows"] for k, v in whole["files"].items()} == {k: v["rows"] for k, v in ascending["files"].items()}
     surface = pd.read_parquet(tmp_path / "asc" / "surface.parquet")
-    pd.testing.assert_frame_equal(surface, pd.read_parquet(tmp_path / "desc" / "surface.parquet"))
+    pd.testing.assert_frame_equal(surface, pd.read_parquet(tmp_path / "desc" / "surface.parquet"), rtol=1e-12)
     chunked = ThetaExactExpiryTables("tables", node_params(tmp_path / "desc-chunked", flush_rows=40)).run(
         CTX, {"records": reader(directory, batch_size=10), "bars": BARS})["manifest"]
     assert chunked["symbols"]["AAA"]["rows_read"] == ascending["symbols"]["AAA"]["rows_read"]
     for name in ("surface", "lifecycle"):
         pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "asc" / f"{name}.parquet"),
-                                      pd.read_parquet(tmp_path / "desc-chunked" / f"{name}.parquet"))
+                                      pd.read_parquet(tmp_path / "desc-chunked" / f"{name}.parquet"), rtol=1e-12)
     for symbol in ("AAA", "BBB"):
         pd.testing.assert_frame_equal(archive_of(tmp_path / "asc", symbol), archive_of(tmp_path / "desc-chunked", symbol))
 
 
 @pytest.mark.parametrize("median, factor, snapped", [
     (0.25, 0.25, True), (0.02, 0.02, True), (30.0, 30.0, True), (360.0, 360.0, True),
-    (1 / 360, 1 / 360, True), (361.5, 361.5, True), (0.2501, 0.2501, False), (361.37, 361.37, False),
-    (1 / 361.37, 1 / 361.37, False)])
+    (1 / 360, 1 / 360, True), (361.5, 361.5, True), (51 / 50, 51 / 50, True), (50 / 51, 50 / 51, True),
+    (51 / 52, 51 / 52, False), (0.2501, 0.2501, False), (361.37, 361.37, False), (1 / 361.37, 1 / 361.37, False)])
 def test_the_snap_reaches_large_reverse_split_factors_and_never_divides_by_zero(median, factor, snapped):
     from index_options.theta_exact_expiry import _PriceBasis
     got, was_snapped, residual = _PriceBasis._snap(median)
     assert (got, was_snapped) == (factor, snapped)
-    assert residual == 0.0 or (was_snapped and residual <= 1e-8)
+    assert residual == 0.0

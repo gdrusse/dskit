@@ -749,3 +749,12 @@ def test_a_null_in_the_order_column_refuses_instead_of_sorting_around_it(tmp_pat
     reader = pack.DateBoundedParquet(str(path), ["when", "px"], {"day": {"end_before": "2024-02-01"}})
     with pytest.raises(ValueError, match="holds nulls"):
         list(reader.batches(order_by="when"))
+
+
+def test_row_groups_with_equal_minima_rank_by_their_maxima(tmp_path):
+    path = tmp_path / "ties.parquet"
+    pq.write_table(pa.table({"when": ["2024-01-02", "2024-01-01", "2024-01-01", "2024-01-01"],
+                             "px": [2.0, 1.0, 1.0, 1.0]}), path, row_group_size=2)
+    reader = pack.DateBoundedParquet(str(path), ["when", "px"], {"when": {"end_before": "2024-02-01"}})
+    got = [v for b in reader.batches(order_by="when") for v in b.column("when").to_pylist()]
+    assert got == ["2024-01-01", "2024-01-01", "2024-01-01", "2024-01-02"]

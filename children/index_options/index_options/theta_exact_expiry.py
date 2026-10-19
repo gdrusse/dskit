@@ -37,8 +37,9 @@ every Theta price to the bars' basis (the split-adjusted ``close``; ``adjusted_c
 dividend-adjusted, which would make the labels total returns and the ratio drift, so it is not the
 default). Per symbol, the day's ratio ``C/U`` (bar close over the median vendor underlying) is
 constant inside each segment between the bars' split dates; the segment's factor ``f`` is the
-median ratio, snapped to the nearest simple fraction ONLY when it equals the measured median to 1e-8
-(a 4:1 split gives exactly 0.25; any other ratio keeps its measured median, ``snapped`` false). A day whose
+median ratio, snapped to a simple fraction (a denominator of at most 50 on the ratio or on its
+reciprocal) ONLY when it equals the measured median to 1e-8 (a 4:1 split gives exactly 0.25, a 1:12 under a
+1:30 gives 360; any other ratio keeps its measured median, ``snapped`` false). A day whose
 ratio is more than ``basis_tolerance`` from its segment's ``f``, or with no bar or no underlying,
 is refused (listed in the manifest) so a stale vendor underlying never rescales a day. SCALED by
 ``f``: ``strike``, ``underlying_price``, ``bid``, ``ask`` (hence ``mark``), ``vega`` (times ``f``,
@@ -154,7 +155,8 @@ DEFAULT_FLUSH_ROWS = 1_000_000
 #: vendor-underlying-to-close ratio may stray from its split segment's factor before the day is refused.
 DEFAULT_BAR_PRICE_FIELD = "close"
 DEFAULT_BASIS_TOLERANCE = 0.01
-#: The most a split factor's reciprocal may need in its denominator when snapping (4:1, 3:2, 5:4, 50:49 ...; 50 so odd cumulative factors still reduce).
+#: The largest denominator a snapped factor may need, on the factor or on its reciprocal (4:1 as 1/4, 3:2, 50:49,
+#: a 1:12 under a 1:30 as 360/1; 50 so odd cumulative factors still reduce).
 _SNAP_DENOMINATOR = 50
 #: How exact a measured segment ratio must be to snap to a simple fraction: a true split gives the
 #: fraction to machine precision (the bars ARE the raw prices divided by it), so anything looser is a
@@ -274,8 +276,8 @@ class _PriceBasis:
     Pass 1 reads the symbol's rows once to find each day's median vendor underlying ``U(d)``. With
     the bar close ``C(d)`` the day's ratio is ``C/U``. Splits seen in the bars' ``split_coefficient``
     cut the dates into segments inside which the ratio must be one constant (the cumulative split
-    factor, 1 when none). Each segment's factor is its median ratio, snapped to the nearest simple
-    fraction (``Fraction.limit_denominator``) ONLY when that fraction equals the measured median to
+    factor, 1 when none). Each segment's factor is its median ratio, snapped to a simple fraction
+    (``Fraction.limit_denominator`` on the reciprocal, then on the ratio itself) ONLY when that fraction equals the measured median to
     :data:`SNAP_TOLERANCE` (1e-8: true splits do, and 0.50505 must not become 50/99), so the adjusted strike grid is exact (140 x 1/4 = 35) and a
     non-split ratio such as 0.9267 is never forced onto the nearby simple fraction. A day whose own ratio differs from its
     segment's factor by more than ``tolerance`` is refused: a stale or mis-timed vendor underlying
