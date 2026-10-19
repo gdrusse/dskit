@@ -4,21 +4,37 @@ A fit queue run by :class:`~dskit.pipeline.libs.cdf_experiment.CDFExperiment` le
 (fold, arm, candidate) cell, an immutable checkpoint, paired validation scores and a learning record. This
 node reloads those artifacts and scores each cell around the strikes, on BOTH the fit band and the validation
 band: the model's mixture, the per-symbol ``horizon_empirical`` baseline refit from that fold's fit rows
-exactly as the queue's ``_score`` does, and the market-implied curve from the panel's ``rn_q_*`` quantiles.
+exactly as the queue's ``_score`` does, the ``pooled`` standardized empirical (one ``HorizonEmpiricalCDF`` per
+fold on the standardized outcomes of ALL admitted symbols' fit rows, conditioned on the study horizon, the
+reference column set to one) and the market-implied curve from the panel's ``rn_q_*`` quantiles.
 Nothing is fitted and no band logic is reimplemented: the experiment object rebuilds the bands, the imputation
 and the one-hot heads (``load_panel``, ``study.plan.calendar``, ``_bands``, ``_arrays``), ``TorchCDF`` restores
 the weights, ``ChronologicalCDFStudy.scores`` gives the proper scores, ``DecisionRegionScores`` the listed-strike
 Brier and wing score, ``MixtureCurve`` / ``GridCurve`` the curves, ``OptionImpliedTransportCDF._proxy`` the raw
 market curve, and ``AtomicFitStore`` verifies every artifact it reads against the cell identity it recomputes.
-The validation rows are also re-scored against the shards the queue stored and any disagreement refuses.
+The validation rows are also re-scored against the shards the queue stored: the restored mixture
+``weights``/``means``/``scales`` of every component must match the stored columns (absolute difference at most
+``MIXTURE_ATOL``), then model and baseline ``crps`` within ``stored_tolerance``, on equal identity sets; and the
+``scores`` directory of a completed cell may hold no shard but its groups', as ``CDFExperiment._resume_state``
+requires. Any disagreement refuses. A cell whose arm admits no group is reported as ``not_eligible``, apart
+from the refusals (absent or unfinished cells).
 
 Outputs (one new directory, built beside it and published by one rename): ``rows.parquet`` (one row per cell,
-band and identity), ``cells.parquet`` (the protocol's cell families with paired differences and clustered
-standard errors), ``curves.json`` (per-epoch losses by seed and the learning signatures) and ``summary.json``
+band and identity; the fit band is a deterministic stride sample, named by ``band_sampled`` and
+``band_rows_population``), ``cells.parquet`` (the protocol's cell families, empty ones with ``rows`` 0: region
+Brier scores, global scores and per-threshold reliability, with paired differences and clustered standard
+errors), ``curves.json`` (per-epoch losses by seed and the learning signatures) and ``summary.json``
 (what was scored, skipped or refused, and the hashes of every input and output).
 
+Reading bound: the node refuses, before it reads the panel, an ``end_before`` earlier than the experiment
+document's own read bounds (``date_upper_exclusive``, ``end_upper_exclusive``), which the owner's ``load_panel``
+applies as it reads, so no row at or after ``end_before`` is ever decoded; the extra columns are read under the
+same bounds.
+
 Documented gaps. Standard errors are clustered by symbol and by settlement date separately and the WIDER is
-reported: two-way clustering can give a negative variance and is not built. The market curve is the owner's raw
+reported (NaN unless both clusterings have two clusters): two-way clustering can give a negative variance and is
+not built. The ``pooled`` forecaster pools standardized outcomes by horizon only; it is not the protocol's
+transported or calibrated variant. The market curve is the owner's raw
 piecewise-linear proxy: between the declared quantiles it interpolates, beyond the outermost ones it adds a
 linear tail ``tail_width`` wide (the owner's ``OptionImpliedTransportCDF`` default is 4 in z), so the two tail
 regions' market masses and every score reaching past the outermost quantile depend on that completion; no
@@ -57,14 +73,19 @@ NODE_KINDS = ()
 #: The output layout version, written into ``summary.json``.
 SCHEMA_VERSION = 1
 #: The scored forecasters and the paired differences (a, b) reported as ``score_a - score_b``.
-FORECASTERS = ("model", "baseline", "market")
-PAIRS = (("model", "market"), ("model", "baseline"), ("market", "baseline"))
+FORECASTERS = ("model", "baseline", "pooled", "market")
+PAIRS = (("model", "market"), ("model", "baseline"), ("market", "baseline"), ("model", "pooled"),
+         ("market", "pooled"))
 #: The regime this node reads, and the band names of the experiment's (fit, calibration, validation) triple.
 REGIME = "pooled"
 BANDS = {0: "fit", 2: "val"}
 #: The per-row metrics aggregated beside the region Brier scores, as ``<forecaster>_<name>`` row columns.
 GLOBAL_METRICS = ("crps", "tail_crps", "weighted_crps", "decision_strike_brier", "decision_wing_twcrps")
 REGION_METRIC = "region_brier"
+#: Per grid threshold: mean forecast F(z) (``score_<forecaster>``) beside the realized frequency of ``y <= z``.
+RELIABILITY_METRIC = "reliability"
+#: How closely the re-scored mixture parameters must reproduce the stored ``weights/means/scales`` columns.
+MIXTURE_ATOL = 1e-6
 ALL_GROUP, FULL_WINDOW = "all", "full"
 #: The quantile levels whose spread is the sharpness column ``q95_q05``.
 SHARPNESS_LEVELS = (0.05, 0.95)
@@ -455,11 +476,17 @@ class _MarketCurves:
 
     def curve(self, frame, scale):
         """Return ``(eligible mask, GridCurve over the eligible rows or None)``."""
-        q = frame[self.names].to_numpy(float)
-        eligible = (frame[self.params["eligible_field"]].to_numpy() == 1) & np.isfinite(q).all(1)
+        flag = frame[self.params["eligible_field"]].to_numpy(float)
+        if not np.isin(flag, (0, 1)).all():
+            raise ValueError(f"{self.params['eligible_field']} must be binary (0 or 1) on every row")
+        eligible = flag == 1
         if not eligible.any():
             return eligible, None
-        q = q[eligible]
+        q = frame[self.names].to_numpy(float)[eligible]
+        if not np.isfinite(q).all():
+            raise ValueError("active market quantiles must be finite")
+        if (np.diff(q, axis=1) < 0).any():
+            raise ValueError("active market quantiles must be ordered")
         if self.params["units"] == "log_return":
             q = q / np.asarray(scale, float)[eligible, None]
         return eligible, self.owner._proxy(q)
@@ -498,6 +525,7 @@ class _ForecastScorer:
         """Return the score names (row columns are ``<forecaster>_<name>``), in order."""
         return (["crps", "tail_crps", "weighted_crps", "pit", "below_05", "above_95", "sd_z", "q95_q05",
                  "decision_strike_brier", "decision_wing_twcrps"]
+                + [f"cdf_z{label}" for label in self.labels]
                 + [f"brier_z{label}" for label in self.labels]
                 + [f"mass_r{r:02d}" for r in range(len(self.z) + 1)])
 
@@ -515,6 +543,7 @@ class _ForecastScorer:
         cdf = curve.cdf(self.z)
         error = cdf - (y[:, None] <= self.z)
         for i, label in enumerate(self.labels):
+            out[f"cdf_z{label}"] = cdf[:, i]
             out[f"brier_z{label}"] = error[:, i] ** 2
         mass = np.diff(np.column_stack([np.zeros(len(y)), cdf, np.ones(len(y))]), axis=1)
         for r in range(mass.shape[1]):
@@ -525,10 +554,15 @@ class _ForecastScorer:
 class _CellTable:
     """The protocol's cell families over one cell's rows of a band.
 
-    Cells are (window) x (DTE slice) x (ticker group) x (metric): the metrics are the region Brier score of
-    each of the ``len(z_grid) + 1`` regions plus the :data:`GLOBAL_METRICS`. Each carries support, the mean
-    score per forecaster, the paired differences and, for each, the mean, count and the symbol-clustered,
-    settlement-date-clustered and wider (reported) standard errors.
+    Cells are (window) x (DTE slice) x (ticker group) x (metric); an empty cell is emitted with ``rows`` 0.
+    The metrics are the region Brier score of each of the ``len(z_grid) + 1`` regions, the
+    :data:`GLOBAL_METRICS` (region -1) and the ``reliability`` of each grid threshold (region = threshold
+    index, ``threshold`` = z): there ``score_<forecaster>`` is the mean forecast F(z). Each cell carries
+    support, the mean score per forecaster, the paired differences (:data:`PAIRS`) and the realized frequency
+    taken on each forecaster's OWN rows (``realized_freq_<forecaster>``; the market's are its eligible rows,
+    as its mass and score are); every one with its count and the symbol-clustered, settlement-date-clustered
+    and reported standard errors. The reported error is NaN unless BOTH clusterings have at least two clusters:
+    it never falls back to the other.
 
     Parameters
     ----------
@@ -539,7 +573,7 @@ class _CellTable:
     regions : int
         The number of regions, ``len(z_grid) + 1``.
     z_grid : list of float
-        The region edges.
+        The region edges and reliability thresholds.
 
     Examples
     --------
@@ -549,22 +583,25 @@ class _CellTable:
         cells = table.aggregate(rows, {"arm": "base", "candidate": "mlp", "fold": 1, "band": "val"})
     """
 
-    STATS = ("score_model", "score_baseline", "score_market", "diff_model_market", "diff_model_baseline",
-             "diff_market_baseline")
-
     def __init__(self, params, fields, regions, z_grid):
         self.params, self.f, self.regions, self.z = params, fields, regions, list(z_grid)
-        self.metrics = [(REGION_METRIC, r) for r in range(regions)] + [(m, -1) for m in GLOBAL_METRICS]
+        self.metrics = ([(REGION_METRIC, r) for r in range(regions)] + [(m, -1) for m in GLOBAL_METRICS]
+                        + [(RELIABILITY_METRIC, k) for k in range(len(self.z))])
 
     def _scores(self, rows):
-        """Return ``{forecaster: (rows, metrics)}`` score matrices, NaN where a forecaster has none."""
+        """Return ``(scores, frequencies, realized)``: per-forecaster (rows, metrics) matrices, NaN where absent."""
+        hit = (rows["y"].to_numpy(float)[:, None] <= np.asarray(self.z)).astype(float)
         realized = rows[[f"realized_r{r:02d}" for r in range(self.regions)]].to_numpy(float)
-        out = {}
+        scores, freqs = {}, {}
         for who in FORECASTERS:
             mass = rows[[f"{who}_mass_r{r:02d}" for r in range(self.regions)]].to_numpy(float)
             glob = rows[[f"{who}_{m}" for m in GLOBAL_METRICS]].to_numpy(float)
-            out[who] = np.column_stack([(mass - realized) ** 2, glob])
-        return out, realized
+            cdf = rows[[f"{who}_cdf_z{_zlabel(z)}" for z in self.z]].to_numpy(float)
+            scores[who] = np.column_stack([(mass - realized) ** 2, glob, cdf])
+            freq = np.column_stack([realized, np.full((len(rows), len(GLOBAL_METRICS)), np.nan), hit])
+            freq[~rows[f"{who}_crps"].notna().to_numpy()] = np.nan
+            freqs[who] = freq
+        return scores, freqs, realized
 
     def _windows(self, rows):
         date = rows[self.f["date"]]
@@ -588,12 +625,13 @@ class _CellTable:
         if rows.empty:
             return pd.DataFrame()
         f = self.f
-        scores, realized = self._scores(rows)
+        scores, freqs, realized = self._scores(rows)
         symbols = pd.factorize(rows[f["group"]])[0]
         dates = pd.factorize(rows[f["end"]])[0]
         stats = {f"score_{who}": scores[who] for who in FORECASTERS}
         for a, b in PAIRS:
             stats[f"diff_{a}_{b}"] = scores[a] - scores[b]
+        stats.update({f"realized_freq_{who}": freqs[who] for who in FORECASTERS})
         dte = rows[f["horizon"]].to_numpy(float)
         frames = []
         for kind, window, wmask in self._windows(rows):
@@ -601,36 +639,37 @@ class _CellTable:
                 smask = (dte >= lo) & (dte <= hi)
                 for group, gmask in self._groups(rows):
                     idx = np.flatnonzero(wmask & smask & gmask)
-                    if len(idx):
-                        frames.append(self._cell(rows, idx, stats, realized, symbols, dates,
-                                                 {**ids, "window_kind": kind, "window": window,
-                                                  "dte_slice": f"{lo}-{hi}", "ticker_group": group}))
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+                    frames.append(self._cell(rows, idx, stats, realized, symbols, dates,
+                                             {**ids, "window_kind": kind, "window": window,
+                                              "dte_slice": f"{lo}-{hi}", "ticker_group": group}))
+        return pd.concat(frames, ignore_index=True)
 
     def _cell(self, rows, idx, stats, realized, symbols, dates, ids):
-        f, m = self.f, len(self.metrics)
+        f, m, regions = self.f, len(self.metrics), self.regions
         part = rows.iloc[idx]
+        pad = lambda values: list(values) + [np.nan] * (m - len(values))  # noqa: E731
+        edge = lambda name, r, shift: (  # noqa: E731
+            self.z[r + shift] if name == REGION_METRIC and 0 <= r + shift < len(self.z) else np.nan)
         table = {**{k: [v] * m for k, v in ids.items()},
                  "metric": [name for name, _ in self.metrics], "region": [r for _, r in self.metrics],
-                 "region_low": [self.z[r - 1] if 0 < r else np.nan for _, r in self.metrics],
-                 "region_high": [self.z[r] if 0 <= r < len(self.z) else np.nan for _, r in self.metrics],
+                 "region_low": [edge(name, r, -1) for name, r in self.metrics],
+                 "region_high": [edge(name, r, 0) for name, r in self.metrics],
+                 "threshold": [self.z[r] if name == RELIABILITY_METRIC else np.nan for name, r in self.metrics],
                  "rows": [len(idx)] * m, "dates": [part[f["date"]].nunique()] * m,
                  "expiries": [part[f["identity"][2]].nunique()] * m,
-                 "symbols": [part[f["group"]].nunique()] * m}
-        regions = self.regions
-        pad = [np.nan] * (m - regions)
-        table["events"] = list(realized[idx].sum(0)) + pad
-        table["realized_freq"] = list(realized[idx].mean(0)) + pad
+                 "symbols": [part[f["group"]].nunique()] * m,
+                 "events": pad(realized[idx].sum(0))}
         for who in FORECASTERS:
             mass = part[[f"{who}_mass_r{r:02d}" for r in range(regions)]].to_numpy(float)
-            table[f"mass_{who}"] = list(_ClusteredMean.estimate(mass, np.zeros(len(mass), dtype=int))[0]) + pad
+            table[f"mass_{who}"] = pad(_ClusteredMean.estimate(mass, np.zeros(len(mass), dtype=int))[0])
         for name, matrix in stats.items():
             block = matrix[idx]
             mean, n, se_symbol = _ClusteredMean.estimate(block, symbols[idx])
             _, _, se_date = _ClusteredMean.estimate(block, dates[idx])
             table[name], table[f"{name}_n"] = mean, n
             table[f"{name}_se_symbol"], table[f"{name}_se_date"] = se_symbol, se_date
-            table[f"{name}_se"] = np.fmax(se_symbol, se_date)
+            table[f"{name}_se"] = np.where(np.isfinite(se_symbol) & np.isfinite(se_date),
+                                           np.fmax(se_symbol, se_date), np.nan)
         return pd.DataFrame(table)
 
 
@@ -654,6 +693,10 @@ class _Experiment:
         if self.end_before > holdout:
             raise ValueError(f"end_before {self.end_before} is after the document's holdout_start {holdout}: "
                              "the holdout is never read")
+        reads = max(document["date_upper_exclusive"], document["end_upper_exclusive"])
+        if self.end_before < reads:
+            raise ValueError(f"end_before {self.end_before} is earlier than the experiment's own read bound {reads}: "
+                             "its fits saw rows this node must not decode, and truncating them would change the bands")
         s = self.study_config
         if len(s["identity"]) != 3 or s["group"] != s["identity"][0]:
             raise ValueError("the study identity must be (group, date, expiry) with the group first")
@@ -720,8 +763,8 @@ class StrikeRegionScores(Node):
         optional), ``market`` (``probabilities``, ``prefix``, ``eligible_field``, ``units``, ``tail_width``),
         ``listed_strikes`` (``{"source": "archive", "archive_root", "data_root", "min_valid_strikes"}`` or
         ``{"source": "panel_context", "context_field"}``), ``fit_band_sample`` (most fit rows scored per cell,
-        by a deterministic stride, or null for all), ``end_before`` (ISO date: no panel row may be dated or
-        settle at or after it, and it may not pass the document's ``holdout_start``), ``chunk_rows`` (rows
+        by a deterministic stride, or null for all), ``end_before`` (ISO date: not earlier than the document's own
+        read bounds and not after its ``holdout_start``, so nothing at or after it is decoded), ``chunk_rows`` (rows
         scored at a time, bounding memory) and ``stored_tolerance`` (how closely the validation rows must
         reproduce the shards the queue stored).
 
@@ -894,6 +937,7 @@ class StrikeRegionScores(Node):
             raise
         return {"summary": {"output": str(output), "scored_cells": len(summary["scored_cells"]),
                             "skipped_cells": len(summary["skipped_cells"]), "refusals": len(summary["refusals"]),
+                            "not_eligible_cells": len(summary["not_eligible_cells"]),
                             "rows": summary["rows"]}}
 
     def _publish(self, work, started):
@@ -904,11 +948,14 @@ class StrikeRegionScores(Node):
         self.scorer = _ForecastScorer(w.study_config, self.params["z_grid"])
         regions = len(self.params["z_grid"]) + 1
         table = _CellTable(self.params, w.fields, regions, self.params["z_grid"])
-        scored, skipped, refusals, curves, cells, hashes = [], [], [], [], [], {}
+        scored, skipped, refusals, ineligible, curves, cells, hashes = [], [], [], [], [], [], {}
         writer, total, schema = None, 0, None
         for cell in self._cells():
             if cell["status"] == "skipped":
                 skipped.append({"cell": cell["name"], "reason": cell["reason"]})
+                continue
+            if cell["status"] == "not_eligible":
+                ineligible.append({"cell": cell["name"], "reason": cell["reason"], "admission": cell["admission"]})
                 continue
             if cell["status"] != "complete":
                 refusals.append({"cell": cell["name"], "reason": cell["reason"]})
@@ -917,7 +964,9 @@ class StrikeRegionScores(Node):
             curves.append(result["curves"])
             hashes[cell["name"]] = result["hashes"]
             for band, rows in result["rows"].items():
-                ids = {"arm": cell["arm"], "candidate": cell["candidate"], "fold": cell["fold"], "band": band}
+                ids = {"arm": cell["arm"], "candidate": cell["candidate"], "fold": cell["fold"], "band": band,
+                       "band_sampled": bool(rows.band_sampled.iloc[0]),
+                       "band_rows_population": int(rows.band_rows_population.iloc[0])}
                 cells.append(table.aggregate(rows, ids))
                 data = pa.Table.from_pandas(rows, preserve_index=False)
                 if writer is None:
@@ -937,7 +986,7 @@ class StrikeRegionScores(Node):
         outputs = {n: AtomicFitStore.file_hash(work / n) for n in ("rows.parquet", "cells.parquet", "curves.json")}
         summary = {
             "schema": SCHEMA_VERSION, "scored_cells": scored, "skipped_cells": skipped, "refusals": refusals,
-            "rows": total, "z_grid": self.params["z_grid"], "z_labels": self.scorer.labels,
+            "not_eligible_cells": ineligible, "forecasters": list(FORECASTERS), "rows": total, "z_grid": self.params["z_grid"], "z_labels": self.scorer.labels,
             "regions": regions, "params": self.params,
             "hashes": {"experiment_document_sha256": w.document_sha,
                        "panel_sha256": AtomicFitStore.file_hash(w.config["panel"]),
@@ -954,7 +1003,7 @@ class StrikeRegionScores(Node):
     def _row_columns(self, regions):
         f = self.world.fields
         names = self.scorer.names()
-        return ["arm", "candidate", "fold", "band", *f["identity"], f["end"], f["horizon"], f["reference"],
+        return ["arm", "candidate", "fold", "band", "band_sampled", "band_rows_population", *f["identity"], f["end"], f["horizon"], f["reference"],
                 "spot", "y", "realized_region", *[f"realized_r{r:02d}" for r in range(regions)],
                 "market_eligible", "listed_strikes_n", "listed_wing_intervals_n",
                 *[f"{who}_{n}" for who in FORECASTERS for n in names]]
@@ -973,7 +1022,7 @@ class StrikeRegionScores(Node):
                     name = f"{arm_name}/{candidate['name']}/{fold}"
                     root = exp.output / REGIME / arm_name / candidate["name"] / str(fold) / "pooled"
                     cell = {"name": name, "arm": arm_name, "candidate": candidate["name"], "fold": fold,
-                            "arm_spec": arm, "root": root, "bands": bands, "groups": groups}
+                            "arm_spec": arm, "root": root, "bands": bands, "groups": groups, "admission": admission}
                     cell["identity"] = {
                         "experiment": exp.identity, "regime": REGIME, "arm": arm_name,
                         "model": candidate["name"], "fold": fold, "groups": groups,
@@ -984,7 +1033,7 @@ class StrikeRegionScores(Node):
     def _state(self, cell):
         root, identity = cell["root"], cell["identity"]
         if not cell["groups"]:
-            return {"status": "refused", "reason": "no eligible groups: the queue skips this cell"}
+            return {"status": "not_eligible", "reason": "the arm admits no group in this fold: the queue skips it"}
         if not root.exists():
             return {"status": "refused", "reason": "cell absent: the queue has not reached it"}
         skipped, completed = root / "skipped", root / "completed"
@@ -998,6 +1047,10 @@ class StrikeRegionScores(Node):
         AtomicFitStore(completed, identity).verify()
         record = AtomicFitStore(root / "fit", identity).verify()
         checkpoint = value_hash(record)
+        shards = root / "scores"
+        for path in sorted(shards.iterdir()) if shards.exists() else ():
+            if ".pending-" not in path.name and not (path.is_dir() and path.name in cell["groups"]):
+                raise IntegrityError(f"unexpected score shard {path.name} under {shards}")
         for ticker in cell["groups"]:
             AtomicFitStore(root / "scores" / ticker, {"fit": identity, "checkpoint": checkpoint,
                                                       "ticker": ticker}).verify()
@@ -1012,12 +1065,14 @@ class StrikeRegionScores(Node):
             raise IntegrityError("training imputation differs from the checkpoint's: the bands were rebuilt differently")
         model = TorchCDF.load_checkpoint(root / "fit" / "model")
         state = json.loads((root / "fit" / "model" / "state.json").read_text())
-        baselines = self._baselines(cell["bands"][0], groups)
-        rows = {}
+        references = {"baselines": self._baselines(cell["bands"][0], groups),
+                       "pooled": self._pooled(cell["bands"][0])}
+        rows, mixtures = {}, {}
         for position, band in BANDS.items():
-            rows[band] = self._score_band(cell, band, cell["bands"][position], arrays[position], model,
-                                          baselines, self._sample(len(cell["bands"][position]), band))
-        self._check_stored(cell, rows["val"])
+            rows[band], mixtures[band] = self._score_band(
+                cell, band, cell["bands"][position], arrays[position], model, references,
+                self._sample(len(cell["bands"][position]), band))
+        self._check_stored(cell, rows["val"], mixtures["val"])
         summary = json.loads((root / "completed" / "summary.json").read_text())
         curves = {"cell": cell["name"], "arm": cell["arm"], "candidate": cell["candidate"], "fold": cell["fold"],
                   "regime": REGIME, "parameters": summary["parameters"], "total_epochs": summary["total_epochs"],
@@ -1038,12 +1093,29 @@ class StrikeRegionScores(Node):
             return np.arange(n)
         return np.arange(0, n, math.ceil(n / limit))
 
-    def _baselines(self, fit, groups):
-        """Return the per-symbol horizon_empirical baseline, refit from the fold's fit rows as the queue does."""
-        s, f = self.world.study_config, self.world.fields
+    def _reference_params(self):
+        """Return the baseline's params over the (horizon, reference) columns, as the queue builds them."""
+        s = self.world.study_config
         params = dict(s["models"][s["reference_model"]]["params"], horizon_index=0, reference_index=1)
         if "condition_indices" in params:
             raise ValueError("additional baseline conditions need explicit mapped columns")
+        return params
+
+    def _pooled(self, fit):
+        """Return the pooled forecaster: one horizon_empirical fit of the standardized outcomes of ALL fit rows.
+
+        The reference column is all ones, so the owner's class stores and returns standardized (z) outcomes
+        grouped by the study horizon, with no per-symbol split.
+        """
+        f = self.world.fields
+        x = np.column_stack([fit[f["horizon"]].to_numpy(float), np.ones(len(fit))])
+        y = (fit[f["target"]] / fit[f["reference"]]).to_numpy(float)
+        return HorizonEmpiricalCDF(**self._reference_params()).fit(x, y, None, None)
+
+    def _baselines(self, fit, groups):
+        """Return the per-symbol horizon_empirical baseline, refit from the fold's fit rows as the queue does."""
+        f = self.world.fields
+        params = self._reference_params()
         out = {}
         for ticker in groups:
             part = fit[fit[f["group"]] == ticker]
@@ -1052,8 +1124,10 @@ class StrikeRegionScores(Node):
             out[ticker] = HorizonEmpiricalCDF(**params).fit(x, y, None, None)
         return out
 
-    def _score_band(self, cell, band, frame, x, model, baselines, sel):
+    def _score_band(self, cell, band, frame, x, model, references, sel):
         w, f = self.world, self.world.fields
+        baselines, pooled = references["baselines"], references["pooled"]
+        population = len(frame)
         frame, x = frame.iloc[sel].reset_index(drop=True), x[sel]
         wanted = [c for c in (*self.listed.columns(), *self.market.columns())]
         extras = w.attach(frame, wanted)
@@ -1070,14 +1144,22 @@ class StrikeRegionScores(Node):
         out = {f"{who}_{name}": np.full(n, np.nan) for who in FORECASTERS for name in names}
         eligible = np.zeros(n, dtype=bool)
         baseline_x = frame[[f["horizon"], f["reference"]]].to_numpy()
+        pooled_x = np.column_stack([frame[f["horizon"]].to_numpy(float), np.ones(n)])
+        mixture = None
         chunk = self.params["chunk_rows"]
         for ticker in cell["groups"]:
             at = np.flatnonzero(symbols == ticker)
             for start in range(0, len(at), chunk):
                 i = at[start:start + chunk]
                 part = [contexts[k] for k in i]
-                curves = {"model": (model.curve(x[i]), np.ones(len(i), dtype=bool)),
-                          "baseline": (baselines[ticker].curve(baseline_x[i]), np.ones(len(i), dtype=bool))}
+                everyone = np.ones(len(i), dtype=bool)
+                fitted = model.curve(x[i])
+                if mixture is None:
+                    mixture = np.full((n, 3, fitted.weights.shape[1]), np.nan)
+                mixture[i] = np.stack([fitted.weights, fitted.means, fitted.scales], axis=1)
+                curves = {"model": (fitted, everyone),
+                          "baseline": (baselines[ticker].curve(baseline_x[i]), everyone),
+                          "pooled": (pooled.curve(pooled_x[i]), everyone)}
                 mask, curve = self.market.curve(scored.iloc[i], scored[f["reference"]].to_numpy()[i])
                 eligible[i] = mask
                 if curve is not None:
@@ -1090,6 +1172,7 @@ class StrikeRegionScores(Node):
         region = np.searchsorted(grid, y, side="left")
         frame_out = pd.DataFrame({
             "arm": cell["arm"], "candidate": cell["candidate"], "fold": cell["fold"], "band": band,
+            "band_sampled": population > n, "band_rows_population": population,
             **{k: frame[k].to_numpy() for k in (*f["identity"], f["end"], f["horizon"], f["reference"])},
             "spot": scored["spot"].to_numpy(float), "y": y, "realized_region": region,
             **{f"realized_r{r:02d}": (region == r).astype("int64") for r in range(len(grid) + 1)},
@@ -1097,17 +1180,37 @@ class StrikeRegionScores(Node):
             "listed_strikes_n": [len(c["thresholds"]) for c in contexts],
             "listed_wing_intervals_n": [len(_DecisionScorer.wing_context(c)["intervals"]) for c in contexts],
             **out})
-        return frame_out
+        return frame_out, mixture
 
-    def _check_stored(self, cell, val):
-        """Refuse when the re-scored validation rows differ from the shards the queue stored."""
+    def _check_stored(self, cell, val, mixture):
+        """Refuse when the re-scored validation rows differ from the shards the queue stored.
+
+        Compared on the validation identities: the mixture ``weights``, ``means`` and ``scales`` of every
+        component against the stored columns (absolute difference at most :data:`MIXTURE_ATOL`), then the
+        model and baseline ``crps`` (within ``stored_tolerance``); the identity sets must be equal.
+        """
         f, tol = self.world.fields, self.params["stored_tolerance"]
         stored = pd.concat([pd.read_parquet(cell["root"] / "scores" / t / "scores.parquet") for t in cell["groups"]])
         keys = f["identity"]
-        joined = val.merge(stored[[*keys, "model_crps", "baseline_crps"]], on=keys, how="outer",
-                           suffixes=("", "_stored"), validate="one_to_one", indicator=True)
+        parts = ("weights", "means", "scales")
+        names = [f"{part}{j}" for part in parts for j in range(mixture.shape[2])]
+        absent = sorted(set(names) - set(stored))
+        if absent:
+            raise IntegrityError(f"{cell['name']}: the stored shards lack mixture column(s) {absent}")
+        restored = val[keys].copy()
+        for a, part in enumerate(parts):
+            for j in range(mixture.shape[2]):
+                restored[f"{part}{j}"] = mixture[:, a, j]
+        joined = restored.merge(stored[[*keys, *names]], on=keys, how="outer", suffixes=("", "_stored"),
+                                validate="one_to_one", indicator=True)
         if (joined.pop("_merge") != "both").any():
             raise IntegrityError(f"{cell['name']}: validation identities differ from the stored shards")
+        for name in names:
+            if not np.allclose(joined[name], joined[f"{name}_stored"], rtol=0, atol=MIXTURE_ATOL):
+                raise IntegrityError(f"{cell['name']}: the restored mixture column {name} differs from the "
+                                     f"stored parameters beyond {MIXTURE_ATOL}")
+        joined = val.merge(stored[[*keys, "model_crps", "baseline_crps"]], on=keys, how="inner",
+                           suffixes=("", "_stored"), validate="one_to_one")
         for who in ("model", "baseline"):
             if not np.allclose(joined[f"{who}_crps"], joined[f"{who}_crps_stored"], rtol=tol, atol=tol):
                 raise IntegrityError(f"{cell['name']}: re-scored {who} validation CRPS differs from the "

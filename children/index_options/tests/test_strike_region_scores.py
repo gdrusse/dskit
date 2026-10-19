@@ -87,6 +87,7 @@ def _build_world(tmp, with_context=False):
     cfg["tickers"] = list(TICKERS)
     cfg["arms"] = {"base": cfg["arms"]["base"]}
     cfg["arms"]["base"].update(min_fit=2, min_cal=1)
+    cfg["arms"]["starved"] = {**copy.deepcopy(cfg["arms"]["base"]), "min_fit": 10 ** 6}
     live = cfg["candidates"][0]
     live["adapters"]["pooled"] = live["adapters"]["unpooled"][-1:]
     cfg["candidates"] = [live, {**copy.deepcopy(live), "name": "Skippy",
@@ -162,7 +163,7 @@ def make_params(world, **over):
                    "units": "z", "tail_width": 4.0},
         "listed_strikes": {"source": "archive", "archive_root": str(world.archive),
                            "data_root": None, "min_valid_strikes": 2},
-        "fit_band_sample": SAMPLE, "end_before": "2001-03-01", "chunk_rows": 16,
+        "fit_band_sample": SAMPLE, "end_before": "2002-01-01", "chunk_rows": 16,
         "stored_tolerance": 1e-4}
     params.update(over)
     return params
@@ -359,7 +360,7 @@ def test_cell_support_counts_match_the_rows(result):
             assert region.events.sum() == len(part)
             for _, cell in region.iterrows():
                 r = int(cell.region)
-                assert cell.realized_freq == pytest.approx(part[f"realized_r{r:02d}"].mean())
+                assert cell.realized_freq_model == pytest.approx(part[f"realized_r{r:02d}"].mean())
                 assert cell.mass_model == pytest.approx(part[f"model_mass_r{r:02d}"].mean())
                 brier = ((part[f"model_mass_r{r:02d}"] - part[f"realized_r{r:02d}"]) ** 2).mean()
                 assert cell.score_model == pytest.approx(brier)
@@ -384,9 +385,11 @@ def test_windows_groups_and_global_metrics_are_present(result):
     assert set(cells.ticker_group) == {"all", "liquid", "thin"}
     assert {"region_brier", "crps", "tail_crps", "weighted_crps", "decision_strike_brier",
             "decision_wing_twcrps"} <= set(cells.metric)
-    assert (_cell(cells, band="val", window="early").empty)           # no validation origin that early
+    early = _cell(cells, band="val", window="early")           # no validation origin that early: empty cells
+    assert len(early) and (early.rows == 0).all() and early.score_model.isna().all()
     liquid = _cell(cells, band="val", window="full", ticker_group="liquid", metric="crps", dte_slice="1-1")
     assert (liquid.symbols == 1).all() and liquid.score_model_se_symbol.isna().all()
+    assert liquid.score_model_se_date.notna().all() and liquid.score_model_se.isna().all()   # never a fallback
 
 
 def test_cell_errors_report_the_wider_of_the_two_clusterings(result):
@@ -491,6 +494,9 @@ def test_summary_names_scored_skipped_and_hashes(world, result):
     assert [c["cell"] for c in skipped] == ["base/Skippy/1"]
     assert "synthetic library incompatibility" in skipped[0]["reason"]["reason"]
     hashes = summary["hashes"]
+    assert [c["cell"] for c in summary["not_eligible_cells"]] == ["starved/PatchTST/1", "starved/Skippy/1"]
+    assert summary["not_eligible_cells"][0]["admission"]["AAA"]["eligible"] is False
+    assert summary["forecasters"] == ["model", "baseline", "pooled", "market"]
     assert hashes["experiment_document_sha256"] == AtomicFitStore.file_hash(world.document)
     assert hashes["panel_sha256"] == AtomicFitStore.file_hash(world.panel_path) == world.cfg["panel_sha256"]
     state = json.loads((world.root / "fit" / "model" / "state.json").read_text())
@@ -538,6 +544,19 @@ def test_a_panel_without_spot_is_refused_before_any_cell_is_read(world):
 def test_a_row_at_or_after_end_before_is_refused(world):
     with pytest.raises(ValueError, match="end_before"):
         run_node(world, end_before="2001-02-04")
+
+
+def test_an_end_before_earlier_than_the_experiments_bounds_refuses_before_the_panel_is_read(world, monkeypatch):
+    def forbidden(self):
+        raise AssertionError("the panel was read")
+    monkeypatch.setattr(CDFExperiment, "load_panel", forbidden)
+    with pytest.raises(ValueError, match="end_before"):
+        run_node(world, end_before="2001-03-01")
+
+
+def test_nothing_in_the_panel_read_reaches_end_before(world, result):
+    assert result.rows.quote_date.max() < result.params["end_before"]
+    assert result.rows.settlement_date.max() < result.params["end_before"]
 
 
 def test_end_before_past_the_documents_holdout_is_refused(world):
@@ -673,3 +692,138 @@ def test_the_shipped_document_validates_and_plans():
     assert node["params"]["dte_slices"] == protocol["cells"]["dte_slices"]
     assert node["params"]["sub_periods"] == protocol["windows"]["validation"]["sub_periods"]
     assert node["params"]["end_before"] == protocol["fold_tables"]["holdout_start"]["screen"]
+
+
+# -- correction round: reliability, the pooled forecaster, population-consistent frequencies -------------
+
+def test_rows_carry_the_cdf_at_every_grid_point_for_every_forecaster(result):
+    rows = result.rows
+    for who in ("model", "baseline", "pooled", "market"):
+        for z in Z_GRID:
+            cdf = rows[f"{who}_cdf_z{zlabel(z)}"]
+            brier = rows[f"{who}_brier_z{zlabel(z)}"]
+            ok = cdf.notna()
+            assert np.allclose(brier[ok], (cdf[ok] - (rows.y[ok] <= z)) ** 2)
+        assert np.allclose(rows[f"{who}_mass_r00"].dropna(), rows[f"{who}_cdf_zm3"].dropna())
+
+
+def test_reliability_cells_give_mean_cdf_and_realized_frequency_per_threshold(result):
+    rows = result.rows
+    part = rows[(rows.band == "val") & (rows.actual_calendar_dte >= 2) & (rows.actual_calendar_dte <= 3)]
+    cells = _cell(result.cells, band="val", window="full", dte_slice="2-3", ticker_group="all", metric="reliability")
+    assert sorted(cells.region) == list(range(len(Z_GRID)))
+    for _, cell in cells.iterrows():
+        z = Z_GRID[int(cell.region)]
+        assert cell.threshold == z
+        for who in ("model", "baseline", "pooled"):
+            assert cell[f"score_{who}"] == pytest.approx(part[f"{who}_cdf_z{zlabel(z)}"].mean())
+            assert cell[f"realized_freq_{who}"] == pytest.approx((part.y <= z).mean())
+        live = part[part.market_eligible]
+        assert cell.score_market == pytest.approx(live[f"market_cdf_z{zlabel(z)}"].mean())
+        assert cell.realized_freq_market == pytest.approx((live.y <= z).mean())
+        assert cell.realized_freq_market_n == len(live)
+    assert (cells.score_model_se > 0).all()
+    assert (cells.realized_freq_model_se >= 0).all() and (cells.realized_freq_model_se > 0).any()
+
+
+def test_the_pooled_forecaster_is_one_horizon_empirical_curve_per_fold_on_the_pooled_fit_band(world, result):
+    exp = CDFExperiment(world.cfg)
+    frame = exp.load_panel()
+    bands, groups, _ = exp._bands(frame, exp.study.plan.calendar(frame), 1, world.cfg["arms"]["base"])
+    fit = bands[0]
+    knots = world.cfg["study"]["models"]["horizon_empirical"]["params"]["knots"]
+    p = np.linspace(0, 1, knots)
+    val = val_rows(result).merge(world.panel[KEY], on=KEY)
+    checked = 0
+    for dte in HORIZONS:
+        pool = (fit[fit.actual_calendar_dte == dte].terminal_return / fit[fit.actual_calendar_dte == dte].reference_scale)
+        q = np.quantile(pool.to_numpy(), p)
+        rows = val[val.actual_calendar_dte == dte]
+        expected = np.interp(rows.y, q, p, left=0, right=1)
+        assert np.allclose(rows.pooled_pit, expected, atol=1e-9)
+        checked += len(rows)
+    assert checked == len(val)
+    assert result.rows.pooled_crps.notna().all() and (result.rows.pooled_crps != result.rows.baseline_crps).any()
+
+
+def test_pairs_include_the_pooled_forecaster(result):
+    cell = _cell(result.cells, band="val", window="full", dte_slice="2-3", ticker_group="all",
+                 metric="region_brier", region=6).iloc[0]
+    assert cell.diff_model_pooled_n == cell.rows and cell.diff_market_pooled_n == cell.score_market_n
+    rows = result.rows
+    part = rows[(rows.band == "val") & (rows.actual_calendar_dte >= 2)]
+    diff = ((part.model_mass_r06 - part.realized_r06) ** 2 - (part.pooled_mass_r06 - part.realized_r06) ** 2)
+    assert cell.diff_model_pooled == pytest.approx(diff.mean())
+
+
+def test_realized_frequency_is_taken_on_each_forecasters_own_rows(result):
+    rows = result.rows
+    part = rows[(rows.band == "val") & (rows.actual_calendar_dte >= 2)]
+    cell = _cell(result.cells, band="val", window="full", dte_slice="2-3", ticker_group="all",
+                 metric="region_brier", region=6).iloc[0]
+    live = part[part.market_eligible]
+    assert cell.realized_freq_market == pytest.approx(live.realized_r06.mean()) != part.realized_r06.mean()
+    assert cell.realized_freq_model == pytest.approx(part.realized_r06.mean())
+    assert cell.mass_market == pytest.approx(live.market_mass_r06.mean())
+    assert cell.realized_freq_pooled == pytest.approx(part.realized_r06.mean())
+
+
+def test_population_columns_name_sampled_fit_bands(world, result):
+    fit = result.rows[result.rows.band == "fit"]
+    val = result.rows[result.rows.band == "val"]
+    total = result.summary["scored_cells"][0]["fit_rows_total"]
+    assert (fit.band_sampled == True).all() and (fit.band_rows_population == total).all()   # noqa: E712
+    assert (val.band_sampled == False).all() and (val.band_rows_population == len(val)).all()   # noqa: E712
+    cells = result.cells
+    assert (cells[cells.band == "fit"].band_sampled).all() and not cells[cells.band == "val"].band_sampled.any()
+    assert set(cells[cells.band == "fit"].band_rows_population) == {total}
+
+
+# -- correction round: integrity and eligibility --------------------------------------------------------
+
+def test_a_re_scored_mixture_that_differs_from_the_stored_parameters_is_refused(world, monkeypatch):
+    import index_options.strike_region_scores as module
+    original = TorchCDF.curve
+
+    def shifted(self, x):
+        curve = original(self, x)
+        return MixtureCurve(curve.weights, curve.means + 1e-3, curve.scales)
+
+    monkeypatch.setattr(module.TorchCDF, "curve", shifted)
+    with pytest.raises(IntegrityError, match="mixture"):
+        run_node(world, stored_tolerance=1.0)
+
+
+def test_an_unexpected_score_shard_is_refused_like_the_queue_does(world):
+    extra = world.root / "scores" / "ZZZ"
+    extra.mkdir()
+    try:
+        with pytest.raises(IntegrityError, match="unexpected score shard"):
+            run_node(world)
+    finally:
+        extra.rmdir()
+
+
+def _market(**over):
+    from index_options.strike_region_scores import _MarketCurves
+    params = {"probabilities": [0.1, 0.5, 0.9], "prefix": "q_", "eligible_field": "ok", "units": "z",
+              "tail_width": 4.0, **over}
+    return _MarketCurves(params)
+
+
+def _frame(flag, quantiles):
+    return pd.DataFrame({"ok": flag, "q_1000": [quantiles[0]], "q_5000": [quantiles[1]], "q_9000": [quantiles[2]]})
+
+
+def test_unordered_market_quantiles_and_nonbinary_flags_are_refused_not_repaired():
+    market = _market()
+    eligible, curve = market.curve(_frame([1], [-1.0, 0.0, 1.0]), np.array([1.0]))
+    assert eligible.tolist() == [True] and curve.cdf([0.0])[0, 0] == pytest.approx(0.5)
+    with pytest.raises(ValueError, match="ordered"):
+        market.curve(_frame([1], [0.5, 0.0, 1.0]), np.array([1.0]))
+    with pytest.raises(ValueError, match="binary"):
+        market.curve(_frame([2], [-1.0, 0.0, 1.0]), np.array([1.0]))
+    with pytest.raises(ValueError, match="finite"):
+        market.curve(_frame([1], [-1.0, np.nan, 1.0]), np.array([1.0]))
+    eligible, curve = market.curve(_frame([0], [np.nan] * 3), np.array([1.0]))
+    assert eligible.tolist() == [False] and curve is None
