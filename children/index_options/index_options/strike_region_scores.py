@@ -954,7 +954,13 @@ class StrikeRegionScores(Node):
             ``end_before`` passes the holdout.
         IntegrityError
             An artifact fails its manifest, the panel hash differs, or the re-scored validation rows
-            disagree with the stored shards. Nothing is left behind on a failure.
+            disagree with the stored shards. A raised failure leaves nothing behind.
+
+        Notes
+        -----
+        The files are built in ``.<output>.partial`` and published by one rename, and a failure removes the
+        partial. A process killed outright (power loss, SIGKILL) cannot clean up: it leaves the partial
+        directory, and a rerun to the same name is refused until that directory is removed by hand.
         """
         started = time.monotonic()
         output = Path(self.params["output"])

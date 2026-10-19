@@ -7,6 +7,7 @@ is read.
 """
 
 import copy
+import datetime as dt
 import json
 import math
 from pathlib import Path
@@ -46,6 +47,10 @@ SAMPLE = 70
 REGIONS = len(Z_GRID) + 1
 #: Declared once so the "no listed strikes" row is findable: BBB's first validation origin, one-day expiry.
 SPARSE = ("BBB", VAL_DATES[0], 1)
+#: Validation rows whose outcome sits exactly on a grid point (and one exactly at zero); the scale is a power of
+#: two, so ``terminal_return / reference_scale`` returns the grid point bit for bit.
+EDGE = {("AAA", VAL_DATES[1], 1): 0.5, ("BBB", VAL_DATES[1], 1): 0.0}
+EDGE_SCALE = 0.0625
 
 
 def zlabel(z):
@@ -81,7 +86,7 @@ def _context(row):
                        "weights": [.25] * 4, "intervals": [[-1.6, -0.7], [0.4, 1.3]], "status": "eligible"})
 
 
-def _build_world(tmp, with_context=False):
+def _build_world(tmp, with_context=False, training=None):
     cfg = json.loads((CONFIGS / "advanced-cdf-zoo.json").read_text())
     cfg["source_hashes"], cfg["dependencies"] = {}, {}
     cfg["tickers"] = list(TICKERS)
@@ -93,6 +98,7 @@ def _build_world(tmp, with_context=False):
     cfg["candidates"] = [live, {**copy.deepcopy(live), "name": "Skippy",
                                 "skip_reason": "synthetic library incompatibility"}]
     cfg["training"].update(epochs=2, patience=None)
+    cfg["training"].update(training or {})
     cfg["capacity"]["pooled"].update(device="cpu", per_row=1000, head_per_row=1000)
     cfg["date_upper_exclusive"] = cfg["end_upper_exclusive"] = "2002-01-01"
     folds = tmp / "folds.jsonl"
@@ -108,18 +114,21 @@ def _build_world(tmp, with_context=False):
         for date in FIT_DATES + VAL_DATES:
             for dte in HORIZONS:
                 row = {name: float(rng.normal()) for name in cfg["arms"]["base"]["features"]}
-                expiry = str((pd.Timestamp(date) + pd.Timedelta(days=dte)).date())
+                expiry = str(dt.date.fromisoformat(date) + dt.timedelta(days=dte))
+                edge = EDGE.get((ticker, date, dte))
+                scale = EDGE_SCALE if edge is not None else float(0.02 + 0.02 * rng.random())
                 spot = SPOTS[ticker] * (1 + 0.01 * float(rng.normal()))
                 eligible = bool(rng.random() > 0.25)
                 q = np.sort(norm.ppf(PROBS) + 0.1 * rng.normal(size=len(PROBS)))
                 row.update(symbol=ticker, quote_date=date, expiry=expiry, settlement_date=expiry,
-                           actual_calendar_dte=float(dte), reference_scale=.03,
-                           terminal_return=float(rng.normal() * .03), spot=spot,
+                           actual_calendar_dte=float(dte), reference_scale=scale,
+                           terminal_return=float(rng.normal() * scale) if edge is None else edge * scale,
+                           spot=spot,
                            rn_proxy_eligible=int(eligible))
                 for p, value in zip(PROBS, q):
                     row[f"rn_q_{round(p * 10000):04d}"] = float(value) if eligible else np.nan
                 rows.append(row)
-                quotes += _quotes(ticker, date, expiry, spot, .03, (ticker, date, dte) == SPARSE)
+                quotes += _quotes(ticker, date, expiry, spot, scale, (ticker, date, dte) == SPARSE)
     panel = pd.DataFrame(rows)
     if with_context:
         panel["decision_context"] = [_context(r) for r in panel.itertuples()]
@@ -271,12 +280,16 @@ def test_market_curve_is_the_monotone_piecewise_linear_quantile_curve(world, res
         assert row.market_sd_z > 0 and row.market_q95_q05 > 0
 
 
-def test_log_return_units_divide_by_the_reference_scale(world, result):
+def test_log_return_units_divide_by_each_rows_own_reference_scale(world, result):
     out, params = run_node(world, market={**make_params(world)["market"], "units": "log_return"})
     rows = pd.read_parquet(Path(params["output"]) / "rows.parquet")
-    both = rows[rows.market_eligible].merge(result.rows[result.rows.market_eligible],
-                                            on=KEY + ["band"], suffixes=("_log", "_z"))
-    assert len(both) and np.allclose(both.market_q95_q05_log, both.market_q95_q05_z / .03)
+    names = [f"rn_q_{round(p * 1e4):04d}" for p in PROBS]
+    both = rows[rows.market_eligible].merge(world.panel[KEY + names], on=KEY)
+    assert len(both) and both.reference_scale.nunique() > 20
+    spread = (both[names[-1]] - both[names[0]]).to_numpy()
+    assert np.allclose(both.market_q95_q05, spread / both.reference_scale.to_numpy())
+    plain = result.rows[result.rows.market_eligible].merge(world.panel[KEY + names], on=KEY)
+    assert np.allclose(plain.market_q95_q05, (plain[names[-1]] - plain[names[0]]).to_numpy())
 
 
 def test_baseline_and_model_crps_equal_the_experiments_own_validation_scores(result, stored):
@@ -314,7 +327,7 @@ def test_decision_wing_twcrps_uses_the_adjacent_pairs_that_do_not_straddle_zero(
     val = val_rows(result).merge(stored, on=KEY, suffixes=("", "_stored"))
     row = val[(val.listed_strikes_n >= 2)].iloc[0]
     z = np.array(LISTED_Z)
-    spot_z = np.log(np.array([row.spot * math.exp(zz * .03) for zz in z]) / row.spot) / row.reference_scale
+    spot_z = z.copy()          # built as spot * exp(z * the row's own scale)
     pairs = [[float(a), float(b)] for a, b in zip(spot_z[:-1], spot_z[1:]) if not (a < 0 < b)]
     n = sum(1 for c in val.columns if c.startswith("weights") and c[7:].isdigit())
     curve = MixtureCurve(*[[[row[f"{name}{i}"] for i in range(n)]] for name in ("weights", "means", "scales")])
@@ -823,6 +836,8 @@ def test_unordered_market_quantiles_and_nonbinary_flags_are_refused_not_repaired
         market.curve(_frame([1], [0.5, 0.0, 1.0]), np.array([1.0]))
     with pytest.raises(ValueError, match="binary"):
         market.curve(_frame([2], [-1.0, 0.0, 1.0]), np.array([1.0]))
+    with pytest.raises(ValueError, match="binary"):
+        market.curve(_frame([np.nan], [-1.0, 0.0, 1.0]), np.array([1.0]))
     with pytest.raises(ValueError, match="finite"):
         market.curve(_frame([1], [-1.0, np.nan, 1.0]), np.array([1.0]))
     eligible, curve = market.curve(_frame([0], [np.nan] * 3), np.array([1.0]))
@@ -917,3 +932,122 @@ def test_stored_tail_and_weighted_crps_are_compared_too(world, monkeypatch):
     monkeypatch.setattr(module.ChronologicalCDFStudy, "scores", staticmethod(drifted))
     with pytest.raises(IntegrityError, match="tail_crps"):
         run_node(world)
+
+
+# -- correction round 3: batching, scales, grid-point outcomes, bands, store form, learning curves -------
+
+DECISIONS = [f"{who}_{m}" for who in ("model", "baseline", "pooled", "market")
+             for m in ("decision_strike_brier", "decision_wing_twcrps")] + ["listed_strikes_n",
+                                                                         "listed_wing_intervals_n"]
+
+
+def test_a_multi_batch_archive_scores_exactly_as_one_batch(world, result, monkeypatch):
+    import pyarrow.parquet as pq
+    import index_options.strike_region_scores as module
+    calls = []
+    original = pq.ParquetFile.iter_batches
+
+    def spy(self, *args, **kwargs):
+        for batch in original(self, *args, **kwargs):
+            calls.append(batch.num_rows)
+            yield batch
+
+    monkeypatch.setattr(pq.ParquetFile, "iter_batches", spy)
+    monkeypatch.setattr(module, "ARCHIVE_BATCH_ROWS", 7)
+    out, params = run_node(world)
+    assert len(calls) > 100 and max(calls) <= 7        # every identity's quotes span several batches
+    rows = pd.read_parquet(Path(params["output"]) / "rows.parquet")
+    cells = pd.read_parquet(Path(params["output"]) / "cells.parquet")
+    pd.testing.assert_frame_equal(rows[KEY + ["band"] + DECISIONS], result.rows[KEY + ["band"] + DECISIONS],
+                                  check_exact=True)
+    pick = lambda c: c[c.metric.isin(["decision_strike_brier", "decision_wing_twcrps"])].reset_index(drop=True)  # noqa: E731
+    pd.testing.assert_frame_equal(pick(cells), pick(result.cells), check_exact=True)
+
+
+def test_outcomes_on_a_grid_point_follow_the_documented_conventions(result):
+    val = val_rows(result)
+    for (symbol, date, dte), z in EDGE.items():
+        row = val[(val.symbol == symbol) & (val.quote_date == date) & (val.actual_calendar_dte == dte)].iloc[0]
+        index = Z_GRID.index(z)
+        assert row.y == z and row.realized_region == index      # (z[r-1], z[r]]: a point on an edge is the bin below it
+        one_hot = [row[f"realized_r{r:02d}"] for r in range(REGIONS)]
+        assert sum(one_hot) == 1 and one_hot[index] == 1
+        for who in ("model", "baseline", "pooled"):
+            for step, hit in ((-1, 0.0), (0, 1.0), (1, 1.0)):       # 1{y <= z}: equality counts as a hit
+                label = zlabel(Z_GRID[index + step])
+                cdf = row[f"{who}_cdf_z{label}"]
+                assert row[f"{who}_brier_z{label}"] == pytest.approx((cdf - hit) ** 2)
+    part = val[val.actual_calendar_dte == 1]
+    cells = _cell(result.cells, band="val", window="full", dte_slice="1-1", ticker_group="all",
+                  metric="reliability")
+    for z in (0, 0.5):
+        cell = cells[cells.threshold == z].iloc[0]
+        assert cell.realized_freq_model == pytest.approx((part.y <= z).mean())
+        assert cell.realized_freq_model > (part.y < z).mean()
+
+
+def test_a_validation_band_larger_than_the_fit_sample_is_scored_completely(world, stored):
+    out, params = run_node(world, fit_band_sample=5)
+    rows = pd.read_parquet(Path(params["output"]) / "rows.parquet")
+    assert (rows.band == "val").sum() == len(stored) > 5 and (rows.band == "fit").sum() == 5
+    summary = json.loads((Path(params["output"]) / "summary.json").read_text())
+    assert summary["scored_cells"][0]["rows"] == {"fit": 5, "val": len(stored)}
+
+
+def test_sub_periods_include_both_of_their_end_dates(world, result):
+    out, params = run_node(world, sub_periods={"head": ["2001-02-01", "2001-02-03"],
+                                               "tail": ["2001-02-04", "2001-02-05"]})
+    cells = pd.read_parquet(Path(params["output"]) / "cells.parquet")
+    val = result.rows[result.rows.band == "val"]
+    for name, last in (("head", "2001-02-03"), ("tail", "2001-02-05")):
+        window = cells[(cells.band == "val") & (cells.window == name) & (cells.metric == "crps")
+                       & (cells.ticker_group == "all")]
+        inside = val[(val.quote_date >= {"head": "2001-02-01", "tail": "2001-02-04"}[name]) & (val.quote_date <= last)]
+        assert len(inside) == {"head": 18, "tail": 12}[name] and window.rows.sum() == len(inside)
+        assert window.set_index("dte_slice").dates["2-3"] == (3 if name == "head" else 2)
+
+
+def test_store_form_archive_reads_like_a_directory_and_records_manifest_digests(tmp_path, blob_store, world, result):
+    blob_store.add("archive", world.archive)
+    reference = {"source": "archive", "stream": "files"}
+    out, params = run_node(world, listed_strikes={"source": "archive", "archive_root": reference,
+                                                  "data_root": str(blob_store.path), "min_valid_strikes": 2})
+    rows = pd.read_parquet(Path(params["output"]) / "rows.parquet")
+    pd.testing.assert_frame_equal(rows[KEY + ["band"] + DECISIONS], result.rows[KEY + ["band"] + DECISIONS],
+                                  check_exact=True)
+    sources = json.loads((Path(params["output"]) / "summary.json").read_text())["hashes"]["listed_strike_sources"]
+    assert sorted(sources) == [f"store:archive/files/{t.lower()}/options_2001.parquet" for t in TICKERS]
+    for label, digest in sources.items():
+        assert digest == AtomicFitStore.file_hash(world.archive / label.split("files/")[1])
+
+
+def test_curves_equal_the_checkpoint_state_exactly(world, result):
+    state = json.loads((world.root / "fit" / "model" / "state.json").read_text())
+    seed = result.curves["cells"][0]["seeds"][0]
+    assert seed["train_loss"] == state["losses"][0] and seed["monitor_loss"] == []
+    assert seed["epoch_zero_monitor_loss"] == state["diagnostics"][0]["epoch_zero_monitor_loss"]
+    assert seed["parameter_delta_l2"] == state["diagnostics"][0]["parameter_delta_l2"]
+
+
+@pytest.fixture(scope="module")
+def patience_world(tmp_path_factory):
+    return _build_world(tmp_path_factory.mktemp("strike-region-patience"),
+                        training={"epochs": 40, "patience": 2, "seeds": [11, 29], "learning_rate": 0.05})
+
+
+def test_a_patience_fit_with_two_seeds_gives_monitor_curves_signatures_and_a_checked_mixture(patience_world):
+    w = patience_world
+    state = json.loads((w.root / "fit" / "model" / "state.json").read_text())
+    assert len(state["losses"]) == len(state["monitor_losses"]) == len(state["best_epochs"]) == 2
+    out, params = run_node(w)
+    root = Path(params["output"])
+    cell = json.loads((root / "curves.json").read_text())["cells"][0]
+    assert [s["seed"] for s in cell["seeds"]] == [11, 29] and cell["best_epochs"] == state["best_epochs"]
+    for i, seed in enumerate(cell["seeds"]):
+        assert seed["train_loss"] == state["losses"][i] and seed["monitor_loss"] == state["monitor_losses"][i]
+        assert seed["best_epoch"] == state["best_epochs"][i]
+        assert len(seed["monitor_loss"]) == len(seed["train_loss"]) == cell["total_epochs"][i]
+    assert cell["signatures"] == _LearningCurves(state).signatures()
+    assert all(isinstance(v, bool) for v in cell["signatures"].values())
+    rows = pd.read_parquet(root / "rows.parquet")
+    assert (rows.band == "val").sum() == 30 and rows.model_crps.notna().all()
