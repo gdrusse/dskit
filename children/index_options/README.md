@@ -581,8 +581,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # ThetaExactExpiryTables into surface/lifecycle/archive/own_iv; new output_root per run)
                            # strike-screen-panel-source.json + strike-screen-folds-screen.jsonl (ADR-0270: the arms study repurposed; ONLY materializes the
                            # exact-expiry panel through cdf_study --stage panel; pinned to strike-screen-protocol.json by tests/test_strike_screen_panel_source.py)
-                           # run-strike-screen-fits-{L1,L3,timing}.json (ADR-0270: the CDFExperiment fit documents, L1 and L3 losses and the
-                           # L1 timing pilot; placeholder pins; tests/test_strike_screen_fits.py; no fit until registered)
+                           # run-strike-screen-fits-{L1,L3,timing,control}.json (ADR-0270: the CDFExperiment fit documents, L1 and L3 losses,
+                           # the L1 timing pilot and the block-shift label control; placeholder pins; tests/test_strike_screen_fits.py; no fit until registered)
                            # run-strike-region-scores.json + run-strike-region-scores-L3.json (ADR-0270: StrikeRegionScores over one CDFExperiment output each;
                            # placeholder paths)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json

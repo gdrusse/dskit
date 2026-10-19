@@ -925,12 +925,12 @@
       "path": "/home/russell/data/index_options/theta-strike-screen-20261018/registration/strike-screen-folds-screen.jsonl",
       "sha256": "d6014ad468bececa14334a6013ec231ddd50c1a7b8236f5d83dc38722f9c97c8",
       "holdout_start": "2024-01-01",
-      "cal_n": 74,
+      "cal_n": 82,
       "roles": [
         "warmup",
         "scored"
       ],
-      "notes": "The protocol's screen rows (warm-up fold 2017-01-03..2018-12-31 train, 2019 validation; scored fold 2017-01-03..2019-12-31 train, 2020-2023 validation). Pilot-root copy of configs/strike-screen-folds-screen.jsonl (same bytes, sha256 pinned); cal_n 74 is the protocol's value."
+      "notes": "The protocol's screen rows (warm-up fold 2017-01-03..2018-12-31 train, 2019 validation; scored fold 2017-01-03..2019-12-31 train, 2020-2023 validation). Pilot-root copy of configs/strike-screen-folds-screen.jsonl (same bytes, sha256 pinned); cal_n 82 is the protocol's value (40 + ceil(252*60/365))."
     },
     "group": "symbol",
     "horizon": "actual_calendar_dte",

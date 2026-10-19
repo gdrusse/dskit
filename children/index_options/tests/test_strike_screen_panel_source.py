@@ -179,7 +179,7 @@ def test_the_fold_table_is_the_protocols_screen_rows_and_pinned(doc, proto):
     screen = proto["fold_tables"]["screen"]
     assert rows == screen and len(rows) == 2 and [r["role"] for r in rows] == ["warmup", "scored"]
     assert spec["holdout_start"] == proto["fold_tables"]["holdout_start"]["screen"] == "2024-01-01"
-    assert spec["cal_n"] == proto["fold_tables"]["cal_n"] == proto["windows"]["monitor_band"]["cal_n"] == 74
+    assert spec["cal_n"] == proto["fold_tables"]["cal_n"] == proto["windows"]["monitor_band"]["cal_n"] == 82
     assert spec["roles"] == ["warmup", "scored"] and set(spec) == {"path", "sha256", "holdout_start", "cal_n", "roles"}
     dev, val = proto["windows"]["development"]["origins"], proto["windows"]["validation"]["origins"]
     assert (rows[0]["train_start"], rows[1]["train_end"]) == tuple(dev)
@@ -205,7 +205,7 @@ def test_the_candidates_are_the_declared_grid_and_the_protocol_training(doc, pro
         assert p["seeds"] == t["seeds"]["screen"] == [11]
         assert p["max_parameters"] == capacity == 100000
         assert p["training_telemetry"] is True and p["device"] == "cuda" and "head_features" not in p
-        assert "per-ticker heads" in t["sharing"]
+        assert "one output head per ticker" in t["sharing"]
 
 
 def test_the_arms_nest_and_the_chain_is_kept_out_of_price_only(doc, proto):

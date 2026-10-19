@@ -10,6 +10,7 @@ Every value is compared with ``strike-screen-protocol.json`` and the panel-sourc
 import copy
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 
@@ -19,7 +20,7 @@ CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 PILOT = Path("/home/russell/data/index_options/theta-strike-screen-20261018")
 FOLDS, PROTOCOL, SOURCE = "strike-screen-folds-screen.jsonl", "strike-screen-protocol.json", "strike-screen-panel-source.json"
 FITS = {"L1": "run-strike-screen-fits-L1.json", "L3": "run-strike-screen-fits-L3.json"}
-TIMING = "run-strike-screen-fits-timing.json"
+TIMING, CONTROL = "run-strike-screen-fits-timing.json", "run-strike-screen-fits-control.json"
 SCORES = {"L1": "run-strike-region-scores.json", "L3": "run-strike-region-scores-L3.json"}
 ZERO, ISO = "0" * 64, re.compile(r"\d{4}-\d{2}-\d{2}")
 HOLDOUT = "2024-01-01"
@@ -53,7 +54,7 @@ def _strings(value, skip_notes=False):
 
 @pytest.fixture(scope="module")
 def docs():
-    return {tag: _json(name) for tag, name in {**FITS, "timing": TIMING}.items()}
+    return {tag: _json(name) for tag, name in {**FITS, "timing": TIMING, "control": CONTROL}.items()}
 
 
 @pytest.fixture(scope="module")
@@ -85,7 +86,7 @@ def _constructible(document, tmp_path):
 # -- shape: the owners' exact key sets -------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tag", ["L1", "L3", "timing"])
+@pytest.mark.parametrize("tag", ["L1", "L3", "timing", "control"])
 def test_key_sets_are_exactly_the_owners(docs, tag):
     from dskit.pipeline.libs.cdf_experiment import CDFExperiment
     doc = docs[tag]
@@ -99,12 +100,12 @@ def test_key_sets_are_exactly_the_owners(docs, tag):
     assert list(doc["arms"]) == list(ARMS) and [c["name"] for c in doc["candidates"]] == ["mlp", "patchtst_hf32"]
 
 
-@pytest.mark.parametrize("tag", ["L1", "L3", "timing"])
+@pytest.mark.parametrize("tag", ["L1", "L3", "timing", "control"])
 def test_the_real_owner_constructs_each_document(docs, tag, tmp_path):
     pytest.importorskip("torch")
     from dskit.pipeline.libs.cdf_experiment import CDFExperiment
     experiment = CDFExperiment(_constructible(docs[tag], tmp_path))
-    assert experiment.study.plan.ids() == ([1] if tag == "timing" else [1, 2])
+    assert experiment.study.plan.ids() == ([1] if tag in ("timing", "control") else [1, 2])
     assert experiment.study.config["fold_table"]["holdout_start"] == HOLDOUT
 
 
@@ -141,6 +142,17 @@ def test_l1_and_l3_differ_only_in_losses_and_output(docs):
     for key in ("study", "arms", "candidates", "capacity", "tickers", "panel"):
         if key != "study":
             assert a[key] == b[key]
+
+
+def test_the_control_document_is_the_timing_document_on_the_block_shifted_panel(docs):
+    """Block-shift label control: the timing document pointed at a panel whose labels are misaligned (features intact)."""
+    t, c = docs["timing"], docs["control"]
+    cut = [("panel",), ("output",), ("study", "output"), ("study", "notes")]
+    assert _without(t, *cut) == _without(c, *cut)
+    assert c["panel"] == str(PILOT / "control" / "block-shift" / "frame.parquet") and c["panel"] != t["panel"]
+    assert c["output"] == str(PILOT / "fits" / "control") and c["panel_sha256"] == ZERO
+    assert (c["training"]["epochs"], c["training"]["patience"]) == (3, None)
+    assert "no skill" in c["study"]["notes"] and "120 sessions" in c["study"]["notes"]
 
 
 def test_the_timing_document_is_the_l1_document_with_three_epochs_on_the_warmup_fold(docs):
@@ -226,13 +238,14 @@ def test_the_panel_is_the_panel_sources_cached_frame(docs, source):
     from dskit.pipeline.libs.parquet import ParquetFrameCache
     from index_options.cdf_study import PANEL_CACHE_DIR
     frame = Path(source["experiment"]["output"]) / PANEL_CACHE_DIR / ParquetFrameCache.FRAME
-    for doc in docs.values():
-        assert doc["panel"] == str(frame) and doc["panel_sha256"] == ZERO
+    for tag, doc in docs.items():
+        assert doc["panel"] == (str(PILOT / "control" / "block-shift" / "frame.parquet") if tag == "control" else str(frame))
+        assert doc["panel_sha256"] == ZERO
 
 
 def test_outputs_are_distinct_roots_under_the_pilot_fits(docs):
     outputs = {tag: doc["output"] for tag, doc in docs.items()}
-    assert outputs == {tag: str(PILOT / "fits" / tag) for tag in ("L1", "L3", "timing")}
+    assert outputs == {tag: str(PILOT / "fits" / tag) for tag in ("L1", "L3", "timing", "control")}
     for doc in docs.values():
         assert doc["study"]["output"] == doc["output"] + "/unused"
         assert Path(doc["study"]["output"]).is_relative_to(PILOT) and Path(doc["panel"]).is_relative_to(PILOT)
@@ -248,8 +261,8 @@ def test_the_fold_table_is_the_protocols_screen_rows_pinned_by_content(docs, pro
         assert set(spec) == {"path", "sha256", "holdout_start", "cal_n", "roles", "notes"}
         assert spec["path"] == str(PILOT / "registration" / FOLDS) and Path(spec["path"]).is_absolute()
         assert spec["holdout_start"] == proto["fold_tables"]["holdout_start"]["screen"] == HOLDOUT
-        assert spec["cal_n"] == proto["fold_tables"]["cal_n"] == proto["windows"]["monitor_band"]["cal_n"] == 74
-        assert spec["roles"] == (["warmup"] if tag == "timing" else ["warmup", "scored"])
+        assert spec["cal_n"] == proto["fold_tables"]["cal_n"] == proto["windows"]["monitor_band"]["cal_n"] == 82
+        assert spec["roles"] == (["warmup"] if tag in ("timing", "control") else ["warmup", "scored"])
     copy_ = PILOT / "registration" / FOLDS
     if copy_.exists():
         assert copy_.read_bytes() == repo
@@ -280,19 +293,20 @@ def test_training_and_capacity_equal_the_protocol(docs, proto):
                           "seeds", "weight_decay"}
         assert p["components"] == a["components"][0] == 3 and p["deterministic"] is True
         assert p["dropout"] == t["regularization"]["dropout"] == 0.1
-        assert p["weight_decay"] in t["regularization"]["weight_decay"] and p["learning_rate"] == t["learning_rate"] == 0.0003
+        assert t["regularization"]["weight_decay"] == t["weight_decay"] == [0.01, 0.3]
+        assert p["weight_decay"] in t["weight_decay"] and p["learning_rate"] == t["learning_rate"] == 0.0003
         assert p["seeds"] == t["seeds"]["screen"] == [11]
-        epochs, patience = (3, None) if tag == "timing" else (t["early_stopping"]["epoch_ceiling"]["screen"],
+        epochs, patience = (3, None) if tag in ("timing", "control") else (t["early_stopping"]["epoch_ceiling"]["screen"],
                                                               t["early_stopping"]["patience"]["screen"])
         assert (p["epochs"], p["patience"]) == (epochs, patience)
         pooled = doc["capacity"]["pooled"]
         assert pooled["absolute"] == int(re.search(r"min\((\d+),", t["capacity"]).group(1)) == 100000
         assert pooled["per_row"] == float(re.search(r"([\d.]+) \* fit rows", t["capacity"]).group(1)) == 0.25
         assert pooled["batch_size"] == t["batch_size"] == 512 and pooled["device"] == "cuda"
-        assert pooled["head_widths"] == [8] and pooled["head_per_row"] == 4
+        assert pooled["head_widths"] == t["head_widths"] == [8] and pooled["head_per_row"] == 4
     assert docs["L1"]["training"]["losses"] == _losses(a["losses"]["L1"])
     assert docs["L3"]["training"]["losses"] == _losses(a["losses"]["L3"])
-    assert docs["timing"]["training"]["losses"] == docs["L1"]["training"]["losses"]
+    assert docs["timing"]["training"]["losses"] == docs["L1"]["training"]["losses"] == docs["control"]["training"]["losses"]
 
 
 def test_the_unpooled_capacity_is_the_mixture_grids_and_never_run(docs):
@@ -407,6 +421,112 @@ def test_each_loss_trains_on_the_fixed_wing_contexts_the_documents_describe(expe
                                 {g: {"fit_n": 3000} for g in exp.config["tickers"]})
         TorchCDF(**params).fit_decision_context(context, context)       # the losses accept the contexts
         assert {t["kind"] for t in params["losses"]} == ({"crps", "tail_crps"} if tag == "L1" else {"crps", "decision_brier"})
+
+
+# -- protocol revision 2: the contract the documents execute ------------------------------------------------------
+
+
+def test_the_protocol_is_revision_2_with_a_change_log(proto):
+    assert proto["revision"] == 2 and isinstance(proto["change_log"], dict) and set(proto["change_log"]) >= {"2"}
+    assert len(proto["change_log"]["2"]) > 200
+    assert "run-strike-screen-arms" not in json.dumps(proto)
+
+
+def test_the_monitor_band_is_82_by_its_own_derivation(proto):
+    band = proto["windows"]["monitor_band"]
+    assert band["derivation"] == "40 + ceil(252*60/365)" and 40 + math.ceil(252 * 60 / 365) == band["cal_n"] == 82
+    assert proto["fold_tables"]["cal_n"] == 82 and "cal_n 82 in the screen" in proto["training"]["monitor_band_sensitivity"]
+
+
+def test_sharing_is_what_the_queue_does_and_the_size_tiers_are_measured(proto):
+    t = proto["training"]
+    assert "one output head per ticker" in t["sharing"] and "118 heads" in t["sharing"] and "promotion-rung axis" in t["sharing"]
+    assert "per-ticker heads = " not in t["sharing"] and "no per-ticker heads" not in t["sharing"]
+    for total in ("11,118", "12,070", "18,686", "19,638"):
+        assert total in json.dumps(t["size_tiers"])
+    assert t["head_widths"] == [8]
+
+
+def test_the_chain_input_is_the_representation_the_panel_emits_and_is_pinned_by_name(docs, proto):
+    chain = proto["formulation"]["inputs"]["chain"]
+    assert "rn_q_" in chain and "deferred" in chain and "ExactExpiryCDFPanel" in chain
+    columns = proto["appendix"]["chain_columns"]
+    assert columns == docs["L1"]["study"]["features"][43:161] == docs["L1"]["arms"]["price_plus_chain"]["features"][43:]
+    assert len(columns) == len(set(columns)) == 118 and sum(c.startswith("rn_q_") for c in columns) == 19
+
+
+def test_the_verification_steps_name_their_scripts_and_documents(proto):
+    v = proto["verification_before_any_ranking"]
+    recover, shift = v["synthetic_recoverability"], v["block_shift_label_control"]
+    assert "prepare/synthetic_recoverability.py" in recover and "5%" in recover and "0.05" in recover
+    assert "prepare/make_block_shift_panel.py" in shift and CONTROL in shift and "120 sessions" in shift and "no skill" in shift
+    assert v["order"].index("synthetic recoverability + null + power harness") < v["order"].index("block-shift label control") \
+        < v["order"].index("per-epoch curves")
+
+
+def test_the_caps_separate_stores_from_fit_outputs(proto):
+    caps = proto["caps"]
+    assert caps["new_output_bytes"] == 1_000_000_000 and "excluding" in caps["new_output_scope"]
+    assert caps["store_ceiling_bytes"] == 8_000_000_000
+    assert caps["per_file_write_bytes"] == {"fits_and_scoring": 67_108_864, "data_preparation": 2_147_483_648}
+    assert caps["host_rss_vram_enforcement"] == "observational (logged); wall clock is enforced"
+
+
+def test_fit_band_sampling_and_ticker_groups_are_recorded(proto):
+    assert proto["scores"]["fit_band"]["sample_rows_per_cell"] == 25000 and "stride" in proto["scores"]["fit_band"]["rule"]
+    groups = proto["cells"]["ticker_groups"]["secondary"]
+    assert "registration" in groups and "deferred" in groups
+    for tag in ("L1", "L3"):
+        params = _json(SCORES[tag])["pipeline"]["scores"]["params"]
+        assert params["fit_band_sample"] == 25000 and params["ticker_groups"] == {}
+
+
+def test_the_fold_table_notes_describe_the_queue_not_the_hpo_selection(proto):
+    notes = proto["fold_tables"]["notes"]
+    assert "CDFExperiment" in notes and "CDFHyperparameterStudy" not in notes and "analysis step" in notes
+
+
+def test_the_panel_source_says_search_select_evaluate_must_never_run(source):
+    notes = source["notes"]
+    assert "expected_cells" in notes and "must never be run" in notes
+    assert "decision_regions" in source["notes"] and "decision_regions" not in source["data"]
+
+
+# -- the registration artifacts outside the repo (machine-local; skipped elsewhere) ----------------------------------
+
+
+def _pilot(*parts):
+    path = PILOT.joinpath(*parts)
+    if not path.exists():
+        pytest.skip("the registration lives under the machine-local pilot root")
+    return path
+
+
+def test_the_inventory_draft_matches_the_documents_and_the_protocol(proto):
+    inv = json.loads(_pilot("registration", "inventory-draft.json").read_text())
+    assert inv["stage_1_timing"]["neural"] == 4 and inv["stage_1_control"]["neural"] == 4
+    assert inv["stage_2_screen"]["neural"] == 16 and inv["totals"]["neural"] == 24
+    assert "(fold, symbol)" in inv["stage_2_screen"]["empirical_unit"]
+    assert inv["caps"]["store_ceiling_bytes"] == proto["caps"]["store_ceiling_bytes"]
+    assert inv["caps"]["per_file_write_bytes"] == proto["caps"]["per_file_write_bytes"]
+    assert inv["approval_points"].keys() == {"A", "B"}
+    for name in (CONTROL, FITS["L1"], FITS["L3"], TIMING):
+        assert inv["documents"][name]["file_sha256"] == hashlib.sha256((CONFIGS / name).read_bytes()).hexdigest()
+    assert inv["documents"]["strike-screen-protocol.json"]["file_sha256"] == hashlib.sha256(
+        (CONFIGS / PROTOCOL).read_bytes()).hexdigest()
+
+
+def test_the_study_readme_orders_the_steps_and_applies_the_caps():
+    text = _pilot("documents", "study", "README.md").read_text()
+    order = ["APPROVAL POINT A", "## 1. Converter", "## 2. Onboard", "## 3. Replace", "## 4. Raw-chain", "## 5. The panel stage",
+             "## 6. Registration", "APPROVAL POINT B", "## 7. Timing", "## 8. Block-shift", "## 9. Synthetic recoverability",
+             "## 10. Stop rule", "## 11. L1", "## 12. StrikeRegionScores", "## 13. Report"]
+    positions = [text.index(h) for h in order]
+    assert positions == sorted(positions)
+    for phrase in ("--fsize=2147483648", "prlimit --fsize=67108864", "documents/superseded", "excluding the stores",
+                   "observational", "refuse", "empty source_hashes", "expected_cells", "must never"):
+        assert phrase in text, phrase
+    assert _pilot("prepare", "synthetic_recoverability.py").exists() and _pilot("prepare", "make_block_shift_panel.py").exists()
 
 
 # -- the scoring documents ----------------------------------------------------------------------------------------
