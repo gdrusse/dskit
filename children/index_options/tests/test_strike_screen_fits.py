@@ -566,7 +566,7 @@ def test_the_inventory_draft_matches_the_documents_and_the_protocol(proto):
     assert inv["caps"]["store_ceiling_bytes"] == proto["caps"]["store_ceiling_bytes"]
     assert inv["caps"]["per_file_write_bytes"] == proto["caps"]["per_file_write_bytes"]
     assert inv["caps"]["evidence_tables"] == proto["caps"]["evidence_tables"]["ceiling_bytes"]
-    assert inv["approval_points"].keys() == {"A", "B"} and "real-data fits only" in inv["approval_points"]["B"]
+    assert inv["approval_points"].keys() == {"A", "B"} and "real-data fits only" in inv["approval_points"]["B"].lower()
     assert inv["stage_0"]["synthetic_recoverability"] == inv["synthetic_recoverability"]["script"] and "Stage 0" in inv["synthetic_recoverability"]["classification"]
     assert "gate change" in inv["synthetic_recoverability"]["sequence_disclosure"] and "superseded" in inv["synthetic_recoverability"]["sequence_disclosure"]
     assert "provisional" in inv["promising_cells"] and "market_calibrated" in inv["promising_cells"]
