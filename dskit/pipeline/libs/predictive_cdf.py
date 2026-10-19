@@ -7625,6 +7625,48 @@ class OptionPriceCDF:
                         or not np.isfinite(value) or value < 0))):
                 raise ValueError(name+" must be finite and nonnegative")
             setattr(self, name, value)
+
+    @staticmethod
+    def _run_medians(values, starts, counts):
+        """Return the median of each sorted run: the middle value, or the midpoint of the middle two."""
+        import numpy as np
+        low = values[starts+(counts-1)//2]
+        high = values[starts+counts//2]
+        with np.errstate(over="ignore", invalid="ignore"):
+            return np.where(low == high, low, (low+high)/2)
+
+    @staticmethod
+    def _runs(*keys):
+        """Return ``(starts, counts)`` of the runs of equal keys in key arrays already sorted together."""
+        import numpy as np
+        new = np.ones(len(keys[0]), dtype=bool)
+        for key in keys:
+            new[1:] &= key[1:] == key[:-1]
+        new[1:] = ~new[1:]
+        starts = np.flatnonzero(new)
+        return starts, np.diff(np.r_[starts, len(new)])
+
+    @staticmethod
+    def _paired_forwards(strike, mark, is_call, growth):
+        """Return the parity forwards of call/put arrays: one median per (strike, side), paired by strike."""
+        import numpy as np
+        keep = ~(np.isnan(strike) | np.isnan(mark))     # a median skips NaN marks; NaN strikes have no group
+        if not keep.all():
+            strike, mark, is_call = strike[keep], mark[keep], is_call[keep]
+        if not len(strike):
+            return None
+        order = np.lexsort((mark, is_call, strike))
+        strike, mark, is_call = strike[order], mark[order], is_call[order]
+        starts, counts = OptionPriceCDF._runs(strike, is_call)
+        price = OptionPriceCDF._run_medians(mark, starts, counts)
+        side, level = is_call[starts], strike[starts]
+        # sorted by (strike, put < call): a strike quoted on both sides is a put run then a call run
+        put = np.flatnonzero(~side[:-1] & side[1:] & (level[:-1] == level[1:]))
+        if not len(put):
+            return None
+        forwards = level[put]+growth*(price[put+1]-price[put])
+        return forwards[np.isfinite(forwards) & (forwards > 0)]
+
     @staticmethod
     def parity_forwards(rows, growth=1.0):
         """Return the per-strike parity forwards ``strike + growth * (call - put)`` (ADR-0213).
@@ -7648,12 +7690,29 @@ class OptionPriceCDF:
             (possibly empty); ``None`` when no strike has both sides.
         """
         import numpy as np
-        paired = rows.pivot_table(index="strike", columns="type", values="mark",
-                                  aggfunc="median").dropna()
-        if paired.empty or not {"call", "put"}.issubset(paired.columns):
-            return None
-        forwards = paired.index.to_numpy()+growth*(paired.call.to_numpy()-paired.put.to_numpy())
-        return forwards[np.isfinite(forwards) & (forwards > 0)]
+        kind = rows["type"].to_numpy()
+        is_call = kind == "call"
+        if not (is_call | (kind == "put")).all():
+            # a third side (or a missing type) is not modelled by the sorted-run pairing
+            paired = rows.pivot_table(index="strike", columns="type", values="mark",
+                                      aggfunc="median").dropna()
+            if paired.empty or not {"call", "put"}.issubset(paired.columns):
+                return None
+            forwards = paired.index.to_numpy()+growth*(paired.call.to_numpy()-paired.put.to_numpy())
+            return forwards[np.isfinite(forwards) & (forwards > 0)]
+        return OptionPriceCDF._paired_forwards(
+            rows["strike"].to_numpy(dtype=float), rows["mark"].to_numpy(dtype=float), is_call, growth)
+
+    @staticmethod
+    def _otm_prices(strike, price):
+        """Return the strikes ascending and the median call-equivalent price at each."""
+        import numpy as np
+        if not len(strike):
+            return strike, price
+        order = np.lexsort((price, strike))
+        strike, price = strike[order], price[order]
+        starts, counts = OptionPriceCDF._runs(strike)
+        return strike[starts], OptionPriceCDF._run_medians(price, starts, counts)
 
     def estimate(self, rows, spot, growth=1.0):
         """Recover a proxy using consistently undiscounted option prices.
@@ -7678,31 +7737,35 @@ class OptionPriceCDF:
         if (isinstance(growth, (bool, np.bool_)) or not isinstance(growth, Real)
                 or not np.isfinite(growth) or growth <= 0):
             return {"eligible": False, "reasons": ["invalid_growth"]}
-        clean = rows.copy()
-        if (not {"strike", "type", "mark"}.issubset(clean.columns)
-                or not len(clean)):
+        if (not {"strike", "type", "mark"}.issubset(rows.columns)
+                or not len(rows)):
             return {"eligible": False, "reasons": ["missing_price_rows"]}
         try:
-            numeric = clean[["strike", "mark"]].to_numpy(dtype=float)
+            strike_all = rows["strike"].to_numpy(dtype=float)
+            mark = rows["mark"].to_numpy(dtype=float, copy=True)
         except (TypeError, ValueError):
             return {"eligible": False, "reasons": ["nonnumeric_prices"]}
-        if (not np.isfinite(numeric).all()
-                or not (numeric > 0).all()
-                or not clean.type.isin(["call", "put"]).all()
-                or clean.duplicated(["strike", "type"]).any()):
+        kind = rows["type"].to_numpy()
+        is_call, is_put = kind == "call", kind == "put"
+        order = np.lexsort((is_call, strike_all))
+        sorted_strike, sorted_call = strike_all[order], is_call[order]
+        if (not np.isfinite(strike_all).all() or not np.isfinite(mark).all()
+                or not (strike_all > 0).all() or not (mark > 0).all()
+                or not (is_call | is_put).all()
+                or ((sorted_strike[1:] == sorted_strike[:-1])
+                    & (sorted_call[1:] == sorted_call[:-1])).any()):
             return {"eligible": False, "reasons": ["invalid_or_duplicate_prices"]}
         from numbers import Real
         if (isinstance(spot, (bool, np.bool_)) or not isinstance(spot, Real)
                 or not np.isfinite(spot) or spot <= 0):
             return {"eligible": False, "reasons": ["invalid_spot"]}
-        if np.max(numeric[:, 0]) > np.finfo(float).max*min(float(spot), 1.):
+        if np.max(strike_all) > np.finfo(float).max*min(float(spot), 1.):
             return {"eligible": False, "reasons": ["nonfinite_return_coordinates"]}
         with np.errstate(over="ignore", invalid="ignore", under="ignore"):
-            numeric[:, 1] *= growth
-        if not np.isfinite(numeric).all() or not (numeric[:, 1] > 0).all():
+            mark *= growth
+        if not np.isfinite(mark).all() or not (mark > 0).all():
             return {"eligible": False, "reasons": ["invalid_grown_prices"]}
-        clean[["strike", "mark"]] = numeric
-        forwards = self.parity_forwards(clean)
+        forwards = self._paired_forwards(strike_all, mark, is_call, 1.0)
         if forwards is None:
             return {"eligible": False, "reasons": ["missing_forward_pairs"]}
         if len(forwards) < self.min_forward_pairs:
@@ -7711,12 +7774,9 @@ class OptionPriceCDF:
         if not np.isfinite(forward):
             return {"eligible": False, "reasons": ["nonfinite_forward"]}
         dispersion = float(np.subtract(*np.percentile(forwards, [75, 25]))/spot)
-        clean["call_equivalent"] = np.where(clean.type.eq("call"), clean.mark,
-                                             clean.mark+forward-clean.strike)
-        otm = clean[((clean.type == "put") & (clean.strike <= forward))
-                    | ((clean.type == "call") & (clean.strike >= forward))]
-        calls = otm.groupby("strike", as_index=False).call_equivalent.median().sort_values("strike")
-        strike, price = calls.strike.to_numpy(), calls.call_equivalent.to_numpy()
+        call_equivalent = np.where(is_call, mark, mark+forward-strike_all)
+        otm = (is_put & (strike_all <= forward)) | (is_call & (strike_all >= forward))
+        strike, price = self._otm_prices(strike_all[otm], call_equivalent[otm])
         if not np.isfinite(price).all():
             return {"eligible": False, "reasons": ["nonfinite_call_equivalents"]}
         if len(strike) < 2*self.min_wing_nodes+1:

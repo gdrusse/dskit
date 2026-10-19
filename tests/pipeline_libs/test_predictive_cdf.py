@@ -3254,6 +3254,14 @@ def test_option_price_cdf_parity_forwards_equal_the_reference_with_duplicate_med
         assert got.dtype == expected.dtype
 
 
+def test_option_price_cdf_parity_forwards_take_the_pandas_median_of_duplicates():
+    rows = pd.DataFrame({"strike": [100.]*7, "type": ["put"]*4+["call"]*3,
+                         "mark": [10., 1., 3., 2., 5., 9., 7.]})
+    # even count: the midpoint of the middle two (2 and 3); odd count: the middle value (7)
+    np.testing.assert_array_equal(predictive_cdf.OptionPriceCDF.parity_forwards(rows), [100.+7.-2.5])
+    assert rows.pivot_table(index="strike", columns="type", values="mark", aggfunc="median").put.iloc[0] == 2.5
+
+
 def test_option_price_cdf_admission_and_optional_guards():
     frame = _priced_options()
     helper = predictive_cdf.OptionPriceCDF(**_option_curve_params())
