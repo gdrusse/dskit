@@ -105,7 +105,7 @@ def test_the_real_owner_constructs_each_document(docs, tag, tmp_path):
     pytest.importorskip("torch")
     from dskit.pipeline.libs.cdf_experiment import CDFExperiment
     experiment = CDFExperiment(_constructible(docs[tag], tmp_path))
-    assert experiment.study.plan.ids() == ([1] if tag in ("timing", "control") else [1, 2])
+    assert experiment.study.plan.ids() == ([1] if tag == "timing" else [1, 2])
     assert experiment.study.config["fold_table"]["holdout_start"] == HOLDOUT
 
 
@@ -144,15 +144,17 @@ def test_l1_and_l3_differ_only_in_losses_and_output(docs):
             assert a[key] == b[key]
 
 
-def test_the_control_document_is_the_timing_document_on_the_block_shifted_panel(docs):
-    """Block-shift label control: the timing document pointed at a panel whose labels are misaligned (features intact)."""
-    t, c = docs["timing"], docs["control"]
+def test_the_control_document_is_the_l1_document_on_the_block_shifted_panel(docs):
+    """Block-shift label control: a real arm's budget (epochs 120, patience 10, both folds, 8 cells) on misaligned labels."""
+    l1, c = docs["L1"], docs["control"]
     cut = [("panel",), ("output",), ("study", "output"), ("study", "notes")]
-    assert _without(t, *cut) == _without(c, *cut)
-    assert c["panel"] == str(PILOT / "control" / "block-shift" / "frame.parquet") and c["panel"] != t["panel"]
+    assert _without(l1, *cut) == _without(c, *cut)
+    assert c["panel"] == str(PILOT / "control" / "block-shift" / "frame.parquet") and c["panel"] != l1["panel"]
     assert c["output"] == str(PILOT / "fits" / "control") and c["panel_sha256"] == ZERO
-    assert (c["training"]["epochs"], c["training"]["patience"]) == (3, None)
-    assert "no skill" in c["study"]["notes"] and "120 sessions" in c["study"]["notes"]
+    assert (c["training"]["epochs"], c["training"]["patience"]) == (120, 10)
+    assert c["study"]["fold_table"]["roles"] == ["warmup", "scored"]
+    notes = c["study"]["notes"]
+    assert "no skill" in notes and "120 sessions" in notes and "0.5%" in notes and "weighted_crps" in notes and "halt" in notes
 
 
 def test_the_timing_document_is_the_l1_document_with_three_epochs_on_the_warmup_fold(docs):
@@ -262,7 +264,7 @@ def test_the_fold_table_is_the_protocols_screen_rows_pinned_by_content(docs, pro
         assert spec["path"] == str(PILOT / "registration" / FOLDS) and Path(spec["path"]).is_absolute()
         assert spec["holdout_start"] == proto["fold_tables"]["holdout_start"]["screen"] == HOLDOUT
         assert spec["cal_n"] == proto["fold_tables"]["cal_n"] == proto["windows"]["monitor_band"]["cal_n"] == 82
-        assert spec["roles"] == (["warmup"] if tag in ("timing", "control") else ["warmup", "scored"])
+        assert spec["roles"] == (["warmup"] if tag == "timing" else ["warmup", "scored"])
     copy_ = PILOT / "registration" / FOLDS
     if copy_.exists():
         assert copy_.read_bytes() == repo
@@ -296,7 +298,7 @@ def test_training_and_capacity_equal_the_protocol(docs, proto):
         assert t["regularization"]["weight_decay"] == t["weight_decay"] == [0.01, 0.3]
         assert p["weight_decay"] in t["weight_decay"] and p["learning_rate"] == t["learning_rate"] == 0.0003
         assert p["seeds"] == t["seeds"]["screen"] == [11]
-        epochs, patience = (3, None) if tag in ("timing", "control") else (t["early_stopping"]["epoch_ceiling"]["screen"],
+        epochs, patience = (3, None) if tag == "timing" else (t["early_stopping"]["epoch_ceiling"]["screen"],
                                                               t["early_stopping"]["patience"]["screen"])
         assert (p["epochs"], p["patience"]) == (epochs, patience)
         pooled = doc["capacity"]["pooled"]
@@ -458,8 +460,11 @@ def test_the_chain_input_is_the_representation_the_panel_emits_and_is_pinned_by_
 def test_the_verification_steps_name_their_scripts_and_documents(proto):
     v = proto["verification_before_any_ranking"]
     recover, shift = v["synthetic_recoverability"], v["block_shift_label_control"]
-    assert "prepare/synthetic_recoverability.py" in recover and "5%" in recover and "0.05" in recover
+    assert "prepare/synthetic_recoverability.py" in recover and "5%" in recover
+    assert "D <= 0.02" in recover and "reliability" in recover and "13 grid thresholds" in recover and "information only" in recover
+    assert "p above" not in recover and "KS p >" not in recover
     assert "prepare/make_block_shift_panel.py" in shift and CONTROL in shift and "120 sessions" in shift and "no skill" in shift
+    assert "epochs 120" in shift and "8 cells" in shift and "0.5%" in shift and "weighted_crps" in shift and "halt before L1" in shift
     assert v["order"].index("synthetic recoverability + null + power harness") < v["order"].index("block-shift label control") \
         < v["order"].index("per-epoch curves")
 
@@ -504,8 +509,12 @@ def _pilot(*parts):
 
 def test_the_inventory_draft_matches_the_documents_and_the_protocol(proto):
     inv = json.loads(_pilot("registration", "inventory-draft.json").read_text())
-    assert inv["stage_1_timing"]["neural"] == 4 and inv["stage_1_control"]["neural"] == 4
-    assert inv["stage_2_screen"]["neural"] == 16 and inv["totals"]["neural"] == 24
+    assert inv["stage_1_timing"]["neural"] == 4 and inv["stage_1_control"]["neural"] == 8
+    assert (inv["stage_1_control"]["epochs"], inv["stage_1_control"]["patience"]) == (120, 10)
+    assert inv["stage_2_screen"]["neural"] == 16 and inv["totals"]["neural"] == 28 == 4 + 8 + 16
+    ceilings = inv["caps"]["step_ceilings_seconds"]
+    assert ceilings["control"] == 2100 and ceilings["sum"] == sum(v for k, v in ceilings.items() if k != "sum" and k != "scoring_each") + 2 * ceilings["scoring_each"]
+    assert (ceilings["sum"] > inv["caps"]["wall_seconds_total"]) == ("above" in inv["caps"]["note"] and "approval b" in inv["caps"]["note"].lower())
     assert "(fold, symbol)" in inv["stage_2_screen"]["empirical_unit"]
     assert inv["caps"]["store_ceiling_bytes"] == proto["caps"]["store_ceiling_bytes"]
     assert inv["caps"]["per_file_write_bytes"] == proto["caps"]["per_file_write_bytes"]
@@ -523,10 +532,19 @@ def test_the_study_readme_orders_the_steps_and_applies_the_caps():
              "## 10. Stop rule", "## 11. L1", "## 12. StrikeRegionScores", "## 13. Report"]
     positions = [text.index(h) for h in order]
     assert positions == sorted(positions)
-    for phrase in ("--fsize=2147483648", "prlimit --fsize=67108864", "documents/superseded", "excluding the stores",
+    for phrase in ("0.0003", "synthetic scale", "D <= 0.02", "weighted_crps skill", "--fsize=2147483648", "prlimit --fsize=67108864", "documents/superseded", "excluding the stores",
                    "observational", "refuse", "empty source_hashes", "expected_cells", "must never"):
         assert phrase in text, phrase
     assert _pilot("prepare", "synthetic_recoverability.py").exists() and _pilot("prepare", "make_block_shift_panel.py").exists()
+
+
+def test_a_recorded_recoverability_result_has_pass_or_fail_per_gate():
+    result = json.loads(_pilot("stage0", "recoverability.json").read_text())
+    gates = result["gates"]
+    assert set(gates) == {"crps_within_5pct_of_oracle", "pit_ks_statistic_at_most_0.02", "max_reliability_gap_at_most_0.02"}
+    assert all(isinstance(v, bool) for v in gates.values()) and result["passed"] == all(gates.values())
+    assert {"oracle_pit_ks_statistic", "pit_ks_p", "oracle_pit_ks_p", "max_abs_reliability_gap", "oracle_max_abs_reliability_gap"} <= set(result)
+    assert result["learning_rate"] == 0.003 and result["epochs"] == 30 and result["patience"] == 5
 
 
 # -- the scoring documents ----------------------------------------------------------------------------------------
