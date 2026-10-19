@@ -611,3 +611,90 @@ def test_lean_load_panel_checks_every_arm_and_the_observed_columns(experiment_co
         _rewrite_panel(experiment_config, lambda f, c=column: f.assign(**{c: np.where(f.index == 2, np.inf, f[c])}))
         with pytest.raises(IntegrityError, match="^invalid panel labels, horizons, features or reference scales$"):
             CDFExperiment(experiment_config).load_panel()
+
+
+# -- the empirical baseline of a validation horizon its fit band never saw (ADR-0270) ---------------------------------------
+
+
+def _horizon_panel(config, fitted, unseen_at=None, unseen=3.0):
+    """Fit rows cycle through ``fitted`` horizons; validation rows sit at the first one, ``unseen_at`` at ``unseen``."""
+    def edit(frame):
+        fit = frame["quote_date"] < "2001-02-01"
+        frame.loc[fit, "actual_calendar_dte"] = [fitted[i % len(fitted)] for i in range(int(fit.sum()))]
+        frame.loc[~fit, "actual_calendar_dte"] = fitted[0]
+        if unseen_at is not None:
+            frame.loc[(frame["symbol"] == unseen_at[0]) & (frame["quote_date"] == unseen_at[1]), "actual_calendar_dte"] = unseen
+        return frame
+    _rewrite_panel(config, edit)
+
+
+def _run_recording_baseline(config, monkeypatch):
+    """Run the pooled queue; return the experiment, the shard dir and the (fitted model, curve input) per ticker."""
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    from dskit.pipeline.libs.predictive_cdf import HorizonEmpiricalCDF
+    seen = []
+    original = HorizonEmpiricalCDF.curve
+
+    def record(self, x):
+        seen.append((self, np.array(x, copy=True)))
+        return original(self, x)
+    monkeypatch.setattr(HorizonEmpiricalCDF, "curve", record)
+    exp = CDFExperiment(config)
+    exp.run("pooled")
+    return exp, Path(config["output"])/"pooled/base/PatchTST/1/pooled/scores", seen
+
+
+def _shard(scores_root, ticker):
+    import json
+    import pandas as pd
+    return (pd.read_parquet(scores_root/ticker/"scores.parquet"),
+            json.loads((scores_root/ticker/"link.json").read_text()))
+
+
+@pytest.mark.parametrize("fitted, mapped_to, distance", [([1., 2., 5.], 2., 1.), ([1., 5.], 1., 2.)])
+def test_an_unseen_validation_horizon_conditions_the_baseline_on_the_nearest_fitted_one(
+        experiment_config, monkeypatch, fitted, mapped_to, distance):
+    _horizon_panel(experiment_config, fitted, unseen_at=("AAA", "2001-02-01"))
+    exp, scores_root, seen = _run_recording_baseline(experiment_config, monkeypatch)
+    s = experiment_config["study"]
+    scores, link = _shard(scores_root, "AAA")
+    other, other_link = _shard(scores_root, "BBB")
+    assert (link["baseline_unseen_horizon_rows"], link["baseline_unseen_horizon_max_distance"]) == (1, distance)
+    assert (other_link["baseline_unseen_horizon_rows"], other_link["baseline_unseen_horizon_max_distance"]) == (0, 0)
+    assert link["n"] == len(scores) == 3
+    row = scores["quote_date"] == "2001-02-01"
+    assert scores.loc[row, s["horizon"]].tolist() == [3.0]            # the scores frame keeps the true horizon
+    assert scores.loc[~row, s["horizon"]].tolist() == [fitted[0]] * 2
+    baseline, sent = seen[0]                                           # AAA is scored first
+    assert sent[:, 0].tolist() == [mapped_to, fitted[0], fitted[0]]    # only the unseen row moved
+    panel = exp.load_panel()
+    truth = panel[panel[s["group"]] == "AAA"].set_index(list(s["identity"]))
+    y = (truth[s["target"]]/truth[s["reference"]]).loc[list(map(tuple, scores[list(s["identity"])].to_numpy()))].to_numpy()
+    # The reference: the same fitted baseline queried at the nearest fitted horizon, scored by the study's own scorer.
+    reference = sent.copy()
+    reference[:, 0] = [mapped_to, fitted[0], fitted[0]]
+    values, _ = exp.study.scores(baseline.curve(reference), y, s["samples"], s["tail_intervals"], s["tail_points"])
+    np.testing.assert_array_equal(scores["baseline_crps"].to_numpy(), values["crps"])
+    with pytest.raises(KeyError):                                       # the estimator itself still refuses the raw horizon
+        raw = reference.copy()
+        raw[0, 0] = 3.0
+        baseline.curve(raw)
+
+
+def test_scores_without_an_unseen_horizon_equal_the_unmapped_behaviour(experiment_config, tmp_path, monkeypatch):
+    import json
+    from pandas.testing import assert_frame_equal
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    _horizon_panel(experiment_config, [1., 2., 5.])
+    _, scores_root, _ = _run_recording_baseline(experiment_config, monkeypatch)
+    previous = json.loads(json.dumps(experiment_config))
+    previous["output"] = str(tmp_path/"previous")
+    with monkeypatch.context() as patch:                               # the behaviour before the rule: the input passes through
+        patch.setattr(CDFExperiment, "_nearest_fitted_horizons",
+                      staticmethod(lambda fitted, queried: (queried, 0, 0.0)))
+        _, previous_root, _ = _run_recording_baseline(previous, monkeypatch)
+    for ticker in ("AAA", "BBB"):
+        scores, link = _shard(scores_root, ticker)
+        assert_frame_equal(scores, _shard(previous_root, ticker)[0], check_exact=True)
+        assert link["baseline_unseen_horizon_rows"] == 0 and link["baseline_unseen_horizon_max_distance"] == 0

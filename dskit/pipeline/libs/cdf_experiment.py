@@ -440,7 +440,9 @@ class CDFExperiment:
             if "condition_indices" in baseline_params:
                 raise ValueError("additional baseline conditions need explicit mapped columns")
             baseline = HorizonEmpiricalCDF(**baseline_params).fit(baseline_x[0], yf, None, None)
-            curves = {"model": model.curve(xv), "baseline": baseline.curve(baseline_x[1])}
+            conditioned, unseen_rows, unseen_distance = self._nearest_fitted_horizons(
+                baseline_x[0][:, 0], baseline_x[1])
+            curves = {"model": model.curve(xv), "baseline": baseline.curve(conditioned)}
             scores = v[list(dict.fromkeys([*s["identity"], s["date"], s["end"], s["horizon"]]))].copy()
             for label, curve in curves.items():
                 values, _ = self.study.scores(curve, yv, s["samples"], s["tail_intervals"], s["tail_points"])
@@ -457,7 +459,30 @@ class CDFExperiment:
             buffer = io.BytesIO()
             scores.to_parquet(buffer, index=False)
             store.publish({"scores.parquet": buffer.getvalue(),
-                           "link.json": self.json_bytes({"checkpoint": checkpoint_hash, "n": len(scores)})})
+                           "link.json": self.json_bytes({"checkpoint": checkpoint_hash, "n": len(scores),
+                                         "baseline_unseen_horizon_rows": unseen_rows,
+                                         "baseline_unseen_horizon_max_distance": unseen_distance})})
+
+    @staticmethod
+    def _nearest_fitted_horizons(fitted, queried):
+        """Map each validation horizon the baseline never fitted to the nearest fitted one.
+
+        The empirical baseline refuses a horizon absent from its fit band, so its conditioning
+        input (column 0) moves to the nearest fitted horizon, a tie to the shorter; the caller's
+        rows, the scores frame and the model are untouched. Returns the conditioned copy, the
+        number of rows moved and the largest distance moved (0 when none).
+        """
+        import numpy as np
+        horizons = np.unique(fitted)
+        conditioned = np.array(queried, copy=True)
+        column = conditioned[:, 0]
+        unseen = np.isfinite(column) & ~np.isin(column, horizons)
+        if not unseen.any() or not len(horizons):
+            return conditioned, 0, 0.0
+        distance = np.abs(column[unseen, None] - horizons[None, :])
+        nearest = distance.argmin(axis=1)             # horizons ascend, so a tie takes the shorter
+        column[unseen] = horizons[nearest]
+        return conditioned, int(unseen.sum()), float(distance[np.arange(len(nearest)), nearest].max())
 
     def _resume_state(self, root, identity, groups, bands):
         """Validate all published ancestors/dependants before any fit or skip."""
