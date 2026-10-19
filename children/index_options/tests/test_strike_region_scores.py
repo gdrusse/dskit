@@ -30,7 +30,7 @@ from dskit.pipeline.stats import cluster_bootstrap_t
 
 from index_options.datafiles import archive_relpath
 from index_options.strike_region_scores import (
-    NO_LEARNING_BEST_EPOCH, StrikeRegionScores, _ClusteredMean, _LearningCurves)
+    NO_LEARNING_BEST_EPOCH, StrikeRegionScores, _CellTable, _ClusteredMean, _Experiment, _LearningCurves)
 
 CTX = NodeContext(name="t", asof="2001-12-31", run_dir="/nonexistent")
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
@@ -389,7 +389,7 @@ def test_windows_groups_and_global_metrics_are_present(result):
     assert len(early) and (early.rows == 0).all() and early.score_model.isna().all()
     liquid = _cell(cells, band="val", window="full", ticker_group="liquid", metric="crps", dte_slice="1-1")
     assert (liquid.symbols == 1).all() and liquid.score_model_se_symbol.isna().all()
-    assert liquid.score_model_se_date.notna().all() and liquid.score_model_se.isna().all()   # never a fallback
+    assert liquid.score_model_se_quote_date.notna().all() and liquid.score_model_se.isna().all()   # never a fallback
 
 
 def test_cell_errors_report_the_wider_of_the_two_clusterings(result):
@@ -397,7 +397,7 @@ def test_cell_errors_report_the_wider_of_the_two_clusterings(result):
     live = cells[(cells.band == "val") & (cells.window == "full") & (cells.ticker_group == "all")
                  & (cells.metric == "crps")].dropna(subset=["score_model_se"])
     assert len(live) and (live.score_model_se > 0).all()
-    wider = np.fmax(live.score_model_se_symbol, live.score_model_se_date)
+    wider = np.fmax(live.score_model_se_symbol, live.score_model_se_quote_date)
     assert np.allclose(live.score_model_se, wider)
 
 
@@ -827,3 +827,93 @@ def test_unordered_market_quantiles_and_nonbinary_flags_are_refused_not_repaired
         market.curve(_frame([1], [-1.0, np.nan, 1.0]), np.array([1.0]))
     eligible, curve = market.curve(_frame([0], [np.nan] * 3), np.array([1.0]))
     assert eligible.tolist() == [False] and curve is None
+
+
+# -- correction round 2: clustering date, bounds, archive, groups, checkpoint pin -------------------------
+
+def test_the_reported_error_clusters_on_the_quote_date_not_the_settlement_date():
+    rng = np.random.default_rng(11)
+    origins, symbols = 240, 40
+    origin = np.repeat(np.arange(origins), symbols)
+    symbol = np.tile(np.arange(symbols), origins)
+    settle = origin + rng.integers(1, 61, size=origin.size)
+    values = (rng.normal(size=origins)[origin] + .3 * rng.normal(size=origin.size))[:, None]
+    codes = {"symbol": symbol, "quote_date": origin, "settlement": settle}
+    out = _CellTable.errors(values, codes)
+    assert out["se_quote_date"][0] > 2 * out["se_settlement"][0] > 0      # the shared shock is a quote-date one
+    assert out["se"][0] == out["se_quote_date"][0] == max(out["se_symbol"][0], out["se_quote_date"][0])
+    one = _CellTable.errors(values, {**codes, "symbol": np.zeros(origin.size, dtype=int)})
+    assert np.isnan(one["se_symbol"][0]) and np.isnan(one["se"][0]) and one["se_quote_date"][0] > 0
+
+
+def test_cells_carry_the_three_clusterings(result):
+    cells = result.cells
+    live = cells[(cells.band == "val") & (cells.window == "full") & (cells.metric == "crps")
+                 & (cells.ticker_group == "all")]
+    for name in ("se_symbol", "se_quote_date", "se_settlement", "se"):
+        assert f"score_model_{name}" in cells and live[f"score_model_{name}"].notna().all()
+    assert not any(c.endswith("_se_date") for c in cells)
+
+
+def test_one_field_for_date_and_end_takes_the_smaller_bound():
+    fields = {"date": "d", "end": "d", "identity": ["s", "d", "e"]}
+    config = {"date_upper_exclusive": "2020-02-01", "end_upper_exclusive": "2020-01-15"}
+    assert _Experiment.read_bounds(fields, config, "2020-03-01") == {"d": {"end_before": "2020-01-15"}}
+    config = {"date_upper_exclusive": "2020-01-15", "end_upper_exclusive": "2020-02-01"}
+    assert _Experiment.read_bounds(fields, config, "2020-03-01") == {"d": {"end_before": "2020-01-15"}}
+    split = {**fields, "end": "z"}
+    assert _Experiment.read_bounds(split, config, "2020-01-20") == {
+        "d": {"end_before": "2020-01-15"}, "z": {"end_before": "2020-01-20"}}
+
+
+def test_archive_rows_outside_the_wanted_identities_are_discarded(world, tmp_path):
+    from index_options.strike_region_scores import _ArchiveStrikes
+    quotes = pd.read_parquet(world.archive / archive_relpath("AAA", 2001))
+    late = quotes.head(2).copy()
+    late["date"], late["expiration"] = "2002-03-01", "2002-03-05"
+    path = tmp_path / archive_relpath("AAA", 2001)
+    path.parent.mkdir(parents=True)
+    pd.concat([quotes, late]).to_parquet(path, index=False)
+    source = _ArchiveStrikes({"source": "archive", "archive_root": str(tmp_path), "data_root": None,
+                              "min_valid_strikes": 2})
+    frame = world.panel[world.panel.symbol == "AAA"].head(3).rename(columns={})
+    source.contexts(frame)
+    assert set(source.strikes) == set(zip(frame.symbol, frame.quote_date, frame.expiry))
+
+
+def test_an_admitted_symbol_missing_from_a_nonempty_group_mapping_is_refused(world):
+    with pytest.raises(ValueError, match="BBB"):
+        run_node(world, ticker_groups={"AAA": "liquid"})
+    out, params = run_node(world, ticker_groups={})
+    cells = pd.read_parquet(Path(params["output"]) / "cells.parquet")
+    assert set(cells.ticker_group) == {"all"}
+
+
+def test_a_completed_summary_naming_another_checkpoint_is_refused(world, monkeypatch):
+    original = AtomicFitStore.verify
+
+    def verify(self):
+        if self.path.name == "fit":
+            return {**original(self), "files": {}}
+        if self.path.parent.name == "scores":
+            return {}
+        return original(self)
+
+    monkeypatch.setattr(AtomicFitStore, "verify", verify)
+    with pytest.raises(IntegrityError, match="summary checkpoint"):
+        run_node(world)
+
+
+def test_stored_tail_and_weighted_crps_are_compared_too(world, monkeypatch):
+    import index_options.strike_region_scores as module
+    original = module.ChronologicalCDFStudy.scores
+
+    def drifted(curve, y, samples, intervals, points, tail_probabilities=None):
+        values, q = original(curve, y, samples, intervals, points, tail_probabilities)
+        if type(curve).__name__ == "MixtureCurve":
+            values = {**values, "tail_crps": values["tail_crps"] * 1.5}
+        return values, q
+
+    monkeypatch.setattr(module.ChronologicalCDFStudy, "scores", staticmethod(drifted))
+    with pytest.raises(IntegrityError, match="tail_crps"):
+        run_node(world)

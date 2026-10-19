@@ -31,9 +31,11 @@ document's own read bounds (``date_upper_exclusive``, ``end_upper_exclusive``), 
 applies as it reads, so no row at or after ``end_before`` is ever decoded; the extra columns are read under the
 same bounds.
 
-Documented gaps. Standard errors are clustered by symbol and by settlement date separately and the WIDER is
-reported (NaN unless both clusterings have two clusters): two-way clustering can give a negative variance and is
-not built. The ``pooled`` forecaster pools standardized outcomes by horizon only; it is not the protocol's
+Documented gaps. Standard errors are clustered by symbol and by quote date (the study's date field, the unit
+shared shocks act on) separately and the WIDER is reported as ``<stat>_se`` (NaN unless both have two clusters);
+the settlement-date one-way error is kept as a third column (``_se_settlement``) and never decides: two-way
+clustering can give a negative variance and is not built. The protocol's ``market_calibrated`` comparison is
+produced by the market stage and joined to these cells by identity; only the raw market curve is scored here. The ``pooled`` forecaster pools standardized outcomes by horizon only; it is not the protocol's
 transported or calibrated variant. The market curve is the owner's raw
 piecewise-linear proxy: between the declared quantiles it interpolates, beyond the outermost ones it adds a
 linear tail ``tail_width`` wide (the owner's ``OptionImpliedTransportCDF`` default is 4 in z), so the two tail
@@ -93,7 +95,7 @@ SHARPNESS_LEVELS = (0.05, 0.95)
 MARKET_UNITS = ("z", "log_return")
 #: The no-learning rule: a seed whose best epoch (1-based) is at most this learned nothing before it was stopped.
 NO_LEARNING_BEST_EPOCH = 1
-#: Rows of an archive file decoded at a time.
+#: Rows of an archive file decoded and filtered at a time.
 ARCHIVE_BATCH_ROWS = 250_000
 #: Region labels are two digits, so the grid may hold at most this many points.
 MAX_GRID = 98
@@ -302,6 +304,10 @@ class _ListedStrikes(ABC):
 
 class _ArchiveStrikes(_ListedStrikes):
     """Listed strikes from the chain archive: strikes with a valid quote on either side, in z.
+
+    The per-year file of each symbol is read batch by batch (:data:`ARCHIVE_BATCH_ROWS` rows) and every batch is
+    cut to the wanted (date, expiration) identities at once: rows outside them are decoded and discarded, and
+    only wanted identities (all before ``end_before``) are ever returned or kept.
 
     Parameters
     ----------
@@ -560,8 +566,8 @@ class _CellTable:
     index, ``threshold`` = z): there ``score_<forecaster>`` is the mean forecast F(z). Each cell carries
     support, the mean score per forecaster, the paired differences (:data:`PAIRS`) and the realized frequency
     taken on each forecaster's OWN rows (``realized_freq_<forecaster>``; the market's are its eligible rows,
-    as its mass and score are); every one with its count and the symbol-clustered, settlement-date-clustered
-    and reported standard errors. The reported error is NaN unless BOTH clusterings have at least two clusters:
+    as its mass and score are); every one with its count and the symbol-, quote-date- and
+    settlement-clustered and reported standard errors. The reported error is NaN unless BOTH clusterings have at least two clusters:
     it never falls back to the other.
 
     Parameters
@@ -626,8 +632,8 @@ class _CellTable:
             return pd.DataFrame()
         f = self.f
         scores, freqs, realized = self._scores(rows)
-        symbols = pd.factorize(rows[f["group"]])[0]
-        dates = pd.factorize(rows[f["end"]])[0]
+        codes = {"symbol": pd.factorize(rows[f["group"]])[0], "quote_date": pd.factorize(rows[f["date"]])[0],
+                 "settlement": pd.factorize(rows[f["end"]])[0]}
         stats = {f"score_{who}": scores[who] for who in FORECASTERS}
         for a, b in PAIRS:
             stats[f"diff_{a}_{b}"] = scores[a] - scores[b]
@@ -639,12 +645,12 @@ class _CellTable:
                 smask = (dte >= lo) & (dte <= hi)
                 for group, gmask in self._groups(rows):
                     idx = np.flatnonzero(wmask & smask & gmask)
-                    frames.append(self._cell(rows, idx, stats, realized, symbols, dates,
+                    frames.append(self._cell(rows, idx, stats, realized, codes,
                                              {**ids, "window_kind": kind, "window": window,
                                               "dte_slice": f"{lo}-{hi}", "ticker_group": group}))
         return pd.concat(frames, ignore_index=True)
 
-    def _cell(self, rows, idx, stats, realized, symbols, dates, ids):
+    def _cell(self, rows, idx, stats, realized, codes, ids):
         f, m, regions = self.f, len(self.metrics), self.regions
         part = rows.iloc[idx]
         pad = lambda values: list(values) + [np.nan] * (m - len(values))  # noqa: E731
@@ -664,13 +670,36 @@ class _CellTable:
             table[f"mass_{who}"] = pad(_ClusteredMean.estimate(mass, np.zeros(len(mass), dtype=int))[0])
         for name, matrix in stats.items():
             block = matrix[idx]
-            mean, n, se_symbol = _ClusteredMean.estimate(block, symbols[idx])
-            _, _, se_date = _ClusteredMean.estimate(block, dates[idx])
+            mean, n, _ = _ClusteredMean.estimate(block, codes["symbol"][idx])
             table[name], table[f"{name}_n"] = mean, n
-            table[f"{name}_se_symbol"], table[f"{name}_se_date"] = se_symbol, se_date
-            table[f"{name}_se"] = np.where(np.isfinite(se_symbol) & np.isfinite(se_date),
-                                           np.fmax(se_symbol, se_date), np.nan)
+            for key, se in self.errors(block, {k: v[idx] for k, v in codes.items()}).items():
+                table[f"{name}_{key}"] = se
         return pd.DataFrame(table)
+
+    @staticmethod
+    def errors(block, codes):
+        """Return the standard errors of the column means of ``block`` under each clustering.
+
+        Parameters
+        ----------
+        block : numpy.ndarray
+            ``(rows, columns)`` scores, NaN missing.
+        codes : dict
+            Integer cluster codes per row under ``symbol``, ``quote_date`` and ``settlement``.
+
+        Returns
+        -------
+        dict
+            ``se_symbol``, ``se_quote_date`` and ``se_settlement`` (one-way, each NaN under two clusters) and
+            ``se``: the wider of the symbol and quote-date errors, NaN unless both are defined. The quote date,
+            the study's date field, is the unit shared shocks act on; settlement dates are reported as a third
+            view and never decide the reported error.
+        """
+        out = {f"se_{key}": _ClusteredMean.estimate(block, codes[key])[2]
+               for key in ("symbol", "quote_date", "settlement")}
+        both = np.isfinite(out["se_symbol"]) & np.isfinite(out["se_quote_date"])
+        out["se"] = np.where(both, np.fmax(out["se_symbol"], out["se_quote_date"]), np.nan)
+        return out
 
 
 class _Experiment:
@@ -722,14 +751,24 @@ class _Experiment:
             raise ValueError(f"{len(late)} panel row(s) are dated or settle at or after end_before "
                              f"{self.end_before}: the screen reads none of them")
 
+    @staticmethod
+    def read_bounds(fields, config, end_before):
+        """Return the ``DateBoundedParquet`` bounds: the document's, lowered to ``end_before``.
+
+        One column serving as both the date and the end field takes the smaller of the two upper bounds.
+        """
+        date, end = fields["date"], fields["end"]
+        if date == end:
+            upper = {date: min(config["date_upper_exclusive"], config["end_upper_exclusive"])}
+        else:
+            upper = {date: config["date_upper_exclusive"], end: config["end_upper_exclusive"]}
+        return {k: {"end_before": min(v, end_before)} for k, v in upper.items()}
+
     def _read_extras(self, extra):
         from dskit.pipeline.libs.parquet import DateBoundedParquet
 
         c, f = self.config, self.fields
-        upper = {f["date"]: c["date_upper_exclusive"], f["end"]: c["end_upper_exclusive"]}
-        if f["date"] == f["end"]:
-            upper = {f["date"]: min(upper.values())}
-        bounds = {k: {"end_before": min(v, self.end_before)} for k, v in upper.items()}
+        bounds = self.read_bounds(f, c, self.end_before)
         columns = list(dict.fromkeys([*f["identity"], f["date"], f["end"], *extra]))
         frame = DateBoundedParquet(c["panel"], columns, bounds).read().to_pandas()
         if frame.duplicated(f["identity"]).any():
@@ -1059,6 +1098,11 @@ class StrikeRegionScores(Node):
     def _score_cell(self, cell):
         w = self.world
         exp, root, groups, arm = w.exp, cell["root"], cell["groups"], cell["arm_spec"]
+        mapping = self.params.get("ticker_groups")
+        unmapped = sorted(set(groups) - set(mapping or groups))
+        if unmapped:
+            raise ValueError(f"admitted symbol(s) {unmapped} are missing from ticker_groups: map every admitted "
+                             "symbol, or give an empty mapping for the 'all' group only")
         metadata = json.loads((root / "fit" / "metadata.json").read_text())
         arrays, medians = exp._arrays(cell["bands"], arm, groups, REGIME)
         if medians != metadata["medians"]:
@@ -1074,6 +1118,9 @@ class StrikeRegionScores(Node):
                 self._sample(len(cell["bands"][position]), band))
         self._check_stored(cell, rows["val"], mixtures["val"])
         summary = json.loads((root / "completed" / "summary.json").read_text())
+        if summary["checkpoint"] != cell["checkpoint"]:
+            raise IntegrityError(f"{cell['name']}: the completed summary checkpoint {summary['checkpoint']} is not "
+                                 f"the fit manifest's {cell['checkpoint']}")
         curves = {"cell": cell["name"], "arm": cell["arm"], "candidate": cell["candidate"], "fold": cell["fold"],
                   "regime": REGIME, "parameters": summary["parameters"], "total_epochs": summary["total_epochs"],
                   "best_epochs": summary["best_epochs"], "elapsed_seconds": metadata["elapsed_seconds"],
@@ -1187,7 +1234,8 @@ class StrikeRegionScores(Node):
 
         Compared on the validation identities: the mixture ``weights``, ``means`` and ``scales`` of every
         component against the stored columns (absolute difference at most :data:`MIXTURE_ATOL`), then the
-        model and baseline ``crps`` (within ``stored_tolerance``); the identity sets must be equal.
+        model and baseline ``crps``, ``tail_crps`` and ``weighted_crps`` (within ``stored_tolerance``); the
+        identity sets must be equal.
         """
         f, tol = self.world.fields, self.params["stored_tolerance"]
         stored = pd.concat([pd.read_parquet(cell["root"] / "scores" / t / "scores.parquet") for t in cell["groups"]])
@@ -1209,9 +1257,10 @@ class StrikeRegionScores(Node):
             if not np.allclose(joined[name], joined[f"{name}_stored"], rtol=0, atol=MIXTURE_ATOL):
                 raise IntegrityError(f"{cell['name']}: the restored mixture column {name} differs from the "
                                      f"stored parameters beyond {MIXTURE_ATOL}")
-        joined = val.merge(stored[[*keys, "model_crps", "baseline_crps"]], on=keys, how="inner",
-                           suffixes=("", "_stored"), validate="one_to_one")
-        for who in ("model", "baseline"):
-            if not np.allclose(joined[f"{who}_crps"], joined[f"{who}_crps_stored"], rtol=tol, atol=tol):
-                raise IntegrityError(f"{cell['name']}: re-scored {who} validation CRPS differs from the "
+        scores = [f"{who}_{m}" for who in ("model", "baseline") for m in ("crps", "tail_crps", "weighted_crps")]
+        joined = val.merge(stored[[*keys, *scores]], on=keys, how="inner", suffixes=("", "_stored"),
+                           validate="one_to_one")
+        for name in scores:
+            if not np.allclose(joined[name], joined[f"{name}_stored"], rtol=tol, atol=tol):
+                raise IntegrityError(f"{cell['name']}: re-scored validation {name} differs from the "
                                      f"stored shards beyond {tol}")
