@@ -334,15 +334,23 @@ class _PriceBasis:
     def _snap(median):
         """Return ``(factor, snapped, residual)``: the nearest simple fraction only if exact, else the median.
 
+        The fraction is sought on the reciprocal first (a 4:1 split gives 0.25, found as 1/4) and on
+        the median itself second (a 1:30 reverse split on top of a 1:12 gives 360, a denominator-1
+        fraction the reciprocal search cannot reach because 1/360 rounds to zero at the limit).
+
         ``residual`` is the relative distance between the factor used and the measured median (0 for
         an unsnapped median, at most :data:`SNAP_TOLERANCE` for a snapped one).
         """
         from fractions import Fraction
 
-        simple = float(1 / Fraction(1 / median).limit_denominator(_SNAP_DENOMINATOR))
-        residual = abs(simple / median - 1)
-        if residual <= SNAP_TOLERANCE:
-            return simple, True, residual
+        inverse = Fraction(1 / median).limit_denominator(_SNAP_DENOMINATOR)
+        direct = Fraction(median).limit_denominator(_SNAP_DENOMINATOR)
+        for simple in (float(1 / inverse) if inverse else None, float(direct) if direct else None):
+            if simple is None:
+                continue                       # a reciprocal (or a median) that rounds to zero is no fraction
+            residual = abs(simple / median - 1)
+            if residual <= SNAP_TOLERANCE:
+                return simple, True, residual
         return median, False, 0.0
 
 
