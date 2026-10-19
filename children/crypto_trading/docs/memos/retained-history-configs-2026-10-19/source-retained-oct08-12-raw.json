@@ -1,0 +1,9 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/retained-history-20261019/oct08-12",
+  "as_of": "2026-10-19T00:00:00Z",
+  "stream": "files",
+  "include": [
+    "decision-*.jsonl"
+  ],
+  "notes": "Derived bounded Oct8-12 decision features. Frozen W4 GRU; no post-cutoff market labels."
+}

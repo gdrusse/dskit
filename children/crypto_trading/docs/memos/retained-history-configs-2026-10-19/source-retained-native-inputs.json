@@ -1,0 +1,10 @@
+{
+  "path": "/home/russell",
+  "as_of": "2026-10-19T00:00:00Z",
+  "stream": "files",
+  "include": [
+    "data/crypto_trading/research/executable-cells-20261018/poly-books.parquet",
+    "pmquant_data/history/poly_live/hrparts_wss/20261017T23.parquet"
+  ],
+  "notes": "Pinned previous native extraction plus one completed previously excluded hour; existing native BTC metadata endsOct17 23:30. All label exposure retrospective."
+}
