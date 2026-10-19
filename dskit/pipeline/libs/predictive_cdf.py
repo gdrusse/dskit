@@ -2710,6 +2710,128 @@ class NGBoostCDF(CDFEstimator):
         return MixtureCurve(np.ones((len(loc), 1)), loc[:, None], scale[:, None])
 
 
+class _EagerBatch:
+    """One mini-batch's forward, loss, backward and clip, run op by op (the reference path).
+
+    Parameters
+    ----------
+    owner : MixtureMLPCDF
+        The estimator whose ``_train_batch`` is the step.
+    model : torch.nn.Module
+        The network being trained.
+    optimizer : torch.optim.Optimizer
+        The optimizer whose gradients the step fills; it is stepped by the caller.
+    tensors : tuple
+        The full ``(features, targets, heads)`` tensors the step gathers from.
+    context : object
+        The owner's training context.
+
+    Examples
+    --------
+    One epoch's steps, the caller stepping the optimizer::
+
+        stepper = _EagerBatch(estimator, model, optimizer, (xx, yy, hh), context)
+        loss, code = stepper.run(order[:512])
+        optimizer.step()
+    """
+
+    path = "eager"
+
+    def __init__(self, owner, model, optimizer, tensors, context):
+        self.owner, self.model, self.optimizer = owner, model, optimizer
+        self.tensors, self.context = tensors, context
+        self.fallback = None
+
+    def run(self, ix):
+        """Return the batch's ``(loss, fault code)`` with ``model`` gradients filled."""
+        return self.owner._train_batch(
+            self.model, self.optimizer, self.tensors, ix, self.context)
+
+
+class _GraphedBatch(_EagerBatch):
+    """The same step replayed from one CUDA graph for full batches (ADR-0270).
+
+    The graph holds forward, loss, backward and gradient clipping for the fixed
+    full-batch shape, with the row indices as its only input; the optimizer step
+    stays outside it, eager, so the update arithmetic is untouched. A shorter
+    last batch runs eagerly. The graph executes the very kernels the eager step
+    launches, so the losses and weights are bit-identical. Capture runs a few
+    warm-up steps, then restores the weights, buffers and random generators it
+    touched, so the training that follows starts exactly where the eager path would.
+
+    Raises
+    ------
+    Exception
+        Whatever warm-up or capture raises (an operation that cannot be captured,
+        out of memory): the caller then trains eagerly.
+    """
+
+    path = "cuda_graph"
+    _WARMUP_STEPS = 3
+
+    def __init__(self, owner, model, optimizer, tensors, context):
+        super().__init__(owner, model, optimizer, tensors, context)
+        import torch
+        self.batch = owner.batch_size
+        self.parameters = list(model.parameters())
+        self.index = torch.arange(self.batch, device=tensors[0].device)
+        saved = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        generators = (torch.get_rng_state(), torch.cuda.get_rng_state(tensors[0].device))
+        captured = False
+        try:
+            self._capture()
+            captured = True
+        finally:
+            if not captured:
+                self._heal_generator(tensors[0].device)
+            with torch.no_grad():
+                for key, value in model.state_dict().items():
+                    value.copy_(saved[key])
+            torch.set_rng_state(generators[0])
+            torch.cuda.set_rng_state(generators[1], tensors[0].device)
+        self.gradients = [p.grad for p in self.parameters]
+        self._detached = False
+
+    @staticmethod
+    def _heal_generator(device):
+        """Leave graph-capture mode in the device's random generator after a failed capture.
+
+        A capture that dies midway leaves the generator believing a capture is
+        still open, so every later random draw (the next epoch's permutation)
+        raises; one small successful capture clears it.
+        """
+        import torch
+        with torch.cuda.graph(torch.cuda.CUDAGraph()):
+            torch.zeros(1, device=device)
+
+    def _capture(self):
+        """Warm up on a side stream, then record one full-batch step."""
+        import torch
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(self._WARMUP_STEPS):
+                super().run(self.index)
+        torch.cuda.current_stream().wait_stream(side)
+        self.graph = torch.cuda.CUDAGraph()
+        # The capture stream is the warm-up stream: one autograd stream throughout.
+        with torch.cuda.graph(self.graph, stream=side):
+            self.loss, self.code = super().run(self.index)
+
+    def run(self, ix):
+        """Replay the graph for a full batch; run any other size eagerly."""
+        if len(ix) != self.batch:
+            self._detached = True
+            return super().run(ix)
+        if self._detached:
+            for parameter, gradient in zip(self.parameters, self.gradients):
+                parameter.grad = gradient
+            self._detached = False
+        self.index.copy_(ix)
+        self.graph.replay()
+        return self.loss, self.code
+
+
 class _PatienceStop:
     """Early-stopping rule over a monitored loss, with best-weight restore.
 
@@ -3159,6 +3281,22 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         code = torch.where(torch.isfinite(loss), torch.where(torch.isfinite(norm), 0, 2), 1)
         return loss, code
 
+    def _graph_capable(self, model):
+        """Say whether training may replay a CUDA graph: a CUDA device and a training-mode net."""
+        return self.device.startswith("cuda") and model.training
+
+    def _batch_stepper(self, model, optimizer, tensors, context):
+        """Return the step runner: a CUDA graph when capturable, else the eager reference."""
+        arguments = (self, model, optimizer, tensors, context)
+        if not self._graph_capable(model) or len(tensors[0]) < self.batch_size:
+            return _EagerBatch(*arguments)
+        try:
+            return _GraphedBatch(*arguments)
+        except Exception as error:
+            stepper = _EagerBatch(*arguments)
+            stepper.fallback = f"{type(error).__name__}: {error}"
+            return stepper
+
     def _refuse_fault(self, fault):
         """Raise the first non-finite fault an epoch recorded (a zero code is clean)."""
         code = int(fault.item())
@@ -3183,7 +3321,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         training_context = self._training_context(x)
         monitor = None if self.patience is None else self._monitor_set(cal_x, cal_y)
         self.models, self.losses, self.monitor_losses, self.best_epochs = [], [], [], []
-        self.training_diagnostics = []
+        self.training_diagnostics, self.step_paths = [], []
         diagnostic_monitor = (self._monitor_set(cal_x, cal_y)
                               if self.training_telemetry and monitor is None else monitor)
         for seed in self.seeds:
@@ -3200,6 +3338,8 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                                           weight_decay=self.weight_decay)
             losses = []
             stop = None if monitor is None else _PatienceStop(self.patience)
+            stepper = self._batch_stepper(model, optimizer, (xx, yy, hh), training_context)
+            self.step_paths.append(stepper.path)
             for _ in range(self.epochs):
                 order = torch.randperm(len(xx), device=self.device)
                 # Epoch sums stay on the device: one host read per epoch, not three per step.
@@ -3207,8 +3347,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                 fault = torch.zeros((), dtype=torch.int64, device=self.device)
                 for start in range(0, len(xx), self.batch_size):
                     ix = order[start:start+self.batch_size]
-                    loss, code = self._train_batch(
-                        model, optimizer, (xx, yy, hh), ix, training_context)
+                    loss, code = stepper.run(ix)
                     optimizer.step()
                     steps += 1
                     total += loss.detach().double()*len(ix)
@@ -3232,11 +3371,14 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                             for p, v in zip(model.parameters(), initial))**.5
                 self.training_diagnostics.append({"parameters": parameter_count,
                     "optimizer_steps": steps, "parameter_delta_l2": delta,
-                    "epoch_zero_monitor_loss": epoch_zero, "finite_gradients": True})
+                    "epoch_zero_monitor_loss": epoch_zero, "finite_gradients": True,
+                    "step_path": stepper.path,
+                    **({} if stepper.fallback is None
+                       else {"step_path_fallback": stepper.fallback})})
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
-        del xx, yy, hh, optimizer, order, loss, ix
+        del xx, yy, hh, optimizer, order, loss, ix, stepper
         gc.collect()
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()

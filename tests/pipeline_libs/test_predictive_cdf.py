@@ -4242,9 +4242,9 @@ def _speed_fit(kind, device="cpu", **settings):
     cal = np.random.default_rng(4)
     cal_x, cal_y = cal.normal(size=(9, 4)), 3*cal.normal(size=9)
     encoder = copy.deepcopy(_EXTERNAL_ENCODER if kind == "external" else _ZOO_ENCODERS[kind])
-    model = predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES, **{
+    model = predictive_cdf.TorchCDF(encoder=encoder, **{
         "components": 2, "hidden": [4], "epochs": 3, "batch_size": 5, "seeds": [7, 8],
-        "device": device, "deterministic": True, **settings})
+        "device": device, "deterministic": True, "losses": _ZOO_LOSSES, **settings})
     model.fit_decision_context(_zoo_context(14), _zoo_context(9, "c"))
     return model.fit(x, y, cal_x, cal_y)
 
@@ -4400,6 +4400,136 @@ def test_sequence_encoder_with_no_context_columns_still_gathers_an_empty_context
     module = model._build_module(4)
     assert module.context_index.shape == (0,)
     assert module(torch.zeros(3, 4)).shape == (3, 6)
+
+
+def _cuda_or_skip(monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    return torch
+
+
+def _eager_and_graph(monkeypatch, kind="mlp", **settings):
+    """Fit the same model on CUDA with the graph path forced off, then left on."""
+    torch = _cuda_or_skip(monkeypatch)
+    with monkeypatch.context() as patch:
+        patch.setattr(predictive_cdf.MixtureMLPCDF, "_graph_capable", lambda self, model: False)
+        eager = _speed_fit(kind, device="cuda", training_telemetry=True, **settings)
+    graph = _speed_fit(kind, device="cuda", training_telemetry=True, **settings)
+    assert torch.cuda.is_available()
+    return eager, graph
+
+
+def _assert_same_fit(eager, graph):
+    assert graph.losses == eager.losses
+    assert graph.monitor_losses == eager.monitor_losses
+    assert _weights_sha256(graph) == _weights_sha256(eager)
+    assert graph._equivalence_state() == eager._equivalence_state()
+
+
+@pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn", "external"])
+def test_cuda_fit_replays_a_graph_and_is_bit_identical_to_the_eager_path(kind, monkeypatch):
+    eager, graph = _eager_and_graph(monkeypatch, kind)
+    assert eager.step_paths == ["eager", "eager"]
+    assert graph.step_paths == ["cuda_graph", "cuda_graph"]
+    assert [d["step_path"] for d in graph.training_diagnostics] == ["cuda_graph", "cuda_graph"]
+    _assert_same_fit(eager, graph)
+
+
+@pytest.mark.parametrize("losses", [
+    [{"kind": "nll", "weight": 1.}, {"kind": "decision_brier", "weight": .5}],
+    [{"kind": "crps", "weight": 1.}, {"kind": "decision_log", "weight": .5}],
+    [{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": .5}],
+    [{"kind": "nll", "weight": 1.}, {"kind": "tail_crps", "weight": .5}],
+    [{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.},
+     {"kind": "decision_brier", "weight": .25}]])
+def test_every_loss_variant_trains_identically_through_the_graph(losses, monkeypatch):
+    eager, graph = _eager_and_graph(monkeypatch, "mlp", losses=losses)
+    assert graph.step_paths == ["cuda_graph"]*2
+    _assert_same_fit(eager, graph)
+
+
+@pytest.mark.parametrize("settings", [
+    {"dropout": .25},
+    {"mask_constant_features": True},
+    {"patience": 2, "epochs": 60, "learning_rate": .05, "seeds": [7]},
+    {"batch_size": 7},
+    {"batch_size": 14}])
+def test_graph_path_matches_eager_across_model_settings_and_batch_shapes(settings, monkeypatch):
+    eager, graph = _eager_and_graph(monkeypatch, "mlp", **settings)
+    assert set(graph.step_paths) == {"cuda_graph"}
+    _assert_same_fit(eager, graph)
+
+
+def test_student_family_builds_constants_per_step_so_it_trains_eagerly_and_identically(monkeypatch):
+    eager, fallen = _eager_and_graph(monkeypatch, "mlp", family=dict(_STUDENT))
+    assert fallen.step_paths == ["eager"]*2
+    assert all("CUDA graph capture" in d["step_path_fallback"] for d in fallen.training_diagnostics)
+    _assert_same_fit(eager, fallen)
+
+
+def test_graph_path_keeps_the_per_ticker_head_gather(monkeypatch):
+    torch = _cuda_or_skip(monkeypatch)
+    rng = np.random.default_rng(2)
+    tasks = np.arange(18) % 3
+    x = np.column_stack([rng.normal(size=(18, 4)), np.eye(3)[tasks]])
+    y = rng.normal(size=18)*(1+tasks)
+    context = _zoo_context(18)
+
+    def fit():
+        model = _zoo_torch("mlp", device="cuda", feature_indices=[0, 1, 2, 3],
+                           head_features=[4, 5, 6], batch_size=5)
+        return model.fit_decision_context(context, context).fit(x, y, x, y)
+    with monkeypatch.context() as patch:
+        patch.setattr(predictive_cdf.MixtureMLPCDF, "_graph_capable", lambda self, model: False)
+        eager = fit()
+    graph = fit()
+    assert graph.step_paths == ["cuda_graph"] and torch.cuda.is_available()
+    _assert_same_fit(eager, graph)
+
+
+def test_a_batch_larger_than_the_data_never_builds_a_graph(monkeypatch):
+    _cuda_or_skip(monkeypatch)
+    model = _speed_fit("mlp", device="cuda", batch_size=64, seeds=[7], epochs=2)
+    assert model.step_paths == ["eager"]
+
+
+def test_cpu_fit_takes_the_eager_path_and_says_so():
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    model = _speed_fit("mlp", training_telemetry=True)
+    assert model.step_paths == ["eager", "eager"]
+    assert [d["step_path"] for d in model.training_diagnostics] == ["eager", "eager"]
+    assert all("step_path_fallback" not in d for d in model.training_diagnostics)
+
+
+def test_the_step_path_is_not_part_of_the_equivalence_identity(monkeypatch):
+    eager, graph = _eager_and_graph(monkeypatch, "mlp")
+    assert "step_path" not in json.dumps(graph._equivalence_settings())
+    assert graph._equivalence_state() == eager._equivalence_state()
+
+
+def test_a_loss_that_cannot_be_captured_falls_back_to_eager_and_records_why(monkeypatch):
+    torch = _cuda_or_skip(monkeypatch)
+    original = predictive_cdf._CDFCRPS.values
+
+    def syncing(self, y, logw, mu, sigma, context):
+        values, eligible = original(self, y, logw, mu, sigma, context)
+        values.sum().item()  # a host read: illegal while a graph is being captured
+        return values, eligible
+    with monkeypatch.context() as patch:
+        patch.setattr(predictive_cdf.MixtureMLPCDF, "_graph_capable", lambda self, model: False)
+        eager = _speed_fit("mlp", device="cuda", training_telemetry=True)
+    with monkeypatch.context() as patch:
+        patch.setattr(predictive_cdf._CDFCRPS, "values", syncing)
+        fallen = _speed_fit("mlp", device="cuda", training_telemetry=True)
+    assert fallen.step_paths == ["eager", "eager"]
+    reasons = [d["step_path_fallback"] for d in fallen.training_diagnostics]
+    assert len(reasons) == 2 and all(isinstance(r, str) and r for r in reasons)
+    _assert_same_fit(eager, fallen)
+    again = _speed_fit("mlp", device="cuda", training_telemetry=True)  # CUDA is still usable
+    assert again.step_paths == ["cuda_graph"]*2 and torch.cuda.is_available()
 
 
 @pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])
