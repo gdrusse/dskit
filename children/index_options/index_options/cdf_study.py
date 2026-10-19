@@ -3440,9 +3440,11 @@ class ExactExpiryCDFPanel:
         lifecycle = pd.read_parquet(files.path(c["lifecycle"]))
         keys = ["symbol", "quote_date", "expiry"]
         meta = surface.merge(lifecycle, on=keys, validate="one_to_one")
+        del surface, lifecycle            # each merge builds a new full frame: hold one at a time
         if c.get("chain_features"):
             chain_features = pd.read_parquet(files.path(c["chain_features"]))
             meta = meta.merge(chain_features, on=keys, validate="one_to_one")
+            del chain_features
         if c.get("surface_features", False):
             meta = self.add_surface_features(meta)
         return self._within_horizon(meta, c["max_dte"], self.conventions["calendar_pad_days"])
@@ -3732,13 +3734,14 @@ class ExactExpiryCDFPanel:
             refused[symbol]["missing_reference"] = int((~good).sum())
             refused[symbol]["iv_for_train_only_imputation"] = int(rows.own_iv.isna().sum())
             panels.append(rows[good].copy())
+        # The metadata frame is a copy source only: release it before the per-name frames are
+        # joined, and those before the wide blocks are built (ADR-0270 amendment, one-pass tail).
+        del meta
+        rows = None
         self.refused = refused
         self.source_hashes = self._source_hashes(files)
         result = pd.concat(panels, ignore_index=True)
-        # The metadata and per-name frames are dead weight from here; release them
-        # before the wide blocks are built (ADR-0270 amendment, one-pass tail).
-        del panels, meta
-        rows = None
+        del panels
         symbols = list(c["symbols"])
         one_hot = pd.DataFrame(
             (result.symbol.to_numpy()[:, None] == np.asarray(symbols, dtype=object)[None, :]
