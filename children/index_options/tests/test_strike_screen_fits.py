@@ -812,6 +812,42 @@ def test_the_block_shift_is_120_sessions_in_the_script_the_runbook_and_the_recor
         assert json.loads(record.read_text())["shift_sessions"] == 120
 
 
+def test_the_arrow_block_shift_equals_the_pandas_reference_on_a_gapped_multi_symbol_panel(tmp_path):
+    pd = pytest.importorskip("pandas")
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("pyarrow")
+    from pandas.testing import assert_frame_equal
+    module = _module("make_block_shift_panel")
+    rng = np.random.default_rng(3)
+    rows = []
+    for symbol, sessions in (("AAA", 9), ("BBB", 7), ("CCC", 2)):          # CCC is shorter than the shift: all its rows drop
+        for day in range(sessions):
+            if symbol == "BBB" and day == 3:
+                continue                                                  # a gap: no session for BBB on that day
+            for expiry, horizon in ((1, 7.0), (2, 7.0), (3, 14.0)):       # two expiries share a horizon (the first by expiry wins)
+                reference = float(rng.uniform(1, 2))
+                rows.append({"symbol": symbol, "quote_date": f"2020-01-{day + 1:02d}", "expiry": f"2020-02-{expiry:02d}",
+                             "settlement_date": f"2020-02-{expiry:02d}", "actual_calendar_dte": horizon,
+                             "terminal_return": float(rng.normal()), "reference_scale": reference,
+                             "count": int(rng.integers(0, 9)), "flag": bool(day % 2), "note": f"n{day}", "gappy": float("nan") if day == 4 else 1.5})
+    source = pd.DataFrame(rows).sample(frac=1.0, random_state=5).reset_index(drop=True)       # unsorted on disk
+    panel = tmp_path / "panel.parquet"
+    source.to_parquet(panel, index=False)
+    shift = 2
+    reference, dropped = module.shifted(pd.read_parquet(panel), shift)
+    assert 0 < dropped < len(source)
+    old = tmp_path / "old.parquet"
+    reference.to_parquet(old, index=False)
+    assert module.main(["--panel", str(panel), "--output-dir", str(tmp_path / "new"), "--shift", str(shift)]) == 0
+    new = pd.read_parquet(tmp_path / "new" / "frame.parquet")
+    assert_frame_equal(new, pd.read_parquet(old), check_exact=True, check_index_type=True)
+    assert list(new.columns) == list(source.columns) and len(new) == len(source) - dropped
+    record = json.loads((tmp_path / "new" / "record.json").read_text())
+    assert (record["rows_in"], record["rows_out"], record["rows_dropped"]) == (len(source), len(new), dropped)
+    assert set(record) == {"source_panel", "source_sha256", "shift_sessions", "rows_in", "rows_out", "rows_dropped",
+                           "frame_sha256", "holdout_excluded_from"}
+
+
 def _wall_functions(readme):
     start, end = readme.index("# BEGIN wall-budget"), readme.index("# END wall-budget")
     return "\n".join(line[4:] if line.startswith("    ") else line for line in readme[start:end].splitlines())
