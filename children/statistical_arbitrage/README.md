@@ -19,7 +19,9 @@ benchmark. MSFT/NVDA and Energy are separate later additions through JSON.
   refits on labels known before each block, scored per chronological fold
   against an expanding mean; the development document tunes one alpha on 2020
   (frozen in `configs/prediction-development-selection.json`), the validation
-  document scores 2021–2025 once. No trade rule, P&L or edge claim.
+  document scores 2021–2025 once; `run-tech-prediction-validation-offset1.json`
+  is the disclosed post-hoc next-session-label robustness run. No trade rule,
+  P&L or edge claim.
 - `statistical_arbitrage/{data,network,surface,backtest,report}.py` wraps
   generic DSKit readers, graph, pair spread and option ledger mechanisms.
 - `docs/decisioning/` records scope; `docs/memos/` records evaluation.
@@ -47,6 +49,9 @@ evaluation reports annual edge selection frequency from fitted windows.
 ```bash
 PYTHONPATH=children/statistical_arbitrage:. python -m dskit.pipeline run children/statistical_arbitrage/configs/run-tech-prediction-validation.json --asof <YYYY-MM-DD>
 ```
+
+Every write node declares `overwrite: false`: a rerun into an existing output
+directory refuses, and new paths change the document hash.
 
 Both documents read the replay's pinned structural JSONL by SHA-256
 (`RecordsFile`), rebuild the all-pairs spreads, label them with
