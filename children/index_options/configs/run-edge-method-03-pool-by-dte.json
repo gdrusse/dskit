@@ -1,6 +1,6 @@
 {
   "name": "edge-method-03-pool-by-dte",
-  "notes": "ADR-0270 ten edge methods (2026-10-20). A GridCDFMethod document over the R1 walk-forward scored rows (TCN chain arm, shared head, seed 11, five yearly folds; scores/strike-region-scores-wf-r1/rows.parquet, sha256 pinned). The method builds one new forecast on the 13-point z grid per fold; learning is causal (prior_validation: earlier folds' validation rows whose settlement precedes the target fold's first validation date; fit_band: the fold's own training-window rows). Fold 1 (2019 warm-up) has no earlier evidence for prior_validation methods and keeps the fallback (flagged, never ranked, Path A0008). Score: Path A0002 twCRPS on the grid (weights 1 on |z| 0.5-2.5, tapering to 0.25), CRPS13 and region Brier on the 14 grid regions; edges against the raw market, the recalibrated market (21-knot PIT map per fold, the analysis-stage comparator) and the R1 model. Tables per (ticker, DTE week, strike region) and (ticker, DTE week) are descriptive (A0002 keeps regions a decomposition); the A0007 gate per (ticker, expiry rank) comes from the walk-forward analysis script run with --method-rows. Predictability only. end_before 2024-01-01 (holdout sealed). Run from children/index_options: python -m dskit.pipeline run configs/<this file> --asof 2023-12-31. M03 linear pool with one weight per DTE week: the model leads the market at ranks 5-8 and loses at ranks 1-3, so the weight should rise with DTE.",
+  "notes": "ADR-0270 ten edge methods (2026-10-20). A GridCDFMethod document over the R1 walk-forward scored rows (TCN chain arm, shared head, seed 11, five yearly folds; scores/strike-region-scores-wf-r1/rows.parquet, sha256 pinned). The method builds one new forecast on the 13-point z grid per fold; learning is causal (prior_validation: earlier folds' validation rows whose settlement precedes the target fold's first validation date; fit_band: the fold's own training-window rows). Fold 1 (2019 warm-up) has no earlier evidence for prior_validation methods and keeps the fallback (flagged, never ranked, Path A0008). Score: Path A0002 twCRPS on the grid (weights 1 on |z| 0.5-2.5, tapering to 0.25), CRPS13 and region Brier on the 14 grid regions; edges against the raw market, the recalibrated market (21-knot PIT map per fold, the analysis-stage comparator), the per-name and pooled baselines and the base model, by DTE week, ticker, strike zone and time range (year, regime). Tables per (ticker, DTE week, strike region) and (ticker, DTE week) are descriptive (A0002 keeps regions a decomposition); the A0007 gate per (ticker, expiry rank) comes from the walk-forward analysis script run with --method-rows. Predictability only. end_before 2024-01-01 (holdout sealed). Run from children/index_options: python -m dskit.pipeline run configs/<this file> --asof 2023-12-31. M03 linear pool with one weight per DTE week: the model leads the market at ranks 5-8 and loses at ranks 1-3, so the weight should rise with DTE.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/run-edge-method-03-pool-by-dte",
     "notes": "The pipeline run directory; the tables go to the node's output. Excluded from the identity hash."
@@ -189,6 +189,8 @@
         "comparators": [
           "market",
           "market_cal",
+          "baseline",
+          "pooled",
           "model"
         ],
         "tables": [
@@ -307,10 +309,112 @@
                 13
               ]
             }
+          },
+          {
+            "name": "ticker_year",
+            "by": [
+              "symbol",
+              "year"
+            ],
+            "regions": false,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
+          },
+          {
+            "name": "year_dte_zone",
+            "by": [
+              "year",
+              "dte_bucket"
+            ],
+            "regions": false,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
+          },
+          {
+            "name": "period_dte_zone",
+            "by": [
+              "period",
+              "dte_bucket"
+            ],
+            "regions": false,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
           }
         ]
       },
-      "notes": "DTE weeks 1-7 ... 43-49 and 50-60 (weekly expiry ranks 1-8 for weekly names); strike zones group the 14 grid regions: left_wing z <= -1.5, left_shoulder -1.5..-0.5, body -0.5..0.5, right_shoulder 0.5..1.5, right_wing > 1.5 (each zone's score is the per-row sum of its regions' Brier scores); periods are the A0007 regimes; comparators market (raw), market_cal (recalibrated) and model (R1)."
+      "notes": "DTE weeks 1-7 ... 43-49 and 50-60 (weekly expiry ranks 1-8 for weekly names); strike zones group the 14 grid regions: left_wing z <= -1.5, left_shoulder -1.5..-0.5, body -0.5..0.5, right_shoulder 0.5..1.5, right_wing > 1.5 (each zone's score is the per-row sum of its regions' Brier scores); periods are the A0007 regimes; comparators market (raw), market_cal (recalibrated), baseline (per-name horizon empirical), pooled (pooled standardized empirical) and model (the base TCN). Every result is a predictive score difference; no trading or P&L."
     }
   }
 }
