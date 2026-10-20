@@ -32,6 +32,52 @@ def test_no_future_signal_can_change_past_intent():
     assert a[0]["entry_date"] == b[0]["entry_date"] == days[1]
 
 
+def test_refused_next_session_entry_frees_the_book_for_later_signal():
+    days = ["2021-01-04", "2021-01-05", "2021-01-06", "2021-01-07", "2021-01-08"]
+    rows = [
+        {"date": days[0], "symbol_a": "AAPL", "symbol_b": "AMZN", "z": 2.2, "status": "ok"},
+        {"date": days[1], "symbol_a": "AAPL", "symbol_b": "GOOGL", "z": 2.3, "status": "ok"},
+    ]
+    bt = VolatilityArbitrageBacktester(entry_z=2, stop_z=4, max_hold_sessions=20)
+    got = bt.intents(rows, days, accepted_entries={"2021-01-05:AAPL:GOOGL"})
+    assert len(got) == 1
+    assert got[0]["entry_date"] == days[2]
+    assert got[0]["symbol_b"] == "GOOGL"
+
+
+def test_observed_corporate_action_and_known_expiry_deadline_trigger_future_exit():
+    days = ["2021-01-04", "2021-01-05", "2021-01-06", "2021-01-07"]
+    signal = {"date": days[0], "symbol_a": "AAPL", "symbol_b": "AMZN",
+              "z": 2.2, "status": "ok"}
+    bt = VolatilityArbitrageBacktester(entry_z=2, stop_z=4, max_hold_sessions=20)
+    identity = "2021-01-04:AAPL:AMZN"
+    base = bt.intents([signal], days, latest_exit={identity: days[3]})
+    assert base[0]["exit_date"] == days[3]
+    assert base[0]["exit_reason"] == "expiry_or_year_boundary"
+    event = {"date": days[1], "symbol": "AAPL", "dividend_amount": 0.1}
+    reactive = bt.intents([signal], days, latest_exit={identity: days[3]},
+                          corporate_events=[event])
+    assert reactive[0]["exit_date"] == days[2]
+    assert reactive[0]["exit_reason"] == "corporate_event_observed"
+
+
+def test_future_exit_and_corporate_action_do_not_gate_entry():
+    intent = {"symbol_a": "AAPL", "symbol_b": "AMZN", "short_symbol": "AAPL",
+              "long_symbol": "AMZN", "decision_date": "2021-12-20",
+              "entry_date": "2021-12-21", "exit_date": "2022-01-03",
+              "exit_reason": "mean_cross", "entry_z": 2.2}
+    surface = [{"date": "2021-12-21", "symbol": symbol, "status": "ok",
+                "expiration": "2022-01-21", "atm_strike": strike, "atm_iv": 0.3,
+                "forward": strike, "dte": 31}
+               for symbol, strike in (("AAPL", 100.0), ("AMZN", 200.0))]
+    bt = VolatilityArbitrageBacktester(entry_z=2, stop_z=4, max_hold_sessions=20)
+    base = bt.pair_orders([intent], surface, max_contracts=5, max_vega_mismatch=0.5)
+    changed = bt.pair_orders([intent], surface, max_contracts=5, max_vega_mismatch=0.5,
+                             corporate_events=[{"date": "2021-12-29", "symbol": "AAPL",
+                                                "dividend_amount": 0.2}])
+    assert base["summary"]["accepted"] == changed["summary"]["accepted"] == 1
+
+
 def test_pair_orders_match_expiry_and_vega_by_integer_contracts():
     intent = {"symbol_a": "AAPL", "symbol_b": "AMZN",
               "short_symbol": "AAPL", "long_symbol": "AMZN",
@@ -175,7 +221,7 @@ def test_report_rejects_trade_outside_declared_close_cohort():
         )
 
 
-def test_pair_orders_refuse_corporate_event_during_hold():
+def test_pair_orders_refuse_corporate_event_observed_on_entry():
     intent = {"symbol_a": "AAPL", "symbol_b": "AMZN",
               "short_symbol": "AAPL", "long_symbol": "AMZN",
               "decision_date": "2021-01-04", "entry_date": "2021-01-05",
@@ -189,7 +235,7 @@ def test_pair_orders_refuse_corporate_event_during_hold():
     bt = VolatilityArbitrageBacktester(entry_z=2, stop_z=4, max_hold_sessions=20)
     out = bt.pair_orders(
         [intent], surface, max_contracts=5, max_vega_mismatch=0.05,
-        corporate_events=[{"date": "2021-01-11", "symbol": "AAPL",
+        corporate_events=[{"date": "2021-01-05", "symbol": "AAPL",
                            "dividend_amount": 0.2, "split_coefficient": 1.0}],
     )
     assert out["pairs"] == []
@@ -219,7 +265,7 @@ def test_pair_orders_use_last_rate_strictly_before_entry():
     assert out["pairs"][0]["hedge_rate"] == pytest.approx(0.001)
 
 
-def test_pair_orders_refuse_cross_year_and_wide_quotes():
+def test_pair_orders_allow_cross_year_and_refuse_wide_quotes():
     surface = [
         {"date": "2021-12-21", "symbol": symbol, "status": "ok", "target_dte": 30,
          "expiration": "2022-01-21", "atm_strike": strike, "atm_iv": 0.3,
@@ -232,9 +278,8 @@ def test_pair_orders_refuse_cross_year_and_wide_quotes():
               "exit_date": "2022-01-03", "exit_reason": "mean_cross", "entry_z": 2.2}
     bt = VolatilityArbitrageBacktester(entry_z=2, stop_z=4, max_hold_sessions=20)
     out = bt.pair_orders([intent], surface, max_contracts=5,
-                         max_vega_mismatch=0.05,
-                         max_half_spread_over_premium=0.10)
-    assert out["summary"]["refused"]["cross_year"] == 1
+                         max_vega_mismatch=0.05)
+    assert out["summary"]["accepted"] == 1
     intent["exit_date"] = "2021-12-29"
     out = bt.pair_orders([intent], surface, max_contracts=5,
                          max_vega_mismatch=0.05,
@@ -560,7 +605,7 @@ def test_replay_output_is_atomic_retryable_and_immutable(tmp_path, monkeypatch):
 
 
 def test_replay_six_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
-    """A single ledger sees all six books and annual and subfold scores are written."""
+    """One source pass feeds entry preflight and six-book final replay."""
     import hashlib
     import json
     from statistical_arbitrage.backtest import TechReplayPipeline
@@ -678,7 +723,7 @@ def test_replay_six_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "PairedOptionLedger", FakeLedger)
     result = TechReplayPipeline(config).run()
     assert chain.passes == 1
-    assert len(FakeLedger.calls) == 1
+    assert len(FakeLedger.calls) == 2
     assert set(result["books"]) == {"atm_network", "atm_correlation", "atm_baseline",
                                     "skew_network", "skew_correlation", "skew_baseline"}
     assert result["books"]["atm_network"]["annual"]["2021"]["model"]["total_return"] == pytest.approx(0.001)

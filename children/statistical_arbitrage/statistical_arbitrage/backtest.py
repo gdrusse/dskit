@@ -34,7 +34,39 @@ class VolatilityArbitrageBacktester:
         self.stop_z = float(stop_z)
         self.max_hold_sessions = int(max_hold_sessions)
 
-    def intents(self, signals: Iterable[dict], sessions: Iterable[str]) -> list[dict]:
+    def entry_candidates(self, signals: Iterable[dict], sessions: Iterable[str]) -> list[dict]:
+        """Rank a single entry decision per close without reserving future exposure."""
+        days = list(sessions)
+        if days != sorted(set(days)):
+            raise ValueError("sessions must be unique and ascending")
+        by_day: dict[str, list[dict]] = defaultdict(list)
+        for row in signals:
+            if row.get("status") == "ok" and isfinite(float(row.get("z", float("nan")))):
+                by_day[row["date"]].append(row)
+        candidates = []
+        for index, day in enumerate(days[:-1]):
+            choices = [row for row in by_day.get(day, [])
+                       if abs(float(row["z"])) >= self.entry_z]
+            choices.sort(key=lambda row: (-abs(float(row["z"])),
+                                          row["symbol_a"], row["symbol_b"]))
+            if not choices:
+                continue
+            chosen = choices[0]
+            a, b = chosen["symbol_a"], chosen["symbol_b"]
+            positive = float(chosen["z"]) > 0
+            candidates.append({
+                "symbol_a": a, "symbol_b": b, "decision_date": day,
+                "entry_date": days[index + 1], "short_symbol": a if positive else b,
+                "long_symbol": b if positive else a,
+                "direction": 1 if positive else -1, "entry_z": float(chosen["z"]),
+                "exit_date": None, "exit_reason": "open_at_end",
+            })
+        return candidates
+
+    def intents(self, signals: Iterable[dict], sessions: Iterable[str], *,
+                accepted_entries: set[str] | None = None,
+                latest_exit: dict[str, str] | None = None,
+                corporate_events: Iterable[dict] = ()) -> list[dict]:
         """Return next-session entry and exit intents, with no same-date fill.
 
         A single pair can be active for this research sleeve. Competing entry
@@ -47,9 +79,21 @@ class VolatilityArbitrageBacktester:
         for row in signals:
             if row.get("status") == "ok" and isfinite(float(row.get("z", float("nan")))):
                 by_day[row["date"]].append(row)
+        candidates = {row["decision_date"]: row
+                      for row in self.entry_candidates(signals, days)}
+        event_days = {(row.get("date"), row.get("symbol")) for row in corporate_events
+                      if row.get("split_coefficient", 1) != 1
+                      or row.get("dividend_amount", 0) != 0}
         planned: list[dict] = []
         active: dict | None = None
+        pending: dict | None = None
         for index, day in enumerate(days):
+            if pending is not None and pending["entry_date"] == day:
+                identity = (f"{pending['decision_date']}:{pending['symbol_a']}:"
+                            f"{pending['symbol_b']}")
+                if accepted_entries is None or identity in accepted_entries:
+                    active = dict(pending, entry_index=index)
+                pending = None
             today = by_day.get(day, [])
             if active is not None:
                 own = next((r for r in today if (r["symbol_a"], r["symbol_b"])
@@ -63,6 +107,14 @@ class VolatilityArbitrageBacktester:
                     reason = "stop_z"
                 elif index - active["entry_index"] >= self.max_hold_sessions - 1:
                     reason = "max_hold"
+                identity = (f"{active['decision_date']}:{active['symbol_a']}:"
+                            f"{active['symbol_b']}")
+                if reason is None and any((day, symbol) in event_days for symbol in
+                                          (active["short_symbol"], active["long_symbol"])):
+                    reason = "corporate_event_observed"
+                if (reason is None and latest_exit is not None and index + 1 < len(days)
+                        and days[index + 1] >= latest_exit[identity]):
+                    reason = "expiry_or_year_boundary"
                 if reason and index + 1 < len(days):
                     active["exit_date"] = days[index + 1]
                     active["exit_reason"] = reason
@@ -71,21 +123,7 @@ class VolatilityArbitrageBacktester:
                     active = None
                     continue
             if active is None and index + 1 < len(days):
-                choices = [r for r in today if abs(float(r["z"])) >= self.entry_z]
-                choices.sort(key=lambda r: (-abs(float(r["z"])), r["symbol_a"], r["symbol_b"]))
-                if choices:
-                    chosen = choices[0]
-                    positive = float(chosen["z"]) > 0
-                    a, b = chosen["symbol_a"], chosen["symbol_b"]
-                    active = {
-                        "symbol_a": a, "symbol_b": b, "decision_date": day,
-                        "entry_date": days[index + 1], "entry_index": index + 1,
-                        "short_symbol": a if positive else b,
-                        "long_symbol": b if positive else a,
-                        "direction": 1 if positive else -1,
-                        "entry_z": float(chosen["z"]),
-                        "exit_date": None, "exit_reason": "open_at_end",
-                    }
+                pending = candidates.get(day)
         if active is not None:
             planned.append({k: v for k, v in active.items()
                             if k not in {"direction", "entry_index"}})
@@ -110,9 +148,10 @@ class VolatilityArbitrageBacktester:
     ) -> dict:
         """Select matched next-session ATM straddles and integer vega quantities.
 
-        Surface rows decide contract selection at the entry date. A pair is
-        emitted only if both nodes offer the same expiry, an exit date before
-        that expiry, and acceptable initial vega matching.
+        Surface rows decide contract selection at the entry date. Eligibility
+        uses only entry-date facts: shared future expiry, quote quality, rate,
+        observed same-day corporate action and initial vega matching. The
+        scheduler sets the eventual exit after entry acceptance.
         """
         if max_contracts < 1 or not 0 <= max_vega_mismatch < 1:
             raise ValueError("invalid integer-contract or vega-mismatch limit")
@@ -143,15 +182,12 @@ class VolatilityArbitrageBacktester:
         for intent in intents:
             entry = intent["entry_date"]
             exit_day = intent.get("exit_date")
-            if exit_day is None or exit_day <= entry:
+            if exit_day is not None and exit_day <= entry:
                 refused["no_valid_exit"] += 1
-                continue
-            if entry[:4] != exit_day[:4]:
-                refused["cross_year"] += 1
                 continue
             if any(
                 event.get("symbol") in {intent["short_symbol"], intent["long_symbol"]}
-                and entry <= event.get("date", "") <= exit_day
+                and event.get("date") == entry
                 and (event.get("split_coefficient", 1) != 1
                      or event.get("dividend_amount", 0) != 0)
                 for event in events
@@ -187,8 +223,8 @@ class VolatilityArbitrageBacktester:
             if not expiry or expiry != long.get("expiration"):
                 refused["expiry_mismatch"] += 1
                 continue
-            if exit_day >= expiry:
-                refused["exit_not_before_expiry"] += 1
+            if expiry <= entry:
+                refused["expired_at_entry"] += 1
                 continue
             try:
                 vegas = [
@@ -230,7 +266,7 @@ class VolatilityArbitrageBacktester:
                     "expiration": expiry,
                     "strikes": [float(row["atm_strike"])] * 2,
                     "structure": structure,
-                    "exit": exit_day,
+                    "exit": exit_day or expiry,
                 }
             pairs.append({
                 "id": f"{intent['decision_date']}:{intent['symbol_a']}:{intent['symbol_b']}",
@@ -567,7 +603,8 @@ class TechReplayPipeline:
         if cfg["signal"]["one_active_pair_per_book"] is not True:
             raise ValueError("only one active pair per book is implemented")
         execution = cfg["execution"]
-        all_pairs, order_summaries = [], {}
+        chain = chain if isinstance(chain, list) else list(chain)
+        candidate_pairs, order_summaries, schedules = [], {}, {}
         keys = {}
         for variant, books in cfg["variants"].items():
             for book, row_name in books.items():
@@ -582,7 +619,7 @@ class TechReplayPipeline:
                     if not sessions:
                         continue
                     signals = [row for row in rows[row_name] if row.get("date") in set(sessions)]
-                    intents = orderer.intents(signals, sessions)
+                    intents = orderer.entry_candidates(signals, sessions)
                     generated = orderer.pair_orders(
                         intents, rows["surface_rows.jsonl"],
                         max_contracts=execution["max_contracts_per_leg"],
@@ -593,13 +630,71 @@ class TechReplayPipeline:
                         rates=rates, require_rate=execution["require_prior_rate"],
                         max_rate_age_days=execution["max_rate_age_days"])
                     yearly[str(year)] = generated["summary"]
+                    templates, deadlines = {}, {}
                     for pair in generated["pairs"]:
+                        safe = [day for day in sessions if pair["entry_date"] < day
+                                < pair["short_order"]["expiration"]]
+                        if not safe:
+                            yearly[str(year)]["refused"]["no_safe_exit"] = (
+                                yearly[str(year)]["refused"].get("no_safe_exit", 0) + 1)
+                            yearly[str(year)]["accepted"] -= 1
+                            continue
+                        deadlines[pair["id"]] = safe[-1]
                         pair["id"] = f"{key}:{pair['id']}"
-                        all_pairs.append(pair)
+                        templates[pair["id"].split(":", 1)[1]] = pair
+                        candidate_pairs.append(pair)
+                    schedules[key, str(year)] = (signals, sessions, templates, deadlines)
                 order_summaries[key] = yearly
         ledger = PairedOptionLedger("replay_pairs", cfg["ledger"])
-        outcome = ledger.run(None, {"pairs": all_pairs, "chain": chain})
-        outcome, blocked = self._block_unclosed(all_pairs, outcome)
+        entry_days = {(pair["entry_date"], order["symbol"])
+                      for pair in candidate_pairs
+                      for order in (pair["short_order"], pair["long_order"])}
+        entry_chain = [row for row in chain
+                       if (row.get("date"), row.get("symbol")) in entry_days]
+        preflight = ledger.run(None, {"pairs": candidate_pairs, "chain": entry_chain})
+        entered = {row["id"] for row in (*preflight["trades"], *preflight["exposures"])}
+        entry_refusals = [row for row in preflight["refusals"]
+                          if row["id"] not in entered]
+        banned: set[str] = set()
+        while True:
+            all_pairs = []
+            for (key, year), (signals, sessions, templates, deadlines) in schedules.items():
+                allowed = {stem for stem in templates
+                           if f"{key}:{stem}" in entered and f"{key}:{stem}" not in banned}
+                intents = orderer.intents(
+                    signals, sessions, accepted_entries=allowed,
+                    latest_exit=deadlines,
+                    corporate_events=(aligned["corporate_events"]
+                                      if execution["refuse_corporate_events"] else ()))
+                for intent in intents:
+                    stem = (f"{intent['decision_date']}:{intent['symbol_a']}:"
+                            f"{intent['symbol_b']}")
+                    if intent["exit_date"] is None:
+                        raise ValueError(f"accepted entry lacks a safe exit: {key}:{stem}")
+                    template = templates[stem]
+                    pair = dict(template, exit_date=intent["exit_date"],
+                                exit_reason=intent["exit_reason"])
+                    pair["short_order"] = dict(template["short_order"],
+                                               exit=intent["exit_date"])
+                    pair["long_order"] = dict(template["long_order"],
+                                              exit=intent["exit_date"])
+                    if intent["exit_date"] >= pair["short_order"]["expiration"]:
+                        raise ValueError(f"scheduled exit after expiry: {pair['id']}")
+                    all_pairs.append(pair)
+            outcome = ledger.run(None, {"pairs": all_pairs, "chain": chain})
+            outcome, blocked = self._block_unclosed(all_pairs, outcome)
+            new_bans = {row["id"] for row in blocked} - banned
+            if not new_bans:
+                break
+            banned.update(new_bans)
+        for (key, year), (_, _, templates, _) in schedules.items():
+            summary = order_summaries[key][year]
+            summary["entry_quote_refused"] = sum(
+                row["id"] in {pair["id"] for pair in templates.values()}
+                for row in entry_refusals)
+            summary["entered"] = sum(
+                pair["id"] in {item["id"] for item in all_pairs}
+                for pair in templates.values())
         reporter = PerformanceReporter(capital_usd=evaluation["initial_capital_usd"],
                                        sessions_per_year=evaluation["sessions_per_year"])
         calendar = self._calendar()
