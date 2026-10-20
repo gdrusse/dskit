@@ -651,7 +651,8 @@ class TechReplayPipeline:
                       for order in (pair["short_order"], pair["long_order"])}
         entry_chain = [row for row in chain
                        if (row.get("date"), row.get("symbol")) in entry_days]
-        preflight = ledger.run(None, {"pairs": candidate_pairs, "chain": entry_chain})
+        preflight = ledger.run(None, {"pairs": candidate_pairs, "chain": entry_chain,
+                                      "dividends": aligned["corporate_events"]})
         entered = {row["id"] for row in (*preflight["trades"], *preflight["exposures"])}
         entry_refusals = [row for row in preflight["refusals"]
                           if row["id"] not in entered]
@@ -681,7 +682,8 @@ class TechReplayPipeline:
                     if intent["exit_date"] >= pair["short_order"]["expiration"]:
                         raise ValueError(f"scheduled exit after expiry: {pair['id']}")
                     all_pairs.append(pair)
-            outcome = ledger.run(None, {"pairs": all_pairs, "chain": chain})
+            outcome = ledger.run(None, {"pairs": all_pairs, "chain": chain,
+                                        "dividends": aligned["corporate_events"]})
             outcome, blocked = self._block_unclosed(all_pairs, outcome)
             new_bans = {row["id"] for row in blocked} - banned
             if not new_bans:

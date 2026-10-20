@@ -626,7 +626,7 @@ def test_replay_six_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
             self.params = params
 
         def run(self, ctx, inputs):
-            FakeLedger.calls.append(inputs["pairs"])
+            FakeLedger.calls.append(inputs)
             list(inputs["chain"])
             assert len(inputs["pairs"]) == 6
             return {
@@ -716,7 +716,8 @@ def test_replay_six_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
     chain = SinglePass()
     monkeypatch.setattr(TechReplayPipeline, "_load_inputs", lambda self, _: (
         {symbol: [{"symbol": symbol, "date": day, "adjusted_close": 100.0,
-                   "split_coefficient": 1.0, "dividend_amount": 0.0}
+                   "split_coefficient": 1.0,
+                   "dividend_amount": 0.5 if symbol == "AAPL" and day == days[2] else 0.0}
                   for day in days]
          for symbol in ("AAPL", "AMZN", "GOOGL", "QQQ")}, [], chain))
     import statistical_arbitrage.backtest as module
@@ -724,6 +725,10 @@ def test_replay_six_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
     result = TechReplayPipeline(config).run()
     assert chain.passes == 1
     assert len(FakeLedger.calls) == 2
+    assert all(call["dividends"] == [{"symbol": "AAPL", "date": days[2],
+                                      "split_coefficient": 1.0,
+                                      "dividend_amount": 0.5}]
+               for call in FakeLedger.calls)
     assert set(result["books"]) == {"atm_network", "atm_correlation", "atm_baseline",
                                     "skew_network", "skew_correlation", "skew_baseline"}
     assert result["books"]["atm_network"]["annual"]["2021"]["model"]["total_return"] == pytest.approx(0.001)

@@ -1,7 +1,8 @@
 """Research pairing of two existing option-structure ledger outcomes.
 
 This pack delegates quote selection, NBBO fills, option marks, expiry/exit cash, fees and
-optional Black-76 delta hedge to :class:`OptionStructureLedger`. A pair appears in the
+optional Black-76 delta hedge, including observed ex-date stock dividends, to
+:class:`OptionStructureLedger`. A pair appears in the
 completed trade output only if both delegated orders open, hedge successfully, and
 close as requested. Any opened but incomplete pair remains in ``exposures`` with
 its actual marks and cashflows, so its P&L cannot disappear. Outputs
@@ -113,6 +114,7 @@ class PairedOptionLedger(Node):
             Passed unchanged to the delegated ledgers.
         inputs : dict
             ``pairs`` is a list of pair orders; ``chain`` is a one-pass iterable of quote rows.
+            Optional ``dividends`` is a list of ex-date cash rows delegated to each side.
 
         Returns
         -------
@@ -128,10 +130,13 @@ class PairedOptionLedger(Node):
         """
         pairs = inputs.get("pairs")
         chain = inputs.get("chain")
+        dividends = inputs.get("dividends", ())
         if not isinstance(pairs, (list, tuple)):
             raise ValueError(f"{self.key}: pairs must be a list or tuple")
         if chain is None or isinstance(chain, (str, bytes, Mapping)):
             raise ValueError(f"{self.key}: chain must be an iterable of rows")
+        if not isinstance(dividends, (list, tuple)):
+            raise ValueError(f"{self.key}: dividends must be a list or tuple")
         prepared = []
         trades, exposures, marks, cashflows, refusals = [], [], [], [], []
         reasons = Counter()
@@ -151,10 +156,10 @@ class PairedOptionLedger(Node):
         for pair_id, short_order, long_order, short_n, long_n, hedge_rate in prepared:
             pair_chain = self._pair_chain(compact, short_order, long_order)
             short, short_problem = self._leg(
-                ctx, pair_chain, short_order, short_n, hedge_rate
+                ctx, pair_chain, short_order, short_n, hedge_rate, dividends
             )
             long, long_problem = self._leg(
-                ctx, pair_chain, long_order, long_n, hedge_rate
+                ctx, pair_chain, long_order, long_n, hedge_rate, dividends
             )
             status = self._status(short, long, short_problem, long_problem)
             if status is not None:
@@ -211,6 +216,7 @@ class PairedOptionLedger(Node):
                 "premium_usd",
                 "option_pnl_usd",
                 "hedge_pnl_usd",
+                "hedge_dividend_usd",
             )
         }
         return {
@@ -389,7 +395,7 @@ class PairedOptionLedger(Node):
         if short_order.get(fields["symbol"]) == long_order.get(fields["symbol"]):
             raise ValueError(f"{self.key}: pair {pair_id!r} needs distinct symbols")
 
-    def _leg(self, ctx, chain, order, contracts, hedge_rate):
+    def _leg(self, ctx, chain, order, contracts, hedge_rate, dividends):
         """Run the existing ledger for one structure, classifying expected quote refusal."""
         params = {**self.params["ledger_params"], "contracts": contracts}
         if hedge_rate is not None:
@@ -401,11 +407,13 @@ class PairedOptionLedger(Node):
                 order_day = params["order_fields"]["date"]
                 entry_rows = [row for row in chain
                               if str(row.get(chain_day)) == str(order[order_day])]
-                entry = ledger.run(ctx, {"chain": entry_rows, "orders": [order]})
+                entry = ledger.run(ctx, {"chain": entry_rows, "orders": [order],
+                                         "dividends": dividends})
                 skipped = entry["summary"].get("hedge", {}).get("skipped", {})
                 if skipped:
                     return None, f"hedge_prerequisite:{skipped}"
-            result = ledger.run(ctx, {"chain": chain, "orders": [order]})
+            result = ledger.run(ctx, {"chain": chain, "orders": [order],
+                                      "dividends": dividends})
         except ValueError as exc:
             message = str(exc)
             if "every order was refused" in message or "no chain rows" in message:
@@ -459,6 +467,7 @@ class PairedOptionLedger(Node):
             "close_fees_usd",
             "option_pnl_usd",
             "hedge_pnl_usd",
+            "hedge_dividend_usd",
             "hedge_fees_usd",
             "fees_usd",
             "pnl_usd",
@@ -497,6 +506,8 @@ class PairedOptionLedger(Node):
                     "pnl_usd": current_left["pnl_usd"] + current_right["pnl_usd"],
                     "hedge_shares": current_left["hedge_shares"]
                     + current_right["hedge_shares"],
+                    "hedge_dividend_usd": current_left["hedge_dividend_usd"]
+                    + current_right["hedge_dividend_usd"],
                     "carried": bool(
                         next_left is None
                         or next_right is None

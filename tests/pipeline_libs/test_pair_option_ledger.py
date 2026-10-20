@@ -74,10 +74,11 @@ def pair():
     }
 
 
-def run(pairs, rows=None, **over):
+def run(pairs, rows=None, *, dividends=(), **over):
     node = PairedOptionLedger("paired", {"ledger_params": LEDGER, **over})
     ctx = NodeContext(name="t", asof="2025-12-31", run_dir="/nonexistent")
-    return node.run(ctx, {"pairs": pairs, "chain": chain() if rows is None else rows})
+    return node.run(ctx, {"pairs": pairs, "chain": chain() if rows is None else rows,
+                          "dividends": dividends})
 
 
 def test_two_nbbo_filled_and_settled_legs_are_one_trade():
@@ -187,6 +188,52 @@ def test_per_pair_hedge_rate_changes_delegate_without_mutating_config():
     override = run([order], rows, ledger_params=config)["trades"][0]["hedge_pnl_usd"]
     assert override != pytest.approx(default)
     assert config["hedge"]["rate"] == 0.0
+
+
+def test_pair_dividend_cash_flows_into_marks_trade_and_exposure():
+    from datetime import date
+    from dskit.pipeline.option_pricing import black76
+
+    open_day, ex_day, expiry = "2020-01-02", "2020-01-03", "2020-02-03"
+    rows = []
+    for symbol, path in (("A", (100.0, 99.0, 100.0)),
+                         ("B", (100.0, 99.0, 100.0))):
+        for day, spot in zip((open_day, ex_day, expiry), path):
+            years = max((date.fromisoformat(expiry) - date.fromisoformat(day)).days, 1) / 365
+            mid = black76("call", spot, 100.0, 0.30, years)
+            rows.append({"symbol": symbol, "date": day, "expiration": expiry,
+                         "strike": 100, "right": "call", "bid": max(mid - .01, .001),
+                         "ask": mid + .01, "underlying_price": spot})
+    requested = pair()
+    for side in ("short_order", "long_order"):
+        requested[side].update(date=open_day, expiration=expiry)
+    cfg = {**LEDGER, "hedge": {"rebalance": "daily", "rate": 0.0,
+                              "fee_per_share": 0.0}}
+    plain = run([requested], rows, ledger_params=cfg)
+    paid = run([requested], rows, ledger_params=cfg, dividends=[
+        {"symbol": "A", "date": ex_day, "dividend_amount": 0.5},
+        {"symbol": "B", "date": ex_day, "dividend_amount": 0.25}])
+    expected = (plain["marks"][0]["short_mark"]["hedge_shares"] * 0.5
+                + plain["marks"][0]["long_mark"]["hedge_shares"] * 0.25)
+    assert paid["trades"][0]["hedge_dividend_usd"] == pytest.approx(expected)
+    assert paid["marks"][1]["hedge_dividend_usd"] == pytest.approx(expected)
+    assert paid["trades"][0]["pnl_usd"] - plain["trades"][0]["pnl_usd"] == pytest.approx(expected)
+    assert paid["summary"]["totals"]["hedge_dividend_usd"] == pytest.approx(expected)
+    assert sum(row["cash_usd"] - row["fees_usd"] for row in paid["cashflows"]) == pytest.approx(
+        paid["trades"][0]["pnl_usd"])
+
+    broken = [dict(row) for row in rows]
+    for row in broken:
+        if row["symbol"] == "B" and row["date"] == expiry:
+            row["underlying_price"] = None
+    exposure = run([requested], broken, ledger_params=cfg, dividends=[
+        {"symbol": "A", "date": ex_day, "dividend_amount": 0.5},
+        {"symbol": "B", "date": ex_day, "dividend_amount": 0.25}])
+    assert exposure["trades"] == []
+    assert exposure["exposures"][0]["status"] == "not_closed"
+    assert exposure["exposures"][0]["marked_pnl_usd"] == pytest.approx(
+        exposure["marks"][-1]["pnl_usd"])
+    assert exposure["marks"][-1]["hedge_dividend_usd"] == pytest.approx(expected)
 
 
 def test_requested_exit_fallback_to_expiry_is_not_a_paired_exit():

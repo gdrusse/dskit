@@ -1,6 +1,6 @@
 {
-  "name": "tech-paired-option-replay-causal-execution-20261020-v5",
-  "notes": "ADR-0271 approved quote-based retrospective replay. Primary ATM-IV and secondary skew variants use identical next-session order, costs, capital and refusal rules against a no-network all-pairs baseline. Entry eligibility uses only next-session observations; future Z, exit and corporate events do not veto entry. Rejected entry preflight frees the book on that session. No untouched OOS, live fill guarantee or paper/live order. Corrected graph supersedes 2026-10-19 diagnostics; previous replay metrics are void. Six-book comparator: precision gate, correlation gate, all pairs.",
+  "name": "tech-paired-option-replay-causal-execution-20261020-v6",
+  "notes": "ADR-0271 approved quote-based retrospective replay. Primary ATM-IV and secondary skew variants use identical next-session order, costs, capital and refusal rules against a no-network all-pairs baseline. Entry eligibility uses only next-session observations; future Z, exit and corporate events do not veto entry. Rejected entry preflight frees the book on that session. Stock hedge P&L includes point-in-time ex-date cash dividends from pinned stock rows. No untouched OOS, live fill guarantee or paper/live order. Corrected graph supersedes 2026-10-19 diagnostics; previous replay metrics including v5 are void. Six-book comparator: precision gate, correlation gate, all pairs.",
   "structural_config": {
     "path": "configs/run-tech-structural.json",
     "sha256": "686770f0830a8b483c4c7e248e6548b55d2c7e614b34f6e2db4ea7a33ac1ba31"
