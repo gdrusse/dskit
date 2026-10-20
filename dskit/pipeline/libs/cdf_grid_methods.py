@@ -72,6 +72,8 @@ COLUMN_ROLES = ("identity", "date", "settlement", "fold", "band", "outcome", "dt
 #: Table metrics. ``twcrps`` weights by ``score_weights``; ``crps13`` is the same trapezoid with weights one.
 SCORE_METRICS = ("twcrps", "crps13")
 REGION_METRIC = "region_brier"
+#: The metric of a declared group of regions (a strike zone): the sum of its regions' Brier scores per row.
+REGION_GROUP_METRIC = "region_group_brier"
 #: The reserved table name of the always-written window table.
 WINDOWS_TABLE = "windows"
 #: Derived category columns a table or a method may name besides parquet columns.
@@ -1386,8 +1388,8 @@ class _Clusters:
 class _PairedTable:
     """Paired comparisons of the method with each comparator over the cells of a grouping."""
 
-    COLUMNS = ("comparator", "metric", "region", "rows", "dates", "method", "comparator_mean", "edge_pct",
-               "se_pct", "t")
+    COLUMNS = ("comparator", "metric", "region", "region_group", "rows", "dates", "method", "comparator_mean",
+               "edge_pct", "se_pct", "t")
 
     def __init__(self, selection, comparators):
         self.selection = selection
@@ -1410,19 +1412,24 @@ class _PairedTable:
         cell[~bad] = inverse
         return cell, uniq
 
-    def _metrics(self, metrics, regions):
-        """Return ``(labels, method columns, {comparator: columns})`` with one column per metric and region."""
+    def _metrics(self, metrics, regions, groups):
+        """Return ``(labels, method columns, {comparator: columns})``: one column per metric, region and group."""
         import numpy as np
 
         sel = self.selection
-        labels = [(metric, None) for metric in metrics]
+        labels = [(metric, None, None) for metric in metrics]
         method = [sel.scores["method"][metric][:, None] for metric in metrics]
         others = {c: [sel.scores[c][metric][:, None] for metric in metrics] for c in self.comparators}
         if regions:
-            labels += [(REGION_METRIC, r) for r in range(sel.grid.regions)]
+            labels += [(REGION_METRIC, r, None) for r in range(sel.grid.regions)]
             method.append(sel.region("method"))
             for c in self.comparators:
                 others[c].append(sel.region(c))
+        for name, members in groups.items():
+            labels.append((REGION_GROUP_METRIC, None, name))
+            method.append(sel.region("method")[:, members].sum(axis=1, keepdims=True))
+            for c in self.comparators:
+                others[c].append(sel.region(c)[:, members].sum(axis=1, keepdims=True))
         return labels, np.hstack(method), {c: np.hstack(v) for c, v in others.items()}
 
     @staticmethod
@@ -1433,7 +1440,7 @@ class _PairedTable:
         return np.column_stack([np.bincount(cell, weights=values[:, c], minlength=cells)
                                 for c in range(values.shape[1])]) / rows[:, None]
 
-    def frame(self, categories, metrics, regions, by_group):
+    def frame(self, categories, metrics, regions, by_group, groups=None):
         """Return the comparison table: one row per cell x comparator x metric (x region).
 
         Parameters
@@ -1447,6 +1454,9 @@ class _PairedTable:
             Whether to add the per-region Brier metric.
         by_group : bool
             Cluster by the group column as well as by date (the larger standard error), else by date only.
+        groups : dict, optional
+            ``{name: region indices}``: each adds the metric ``region_group_brier``, the per-row sum of
+            those regions' Brier scores (a strike zone), with its own paired standard error.
 
         Returns
         -------
@@ -1466,7 +1476,7 @@ class _PairedTable:
         codes = [sel.date_codes[keep], *([sel.group_codes[keep]] if by_group else [])]
         clusters = [_Clusters(local, cells, c) for c in codes]
         labels = self._cell_labels(categories, uniq[used])
-        names, method, others = self._metrics(metrics, regions)
+        names, method, others = self._metrics(metrics, regions, groups or {})
         method_mean = self._means(method[keep], local, cells, clusters[0].rows)
         pieces = []
         for position, comparator in enumerate(self.comparators):
@@ -1478,10 +1488,11 @@ class _PairedTable:
                 edge = 100.0 * (other_mean - method_mean) / other_mean
                 se_pct = 100.0 * se / other_mean
                 t = np.where(np.isfinite(se_pct) & (se_pct > 0), edge / se_pct, np.nan)
-            for column, (metric, region) in enumerate(names):
+            for column, (metric, region, group) in enumerate(names):
                 piece = pd.DataFrame(labels, index=range(cells))
                 piece["comparator"], piece["metric"] = comparator, metric
                 piece["region"] = pd.array([region] * cells, dtype="Int64")
+                piece["region_group"] = pd.array([group] * cells, dtype="string")
                 piece["rows"], piece["dates"] = clusters[0].rows.astype(int), clusters[0].count
                 piece["method"], piece["comparator_mean"] = method_mean[:, column], other_mean[:, column]
                 piece["edge_pct"], piece["se_pct"], piece["t"] = edge[:, column], se_pct[:, column], t[:, column]
@@ -1526,7 +1537,7 @@ class _Tables:
         names = spec["by"]
         by_group = self.params["columns"]["group"] not in names
         return _PairedTable(self.val, self.params["comparators"]).frame(
-            self._categories(self.val, names), SCORE_METRICS, spec["regions"], by_group)
+            self._categories(self.val, names), SCORE_METRICS, spec["regions"], by_group, spec.get("region_groups"))
 
     def windows(self):
         """Return the windows table: fold, year, period, pooled over the ranked folds, and the fit band."""
@@ -1571,7 +1582,8 @@ class GridCDFMethod(Node):
         ``fallback`` (component used where the method is not fitted or a needed CDF is missing);
         ``method`` (``{kind, learn: "fit_band" | "prior_validation", ...}`` with the kind's own keys, see
         :data:`METHOD_KINDS`); ``comparators`` (component names) and ``ranked_folds`` (ints) for the tables;
-        ``tables`` (list of ``{name, by, regions}``); optional ``buckets`` (derived bucketed columns,
+        ``tables`` (list of ``{name, by, regions, region_groups?}``; a region group sums named regions into
+        a strike zone); optional ``buckets`` (derived bucketed columns,
         ``{name: {column, edges: [[lo, hi], ...]}}``) and ``periods`` (``{name: [start, end]}``).
 
     Examples
@@ -1629,7 +1641,7 @@ class GridCDFMethod(Node):
             problems.append(f"fallback names {params['fallback']!r}, not a declared component {sorted(names)}")
         cls._comparator_problems(problems, params, names)
         cls._derived_problems(problems, params)
-        cls._table_problems(problems, params.get("tables"))
+        cls._table_problems(problems, params.get("tables"), params.get("z_grid"))
         cls._method_problems(problems, params, names)
         return problems
 
@@ -1741,7 +1753,7 @@ class GridCDFMethod(Node):
             problems.append("periods must map names to non-overlapping [start, end] ISO date pairs")
 
     @classmethod
-    def _table_problems(cls, problems, tables):
+    def _table_problems(cls, problems, tables, grid):
         if tables is None:
             return
         if not isinstance(tables, list):
@@ -1749,16 +1761,32 @@ class GridCDFMethod(Node):
             return
         seen = []
         for index, spec in enumerate(tables):
-            ok = (isinstance(spec, dict) and set(spec) == {"name", "by", "regions"} and _is_name(spec["name"])
+            ok = (isinstance(spec, dict) and set(spec) - {"region_groups"} == {"name", "by", "regions"} and _is_name(spec["name"])
                   and _TABLE_NAME.match(spec["name"]) and isinstance(spec["by"], list)
                   and all(_is_name(c) for c in spec["by"]) and isinstance(spec["regions"], bool))
             if not ok:
                 problems.append(f"tables[{index}] must be {{name (file-safe), by (column list), regions (bool)}}")
                 continue
+            if "region_groups" in spec:
+                cls._region_group_problems(problems, index, spec["region_groups"], grid)
             if spec["name"] == WINDOWS_TABLE or spec["name"] in seen:
                 problems.append(f"tables[{index}].name {spec['name']!r} is reserved or repeated "
                                 f"({WINDOWS_TABLE!r} is always written)")
             seen.append(spec["name"])
+
+    @staticmethod
+    def _region_group_problems(problems, index, groups, grid):
+        """Require each region group to name a non-empty set of distinct region indices of the grid."""
+        regions = len(grid) + 1 if isinstance(grid, list) else None
+        ok = isinstance(groups, dict) and bool(groups) and all(
+            _is_name(name) and isinstance(members, list) and members
+            and all(isinstance(r, int) and not isinstance(r, bool) and r >= 0 and (regions is None or r < regions)
+                    for r in members)
+            and len(set(members)) == len(members)
+            for name, members in groups.items())
+        if not ok:
+            problems.append(f"tables[{index}].region_groups must map names to non-empty lists of distinct "
+                            f"region indices (0 to {regions - 1 if regions else 'len(z_grid)'})")
 
     @classmethod
     def _method_problems(cls, problems, params, names):

@@ -889,3 +889,39 @@ def test_a_declared_pit_column_is_read_from_the_source(tmp_path):
     forecasts, fit, _ = read_out(params)
     assert forecasts["fitted"].all()
     assert fit["components"]["market_cal"]["1"]["learning_rows"] == 300
+
+
+def test_region_groups_sum_the_region_briers_of_each_named_group_with_their_own_errors(tmp_path):
+    df, params = table_setup(tmp_path)
+    groups = {"left": [0, 1, 2, 3], "body": [6, 7], "right": [10, 11, 12, 13]}
+    params["tables"] = [{"name": "by_symbol", "by": ["symbol"], "regions": True, "region_groups": groups}]
+    run(params)
+    forecasts, _, _ = read_out(params)
+    full = joined(forecasts, df)
+    table = pd.read_csv(tmp_path / "out" / "tables" / "by_symbol.csv")
+    zone = table[table["metric"] == "region_group_brier"]
+    assert set(zone["region_group"]) == set(groups)
+    val = full[(full["band"] == "val") & full["fold"].isin([2, 3]) & (full["symbol"] == "B")]
+
+    def brier(F):
+        mass = np.concatenate([F[:, :1], np.diff(F, axis=1), 1 - F[:, -1:]], axis=1)
+        inside = np.zeros_like(mass)
+        inside[np.arange(len(val)), np.searchsorted(Z, val["y"].to_numpy(), side="left")] = 1.0
+        return (mass - inside) ** 2
+
+    method = brier(val[[f"method_cdf_{label}" for label in LABELS]].to_numpy())
+    market = brier(cdfs(val, "mkt"))
+    for name, regions in groups.items():
+        m, c = method[:, regions].sum(1), market[:, regions].sum(1)
+        row = zone[(zone["symbol"] == "B") & (zone["comparator"] == "market") & (zone["region_group"] == name)].iloc[0]
+        assert row["method"] == pytest.approx(m.mean()) and row["comparator_mean"] == pytest.approx(c.mean())
+        se = cluster_se(c - m, val["quote_date"].to_numpy(), None, by_group=False)
+        assert row["se_pct"] == pytest.approx(100 * se / c.mean())
+    assert table.loc[table["metric"] != "region_group_brier", "region_group"].isna().all()
+
+
+@pytest.mark.parametrize("groups", [{"x": []}, {"x": [14]}, {"x": [1, 1]}, {"": [1]}, [[1]], {"x": [1.0]}])
+def test_bad_region_groups_are_refused(tmp_path, groups):
+    df, params = table_setup(tmp_path)
+    params["tables"] = [{"name": "t", "by": ["symbol"], "regions": True, "region_groups": groups}]
+    assert any("region_groups" in p for p in GridCDFMethod.validate_params(params))
