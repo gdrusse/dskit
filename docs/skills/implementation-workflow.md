@@ -9,6 +9,7 @@ dependency gates, evidence schemas, or execution restrictions.
 
 ## Start and scope
 
+0. Read the child's `docs/decisioning/path.csv` first: `locked=Y` rows bind the design; cite them, never contradict them silently.
 1. Work in WSL2. Fetch origin, create an isolated worktree from current
    origin/main, and read root/nearest AGENTS.md or CLAUDE.md, `docs/RE-ENTRY.md`
    (the one-screen index) and ONLY the lane's note

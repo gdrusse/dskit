@@ -26,6 +26,7 @@ Updated: 2026-10-19 by Claude Fable 5.1 / Sonnet 5.5. Previous note in docs/arch
 
 ## Read first
 
+- docs/decisioning/path.csv (locked rows A0001, A0003-A0005 are binding; A0002 evaluation is unlocked: the owner may lock it).
 - CLAUDE.md; the last ADR-0270 entries of docs/architecture/decision-log.md; the memo above.
 - docs/research/distribution-modeling/2026-10-18-*.md (the design); pilot root documents/study/README.md.
 

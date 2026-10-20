@@ -109,6 +109,7 @@ Use README.md for installation, the temporary demo and focused tests.
 - Test only this child unless broader tests are authorized. Enable real journal
   writes in isolation tests with DSKIT_JOURNAL_TESTS=1 and a temporary
   DSKIT_JOURNAL_ROOT; prove positive recording, not only absence of damage.
+- READ `docs/decisioning/path.csv` FIRST in every session and before any design: `locked=Y` rows (windows, fold rungs, promotion rule, approach) are binding, cite the row id.
 - Path and Current Work are human-owner-only. Never alter/promote/regenerate
   Path rows. actions.csv is append-only; the decisioning README is generated.
   Its full Path and latest 10 Actions are display rules, not history deletion.

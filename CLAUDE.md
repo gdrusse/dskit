@@ -49,6 +49,11 @@ One line per rule; the rationale is `docs/standards/working-agreement.md`.
   `.cursor/hooks.json`, `.opencode/plugin/session-pull.ts`). Then read
   `docs/RE-ENTRY.md` (one screen) and ONLY the note of the lane you will work,
   `children/<child>/docs/RE-ENTRY.md`. Never the archive at session start.
+- **Path first**: before designing, proposing or running anything in a child,
+  read its `docs/decisioning/path.csv` (or the Path table of the generated
+  `README.md`). Rows with `locked=Y` are owner decisions: cite them, follow
+  them, never contradict them silently; an unlocked row is context, not
+  authority. Propose a change in words and wait; do not re-derive a locked one.
 - **Isolation**: your own git worktree. Never `main` in a shared checkout,
   never a checkout another session is using.
 - **Merges** go through the ADR-0109 drivers (`tools/merge/install.sh` once per
