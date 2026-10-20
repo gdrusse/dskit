@@ -2194,3 +2194,278 @@ def test_external_component_keys_are_validated(tmp_path, name):
     assert any(needle in p for p in problems), problems
     with pytest.raises(ConfigError):
         GridCDFMethod("g", params)
+
+
+# ------------------------------------------------------------------ round-two pins (skeptic review of ADR-0270)
+
+
+def interp_quantiles(cdf, levels, tail=4.0):
+    """The quantile function of one strictly increasing grid CDF at ``l / (levels + 1)``, closed by the PIT tails.
+
+    Recomputed with ``np.interp`` through the knots ``(z_first - tail, 0), (z_k, F_k), (z_last + tail, 1)``;
+    the two end levels 0 and 1 are the tail ends. No running maximum: the inputs of its callers are monotone.
+    """
+    x = np.r_[Z[0] - tail, Z, Z[-1] + tail]
+    p = np.r_[0.0, np.arange(1, levels + 1) / (levels + 1), 1.0]
+    return np.interp(p, np.r_[0.0, cdf, 1.0], x)
+
+
+def averaged_quantile_cdf(components, weights, levels, tail=4.0):
+    """The CDF on the grid of ``sum_i w_i Q_i`` per row, where ``components`` are ``(rows, 13)`` CDF arrays.
+
+    Component ``i`` takes ``weights[i]`` (the order the document lists them in); the averaged quantile
+    function is read back at the grid points by linear interpolation of the level against the quantile.
+    """
+    p = np.r_[0.0, np.arange(1, levels + 1) / (levels + 1), 1.0]
+    out = []
+    for row in zip(*components):
+        pooled = sum(w * interp_quantiles(cdf, levels, tail) for w, cdf in zip(weights, row))
+        out.append(np.interp(Z, pooled, p))
+    return np.array(out)
+
+
+def asymmetric_average_frame(rng, n_fit=700, n_val=200, folds=(1, 2)):
+    """Truth N(0.85, 1.4), close to the second of N(0, 1) and N(1, 1.5): unequal weights (about 0.2 / 0.8) are optimal."""
+    df = make_frame(rng, folds=folds, n_fit=n_fit, n_val=n_val)
+    df["y"] = rng.normal(0.85, 1.4, len(df))
+    add_cdf(df, "mdl", 0.0, 1.0)
+    add_cdf(df, "mkt", 1.0, 1.5)
+    return df
+
+
+def mean_score(cdf, rows, omega=None):
+    """The omega-weighted mean grid twCRPS of ``cdf`` against the outcomes of ``rows`` (equal weights if None)."""
+    score = tw(cdf, rows["y"].to_numpy())
+    return float(score.mean() if omega is None else (omega * score).sum() / omega.sum())
+
+
+def test_quantile_average_applies_the_fitted_weights_to_the_components_in_document_order(tmp_path):
+    df = asymmetric_average_frame(np.random.default_rng(430))
+    params = params_for(tmp_path, df, quantile_method())
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    full = joined(forecasts, df)
+    for fold in (1, 2):
+        state = fit["folds"][str(fold)]["state"]["global"]
+        w = state["weights"]
+        assert w[0] < 0.3 < 0.7 < w[1]  # unequal, so the order and the values matter
+        rows = full[full["fold"] == fold]  # the fit band and the validation band alike
+        expect = averaged_quantile_cdf([cdfs(rows, "mdl"), cdfs(rows, "mkt")], w, 199)
+        assert np.allclose(cdf_columns(rows), expect, atol=1e-9)
+        # the neighbouring mistakes move the forecast far more than the tolerance
+        assert np.abs(averaged_quantile_cdf([cdfs(rows, "mdl"), cdfs(rows, "mkt")], [0.5, 0.5], 199)
+                      - expect).max() > 0.02
+        assert np.abs(averaged_quantile_cdf([cdfs(rows, "mkt"), cdfs(rows, "mdl")], w, 199) - expect).max() > 0.02
+
+
+def test_a_nondefault_levels_drives_both_the_quantile_average_objective_and_its_applied_forecast(tmp_path):
+    df = asymmetric_average_frame(np.random.default_rng(431), n_fit=500)
+    params = params_for(tmp_path, df, quantile_method(levels=49))
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    state = fit["folds"]["2"]["state"]["global"]
+    assert state["levels"] == 49
+    rows = df[(df["band"] == "fit") & (df["fold"] == 2)]
+    comps = [cdfs(rows, "mdl"), cdfs(rows, "mkt")]
+    for key, weights in (("objective", state["weights"]), ("start_objective", state["start_weights"])):
+        at_49 = mean_score(averaged_quantile_cdf(comps, weights, 49), rows)
+        at_199 = mean_score(averaged_quantile_cdf(comps, weights, 199), rows)
+        assert state[key] == pytest.approx(at_49, rel=1e-9), key
+        assert abs(at_49 - at_199) > 1e-6, key  # the default would have given another number
+    full = joined(forecasts, df)
+    every = full[full["fold"] == 2]
+    both = [cdfs(every, "mdl"), cdfs(every, "mkt")]
+    assert np.allclose(cdf_columns(every), averaged_quantile_cdf(both, state["weights"], 49), atol=1e-9)
+    assert np.abs(averaged_quantile_cdf(both, state["weights"], 199) - cdf_columns(every)).max() > 1e-4
+
+
+@pytest.mark.parametrize("kind", ["beta_pool", "quantile_average"])
+def test_bucket_cells_of_a_parametric_pool_are_fitted_with_the_recency_weights(tmp_path, kind):
+    df = roll_frame(np.random.default_rng(440), drift=True, n_val=500)
+    extra = {"levels": 49} if kind == "quantile_average" else {}
+    base = {"kind": kind, "learn": "prior_validation", "components": ["model", "market"], "min_rows": 50,
+            "by": "symbol", **extra}
+    aged = params_for(tmp_path, df, {**base, "half_life_days": 60}, output=str(tmp_path / "aged"))
+    plain = params_for(tmp_path, df, base, output=str(tmp_path / "plain"))
+    run(aged)
+    run(plain)
+    _, fit_aged, _ = read_out(aged)
+    _, fit_plain, _ = read_out(plain)
+    reference = first_val(df, 3)
+    state, state_plain = fit_aged["folds"]["3"]["state"], fit_plain["folds"]["3"]["state"]
+    assert sorted(state["buckets"]) == ["A", "B"]
+    start = "linear_pool" if kind == "beta_pool" else "start"
+    for symbol in ("A", "B"):
+        rows = df[(df["band"] == "val") & (df["fold"] < 3) & (df["settlement_date"] < reference)
+                  & (df["symbol"] == symbol)]
+        omega = recency(rows, reference, 60.0)
+        assert omega.min() < 0.1 * omega.max()
+        cell, cell_plain = state["buckets"][symbol], state_plain["buckets"][symbol]
+        assert cell["rows"] == len(rows)  # the count is of rows, whatever their weight
+        # the starting point is the exact weighted linear pool of this bucket's rows ...
+        assert cell[f"{start}_weights"][0] == pytest.approx(pool_weight_closed_form(rows, omega), abs=1e-9)
+        # ... and the fitted objective is the weighted mean score of the cell's own parameters
+        w = np.array(cell["weights"])
+        comps = [cdfs(rows, "mdl"), cdfs(rows, "mkt")]
+        if kind == "beta_pool":
+            fitted = special.betainc(cell["a"], cell["b"], np.clip(w[0] * comps[0] + w[1] * comps[1], 0, 1))
+        else:
+            fitted = averaged_quantile_cdf(comps, w, 49)
+        assert cell["objective"] == pytest.approx(mean_score(fitted, rows, omega), rel=1e-8)
+        assert cell["objective"] != pytest.approx(mean_score(fitted, rows), rel=1e-4)  # equal weights would differ
+        assert abs(cell[f"{start}_weights"][0] - cell_plain[f"{start}_weights"][0]) > 0.05  # recency moved it
+        assert abs(cell["objective"] - cell_plain["objective"]) > 1e-4
+
+
+@pytest.mark.parametrize("kind", ["beta_pool", "quantile_average"])
+def test_parametric_pools_fit_exactly_at_min_rows_and_decline_one_row_below(tmp_path, kind):
+    n, small = 120, 40
+    rng = np.random.default_rng(450)
+    df = make_frame(rng, folds=(1,), n_fit=n, n_val=20)
+    df["y"] = rng.normal(0.3, 1.2, len(df))
+    add_cdf(df, "mdl", 0.0, 1.0)
+    add_cdf(df, "mkt", 0.5, 1.5)
+    df["symbol"] = "B"
+    df.loc[df.index[df["band"] == "fit"][:small], "symbol"] = "A"  # 40 rows in A, 80 in B, 120 in all
+    base = {"kind": kind, "learn": "fit_band", "components": ["model", "market"]}
+
+    def fitted(min_rows, tag, **over):
+        params = params_for(tmp_path, df, {**base, "min_rows": min_rows, **over}, output=str(tmp_path / tag))
+        run(params)
+        return read_out(params)[1]["folds"]["1"]
+
+    at, below = fitted(n, "global_at"), fitted(n + 1, "global_below")
+    assert at["fitted"] is True and at["state"]["global"]["rows"] == n
+    assert below["fitted"] is False and below["state"] is None and below["reason"] == "the method declined to fit"
+    assert sorted(fitted(small, "bucket_at", by="symbol")["state"]["buckets"]) == ["A", "B"]
+    assert sorted(fitted(small + 1, "bucket_below", by="symbol")["state"]["buckets"]) == ["B"]
+
+
+@pytest.mark.parametrize("kind", ["beta_pool", "quantile_average"])
+def test_max_learning_rows_takes_the_stride_rounded_up(tmp_path, kind):
+    rng = np.random.default_rng(451)
+    df = make_frame(rng, folds=(1,), n_fit=1000, n_val=20)
+    df["y"] = rng.normal(0.7, 1.35, len(df))
+    add_cdf(df, "mdl", 0.0, 1.0)
+    add_cdf(df, "mkt", 1.0, 1.5)
+    method = {"kind": kind, "learn": "fit_band", "components": ["model", "market"], "min_rows": 50,
+              "max_learning_rows": 300, **({"levels": 49} if kind == "quantile_average" else {})}
+    params = params_for(tmp_path, df, method)
+    run(params)
+    state = read_out(params)[1]["folds"]["1"]["state"]["global"]
+    # 1000 / 300 = 3.33: the stride is 4 (not 3), so 250 rows are used and they are every fourth one
+    assert state["rows"] == 1000 and state["rows_used"] == len(range(0, 1000, 4)) == 250
+    used = df[(df["band"] == "fit") & (df["fold"] == 1)].iloc[::4]
+    comps, w = [cdfs(used, "mdl"), cdfs(used, "mkt")], np.array(state["weights"])
+    if kind == "beta_pool":
+        fitted = special.betainc(state["a"], state["b"], np.clip(w[0] * comps[0] + w[1] * comps[1], 0, 1))
+    else:
+        fitted = averaged_quantile_cdf(comps, w, 49)
+    assert state["objective"] == pytest.approx(mean_score(fitted, used), rel=1e-9)
+
+
+def test_the_fold_record_counts_the_rows_fitted_over_all_its_rolling_blocks(tmp_path):
+    df = roll_frame(np.random.default_rng(452), n_fit=100, n_val=400)
+    params = params_for(tmp_path, df, rolling_method())
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    for fold in (1, 2, 3):
+        record = fit["folds"][str(fold)]
+        blocks = record["blocks"]
+        flagged = int(forecasts.loc[forecasts["fold"] == fold, "fitted"].sum())
+        assert record["rows_fitted"] == sum(b["rows_fitted"] for b in blocks) == flagged
+        assert max(b["rows_fitted"] for b in blocks) < record["rows_fitted"]  # more than any one block alone
+    first = fit["folds"]["1"]
+    assert first["blocks"][0]["fitted"] is False and first["rows_fitted"] < first["rows"]  # nothing settled yet
+
+
+def test_a_fold_record_names_its_weight_reference_only_for_a_single_block_rule_with_a_half_life(tmp_path):
+    df = roll_frame(np.random.default_rng(453), n_fit=80, n_val=150)
+    records = {}
+    for tag, method in (("fit_band", pool_method(half_life_days=30)),
+                        ("prior", pool_method(learn="prior_validation", half_life_days=30)),
+                        ("plain", pool_method()),
+                        ("rolling", rolling_method(half_life_days=30))):
+        params = params_for(tmp_path, df, method, output=str(tmp_path / tag))
+        run(params)
+        records[tag] = read_out(params)[1]["folds"]
+    for fold in (1, 2, 3):
+        day = first_val(df, fold).date().isoformat()
+        assert records["fit_band"][str(fold)]["reference"] == day
+        assert records["prior"][str(fold)]["reference"] == day
+        assert "reference" not in records["plain"][str(fold)]
+        assert "reference" not in records["rolling"][str(fold)] and "blocks" not in records["plain"][str(fold)]
+        assert records["rolling"][str(fold)]["blocks"][0]["start"] == day  # a block's start is its reference
+
+
+def left_inverse(raw, level, tail=4.0):
+    """``inf {z : F(z) >= level}`` of the piecewise-linear CDF through ``raw`` (the running maximum of it).
+
+    The first knot whose raw value reaches the level is found by a plain scan, and the segment before it
+    runs from the highest value seen so far (below the level) at the previous knot.
+    """
+    x = np.r_[Z[0] - tail, Z, Z[-1] + tail]
+    f = np.r_[0.0, raw, 1.0]
+    k = next(i for i, value in enumerate(f) if value >= level)
+    low = max(f[:k])
+    return x[k - 1] + (level - low) / (f[k] - low) * (x[k] - x[k - 1])
+
+
+def test_the_quantile_function_reads_a_nonmonotone_cdf_as_its_running_maximum():
+    grid = cgm._Grid(Z, LABELS, [1.0] * 13, 4.0)
+    inverse = cgm._QuantileGrid(grid, 99)
+    base = np.linspace(0.05, 0.95, 13)
+    dipped = []
+    for at in (3, 6, 9):  # a dip of 0.02 below the previous knot, in three places
+        row = base.copy()
+        row[at] = row[at - 1] - 0.02
+        dipped.append(row)
+    got = inverse.invert(np.array(dipped))
+    levels = np.arange(1, 100) / 100
+    for row, quantiles in zip(dipped, got):
+        expect = [left_inverse(row, p) for p in levels]
+        assert np.allclose(quantiles[1:-1], expect, atol=1e-12)
+        assert (np.diff(quantiles) >= 0).all()
+        assert (np.abs(quantiles[1:-1] - [left_inverse(base, p) for p in levels]) > 1e-3).any()  # the dip matters
+
+
+def test_an_external_join_on_several_keys_outside_the_identity_roles_matches_each_row(tmp_path):
+    rng = np.random.default_rng(454)
+    df = make_frame(rng, folds=(1, 2), n_fit=200, n_val=80)
+    df["y"] = rng.normal(size=len(df))
+    add_cdf(df, "mdl", 0.0, 1.0)
+    add_cdf(df, "mkt", 0.3, 1.2)
+    seen = df.groupby("quote_date").cumcount().to_numpy()
+    df["leg"], df["slot"] = seen % 3, seen // 3  # neither is an identity column; only the triple is unique
+    assert not df.duplicated(subset=["quote_date", "leg", "slot"]).any() and df["leg"].nunique() == 3
+    centre = lambda frame: 0.4 * frame["leg"].to_numpy() - 0.15 * frame["slot"].to_numpy()
+    ext = df[["quote_date", "leg", "slot"]].sample(frac=1.0, random_state=3).reset_index(drop=True)
+    add_cdf(ext, "mdl", centre(ext), 1.0)  # a CDF that depends on the key triple, in another row order
+    keys = ("leg", "slot", "quote_date")
+    path = write_source(tmp_path, ext, "legs.parquet")
+    components = [{"name": "market", "source": "mkt"}, {"name": "model", "source": "mdl"},
+                  external_component(path, keys, name="heads")]
+    declined = beta_method(components=["model", "heads"], min_rows=10 ** 6)  # declines, so the fallback is output
+    params = params_for(tmp_path, df, declined, components=components, fallback="heads")
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    full = joined(forecasts, df)
+    expect = ndtr((np.array(Z)[None, :] - centre(full)[:, None]) / 1.0)
+    assert np.allclose(cdf_columns(full), expect, atol=1e-12)  # every row took its own triple's CDF
+    record = fit["external"]["heads"]
+    assert record["keys"] == list(keys) and record["rows_read"] == len(df)
+    assert record["coverage"] == {"1": 1.0, "2": 1.0}
+
+
+def test_the_beta_pool_shapes_stop_at_the_log_bound(tmp_path):
+    bound = float(np.exp(3.0))  # BETA_LOG_BOUND = 3: a and b never exceed e ** 3
+    df = beta_truth_frame(np.random.default_rng(455), a0=80.0, b0=80.0, w0=0.5, n_fit=1500, n_val=50, folds=(1,))
+    params = params_for(tmp_path, df, beta_method())
+    run(params)
+    state = read_out(params)[1]["folds"]["1"]["state"]["global"]
+    assert cgm.BETA_LOG_BOUND == 3.0
+    assert state["a"] == pytest.approx(bound, rel=1e-9) and state["b"] <= bound * (1 + 1e-9)
+    # the truth is the beta transform with shapes 80 of the equal-weight pool: far beyond the bound, and better
+    rows = df[(df["band"] == "fit") & (df["fold"] == 1)]
+    equal = np.clip(0.5 * cdfs(rows, "mdl") + 0.5 * cdfs(rows, "mkt"), 0, 1)
+    assert mean_score(special.betainc(80.0, 80.0, equal), rows) < state["objective"] - 0.005
