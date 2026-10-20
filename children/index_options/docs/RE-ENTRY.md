@@ -1,51 +1,36 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-10-16 by GPT-6 Astra. Previous note in docs/archive/re-entry/index_options.md.
+Updated: 2026-10-19 by Claude Fable 5.1 / Sonnet 5.5. Previous note in docs/archive/re-entry/index_options.md.
 
 ## Now
 
-- R6 training preparation closed: candidate8bd08dbb over f10a534e; two fresh independent clean final lenses.
-- 44focused tests pass, including actual synthetic detached services, interruption and surviving-child cleanup.
-- Packet SHA07976b0ef6266539f30e79fe04bfed2d17a32d3dd71a8ea8a6a9d2fe2a33706a;107pins verified.
-- R6 root /home/russell/data/index_options/theta-market-training-20261016; no actual training launched.
-- All12components/LR/weight-decay settings,42price versus51price+Theta,seed29,2019warmup/2020scored folds.
-- Exact48neural+13536historical=13584attempts;4htotal,1GBobservational acceptancecap,64MBperfile,30GBfreefloor.
-- All12preflights passed;277/287identical groups and bandidentities; frozen2018familyadmission unchanged.
-- Coordinator precharges wholeinventory once, blocks foreground use, holds process identity until ownedgroup quiesces.
-- No retries; partialcharges/powerloss/missingterminal consume; final success requires verifiedoutputs and storagebounds.
-- R5 theta-training-20261016 remains INTERRUPTED:4528consumed,10/16models completed; never retry/resume.
-- Prior modelresults mixed; no new evidence of market advantage or profitable strategy.
-- f10a534e market-pocket/mixture pipeline implementation remains landed; templates carry unresolved source/launch pins.
+- ADR-0270 strike-region fast screen: pipeline built and run on 118 names, 2017-2023 (holdout 2024-2025 sealed, 2026 sealed forever). Memo: children/index_options/docs/memos/2026-10-19-strike-screen-matrix-results.md.
+- Pilot root /home/russell/data/index_options/theta-strike-screen-20261018 (not in git): converter, onboarding, 1.21M-row panel (sha 186def50), resolved documents, 20 matrix cells (fits/matrix), L1/L3 baseline fits, runbook documents/study/README.md.
+- Protocol configs/strike-screen-protocol.json revision 5 (sha 073d39cb). R5 stays consumed; R6 packet never launched.
+- Matrix result (model vs per-name empirical baseline, weighted CRPS skill): fold 1 +0.1..+0.9%, fold 2 +1.2..+2.2%; best context_chain/tcn; chain arm > context-only; long DTE best. Every cell overfits by epoch 1-2.
+- NOT done: StrikeRegionScores over the matrix (market-implied comparison, listed-strike Brier, regions, promising cells). Killed by the host memory guard on a fold-2 cell (706k validation rows).
+- Speed-ups landed (bit-identical): CUDA-graph step, lean panel load, vectorized raw-chain prepare, nearest-horizon baseline rule.
 
 ## Next
 
-1. Obtain exact owner R6manifest/order decision: trainingfirst with marketcomparison deferred, or keep marketfirst.
-2. If approved, exclusively write authorization bound to packetSHA,training_first_market_deferred,retry_slots0.
-3. Launch only pinned registration/service.json command; verify actualservice/claim/charge/heartbeat; never auto-retry.
-4. Record all completed/failed outcomes; marketproxy/transport/pairedpockets/replay remain separately gated.
-5. Market preparation needs exact-expiry sources,clock/basis/metadata,fullfit/support/cost/selection inventory before runs.
+1. Rerun scoring with a memory sampler and nothing else running (group scoring-matrix; wall left about 3,100 s of the 14,400 s packet), or reduce the per-cell validation band; then read the market comparison and name the cells that beat it.
+2. Build the design's missing pieces: vol-unit sequence, 13 logit-difference chain vector, shared head, optional probit-PIT residual arm; rerun the matrix.
+3. Only for cells that beat the market: holdout conversion (end_before 2026), one confirmation run, then registration and serving.
 
 ## Blocked / owner decisions
 
-- ADR0269 explicitly says prepare matched market references BEFORE further HPO; R6proposes changing that order.
-- Final reviews close implementation only; no authorization file or realtrainingunit exists as of wrap.
-- DeferredMinor: futurepacket semanticvalidator lacks independentfactorial/model assertions; this pinnedpacket verifiedcorrect.
-- All2021-2025alreadyseen, reused development, never clean holdouts;2026sealed forever.
-- Historical snapshots/partialTheta coverage support retrospective research, not PIT/live/trading qualification.
+- Scoring rerun is the owner's call (host memory). Assumptions to confirm: fit outputs counted as evidence-class (4 GB), the 8 GiB RSS breaches waived (panel build only was waived in writing).
+- Merge to main withheld: the market comparison is unfinished.
+- tests/pipeline purity failure predates the lane (dskit.onboarding.snapshot in ParquetStreamRows, on main).
 
 ## Read first
 
-- CLAUDE.md; docs/skills/implementation-workflow.md; ADR0269 R6 at tail of docs/architecture/decision-log.md.
-- children/index_options/docs/memos/2026-10-15-theta-amendment6.md: fullfindings,checks,locks and run evidence.
-- /home/russell/data/index_options/theta-market-training-20261016/registration/packet.json and service.json.
-- children/index_options/configs/run-theta-mixture-grid.json and theta-ml-pocket-calendar.json.
-- children/index_options/configs/run-theta-market-reference-scores.json and run-theta-score-pockets.json.
+- CLAUDE.md; the last ADR-0270 entries of docs/architecture/decision-log.md; the memo above.
+- docs/research/distribution-modeling/2026-10-18-*.md (the design); pilot root documents/study/README.md.
 
 ## Do not
 
-- Never read2026marketrecords; R6origins/outcomes end_before2021-01-01.
-- Never edit preregistered statistics/signs/thresholds/splits; H0-H7 remains separate unchanged program.
-- Never write options-* stores,start/stopTheta driver,call25503,or delete /home/russell/data.
-- Keep>=30GBfreeC:; read/report ALERT.txt if present,neverdelete. Kill only verifiedownedprocessgroups.
-- WSL2only; /home/russell/dskit/.venv/bin/python -B; PYTHONDONTWRITEBYTECODE=1; absolute worktree+childPYTHONPATH.
-- Preserve R5 byte-for-byte,owner-onlyPath/CurrentWork and frozen20261008configs.
+- Never read 2026 market records or the 2024-2025 holdout before the owner opens it; no profitability claim.
+- Never write options-* stores, start/stop Theta pulls, call 25503, or delete under /home/russell/data.
+- WSL2 only; /home/russell/dskit/.venv/bin/python -B; PYTHONDONTWRITEBYTECODE=1; CUBLAS_WORKSPACE_CONFIG=:4096:8 for CUDA fits.
+- Owner-only Path/Current Work; R5 and the R6 packet untouched.
