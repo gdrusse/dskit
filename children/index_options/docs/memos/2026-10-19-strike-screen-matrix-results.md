@@ -70,6 +70,14 @@ Table: pilot root `analysis/ticker_dte_cells_vs_market.csv` (514 cells; 326 with
 - By horizon: the longer the better. Positive in both folds: 1-7 DTE 0 of 45 cells; 8-14 DTE few; 36-60 DTE 61% of cells positive in fold 2 (median +0.6%); median edge at 1-7 DTE -4.0% / -2.4%.
 - Not done: the z-region distribution inside each ticker x DTE cell (14 regions) is in rows.parquet, unread per cell; the final promising-cell rule needs market_calibrated.
 
+## Ticker x expiry window x strike region (validation, chain arm, region Brier vs the raw market)
+
+Cell grid (decided with the owner): the first three windows are exactly the 1st, 2nd and 3rd weekly expiry (7-day windows 1-7, 8-14, 15-21); the rest follow the same 7-day edges (22-28, 29-35, 36-42, 43-49, 50-60); the 26 monthly-only names use expiry position (front, 2nd, 3rd monthly) instead; Thursday expiries (holiday-shifted Fridays) stay. Regions are the 14 z regions. Tables in the pilot root `analysis/`: `ticker_window_region_cells_vs_market.csv` (20,538 cells), `ticker_horizon_zone_cells_vs_market.csv` (coarse), `edge_by_exact_dte.csv`.
+
+- Full grid is below the noise floor on the scoring sample (50,000 validation rows per cell, about 40 rows per ticker-window): median 1 event per cell, maximum 25, zero cells with 30 events. It cannot be read; the 20,538 cells are not evidence.
+- Coarse grid (92 weekly names x 3 horizon groups near 1-21 / mid 22-35 / far 36-60 x 3 zones left z<-1 / centre / right z>1; 1,076 cells with >= 15 events and >= 30 dates per fold): model beats the market in 15-45% of cells at near and mid horizons, and in 64-70% of far (36-60) cells in fold 2 (right-tail far also 64% in fold 1); median edge about 0 to +1.2% at far, -0.1% to -1.6% at near. 418 cells are testable in both folds: 91 positive in both, 2 at t > 2 in both (about 0.2 expected). Consistent but small: EOG mid right tail, COST far right tail (+2.2%, +3.2%), ABT far centre, BLK near right tail, ADBE / CMG / APO / BX far right tail (+2 to +6%). The left-tail far pocket of the pooled cells (above) is positive in fold 2 per ticker (70% of cells) but not in fold 1 (38%).
+- Feasible reading level on this data: ticker x horizon group, or window x region pooled across tickers. A real ticker x window x strike table needs all validation rows: score the best arm and encoder alone (a 2-cell document, about 0.9 GB of evidence, about 15 minutes) instead of 20 cells at 50,000 rows.
+
 ## Not done and caveats
 
 - Per-sub-period (COVID) and per-year cuts are in `cells.parquet` but unread; ticker-group cuts are empty (no liquidity-tercile groups); the final promising-cell rule needs market_calibrated.
