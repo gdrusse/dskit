@@ -101,6 +101,8 @@ class CDFExperiment:
     ARM_KEYS = {"features", "sequence_indices", "context_indices", "observed_columns",
                 "min_fit", "min_cal", "min_disjoint"}
     CANDIDATE_KEYS = {"name", "adapters", "skip_reason"}
+    OPTIONAL_POOLED_KEYS = {"ticker_heads"}   # absent means DEFAULT_TICKER_HEADS; the document is hashed as written
+    DEFAULT_TICKER_HEADS = True
 
     def __init__(self, config):
         if set(config) != self.KEYS:
@@ -133,7 +135,10 @@ class CDFExperiment:
             keys = {"absolute", "per_row", "batch_size", "device", "head_widths"}
             if regime == "pooled":
                 keys.add("head_per_row")
-            if (set(cap) != keys or any(type(cap[k]) is not int or cap[k] < 1
+            optional = cap.keys() & self.OPTIONAL_POOLED_KEYS if regime == "pooled" else set()
+            if (set(cap) - optional != keys
+                    or any(type(cap[k]) is not bool for k in optional)
+                    or any(type(cap[k]) is not int or cap[k] < 1
                     for k in ("absolute", "batch_size"))
                     or not 0 < cap["per_row"] < float("inf")
                     or not cap["head_widths"]
@@ -340,9 +345,16 @@ class CDFExperiment:
         params["batch_size"] = min(c["capacity"][regime]["batch_size"], nfit)
         params["device"] = c["capacity"][regime]["device"]
         if regime == "pooled":
-            params.update(head_features=list(range(width, width+len(groups))),
-                          feature_indices=list(range(width)))
+            # The appended one-hot columns stay in the arrays; feature_indices keeps them out of the
+            # inputs, and head_features (one output head per ticker) is omitted for the shared head.
+            params["feature_indices"] = list(range(width))
+            if self._ticker_heads():
+                params["head_features"] = list(range(width, width+len(groups)))
         return params
+
+    def _ticker_heads(self):
+        """Say whether the pooled regime trains one output head per ticker (the default) or one shared head."""
+        return self.config["capacity"]["pooled"].get("ticker_heads", self.DEFAULT_TICKER_HEADS)
 
     def _choose(self, arm, candidate, regime, groups, admission):
         nfit = sum(admission[g]["fit_n"] for g in groups)
@@ -354,9 +366,12 @@ class CDFExperiment:
                 count = model.parameter_count(len(arm["features"]))
                 attempts.append(count)
                 head = (hidden+1)*3*params["components"]
+                # A ticker head is fit by that ticker's rows; the shared head by every group's rows.
+                head_rows = ([admission[g]["fit_n"] for g in groups] if "head_features" in params
+                             else [nfit])
                 if (count <= params["max_parameters"] and (regime != "pooled"
-                        or all(head <= self.config["capacity"][regime]["head_per_row"]
-                               *admission[g]["fit_n"] for g in groups))):
+                        or all(head <= self.config["capacity"][regime]["head_per_row"]*n
+                               for n in head_rows))):
                     return params, count
         raise ValueError("no configuration meets parameter budget; counts="+str(attempts))
 

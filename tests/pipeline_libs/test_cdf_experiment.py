@@ -734,3 +734,201 @@ def test_two_unseen_horizons_in_one_name_map_separately_and_another_names_fit_ba
         np.testing.assert_array_equal(scores["baseline_"+metric].to_numpy(), values[metric])
     np.testing.assert_array_equal(scores["baseline_weighted_crps"].to_numpy(),
                                   values["crps"]+s["tail_weight"]*values["tail_crps"])
+
+
+# --- pooled.ticker_heads (ADR-0270 R1): one shared head instead of one per ticker -------------------
+
+ZOO_IDENTITIES = {  # value_hash of committed documents, pinned on the code BEFORE the key existed
+    "advanced-cdf-zoo": "2a78d320868c75aaa30fe48b42dff29a04ac303e65ce1404c13b5eca3a965a98",
+    "run-strike-screen-fits-walkforward": "185425341d58939318f83bab238c7c5493b507e5b12042e2aefe43d17195db49",
+}
+
+
+def _reference_settings(exp, arm, adapter, regime, groups, nfit, hidden):
+    """Verbatim copy of ``CDFExperiment._settings`` before the ticker_heads key (the identity reference)."""
+    import copy
+    c = exp.config
+    width = len(arm["features"])
+    params = copy.deepcopy(c["training"])
+    params.update(encoder={"kind": "external", "adapter": adapter,
+        "sequence_indices": arm["sequence_indices"], "context_indices": arm["context_indices"]},
+        hidden=[hidden], mask_constant_features=True, training_telemetry=True)
+    cap = c["capacity"][regime]
+    params["max_parameters"] = min(cap["absolute"], int(nfit*cap["per_row"]))
+    params["batch_size"] = min(c["capacity"][regime]["batch_size"], nfit)
+    params["device"] = c["capacity"][regime]["device"]
+    if regime == "pooled":
+        params.update(head_features=list(range(width, width+len(groups))),
+                      feature_indices=list(range(width)))
+    return params
+
+
+def _settings_of(exp, regime="pooled", groups=("AAA", "BBB")):
+    arm = exp.config["arms"]["base"]
+    adapter = exp.config["candidates"][0]["adapters"][regime][0]
+    return exp._settings(arm, adapter, regime, list(groups), 50, 8)
+
+
+def _reference_of(exp, regime="pooled", groups=("AAA", "BBB")):
+    arm = exp.config["arms"]["base"]
+    adapter = exp.config["candidates"][0]["adapters"][regime][0]
+    return _reference_settings(exp, arm, adapter, regime, list(groups), 50, 8)
+
+
+@pytest.mark.parametrize("name", sorted(ZOO_IDENTITIES))
+def test_committed_documents_keep_their_identity_hash(name):
+    import json
+    from pathlib import Path
+    from dskit.pipeline.base import value_hash
+    document = json.loads(Path(f"children/index_options/configs/{name}.json").read_text())
+    assert "ticker_heads" not in document["capacity"]["pooled"]
+    assert value_hash(document) == ZOO_IDENTITIES[name]
+
+
+@pytest.mark.parametrize("regime", ["pooled", "unpooled"])
+def test_absent_ticker_heads_leaves_settings_identical_to_the_reference(experiment_config, regime):
+    from dskit.pipeline.base import value_hash
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    assert "ticker_heads" not in experiment_config["capacity"]["pooled"]
+    exp = CDFExperiment(experiment_config)
+    assert exp.identity == value_hash(experiment_config)
+    got, want = _settings_of(exp, regime), _reference_of(exp, regime)
+    assert got == want
+    assert ("head_features" in got) == (regime == "pooled")
+
+
+def test_explicit_true_ticker_heads_equals_absent_settings_but_is_a_different_document(experiment_config):
+    import copy
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    config = copy.deepcopy(experiment_config)
+    config["capacity"]["pooled"]["ticker_heads"] = True
+    explicit, absent = CDFExperiment(config), CDFExperiment(experiment_config)
+    assert _settings_of(explicit) == _settings_of(absent) == _reference_of(absent)
+    assert explicit.identity != absent.identity   # the document identity hashes the config as written
+
+
+def test_ticker_heads_false_drops_head_features_and_keeps_the_feature_pick(experiment_config):
+    import copy
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    config = copy.deepcopy(experiment_config)
+    config["capacity"]["pooled"]["ticker_heads"] = False
+    got, want = _settings_of(CDFExperiment(config)), _reference_of(CDFExperiment(experiment_config))
+    width = len(config["arms"]["base"]["features"])
+    assert "head_features" not in got
+    assert got["feature_indices"] == list(range(width)) == want["feature_indices"]
+    assert got == {k: v for k, v in want.items() if k != "head_features"}
+    unpooled = _settings_of(CDFExperiment(config), "unpooled")
+    assert unpooled == _reference_of(CDFExperiment(experiment_config), "unpooled")
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", None, [], 0.0])
+def test_ticker_heads_must_be_a_bool(experiment_config, value):
+    import copy
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    config = copy.deepcopy(experiment_config)
+    config["capacity"]["pooled"]["ticker_heads"] = value
+    with pytest.raises(ValueError, match="invalid capacity settings"):
+        CDFExperiment(config)
+
+
+def test_ticker_heads_is_refused_for_the_unpooled_regime(experiment_config):
+    import copy
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    config = copy.deepcopy(experiment_config)
+    config["capacity"]["unpooled"]["ticker_heads"] = False
+    with pytest.raises(ValueError, match="invalid capacity settings"):
+        CDFExperiment(config)
+
+
+def _shared_head_config(config):
+    import copy
+    config = copy.deepcopy(config)
+    config["capacity"]["pooled"]["ticker_heads"] = False
+    return config
+
+
+def test_the_shared_head_has_fewer_parameters_by_exactly_the_extra_heads(experiment_config):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    tickers, shared = CDFExperiment(experiment_config), CDFExperiment(_shared_head_config(experiment_config))
+    arm, candidate = experiment_config["arms"]["base"], experiment_config["candidates"][0]
+    admission = {g: {"fit_n": 20} for g in ("AAA", "BBB")}
+    p_t, n_t = tickers._choose(arm, candidate, "pooled", ["AAA", "BBB"], admission)
+    p_s, n_s = shared._choose(arm, candidate, "pooled", ["AAA", "BBB"], admission)
+    assert p_t["hidden"] == p_s["hidden"]
+    head = (p_t["hidden"][0]+1)*3*p_t["components"]
+    assert n_t - n_s == head*(2-1)
+    assert n_s == TorchCDF(**p_s).parameter_count(len(arm["features"]))
+
+
+def test_head_budget_of_a_shared_head_is_measured_against_all_fit_rows(experiment_config):
+    import copy
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    arm, candidate = experiment_config["arms"]["base"], experiment_config["candidates"][0]
+    admission = {"AAA": {"fit_n": 10}, "BBB": {"fit_n": 10}}
+    head = (experiment_config["capacity"]["pooled"]["head_widths"][0]+1)*3*experiment_config["training"]["components"]
+    for heads, accepted in ((True, False), (False, True)):
+        config = copy.deepcopy(experiment_config)
+        config["capacity"]["pooled"].update(ticker_heads=heads, head_widths=[experiment_config["capacity"]["pooled"]["head_widths"][0]],
+                                            head_per_row=head/15, per_row=1000, absolute=10**9)
+        exp = CDFExperiment(config)
+        if accepted:   # 15 rows per head budget: each ticker's 10 rows fail it, the pooled 20 pass it
+            assert exp._choose(arm, candidate, "pooled", ["AAA", "BBB"], admission)[0]
+        else:
+            with pytest.raises(ValueError, match="no configuration meets parameter budget"):
+                exp._choose(arm, candidate, "pooled", ["AAA", "BBB"], admission)
+
+
+def _scored_frames(exp, root):
+    """Reload the fit's checkpoint and score the validation band, as the shard writer did."""
+    import json
+    from dskit.pipeline.libs.predictive_cdf import TorchCDF
+    frame = exp.load_panel()
+    arm = exp.config["arms"]["base"]
+    bands, groups, _ = exp._bands(frame, exp.study.plan.calendar(frame), 1, arm)
+    metadata = json.loads((root/"fit/metadata.json").read_text())
+    arrays, _ = exp._arrays(bands, arm, groups, "pooled", metadata["medians"])
+    return TorchCDF.load_checkpoint(root/"fit/model"), bands, arrays
+
+
+def test_shared_head_queue_completes_and_its_checkpoint_reloads_and_scores_identically(experiment_config):
+    import json
+    from pathlib import Path
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    config = _shared_head_config(experiment_config)
+    exp = CDFExperiment(config)
+    exp.run("pooled")
+    root = Path(config["output"])/"pooled/base/PatchTST/1/pooled"
+    assert not (root/"skipped").exists(), (root/"skipped/reason.json").read_text()
+    assert (root/"completed/complete.json").exists()
+    summary = json.loads((root/"completed/summary.json").read_text())
+    assert "head_features" not in summary["settings"] and summary["settings"]["feature_indices"] == [
+        *range(len(config["arms"]["base"]["features"]))]
+    state = json.loads((root/"fit/model/state.json").read_text())
+    assert not state["settings"].get("head_features")
+    model, bands, arrays = _scored_frames(exp, root)
+    assert model.head_features == ()
+    s = config["study"]
+    for ticker in config["tickers"]:
+        shard = pd.read_parquet(root/"scores"/ticker/"scores.parquet")
+        assert len(shard) > 0
+        curve = model.curve(arrays[2][(bands[2][s["group"]] == ticker).to_numpy()])
+        for name in ("weights", "means", "scales"):
+            stored = shard[[c for c in shard.columns if c.startswith(name) and c[len(name):].isdigit()]]
+            np.testing.assert_allclose(getattr(curve, name), stored.to_numpy(), rtol=1e-6, atol=1e-7)
+    # The head columns are inert: dropping them leaves every row's curve unchanged.
+    narrow = model.curve(arrays[2][:5, :len(config["arms"]["base"]["features"])])
+    np.testing.assert_allclose(narrow.means, model.curve(arrays[2][:5]).means, rtol=1e-6, atol=1e-7)
+
+
+def test_ticker_head_queue_is_unchanged_by_the_key_existing(experiment_config):
+    import json
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    CDFExperiment(experiment_config).run("pooled")
+    root = Path(experiment_config["output"])/"pooled/base/PatchTST/1/pooled"
+    assert (root/"completed/complete.json").exists()
+    model, _, _ = _scored_frames(CDFExperiment(experiment_config), root)
+    assert model.head_features == (len(experiment_config["arms"]["base"]["features"]),
+                                   len(experiment_config["arms"]["base"]["features"])+1)
+    assert json.loads((root/"completed/summary.json").read_text())["settings"]["head_features"]

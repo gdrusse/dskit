@@ -86,7 +86,7 @@ def _context(row):
                        "weights": [.25] * 4, "intervals": [[-1.6, -0.7], [0.4, 1.3]], "status": "eligible"})
 
 
-def _build_world(tmp, with_context=False, training=None):
+def _build_world(tmp, with_context=False, training=None, pooled_capacity=None):
     cfg = json.loads((CONFIGS / "advanced-cdf-zoo.json").read_text())
     cfg["source_hashes"], cfg["dependencies"] = {}, {}
     cfg["tickers"] = list(TICKERS)
@@ -100,6 +100,7 @@ def _build_world(tmp, with_context=False, training=None):
     cfg["training"].update(epochs=2, patience=None)
     cfg["training"].update(training or {})
     cfg["capacity"]["pooled"].update(device="cpu", per_row=1000, head_per_row=1000)
+    cfg["capacity"]["pooled"].update(pooled_capacity or {})
     cfg["date_upper_exclusive"] = cfg["end_upper_exclusive"] = "2002-01-01"
     folds = tmp / "folds.jsonl"
     folds.write_text(json.dumps({"fold": 1, "role": "scored", "train_start": "2001-01-01",
@@ -158,6 +159,12 @@ def world(tmp_path_factory):
 @pytest.fixture(scope="module")
 def context_world(tmp_path_factory):
     return _build_world(tmp_path_factory.mktemp("strike-region-context"), with_context=True)
+
+
+@pytest.fixture(scope="module")
+def shared_head_world(tmp_path_factory):
+    return _build_world(tmp_path_factory.mktemp("strike-region-shared-head"),
+                        pooled_capacity={"ticker_heads": False})
 
 
 def make_params(world, **over):
@@ -520,6 +527,24 @@ def test_summary_names_scored_skipped_and_hashes(world, result):
     assert result.out["summary"]["output"] == str(result.root)
     assert sorted(p.name for p in result.root.iterdir()) == [
         "cells.parquet", "curves.json", "rows.parquet", "summary.json"]
+
+
+def test_a_shared_head_fit_is_rescored_to_its_stored_shards(shared_head_world, world):
+    """ADR-0270 R1: with ``pooled.ticker_heads`` false the loaded model has no head columns, and the
+    scorer still rebuilds the same arrays (the one-hot columns are inert) and reproduces every stored
+    shard; ``_check_stored`` inside the run is the assertion, the checks below prove the run happened."""
+    state = json.loads((shared_head_world.root / "fit" / "model" / "state.json").read_text())
+    assert not state["settings"].get("head_features")
+    assert TorchCDF.load_checkpoint(shared_head_world.root / "fit" / "model").head_features == ()
+    out, params = run_node(shared_head_world)
+    summary = json.loads((Path(params["output"]) / "summary.json").read_text())
+    assert [c["cell"] for c in summary["scored_cells"]] == ["base/PatchTST/1"]
+    assert summary["refusals"] == []
+    rows = pd.read_parquet(Path(params["output"]) / "rows.parquet")
+    assert (rows.band == "val").any()
+    shared, tickers = (json.loads((w.root / "completed" / "summary.json").read_text())["parameters"]
+                       for w in (shared_head_world, world))
+    assert shared < tickers
 
 
 def test_an_unfinished_cell_is_a_named_refusal_not_a_score(world):
