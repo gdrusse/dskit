@@ -78,6 +78,8 @@ REGION_GROUP_METRIC = "region_group_brier"
 WINDOWS_TABLE = "windows"
 #: Derived category columns a table or a method may name besides parquet columns.
 PERIOD_COLUMN, YEAR_COLUMN = "period", "year"
+#: The component name the new forecaster takes in the tables; no declared component may use it.
+METHOD_NAME = "method"
 #: Pool sizes above this are refused: every support of the simplex is solved exactly (2^K - 1 of them).
 MAX_POOL_COMPONENTS = 6
 #: The base probability is clipped to this before the logit.
@@ -86,7 +88,6 @@ LOGIT_CLIP = 1e-4
 CHUNK_ROWS = 50_000
 #: A row-support candidate whose smallest weight is below this (numerical noise) is clipped to zero.
 SIMPLEX_NOISE = 1e-12
-_HASH_BLOCK = 1 << 22
 _TABLE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -191,12 +192,13 @@ class _Source:
     @staticmethod
     def verify(path, expected, what):
         """Raise ValueError unless the sha256 of the file at ``path`` is ``expected``."""
-        digest = hashlib.sha256()
-        with open(path, "rb") as handle:
-            for block in iter(lambda: handle.read(_HASH_BLOCK), b""):
-                digest.update(block)
-        if digest.hexdigest() != expected:
-            raise ValueError(f"{what} {path} has sha256 {digest.hexdigest()}, the document declares {expected}")
+        from dskit.pipeline.workflow import path_hash
+
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"no file to hash at {path}")
+        actual = path_hash(str(path))
+        if actual != expected:
+            raise ValueError(f"{what} {path} has sha256 {actual}, the document declares {expected}")
 
     @staticmethod
     def read(path, columns, date_columns, end_before):
@@ -1641,7 +1643,7 @@ class GridCDFMethod(Node):
             problems.append(f"fallback names {params['fallback']!r}, not a declared component {sorted(names)}")
         cls._comparator_problems(problems, params, names)
         cls._derived_problems(problems, params)
-        cls._table_problems(problems, params.get("tables"), params.get("z_grid"))
+        cls._table_problems(problems, params.get("tables"), params.get("z_grid"), bool(params.get("periods")))
         cls._method_problems(problems, params, names)
         return problems
 
@@ -1699,6 +1701,8 @@ class GridCDFMethod(Node):
             problems.append("components must be a non-empty list of mappings")
             return set()
         names = [c.get("name") for c in components]
+        if METHOD_NAME in names:
+            problems.append(f"a component may not be named {METHOD_NAME!r}: it is reserved for the new forecaster")
         for index, spec in enumerate(components):
             reject_unknown_params(problems, spec, cls._COMPONENT_KEYS)
             if not (_is_name(spec.get("name")) and _is_name(spec.get("source"))):
@@ -1753,7 +1757,7 @@ class GridCDFMethod(Node):
             problems.append("periods must map names to non-overlapping [start, end] ISO date pairs")
 
     @classmethod
-    def _table_problems(cls, problems, tables, grid):
+    def _table_problems(cls, problems, tables, grid, has_periods):
         if tables is None:
             return
         if not isinstance(tables, list):
@@ -1767,6 +1771,8 @@ class GridCDFMethod(Node):
             if not ok:
                 problems.append(f"tables[{index}] must be {{name (file-safe), by (column list), regions (bool)}}")
                 continue
+            if PERIOD_COLUMN in spec["by"] and not has_periods:
+                problems.append(f"tables[{index}].by names {PERIOD_COLUMN!r}, but no periods are declared")
             if "region_groups" in spec:
                 cls._region_group_problems(problems, index, spec["region_groups"], grid)
             if spec["name"] == WINDOWS_TABLE or spec["name"] in seen:

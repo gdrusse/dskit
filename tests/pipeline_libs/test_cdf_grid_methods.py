@@ -9,6 +9,7 @@ node under test.
 import hashlib
 import itertools
 import json
+import types
 
 import pytest
 
@@ -656,6 +657,11 @@ REFUSALS = {
     "bad periods": (lambda p: p.update(periods={"P": ["2020-02-01", "2020-01-01"]}), "periods"),
     "bad buckets": (lambda p: p.update(buckets={"b": {"column": "actual_calendar_dte", "edges": [[5, 1]]}}),
                     "buckets"),
+    "table by period without periods": (
+        lambda p: p.update(tables=[{"name": "t", "by": ["period"], "regions": False}]), "period"),
+    "table by symbol and period without periods": (
+        lambda p: p.update(tables=[{"name": "t", "by": ["symbol", "period"], "regions": False}]), "period"),
+    "component named method": (lambda p: p["components"].append({"name": "method", "source": "mdl"}), "reserved"),
 }
 
 
@@ -925,3 +931,316 @@ def test_bad_region_groups_are_refused(tmp_path, groups):
     df, params = table_setup(tmp_path)
     params["tables"] = [{"name": "t", "by": ["symbol"], "regions": True, "region_groups": groups}]
     assert any("region_groups" in p for p in GridCDFMethod.validate_params(params))
+
+
+# ------------------------------------------------------------------- pins: bucketed and per-threshold pools
+
+
+def method_cdfs(frame):
+    """The method's CDF columns of a forecasts-like frame as an array."""
+    return frame[[f"method_cdf_{label}" for label in LABELS]].to_numpy()
+
+
+def regional_frame(rng, n_fit=1500, n_val=300):
+    """Truth N(0, 1); the model is sharp and offset, the market wide: their best mix differs by region of z."""
+    df = make_frame(rng, n_fit=n_fit, n_val=n_val)
+    df["y"] = rng.normal(0, 1, len(df))
+    add_cdf(df, "mdl", 0.3, 0.7)
+    add_cdf(df, "mkt", 0.0, 2.0)
+    return df
+
+
+DTE_BUCKETS = {"dte_bucket": {"column": "actual_calendar_dte", "edges": [[1, 15], [16, 30]]}}
+
+
+def test_bucketed_pool_learns_and_applies_each_buckets_own_weights(tmp_path):
+    rng = np.random.default_rng(80)
+    truth = {"1-15": 0.8, "16-30": 0.2}
+    df = pool_frame(rng, n_fit=2000, weight=lambda d: np.where(d["actual_calendar_dte"] <= 15, 0.8, 0.2))
+    params = params_for(tmp_path, df, pool_method(by="dte_bucket"), buckets=DTE_BUCKETS)
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    state = fit["folds"]["2"]["state"]
+    assert sorted(state["buckets"]) == sorted(truth)
+    w = {b: np.array(state["buckets"][b]["weights"]) for b in truth}
+    for bucket, expected in truth.items():
+        assert w[bucket][0] == pytest.approx(expected, abs=0.07)
+    assert abs(w["1-15"][0] - w["16-30"][0]) > 0.4
+    full = joined(forecasts, df)
+    got = method_cdfs(full)
+    dte = full["actual_calendar_dte"].to_numpy()
+    in_fold = (full["fold"] == 2).to_numpy()
+    for bucket, inside in (("1-15", dte <= 15), ("16-30", dte >= 16)):
+        rows = in_fold & inside
+        expect = w[bucket][0] * cdfs(full, "mdl") + w[bucket][1] * cdfs(full, "mkt")
+        assert rows.sum() > 100 and np.allclose(got[rows], expect[rows], atol=1e-12)
+
+
+def test_per_threshold_weights_are_each_thresholds_own_brier_minimizer(tmp_path):
+    df = regional_frame(np.random.default_rng(81))
+    run(params := params_for(tmp_path, df, pool_method(per_threshold=True)))
+    _, fit, _ = read_out(params)
+    weights = np.array(fit["folds"]["2"]["state"]["global"]["weights"])
+    rows = df[(df["fold"] == 2) & (df["band"] == "fit")]
+    first, second = cdfs(rows, "mdl"), cdfs(rows, "mkt")
+    hit = (rows["y"].to_numpy()[:, None] <= np.array(Z)[None, :]).astype(float)
+    ticks = np.linspace(0, 1, 2001)
+    best = np.empty(13)
+    for k in range(13):
+        pooled = ticks[:, None] * first[:, k] + (1 - ticks[:, None]) * second[:, k]
+        best[k] = ticks[np.argmin(((pooled - hit[:, k]) ** 2).mean(1))]
+    assert best.max() - best.min() > 0.3  # the minimizers differ by threshold, so a scrambled layout shows
+    assert weights.shape == (13, 2) and np.allclose(weights.sum(1), 1.0)
+    assert np.allclose(weights[:, 0], best, atol=1e-3)
+
+
+def test_per_threshold_predict_returns_the_sorted_clipped_pooled_values():
+    grid = cgm._Grid(Z, LABELS, [1.0] * 13, 4.0)
+    spec = {"kind": "linear_pool", "learn": "fit_band", "components": ["a", "b"], "min_rows": 1,
+            "per_threshold": True}
+    method = cgm._LinearPoolMethod(spec, {}, grid)
+    z = np.array(Z)
+    low, high = ndtr(z - 2.0), ndtr(z + 0.5)
+    panel = types.SimpleNamespace(cdf={"a": np.tile(low, (3, 1)), "b": np.tile(high, (3, 1))})
+    first = np.array([1.0, 0.0, 1.0, 0.3, 0.0, 1.0, 0.0, 0.8, 1.0, 0.0, 0.6, 0.0, 0.0])  # weight of "a": a zigzag
+    weights = np.stack([first, 1 - first], axis=1)
+    pooled = first * low + (1 - first) * high
+    assert (np.diff(pooled) < -0.05).any()  # the premise: the pooled values cross, so a rearrangement is needed
+    fitted = cgm._Fitted({}, {"global": weights, "buckets": {}, "states": []})
+    got = method.predict(panel, np.arange(3), fitted)
+    assert got.shape == (3, 13)
+    assert np.allclose(got, np.sort(np.clip(pooled, 0, 1))[None, :], atol=1e-15)
+    assert (np.diff(got, axis=1) >= 0).all()
+
+
+# ------------------------------------------------------------------------------ pins: the weighted objective
+
+
+def tw_minimizer(rows, weights, trapezoid=True):
+    """The weight on the model minimizing the weighted grid twCRPS of ``w * F_model + (1 - w) * F_market``."""
+    first, second, y = cdfs(rows, "mdl"), cdfs(rows, "mkt"), rows["y"].to_numpy()
+    ticks = np.linspace(0, 1, 2001)
+    if trapezoid:
+        loss = [tw(w * first + (1 - w) * second, y, weights).mean() for w in ticks]
+    else:
+        hit = (y[:, None] <= np.array(Z)[None, :]).astype(float)
+        loss = [(((w * first + (1 - w) * second - hit) ** 2) @ np.asarray(weights, dtype=float)).mean()
+                for w in ticks]
+    return ticks[int(np.argmin(loss))]
+
+
+@pytest.mark.parametrize("case", ["taper", "two_points"])
+def test_pool_weight_minimizes_the_score_weighted_twcrps(tmp_path, case):
+    weights = {"taper": [0.25] * 4 + [1.0] * 5 + [0.25] * 4,
+               "two_points": [1.0] + [0.0] * 5 + [1.0] + [0.0] * 6}[case]
+    df = regional_frame(np.random.default_rng(82))
+    run(params := params_for(tmp_path, df, pool_method(), score_weights=weights))
+    _, fit, _ = read_out(params)
+    got = fit["folds"]["2"]["state"]["global"]["weights"][0]
+    rows = df[(df["fold"] == 2) & (df["band"] == "fit")]
+    expected = tw_minimizer(rows, weights)
+    assert abs(expected - tw_minimizer(rows, [1.0] * 13)) > 0.05  # the weights matter on this data
+    if case == "two_points":
+        assert abs(expected - tw_minimizer(rows, weights, trapezoid=False)) > 0.05  # and so does the spacing
+    assert got == pytest.approx(expected, abs=1.5e-3)
+
+
+# ---------------------------------------------------------------------------------- pins: the pit_map paths
+
+
+def pit_frame(rng, symbols=("A", "B"), folds=(1, 2)):
+    """Truth N(0, 1) for symbol A and N(0, 2) for the others; the market is N(0, 1), its PIT is a column."""
+    df = make_frame(rng, folds=folds, n_fit=900, n_val=300, symbols=symbols)
+    spread = np.where(df["symbol"] == "A", 1.0, 2.0)
+    df["y"] = rng.normal(0, 1, len(df)) * spread
+    add_cdf(df, "mkt", 0.0, 1.0)
+    add_cdf(df, "mdl", 0.0, 1.0)
+    df["mkt_pit"] = ndtr(df["y"].to_numpy())
+    return df
+
+
+PIT_COMPONENTS = [{"name": "market", "source": "mkt", "pit_column": "mkt_pit"}, {"name": "model", "source": "mdl"}]
+
+
+def empirical_map(pits, knots):
+    """G(p) = the fraction of ``pits`` at or below p, on ``knots`` evenly spaced points of [0, 1]."""
+    p = np.linspace(0, 1, knots)
+    return p, np.array([(pits <= point).mean() for point in p])
+
+
+def test_pit_map_buckets_apply_their_own_map_and_small_buckets_use_the_global_one(tmp_path):
+    rng = np.random.default_rng(83)
+    df = pit_frame(rng)
+    rare = df.index[(df["fold"] == 2) & (df["band"] == "fit")][:5]
+    df.loc[rare, "symbol"] = "C"
+    method = {"kind": "pit_map", "learn": "fit_band", "component": "market", "knots": 41, "min_rows": 50,
+              "by": "symbol"}
+    params = params_for(tmp_path, df, method, components=PIT_COMPONENTS, fallback="market")
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    state = fit["folds"]["2"]["state"]
+    assert sorted(state["buckets"]) == ["A", "B"]
+    learn = df[(df["fold"] == 2) & (df["band"] == "fit")]
+    full = joined(forecasts, df)
+    fold2 = full[full["fold"] == 2]
+    raw = cdfs(fold2, "mkt")
+    got = method_cdfs(fold2)
+    maps = {}
+    for symbol in ("A", "B"):
+        p, maps[symbol] = empirical_map(learn.loc[learn["symbol"] == symbol, "mkt_pit"].to_numpy(), 41)
+    _, maps["global"] = empirical_map(learn["mkt_pit"].to_numpy(), 41)
+    assert np.abs(maps["A"] - maps["B"]).max() > 0.1  # the buckets really are miscalibrated differently
+    assert np.abs(maps["global"] - maps["A"]).max() > 0.05
+    for symbol, key in (("A", "A"), ("B", "B"), ("C", "global")):
+        rows = (fold2["symbol"] == symbol).to_numpy()
+        assert rows.sum() >= 5
+        assert np.allclose(got[rows], np.interp(raw[rows], p, maps[key][None, :][0]), atol=1e-12)
+    assert state["global"]["rows"] == len(learn) and state["buckets"]["A"]["g"] == pytest.approx(maps["A"].tolist())
+
+
+def test_pit_map_learns_from_eligible_rows_only(tmp_path):
+    rng = np.random.default_rng(84)
+    df = pit_frame(rng, symbols=("A",))
+    bad = ((df["fold"] == 2) & (df["band"] == "fit") & (rng.random(len(df)) < 0.3)).to_numpy()
+    df.loc[bad, "market_eligible"] = False
+    df.loc[bad, "y"] = rng.normal(0, 4, int(bad.sum()))
+    df["mkt_pit"] = ndtr(df["y"].to_numpy())
+    components = [*PIT_COMPONENTS, {"name": "market_cal", "source": "mkt", "pit_column": "mkt_pit",
+                                    "pit_map": {"knots": 41, "learn": "fit_band"}}]
+    method = {"kind": "pit_map", "learn": "fit_band", "component": "market", "knots": 41, "min_rows": 50}
+    params = params_for(tmp_path, df, method, components=components, fallback="market")
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    learn = df[(df["fold"] == 2) & (df["band"] == "fit")]
+    eligible = learn[learn["market_eligible"]]
+    p, expected = empirical_map(eligible["mkt_pit"].to_numpy(), 41)
+    _, everything = empirical_map(learn["mkt_pit"].to_numpy(), 41)
+    assert 0 < len(eligible) < len(learn) and np.abs(expected - everything).max() > 0.03
+    state = fit["folds"]["2"]["state"]
+    assert state["global"]["rows"] == len(eligible)
+    assert state["global"]["g"] == pytest.approx(expected.tolist())
+    component = fit["components"]["market_cal"]["2"]
+    assert component["learning_rows"] == len(eligible) and component["g"] == pytest.approx(expected.tolist())
+    full = joined(forecasts, df)
+    fold2 = full[full["fold"] == 2]
+    assert np.allclose(method_cdfs(fold2), np.interp(cdfs(fold2, "mkt"), p, expected), atol=1e-12)
+
+
+# ------------------------------------------------------------------------------ pins: best_component cells
+
+
+def test_best_component_applies_a_nondefault_choice_and_the_default_to_an_unlearned_cell(tmp_path):
+    rng = np.random.default_rng(85)
+    df = make_frame(rng, folds=(1, 2), n_fit=600, n_val=300, symbols=("A", "C"))
+    df["y"] = rng.normal(size=len(df))
+    unseen = df.index[(df["fold"] == 2) & (df["band"] == "val")][:40]
+    df.loc[unseen, "symbol"] = "B"  # a cell with no learning rows, sorting between the two learned ones
+    model_wins = (df["symbol"] == "C").to_numpy()
+    add_cdf(df, "mdl", 0.0, np.where(model_wins, 1.0, 0.5))
+    add_cdf(df, "mkt", 0.0, np.where(model_wins, 0.5, 1.0))
+    params = params_for(tmp_path, df, best_method())
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    learn = df[(df["fold"] == 2) & (df["band"] == "fit")]
+    for symbol, better in (("A", "mkt"), ("C", "mdl")):
+        rows = learn[learn["symbol"] == symbol]
+        scores = {n: tw(cdfs(rows, n), rows["y"].to_numpy()).mean() for n in ("mdl", "mkt")}
+        assert min(scores, key=scores.get) == better
+    cells = {c["cell"]["symbol"]: c["chosen"] for c in fit["folds"]["2"]["state"]["cells"]}
+    assert cells == {"A": "market", "C": "model"}
+    full = joined(forecasts, df)
+    fold2 = full[full["fold"] == 2]
+    got = method_cdfs(fold2)
+    for symbol, source in (("A", "mkt"), ("C", "mdl"), ("B", "mkt")):
+        rows = (fold2["symbol"] == symbol).to_numpy()
+        assert rows.sum() > 0 and np.allclose(got[rows], cdfs(fold2, source)[rows])
+    assert (fold2["symbol"] == "B").sum() == 40
+
+
+# ------------------------------------------------------------------------------ pins: the table's errors
+
+
+def test_a_table_not_grouped_by_the_group_column_takes_the_larger_of_the_date_and_group_errors(tmp_path):
+    rng = np.random.default_rng(86)
+    df = make_frame(rng, n_fit=800, n_val=500, symbols=("A", "B"))
+    df["y"] = rng.normal(size=len(df))
+    add_cdf(df, "mkt", 0.0, np.where(df["symbol"] == "A", 0.5, 1.0))  # the market is wrong for symbol A only
+    add_cdf(df, "mdl", 0.0, 1.0)
+    method = {"kind": "pit_map", "learn": "fit_band", "component": "market", "knots": 41, "min_rows": 50}
+    params = params_for(tmp_path, df, method, comparators=["market"], ranked_folds=[2, 3], buckets=DTE_BUCKETS,
+                        tables=[{"name": "by_dte", "by": ["dte_bucket"], "regions": False}])
+    run(params)
+    forecasts, _, _ = read_out(params)
+    full = joined(forecasts, df)
+    val = full[(full["band"] == "val") & full["fold"].isin([2, 3])]
+    table = pd.read_csv(tmp_path / "out" / "tables" / "by_dte.csv", dtype={"dte_bucket": str})
+    table = table[(table["comparator"] == "market") & (table["metric"] == "twcrps")].set_index("dte_bucket")
+    dte = val["actual_calendar_dte"].to_numpy()
+    for bucket, inside in (("1-15", dte <= 15), ("16-30", dte >= 16)):
+        cell = val[inside]
+        d = tw(cdfs(cell, "mkt"), cell["y"].to_numpy()) - tw(method_cdfs(cell), cell["y"].to_numpy())
+        dates, groups = cell["quote_date"].to_numpy(), cell["symbol"].to_numpy()
+        by_date = cluster_se(d, dates, groups, by_group=False)
+        both = cluster_se(d, dates, groups)
+        assert both > 1.5 * by_date  # the group clusters carry the larger error here
+        other = tw(cdfs(cell, "mkt"), cell["y"].to_numpy()).mean()
+        assert table.loc[bucket, "se_pct"] == pytest.approx(100 * both / other)
+
+
+# ---------------------------------------------------------------- pins: y on a grid point counts as y <= z
+
+
+def test_the_score_counts_an_outcome_on_a_grid_point_as_at_or_below_it():
+    grid = cgm._Grid(Z, LABELS, [1.0] * 13, 4.0)
+    F = np.sort(np.random.default_rng(87).random((13, 13)), axis=1)
+    y = np.array(Z)
+    assert np.allclose(grid.score(F, y), tw(F, y), atol=1e-14)
+    assert (grid.indicator(y) == (y[:, None] <= np.array(Z)[None, :])).all() and grid.indicator(y)[0, 0] == 1.0
+
+
+def test_a_pool_on_outcomes_that_sit_on_grid_points_is_scored_with_at_or_below(tmp_path):
+    rng = np.random.default_rng(88)
+    df = make_frame(rng, folds=(1, 2), n_fit=1200, n_val=100)
+    df["y"] = np.clip(np.round(rng.normal(0.4, 1.0, len(df)) * 2) / 2, -3, 3)  # every outcome is a grid value
+    add_cdf(df, "mdl", 0.3, 0.7)
+    add_cdf(df, "mkt", 0.0, 2.0)
+    run(params := params_for(tmp_path, df, pool_method()))
+    _, fit, _ = read_out(params)
+    rows = df[(df["fold"] == 2) & (df["band"] == "fit")]
+    assert np.isin(rows["y"], Z).all()
+    expected = tw_minimizer(rows, [1.0] * 13)
+    strict = rows.assign(y=rows["y"] + 1e-9)  # the same outcomes just above their grid points: not y <= z there
+    assert abs(tw_minimizer(strict, [1.0] * 13) - expected) > 0.01  # the tie rule is visible in the optimum
+    assert fit["folds"]["2"]["state"]["global"]["weights"][0] == pytest.approx(expected, abs=1.5e-3)
+
+
+def test_binary_gbm_labels_an_outcome_on_a_grid_point_as_at_or_below_it(tmp_path):
+    pytest.importorskip("lightgbm")
+    df = gbm_frame(np.random.default_rng(89))
+    df["y"] = 0.0  # exactly the grid point z = 0 for every row
+    params = gbm_params(tmp_path, df)
+    run(params)
+    forecasts, _, _ = read_out(params)
+    at_zero = forecasts[f"method_cdf_{LABELS[Z.index(0.0)]}"].to_numpy()
+    just_below = forecasts[f"method_cdf_{LABELS[Z.index(-0.5)]}"].to_numpy()
+    assert at_zero.mean() > 0.9 and just_below.mean() < 0.1
+
+
+# ----------------------------------------------------------------------------------- pins: validation
+
+
+def test_a_table_may_group_by_year_and_by_a_declared_period(tmp_path):
+    _, params = valid_params(tmp_path)
+    params["tables"] = [{"name": "y", "by": ["year"], "regions": False}]
+    assert GridCDFMethod.validate_params(params) == []
+    params["periods"] = {"P1": ["2020-05-15", "2020-06-15"]}
+    params["tables"] = [{"name": "p", "by": ["period"], "regions": False}]
+    assert GridCDFMethod.validate_params(params) == []
+
+
+def test_a_period_table_without_declared_periods_is_refused_not_a_crash_after_the_compute(tmp_path):
+    df, params = valid_params(tmp_path)
+    params["tables"] = [{"name": "p", "by": ["period"], "regions": False}]
+    assert any("period" in p for p in GridCDFMethod.validate_params(params))
+    with pytest.raises(ConfigError):
+        GridCDFMethod("g", params).run(CTX, {})
