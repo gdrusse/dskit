@@ -109,7 +109,7 @@
           "data_root": "/home/russell/data/index_options/theta-strike-screen-20261018/ob",
           "min_valid_strikes": 2
         },
-        "fit_band_sample": 25000,
+        "fit_band_sample": 100000,
         "end_before": "2024-01-01",
         "chunk_rows": 4096,
         "stored_tolerance": 0.0001
