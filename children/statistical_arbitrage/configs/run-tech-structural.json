@@ -1,0 +1,457 @@
+{
+  "name": "tech-structural-20261019",
+  "notes": "Phase-one AAPL/AMZN/GOOGL annual precision graph, Theta 30-DTE IV/skew, network pair z-scores and all-pairs baseline. QQQ factor. Source and signal clocks are retrospective; no option order or P&L. Bounded to last QQQ close 2025-12-15.",
+  "outputs": {
+    "run_root": "/home/russell/data/statistical_arbitrage/pipeline_runs"
+  },
+  "pipeline": {
+    "prices_aapl": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "AAPL": "aapl/underlying_prices.parquet"
+        },
+        "key": "AAPL",
+        "columns": {
+          "symbol": "symbol",
+          "date": "date",
+          "adjusted_close": "adjusted_close",
+          "split_coefficient": "split_coefficient",
+          "dividend_amount": "dividend_amount"
+        },
+        "read_bounds": {
+          "date": {
+            "start": "2016-01-04",
+            "end_before": "2025-12-16"
+          }
+        }
+      },
+      "notes": "Manifest-verified adjusted close and corporate actions; the date bound is pushed into the Parquet scan."
+    },
+    "prices_amzn": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "AMZN": "amzn/underlying_prices.parquet"
+        },
+        "key": "AMZN",
+        "columns": {
+          "symbol": "symbol",
+          "date": "date",
+          "adjusted_close": "adjusted_close",
+          "split_coefficient": "split_coefficient",
+          "dividend_amount": "dividend_amount"
+        },
+        "read_bounds": {
+          "date": {
+            "start": "2016-01-04",
+            "end_before": "2025-12-16"
+          }
+        }
+      },
+      "notes": "Manifest-verified adjusted close and corporate actions; the date bound is pushed into the Parquet scan."
+    },
+    "prices_googl": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "stock-daily-bars",
+        "stream": "files",
+        "relpath_by_key": {
+          "GOOGL": "googl/underlying_prices.parquet"
+        },
+        "key": "GOOGL",
+        "columns": {
+          "symbol": "symbol",
+          "date": "date",
+          "adjusted_close": "adjusted_close",
+          "split_coefficient": "split_coefficient",
+          "dividend_amount": "dividend_amount"
+        },
+        "read_bounds": {
+          "date": {
+            "start": "2016-01-04",
+            "end_before": "2025-12-16"
+          }
+        }
+      },
+      "notes": "Manifest-verified adjusted close and corporate actions; the date bound is pushed into the Parquet scan."
+    },
+    "prices_qqq": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "philippdubach-options",
+        "stream": "files",
+        "relpath_by_key": {
+          "QQQ": "qqq/underlying_prices.parquet"
+        },
+        "key": "QQQ",
+        "columns": {
+          "symbol": "symbol",
+          "date": "date",
+          "adjusted_close": "adjusted_close",
+          "split_coefficient": "split_coefficient",
+          "dividend_amount": "dividend_amount"
+        },
+        "read_bounds": {
+          "date": {
+            "start": "2016-01-04",
+            "end_before": "2025-12-16"
+          }
+        }
+      },
+      "notes": "Manifest-verified adjusted close and corporate actions; the date bound is pushed into the Parquet scan."
+    },
+    "returns": {
+      "uses": "statistical_arbitrage.data:TechAdjustedReturns",
+      "inputs": {
+        "aapl": "$prices_aapl.records",
+        "amzn": "$prices_amzn.records",
+        "googl": "$prices_googl.records",
+        "qqq": "$prices_qqq.records"
+      },
+      "params": {
+        "end_before": "2025-12-16",
+        "ports": {
+          "aapl": "AAPL",
+          "amzn": "AMZN",
+          "googl": "GOOGL",
+          "qqq": "QQQ"
+        },
+        "factor_port": "qqq",
+        "max_forward_fill_sessions": 0
+      },
+      "notes": "Exact common-date adjusted-close log returns. QQQ is a factor only; corporate events are retained for later execution exclusion."
+    },
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/thetadata/parquet-v2/options-tested/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "open_interest",
+          "volume",
+          "underlying_price"
+        ],
+        "symbols": [
+          "AAPL",
+          "AMZN",
+          "GOOGL"
+        ],
+        "start": "2018-01-01",
+        "end_before": "2025-12-16",
+        "sealed_from": "2026-01-01"
+      },
+      "notes": "Read Theta Parquet snapshots for the three tradable roots, with symbol and date pushed down before decode."
+    },
+    "rates_raw": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "fred-market-features",
+        "stream": "dgs3mo",
+        "key_fields": [
+          "observation_date"
+        ]
+      },
+      "notes": "Onboarded FRED DGS3MO. The surface processor uses only prior observations."
+    },
+    "rates": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$rates_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "observation_date",
+            "op": "<",
+            "value": "2025-12-16"
+          },
+          {
+            "field": "DGS3MO",
+            "op": "!=",
+            "value": "."
+          }
+        ]
+      },
+      "notes": "Filter missing FRED prints and bound the rate series for this structural run."
+    },
+    "surface": {
+      "uses": "statistical_arbitrage.surface:TechOptionSurface",
+      "inputs": {
+        "records": "$chain.records",
+        "rates": "$rates.records"
+      },
+      "params": {
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "expiration_field": "expiration",
+        "strike_field": "strike",
+        "right_field": "right",
+        "bid_field": "bid",
+        "ask_field": "ask",
+        "open_interest_field": "open_interest",
+        "volume_field": "volume",
+        "underlying_price_field": "underlying_price",
+        "call_values": [
+          "call"
+        ],
+        "put_values": [
+          "put"
+        ],
+        "end_before": "2025-12-16",
+        "targets": [
+          {
+            "dte": 30,
+            "tolerance": 7
+          }
+        ],
+        "target_field": "target_dte",
+        "atm_band": 0.05,
+        "wing_delta": 0.25,
+        "min_forward_pairs": 5,
+        "oi_lag_sessions": 5,
+        "oi_lag_max_days": 10,
+        "fields": {
+          "expiration": "expiration",
+          "dte": "dte",
+          "spot": "spot",
+          "forward": "forward",
+          "atm_strike": "atm_strike",
+          "atm_iv": "atm_iv",
+          "put_wing_iv": "put25_iv",
+          "call_wing_iv": "call25_iv",
+          "risk_reversal": "risk_reversal",
+          "half_spread_over_premium": "half_spread_over_premium"
+        },
+        "status_field": "status",
+        "symbol_contiguous": true,
+        "rate_date_field": "observation_date",
+        "rate_value_field": "DGS3MO",
+        "rate_max_age_days": 5,
+        "rate_scale": 0.01,
+        "oi_scope": "expiry",
+        "stale_spot_tolerance": 0.05,
+        "stale_spot_field": "stale_spot",
+        "max_symbol_rows": 10000000
+      },
+      "notes": "30\u00b17 DTE ATM/wing IV, parity forward, spot, expiry, strike, relative quote width and status for later executable replay. DGS3MO strictly precedes quote date."
+    },
+    "graph": {
+      "uses": "dskit.pipeline.libs.graphical_lasso:RollingPrecisionGraph",
+      "inputs": {
+        "records": "$returns.records"
+      },
+      "params": {
+        "date_field": "date",
+        "symbol_field": "symbol",
+        "return_field": "log_return",
+        "factor_field": "factor_return",
+        "symbols": [
+          "AAPL",
+          "AMZN",
+          "GOOGL"
+        ],
+        "window": 252,
+        "min_observations": 252,
+        "cv_splits": 3,
+        "max_iter": 400,
+        "tol": 0.01,
+        "edge_min_weight": 0.01,
+        "refit_frequency": "yearly",
+        "fit_dates": [
+          "2019-01-02",
+          "2020-01-02",
+          "2021-01-04",
+          "2022-01-03",
+          "2023-01-03",
+          "2024-01-02",
+          "2025-01-02"
+        ]
+      },
+      "notes": "Seven annual factor-residualized GraphicalLassoCV fits; each decision uses the most recent prior-only fit. Disconnected graphs emit no pair."
+    },
+    "atm_network": {
+      "uses": "dskit.pipeline.libs.pair_spread:RollingPairSpread",
+      "inputs": {
+        "surfaces": "$surface.records",
+        "edges": "$graph.edges"
+      },
+      "params": {
+        "lookback": 60,
+        "entry_z": 2.0,
+        "date_field": "date",
+        "symbol_field": "symbol",
+        "value_field": "atm_iv",
+        "target_field": "target_dte",
+        "target_value": 30,
+        "surface_status_field": "status",
+        "surface_ok_value": "ok",
+        "end_before": "2025-12-16",
+        "select_mode": "edges"
+      },
+      "notes": "Network-gated 60-session, strictly prior spread z-score; after-close diagnostic only, no fill or P&L."
+    },
+    "atm_baseline": {
+      "uses": "dskit.pipeline.libs.pair_spread:RollingPairSpread",
+      "inputs": {
+        "surfaces": "$surface.records"
+      },
+      "params": {
+        "lookback": 60,
+        "entry_z": 2.0,
+        "date_field": "date",
+        "symbol_field": "symbol",
+        "value_field": "atm_iv",
+        "target_field": "target_dte",
+        "target_value": 30,
+        "surface_status_field": "status",
+        "surface_ok_value": "ok",
+        "end_before": "2025-12-16",
+        "select_mode": "all_pairs",
+        "symbols": [
+          "AAPL",
+          "AMZN",
+          "GOOGL"
+        ]
+      },
+      "notes": "Identical z-score rule across all three pairs without graph selection; structural signal baseline, not an executable strategy."
+    },
+    "skew_network": {
+      "uses": "dskit.pipeline.libs.pair_spread:RollingPairSpread",
+      "inputs": {
+        "surfaces": "$surface.records",
+        "edges": "$graph.edges"
+      },
+      "params": {
+        "lookback": 60,
+        "entry_z": 2.0,
+        "date_field": "date",
+        "symbol_field": "symbol",
+        "value_field": "risk_reversal",
+        "target_field": "target_dte",
+        "target_value": 30,
+        "surface_status_field": "status",
+        "surface_ok_value": "ok",
+        "end_before": "2025-12-16",
+        "select_mode": "edges"
+      },
+      "notes": "Network-gated 60-session, strictly prior spread z-score; after-close diagnostic only, no fill or P&L."
+    },
+    "skew_baseline": {
+      "uses": "dskit.pipeline.libs.pair_spread:RollingPairSpread",
+      "inputs": {
+        "surfaces": "$surface.records"
+      },
+      "params": {
+        "lookback": 60,
+        "entry_z": 2.0,
+        "date_field": "date",
+        "symbol_field": "symbol",
+        "value_field": "risk_reversal",
+        "target_field": "target_dte",
+        "target_value": 30,
+        "surface_status_field": "status",
+        "surface_ok_value": "ok",
+        "end_before": "2025-12-16",
+        "select_mode": "all_pairs",
+        "symbols": [
+          "AAPL",
+          "AMZN",
+          "GOOGL"
+        ]
+      },
+      "notes": "Identical z-score rule across all three pairs without graph selection; structural signal baseline, not an executable strategy."
+    },
+    "write_surface_rows": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$surface.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/surface_rows.jsonl",
+        "overwrite": false,
+        "source": "ADR-0271 structural surface.records; retrospective research, no trade or P&L"
+      },
+      "notes": "Immutable structural evidence for diagnostics and later paired replay."
+    },
+    "write_graph_fits": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$graph.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/graph_fits.jsonl",
+        "overwrite": false,
+        "source": "ADR-0271 structural graph.fits; retrospective research, no trade or P&L"
+      },
+      "notes": "Immutable structural evidence for diagnostics and later paired replay."
+    },
+    "write_atm_network_rows": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_network.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/atm_network_rows.jsonl",
+        "overwrite": false,
+        "source": "ADR-0271 structural atm_network.records; retrospective research, no trade or P&L"
+      },
+      "notes": "Immutable structural evidence for diagnostics and later paired replay."
+    },
+    "write_atm_baseline_rows": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_baseline.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/atm_baseline_rows.jsonl",
+        "overwrite": false,
+        "source": "ADR-0271 structural atm_baseline.records; retrospective research, no trade or P&L"
+      },
+      "notes": "Immutable structural evidence for diagnostics and later paired replay."
+    },
+    "write_skew_network_rows": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_network.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/skew_network_rows.jsonl",
+        "overwrite": false,
+        "source": "ADR-0271 structural skew_network.records; retrospective research, no trade or P&L"
+      },
+      "notes": "Immutable structural evidence for diagnostics and later paired replay."
+    },
+    "write_skew_baseline_rows": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_baseline.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/skew_baseline_rows.jsonl",
+        "overwrite": false,
+        "source": "ADR-0271 structural skew_baseline.records; retrospective research, no trade or P&L"
+      },
+      "notes": "Immutable structural evidence for diagnostics and later paired replay."
+    }
+  }
+}

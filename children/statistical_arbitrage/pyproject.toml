@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "statistical-arbitrage"
+version = "0.0.1"
+description = "DSKit child for structural equity and option relative-value research."
+requires-python = ">=3.11"
+dependencies = [
+  "dskit[graph]",
+  "numpy>=2",
+  "pandas>=2",
+  "pyarrow>=20",
+  "matplotlib>=3.8",
+]
+
+[tool.setuptools.packages.find]
+include = ["statistical_arbitrage*"]

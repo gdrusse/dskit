@@ -292,3 +292,13 @@ def test_implied_vol_refuses_a_malformed_input(bad):
 
 def test_implied_vol_is_exported():
     assert "black76_implied_vol" in option_pricing.__all__
+
+def test_black76_vega_matches_central_price_difference():
+    """The reusable vega sizes ATM paired structures in volatility units."""
+    from dskit.pipeline.option_pricing import black76, black76_vega
+
+    eps = 1e-5
+    expected = (black76("call", 120.0, 118.0, 0.3 + eps, 30 / 365)
+                - black76("call", 120.0, 118.0, 0.3 - eps, 30 / 365)) / (2 * eps)
+    assert black76_vega("call", 120.0, 118.0, 0.3, 30 / 365) == pytest.approx(expected, rel=1e-8)
+    assert black76_vega("put", 120.0, 118.0, 0.3, 30 / 365) == pytest.approx(expected, rel=1e-8)

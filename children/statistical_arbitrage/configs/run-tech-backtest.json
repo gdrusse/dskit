@@ -1,0 +1,135 @@
+{
+  "name": "tech-paired-option-replay-20261020",
+  "notes": "ADR-0271 approved quote-based retrospective replay. Primary ATM-IV and secondary skew variants use identical next-session order, costs, capital and refusal rules against a no-network all-pairs baseline. No untouched OOS, live fill guarantee or paper/live order.",
+  "structural_config": {
+    "path": "configs/run-tech-structural.json",
+    "sha256": "da8e353050139277e14ddd92ebe57100e09a32e2fe5be898e8d879e34d96ee85"
+  },
+  "structural_rows": {
+    "surface_rows.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/surface_rows.jsonl",
+      "sha256": "517f705cfe37aa6bad6f3f62d06d0a0920f7ef45f790e6238a58051059fbc86a"
+    },
+    "graph_fits.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/graph_fits.jsonl",
+      "sha256": "4715fd566d6c6f98b832abbd1410b62efb7d04540f3106a364a41760b4279ac2"
+    },
+    "atm_network_rows.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/atm_network_rows.jsonl",
+      "sha256": "5f6bee744c786043b4fcd7465e5c71f58e04eeba6303e59ec57510d9b88fb489"
+    },
+    "atm_baseline_rows.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/atm_baseline_rows.jsonl",
+      "sha256": "9fa2697748c2dab0efae40f9882d7dfd8667fa6a6e9e0fe5447eeca95ccd8c36"
+    },
+    "skew_network_rows.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/skew_network_rows.jsonl",
+      "sha256": "b467e593ffe997f0af55b16acaf6c1c0172ae0a18f81d15b54cafcda385a4d32"
+    },
+    "skew_baseline_rows.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/skew_baseline_rows.jsonl",
+      "sha256": "e0b6b380e8e092f53ddb0521bc8e15982473161394239a21b03a42d5b3a5fa20"
+    }
+  },
+  "source_configs": {
+    "stock": "configs/source-stock-daily.json",
+    "theta": "configs/source-theta-chain.json"
+  },
+  "variants": {
+    "atm": {
+      "network": "atm_network_rows.jsonl",
+      "baseline": "atm_baseline_rows.jsonl"
+    },
+    "skew": {
+      "network": "skew_network_rows.jsonl",
+      "baseline": "skew_baseline_rows.jsonl"
+    }
+  },
+  "evaluation": {
+    "start": "2019-01-02",
+    "end_before": "2025-12-16",
+    "warmup_year": 2019,
+    "development_year": 2020,
+    "validation_years": [
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "initial_capital_usd": 100000.0,
+    "sessions_per_year": 252
+  },
+  "signal": {
+    "entry_z": 2.0,
+    "stop_z": 4.0,
+    "max_hold_sessions": 20,
+    "one_active_pair_per_book": true
+  },
+  "execution": {
+    "max_contracts_per_leg": 8,
+    "max_initial_vega_mismatch": 0.2,
+    "max_half_spread_over_premium": 0.2,
+    "max_gross_underlying_notional_usd": 200000.0,
+    "require_prior_rate": true,
+    "max_rate_age_days": 5,
+    "refuse_corporate_events": true,
+    "fill_clock": "next_common_session_eod_nbbo",
+    "notes": "ATM straddles same expiry, integer vega matched, closed before expiry. Quotes are EOD snapshots: fills are a historical NBBO proxy, not executable order evidence."
+  },
+  "ledger": {
+    "ledger_params": {
+      "chain_fields": {
+        "symbol": "symbol",
+        "date": "date",
+        "expiration": "expiration",
+        "strike": "strike",
+        "right": "right",
+        "bid": "bid",
+        "ask": "ask",
+        "underlying": "underlying_price"
+      },
+      "order_fields": {
+        "date": "date",
+        "symbol": "symbol",
+        "expiration": "expiration",
+        "strikes": "strikes",
+        "structure": "structure",
+        "exit": "exit"
+      },
+      "structures": {
+        "short_straddle": [
+          [
+            "put",
+            -1
+          ],
+          [
+            "call",
+            -1
+          ]
+        ],
+        "long_straddle": [
+          [
+            "put",
+            1
+          ],
+          [
+            "call",
+            1
+          ]
+        ]
+      },
+      "multiplier": 100,
+      "fee_per_contract": 0.65,
+      "fill": "nbbo",
+      "close_rule": "exit",
+      "exit_zero_bid": "refuse",
+      "hedge": {
+        "rebalance": "daily",
+        "rate": 0.0,
+        "fee_per_share": 0.005
+      }
+    }
+  },
+  "output_dir": "/home/russell/data/statistical_arbitrage/replay-20261020"
+}
