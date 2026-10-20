@@ -2869,19 +2869,76 @@ def test_feature_quantile_objective_gradient_matches_finite_differences(theta_sc
     check_gradient(objective, theta)
 
 
-def test_feature_objectives_start_at_the_constant_weight_pool():
+def test_feature_objectives_compare_with_the_constant_weight_pool_and_start_from_an_interior_point():
     rng = np.random.default_rng(620)
     grid = three_point_grid()
     stack = np.stack([ndtr(np.array(Z)[None, :] - rng.normal(size=(30, 1)) - s) for s in (-0.5, 0.9)], axis=1)
     y, omega, design = rng.normal(size=30), rng.random(30) + 0.1, rng.normal(size=(30, 3))
     w = np.array([0.35, 0.65])
+    blend = (1.0 - cgm.UNIFORM_START_SHARE) * w + cgm.UNIFORM_START_SHARE / 2
     linear = cgm._FeatureLinearObjective(grid, stack, y, omega, design)
-    constant = (omega * tw(w[0] * stack[:, 0] + w[1] * stack[:, 1], y, grid.weights)).sum() / omega.sum()
-    value, _ = linear.value_and_grad(linear.start(w))
-    assert value == pytest.approx(constant, rel=1e-3)  # the start logits lift only a zero weight, so this is the pool
     quantile = cgm._FeatureQuantileObjective(grid, stack, y, omega, 49, design)
     plain = cgm._QuantileAverageObjective(grid, stack, y, omega, 49)
-    assert quantile.value_and_grad(quantile.start(w))[0] == pytest.approx(plain.loss(w), rel=1e-9)
+    constant = (omega * tw(w[0] * stack[:, 0] + w[1] * stack[:, 1], y, grid.weights)).sum() / omega.sum()
+    assert linear.baseline(w)[1] == pytest.approx(constant, rel=1e-3)  # the comparison is the constant pool
+    assert quantile.baseline(w)[1] == pytest.approx(plain.loss(w), rel=1e-9)
+    assert np.array_equal(linear.baseline(w)[0]["bias"], cgm._SoftmaxWeights.logits(w))
+    for objective in (linear, quantile):
+        start = objective.start(w)
+        assert np.array_equal(start[2:], np.zeros(6))  # the coefficients start at zero
+        assert cgm._SoftmaxWeights.of(start[:2]) == pytest.approx(blend, abs=1e-12)  # the intercepts blend in uniform
+    assert quantile.value_and_grad(quantile.start(w))[0] == pytest.approx(plain.loss(blend), rel=1e-9)
+
+
+def test_interior_logits_blend_the_weights_with_uniform_and_keep_a_zero_weight_off_the_floor():
+    for w in (np.array([0.35, 0.65]), np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.5, 0.5])):
+        share = cgm.UNIFORM_START_SHARE
+        expect = (1.0 - share) * w + share / len(w)
+        assert cgm._SoftmaxWeights.of(cgm._SoftmaxWeights.interior_logits(w)) == pytest.approx(expect, abs=1e-12)
+        assert cgm._SoftmaxWeights.of(cgm._SoftmaxWeights.interior_logits(w)).min() >= share / len(w) - 1e-12
+    assert 0.0 < cgm.UNIFORM_START_SHARE < 0.5
+
+
+def gated_stack(rng, rows, cut, shift):
+    """Components N(-1, .7) and N(1.5, .8); the truth is the second only far up the feature, else the first moved ``shift`` left.
+
+    The constant pool puts the second component at weight zero (its rare rows do not repay the harm elsewhere),
+    yet a weight that rises with the feature is far better.
+    """
+    x = rng.normal(size=rows)
+    use_second = rng.random(rows) < ndtr(6.0 * (x - cut))
+    y = np.where(use_second, rng.normal(1.5, 0.8, rows), rng.normal(-1.0 - shift, 0.7, rows))
+    z = np.array(Z)[None, :]
+    stack = np.stack([ndtr((z + 1.0) / 0.7) * np.ones((rows, 1)), ndtr((z - 1.5) / 0.8) * np.ones((rows, 1))], axis=1)
+    return ((x - x.mean()) / x.std())[:, None], y, stack
+
+
+def stalled_linear():
+    design, y, stack = gated_stack(np.random.default_rng(1), 3000, 2.0, 2.0)
+    return cgm._FeatureLinearObjective(cgm._Grid(Z, LABELS, [1.0] * 13, 4.0), stack, y, None, design)
+
+
+def stalled_quantile():
+    design, y, stack = gated_stack(np.random.default_rng(1), 3000, 1.5, 1.0)
+    return cgm._FeatureQuantileObjective(cgm._Grid(Z, LABELS, [1.0] * 13, 4.0), stack, y, None, 49, design)
+
+
+def stalled_banded():
+    rng = np.random.default_rng(3)
+    u = rng.random(3000)
+    y = np.where(u < 0.7, 0.8 * ndtri(u), 2.5 * ndtri(u) + 1.0)  # the narrow component below, the wide one above
+    z = np.array(Z)[None, :]
+    stack = np.stack([ndtr(z / 0.8) * np.ones((3000, 1)), ndtr((z - 1.0) / 2.5) * np.ones((3000, 1))], axis=1)
+    return cgm._BandedQuantileAverageObjective(cgm._Grid(Z, LABELS, [1.0] * 13, 4.0), stack, y, None, 49, [0.7])
+
+
+@pytest.mark.parametrize("build, ratio", [(stalled_linear, 0.985), (stalled_quantile, 0.95), (stalled_banded, 0.95)])
+def test_a_fit_whose_constant_pool_has_a_zero_weight_still_leaves_the_constant_pool(build, ratio):
+    # with a component at exactly zero the logit start sits at the floor (about -9.2), where the gradient is
+    # ~1e-6 and L-BFGS-B stops at once: "the features add nothing" would be an artifact of the start
+    objective = build()
+    result = objective.solve(np.array([1.0, 0.0]))
+    assert result["objective"] < ratio * result["start_objective"], (result["objective"], result["start_objective"])
 
 
 FEATURE_REFUSALS = {
@@ -3244,3 +3301,155 @@ def test_a_location_scale_fit_leaves_a_monotone_cdf_even_for_a_noisy_base(tmp_pa
 
 def test_the_edge_method_documents_still_validate_with_the_round_three_kinds_present():
     test_the_edge_method_documents_of_the_child_still_validate()
+
+
+# --------------------------------------------------------------- round-three pins: columns, weights, alignment
+
+
+def learning_rows(df, fold=2):
+    """The fit-band rows that teach a fold under ``learn: fit_band``."""
+    return df[(df["fold"] == fold) & (df["band"] == "fit")]
+
+
+@pytest.mark.parametrize("kind", ["linear_pool", "quantile_average"])
+def test_three_features_each_read_their_own_column_through_the_panel(tmp_path, kind):
+    df, _ = feature_frame(np.random.default_rng(650), "linear" if kind == "linear_pool" else "quantile",
+                          n_fit=1500, n_val=300)
+    df["feat"] = 2.0 * df["feat"] + 3.0  # distinct locations, so a swapped or cached-wrong column shows
+    df["other"] = 5.0 + 0.5 * df["other"]
+    entries = ["feat", "other", {"column": "actual_calendar_dte", "transform": "log"}]
+    params = params_for(tmp_path, df, featured_method(kind, weight_features=entries))
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    cell = fit["folds"]["2"]["state"]["global"]
+    learn = learning_rows(df)
+    columns = [learn["feat"].to_numpy(), learn["other"].to_numpy(), np.log(learn["actual_calendar_dte"].to_numpy(float))]
+    assert cell["features"] == ["feat", "other", "log(actual_calendar_dte)"]
+    assert cell["feature_mean"] == pytest.approx([c.mean() for c in columns], rel=1e-12)
+    assert cell["feature_sd"] == pytest.approx([c.std() for c in columns], rel=1e-12)
+    coefficients = np.array(cell["coefficients"])
+    assert coefficients.shape == (2, 3)
+    assert np.abs(coefficients[:, 0]).min() > 0.5 and np.abs(coefficients[:, 1:]).max() < 0.3  # the signal is "feat"
+    rows = joined(forecasts, df)
+    rows = rows[rows["fold"] == 2].iloc[::25]
+    w = featured_weights(cell, [rows["feat"].to_numpy(), rows["other"].to_numpy(),
+                                np.log(rows["actual_calendar_dte"].to_numpy(float))])
+    if kind == "linear_pool":
+        expect = w[:, :1] * cdfs(rows, "mdl") + w[:, 1:] * cdfs(rows, "mkt")
+    else:
+        expect = np.array([averaged_quantile_cdf([cdfs(rows.iloc[[i]], "mdl"), cdfs(rows.iloc[[i]], "mkt")], w[i], 99)[0]
+                           for i in range(len(rows))])
+    assert np.allclose(cdf_columns(rows), expect, atol=1e-9)
+
+
+def test_the_panel_converts_each_column_once_and_returns_that_column():
+    frame = pd.DataFrame({"a": [1, 2, 3], "b": ["4", "5", "6"]})
+    panel = cgm._Panel.__new__(cgm._Panel)
+    panel.frame, panel._numbers = frame, {}
+    first, second = panel.numeric("a"), panel.numeric("b")
+    assert first.tolist() == [1.0, 2.0, 3.0] and second.tolist() == [4.0, 5.0, 6.0]
+    assert panel.numeric("a") is first and panel.numeric("b") is second and first.dtype == float
+
+
+def test_a_feature_set_reads_log1p_as_log_of_one_plus_the_value():
+    panel = types.SimpleNamespace(numeric=lambda column: np.array([0.0, 1.0, 3.0, -0.5, -1.0, 1e-9]))
+    features = cgm._FeatureSet([{"column": "a", "transform": "log1p"}, {"column": "a", "transform": "log"}])
+    assert features.names() == ["log1p(a)", "log(a)"]
+    raw = features.raw(panel, np.arange(6))
+    assert raw[:, 0] == pytest.approx([0.0, np.log(2.0), np.log(4.0), np.log(0.5), np.nan, np.log1p(1e-9)], nan_ok=True)
+    assert np.isnan(raw[[0, 3, 4], 1]).all() and raw[1:3, 1] == pytest.approx([0.0, np.log(3.0)])
+    assert features.present(panel, np.arange(6)).tolist() == [False, True, True, False, False, True]  # a log of 0 or -.5 is missing
+    assert cgm._FeatureSet([{"column": "a", "transform": "log1p"}]).present(panel, np.arange(6)).tolist() == [
+        True, True, True, True, False, True]
+
+
+def test_teachable_drops_the_learning_weights_of_the_rows_missing_a_feature():
+    feature = np.array([1.0, np.nan, 2.0, 3.0, np.inf, 4.0])
+    method = ls_spec_method(features=["x"])
+    rows, weights = method._teachable(stub_panel(None, x=feature), np.arange(6), np.arange(1.0, 7.0))
+    assert rows.tolist() == [0, 2, 3, 5] and weights.tolist() == [1.0, 3.0, 4.0, 6.0]
+    rows, weights = method._teachable(stub_panel(None, x=feature), np.array([5, 4, 3]), np.array([9.0, 8.0, 7.0]))
+    assert rows.tolist() == [5, 3] and weights.tolist() == [9.0, 7.0]
+    assert method._teachable(stub_panel(None, x=feature), np.arange(6), None)[1] is None
+    plain = ls_spec_method(features=["x"])
+    plain.features = None
+    assert plain._teachable(None, np.arange(3), np.ones(3))[1].tolist() == [1.0, 1.0, 1.0]
+
+
+@pytest.mark.parametrize("kind", ["linear_pool", "quantile_average"])
+def test_recency_weights_follow_their_rows_when_some_rows_lack_a_feature(tmp_path, kind):
+    df, _ = feature_frame(np.random.default_rng(651), "linear" if kind == "linear_pool" else "quantile",
+                          n_fit=1200, n_val=200)
+    missing = (df["band"] == "fit") & (np.random.default_rng(652).random(len(df)) < 0.25)
+    nan_frame = df.copy()
+    nan_frame.loc[missing, "feat"] = np.nan
+    method = featured_method(kind, half_life_days=20)
+    (tmp_path / "nan").mkdir()
+    (tmp_path / "dropped").mkdir()
+    with_nan = params_for(tmp_path / "nan", nan_frame, method)
+    without = params_for(tmp_path / "dropped", df[~missing].reset_index(drop=True), method)
+    run(with_nan)
+    run(without)
+    a, b = read_out(with_nan)[1]["folds"]["2"]["state"]["global"], read_out(without)[1]["folds"]["2"]["state"]["global"]
+    assert a["rows_missing_features"] == int((missing & (df["fold"] == 2)).sum()) > 50
+    for key in ("rows", "feature_mean", "feature_sd", "bias", "coefficients", "objective", "start_objective"):
+        assert np.allclose(a[key], b[key], rtol=1e-9, atol=1e-12), key
+
+
+def test_location_scale_aligns_a_base_that_varies_row_by_row_with_its_outcome(tmp_path):
+    rng = np.random.default_rng(653)
+    df = make_frame(rng, folds=(1, 2), n_fit=3000, n_val=400)
+    df["feat"] = rng.normal(size=len(df))
+    centre = 1.2 * rng.normal(size=len(df))  # the base itself moves from row to row; reversed against y it is noise
+    df["y"] = rng.normal(centre + 0.5 * df["feat"], 1.0)
+    add_cdf(df, "mkt", centre, 1.0)
+    add_cdf(df, "mdl", 0.0, 1.0)
+    params = params_for(tmp_path, df, ls_method())
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    cell = fit["folds"]["2"]["state"]["global"]
+    intercept, slope = raw_coefficients(cell, "location")
+    assert slope[0] == pytest.approx(0.5, abs=0.06) and intercept == pytest.approx(0.0, abs=0.08)
+    assert abs(cell["log_scale_intercept"]) < 0.08
+    val = val_rows(forecasts, df)
+    assert tw(cdf_columns(val), val["y"]).mean() < 0.9 * tw(cdfs(val, "mkt"), val["y"]).mean()
+
+
+@pytest.mark.parametrize("make", ["pool", "location_scale"])
+def test_standardization_uses_every_learning_row_not_the_strided_sample(tmp_path, make):
+    if make == "pool":
+        df, _ = feature_frame(np.random.default_rng(654), "linear", n_fit=1500, n_val=100)
+        method = featured_method("linear_pool", max_learning_rows=200)
+    else:
+        df = ls_frame(np.random.default_rng(655), lambda d: 0.5 * d["feat"], lambda d: 1.0, n_fit=1500, n_val=100)
+        method = ls_method(max_learning_rows=200)
+    params = params_for(tmp_path, df, method)
+    run(params)
+    cell = read_out(params)[1]["folds"]["2"]["state"]["global"]
+    feat = learning_rows(df)["feat"].to_numpy()
+    stride = -(-len(feat) // 200)
+    assert cell["rows"] == len(feat) and cell["rows_used"] == len(feat[::stride]) < len(feat)
+    assert abs(feat[::stride].mean() - feat.mean()) > 1e-3 and abs(feat[::stride].std() - feat.std()) > 1e-3
+    assert cell["feature_mean"] == pytest.approx([feat.mean()], rel=1e-12)
+    assert cell["feature_sd"] == pytest.approx([feat.std()], rel=1e-12)
+
+
+def test_the_log_scale_stops_at_the_bound_when_the_optimum_lies_beyond_it(tmp_path):
+    # the truth is wider than the base by far more than exp(3), so the unbounded optimum is past the bound
+    rng = np.random.default_rng(656)
+    df = make_frame(rng, folds=(1, 2), n_fit=1500, n_val=100)
+    df["y"] = rng.normal(0.0, 20.0, len(df))
+    add_cdf(df, "mkt", 0.0, 0.3)
+    add_cdf(df, "mdl", 0.0, 1.0)
+    params = params_for(tmp_path, df, ls_method(features=[]))
+    run(params)
+    cell = read_out(params)[1]["folds"]["2"]["state"]["global"]
+    assert cgm.SCALE_LOG_BOUND == 3.0
+    assert cell["log_scale_intercept"] == pytest.approx(3.0, abs=1e-6)
+
+
+def test_the_location_scale_bounds_are_the_grid_span_for_the_location_and_the_log_bound_for_the_scale():
+    objective = cgm._LocationScaleObjective(three_point_grid(), np.full((4, 1, 13), 0.5), np.zeros(4), None,
+                                            np.ones((4, 2)))
+    span = Z[-1] - Z[0]
+    assert objective.bounds() == [(-span, span)] * 2 + [(-3.0, 3.0)] * 2

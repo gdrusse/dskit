@@ -123,6 +123,10 @@ DEFAULT_LEVELS, MIN_LEVELS = 199, 3
 QUANTILE_CHUNK = 10_000
 #: Optimizer settings of the parametric pools: iteration cap, softmax logit bound and floor of a zero weight.
 MAX_ITERATIONS, LOGIT_BOUND, WEIGHT_FLOOR = 100, 30.0, 1e-4
+#: The share of uniform weights blended into the start of a fit that varies its weights (by feature or by level
+#: band): a component the constant pool leaves at zero would start at the floor logit, where the gradient is
+#: too small for the optimizer to leave.
+UNIFORM_START_SHARE = 0.1
 #: The beta pool's ``log a`` and ``log b`` stay within this, the probability clip of its density, and the
 #: relative step of its forward difference in the shapes.
 BETA_LOG_BOUND, PROB_CLIP, SHAPE_STEP = 3.0, 1e-9, 1e-6
@@ -1207,6 +1211,14 @@ class _SoftmaxWeights:
 
         return np.log(np.maximum(weights, WEIGHT_FLOOR))
 
+    @classmethod
+    def interior_logits(cls, weights):
+        """Return logits whose softmax is ``weights`` blended with uniform weights by :data:`UNIFORM_START_SHARE`."""
+        import numpy as np
+
+        weights = np.asarray(weights, dtype=float)
+        return cls.logits((1.0 - UNIFORM_START_SHARE) * weights + UNIFORM_START_SHARE / len(weights))
+
     @staticmethod
     def backprop(weights, grad):
         """Return the gradient with respect to the logits from the gradient with respect to the weights."""
@@ -1576,10 +1588,10 @@ class _BandedQuantileAverageObjective(_QuantileAverageObjective):
         return float(self.weight @ resid ** 2), back
 
     def start(self, weights):
-        """Return the linear-pool logits repeated in every band."""
+        """Return the linear-pool logits, blended with uniform weights, repeated in every band."""
         import numpy as np
 
-        return np.tile(_SoftmaxWeights.logits(weights), self.bands)
+        return np.tile(_SoftmaxWeights.interior_logits(weights), self.bands)
 
     def bounds(self):
         """Return wide logit bounds."""
@@ -1619,8 +1631,9 @@ class _FeatureWeightLaw:
     """The parameters ``theta = [c, B]`` of feature-conditioned weights, mixed into a pool objective.
 
     ``c`` holds one intercept logit per component and ``B`` the ``(components, features)`` coefficients on the
-    standardized design, row-major after ``c``. The start is ``c`` at the linear-pool logits and ``B`` zero, so
-    it reproduces the constant-weight pool; the comparison point is that start.
+    standardized design, row-major after ``c``. The comparison point is ``c`` at the linear-pool logits and ``B``
+    zero, the constant-weight pool. The start is the same with the weights blended with uniform ones
+    (:data:`UNIFORM_START_SHARE`), so a component the constant pool leaves at zero is not stuck at the logit floor.
     """
 
     BASELINE = "start"
@@ -1642,11 +1655,15 @@ class _FeatureWeightLaw:
         g = _RowWeights.backprop(weights, grad_w)
         return np.concatenate([g.sum(axis=0), (g.T @ self.design).ravel()])
 
-    def start(self, weights):
-        """Return the linear-pool logits with zero coefficients."""
+    def _theta(self, logits):
+        """Return ``theta`` with intercepts ``logits`` and zero coefficients."""
         import numpy as np
 
-        return np.concatenate([_SoftmaxWeights.logits(weights), np.zeros(self.components * self.design.shape[1])])
+        return np.concatenate([logits, np.zeros(self.components * self.design.shape[1])])
+
+    def start(self, weights):
+        """Return the interior start: the linear-pool weights blended with uniform ones, zero coefficients."""
+        return self._theta(_SoftmaxWeights.interior_logits(weights))
 
     def bounds(self):
         """Return wide logit bounds on every entry."""
@@ -1658,8 +1675,8 @@ class _FeatureWeightLaw:
         return {"weights": _SoftmaxWeights.of(bias), "bias": bias, "coefficients": coefficients}
 
     def baseline(self, weights):
-        """Return the start (the constant-weight pool) and its objective."""
-        theta = self.start(weights)
+        """Return the constant-weight pool (zero coefficients) and its objective."""
+        theta = self._theta(_SoftmaxWeights.logits(weights))
         return self.unpack(theta), self.value_and_grad(theta)[0]
 
 
