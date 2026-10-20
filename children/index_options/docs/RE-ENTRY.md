@@ -7,20 +7,20 @@ Updated: 2026-10-19 by Claude Fable 5.1 / Sonnet 5.5. Previous note in docs/arch
 - ADR-0270 strike-region fast screen: pipeline built and run on 118 names, 2017-2023 (holdout 2024-2025 sealed, 2026 sealed forever). Memo: children/index_options/docs/memos/2026-10-19-strike-screen-matrix-results.md.
 - Pilot root /home/russell/data/index_options/theta-strike-screen-20261018 (not in git): converter, onboarding, 1.21M-row panel (sha 186def50), resolved documents, 20 matrix cells (fits/matrix), L1/L3 baseline fits, runbook documents/study/README.md.
 - Protocol configs/strike-screen-protocol.json revision 5 (sha 073d39cb). R5 stays consumed; R6 packet never launched.
-- Matrix result (model vs per-name empirical baseline, weighted CRPS skill): fold 1 +0.1..+0.9%, fold 2 +1.2..+2.2%; best context_chain/tcn; chain arm > context-only; long DTE best. Every cell overfits by epoch 1-2.
-- NOT done: StrikeRegionScores over the matrix (market-implied comparison, listed-strike Brier, regions, promising cells). Killed by the host memory guard on a fold-2 cell (706k validation rows).
+- Matrix fits 20/20 (model vs per-name baseline +0.1..0.9% fold 1, +1.2..2.2% fold 2) and scoring 20/20 on a 50,000-row validation sample per cell (validation_band_sample).
+- VS THE MARKET-IMPLIED CURVE: the market wins on every proper score (weighted CRPS by 0.8-3.3%); models win only region Brier in a left-tail pocket at 36-60 DTE (z -2.0..-1.0, about +2%, both folds). Models are far better calibrated than the RAW market (reliability), which a recalibrated market would erase: market_calibrated not built, so no production candidate yet.
 - Speed-ups landed (bit-identical): CUDA-graph step, lean panel load, vectorized raw-chain prepare, nearest-horizon baseline rule.
 
 ## Next
 
-1. Rerun scoring with a memory sampler and nothing else running (group scoring-matrix; wall left about 3,100 s of the 14,400 s packet), or reduce the per-cell validation band; then read the market comparison and name the cells that beat it.
-2. Build the design's missing pieces: vol-unit sequence, 13 logit-difference chain vector, shared head, optional probit-PIT residual arm; rerun the matrix.
-3. Only for cells that beat the market: holdout conversion (end_before 2026), one confirmation run, then registration and serving.
+1. Build market_calibrated (PIT-recalibrated market, ADR-0269) and score the matrix against it; this is the production comparator.
+2. Build the design's missing pieces: vol-unit sequence, 13 logit-difference chain vector, shared head, probit-PIT residual arm (model corrects the market curve); rerun the matrix; fix the overfit (finer early stopping, wd 0.3, shared head).
+3. Only for cells that still beat the calibrated market (candidate: left tail, 36-60 DTE): holdout conversion (end_before 2026), one confirmation run, registration, serving.
 
 ## Blocked / owner decisions
 
-- Scoring rerun is the owner's call (host memory). Assumptions to confirm: fit outputs counted as evidence-class (4 GB), the 8 GiB RSS breaches waived (panel build only was waived in writing).
-- Merge to main withheld: the market comparison is unfinished.
+- Owner call: build market_calibrated and the residual arm next, or stop. Assumptions to confirm: fit outputs counted as evidence-class (4 GB), the 8 GiB RSS breaches waived (panel build only was waived in writing).
+- Merge to main: branch pushed, merge awaits the owner (the deliverable is complete, no production candidate).
 - tests/pipeline purity failure predates the lane (dskit.onboarding.snapshot in ParquetStreamRows, on main).
 
 ## Read first

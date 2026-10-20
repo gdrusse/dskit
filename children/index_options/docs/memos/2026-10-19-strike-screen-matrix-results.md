@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-The Theta-to-model pipeline now runs end to end on 118 names (2017-2023): 20 designed models fit in 51 minutes and beat the per-name empirical baseline by 0.1-0.9% (2019 validation) and 1.2-2.2% (2020-2023 validation), the chain-feature arm best, longest horizons most. The comparison that matters, against the market-implied reference at the listed strikes, is NOT done: the scoring step was stopped by the host memory guard. No result here is a claim of beating the market.
+Against the market-implied curve the models do NOT win overall: on the proper scores (CRPS family, strike Brier) the market is better in every cell, by 0.8-3.3% weighted CRPS. One replicated pocket stands out: left-tail regions (z from -2.0 to -1.0) at 36-60 DTE, where models beat the raw market's region Brier by about 1-2% in both folds. The raw market curve is badly calibrated and a recalibrated market is not built, so no cell is a production candidate yet.
 
 ## Execution contract
 
@@ -22,7 +22,7 @@ The Theta-to-model pipeline now runs end to end on 118 names (2017-2023): 20 des
 | Speed | Training path was launch-bound; three bit-identical changes (no per-step host syncs, device index tensors, one CUDA graph) cut an epoch from 4.7 s to 1.0 s (PatchTST 5.9 to 1.3). |
 | L1 and L3 fits (raw price columns plus a 119-column chain block, 2 encoders, 2 losses) | 16 of 16 complete, early stop at epochs 11-13 (best 1-3). Per-row score shards kept; skill NOT read; superseded by the matrix. |
 | Matrix fits (this design) | 20 of 20 complete in 3,060 s: arms `context` (22 raw returns + 16 scalars incl. log sessions and calendar days per session) and `context_chain` (+ 19 market quantiles rn_q in z units, `rn_interior_mass`, 8 chain scalars) x mlp, gru, tcn, dlinear, patchtst_hf32 x 2 folds; crps + tail_crps, K=3. |
-| StrikeRegionScores over the matrix | Attempt 1 failed (baseline unseen-horizon KeyError; fixed in the scorer, `bb08f71b`); attempt 2 killed by the Claude Code host memory guard. NOT DONE. |
+| StrikeRegionScores over the matrix | Attempt 1 failed (unseen-horizon KeyError, fixed `bb08f71b`); attempt 2 stopped (1.98 GB partial); attempt 3 with `validation_band_sample` 50,000 (`d01cc082`) complete: 21 min, 1.50 GB rows, 20 of 20 cells, no refusals. |
 
 ## Results available (model vs per-name empirical baseline, weighted CRPS skill; NOT the market)
 
@@ -39,17 +39,33 @@ The Theta-to-model pipeline now runs end to end on 118 names (2017-2023): 20 des
 | context_chain / patchtst32 | +0.66% | +1.98% | +2.6% |
 | context_chain / tcn | **+0.90%** | **+2.23%** | **+2.8%** |
 
-- Rows: 160,754 (fold 1) and 706,003 (fold 2) validation rows per cell; shard-level means; no uncertainty estimate yet (the scorer computes clustered standard errors).
+- Rows: 160,754 (fold 1) and 706,003 (fold 2) validation rows per cell; shard-level means over ALL validation rows (the scorer section below uses a 50,000-row sample and market-eligible rows).
 - Fold 1: short horizons (1-21 DTE) are at or below the baseline for most cells; only 36-60 DTE is clearly positive (+1.1% to +2.0%). Fold 2: all DTE slices positive; 1-7 DTE +0.4% to +1.9%.
 - The chain arm beats context-only by 0.2-0.8 points in fold 2 for every encoder; encoder choice matters less than the chain inputs.
 - Every cell overfits fast: best monitor epoch 1-2, training loss falls, monitor loss rises from there (per-epoch curves are in each checkpoint `state.json`). Per-ticker heads (116) are the likeliest memorizer.
 
+## Model versus the market-implied curve (StrikeRegionScores, validation band, 20 cells)
+
+Scoring ran (21 min, 7.1 GiB peak) on a deterministic stride sample of 50,000 validation rows per cell (the full 8.7M-row evidence would exceed the 2 GiB file, 4 GB class and wall caps), market-eligible rows only (59% in fold 1, 73% in fold 2 of the sample). Differences are model minus market; standard errors take the wider of symbol and quote-date clustering. Not corrected for multiple testing.
+
+| Proper score, all horizons | Fold 1 (2019) | Fold 2 (2020-23) |
+|---|---|---|
+| market vs per-name baseline (weighted CRPS) | +3.2% | +3.2% |
+| best model vs baseline (context_chain / tcn) | +1.0% | +2.3% |
+| model vs market, range over the 10 models | -1.9% to -3.3% | -0.8% to -1.9% |
+
+- The market beats the model on weighted CRPS, CRPS, tail CRPS, strike Brier and wing twCRPS: the model is better in 0-4 of 50 cells per metric and fold, none at t > 3. The gap is smallest for the chain arm and for TCN (fold 2, context_chain/tcn: -0.8%).
+- Region Brier (14 z regions x 5 horizons x 20 cells x 2 folds = 1,400 tests): model better in 221 of 700 cells (fold 1) and 351 of 700 (fold 2); t > 3 in 6 and 21 cells; market better at t < -3 in 12 of 700 (fold 2). Under no effect about 1 cell per fold would pass t > 3.
+- Where the model wins (fold 2, 36-60 DTE): regions z in [-2.5, -1.0] and [1.5, 2.0], +0.9% to +2.1% mean advantage; strongest region 3 (z -2.0 to -1.5): +2.05%, t about 4.9 in 10 of 20 cells. Fold 1 shows the same pocket (regions 3-4 at 36-60 DTE: +1.9%, +2.1%). Cells are the same 116 names scored by 20 correlated models, so this is one pattern, not 21 independent findings.
+- Where the market wins: short horizons and the far tails (1-7 DTE: region 0 -8%, region 13 -5% to -14%); the central region around the median at all horizons is a tie or market.
+- Reliability (squared calibration gap): the models are 22-27% better than the market in about 95% of cells, t about 25. The raw risk-neutral curve is miscalibrated against realized frequencies (the variance risk premium). This is NOT a model edge to bank: a PIT-recalibrated market (market_calibrated, 2-6 parameters, +2.75% on ETFs in the research record) is the right production comparator and is not built.
+
 ## Not done and caveats
 
-- Market-implied comparison, listed-strike Brier, per-region (14 z regions) and per-cell promising-rule evaluation: need the scorer. The run died on host memory (peak unknown; the first fold-2 cell has 706k validation rows). Next: run the scorer with a memory sampler and nothing else on the host, or cut the validation band per cell.
+- Per-sub-period (COVID) and per-year cuts are in `cells.parquet` but unread; ticker-group cuts are empty (no liquidity-tercile groups); the final promising-cell rule needs market_calibrated.
 - Deviations from the design (each needs code): raw returns instead of asinh(ret/rv_22); the 19 rn_q quantiles instead of the 13 logit differences logit F_Q(z_k) - logit Phi(z_k); one head per ticker instead of a shared head; no probit-PIT residual arm.
-- Fit outputs (about 1.2 GB per 8 to 20 cells) were treated as evidence-class output (4 GB) not the 1 GB cap, by assumption; the 8 GiB host-RSS cap was breached in the panel build, the L1/L3 and the timing queues' scoring phase.
-- Holdout conversion (2024-2025) not run; market-calibrated reference stage not run.
+- Scoring used a validation sample (50,000 rows/cell), not every row; fit outputs (about 1.2 GB for 20 cells) counted as evidence-class output by assumption; the 8 GiB host-RSS cap was breached in the panel build (waived), the L1/L3 and timing queues' scoring phase.
+- Holdout conversion (2024-2025) not run; market-calibrated reference stage not run. Packet wall used about 12,550 s of 14,400.
 - Test state: lane suites green; `tests/pipeline` has one purity failure that predates this lane (`dskit.onboarding.snapshot` import in `ParquetStreamRows`, on main).
 
 ## Artifacts
@@ -57,4 +73,4 @@ The Theta-to-model pipeline now runs end to end on 118 names (2017-2023): 20 des
 - Fits: pilot root `fits/matrix` (20 cells, checkpoints, per-row score shards), `fits/L1`, `fits/L3`, `fits/timing`, `fits/control`; skipped/superseded outputs kept under `fits/skipped-*`, `fits/superseded-*`.
 - Documents: `configs/run-strike-screen-fits-matrix.json` (+ scoring `run-strike-region-scores-matrix.json`); resolved copies and the runbook in `documents/study`; summary table `scratchpad` copy of the shard skill above.
 - Decisions and review records: ADR-0270 entries in `docs/architecture/decision-log.md` (23 lens reviews, every Critical/Major closed).
-- Next authorized action: none beyond the owner's call on the scoring rerun.
+- Scores: pilot root `scores/strike-region-scores-matrix` (rows.parquet 1.50 GB, cells.parquet, curves.json, summary.json). Next authorized action: the owner's call (see the lane note).
