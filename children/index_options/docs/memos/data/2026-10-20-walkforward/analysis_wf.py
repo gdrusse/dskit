@@ -6,7 +6,7 @@ Run: python -B analysis_wf.py --scores DIR --fits DIR --panel FRAME.parquet --ou
 Score (Path A0002): threshold-weighted CRPS on the 13-point z grid -3..3 step 0.5, trapezoid rule, weight 1 on |z| in [0.5, 2.5]
 tapering to 0.25 at z = 0 and |z| >= 3; plain CRPS on the same grid and the scorer's own tail CRPS, strike Brier and wing twCRPS beside it.
 Edge = (comparator - model) / comparator on mean scores (positive = the model has the lower loss). Comparators: the raw market-implied
-curve (market-eligible rows only), the per-name horizon baseline ("baseline"), the pooled standardized empirical ("pooled").
+curve (market-eligible rows only), the recalibrated market (per-fold 21-knot PIT map, twCRPS and CRPS only), the per-name horizon baseline ("baseline"), the pooled standardized empirical ("pooled").
 Uncertainty: cluster-robust SE of the paired mean difference, the larger of quote-date and symbol clustering.
 Warm-up fold 1 (2019) is reported but never ranked or gated (Path A0008).
 Gate (Path A0007): a (ticker, rank) cell passes if the model beats market AND baseline in >= 3 of 4 yearly folds and >= 3 of 5 regimes;
@@ -25,7 +25,7 @@ GRID = ["zm3", "zm2.5", "zm2", "zm1.5", "zm1", "zm0.5", "zp0", "zp0.5", "zp1", "
 ZS = np.array([-3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5, 3], float)
 W_TW = np.clip(np.where(np.abs(ZS) < 0.5, 0.25 + 1.5 * np.abs(ZS), np.where(np.abs(ZS) <= 2.5, 1.0, 1 - 1.5 * (np.abs(ZS) - 2.5))), 0.25, 1.0)
 FORECASTERS = ("model", "baseline", "pooled", "market")
-COMPARATORS = ("market", "baseline", "pooled")
+COMPARATORS = ("market", "baseline", "pooled", "market_cal")
 SCORER_METRICS = ("tail_crps", "decision_strike_brier", "decision_wing_twcrps")
 REGIMES = {"S0_pre_crash": ("2020-01-02", "2020-02-14"), "S1_covid_crash": ("2020-02-15", "2020-06-30"),
            "S2_recovery": ("2020-07-01", "2021-12-31"), "S3_rate_shock": ("2022-01-03", "2022-12-30"),
@@ -44,7 +44,7 @@ def load_rows(path, arm, candidate):
     cols = ["symbol", "quote_date", "expiry", "arm", "candidate", "fold", "band", "actual_calendar_dte", "market_eligible", "y"]
     for who in FORECASTERS:
         cols += [f"{who}_cdf_{g}" for g in GRID] + [f"{who}_{m}" for m in SCORER_METRICS] + [f"{who}_below_05", f"{who}_above_95"]
-    cols = [c for c in cols if c in names]
+    cols = [c for c in cols if c in names] + (["market_pit"] if "market_pit" in names else [])
     filters = [("arm", "=", arm), ("candidate", "=", candidate)] if arm and candidate else None
     return pq.read_table(path, columns=cols, filters=filters).to_pandas()
 
@@ -59,6 +59,32 @@ def add_scores(d):
         d[f"{who}_crps13"] = trapezoid(b, np.ones(len(ZS)))
     ok = d["market_eligible"].astype(bool) & d["market_twcrps"].notna()
     d["common"] = ok
+    return d
+
+
+def add_calibrated(d, knots=21):
+    """Add the recalibrated market (Path A0007 follow-up): per fold, a 21-knot PIT map fit on that fold's training-window rows.
+
+    The map G is the empirical CDF of the raw market's PIT on the fold's market-eligible training-window rows at `knots` equally spaced
+    points; the calibrated curve is G(F_market(z)) at each grid point (monotone by construction). Validation rows of the fold use the
+    fold's own map, so no validation outcome informs it.
+    """
+    p = np.linspace(0.0, 1.0, knots)
+    for who in ("market_cal_twcrps", "market_cal_crps13"):
+        d[who] = np.nan
+    ind = (d["y"].to_numpy()[:, None] <= ZS[None, :]).astype(float)
+    mkt = np.stack([d[f"market_cdf_{g}"].to_numpy(float) for g in GRID], 1)
+    for fold, g in d.groupby("fold"):
+        fit = g[(g["band"] == "fit") & g["common"] & g["market_pit"].notna()]
+        if len(fit) < 1000:
+            continue
+        u = np.sort(fit["market_pit"].to_numpy(float))
+        knot_g = np.searchsorted(u, p, side="right") / len(u)
+        rows = (d["fold"] == fold).to_numpy() & d["common"].to_numpy()
+        cal = np.interp(mkt[rows], p, knot_g)
+        b = (cal - ind[rows]) ** 2
+        d.loc[rows, "market_cal_twcrps"] = trapezoid(b, W_TW)
+        d.loc[rows, "market_cal_crps13"] = trapezoid(b, np.ones(len(ZS)))
     return d
 
 
@@ -91,6 +117,8 @@ def cluster_se(values, dates, symbols):
 
 def edge_row(g, metric, comp):
     """Paired edge of the model against one comparator on the rows of g."""
+    if f"{comp}_{metric}" not in g:
+        return None
     m, c = g[f"model_{metric}"].to_numpy(float), g[f"{comp}_{metric}"].to_numpy(float)
     ok = np.isfinite(m) & np.isfinite(c)
     if ok.sum() < 3:
@@ -129,7 +157,7 @@ def perf_by_window(d):
     metrics = ["twcrps", "crps13", *SCORER_METRICS]
     for band, fold, kind, name, g in windows(d):
         for comp in COMPARATORS:
-            sets = [("market_eligible", g[g["common"]])] + ([("all", g)] if comp != "market" else [])
+            sets = [("market_eligible", g[g["common"]])] + ([("all", g)] if comp not in ("market", "market_cal") else [])
             for sname, gg in sets:
                 for metric in metrics:
                     r = edge_row(gg, metric, comp)
@@ -169,10 +197,10 @@ def cells(d):
     return pd.DataFrame(rows)
 
 
-def gate(d, flips, seed=829):
+def gate(d, flips, seed=829, market="market"):
     """Per (ticker, rank): years and regimes positive vs market and baseline; sign-flip randomization for the luck count."""
     v = d[(d["band"] == "val") & d["common"] & (d["fold"] >= 2)].copy()
-    v["dm"] = v["market_twcrps"] - v["model_twcrps"]
+    v["dm"] = v[f"{market}_twcrps"] - v["model_twcrps"]
     v["db"] = v["baseline_twcrps"] - v["model_twcrps"]
     v["year"] = v["quote_date"].str[:4]
     v["regime"] = ""
@@ -206,7 +234,7 @@ def gate(d, flips, seed=829):
         rec = {"symbol": k[0], "kind": k[1], "rank": int(k[2]), "dates": len(ud), "years": len(years), "regimes": len(regs),
                "years_pos_market": base["market"][0], "years_pos_baseline": base["baseline"][0],
                "regimes_pos_market": base["market"][1], "regimes_pos_baseline": base["baseline"][1],
-               "edge_market_pct": 100 * g["dm"].mean() / g["market_twcrps"].mean(), "edge_baseline_pct": 100 * g["db"].mean() / g["baseline_twcrps"].mean(),
+               "edge_market_pct": 100 * g["dm"].mean() / g[f"{market}_twcrps"].mean(), "edge_baseline_pct": 100 * g["db"].mean() / g["baseline_twcrps"].mean(),
                "pass": bool(passed(base) and years_ok)}
         out.append(rec)
         if flips and rec["years"] >= 3:
@@ -276,11 +304,12 @@ def main(argv=None):
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     d = load_rows(Path(a.scores) / "rows.parquet", a.arm, a.candidate)
-    d = add_ranks(add_scores(d), a.panel)
+    d = add_ranks(add_calibrated(add_scores(d)), a.panel)
     tables = {"perf_by_window": perf_by_window(d), "perf_by_rank": perf_by_rank(d), "cells_ticker_rank_year": cells(d),
               "training_curves": curves(a.fits), "calibration_by_window": calibration(d)}
     gt, gs = gate(d, a.flips)
     tables["gate_ticker_rank"], tables["gate_summary"] = gt, gs
+    tables["gate_ticker_rank_vs_calibrated_market"], tables["gate_summary_vs_calibrated_market"] = gate(d, a.flips, market="market_cal")
     for name, t in tables.items():
         t.round(6).to_csv(out / f"{a.tag}_{name}.csv", index=False)
         print(name, len(t))
