@@ -427,6 +427,28 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/memos/data/2026-10-20-adjustments/wf_r2_perf_by_window.csv",
         "docs/memos/data/2026-10-20-adjustments/wf_r2_training_curves.csv",
         "docs/memos/2026-10-20-adjustments-results.md",
+        "docs/memos/data/2026-10-20-edge-methods/edge_calibration.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_cell_counts.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_dte_zone_region.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_gate_summary.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_gate_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_gate_vs_market.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_perf_by_rank.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_ticker_dte.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_ticker_dte_zone.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_ticker_zone.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_windows.csv",
+        "docs/memos/2026-10-20-edge-methods-results.md",
+        "configs/run-edge-method-01-market-pit-by-dte.json",
+        "configs/run-edge-method-02-pool-global.json",
+        "configs/run-edge-method-03-pool-by-dte.json",
+        "configs/run-edge-method-04-pool-by-threshold.json",
+        "configs/run-edge-method-05-pool-by-regime.json",
+        "configs/run-edge-method-06-pool-by-ticker.json",
+        "configs/run-edge-method-07-model-pit.json",
+        "configs/run-edge-method-08-stack-four-by-dte.json",
+        "configs/run-edge-method-09-best-by-ticker-dte.json",
+        "configs/run-edge-method-10-gbm-market.json",
         "configs/strike-screen-folds-walkforward.jsonl", "configs/run-strike-screen-fits-walkforward.json",
         "configs/run-strike-region-scores-walkforward.json",
         "tests/test_strike_screen_fits.py",
@@ -476,7 +498,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the strike-region scores node, its document and its test = 581.
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
-    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase)
+    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase)
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

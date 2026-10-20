@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-16: ADR-0268 perf sweep landed 471dd655 (26 units, two clean lenses each); owner purges remote branches |
-| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-20: ADR-0270 adjustments (shared head, regularization, design inputs) tie the market (-0.01%/+0.11%) and beat baselines (+2%); second seed next |
+| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-20: ten edge methods; four-way stack beats the recalibrated market +0.48% (t 8.4), gate 215 vs 29 luck; evidence cap breached (owner) |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |

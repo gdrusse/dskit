@@ -2,6 +2,7 @@
 
 Reads the StrikeRegionScores output and the fit queue output of ONE walk-forward run, writes long CSVs.
 Run: python -B analysis_wf.py --scores DIR --fits DIR --panel FRAME.parquet --out DIR [--tag TAG] [--candidate NAME] [--arm NAME] [--flips N]
+     [--method-rows FORECASTS.parquet]  (a GridCDFMethod output: its forecast replaces "model"; the scored model becomes comparator "base")
 
 Score (Path A0002): threshold-weighted CRPS on the 13-point z grid -3..3 step 0.5, trapezoid rule, weight 1 on |z| in [0.5, 2.5]
 tapering to 0.25 at z = 0 and |z| >= 3; plain CRPS on the same grid and the scorer's own tail CRPS, strike Brier and wing twCRPS beside it.
@@ -24,8 +25,10 @@ import pyarrow.parquet as pq
 GRID = ["zm3", "zm2.5", "zm2", "zm1.5", "zm1", "zm0.5", "zp0", "zp0.5", "zp1", "zp1.5", "zp2", "zp2.5", "zp3"]
 ZS = np.array([-3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5, 3], float)
 W_TW = np.clip(np.where(np.abs(ZS) < 0.5, 0.25 + 1.5 * np.abs(ZS), np.where(np.abs(ZS) <= 2.5, 1.0, 1 - 1.5 * (np.abs(ZS) - 2.5))), 0.25, 1.0)
-FORECASTERS = ("model", "baseline", "pooled", "market")
-COMPARATORS = ("market", "baseline", "pooled", "market_cal")
+FORECASTERS = ["model", "baseline", "pooled", "market"]
+COMPARATORS = ["market", "baseline", "pooled", "market_cal"]
+KEYS = ["symbol", "quote_date", "expiry", "fold", "band"]
+PIT_TAIL = 4.0
 SCORER_METRICS = ("tail_crps", "decision_strike_brier", "decision_wing_twcrps")
 REGIMES = {"S0_pre_crash": ("2020-01-02", "2020-02-14"), "S1_covid_crash": ("2020-02-15", "2020-06-30"),
            "S2_recovery": ("2020-07-01", "2021-12-31"), "S3_rate_shock": ("2022-01-03", "2022-12-30"),
@@ -60,6 +63,42 @@ def add_scores(d):
     ok = d["market_eligible"].astype(bool) & d["market_twcrps"].notna()
     d["common"] = ok
     return d
+
+
+def grid_pit(cdf, y, tail=PIT_TAIL):
+    """F(y) by linear interpolation on the 13-point grid, linear to 0 and 1 over `tail` beyond the outer points."""
+    zs = np.concatenate([[ZS[0] - tail], ZS, [ZS[-1] + tail]])
+    f = np.concatenate([np.zeros((len(cdf), 1)), cdf, np.ones((len(cdf), 1))], 1)
+    yc = np.clip(y, zs[0], zs[-1])
+    j = np.clip(np.searchsorted(zs, yc, side="right") - 1, 0, len(zs) - 2)
+    r = np.arange(len(cdf))
+    w = (yc - zs[j]) / (zs[j + 1] - zs[j])
+    return f[r, j] + w * (f[r, j + 1] - f[r, j])
+
+
+def swap_method(d, path):
+    """Replace the model's grid CDF by a GridCDFMethod forecast (joined by identity); keep the scored model as "base"."""
+    m = pq.read_table(path).to_pandas()
+    cols = [f"method_cdf_{g}" for g in GRID]
+    m = m[KEYS + cols]
+    if m.duplicated(KEYS).any():
+        raise SystemExit("duplicate identities in method rows")
+    n = len(d)
+    d = d.merge(m, on=KEYS, how="left")
+    if len(d) != n or d[cols].isna().all(axis=1).sum():
+        raise SystemExit("method rows do not cover the scored rows")
+    for g in GRID:
+        d[f"base_cdf_{g}"] = d[f"model_cdf_{g}"]
+        d[f"model_cdf_{g}"] = d[f"method_cdf_{g}"]
+    for k in ("below_05", "above_95"):
+        d[f"base_{k}"] = d[f"model_{k}"]
+    for k in SCORER_METRICS:
+        d[f"model_{k}"] = np.nan                      # needs the full curve and listed strikes: not defined for a grid method
+    pit = grid_pit(np.stack([d[f"model_cdf_{g}"].to_numpy(float) for g in GRID], 1), d["y"].to_numpy(float))
+    d["model_below_05"], d["model_above_95"] = (pit < 0.05).astype(float), (pit > 0.95).astype(float)
+    FORECASTERS.append("base")
+    COMPARATORS.append("base")
+    return d.drop(columns=cols)
 
 
 def add_calibrated(d, knots=21):
@@ -300,10 +339,13 @@ def main(argv=None):
     ap.add_argument("--arm", default="context_chain")
     ap.add_argument("--candidate", default="tcn")
     ap.add_argument("--flips", type=int, default=200)
+    ap.add_argument("--method-rows", default=None)
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     d = load_rows(Path(a.scores) / "rows.parquet", a.arm, a.candidate)
+    if a.method_rows:
+        d = swap_method(d, a.method_rows)
     d = add_ranks(add_calibrated(add_scores(d)), a.panel)
     tables = {"perf_by_window": perf_by_window(d), "perf_by_rank": perf_by_rank(d), "cells_ticker_rank_year": cells(d),
               "training_curves": curves(a.fits), "calibration_by_window": calibration(d)}
