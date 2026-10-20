@@ -342,3 +342,69 @@ def test_table_write_now_names_a_value_json_cannot_carry(tmp_path):
     with pytest.raises(ValueError, match="field 'AAA' is NaN"):
         node.run(run_ctx(tmp_path), {"table": {"AAA": float("nan"), "BBB": 1.0}})
     assert not (tmp_path / "t.json").exists()
+
+
+# -- RecordsFile: a pinned JSON-lines stream under TableFile's provenance contract (ADR-0272) ----
+
+from dskit.pipeline.kinds_table import RecordsFile  # noqa: E402
+
+LINES = [{"d": "2020-01-02", "v": 1.5}, {"d": "2020-01-03", "v": -2.0}]
+
+
+@pytest.fixture
+def stream(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    text = "".join(json.dumps(row, sort_keys=True) + "\n" for row in LINES)
+    (tmp_path / "rows.jsonl").write_text(text, encoding="utf-8")
+    return {
+        "path": "rows.jsonl",
+        "source": "a pinned structural artifact",
+        "retrieved": "2026-10-20",
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "expect": 2,
+    }
+
+
+def test_records_file_is_by_import_path_only_and_shares_table_file_params():
+    assert "records-file" not in DEFAULT_NODE_KINDS
+    assert issubclass(RecordsFile, TableFile)
+    assert RecordsFile._PARAMS == TableFile._PARAMS
+    assert RecordsFile.validate_params.__func__ is TableFile.validate_params.__func__
+    assert RecordsFile.outputs == ("records", "provenance")
+    assert "RecordsFile" in __import__("dskit.pipeline.kinds_table", fromlist=["x"]).__all__
+
+
+def test_records_file_yields_the_rows_in_file_order_with_provenance(stream):
+    out = RecordsFile("rows", params=stream).run(None, {})
+    assert out["records"] == LINES
+    assert out["provenance"] == {
+        "path": "rows.jsonl",
+        "source": "a pinned structural artifact",
+        "retrieved": "2026-10-20",
+        "sha256": stream["sha256"],
+        "entries": 2,
+    }
+
+
+def test_records_file_refuses_a_drifted_digest_a_wrong_count_and_a_non_object_line(stream):
+    with open("rows.jsonl", "a", encoding="utf-8") as fh:
+        fh.write('{"d": "2020-01-06", "v": 0.0}\n')
+    with pytest.raises(ValueError, match="sha256"):
+        RecordsFile("rows", params=stream).run(None, {})
+    text = "".join(json.dumps(row, sort_keys=True) + "\n" for row in LINES)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with open("rows.jsonl", "w", encoding="utf-8") as fh:
+        fh.write(text)
+    with pytest.raises(ValueError, match="expects 3"):
+        RecordsFile("rows", params={**stream, "sha256": digest, "expect": 3}).run(None, {})
+    bad = '[1, 2]\n'
+    with open("rows.jsonl", "w", encoding="utf-8") as fh:
+        fh.write(bad)
+    with pytest.raises(ValueError, match="line 1"):
+        RecordsFile("rows", params={**stream, "expect": None,
+                                    "sha256": hashlib.sha256(bad.encode()).hexdigest()}).run(None, {})
+
+
+def test_records_file_takes_no_inputs(stream):
+    assert RecordsFile("rows", params=stream).validate_inputs({"records": []})
+    assert RecordsFile("rows", params=stream).validate_inputs({}) == []

@@ -1219,3 +1219,121 @@ def test_the_family_needs_a_sign_on_every_measure_and_a_valid_alpha_and_correcti
                 {"alpha": 0.05, "x": 1}, {}):
         assert CrossSectionIC.validate_params({**base, "measures": ok, "family": bad}), bad
     assert CrossSectionIC.validate_params({**base, "measures": {"a": {"forecast_field": "f", "outcome_field": "y", "sign": 2}}})
+
+
+# -- ChronologicalForecastSkill: per-fold forecast skill against a benchmark (ADR-0272) ----
+
+from dskit.pipeline.kinds_stats import ChronologicalForecastSkill  # noqa: E402
+
+SKILL = {
+    "stamp_field": "d", "group_field": "g", "outcome_field": "y",
+    "forecasts": {"mean": "f_mean", "model": "f_model"}, "benchmark": "mean", "h_steps": 1,
+    "folds": {"2020": {"start": "2020-01-01", "end_before": "2021-01-01"},
+              "2021": {"start": "2021-01-01", "end_before": "2022-01-01"}},
+    "comparisons": [["model", "mean"]],
+    "bootstrap": {"block_days": 7, "replicates": 100, "seed": 3, "level": 0.9},
+}
+
+
+def _skill_rows(n_days=40, noise=0.0):
+    from datetime import date, timedelta
+
+    rows = []
+    for year in (2020, 2021):
+        for i in range(n_days):
+            day = (date(year, 1, 2) + timedelta(days=i)).isoformat()
+            for j, group in enumerate(("P", "Q")):
+                y = ((i * 7 + j * 3) % 11 - 5) / 10.0
+                rows.append({"d": day, "g": group, "y": y, "f_mean": 0.01,
+                             "f_model": y + noise * (((i + j) % 3) - 1)})
+    return rows
+
+
+def _skill(rows, **over):
+    ctx = NodeContext(name="t", asof=ASOF, run_dir="/nonexistent")
+    return ChronologicalForecastSkill("skill", {**SKILL, **over}).run(ctx, {"records": rows})
+
+
+def test_a_perfect_forecast_scores_r2_one_ic_one_and_every_hit():
+    out = _skill(_skill_rows())
+    rows = {(r["fold"], r["model"], r["group"]): r for r in out["records"]}
+    for fold in ("2020", "2021", "pooled"):
+        for group in ("P", "Q", "all"):
+            perfect = rows[(fold, "model", group)]
+            assert perfect["r2oos"] == pytest.approx(1.0)
+            assert perfect["ic"] == pytest.approx(1.0)
+            assert perfect["hit_rate"] == pytest.approx(1.0)
+            assert perfect["mse"] == pytest.approx(0.0)
+            bench = rows[(fold, "mean", group)]
+            assert bench["r2oos"] == pytest.approx(0.0)
+            assert bench["mse"] == pytest.approx(bench["mse_benchmark"])
+    assert rows[("2020", "model", "P")]["n"] == 40 and rows[("2020", "model", "all")]["n"] == 80
+    assert rows[("pooled", "model", "all")]["n"] == 160
+    assert rows[("pooled", "model", "all")]["gap_p"] < 0.05
+    assert rows[("pooled", "model", "all")]["ic_lo"] == pytest.approx(1.0)
+    assert out["summary"]["skill"]["model"]["passes"] is True
+    assert out["summary"]["skill"]["model"]["n_folds"] == 2
+    assert out["summary"]["comparisons"]["model|mean"]["pooled"]["p_value"] < 0.05
+    assert out["summary"]["family"]["decisions"]["bh"]["model|mean"] is True
+    assert out["summary"]["family"]["decisions"]["bh"]["model"] is True
+    assert out["summary"]["lags"] == 0 and out["summary"]["folds"] == ["2020", "2021"]
+
+
+def test_r2oos_is_one_minus_mse_over_benchmark_mse_and_the_gap_is_signed_for_the_model():
+    rows = _skill_rows(noise=0.3)
+    out = _skill(rows)
+    row = {(r["fold"], r["model"], r["group"]): r for r in out["records"]}[("2021", "model", "all")]
+    fold = [r for r in rows if r["d"] >= "2021-01-01"]
+    mse = sum((r["y"] - r["f_model"]) ** 2 for r in fold) / len(fold)
+    bench = sum((r["y"] - r["f_mean"]) ** 2 for r in fold) / len(fold)
+    assert row["mse"] == pytest.approx(mse) and row["mse_benchmark"] == pytest.approx(bench)
+    assert row["r2oos"] == pytest.approx(1 - mse / bench)
+    assert row["gap_mean"] == pytest.approx(bench - mse)
+    assert row["hit_rate"] == pytest.approx(
+        sum(1 for r in fold if r["y"] * r["f_model"] > 0) / sum(1 for r in fold if r["y"] * r["f_model"] != 0))
+
+
+def test_rows_outside_every_fold_or_without_an_outcome_or_forecast_are_counted_not_filled():
+    rows = _skill_rows()
+    rows[0]["y"] = None
+    rows[1]["f_model"] = None
+    rows.append({"d": "2019-06-01", "g": "P", "y": 0.1, "f_mean": 0.0, "f_model": 0.1})
+    out = _skill(rows)
+    dropped = out["summary"]["dropped"]
+    assert dropped["outside_folds"] == 1 and dropped["missing_outcome"] == 1
+    assert dropped["missing_forecast"] == {"mean": 0, "model": 1}
+    row = {(r["fold"], r["model"], r["group"]): r for r in out["records"]}
+    # rows[0] is group P, rows[1] is group Q: each loses one row, and BOTH models lose it
+    assert row[("2020", "model", "P")]["n"] == 39 and row[("2020", "mean", "P")]["n"] == 39
+    assert row[("2020", "model", "Q")]["n"] == 39 and row[("2020", "mean", "Q")]["n"] == 39
+    assert row[("2020", "model", "all")]["n"] == 78 and out["summary"]["rows_scored"] == 158
+    with pytest.raises(ValueError, match="stamp"):
+        _skill([{**rows[2], "d": 5}])
+
+
+def test_h_steps_sets_the_bartlett_lag_and_folds_must_not_overlap():
+    out = _skill(_skill_rows(noise=0.3), h_steps=5)
+    assert out["summary"]["lags"] == 4
+    assert out["summary"]["skill"]["model"]["h_steps"] == 5
+    assert ChronologicalForecastSkill.validate_params(
+        {**SKILL, "folds": {"a": {"start": "2020-01-01", "end_before": "2021-06-01"},
+                            "b": {"start": "2021-01-01", "end_before": "2022-01-01"}}})
+    with pytest.raises(ValueError, match="no scored rows"):
+        _skill(_skill_rows(), folds={"2030": {"start": "2030-01-01", "end_before": "2031-01-01"}})
+
+
+def test_forecast_skill_default_denies_and_checks_each_knob():
+    for bad in ({**SKILL, "extra": 1}, {**SKILL, "benchmark": "nope"}, {**SKILL, "h_steps": 0},
+                {**SKILL, "forecasts": {"mean": "f_mean"}}, {**SKILL, "comparisons": [["model"]]},
+                {**SKILL, "comparisons": [["model", "x"]]}, {**SKILL, "folds": {}},
+                {**SKILL, "folds": {"a": {"start": "2020-01-01"}}},
+                {**SKILL, "folds": {"pooled": {"start": "2020-01-01", "end_before": "2021-01-01"}}},
+                {**SKILL, "bootstrap": {"block_days": 7}}, {**SKILL, "alpha": 1.5},
+                {k: v for k, v in SKILL.items() if k != "outcome_field"}):
+        assert ChronologicalForecastSkill.validate_params(bad), bad
+    assert ChronologicalForecastSkill.validate_params(SKILL) == []
+    assert ChronologicalForecastSkill.validate_params(
+        {k: v for k, v in SKILL.items() if k not in ("comparisons", "bootstrap")}) == []
+    assert ChronologicalForecastSkill.role == "transform"
+    assert ChronologicalForecastSkill.outputs == ("summary", "records")
+    assert "ChronologicalForecastSkill" in __import__("dskit.pipeline.kinds_stats", fromlist=["x"]).__all__

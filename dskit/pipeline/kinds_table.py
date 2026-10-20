@@ -87,7 +87,8 @@ from dskit.pipeline.node import (
 )
 from dskit.pipeline.records import price_ok
 
-__all__ = ["FileWrite", "HorizonPairs", "RecordsWrite", "TableFile", "TableWrite", "register"]
+__all__ = ["FileWrite", "HorizonPairs", "RecordsFile", "RecordsWrite", "TableFile", "TableWrite",
+           "register"]
 
 #: A hex sha256, and nothing that merely looks like one.
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -194,7 +195,8 @@ class TableFile(Node):
             ]
         return []
 
-    def run(self, ctx, inputs):
+    def _verified_bytes(self):
+        """The file's bytes and their digest, refusing a digest the document did not declare."""
         path = self.params["path"]
         declared = self.params["sha256"].lower()
         try:
@@ -215,7 +217,32 @@ class TableFile(Node):
                 "the digest deliberately, or restore the file. Running anyway "
                 "would report this document's identity for a different input"
             )
+        return raw, actual
 
+    def _check_expected(self, count, unit):
+        """Refuse a count that disagrees with ``expect``, the check a reader makes by eye."""
+        expect = self.params.get("expect")
+        if expect is not None and count != expect:
+            raise ValueError(
+                f"{self.key}: {self.params['path']!r} holds {count} {unit} but this "
+                f"document expects {expect}. The count is the provenance check a "
+                "reader can make by eye; fix the file or update the document, "
+                "but do not let them disagree"
+            )
+
+    def _provenance(self, digest, count):
+        """The block the run record keeps: what was read and where it came from."""
+        return {
+            "path": self.params["path"],
+            "source": self.params["source"],
+            "retrieved": self.params["retrieved"],
+            "sha256": digest,
+            "entries": count,
+        }
+
+    def run(self, ctx, inputs):
+        path = self.params["path"]
+        raw, actual = self._verified_bytes()
         try:
             table = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -227,22 +254,8 @@ class TableFile(Node):
                 "different kind"
             )
 
-        expect = self.params.get("expect")
-        if expect is not None and len(table) != expect:
-            raise ValueError(
-                f"{self.key}: {path!r} holds {len(table)} entries but this "
-                f"document expects {expect}. The count is the provenance check a "
-                "reader can make by eye; fix the file or update the document, "
-                "but do not let them disagree"
-            )
-
-        provenance = {
-            "path": path,
-            "source": self.params["source"],
-            "retrieved": self.params["retrieved"],
-            "sha256": actual,
-            "entries": len(table),
-        }
+        self._check_expected(len(table), "entries")
+        provenance = self._provenance(actual, len(table))
         self.log.info(
             "table-file %r: %d entr(ies) from %s (retrieved %s, sha256 %s)",
             self.key,
@@ -252,6 +265,57 @@ class TableFile(Node):
             actual[:12],
         )
         return {"table": table, "provenance": provenance}
+
+
+class RecordsFile(TableFile):
+    """Supply one record stream from a declared JSON-lines file (role ``transform``).
+
+    ``TableFile``'s contract, line by line: the same ``path`` / ``source`` /
+    ``retrieved`` / ``sha256`` / ``expect`` params, the same digest refusal,
+    and the same provenance block, so a document that reads a pinned
+    artifact another run wrote (``records-write``'s output, say) carries
+    that artifact's digest in its own identity. By import path only
+    (ADR-0272): ``uses: "dskit.pipeline.kinds_table:RecordsFile"``.
+
+    Every non-blank line must be one JSON object; a line that is not refuses
+    by its 1-based number. ``expect`` counts rows.
+
+    Outputs
+    -------
+    ``records``
+        The rows, in file order, exactly as the file holds them.
+    ``provenance``
+        ``{path, source, retrieved, sha256, entries}`` as :class:`TableFile`.
+    """
+
+    outputs = ("records", "provenance")
+
+    def run(self, ctx, inputs):
+        """Read, verify the digest, parse each line, count, and report provenance."""
+        raw, actual = self._verified_bytes()
+        rows = []
+        for number, line in enumerate(raw.decode("utf-8").split("\n"), start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{self.key}: {self.params['path']!r} line {number} is not JSON: {exc}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"{self.key}: {self.params['path']!r} line {number} holds a "
+                    f"{type(row).__name__}, and a record is a mapping"
+                )
+            rows.append(row)
+        self._check_expected(len(rows), "rows")
+        provenance = self._provenance(actual, len(rows))
+        self.log.info(
+            "records-file %r: %d row(s) from %s (retrieved %s, sha256 %s)",
+            self.key, len(rows), self.params["path"], provenance["retrieved"], actual[:12],
+        )
+        return {"records": rows, "provenance": provenance}
 
 
 def _non_finite(value, path=""):

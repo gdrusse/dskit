@@ -290,6 +290,18 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+ADR-0272 adds three nodes by import path (`NODE_KINDS` untouched) for a
+prediction-only study: `kinds_table.RecordsFile` (a pinned JSON-lines stream
+under `TableFile`'s `path/source/retrieved/sha256/expect` contract),
+`libs/pair_spread.PairSpreadHorizonRows` (session-indexed forward labels
+`y_<h>` with their known instant `known_ms_<h>`, prior-window features and
+carried edge weights per pair, for `SklearnExpandingRefit`), and
+`kinds_stats.ChronologicalForecastSkill` (per declared chronological fold,
+model and group: out-of-sample R² against a benchmark model, Spearman IC with
+a calendar block-bootstrap interval, hit rate, the Newey–West loss gap,
+Diebold–Mariano comparisons, `skill_vs_mean` and a BH family). None of them
+sizes, ranks or trades.
+
 ADR-0269 adds `libs/cdf_research.py`: guarded price-only market proxies,
 immutable single-seed experiment plans, explicitly budgeted paired market scores,
 and frozen chronological pocket summaries. These are research building blocks;

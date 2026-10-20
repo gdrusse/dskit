@@ -11,6 +11,15 @@ benchmark. MSFT/NVDA and Energy are separate later additions through JSON.
   option surfaces and pair Z scores.
 - `configs/run-tech-backtest.json` pins those outputs by SHA-256 and declares
   quote, fee, hedge, capital and calendar policy.
+- `configs/run-tech-prediction-development.json` and
+  `run-tech-prediction-validation.json` are the ADR-0272 prediction-only study:
+  do date-t features (prior-60 Z, 5-session spread change, carried
+  precision-network or correlation-gate edge weights) predict the 5- and
+  20-session change of a pair's ATM-IV or skew spread? Expanding weekly Ridge
+  refits on labels known before each block, scored per chronological fold
+  against an expanding mean; the development document tunes one alpha on 2020
+  (frozen in `configs/prediction-development-selection.json`), the validation
+  document scores 2021–2025 once. No trade rule, P&L or edge claim.
 - `statistical_arbitrage/{data,network,surface,backtest,report}.py` wraps
   generic DSKit readers, graph, pair spread and option ledger mechanisms.
 - `docs/decisioning/` records scope; `docs/memos/` records evaluation.
@@ -33,15 +42,28 @@ not executable fill guarantees or evidence of an edge. GraphicalLassoCV has
 fit iterations and chronological CV scores; it has no neural epochs. The
 evaluation reports annual edge selection frequency from fitted windows.
 
+## Prediction-only study
+
+```bash
+PYTHONPATH=children/statistical_arbitrage:. python -m dskit.pipeline run children/statistical_arbitrage/configs/run-tech-prediction-validation.json --asof <YYYY-MM-DD>
+```
+
+Both documents read the replay's pinned structural JSONL by SHA-256
+(`RecordsFile`), rebuild the all-pairs spreads, label them with
+`PairSpreadHorizonRows`, refit with `SklearnExpandingRefit` and score with
+`ChronologicalForecastSkill`; rows, fits and skill tables land under
+`/home/russell/data/statistical_arbitrage/prediction-20261020/<document>/`.
+Memo: `docs/memos/2026-10-20-tech-prediction-only-study.md`.
+
 ## Layout
 
 ```text
 children/statistical_arbitrage/
   AGENTS.md  CLAUDE.md  README.md  pyproject.toml  journal.json
-  configs/    source, calendar, structural and replay JSON
+  configs/    source, calendar, structural, replay and prediction-study JSON
   statistical_arbitrage/
     __init__.py  data.py  network.py  surface.py  backtest.py  report.py
-  tests/      test_configs.py  test_nodes.py
+  tests/      test_configs.py  test_nodes.py  test_prediction_configs.py
   docs/       RE-ENTRY.md  decisioning/  plans/  memos/
 ```
 

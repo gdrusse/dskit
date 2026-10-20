@@ -1,0 +1,1319 @@
+{
+  "name": "tech-prediction-development-20261020",
+  "notes": "ADR-0272 prediction-only study, DEVELOPMENT document. Scores the 2020 fold only, for the single tuned quantity: the Ridge alpha of the lagged-spread model (grid 0.1/1/10/100), per target, chosen as the grid value maximizing pooled 2020 R2oos averaged over horizons 5 and 20. 2019 is warm-up (labels accrue, nothing scored). No network model is fitted here, so no network choice is tuned. No trade rule, P&L or edge claim.",
+  "outputs": {
+    "run_root": "/home/russell/data/statistical_arbitrage/pipeline_runs"
+  },
+  "pipeline": {
+    "calendar": {
+      "uses": "table-file",
+      "params": {
+        "path": "children/statistical_arbitrage/configs/validation-calendar.json",
+        "source": "ADR-0271 child validation calendar (the replay pinned the same digest)",
+        "retrieved": "2026-10-20",
+        "sha256": "a06f6f6f1d406e42b69db3c320b0fe1ef130a2d0de96388c661812e49eb6dc1e",
+        "expect": 10
+      },
+      "notes": "Pins the chronological calendar the folds below copy; the digest puts it in this document's identity."
+    },
+    "surface": {
+      "uses": "dskit.pipeline.kinds_table:RecordsFile",
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/surface_rows.jsonl",
+        "source": "ADR-0271 structural run tech-structural-correlation-20261020 (pinned by run-tech-backtest.json)",
+        "retrieved": "2026-10-20",
+        "sha256": "517f705cfe37aa6bad6f3f62d06d0a0920f7ef45f790e6238a58051059fbc86a",
+        "expect": 6000
+      },
+      "notes": "The same immutable artifact the v6 replay pinned; the digest makes it part of this document's identity."
+    },
+    "precision_edges": {
+      "uses": "dskit.pipeline.kinds_table:RecordsFile",
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/graph_edges.jsonl",
+        "source": "ADR-0271 structural run tech-structural-correlation-20261020 (pinned by run-tech-backtest.json)",
+        "retrieved": "2026-10-20",
+        "sha256": "c72611c54d67961e90e3701de1c0bdcc0c7325443ccf82da72ceb6b485f7b370",
+        "expect": 2980
+      },
+      "notes": "The same immutable artifact the v6 replay pinned; the digest makes it part of this document's identity."
+    },
+    "correlation_edges": {
+      "uses": "dskit.pipeline.kinds_table:RecordsFile",
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/corr_graph_edges.jsonl",
+        "source": "ADR-0271 structural run tech-structural-correlation-20261020 (pinned by run-tech-backtest.json)",
+        "retrieved": "2026-10-20",
+        "sha256": "e40554f1c9c3af0af9d8ac27e5f4127068d72eef456da5a652d72582a524bd87",
+        "expect": 4997
+      },
+      "notes": "The same immutable artifact the v6 replay pinned; the digest makes it part of this document's identity."
+    },
+    "spread_atm": {
+      "uses": "dskit.pipeline.libs.pair_spread:RollingPairSpread",
+      "inputs": {
+        "surfaces": "$surface.records"
+      },
+      "params": {
+        "select_mode": "all_pairs",
+        "symbols": [
+          "AAPL",
+          "AMZN",
+          "GOOGL"
+        ],
+        "lookback": 60,
+        "entry_z": 2,
+        "date_field": "date",
+        "symbol_field": "symbol",
+        "value_field": "atm_iv",
+        "target_field": "target_dte",
+        "target_value": 30,
+        "surface_status_field": "status",
+        "surface_ok_value": "ok",
+        "end_before": "2025-12-16"
+      },
+      "notes": "Every pair, prior-60-session Z exactly as the replay's all-pairs book; the Z at t uses t's value and prior-only mean/std."
+    },
+    "rows_atm": {
+      "uses": "dskit.pipeline.libs.pair_spread:PairSpreadHorizonRows",
+      "inputs": {
+        "spreads": "$spread_atm.records",
+        "precision": "$precision_edges.records",
+        "correlation": "$correlation_edges.records"
+      },
+      "params": {
+        "horizons": [
+          5,
+          20
+        ],
+        "change_lags": [
+          5
+        ],
+        "edges": {
+          "precision": {
+            "weight_field": "weight"
+          },
+          "correlation": {
+            "weight_field": "weight"
+          }
+        }
+      },
+      "notes": "Labels y_h = spread h sessions later minus spread at t, known at that later close; edge weights are the yearly prior-only fits carried for the date (0 when the pair has no edge)."
+    },
+    "spread_skew": {
+      "uses": "dskit.pipeline.libs.pair_spread:RollingPairSpread",
+      "inputs": {
+        "surfaces": "$surface.records"
+      },
+      "params": {
+        "select_mode": "all_pairs",
+        "symbols": [
+          "AAPL",
+          "AMZN",
+          "GOOGL"
+        ],
+        "lookback": 60,
+        "entry_z": 2,
+        "date_field": "date",
+        "symbol_field": "symbol",
+        "value_field": "risk_reversal",
+        "target_field": "target_dte",
+        "target_value": 30,
+        "surface_status_field": "status",
+        "surface_ok_value": "ok",
+        "end_before": "2025-12-16"
+      },
+      "notes": "Every pair, prior-60-session Z exactly as the replay's all-pairs book; the Z at t uses t's value and prior-only mean/std."
+    },
+    "rows_skew": {
+      "uses": "dskit.pipeline.libs.pair_spread:PairSpreadHorizonRows",
+      "inputs": {
+        "spreads": "$spread_skew.records",
+        "precision": "$precision_edges.records",
+        "correlation": "$correlation_edges.records"
+      },
+      "params": {
+        "horizons": [
+          5,
+          20
+        ],
+        "change_lags": [
+          5
+        ],
+        "edges": {
+          "precision": {
+            "weight_field": "weight"
+          },
+          "correlation": {
+            "weight_field": "weight"
+          }
+        }
+      },
+      "notes": "Labels y_h = spread h sessions later minus spread at t, known at that later close; edge weights are the yearly prior-only fits carried for the date (0 when the pair has no edge)."
+    },
+    "atm_h5_mean": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$rows_atm.records"
+      },
+      "params": {
+        "estimator": "sklearn.dummy.DummyRegressor",
+        "estimator_params": {
+          "strategy": "mean"
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_mean",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: mean forecast of y_5 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h5_mean": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h5_mean.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h5_mean.jsonl",
+        "overwrite": false,
+        "source": "atm_h5_mean per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h5_lagged_a0p1": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$atm_h5_mean.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 0.1
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a0p1",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a0p1 forecast of y_5 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h5_lagged_a0p1": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h5_lagged_a0p1.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h5_lagged_a0p1.jsonl",
+        "overwrite": false,
+        "source": "atm_h5_lagged_a0p1 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h5_lagged_a1": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$atm_h5_lagged_a0p1.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 1.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a1",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a1 forecast of y_5 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h5_lagged_a1": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h5_lagged_a1.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h5_lagged_a1.jsonl",
+        "overwrite": false,
+        "source": "atm_h5_lagged_a1 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h5_lagged_a10": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$atm_h5_lagged_a1.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 10.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a10",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a10 forecast of y_5 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h5_lagged_a10": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h5_lagged_a10.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h5_lagged_a10.jsonl",
+        "overwrite": false,
+        "source": "atm_h5_lagged_a10 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h5_lagged_a100": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$atm_h5_lagged_a10.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 100.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a100",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a100 forecast of y_5 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h5_lagged_a100": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h5_lagged_a100.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h5_lagged_a100.jsonl",
+        "overwrite": false,
+        "source": "atm_h5_lagged_a100 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skill_atm_h5": {
+      "uses": "dskit.pipeline.kinds_stats:ChronologicalForecastSkill",
+      "inputs": {
+        "records": "$atm_h5_lagged_a100.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "group_field": "pair",
+        "outcome_field": "y_5",
+        "forecasts": {
+          "mean": "f_mean",
+          "lagged_a0p1": "f_lagged_a0p1",
+          "lagged_a1": "f_lagged_a1",
+          "lagged_a10": "f_lagged_a10",
+          "lagged_a100": "f_lagged_a100"
+        },
+        "benchmark": "mean",
+        "h_steps": 5,
+        "folds": {
+          "2020-development": {
+            "start": "2020-01-02",
+            "end_before": "2021-01-01"
+          }
+        },
+        "comparisons": [],
+        "bootstrap": {
+          "block_days": 21,
+          "replicates": 1000,
+          "seed": 20261020,
+          "level": 0.9
+        },
+        "alpha": 0.05,
+        "corrections": [
+          "bh",
+          "bonferroni"
+        ]
+      },
+      "notes": "development: per-fold R2oos, Spearman IC with a 21-calendar-day block bootstrap, hit rate, Newey-West loss gap (lags h-1) and Diebold-Mariano comparisons; the family is BH 5% over the pooled one-sided p-values."
+    },
+    "write_rows_atm_h5": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h5_lagged_a100.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/rows_atm_h5.jsonl",
+        "overwrite": false,
+        "source": "scored rows with every forecast column"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "write_skill_rows_atm_h5": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skill_atm_h5.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/skill_atm_h5.jsonl",
+        "overwrite": false,
+        "source": "per fold/model/group skill records"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "write_skill_summary_atm_h5": {
+      "uses": "table-write",
+      "inputs": {
+        "table": "$skill_atm_h5.summary"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/skill_atm_h5.json",
+        "overwrite": false,
+        "source": "skill summary: skill_vs_mean, comparisons, family"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h20_mean": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$rows_atm.records"
+      },
+      "params": {
+        "estimator": "sklearn.dummy.DummyRegressor",
+        "estimator_params": {
+          "strategy": "mean"
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_mean",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: mean forecast of y_20 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h20_mean": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h20_mean.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h20_mean.jsonl",
+        "overwrite": false,
+        "source": "atm_h20_mean per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h20_lagged_a0p1": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$atm_h20_mean.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 0.1
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a0p1",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a0p1 forecast of y_20 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h20_lagged_a0p1": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h20_lagged_a0p1.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h20_lagged_a0p1.jsonl",
+        "overwrite": false,
+        "source": "atm_h20_lagged_a0p1 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h20_lagged_a1": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$atm_h20_lagged_a0p1.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 1.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a1",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a1 forecast of y_20 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h20_lagged_a1": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h20_lagged_a1.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h20_lagged_a1.jsonl",
+        "overwrite": false,
+        "source": "atm_h20_lagged_a1 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h20_lagged_a10": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$atm_h20_lagged_a1.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 10.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a10",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a10 forecast of y_20 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h20_lagged_a10": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h20_lagged_a10.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h20_lagged_a10.jsonl",
+        "overwrite": false,
+        "source": "atm_h20_lagged_a10 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "atm_h20_lagged_a100": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$atm_h20_lagged_a10.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 100.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a100",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a100 forecast of y_20 for the atm spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_atm_h20_lagged_a100": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h20_lagged_a100.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_atm_h20_lagged_a100.jsonl",
+        "overwrite": false,
+        "source": "atm_h20_lagged_a100 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skill_atm_h20": {
+      "uses": "dskit.pipeline.kinds_stats:ChronologicalForecastSkill",
+      "inputs": {
+        "records": "$atm_h20_lagged_a100.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "group_field": "pair",
+        "outcome_field": "y_20",
+        "forecasts": {
+          "mean": "f_mean",
+          "lagged_a0p1": "f_lagged_a0p1",
+          "lagged_a1": "f_lagged_a1",
+          "lagged_a10": "f_lagged_a10",
+          "lagged_a100": "f_lagged_a100"
+        },
+        "benchmark": "mean",
+        "h_steps": 20,
+        "folds": {
+          "2020-development": {
+            "start": "2020-01-02",
+            "end_before": "2021-01-01"
+          }
+        },
+        "comparisons": [],
+        "bootstrap": {
+          "block_days": 21,
+          "replicates": 1000,
+          "seed": 20261020,
+          "level": 0.9
+        },
+        "alpha": 0.05,
+        "corrections": [
+          "bh",
+          "bonferroni"
+        ]
+      },
+      "notes": "development: per-fold R2oos, Spearman IC with a 21-calendar-day block bootstrap, hit rate, Newey-West loss gap (lags h-1) and Diebold-Mariano comparisons; the family is BH 5% over the pooled one-sided p-values."
+    },
+    "write_rows_atm_h20": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$atm_h20_lagged_a100.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/rows_atm_h20.jsonl",
+        "overwrite": false,
+        "source": "scored rows with every forecast column"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "write_skill_rows_atm_h20": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skill_atm_h20.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/skill_atm_h20.jsonl",
+        "overwrite": false,
+        "source": "per fold/model/group skill records"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "write_skill_summary_atm_h20": {
+      "uses": "table-write",
+      "inputs": {
+        "table": "$skill_atm_h20.summary"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/skill_atm_h20.json",
+        "overwrite": false,
+        "source": "skill summary: skill_vs_mean, comparisons, family"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h5_mean": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$rows_skew.records"
+      },
+      "params": {
+        "estimator": "sklearn.dummy.DummyRegressor",
+        "estimator_params": {
+          "strategy": "mean"
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_mean",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: mean forecast of y_5 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h5_mean": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h5_mean.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h5_mean.jsonl",
+        "overwrite": false,
+        "source": "skew_h5_mean per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h5_lagged_a0p1": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$skew_h5_mean.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 0.1
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a0p1",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a0p1 forecast of y_5 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h5_lagged_a0p1": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h5_lagged_a0p1.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h5_lagged_a0p1.jsonl",
+        "overwrite": false,
+        "source": "skew_h5_lagged_a0p1 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h5_lagged_a1": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$skew_h5_lagged_a0p1.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 1.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a1",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a1 forecast of y_5 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h5_lagged_a1": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h5_lagged_a1.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h5_lagged_a1.jsonl",
+        "overwrite": false,
+        "source": "skew_h5_lagged_a1 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h5_lagged_a10": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$skew_h5_lagged_a1.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 10.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a10",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a10 forecast of y_5 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h5_lagged_a10": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h5_lagged_a10.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h5_lagged_a10.jsonl",
+        "overwrite": false,
+        "source": "skew_h5_lagged_a10 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h5_lagged_a100": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$skew_h5_lagged_a10.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 100.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_5",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_5",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a100",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a100 forecast of y_5 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h5_lagged_a100": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h5_lagged_a100.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h5_lagged_a100.jsonl",
+        "overwrite": false,
+        "source": "skew_h5_lagged_a100 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skill_skew_h5": {
+      "uses": "dskit.pipeline.kinds_stats:ChronologicalForecastSkill",
+      "inputs": {
+        "records": "$skew_h5_lagged_a100.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "group_field": "pair",
+        "outcome_field": "y_5",
+        "forecasts": {
+          "mean": "f_mean",
+          "lagged_a0p1": "f_lagged_a0p1",
+          "lagged_a1": "f_lagged_a1",
+          "lagged_a10": "f_lagged_a10",
+          "lagged_a100": "f_lagged_a100"
+        },
+        "benchmark": "mean",
+        "h_steps": 5,
+        "folds": {
+          "2020-development": {
+            "start": "2020-01-02",
+            "end_before": "2021-01-01"
+          }
+        },
+        "comparisons": [],
+        "bootstrap": {
+          "block_days": 21,
+          "replicates": 1000,
+          "seed": 20261020,
+          "level": 0.9
+        },
+        "alpha": 0.05,
+        "corrections": [
+          "bh",
+          "bonferroni"
+        ]
+      },
+      "notes": "development: per-fold R2oos, Spearman IC with a 21-calendar-day block bootstrap, hit rate, Newey-West loss gap (lags h-1) and Diebold-Mariano comparisons; the family is BH 5% over the pooled one-sided p-values."
+    },
+    "write_rows_skew_h5": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h5_lagged_a100.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/rows_skew_h5.jsonl",
+        "overwrite": false,
+        "source": "scored rows with every forecast column"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "write_skill_rows_skew_h5": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skill_skew_h5.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/skill_skew_h5.jsonl",
+        "overwrite": false,
+        "source": "per fold/model/group skill records"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "write_skill_summary_skew_h5": {
+      "uses": "table-write",
+      "inputs": {
+        "table": "$skill_skew_h5.summary"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/skill_skew_h5.json",
+        "overwrite": false,
+        "source": "skill summary: skill_vs_mean, comparisons, family"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h20_mean": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$rows_skew.records"
+      },
+      "params": {
+        "estimator": "sklearn.dummy.DummyRegressor",
+        "estimator_params": {
+          "strategy": "mean"
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_mean",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: mean forecast of y_20 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h20_mean": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h20_mean.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h20_mean.jsonl",
+        "overwrite": false,
+        "source": "skew_h20_mean per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h20_lagged_a0p1": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$skew_h20_mean.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 0.1
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a0p1",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a0p1 forecast of y_20 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h20_lagged_a0p1": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h20_lagged_a0p1.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h20_lagged_a0p1.jsonl",
+        "overwrite": false,
+        "source": "skew_h20_lagged_a0p1 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h20_lagged_a1": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$skew_h20_lagged_a0p1.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 1.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a1",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a1 forecast of y_20 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h20_lagged_a1": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h20_lagged_a1.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h20_lagged_a1.jsonl",
+        "overwrite": false,
+        "source": "skew_h20_lagged_a1 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h20_lagged_a10": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$skew_h20_lagged_a1.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 10.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a10",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a10 forecast of y_20 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h20_lagged_a10": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h20_lagged_a10.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h20_lagged_a10.jsonl",
+        "overwrite": false,
+        "source": "skew_h20_lagged_a10 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skew_h20_lagged_a100": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnExpandingRefit",
+      "inputs": {
+        "records": "$skew_h20_lagged_a10.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 100.0
+        },
+        "features": [
+          {
+            "field": "z",
+            "transform": "identity"
+          },
+          {
+            "field": "spread_change_5",
+            "transform": "identity"
+          }
+        ],
+        "label": "y_20",
+        "time_field": "decision_ms",
+        "known_field": "known_ms_20",
+        "block_ms": 604800000,
+        "block_origin_ms": 1546214400000,
+        "min_train_blocks": 52,
+        "output_field": "f_lagged_a100",
+        "predict_method": "predict",
+        "group_field": "pair"
+      },
+      "notes": "development: lagged_a100 forecast of y_20 for the skew spread; weekly expanding refit on labels known before each block, one fit per pair."
+    },
+    "write_fits_skew_h20_lagged_a100": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h20_lagged_a100.fits"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/fits_skew_h20_lagged_a100.jsonl",
+        "overwrite": false,
+        "source": "skew_h20_lagged_a100 per-block fits (n_train, cutoff, coef)"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "skill_skew_h20": {
+      "uses": "dskit.pipeline.kinds_stats:ChronologicalForecastSkill",
+      "inputs": {
+        "records": "$skew_h20_lagged_a100.records"
+      },
+      "params": {
+        "stamp_field": "date",
+        "group_field": "pair",
+        "outcome_field": "y_20",
+        "forecasts": {
+          "mean": "f_mean",
+          "lagged_a0p1": "f_lagged_a0p1",
+          "lagged_a1": "f_lagged_a1",
+          "lagged_a10": "f_lagged_a10",
+          "lagged_a100": "f_lagged_a100"
+        },
+        "benchmark": "mean",
+        "h_steps": 20,
+        "folds": {
+          "2020-development": {
+            "start": "2020-01-02",
+            "end_before": "2021-01-01"
+          }
+        },
+        "comparisons": [],
+        "bootstrap": {
+          "block_days": 21,
+          "replicates": 1000,
+          "seed": 20261020,
+          "level": 0.9
+        },
+        "alpha": 0.05,
+        "corrections": [
+          "bh",
+          "bonferroni"
+        ]
+      },
+      "notes": "development: per-fold R2oos, Spearman IC with a 21-calendar-day block bootstrap, hit rate, Newey-West loss gap (lags h-1) and Diebold-Mariano comparisons; the family is BH 5% over the pooled one-sided p-values."
+    },
+    "write_rows_skew_h20": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skew_h20_lagged_a100.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/rows_skew_h20.jsonl",
+        "overwrite": false,
+        "source": "scored rows with every forecast column"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "write_skill_rows_skew_h20": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$skill_skew_h20.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/skill_skew_h20.jsonl",
+        "overwrite": false,
+        "source": "per fold/model/group skill records"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    },
+    "write_skill_summary_skew_h20": {
+      "uses": "table-write",
+      "inputs": {
+        "table": "$skill_skew_h20.summary"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/prediction-20261020/development/skill_skew_h20.json",
+        "overwrite": false,
+        "source": "skill summary: skill_vs_mean, comparisons, family"
+      },
+      "notes": "Immutable evidence for the memo; a second run must name a new directory."
+    }
+  }
+}

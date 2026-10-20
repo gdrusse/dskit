@@ -44,6 +44,8 @@ Display only: `actions.csv` remains the complete, append-only journal.
 | ID | Category | Step | Execution Date | Relevant Inputs | Relevant Outputs | Database Location | Notes |
 |---|---|---|---|---|---|---|---|
 | A0001 | research | Lock phase-one universe and approved child layout | 2026-10-20T02:45:04+00:00 | owner decisions; parent ADR-0270; DSKit inventory | docs/architecture/decision-log.md#adr-0270; children/statistical_arbitrage | local design worktree | AAPL/AMZN/GOOGL option nodes; QQQ factor/benchmark; later MSFT/NVDA and energy; no fit or backtest |
+| A0002 | execute | Independent audit of accepted v6 evidence (two read-only lenses) | 2026-10-20T22:53:37+00:00 | ADR-0270; ADR-0271; code 76b4179e; frozen v6 run; memo 2026-10-20-tech-phase-one-evaluation | docs/memos/2026-10-20-v6-independent-audit.md | /home/russell/data/statistical_arbitrage/replay-20261020 (unchanged) | No arithmetic or lookahead error; two Major interpretation findings: skew books trade ATM straddles; no trade possible before 2022-06-27. No-go stands. |
+| A0003 | execute | ADR-0272 prediction-only study: development, validation, offset-1 runs | 2026-10-20T22:53:43+00:00 | pinned surface_rows/graph_edges/corr_graph_edges; configs/run-tech-prediction-*.json | docs/memos/2026-10-20-tech-prediction-only-study.md | /home/russell/data/statistical_arbitrage/prediction-20261020 | Lagged-spread Z predicts ATM pair-spread change (executable clock R2oos +0.20 at 20 sessions, +0.08 at 5); skew predictability is one-day measurement reversal; network edges add nothing. No trade rule or P&L. |
 
 ## Path to Production
 

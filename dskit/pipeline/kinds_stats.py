@@ -55,26 +55,28 @@ from dskit.pipeline.node import (
     check_int_param,
     reject_unknown_params,
 )
-from dskit.pipeline.ordering import cross_section_by_stamp, ic_from_rho
+from dskit.pipeline.ordering import cross_section_by_stamp, ic_from_rho, spearman
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
 from dskit.pipeline.stats import (
-    CORRECTIONS,
-    METHODS,
     CalendarBlockBootstrap,
     cluster_bootstrap_pvalue,
     cluster_bootstrap_t,
     correction,
+    CORRECTIONS,
+    diebold_mariano_test,
     dm_lags,
+    METHODS,
     newey_west_mean,
     quantile_bin,
     quantile_edges,
     sample_quantile,
+    skill_vs_mean,
 )
 
-__all__ = ["DEFAULT_CORRECTIONS", "MIN_CLUSTERS", "P_FLOOR", "CrossSectionIC", "QuantileSortBook", "StatTest",
-           "Validate", "block_bootstrap_interval", "corrections_problems", "family_decisions", "iso_date",
-           "register", "series_statistics"]
+__all__ = ["DEFAULT_CORRECTIONS", "MIN_CLUSTERS", "P_FLOOR", "ChronologicalForecastSkill", "CrossSectionIC",
+           "QuantileSortBook", "StatTest", "Validate", "block_bootstrap_interval", "corrections_problems",
+           "family_decisions", "iso_date", "register", "series_statistics"]
 
 #: The bootstrap's honesty floor: below this many clusters an instrument's
 #: resampling distribution is degenerate (one cluster resamples to itself
@@ -1303,6 +1305,341 @@ class CrossSectionIC(Node):
         self.log.info("%s: %d row(s) in, %d measure(s), %d split summar(ies)",
                       self.key, rows_in, len(measures), len(splits))
         return {"summary": summary, "records": records}
+
+
+#: The fold name reserved for the union of every declared fold.
+POOLED_FOLD = "pooled"
+#: The group name reserved for every group together.
+ALL_GROUPS = "all"
+
+
+class ChronologicalForecastSkill(Node):
+    """Per-fold forecast skill of named models against one benchmark — by import path (ADR-0272).
+
+    Role ``transform``. ``uses: "dskit.pipeline.kinds_stats:ChronologicalForecastSkill"``;
+    never registered. Rows carry an ISO-date ``stamp_field``, a ``group_field``
+    (a pair, a name), an ``outcome_field`` and one forecast field per model in
+    ``forecasts``; ``benchmark`` names the model every other model is scored
+    against (an expanding training mean, say). ``folds`` are declared
+    half-open ``[start, end_before)`` date intervals that must not overlap; a
+    row outside every fold, with a missing outcome, or with any model's
+    forecast missing is dropped and counted, never filled, so every model is
+    scored on exactly the same rows.
+
+    Per fold (and :data:`POOLED_FOLD`, their union), model and group (and
+    :data:`ALL_GROUPS`): ``n``, ``mse``, ``mse_benchmark``, ``r2oos`` = 1 −
+    mse/mse_benchmark, ``ic`` (Spearman of forecast against outcome, ``None``
+    when either is constant) with a calendar block-bootstrap interval when
+    ``bootstrap`` is declared (``ic_lo``, ``ic_hi``, ``ic_supported``),
+    ``hit_rate`` (sign agreement over rows where both sides are non-zero,
+    ``hit_n``), and the per-row loss gap ``(y − b)² − (y − f)²`` averaged per
+    stamp across the group's rows and tested with the Newey–West mean at
+    ``lags = h_steps − 1`` (``gap_mean``, ``gap_se``, ``gap_t``, ``gap_p``,
+    ``gap_n``). The gap is signed FOR the model: positive means the model's
+    squared error is smaller than the benchmark's.
+
+    ``summary.skill`` holds :func:`~dskit.pipeline.stats.skill_vs_mean` per
+    non-benchmark model over the declared folds (all groups); ``comparisons``
+    holds :func:`~dskit.pipeline.stats.diebold_mariano_test` of each declared
+    ``[model, reference]`` pair per fold and pooled; ``family`` is
+    :func:`family_decisions` over the pooled one-sided p-values of every
+    non-benchmark model (named by the model) and every comparison (named
+    ``"<model>|<reference>"``). Nothing here sizes, ranks or trades.
+
+    Parameters
+    ----------
+    params : dict
+        ``stamp_field``, ``group_field``, ``outcome_field`` (non-empty str,
+        REQUIRED); ``forecasts`` (``{model: field}``, at least two, REQUIRED);
+        ``benchmark`` (a model name, REQUIRED); ``h_steps`` (int >= 1,
+        REQUIRED); ``folds`` (``{name: {start, end_before}}``, non-empty,
+        ISO dates, non-overlapping, no name equal to :data:`POOLED_FOLD`,
+        REQUIRED). Optional ``comparisons`` (list of ``[model, reference]``),
+        ``bootstrap`` (``{block_days, replicates, seed, level}`` as
+        :func:`block_bootstrap_interval`), ``alpha`` (default 0.05) and
+        ``corrections`` (default :data:`DEFAULT_CORRECTIONS`).
+
+    Examples
+    --------
+    Two models against the mean over two annual folds::
+
+        node = ChronologicalForecastSkill("skill", {
+            "stamp_field": "date", "group_field": "pair", "outcome_field": "y_5",
+            "forecasts": {"mean": "f_mean", "lagged": "f_lagged"}, "benchmark": "mean",
+            "h_steps": 5, "folds": {"2021": {"start": "2021-01-01", "end_before": "2022-01-01"},
+                                    "2022": {"start": "2022-01-01", "end_before": "2023-01-01"}},
+            "comparisons": [["lagged", "mean"]]})
+        out = node.run(ctx, {"records": rows})
+    """
+
+    role = "transform"
+    outputs = ("summary", "records")
+
+    _PARAMS = ("stamp_field", "group_field", "outcome_field", "forecasts", "benchmark", "h_steps",
+               "folds", "comparisons", "bootstrap", "alpha", "corrections")
+    _REQUIRED = ("stamp_field", "group_field", "outcome_field", "forecasts", "benchmark", "h_steps", "folds")
+    _BOOTSTRAP_KEYS = ("block_days", "replicates", "seed", "level")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Default-deny: refuse unknown, missing and malformed knobs."""
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        for name in cls._REQUIRED:
+            if name not in params:
+                problems.append(f"{name} is required")
+        for name in ("stamp_field", "group_field", "outcome_field"):
+            if name in params and (not isinstance(params[name], str) or not params[name]):
+                problems.append(f"{name} must be a non-empty string")
+        forecasts = params.get("forecasts")
+        models = []
+        if "forecasts" in params:
+            if (not isinstance(forecasts, dict) or len(forecasts) < 2
+                    or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v
+                           for k, v in forecasts.items())):
+                problems.append("forecasts must map at least two model names to field names")
+            else:
+                models = list(forecasts)
+                if len(set(forecasts.values())) != len(forecasts):
+                    problems.append("forecasts must name distinct fields")
+        if "benchmark" in params and params["benchmark"] not in models:
+            problems.append(f"benchmark must be one of forecasts, got {params.get('benchmark')!r}")
+        if "h_steps" in params:
+            _check_int(problems, "h_steps", params["h_steps"], ge=1)
+        if "folds" in params:
+            problems += cls._folds_problems(params["folds"])
+        comparisons = params.get("comparisons", [])
+        if (not isinstance(comparisons, list)
+                or any(not isinstance(c, list) or len(c) != 2 or c[0] == c[1]
+                       or any(m not in models for m in c) for c in comparisons)):
+            problems.append("comparisons must list [model, reference] pairs of distinct forecast names")
+        if "bootstrap" in params:
+            spec = params["bootstrap"]
+            if not isinstance(spec, dict) or set(spec) != set(cls._BOOTSTRAP_KEYS):
+                problems.append(f"bootstrap must declare exactly {list(cls._BOOTSTRAP_KEYS)}")
+            else:
+                _check_int(problems, "bootstrap.block_days", spec["block_days"], ge=1)
+                _check_int(problems, "bootstrap.replicates", spec["replicates"], ge=1)
+                _check_int(problems, "bootstrap.seed", spec["seed"], ge=0)
+                level = spec["level"]
+                if isinstance(level, bool) or not isinstance(level, (int, float)) or not 0 < level < 1:
+                    problems.append(f"bootstrap.level must be in (0, 1), got {level!r}")
+        alpha = params.get("alpha", 0.05)
+        if isinstance(alpha, bool) or not isinstance(alpha, (int, float)) or not 0 < alpha < 1:
+            problems.append(f"alpha must be a number in (0, 1), got {alpha!r}")
+        if "corrections" in params:
+            problems += corrections_problems(params["corrections"])
+        return problems
+
+    @classmethod
+    def _folds_problems(cls, folds):
+        """Problems with the declared folds: named, dated, ordered, disjoint."""
+        if not isinstance(folds, dict) or not folds:
+            return [f"folds must be a non-empty mapping of name -> {{start, end_before}}, got {folds!r}"]
+        problems, spans = [], []
+        for name, spec in folds.items():
+            if not isinstance(name, str) or not name or name == POOLED_FOLD:
+                problems.append(f"fold name {name!r} must be a non-empty string other than {POOLED_FOLD!r}")
+            if not isinstance(spec, dict) or set(spec) != {"start", "end_before"}:
+                problems.append(f"fold {name!r} must declare exactly start and end_before")
+                continue
+            try:
+                start, end = (iso_date(spec[k]) for k in ("start", "end_before"))
+            except ValueError:
+                problems.append(f"fold {name!r} dates must be ISO YYYY-MM-DD")
+                continue
+            if start >= end:
+                problems.append(f"fold {name!r} must have start < end_before")
+            spans.append((start, end, name))
+        spans.sort()
+        for (_, end_a, a), (start_b, _, b) in zip(spans, spans[1:]):
+            if start_b < end_a:
+                problems.append(f"folds {a!r} and {b!r} overlap")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Problems with the wired ``records`` (a materialized list)."""
+        records = inputs.get("records")
+        if not isinstance(records, list):
+            return [f"records must be a list of rows, got {type(records).__name__}"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Assign folds, drop what cannot be scored, and score every model on the same rows.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused.
+        inputs : dict
+            ``records``: a list of mapping rows.
+
+        Returns
+        -------
+        dict
+            ``summary`` and ``records`` as the class docstring describes.
+
+        Raises
+        ------
+        ValueError
+            On a malformed stamp or group, or when no row can be scored.
+        """
+        p = self.params
+        models = list(p["forecasts"])
+        folds = p["folds"]
+        spans = [(iso_date(spec["start"]), iso_date(spec["end_before"]), name) for name, spec in folds.items()]
+        dropped = {"outside_folds": 0, "missing_outcome": 0, "missing_forecast": {m: 0 for m in models}}
+        cells = []
+        for index, row in enumerate(inputs["records"]):
+            stamp = _field(row, p["stamp_field"])
+            try:
+                day = iso_date(stamp)
+            except ValueError:
+                raise ValueError(f"{self.key}: row {index} stamp {stamp!r} is not an ISO date") from None
+            group = _field(row, p["group_field"])
+            if not isinstance(group, str) or not group:
+                raise ValueError(f"{self.key}: row {index} group {group!r} must be a non-empty string")
+            fold = next((name for start, end, name in spans if start <= day < end), None)
+            if fold is None:
+                dropped["outside_folds"] += 1
+                continue
+            outcome = _field(row, p["outcome_field"])
+            if not number_ok(outcome):
+                dropped["missing_outcome"] += 1
+                continue
+            values = {m: _field(row, f) for m, f in p["forecasts"].items()}
+            missing = [m for m, v in values.items() if not number_ok(v)]
+            if missing:
+                for m in missing:
+                    dropped["missing_forecast"][m] += 1
+                continue
+            cells.append((day.isoformat(), group, fold, float(outcome), {m: float(v) for m, v in values.items()}))
+        if not cells:
+            raise ValueError(f"{self.key}: no scored rows — every row was outside the folds or unscoreable")
+        cells.sort(key=lambda c: (c[0], c[1]))
+        fold_names = list(folds)
+        groups = sorted({c[1] for c in cells})
+        lags = int(p["h_steps"]) - 1
+        records = []
+        for fold in fold_names + [POOLED_FOLD]:
+            in_fold = [c for c in cells if fold == POOLED_FOLD or c[2] == fold]
+            if not in_fold:
+                continue
+            for group in groups + [ALL_GROUPS]:
+                rows = [c for c in in_fold if group == ALL_GROUPS or c[1] == group]
+                if not rows:
+                    continue
+                for model in models:
+                    records.append(self._score(fold, model, group, rows, lags))
+        summary = {
+            "stage": f"forecast skill of {models} against {p['benchmark']!r} over folds {fold_names}",
+            "rows_in": len(inputs["records"]), "rows_scored": len(cells), "dropped": dropped,
+            "folds": fold_names, "groups": groups, "models": models, "benchmark": p["benchmark"],
+            "h_steps": int(p["h_steps"]), "lags": lags, "bootstrap": p.get("bootstrap"),
+            "skill": self._skill(cells, fold_names, models),
+            "comparisons": self._comparisons(cells, fold_names, lags),
+        }
+        summary["family"] = self._family(records, summary["comparisons"])
+        return {"summary": summary, "records": records}
+
+    def _score(self, fold, model, group, rows, lags):
+        """One record: the model's loss, ordering and gap statistics on these rows."""
+        bench = self.params["benchmark"]
+        ys = [c[3] for c in rows]
+        fs = [c[4][model] for c in rows]
+        bs = [c[4][bench] for c in rows]
+        n = len(rows)
+        mse = math.fsum((y - f) ** 2 for y, f in zip(ys, fs)) / n
+        mse_b = math.fsum((y - b) ** 2 for y, b in zip(ys, bs)) / n
+        signed = [(y, f) for y, f in zip(ys, fs) if y * f != 0.0]
+        out = {
+            "fold": fold, "model": model, "group": group, "n": n,
+            "mse": mse, "mse_benchmark": mse_b,
+            "r2oos": (1.0 - mse / mse_b) if mse_b > 0.0 else None,
+            "ic": spearman(fs, ys) if n >= 2 else None,
+            "ic_lo": None, "ic_hi": None, "ic_supported": None,
+            "hit_rate": (sum(1 for y, f in signed if y * f > 0.0) / len(signed)) if signed else None,
+            "hit_n": len(signed),
+            "gap_mean": None, "gap_se": None, "gap_t": None, "gap_p": None, "gap_n": 0, "lags": lags,
+        }
+        gaps = self._per_stamp(rows, lambda c: (c[3] - c[4][bench]) ** 2 - (c[3] - c[4][model]) ** 2)
+        out["gap_n"] = len(gaps)
+        if len(gaps) >= 2:
+            nw = newey_west_mean([g for _, g in gaps], lags=min(lags, len(gaps) - 1))
+            out.update(gap_mean=nw["mean"], gap_se=nw["se"], gap_t=nw["t"], gap_p=nw["p_value"])
+        elif gaps:
+            out["gap_mean"] = gaps[0][1]
+        spec = self.params.get("bootstrap")
+        if spec is not None and n >= 2:
+            by_stamp = self._per_stamp(rows, lambda c: (c[4][model], c[3]), collapse=False)
+            interval = block_bootstrap_interval(
+                [s for s, _ in by_stamp], [pairs for _, pairs in by_stamp], spec,
+                statistic=self._sample_spearman)
+            out.update(ic_lo=interval["lo"], ic_hi=interval["hi"], ic_supported=interval["supported"])
+        return out
+
+    @staticmethod
+    def _sample_spearman(sample):
+        """Spearman over the (forecast, outcome) pairs of a resampled list of stamp groups."""
+        pairs = [pair for stamp_pairs in sample for pair in stamp_pairs]
+        if len(pairs) < 2:
+            return None
+        return spearman([f for f, _ in pairs], [y for _, y in pairs])
+
+    @staticmethod
+    def _per_stamp(rows, value, collapse=True):
+        """``[(stamp, value)]`` in stamp order; with ``collapse`` the per-stamp mean, else the list."""
+        buckets = {}
+        for cell in rows:
+            buckets.setdefault(cell[0], []).append(value(cell))
+        if collapse:
+            return [(stamp, math.fsum(vals) / len(vals)) for stamp, vals in sorted(buckets.items())]
+        return sorted(buckets.items())
+
+    def _skill(self, cells, fold_names, models):
+        """``skill_vs_mean`` per non-benchmark model over the declared folds, all groups."""
+        bench, h_steps, alpha = self.params["benchmark"], int(self.params["h_steps"]), self.params.get("alpha", 0.05)
+        out = {}
+        for model in models:
+            if model == bench:
+                continue
+            folds = []
+            for fold in fold_names:
+                rows = [c for c in cells if c[2] == fold]
+                gaps = self._per_stamp(rows, lambda c: (c[3] - c[4][bench]) ** 2 - (c[3] - c[4][model]) ** 2)
+                q = math.fsum((c[3] - c[4][bench]) ** 2 for c in rows) / len(rows) if rows else 0.0
+                if len(gaps) >= 2 and q > 0.0:
+                    folds.append({"d": [g for _, g in gaps], "q": q})
+            out[model] = skill_vs_mean(folds, h_steps=h_steps, alpha=alpha) if folds else None
+        return out
+
+    def _comparisons(self, cells, fold_names, lags):
+        """Diebold–Mariano of each declared [model, reference] per fold and pooled, all groups."""
+        h_steps = int(self.params["h_steps"])
+        out = {}
+        for model, reference in self.params.get("comparisons", []):
+            entry = {}
+            for fold in fold_names + [POOLED_FOLD]:
+                rows = [c for c in cells if fold == POOLED_FOLD or c[2] == fold]
+                gaps = self._per_stamp(rows, lambda c: (c[3] - c[4][reference]) ** 2 - (c[3] - c[4][model]) ** 2)
+                entry[fold] = (diebold_mariano_test([g for _, g in gaps], lags=min(lags, len(gaps) - 1),
+                                                    h_steps=h_steps) if len(gaps) >= 2 else None)
+            out[f"{model}|{reference}"] = entry
+        return out
+
+    def _family(self, records, comparisons):
+        """BH / Bonferroni over the pooled one-sided p-values of the models and comparisons."""
+        bench = self.params["benchmark"]
+        p_values = {}
+        for record in records:
+            if record["fold"] == POOLED_FOLD and record["group"] == ALL_GROUPS and record["model"] != bench:
+                p_values[record["model"]] = record["gap_p"]
+        for name, entry in comparisons.items():
+            pooled = entry.get(POOLED_FOLD)
+            p_values[name] = None if pooled is None else pooled["p_value"]
+        if not p_values:
+            return None
+        return family_decisions(p_values, self.params.get("alpha", 0.05), self.params.get("corrections"))
 
 
 class QuantileSortBook(Node):

@@ -175,3 +175,121 @@ def test_missing_prior_session_does_not_stretch_window():
     assert scored["status"] == "incomplete_window"
     assert scored["n_history"] == 1
     assert scored["z"] is None and scored["signal"] == "none"
+
+
+# -- PairSpreadHorizonRows: session-indexed labels and lagged features per pair (ADR-0272) ----
+
+from dskit.pipeline.libs.pair_spread import PairSpreadHorizonRows  # noqa: E402
+
+DAYS = ["2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07", "2020-01-08", "2020-01-09"]
+SPREADS = [1.0, 2.0, 4.0, 7.0, 11.0, 16.0]
+
+
+def _ms(day):
+    from datetime import date, datetime, timezone
+
+    d = date.fromisoformat(day)
+    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def spread_rows(pair=("A", "B"), days=DAYS, spreads=SPREADS):
+    return [
+        {"date": day, "symbol_a": pair[0], "symbol_b": pair[1], "spread": s, "mean": s - 0.5,
+         "std": 1.0, "z": 0.5, "status": "ok", "signal": "flat", "n_history": 60}
+        for day, s in zip(days, spreads)
+    ]
+
+
+HORIZON = {"horizons": [1, 2], "change_lags": [1], "edges": {"precision": {"weight_field": "weight"}}}
+
+
+def horizon(rows, edges=(), **over):
+    node = PairSpreadHorizonRows("h", {**HORIZON, **over})
+    return node.run(NodeContext(name="t", asof="2025-12-31", run_dir="/nonexistent"),
+                    {"spreads": rows, "precision": list(edges)})
+
+
+def test_labels_count_panel_sessions_and_are_known_at_the_later_session():
+    out = horizon(spread_rows())
+    r = out["records"]
+    assert len(r) == len(DAYS)
+    assert r[0]["decision_ms"] == _ms(DAYS[0])
+    assert r[0]["y_1"] == pytest.approx(1.0) and r[0]["known_ms_1"] == _ms(DAYS[1])
+    assert r[0]["y_2"] == pytest.approx(3.0) and r[0]["known_ms_2"] == _ms(DAYS[2])
+    assert r[2]["y_2"] == pytest.approx(11.0 - 4.0) and r[2]["known_ms_2"] == _ms(DAYS[4])
+    assert r[-1]["y_1"] is None and r[-1]["known_ms_1"] is None
+    assert r[-2]["y_1"] == pytest.approx(5.0) and r[-2]["y_2"] is None
+    assert r[0]["spread_dev"] == pytest.approx(0.5) and r[0]["z"] == pytest.approx(0.5)
+    assert r[0]["spread_change_1"] is None
+    assert r[1]["spread_change_1"] == pytest.approx(1.0)
+    assert r[0]["pair"] == "A|B" and r[0]["symbol_a"] == "A" and r[0]["symbol_b"] == "B"
+    assert out["summary"]["rows"] == len(DAYS) and out["summary"]["pairs"] == 1
+
+
+def test_edge_weight_is_the_pairs_absolute_weight_on_that_date_else_zero():
+    edges = [{"date": DAYS[1], "symbol_a": "A", "symbol_b": "B", "weight": 0.7,
+              "partial_correlation": -0.7, "fit_date": DAYS[0], "trained_through": "2019-12-31"},
+             {"date": DAYS[2], "symbol_a": "B", "symbol_b": "A", "weight": -0.2}]
+    r = horizon(spread_rows(), edges)["records"]
+    assert r[0]["precision_weight"] == 0.0 and r[0]["z_x_precision_weight"] == 0.0
+    assert r[1]["precision_weight"] == pytest.approx(0.7)
+    assert r[1]["z_x_precision_weight"] == pytest.approx(0.5 * 0.7)
+    assert r[2]["precision_weight"] == pytest.approx(0.2)  # symbols in either order, absolute weight
+    assert r[3]["precision_weight"] == 0.0
+
+
+def test_a_non_ok_spread_carries_none_features_and_breaks_labels_through_it():
+    rows = spread_rows()
+    rows[2]["status"] = "incomplete_window"
+    rows[2]["z"] = rows[2]["mean"] = rows[2]["std"] = None
+    r = horizon(rows)["records"]
+    assert r[2]["z"] is None and r[2]["spread_dev"] is None and r[2]["spread_change_1"] is None
+    assert r[2]["y_1"] is None and r[2]["known_ms_1"] is None  # no spread at t
+    assert r[1]["y_1"] is None  # the later session has no spread
+    assert r[1]["y_2"] == pytest.approx(7.0 - 2.0)  # two sessions on is fine
+    assert r[3]["spread_change_1"] is None  # the prior session has no spread
+
+
+def test_pairs_are_independent_series_and_duplicates_or_future_edges_refuse():
+    rows = spread_rows() + spread_rows(pair=("A", "C"), spreads=[s * 10 for s in SPREADS])
+    r = horizon(rows)["records"]
+    assert [x["pair"] for x in r] == ["A|B"] * 6 + ["A|C"] * 6
+    assert r[6]["y_1"] == pytest.approx(10.0)
+    with pytest.raises(ValueError, match="duplicate"):
+        horizon(rows + spread_rows()[:1])
+    with pytest.raises(ValueError, match="trained_through"):
+        horizon(spread_rows(), [{"date": DAYS[1], "symbol_a": "A", "symbol_b": "B", "weight": 0.1,
+                                 "trained_through": DAYS[1]}])
+    with pytest.raises(ValueError, match="duplicate edge"):
+        horizon(spread_rows(), [{"date": DAYS[1], "symbol_a": "A", "symbol_b": "B", "weight": 0.1},
+                                {"date": DAYS[1], "symbol_a": "B", "symbol_b": "A", "weight": 0.1}])
+
+
+def test_label_offset_scores_the_change_after_the_first_executable_session():
+    r = horizon(spread_rows(), label_offset=1)["records"]
+    # decision at DAYS[0]: the label is spread(DAYS[1+h]) - spread(DAYS[1]), known at DAYS[1+h]
+    assert r[0]["y_1"] == pytest.approx(4.0 - 2.0) and r[0]["known_ms_1"] == _ms(DAYS[2])
+    assert r[0]["y_2"] == pytest.approx(7.0 - 2.0) and r[0]["known_ms_2"] == _ms(DAYS[3])
+    assert r[-2]["y_1"] is None and r[-1]["y_1"] is None  # the base or the end is past the panel
+    assert r[0]["z"] == pytest.approx(0.5) and r[0]["spread_dev"] == pytest.approx(0.5)  # features unchanged
+    rows = spread_rows()
+    rows[1]["status"] = "incomplete_window"
+    assert horizon(rows, label_offset=1)["records"][0]["y_1"] is None  # the base session has no spread
+
+
+def test_horizon_rows_default_deny_and_knob_checks():
+    good = PairSpreadHorizonRows.validate_params(HORIZON)
+    assert good == []
+    for bad in ({**HORIZON, "extra": 1}, {**HORIZON, "horizons": []}, {**HORIZON, "horizons": [0]},
+                {**HORIZON, "label_offset": -1}, {**HORIZON, "label_offset": 1.5},
+                {**HORIZON, "horizons": [1, 1]}, {**HORIZON, "change_lags": [-1]},
+                {**HORIZON, "edges": {"": {"weight_field": "w"}}},
+                {**HORIZON, "edges": {"precision": {}}}, {**HORIZON, "edges": []},
+                {k: v for k, v in HORIZON.items() if k != "horizons"}):
+        assert PairSpreadHorizonRows.validate_params(bad), bad
+    assert PairSpreadHorizonRows.validate_params({"horizons": [5]}) == []
+    assert PairSpreadHorizonRows.role == "transform"
+    assert PairSpreadHorizonRows.outputs == ("records", "summary")
+    assert "PairSpreadHorizonRows" in __import__("dskit.pipeline.libs.pair_spread", fromlist=["x"]).__all__
+    with pytest.raises(ValueError, match="precision"):
+        PairSpreadHorizonRows("h", HORIZON).run(None, {"spreads": spread_rows()})
