@@ -1165,6 +1165,16 @@ class StrikeRegionScores(Node):
         y = (fit[f["target"]] / fit[f["reference"]]).to_numpy(float)
         return HorizonEmpiricalCDF(**self._reference_params()).fit(x, y, None, None)
 
+    @staticmethod
+    def _conditioned(baseline, x):
+        """Return ``x`` with an unseen horizon moved to the baseline's nearest fitted one (the queue's rule, ADR-0270 rev 4).
+
+        The same ``CDFExperiment._nearest_fitted_horizons`` the queue's ``_score`` uses, so the recomputed baseline
+        equals the stored one; seen horizons and the reference column are untouched.
+        """
+        fitted = np.array([key[0] for key in baseline.shapes], dtype=float)
+        return CDFExperiment._nearest_fitted_horizons(fitted, x)[0]
+
     def _baselines(self, fit, groups):
         """Return the per-symbol horizon_empirical baseline, refit from the fold's fit rows as the queue does."""
         f = self.world.fields
@@ -1211,8 +1221,8 @@ class StrikeRegionScores(Node):
                     mixture = np.full((n, 3, fitted.weights.shape[1]), np.nan)
                 mixture[i] = np.stack([fitted.weights, fitted.means, fitted.scales], axis=1)
                 curves = {"model": (fitted, everyone),
-                          "baseline": (baselines[ticker].curve(baseline_x[i]), everyone),
-                          "pooled": (pooled.curve(pooled_x[i]), everyone)}
+                          "baseline": (baselines[ticker].curve(self._conditioned(baselines[ticker], baseline_x[i])), everyone),
+                          "pooled": (pooled.curve(self._conditioned(pooled, pooled_x[i])), everyone)}
                 mask, curve = self.market.curve(scored.iloc[i], scored[f["reference"]].to_numpy()[i])
                 eligible[i] = mask
                 if curve is not None:

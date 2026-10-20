@@ -1051,3 +1051,18 @@ def test_a_patience_fit_with_two_seeds_gives_monitor_curves_signatures_and_a_che
     assert all(isinstance(v, bool) for v in cell["signatures"].values())
     rows = pd.read_parquet(root / "rows.parquet")
     assert (rows.band == "val").sum() == 30 and rows.model_crps.notna().all()
+
+
+def test_the_scorer_conditions_an_unseen_horizon_on_the_nearest_fitted_one_like_the_queue():
+    from dskit.pipeline.libs.predictive_cdf import HorizonEmpiricalCDF
+    from index_options.strike_region_scores import StrikeRegionScores
+    rng = np.random.default_rng(5)
+    fit_x = np.column_stack([np.repeat([1.0, 2.0, 5.0], 40), np.full(120, 0.03)])
+    baseline = HorizonEmpiricalCDF(0, 1, 21).fit(fit_x, rng.normal(size=120), None, None)
+    query = np.array([[3.0, 0.03], [5.0, 0.03], [1.0, 0.03], [9.0, 0.03]])
+    moved = StrikeRegionScores._conditioned(baseline, query)
+    assert moved[:, 0].tolist() == [2.0, 5.0, 1.0, 5.0] and moved[:, 1].tolist() == query[:, 1].tolist()
+    assert query[0, 0] == 3.0                                           # the caller's rows are untouched
+    assert baseline.curve(moved).cdf([0.0]).shape == (4, 1)             # the raw query would raise KeyError
+    with pytest.raises(KeyError):
+        baseline.curve(query)
