@@ -1,0 +1,13 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/retained-history-20261019/bounded-inputs/kalshi-crypto-candles-btc",
+  "layout": "file",
+  "formats": [
+    "jsonl"
+  ],
+  "streams": [
+    "candles"
+  ],
+  "effective_field": "ts",
+  "effective_unit": "s",
+  "notes": "Bounded retained data only; opaque JSON projection excludes closes/times at or after Oct12 before Python outcome decoding. Original native values preserved."
+}

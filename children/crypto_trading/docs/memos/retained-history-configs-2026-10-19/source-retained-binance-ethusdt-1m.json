@@ -1,0 +1,9 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/retained-history-20261019/bounded-tapes/binance-ethusdt-1m",
+  "as_of": "2026-10-19T00:00:00Z",
+  "stream": "files",
+  "include": [
+    "*.parquet"
+  ],
+  "notes": "Latest pinned retained version per day over original full feature warmup; day filenames strictly beforeOct12. Consolidation fixes latest incremental-snapshot-only reader, no values modified."
+}

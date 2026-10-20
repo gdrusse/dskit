@@ -1,0 +1,10 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/polymarket-price-history-warmup",
+  "as_of": "2026-10-18T00:00:00Z",
+  "stream": "files",
+  "include": [
+    "decisions-polymarket-btc-15m-price-history-warmup-2026-08-01.jsonl",
+    "summary-polymarket-btc-15m-price-history-warmup-2026-08-01.json"
+  ],
+  "notes": "Existing official CLOB price-history derived decisions, reused without downloading or changing source. Reported scalar p is not proven midpoint or executable price. Realized labels are the saved Polymarket UP settlements; original raw API response provenance is incomplete. Acquiring establishes identity from this snapshot onward, not retrospective authenticity."
+}

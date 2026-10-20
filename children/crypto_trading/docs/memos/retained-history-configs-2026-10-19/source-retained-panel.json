@@ -1,0 +1,9 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/retained-history-20261019",
+  "as_of": "2026-10-19T00:00:00Z",
+  "stream": "files",
+  "include": [
+    "panels/minute-retained-20261019/*"
+  ],
+  "notes": "Bounded feature panel; same original features, Oct12 exclusive."
+}

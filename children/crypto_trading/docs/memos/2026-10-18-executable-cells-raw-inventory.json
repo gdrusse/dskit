@@ -1,0 +1,206 @@
+{
+  "kalshi_books": {
+    "KXBTC15M": {
+      "rows": 27157,
+      "captures_exact_minute": 27157,
+      "two_sided_rows": 24581,
+      "exchange_timestamp_rows": 0,
+      "contracts": 481,
+      "unique_capture_minutes": 7218,
+      "first_capture_ms": 1791832020000,
+      "last_capture_ms": 1792358160000
+    },
+    "KXETH15M": {
+      "rows": 27161,
+      "captures_exact_minute": 27161,
+      "two_sided_rows": 24435,
+      "exchange_timestamp_rows": 0,
+      "contracts": 481,
+      "unique_capture_minutes": 7219,
+      "first_capture_ms": 1791832020000,
+      "last_capture_ms": 1792358160000
+    }
+  },
+  "batch_availability_delay": {
+    "min": 0.0,
+    "median": 31000.0,
+    "p95": 58000.0,
+    "max": 88000.0
+  },
+  "kalshi_hash_failures": [
+    {
+      "path": "/home/russell/data/crypto_trading/ob/raw/kalshi-crypto-books-15m/20261013T092744Z-live-362908a1/payload/orderbooks.jsonl.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "acquired_at": "2026-10-13T09:27:44+00:00",
+      "declared_sha256": "c25dbe2a2ef84d76ee67885d21b266a075a7b37abf009cf5cd3ddb774e2532ff",
+      "hash_matches": false
+    },
+    {
+      "path": "/home/russell/data/crypto_trading/ob/raw/kalshi-crypto-books-15m/20261013T092800Z-live-593adaf9/payload/orderbooks.jsonl.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "acquired_at": "2026-10-13T09:28:00+00:00",
+      "declared_sha256": "687c49c5c74204a8027b297d29087857788b46651bc02fb045a32ff5da42c14f",
+      "hash_matches": false
+    }
+  ],
+  "source_inventory": [
+    {
+      "source": "binance-btcbvol",
+      "snapshots": 9,
+      "payload_files": 9481,
+      "bytes": 6214409933,
+      "effective_first": "2026-10-06T00:00:00+00:00",
+      "effective_last": "2026-10-12T19:00:00+00:00"
+    },
+    {
+      "source": "binance-btcusdt-1m",
+      "snapshots": 9,
+      "payload_files": 9691,
+      "bytes": 905723230,
+      "effective_first": "2026-10-06T00:00:00+00:00",
+      "effective_last": "2026-10-12T19:00:00+00:00"
+    },
+    {
+      "source": "binance-ethbvol",
+      "snapshots": 9,
+      "payload_files": 9481,
+      "bytes": 6304893198,
+      "effective_first": "2026-10-06T00:00:00+00:00",
+      "effective_last": "2026-10-12T19:00:00+00:00"
+    },
+    {
+      "source": "binance-ethusdt-1m",
+      "snapshots": 9,
+      "payload_files": 9691,
+      "bytes": 857543830,
+      "effective_first": "2026-10-06T00:00:00+00:00",
+      "effective_last": "2026-10-12T19:00:00+00:00"
+    },
+    {
+      "source": "crypto-prew4-binance-btc-bvol",
+      "snapshots": 1,
+      "payload_files": 1113,
+      "bytes": 972473692,
+      "effective_first": "2026-08-01T00:00:00+00:00",
+      "effective_last": "2026-08-01T00:00:00+00:00"
+    },
+    {
+      "source": "crypto-prew4-binance-btc-klines",
+      "snapshots": 1,
+      "payload_files": 1139,
+      "bytes": 133249549,
+      "effective_first": "2026-08-01T00:00:00+00:00",
+      "effective_last": "2026-08-01T00:00:00+00:00"
+    },
+    {
+      "source": "crypto-prew4-binance-eth-bvol",
+      "snapshots": 1,
+      "payload_files": 1113,
+      "bytes": 985111261,
+      "effective_first": "2026-08-01T00:00:00+00:00",
+      "effective_last": "2026-08-01T00:00:00+00:00"
+    },
+    {
+      "source": "crypto-prew4-binance-eth-klines",
+      "snapshots": 1,
+      "payload_files": 1139,
+      "bytes": 125141258,
+      "effective_first": "2026-08-01T00:00:00+00:00",
+      "effective_last": "2026-08-01T00:00:00+00:00"
+    },
+    {
+      "source": "crypto-prew4-oos-markets",
+      "snapshots": 1,
+      "payload_files": 1,
+      "bytes": 27267574,
+      "effective_first": "2025-12-10T22:00:00+00:00",
+      "effective_last": "2026-07-31T23:45:00+00:00"
+    },
+    {
+      "source": "kalshi-crypto",
+      "snapshots": 15,
+      "payload_files": 15,
+      "bytes": 146260530,
+      "effective_first": "2026-08-01T00:00:00Z",
+      "effective_last": "2026-10-18T06:15:00Z"
+    },
+    {
+      "source": "kalshi-crypto-books-15m",
+      "snapshots": 27164,
+      "payload_files": 27164,
+      "bytes": 66688604,
+      "effective_first": "2026-10-12T19:07:00+00:00",
+      "effective_last": "2026-10-18T21:16:00+00:00"
+    },
+    {
+      "source": "kalshi-crypto-candles-btc",
+      "snapshots": 8,
+      "payload_files": 8,
+      "bytes": 4033939,
+      "effective_first": "2026-07-31T23:46:00+00:00",
+      "effective_last": "2026-10-18T06:30:00+00:00"
+    },
+    {
+      "source": "kalshi-crypto-candles-eth",
+      "snapshots": 8,
+      "payload_files": 8,
+      "bytes": 3872689,
+      "effective_first": "2026-07-31T23:46:00+00:00",
+      "effective_last": "2026-10-18T06:30:00+00:00"
+    },
+    {
+      "source": "kalshi-history-crypto",
+      "snapshots": 1,
+      "payload_files": 1,
+      "bytes": 80431659,
+      "effective_first": "2024-03-18T20:00:00Z",
+      "effective_last": "2026-10-12T19:08:00+00:00"
+    },
+    {
+      "source": "kalshi-history-trades-15m-w5",
+      "snapshots": 6,
+      "payload_files": 6,
+      "bytes": 2235953363,
+      "effective_first": "2026-09-14T23:45:00.183615Z",
+      "effective_last": "2026-10-07T23:44:59.974211Z"
+    }
+  ],
+  "poly_native_counts": {
+    "event_rows": 6911,
+    "book_rows_read": 14160578,
+    "missing_token_hour": 450,
+    "output_rows": 64830,
+    "contracts": 6483,
+    "hours": 1632
+  },
+  "poly_live_series": {
+    "eth-up-or-down-15m": {
+      "event_observations": 2767,
+      "distinct_markets": 92,
+      "book_rows": 18820,
+      "first_book_ms": 1792276802297,
+      "last_book_ms": 1792357866852
+    },
+    "xrp-up-or-down-15m": {
+      "event_observations": 2767,
+      "distinct_markets": 92,
+      "book_rows": 16534,
+      "first_book_ms": 1792276802297,
+      "last_book_ms": 1792357866852
+    },
+    "sol-up-or-down-15m": {
+      "event_observations": 2767,
+      "distinct_markets": 92,
+      "book_rows": 17516,
+      "first_book_ms": 1792276802297,
+      "last_book_ms": 1792357866852
+    },
+    "btc-up-or-down-15m": {
+      "event_observations": 2767,
+      "distinct_markets": 92,
+      "book_rows": 18388,
+      "first_book_ms": 1792276802297,
+      "last_book_ms": 1792357866852
+    }
+  }
+}

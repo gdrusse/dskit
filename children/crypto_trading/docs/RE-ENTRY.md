@@ -1,75 +1,41 @@
 # RE-ENTRY — crypto_trading
 
-Updated: 2026-10-18 Eastern by GPT-6.
-The replaced note is archived at docs/archive/re-entry/crypto_trading.md.
+Updated: 2026-10-19 Eastern by GPT-6 Astra.
+Previous note archived at docs/archive/re-entry/crypto_trading.md.
 
 ## Now
 
-- Astra-directed attribution diagnostic completed on saved forecasts; no refit.
-- Nine contrasts frozen at a9a78467: global24 vs45/46/47 and48 vs24;
-  local setting03 vs raw/logistic/02/45/24 in fixed ETH11m10–20%.
-- Same warm-up February19–April19, 52,999 forecasts/11,213 contracts;
-  validation May2–July31, 84,728 forecasts/17,158 contracts.
-  Existing March21/June16 half splits and original training schedules retained.
-- All dates previously explored; diagnostic evidence, not untouched confirmation.
-- Reference24 improves means versus45/46/47 every validation month and half,
-  and after every omission of any three of14 week blocks.
-  Only24 vs47 passes the full day/week nine-comparison corrected screen.
-  Weekly adjusted p versus45=.1603 and versus46=.2639 remain inconclusive.
-- Do not replace24 with48: July and second-half differences reverse;
-  removing one week can eliminate its small validation mean advantage.
-- Fixed ETH11m10–20 setting03 improves means against all five controls
-  every validation month and after any three-week removal; none passes.
-  689 contracts,98 YES; raw loss difference−.003899.
-- Pocket raw gain is in488 narrow-spread observations (−.005712);
- 201 wide-spread observations worsen (+.000505). All689 have positive volume.
-  Boundary is the warm-up median spread, approximately one probability point.
-  No new narrow-spread filter or pocket was selected.
-- All137,727 inputs match the acquired panel and original decision records.
-  Three saved GRU hashes verified; training-label reach precedes decisions
-  by at least23h31m. Source endpoints agree, but actual bid/ask update
-  timestamps are absent. No source regeneration or GRU refit was performed.
-- Complete2,800 cells,140 lead rows,280 asset/leads,1,400 calibration rows,
-  joined forecast/contract Parquets, monthly/quality and week-removal views.
-- Candidate1bcb02c2. Twelve focused tests and four doc-budget checks passed;
-  no full suite. Two Astra reviews: zero Critical/Major; one deferred Minor.
-  INT-1: add identical duplicate-cohort regression; runtime guard is correct.
-- First analysis attempt had an incorrect archive payload path; retained
-  failed log, then corrected retry. No completed outputs were overwritten.
-- Artifacts: /home/russell/data/crypto_trading/research/attribution-20261018.
-  Prior artifacts: sibling warmup20-20261018 and pocket-tuning-20261018.
+- **Recommendation: one pooled Kalshi BTC/ETH model, aligned-24 (method 24), and exactly two cells for the next prospective test.**
+- KXETH15M: five minutes before close, native YES midpoint 00-10%, buy NO only under the frozen model-versus-executable-NO-ask-plus-fee signal.
+- KXBTC15M: eight minutes before close, native YES midpoint 00-10%, buy NO under that same side-specific rule.
+- On later retained W4 and W5, method 24 beat both raw and calibrated market log loss in both cells. ETH: W4 0.151148 vs raw 0.153524 (902 contracts), W5 0.158124 vs 0.160514 (478). BTC: W4 0.216612 vs 0.217844 (287), W5 0.205555 vs 0.208529 (167). The staged JSON retains exact calibrated scores.
+- Sparse inspected Oct 8–12 is mixed: BTC model 0.141578 versus raw 0.138542/calibrated 0.132300 (31 contracts), with −0.07c/18 selected NO; ETH model 0.106888 beats raw 0.109979 but loses to calibrated 0.105519 (73 contracts), with +3.81c/32 selected NO. These tiny slices do not validate either cell.
+- Historical 10-share candle-cost means for ETH NO were +1.25c/506 W4 and +0.97c/269 W5; BTC NO +1.37c/175 W4 and +1.66c/117 W5. BTC W4/W5 selected counts miss the frozen 200-contract floor.
+- **These are retrospective later-set results, not an untouched holdout, verified delayed fills, or production approval.** The two original protected tests use different frozen rules and cannot be repurposed to validate this recommendation.
+- Polymarket model 10 / BTC 11m / UP 80-90% is a separate research reserve: +3.37c on 324 primary displayed-book selections, but no distinct later settled outcome set and no corrected pass. No Polymarket cell is in this immediate recommendation.
+- Complete historical audit: 77/77 Kalshi and 20/20 native BTC fixed runs; all 600 registered side/cells retained; 219 positive modeled scenarios among 300 assessable entries; zero corrected after-cost passes. Final independent reviews passed on `f3dc1bca`.
+- The staged JSON records these two cells, later retained comparisons, and sparse adverse October evidence. Frozen machine-specific study configs now live as byte-identical archive evidence under `docs/memos/retained-history-configs-2026-10-19/`; the checkpoint evidence JSON retains the amendment bridge and final manifests. Two fresh independent reviews of `f3dc1bca` found zero unresolved Critical/Major/Minor/Nit issues; three focused config failures reproduce on unchanged main.
 
 ## Next
 
-- Retain24; stop architecture/strength/pruning/boundary and local cell tuning
-  on these dates. Keep48 as a recorded sensitivity, not a replacement.
-- Next useful work is a data inventory for accurately timestamped historical
-  market probabilities and a documented unexamined, admissible interval.
-  Freeze candidates, controls, cohort, fits and bins before opening outcomes.
-- Keep the existing03 pocket rule fixed, without adding the observed spread
-  filter. If suitable data is unavailable, close this historical optimization
-  line as inconclusive; more models on the same rows do not resolve it.
-- The separate protected January15,2027 protocol remains unchanged.
-  It was not required for this completed historical diagnostic. No automation.
+- Keep work on the two method-24 Kalshi cells. Freeze a distinct future evaluation interval and exact source, executable-ask, fee, depth, delay, size, overlap and failure rules before its outcomes.
+- Preserve the original overnight Oct 12-Nov 11/read Nov 11 and predictive Oct 17-Jan 15/read Jan 15 protocols; their overlap still needs owner reconciliation. Neither is an interim selector.
+- The next work is a separately frozen prospective test of these two cells. The three focused crypto config failures reproduce on unchanged main; documentation budget checks passed 4/4. Do not rerun the full suite without relevant code changes or owner instruction.
 
 ## Blocked / owner decisions
 
-- No blocker to completed study; exact quote freshness remains unresolvable
-  from these decision records. No unexamined interval has been established.
-- No trading, deployment, new acquisition or protected-outcome read.
-- Prior owner-only Path decisions remain unchanged.
+- No certified untouched period is assigned to the two-cell test. W4/W5 and Oct 8-12 were inspected.
+- Kalshi historical candles lack decision/entry timestamps and standing depth needed to verify fills; model forecast allowances are small.
+- Polymarket ETH/SOL/XRP lack settled native labels and earlier training history; Polymarket BTC lead remains a reserve.
+- No subagents or extra paid model/API work without owner approval. No shadow service or live trading.
 
 ## Read first
 
-- docs/memos/2026-10-18-attribution.md
-- docs/memos/2026-10-18-attribution-evidence.json
-- docs/memos/2026-10-18-pocket-tuning.md
-- docs/memos/2026-10-18-warmup20-aligned-methods.md
-- docs/research/attribution/2026-10-18-synthesis.md
+- docs/plans/2026-10-19-staged-multicurrency-selection.json
+- docs/memos/2026-10-19-retained-history-study.md
+- docs/memos/2026-10-18-executable-cells.md
+- docs/memos/2026-10-19-retained-history-protocol.json
 
 ## Do not
 
-- Promote historical consistency or correlated models as established edge.
-- Read protected outcomes, change frozen protocols or select another pocket.
-- Hand-edit generated journals/Path rows or other sessions' checkouts.
-- Rerun completed output paths or discard the failed attempt evidence.
+- Claim these two cells are independently validated or profitable, drop the 600-entry audit, override protected reads, refit on protected outcomes, launch services/orders, or merge before required reviews.

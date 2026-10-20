@@ -1,0 +1,11 @@
+{
+  "path": "/home/russell/data/crypto_trading/research/executable-cells-20261018",
+  "as_of": "2026-10-18T00:00:00Z",
+  "stream": "files",
+  "include": [
+    "transfer-panel.parquet",
+    "transfer-preparation.json",
+    "protocol.json"
+  ],
+  "notes": "Fixed May2 training; native BTC UP midpoint at decision from verified registered coalesced WSS books. Freshness and fill scenarios are separate. All later dates retrospective."
+}
