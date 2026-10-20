@@ -190,13 +190,14 @@ class PerformanceReporter:
         *,
         symbols: Sequence[str],
         graph_fits: Sequence[Mapping[str, Any]] = (),
+        graph_edges: Sequence[Mapping[str, Any]] = (),
+        graph_centrality: Sequence[Mapping[str, Any]] = (),
         entry_z: float | None = None,
     ) -> list[str]:
         """Save descriptive plots from scored books and pinned structural rows.
 
-        Edge widths are deliberately uniform: pair signal rows retain membership,
-        but not fitted partial-correlation weights. Trade flags mark actual fill
-        dates at the most recent strictly earlier close Z for the selected pair.
+        Graph links and node sizes use persisted fitted weights and centrality.
+        Trade flags mark actual fill dates at the most recent earlier close Z.
         """
         import matplotlib
 
@@ -213,21 +214,28 @@ class PerformanceReporter:
         refits = [row for row in graph_fits if row.get("refit") is True]
         fit_date = (max(row["fit_date"] for row in refits)
                     if refits else max((row["fit_date"] for row in atm), default=None))
-        edges = sorted({(row["symbol_a"], row["symbol_b"])
-                        for row in atm if row.get("fit_date") == fit_date
-                        and row.get("status") == "ok"})
+        edges = [row for row in graph_edges
+                 if row.get("fit_date") == fit_date and row.get("date") == fit_date]
+        centers = {row["symbol"]: float(row["eigenvector_centrality"])
+                   for row in graph_centrality
+                   if row.get("fit_date") == fit_date and row.get("date") == fit_date}
         graph = nx.Graph()
         graph.add_nodes_from(symbols)
-        graph.add_edges_from(edges)
+        for row in edges:
+            graph.add_edge(row["symbol_a"], row["symbol_b"],
+                           weight=float(row["weight"]),
+                           partial_correlation=float(row["partial_correlation"]))
         figure, axis = plt.subplots(figsize=(7, 5))
         try:
             locations = nx.spring_layout(graph, seed=23)
+            widths = [1 + 4 * graph[a][b]["weight"] for a, b in graph.edges]
+            node_sizes = [900 + 900 * centers.get(symbol, 0.0) for symbol in graph.nodes]
             nx.draw_networkx(graph, pos=locations, ax=axis, with_labels=True,
                              node_color="#b9d9f3", edge_color="#356b9b",
-                             width=2.0, node_size=1400, font_size=11)
+                             width=widths, node_size=node_sizes, font_size=11)
             axis.set_title(f"Selected ATM network at fit {fit_date or 'none'}")
             axis.text(0.5, -0.08,
-                      "Equal-width links show selected pairs; saved rows have no edge weights.",
+                      "Link width: absolute partial correlation; node size: centrality.",
                       transform=axis.transAxes, ha="center", fontsize=8)
             axis.axis("off")
             figure.tight_layout()
@@ -322,6 +330,9 @@ class PerformanceReporter:
                     ("qqq_equity", "QQQ"),
                 ):
                     axis.plot(days, [row[field] for row in daily], label=label)
+                correlated = evaluation["books"][f"{variant}_correlation"]["full"]["daily"]
+                axis.plot(days, [row["model_equity"] for row in correlated],
+                          label=f"{variant.upper()} correlation gate")
                 axis.set_title(f"{variant.upper()} scored cumulative equity")
                 axis.set_ylabel("USD")
                 axis.grid(alpha=0.25)

@@ -539,7 +539,8 @@ def test_replay_output_is_atomic_retryable_and_immutable(tmp_path, monkeypatch):
     runner = TechReplayPipeline(config)
     provenance = {"backtest_config_sha256": runner._digest(config)}
     rows = {"atm_network_rows.jsonl": [], "skew_network_rows.jsonl": [],
-            "graph_fits.jsonl": []}
+            "graph_fits.jsonl": [], "graph_edges.jsonl": [],
+            "graph_centrality.jsonl": []}
     structural = {"pipeline": {"graph": {"params": {"symbols": ["AAPL", "AMZN"]}}}}
     def fail_plot(self, path, *args, **kwargs):
         (path / "partial.png").write_bytes(b"partial")
@@ -558,8 +559,8 @@ def test_replay_output_is_atomic_retryable_and_immutable(tmp_path, monkeypatch):
     assert not any(path.name.startswith(".fixture-") for path in root.iterdir())
 
 
-def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
-    """A single ledger sees all four books and annual and subfold scores are written."""
+def test_replay_six_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
+    """A single ledger sees all six books and annual and subfold scores are written."""
     import hashlib
     import json
     from statistical_arbitrage.backtest import TechReplayPipeline
@@ -582,7 +583,7 @@ def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
         def run(self, ctx, inputs):
             FakeLedger.calls.append(inputs["pairs"])
             list(inputs["chain"])
-            assert len(inputs["pairs"]) == 4
+            assert len(inputs["pairs"]) == 6
             return {
                 "marks": [{"id": p["id"], "date": "2021-01-06", "pnl_usd": 10.0}
                           for p in inputs["pairs"]],
@@ -590,7 +591,7 @@ def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
                             "close_date": "2021-01-07", "pnl_usd": 10.0}
                            for p in inputs["pairs"]],
                 "exposures": [], "cashflows": [], "refusals": [],
-                "summary": {"pairs_in": 4},
+                "summary": {"pairs_in": 6},
             }
 
     days = ["2021-01-04", "2021-01-05", "2021-01-06", "2021-01-07"]
@@ -608,14 +609,24 @@ def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
         path = tmp_path / name
         data = (surface if name == "surface_rows.jsonl" else
                 [{"date": days[0], "fit_date": days[0], "refit": True,
-                  "alpha": 0.1, "cv_score": -1.0, "train_log_likelihood": -0.5,
-                  "n_iter": 2}] if name == "graph_fits.jsonl" else [signal])
+                  "status": "ok", "alpha": 0.1, "cv_score": -1.0,
+                  "train_log_likelihood": -0.5, "n_iter": 2}]
+                if name in ("graph_fits.jsonl", "corr_graph_fits.jsonl") else
+                [{"date": days[0], "fit_date": days[0], "symbol_a": "AAPL",
+                  "symbol_b": "AMZN", "weight": 0.4,
+                  "partial_correlation": 0.4}]
+                if name in ("graph_edges.jsonl", "corr_graph_edges.jsonl") else
+                [signal])
         path.write_text("".join(json.dumps(row) + "\n" for row in data), encoding="utf-8")
         pinned[name] = {"path": str(path),
                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     structural = tmp_path / "structural.json"
-    structural.write_text(json.dumps({"pipeline": {"graph": {"params": {
-        "symbols": ["AAPL", "AMZN", "GOOGL"]}}, "returns": {"params": {
+    structural.write_text(json.dumps({"pipeline": {
+        "graph": {"uses": "dskit.pipeline.libs.graphical_lasso:RollingPrecisionGraph",
+                  "params": {"symbols": ["AAPL", "AMZN", "GOOGL"]}},
+        "corr_graph": {"uses": "dskit.pipeline.libs.graphical_lasso:RollingCorrelationGraph",
+                       "params": {"symbols": ["AAPL", "AMZN", "GOOGL"]}},
+        "returns": {"params": {
         "ports": {name.lower(): name for name in ("AAPL", "AMZN", "GOOGL", "QQQ")},
         "factor_port": "qqq", "end_before": "2021-01-08",
         "max_forward_fill_sessions": 0}}}}), encoding="utf-8")
@@ -638,6 +649,7 @@ def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
         "source_configs": {"stock": pin(stock), "theta": pin(theta)},
         "structural_resolved": pin(resolved),
         "variants": {variant: {"network": f"{variant}_network_rows.jsonl",
+                               "correlation": f"{variant}_corr_rows.jsonl",
                                "baseline": f"{variant}_baseline_rows.jsonl"}
                      for variant in ("atm", "skew")},
         "evaluation": {"start": days[0], "end_before": "2021-01-08",
@@ -667,15 +679,37 @@ def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
     result = TechReplayPipeline(config).run()
     assert chain.passes == 1
     assert len(FakeLedger.calls) == 1
-    assert set(result["books"]) == {"atm_network", "atm_baseline",
-                                    "skew_network", "skew_baseline"}
+    assert set(result["books"]) == {"atm_network", "atm_correlation", "atm_baseline",
+                                    "skew_network", "skew_correlation", "skew_baseline"}
     assert result["books"]["atm_network"]["annual"]["2021"]["model"]["total_return"] == pytest.approx(0.001)
+    assert result["books"]["atm_correlation"]["annual"]["2021"]["model"]["total_return"] == pytest.approx(0.001)
     assert len(result["books"]["atm_network"]["subfolds"]) == 1
     assert (tmp_path / "out" / f"fixture-{hashlib.sha256(config.read_bytes()).hexdigest()[:12]}"
             / "evaluation.json").exists()
     assert len(result["plots"]) == 4
     assert all((tmp_path / "out" / f"fixture-{hashlib.sha256(config.read_bytes()).hexdigest()[:12]}"
                 / plot).is_file() for plot in result["plots"])
+
+
+def test_edge_frequency_counts_unique_annual_fits_not_daily_carry():
+    from statistical_arbitrage.backtest import TechReplayPipeline
+
+    fits = [
+        {"date": "2020-01-02", "fit_date": "2020-01-02", "refit": True,
+         "status": "ok"},
+        {"date": "2020-01-03", "fit_date": "2020-01-02", "refit": False,
+         "status": "ok"},
+        {"date": "2021-01-04", "fit_date": "2021-01-04", "refit": True,
+         "status": "disconnected"},
+    ]
+    edges = [{"date": day, "fit_date": "2020-01-02", "symbol_a": "AAPL",
+              "symbol_b": "AMZN", "partial_correlation": -0.4, "weight": 0.4}
+             for day in ("2020-01-02", "2020-01-03")]
+    out = TechReplayPipeline._edge_frequency(fits, edges, ["AAPL", "AMZN", "GOOGL"])
+    assert out["annual_fits"] == 2
+    assert out["pairs"]["AAPL:AMZN"]["selected_fits"] == 1
+    assert out["pairs"]["AAPL:AMZN"]["frequency"] == pytest.approx(0.5)
+    assert out["pairs"]["AAPL:GOOGL"]["selected_fits"] == 0
 
 
 def test_replay_retains_unclosed_exposure_and_blocks_later_book_entries():
@@ -743,10 +777,20 @@ def test_report_plots_use_pinned_pair_and_evaluation_curves(tmp_path, monkeypatc
     matplotlib.use("Agg")
     from matplotlib import pyplot as plt
     from matplotlib.figure import Figure
+    import networkx as nx
     from statistical_arbitrage.report import PerformanceReporter
 
     captured = {}
     original = Figure.savefig
+    original_draw = nx.draw_networkx
+
+    def capture_network(graph, *args, **kwargs):
+        captured["graph_edges"] = list(graph.edges(data=True))
+        captured["graph_width"] = kwargs["width"]
+        captured["node_size"] = kwargs["node_size"]
+        return original_draw(graph, *args, **kwargs)
+
+    monkeypatch.setattr(nx, "draw_networkx", capture_network)
 
     def capture(self, filename, *args, **kwargs):
         if filename.name == "cumulative-equity.png":
@@ -776,9 +820,20 @@ def test_report_plots_use_pinned_pair_and_evaluation_curves(tmp_path, monkeypatc
     result = {"books": {f"{variant}_network": {"full": {"daily": daily},
                           "trades": [trade] if variant == "atm" else []}
                         for variant in ("atm", "skew")}}
+    for variant in ("atm", "skew"):
+        result["books"][f"{variant}_correlation"] = {"full": {"daily": [
+            {"date": item["date"], "model_equity": item["baseline_equity"]}
+            for item in daily]}}
     charts = PerformanceReporter(capital_usd=100).save_plots(
         tmp_path, result, {"atm": rows, "skew": rows},
-        symbols=["AAPL", "AMZN", "GOOGL"])
+        symbols=["AAPL", "AMZN", "GOOGL"],
+        graph_edges=[{"date": day[0], "fit_date": day[0], "symbol_a": "AAPL",
+                      "symbol_b": "AMZN", "partial_correlation": -0.4,
+                      "weight": 0.4}],
+        graph_centrality=[{"date": day[0], "fit_date": day[0],
+                           "symbol": symbol, "eigenvector_centrality": score}
+                          for symbol, score in (("AAPL", 0.7), ("AMZN", 0.7),
+                                                ("GOOGL", 0.0))])
     assert len(charts) == 4
     assert all((tmp_path / name).is_file() for name in charts)
     assert all((tmp_path / name).stat().st_size > 0 for name in charts)
@@ -787,5 +842,9 @@ def test_report_plots_use_pinned_pair_and_evaluation_curves(tmp_path, monkeypatc
     assert captured["equity"]["ATM all-pairs baseline"] == [100, 101, 101]
     assert captured["equity"]["Equal-weight tech"] == [100, 103, 104]
     assert captured["equity"]["QQQ"] == [100, 102, 103]
+    assert captured["equity"]["ATM correlation gate"] == [100, 101, 101]
+    assert captured["graph_edges"][0][2]["weight"] == pytest.approx(0.4)
+    assert captured["graph_width"] == [pytest.approx(2.6)]
+    assert captured["node_size"][0] > captured["node_size"][2]
     assert captured["z"] == [2.2, 1.0, -0.1]
     assert captured["markers"] == 2

@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("sklearn")
 pytest.importorskip("networkx")
 
+import dskit.pipeline.libs.graphical_lasso as graph_module
 from dskit.pipeline.libs.graphical_lasso import RollingPrecisionGraph
 
 
@@ -143,3 +144,34 @@ def test_cv_training_features_ignore_future_fold_observations(monkeypatch):
     assert len(captured) == 2
     np.testing.assert_allclose(captured[0][:10], captured[1][:10], rtol=0, atol=1e-12)
     assert not np.allclose(captured[0][-5:], captured[1][-5:])
+
+
+def test_correlation_graph_uses_prior_residuals_and_weighted_signed_edges():
+    assert hasattr(graph_module, "RollingCorrelationGraph")
+    RollingCorrelationGraph = graph_module.RollingCorrelationGraph
+    params = _params(edge_min_weight=0.10)
+    node = RollingCorrelationGraph("correlation", params)
+    first = node.run(None, {"records": _rows()})
+    assert first["fits"][0]["status"] == "ok"
+    assert first["fits"][0]["alpha"] is None
+    assert first["edges"]
+    assert len(first["centrality"]) == 3
+    for edge in first["edges"]:
+        assert edge["date"] == "2020-02-10"
+        assert edge["weight"] == pytest.approx(abs(edge["correlation"]))
+        assert edge["trained_through"] < edge["date"]
+    changed = [dict(row) for row in _rows()]
+    for row in changed:
+        if row["day"] >= "2020-02-10":
+            row["ret"] *= -100
+    assert node.run(None, {"records": changed}) == first
+
+
+def test_correlation_graph_no_edge_when_threshold_screens_all_pairs():
+    assert hasattr(graph_module, "RollingCorrelationGraph")
+    RollingCorrelationGraph = graph_module.RollingCorrelationGraph
+    node = RollingCorrelationGraph("correlation", _params(edge_min_weight=0.999999))
+    out = node.run(None, {"records": _rows()})
+    assert out["fits"][0]["status"] == "no_edges"
+    assert out["edges"] == []
+    assert out["centrality"] == []

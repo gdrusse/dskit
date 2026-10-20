@@ -1,37 +1,65 @@
 {
-  "name": "tech-paired-option-replay-20261020-v3",
-  "notes": "ADR-0271 approved quote-based retrospective replay. Primary ATM-IV and secondary skew variants use identical next-session order, costs, capital and refusal rules against a no-network all-pairs baseline. No untouched OOS, live fill guarantee or paper/live order. Corrected causal graph supersedes the 2026-10-19 network diagnostics.",
+  "name": "tech-paired-option-replay-correlation-20261020-v4",
+  "notes": "ADR-0271 approved quote-based retrospective replay. Primary ATM-IV and secondary skew variants use identical next-session order, costs, capital and refusal rules against a no-network all-pairs baseline. No untouched OOS, live fill guarantee or paper/live order. Corrected causal graph supersedes the 2026-10-19 network diagnostics. Six-book same-cost comparator: precision gate, correlation gate, and all pairs. Graph edges/centrality and annual edge frequencies are pinned.",
   "structural_config": {
     "path": "configs/run-tech-structural.json",
-    "sha256": "282794c01f439adbe5387feae0998b9a4ebe28c39cd5405bdbe9cd5f9a1b476c"
+    "sha256": "686770f0830a8b483c4c7e248e6548b55d2c7e614b34f6e2db4ea7a33ac1ba31"
   },
   "structural_resolved": {
-    "path": "/home/russell/data/statistical_arbitrage/pipeline_runs/tech-structural-causal-retry-20261020-2025-12-16-0f928572/resolved.json",
-    "sha256": "6709804dd300525e7893f8787e586897f4601966531df66dd1c3974cdf2bb0d0"
+    "path": "/home/russell/data/statistical_arbitrage/pipeline_runs/tech-structural-correlation-20261020-2025-12-16-366e6db1/resolved.json",
+    "sha256": "75f1d529dada79ede569266a484f563e41d99712a4bbcd29897e3bda27a934be"
   },
   "structural_rows": {
     "surface_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/surface_rows.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/surface_rows.jsonl",
       "sha256": "517f705cfe37aa6bad6f3f62d06d0a0920f7ef45f790e6238a58051059fbc86a"
     },
     "graph_fits.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/graph_fits.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/graph_fits.jsonl",
       "sha256": "c97ca2d93c3b67e9a0cd26311a8001be525d813a6f05b38f63a7869ba4dae23d"
     },
+    "graph_edges.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/graph_edges.jsonl",
+      "sha256": "c72611c54d67961e90e3701de1c0bdcc0c7325443ccf82da72ceb6b485f7b370"
+    },
+    "graph_centrality.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/graph_centrality.jsonl",
+      "sha256": "5cdc175b02c624ee5e111d3b39ac97ec0b9a2b7a087081ca8c82a8f3b1693074"
+    },
+    "corr_graph_fits.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/corr_graph_fits.jsonl",
+      "sha256": "987a8ccbfa3136f5c095c6289d2f0d8c8b7213e2cec7bf0005310b2a8ff5fbcc"
+    },
+    "corr_graph_edges.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/corr_graph_edges.jsonl",
+      "sha256": "e40554f1c9c3af0af9d8ac27e5f4127068d72eef456da5a652d72582a524bd87"
+    },
+    "corr_graph_centrality.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/corr_graph_centrality.jsonl",
+      "sha256": "0b170758c80e831f25e0820882eadbb78eadaa6d06e1b5fed8399f8164f0b1ad"
+    },
     "atm_network_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/atm_network_rows.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/atm_network_rows.jsonl",
       "sha256": "00cce4ecc2438b1125f84648f063421f69f49c7e5519aa2b510b13a51141094a"
     },
+    "atm_corr_rows.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/atm_corr_rows.jsonl",
+      "sha256": "140089463e3416b22a87d20ebcc4f88f969afbf1e32f53b3d2621d92a85d434b"
+    },
     "atm_baseline_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/atm_baseline_rows.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/atm_baseline_rows.jsonl",
       "sha256": "9fa2697748c2dab0efae40f9882d7dfd8667fa6a6e9e0fe5447eeca95ccd8c36"
     },
     "skew_network_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/skew_network_rows.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/skew_network_rows.jsonl",
       "sha256": "52481478701d4c1f674beb8d243912fb352cbb3389509d889fede9408aeb4f4d"
     },
+    "skew_corr_rows.jsonl": {
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/skew_corr_rows.jsonl",
+      "sha256": "c209006fcf511f85aec93e2ffc19839b29ae7f56cbc12ed4a57a2a5a25f275d7"
+    },
     "skew_baseline_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/skew_baseline_rows.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-correlation-20261020/skew_baseline_rows.jsonl",
       "sha256": "e0b6b380e8e092f53ddb0521bc8e15982473161394239a21b03a42d5b3a5fa20"
     }
   },
@@ -48,11 +76,13 @@
   "variants": {
     "atm": {
       "network": "atm_network_rows.jsonl",
-      "baseline": "atm_baseline_rows.jsonl"
+      "baseline": "atm_baseline_rows.jsonl",
+      "correlation": "atm_corr_rows.jsonl"
     },
     "skew": {
       "network": "skew_network_rows.jsonl",
-      "baseline": "skew_baseline_rows.jsonl"
+      "baseline": "skew_baseline_rows.jsonl",
+      "correlation": "skew_corr_rows.jsonl"
     }
   },
   "evaluation": {
@@ -67,12 +97,12 @@
       2024,
       2025
     ],
-    "initial_capital_usd": 100000.0,
+    "initial_capital_usd": 100000,
     "sessions_per_year": 252
   },
   "signal": {
-    "entry_z": 2.0,
-    "stop_z": 4.0,
+    "entry_z": 2,
+    "stop_z": 4,
     "max_hold_sessions": 20,
     "one_active_pair_per_book": true
   },
@@ -80,7 +110,7 @@
     "max_contracts_per_leg": 8,
     "max_initial_vega_mismatch": 0.2,
     "max_half_spread_over_premium": 0.2,
-    "max_gross_underlying_notional_usd": 200000.0,
+    "max_gross_underlying_notional_usd": 200000,
     "require_prior_rate": true,
     "max_rate_age_days": 5,
     "refuse_corporate_events": true,
@@ -136,7 +166,7 @@
       "exit_zero_bid": "refuse",
       "hedge": {
         "rebalance": "daily",
-        "rate": 0.0,
+        "rate": 0,
         "fee_per_share": 0.005
       }
     }

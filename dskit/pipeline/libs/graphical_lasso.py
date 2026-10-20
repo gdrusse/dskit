@@ -16,7 +16,7 @@ from datetime import date
 from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
-__all__ = ["NODE_KINDS", "RollingPrecisionGraph"]
+__all__ = ["NODE_KINDS", "RollingPrecisionGraph", "RollingCorrelationGraph"]
 
 NODE_KINDS = ()
 
@@ -249,17 +249,28 @@ class RollingPrecisionGraph(Node):
         except (ValueError, FloatingPointError, ArithmeticError) as exc:
             fit["status"], fit["warning"] = "fit_failed", str(exc)
             return fit, [], []
+        weights = -precision / np.sqrt(np.outer(np.diag(precision), np.diag(precision)))
+        return self._finish_graph(decision, fit, symbols, weights, nx,
+                                  "partial_correlation")
+
+    def _finish_graph(self, decision, fit, symbols, weights, nx, signed_field):
+        """Screen signed association weights and return a connected graph."""
+        import numpy as np
+
+        if not np.all(np.isfinite(weights)):
+            fit["status"] = "invalid_weights"
+            return fit, [], []
         graph = nx.Graph()
         graph.add_nodes_from(symbols)
         candidates = []
         for i, first in enumerate(symbols):
             for j in range(i + 1, len(symbols)):
-                weight = -precision[i, j] / math.sqrt(precision[i, i] * precision[j, j])
+                weight = float(weights[i, j])
                 if abs(weight) <= self.params["edge_min_weight"]:
                     continue
                 a, b = sorted((first, symbols[j]))
                 row = {"symbol_a": a, "symbol_b": b,
-                       "partial_correlation": float(weight), "weight": float(abs(weight)),
+                       signed_field: weight, "weight": abs(weight),
                        "fit_date": decision, "trained_through": fit["trained_through"]}
                 candidates.append(row)
                 graph.add_edge(a, b, weight=row["weight"])
@@ -280,6 +291,7 @@ class RollingPrecisionGraph(Node):
                               for name in sorted(symbols)]
                 return fit, sorted(candidates, key=lambda r: (r["symbol_a"], r["symbol_b"])), centrality
         return fit, [], []
+
 
     @staticmethod
     def _causal_features(factor, matrix, np):
@@ -328,6 +340,45 @@ class RollingPrecisionGraph(Node):
     def _complete(cell, symbols):
         """Whether one date has every asset return and the shared factor."""
         return (cell["factor"] is not None and all(cell["returns"].get(s) is not None for s in symbols))
+
+
+class RollingCorrelationGraph(RollingPrecisionGraph):
+    """Annual prior-window Pearson correlation graph of causal factor residuals.
+
+    It accepts the same window, edge, and decision calendar as the precision
+    engine to make gate comparisons clock matched. GraphicalLasso-only fit
+    controls are accepted but unused; alpha/CV/iterations are null in fits.
+    """
+
+    def _fit_one(self, decision, dates, panel, symbols, np, nx,
+                 GraphicalLassoCV, TimeSeriesSplit, ConvergenceWarning):
+        """Fit a simple residual-correlation gate using strictly earlier dates."""
+        past = [d for d in dates if d < decision][-self.params["window"]:]
+        values = [panel[d] for d in past if self._complete(panel[d], symbols)]
+        fit = {"fit_date": decision, "trained_through": past[-1] if past else None,
+               "status": "insufficient_history", "n_window": len(values),
+               "alpha": None, "n_edges": 0, "warning": None,
+               "train_log_likelihood": None, "cv_score": None, "n_iter": None}
+        if len(values) < self.params["min_observations"]:
+            return fit, [], []
+        fit["trained_through"] = next(d for d in reversed(past)
+                                      if self._complete(panel[d], symbols))
+        factor = np.asarray([row["factor"] for row in values], dtype=float)
+        matrix = np.asarray([[row["returns"][s] for s in symbols]
+                             for row in values], dtype=float)
+        if np.std(factor, ddof=1) <= 1e-12:
+            fit["status"] = "factor_degenerate"
+            return fit, [], []
+        residuals = self._causal_features(factor, matrix, np)
+        if len(residuals) <= self.params["cv_splits"] + 1:
+            fit["status"] = "insufficient_causal_features"
+            return fit, [], []
+        scale = np.std(residuals, axis=0, ddof=1)
+        if np.any(scale <= 1e-12):
+            fit["status"] = "residual_degenerate"
+            return fit, [], []
+        weights = np.corrcoef(residuals, rowvar=False)
+        return self._finish_graph(decision, fit, symbols, weights, nx, "correlation")
 
 
 def _iso_day(value):

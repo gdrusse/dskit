@@ -263,9 +263,12 @@ class TechReplayPipeline:
     after the replay and reports succeed.
     """
 
-    _ROWS = ("surface_rows.jsonl", "graph_fits.jsonl",
-             "atm_network_rows.jsonl", "atm_baseline_rows.jsonl",
-             "skew_network_rows.jsonl", "skew_baseline_rows.jsonl")
+    _ROWS = ("surface_rows.jsonl", "graph_fits.jsonl", "graph_edges.jsonl",
+             "graph_centrality.jsonl", "corr_graph_fits.jsonl",
+             "corr_graph_edges.jsonl", "corr_graph_centrality.jsonl",
+             "atm_network_rows.jsonl", "atm_corr_rows.jsonl",
+             "atm_baseline_rows.jsonl", "skew_network_rows.jsonl",
+             "skew_corr_rows.jsonl", "skew_baseline_rows.jsonl")
 
     def __init__(self, config_path: str | Path) -> None:
         self.path = Path(config_path).resolve()
@@ -325,7 +328,7 @@ class TechReplayPipeline:
         _, structural = self._pinned_json(cfg["structural_config"])
         declared = cfg["structural_rows"]
         if not isinstance(declared, dict) or set(declared) != set(self._ROWS):
-            raise ValueError("structural_rows must pin all six approved outputs")
+            raise ValueError("structural_rows must pin all approved outputs")
         rows = {name: self._jsonl(*self._pinned_bytes(declared[name]))
                 for name in self._ROWS}
         source_declarations = cfg["source_configs"]
@@ -341,6 +344,14 @@ class TechReplayPipeline:
             raise ValueError("resolved structural run lacks data_fingerprint")
         self._resolved_fingerprints = fingerprints
         calendar_path, calendar = self._pinned_json(cfg["validation_calendar"])
+        pipeline = structural.get("pipeline", {})
+        graph, correlation = pipeline.get("graph", {}), pipeline.get("corr_graph", {})
+        if (graph.get("uses") !=
+                "dskit.pipeline.libs.graphical_lasso:RollingPrecisionGraph"
+                or correlation.get("uses") !=
+                "dskit.pipeline.libs.graphical_lasso:RollingCorrelationGraph"
+                or graph.get("params") != correlation.get("params")):
+            raise ValueError("precision and correlation graph contracts disagree")
         self._calendar_record = {"data": calendar, "path": str(calendar_path),
                                  "sha256": cfg["validation_calendar"]["sha256"]}
         return structural, rows, {"structural_config": cfg["structural_config"],
@@ -466,6 +477,31 @@ class TechReplayPipeline:
         return [trade for trade in trades if first <= trade["exit_date"] < end]
 
     @staticmethod
+    def _edge_frequency(fits: list[dict], edges: list[dict], symbols: list[str]) -> dict:
+        """Count each selected pair once per annual fit, not once per carried date."""
+        from itertools import combinations
+
+        annual = {row["fit_date"]: row for row in fits if row.get("refit") is True}
+        if len(annual) != sum(row.get("refit") is True for row in fits):
+            raise ValueError("duplicate annual graph fit")
+        pair_names = {f"{a}:{b}": 0 for a, b in combinations(sorted(symbols), 2)}
+        selected = set()
+        for row in edges:
+            pair = f"{row['symbol_a']}:{row['symbol_b']}"
+            fit_date = row["fit_date"]
+            if (pair not in pair_names or fit_date not in annual
+                    or annual[fit_date].get("status") != "ok"
+                    or row["date"] < fit_date):
+                raise ValueError("edge disagrees with annual fitted graph")
+            selected.add((fit_date, pair))
+        for _, pair in selected:
+            pair_names[pair] += 1
+        total = len(annual)
+        return {"annual_fits": total, "pairs": {
+            pair: {"selected_fits": count, "frequency": count / total if total else None}
+            for pair, count in sorted(pair_names.items())}}
+
+    @staticmethod
     def _block_unclosed(pairs: list[dict], outcome: dict) -> tuple[dict, list[dict]]:
         """Suppress entries while an earlier pair remains open in the same book.
 
@@ -507,9 +543,10 @@ class TechReplayPipeline:
 
         cfg, evaluation = self.config, self.config["evaluation"]
         if set(cfg["variants"]) != {"atm", "skew"} or any(
-            set(books) != {"network", "baseline"} for books in cfg["variants"].values()
+            set(books) != {"network", "correlation", "baseline"}
+            for books in cfg["variants"].values()
         ):
-            raise ValueError("phase-one replay requires ATM/skew network and baseline books")
+            raise ValueError("phase-one replay requires ATM/skew precision, correlation and all-pairs books")
         provenance["source_configs"] = getattr(self, "_source_provenance", {})
         provenance["reader_fingerprints"] = getattr(self, "_reader_fingerprints", {})
         returns = TechAdjustedReturns("replay_returns", structural["pipeline"]["returns"]["params"])
@@ -534,7 +571,7 @@ class TechReplayPipeline:
         keys = {}
         for variant, books in cfg["variants"].items():
             for book, row_name in books.items():
-                if row_name not in rows or book not in ("network", "baseline"):
+                if row_name not in rows or book not in ("network", "correlation", "baseline"):
                     raise ValueError("variant references an unpinned book")
                 key = f"{variant}_{book}"
                 keys[key] = row_name
@@ -581,8 +618,8 @@ class TechReplayPipeline:
                               "refusals": [refusal for refusal in outcome["refusals"]
                                            if refusal["id"].startswith(key + ":")]}
         for variant in cfg["variants"]:
-            model, baseline = books_out[f"{variant}_network"], books_out[f"{variant}_baseline"]
-            def fold(first: str, end: str) -> dict | None:
+            baseline = books_out[f"{variant}_baseline"]
+            def fold(model: dict, first: str, end: str) -> dict | None:
                 indices = [i for i, day in enumerate(days) if first <= day < end]
                 if not indices:
                     return None
@@ -600,24 +637,35 @@ class TechReplayPipeline:
                     trade_date_index=global_session_index,
                     model_trades=self._closed_in_window(model["trades"], first, end),
                     baseline_trades=self._closed_in_window(baseline["trades"], first, end))
-            annual = {str(year): fold(f"{year}-01-01", f"{year + 1}-01-01")
-                      for year in range(evaluation["development_year"],
-                                        max(evaluation["validation_years"]) + 1)}
-            subfolds = {str(block["block"]): fold(block["origin_start"],
-                                                  block["origin_end_before"])
-                        for block in calendar["data"]["blocks"]}
-            model["annual"], model["subfolds"] = annual, subfolds
-            model["full"] = fold(f"{evaluation['development_year']}-01-01",
-                                 evaluation["end_before"])
+            for book in ("network", "correlation"):
+                model = books_out[f"{variant}_{book}"]
+                model["annual"] = {
+                    str(year): fold(model, f"{year}-01-01", f"{year + 1}-01-01")
+                    for year in range(evaluation["development_year"],
+                                      max(evaluation["validation_years"]) + 1)}
+                model["subfolds"] = {
+                    str(block["block"]): fold(model, block["origin_start"],
+                                               block["origin_end_before"])
+                    for block in calendar["data"]["blocks"]}
+                model["full"] = fold(model, f"{evaluation['development_year']}-01-01",
+                                     evaluation["end_before"])
         fits = [row for row in rows["graph_fits.jsonl"] if row.get("refit") is True]
         diagnostics = [{name: fit.get(name) for name in
                         ("date", "fit_date", "trained_through", "status", "alpha",
                          "cv_score", "train_log_likelihood", "n_iter", "n_window",
                          "n_edges", "warning")}
                        for fit in fits]
+        symbols = structural["pipeline"]["graph"]["params"]["symbols"]
+        edge_frequency = {
+            "precision": self._edge_frequency(rows["graph_fits.jsonl"],
+                                               rows["graph_edges.jsonl"], symbols),
+            "correlation": self._edge_frequency(rows["corr_graph_fits.jsonl"],
+                                                 rows["corr_graph_edges.jsonl"], symbols),
+        }
         return {"name": cfg["name"], "calendar": calendar,
                 "provenance": provenance, "dates": days,
                 "training_cv_diagnostics": diagnostics,
+                "edge_selection_frequency": edge_frequency,
                 "training_epoch_loss": None,
                 "training_note": "GraphicalLassoCV is not an epoch-trained neural model.",
                 "books": books_out, "ledger_summary": outcome["summary"],
@@ -650,6 +698,8 @@ class TechReplayPipeline:
                  for variant in ("atm", "skew")},
                 symbols=structural["pipeline"]["graph"]["params"]["symbols"],
                 graph_fits=rows["graph_fits.jsonl"],
+                graph_edges=rows["graph_edges.jsonl"],
+                graph_centrality=rows["graph_centrality.jsonl"],
                 entry_z=self.config["signal"]["entry_z"],
             )
             result["output_path"] = str(target)
