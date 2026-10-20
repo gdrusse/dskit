@@ -1268,6 +1268,10 @@ class _Components:
         columns += [s["pit_column"] for s in self.specs if s.get("pit_column")]
         return list(dict.fromkeys(columns))
 
+    def pit_columns(self):
+        """Return the declared PIT columns, which the panel reads row by row."""
+        return list(dict.fromkeys(s["pit_column"] for s in self.specs if s.get("pit_column")))
+
     def raw_matrix(self, table, source):
         """Return the ``(rows, points)`` float64 CDF matrix of one source forecaster."""
         import numpy as np
@@ -1828,7 +1832,8 @@ class GridCDFMethod(Node):
         p = self.params
         roles = p["columns"]
         frame_columns = self._needed_columns(method)
-        table = _Source.read(p["source"], [*frame_columns, *components.source_columns()],
+        frame_columns += [c for c in components.pit_columns() if c not in frame_columns]
+        table = _Source.read(p["source"], list(dict.fromkeys([*frame_columns, *components.source_columns()])),
                              [roles["date"], roles["settlement"]], p["end_before"])
         raw = {s["source"]: components.raw_matrix(table, s["source"]) for s in components.specs}
         return _Panel(table.select(frame_columns).to_pandas(date_as_object=False), p, grid), raw

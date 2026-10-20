@@ -871,3 +871,21 @@ def test_rows_with_a_nonfinite_comparator_are_left_out_of_the_comparison(tmp_pat
     pooled = windows[(windows["window_kind"] == "pooled") & (windows["metric"] == "twcrps")]
     val = df[(df["band"] == "val") & df["fold"].isin([2, 3])]
     assert (pooled["rows"] == len(val) - 25).all()
+
+
+def test_a_declared_pit_column_is_read_from_the_source(tmp_path):
+    """Regression: a component's pit_column must reach the panel (it was read, then dropped by the column select)."""
+    rng = np.random.default_rng(41)
+    df = make_frame(rng)
+    df["y"] = rng.normal(0, 1.6, len(df))
+    add_cdf(df, "mkt", 0.0, 1.0)
+    add_cdf(df, "mdl", 0.0, 1.6)
+    df["mkt_pit"] = ndtr(df["y"].to_numpy())
+    components = [{"name": "market", "source": "mkt", "pit_column": "mkt_pit"}, {"name": "model", "source": "mdl"},
+                  {"name": "market_cal", "source": "mkt", "pit_column": "mkt_pit", "pit_map": {"knots": 21, "learn": "fit_band"}}]
+    params = params_for(tmp_path, df, {"kind": "pit_map", "learn": "fit_band", "component": "market", "knots": 21, "min_rows": 50},
+                        components=components)
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    assert forecasts["fitted"].all()
+    assert fit["components"]["market_cal"]["1"]["learning_rows"] == 300
