@@ -1066,3 +1066,25 @@ def test_the_scorer_conditions_an_unseen_horizon_on_the_nearest_fitted_one_like_
     assert baseline.curve(moved).cdf([0.0]).shape == (4, 1)             # the raw query would raise KeyError
     with pytest.raises(KeyError):
         baseline.curve(query)
+
+
+def test_a_validation_sample_is_a_deterministic_stride_whose_rows_equal_the_full_runs(world, result, stored):
+    n = len(stored)
+    limit = max(2, n // 3)
+    sampled, params = run_node(world, validation_band_sample=limit)
+    rows = pd.read_parquet(Path(params["output"]) / "rows.parquet")
+    val, full = rows[rows.band == "val"], val_rows(result)
+    stride = -(-n // limit)
+    assert 0 < len(val) < len(full) and len(val) == len(range(0, n, stride)) * len(set(full.candidate))
+    joined = val.merge(full, on=KEY + ["arm", "candidate", "fold", "band"], suffixes=("", "_full"), validate="one_to_one")
+    assert len(joined) == len(val)
+    for name in ("model_crps", "baseline_crps", "model_weighted_crps"):
+        np.testing.assert_allclose(joined[name].to_numpy(), joined[name + "_full"].to_numpy(), rtol=1e-12, atol=0)
+    again, params2 = run_node(world, validation_band_sample=limit)
+    assert pd.read_parquet(Path(params2["output"]) / "rows.parquet")[KEY + ["band"]].equals(rows[KEY + ["band"]])
+
+
+def test_validation_band_sample_is_optional_and_must_be_a_positive_integer_or_none(world):
+    assert StrikeRegionScores.validate_params(make_params(world, validation_band_sample=None)) == []
+    assert StrikeRegionScores.validate_params(make_params(world, validation_band_sample=5)) == []
+    assert StrikeRegionScores.validate_params(make_params(world, validation_band_sample=0))

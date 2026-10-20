@@ -819,8 +819,8 @@ class StrikeRegionScores(Node):
     role = "report"
     outputs = ("summary",)
     _PARAMS = ("experiment_document", "panel", "output", "z_grid", "dte_slices", "sub_periods",
-               "ticker_groups", "market", "listed_strikes", "fit_band_sample", "end_before", "chunk_rows",
-               "stored_tolerance")
+               "ticker_groups", "market", "listed_strikes", "fit_band_sample", "validation_band_sample", "end_before",
+               "chunk_rows", "stored_tolerance")
     _MARKET_KEYS = ("probabilities", "prefix", "eligible_field", "units", "tail_width")
 
     @classmethod
@@ -839,7 +839,7 @@ class StrikeRegionScores(Node):
         """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
-        missing = sorted(set(cls._PARAMS) - {"ticker_groups"} - set(params))
+        missing = sorted(set(cls._PARAMS) - {"ticker_groups", "validation_band_sample"} - set(params))
         if missing:
             problems.append(f"missing parameters: {missing}")
         for name in ("experiment_document", "panel", "output"):
@@ -862,9 +862,10 @@ class StrikeRegionScores(Node):
                 problems.append(f"listed_strikes needs a mapping whose source is one of {sorted(LISTED_SOURCES)}")
             else:
                 problems += owner.problems(source)
-        sample = params.get("fit_band_sample", 1)
-        if sample is not None:
-            check_int_param(problems, "fit_band_sample", sample, ge=1)
+        for knob in ("fit_band_sample", "validation_band_sample"):
+            sample = params.get(knob, 1)
+            if sample is not None:
+                check_int_param(problems, knob, sample, ge=1)
         if "end_before" in params and _iso(params["end_before"]) is None:
             problems.append(f"end_before must be an ISO date text YYYY-MM-DD, got {params['end_before']!r}")
         if "chunk_rows" in params:
@@ -1140,9 +1141,14 @@ class StrikeRegionScores(Node):
                 "hashes": {"weights_sha256": state["weights_sha256"], "fit_manifest": cell["checkpoint"]}}
 
     def _sample(self, n, band):
-        """Return the row positions scored: a deterministic stride over the fit band, every validation row."""
-        limit = self.params["fit_band_sample"]
-        if band != "fit" or limit is None or n <= limit:
+        """Return the row positions scored: a deterministic stride over each band, every row when its limit is None.
+
+        ``fit_band_sample`` bounds the fit band; the optional ``validation_band_sample`` (default None, every
+        validation row) bounds the validation band the same way (ADR-0270 matrix run: the evidence file and the
+        wall budget cannot hold 8.7M rows).
+        """
+        limit = self.params["fit_band_sample"] if band == "fit" else self.params.get("validation_band_sample")
+        if limit is None or n <= limit:
             return np.arange(n)
         return np.arange(0, n, math.ceil(n / limit))
 
@@ -1265,8 +1271,9 @@ class StrikeRegionScores(Node):
         for a, part in enumerate(parts):
             for j in range(mixture.shape[2]):
                 restored[f"{part}{j}"] = mixture[:, a, j]
-        joined = restored.merge(stored[[*keys, *names]], on=keys, how="outer", suffixes=("", "_stored"),
-                                validate="one_to_one", indicator=True)
+        sampled = self.params.get("validation_band_sample") is not None      # a sample may be a subset of the shards
+        joined = restored.merge(stored[[*keys, *names]], on=keys, how="left" if sampled else "outer",
+                                suffixes=("", "_stored"), validate="one_to_one", indicator=True)
         if (joined.pop("_merge") != "both").any():
             raise IntegrityError(f"{cell['name']}: validation identities differ from the stored shards")
         for name in names:

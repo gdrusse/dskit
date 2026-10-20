@@ -112,7 +112,8 @@
         "fit_band_sample": 25000,
         "end_before": "2024-01-01",
         "chunk_rows": 4096,
-        "stored_tolerance": 0.0001
+        "stored_tolerance": 0.0001,
+        "validation_band_sample": 50000
       },
       "notes": "z_grid, dte_slices and sub_periods are the protocol's strike_grid_z, cells.dte_slices and windows.validation.sub_periods (a test pins them); the grid gives 12 inner 0.5-wide bins and two tails. market: the 19 proxy probabilities of the panel-source document (raw_chain.proxy_probabilities), the panel's rn_q_<pppp> columns already standardized by the reference scale (units z), completed by a 4-wide linear tail (the OptionImpliedTransportCDF default) beyond the outermost quantiles: the two tail regions' market masses depend on that completion. listed_strikes: the converter's chain archive (archive_relpath layout) through the onboarding store, strikes with bid > 0 and ask >= bid on either side, at least two. fit_band_sample bounds the fit-band rows scored per cell by a deterministic stride (the whole validation band is always scored); chunk_rows bounds memory; stored_tolerance is how closely the re-scored validation CRPS must reproduce the shards the queue stored (a larger gap is an integrity error). end_before is the protocol's screen holdout_start and must not be earlier than the experiment document's own read bounds, so no panel row at or after it is returned. The validation rows must also reproduce the stored mixture parameters (1e-6) and CRPS."
     }
