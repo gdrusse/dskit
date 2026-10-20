@@ -136,6 +136,45 @@ def test_fold_benchmark_includes_first_session_return_from_prior_close():
     assert got["qqq"]["total_return"] == pytest.approx(0.05)
 
 
+def test_fold_trades_use_close_date_and_global_duration():
+    """A boundary-spanning trade belongs to its closing fold once."""
+    from statistical_arbitrage.backtest import TechReplayPipeline
+    from statistical_arbitrage.report import PerformanceReporter
+
+    sessions = ["2021-01-04", "2021-01-05", "2021-01-06", "2021-01-07"]
+    trades = [
+        {"entry_date": sessions[0], "exit_date": sessions[2], "pnl_usd": 10.0},
+        {"entry_date": sessions[2], "exit_date": sessions[3], "pnl_usd": -5.0},
+    ]
+    selected = TechReplayPipeline._closed_in_window(trades, sessions[2], sessions[3])
+    assert selected == trades[:1]
+    assert TechReplayPipeline._closed_in_window(trades, sessions[0], sessions[2]) == []
+    report = PerformanceReporter(capital_usd=100.0).evaluate(
+        dates=[sessions[2]], model_pnl=[10.0], baseline_pnl=[0.0],
+        adjusted_prices={"AAPL": [100.0], "QQQ": [100.0]},
+        model_trades=selected, baseline_trades=[],
+        trade_date_index={day: i for i, day in enumerate(sessions)},
+    )
+    assert report["model"]["trade_count"] == 1
+    assert report["model"]["average_trade_duration_sessions"] == 2.0
+    assert report["trade_cohort_policy"] == "close_date"
+
+
+def test_report_rejects_trade_outside_declared_close_cohort():
+    from statistical_arbitrage.report import PerformanceReporter
+
+    with pytest.raises(ValueError, match="close date"):
+        PerformanceReporter(capital_usd=100.0).evaluate(
+            dates=["2021-01-06"], model_pnl=[0.0], baseline_pnl=[0.0],
+            adjusted_prices={"AAPL": [100.0], "QQQ": [100.0]},
+            model_trades=[{"entry_date": "2021-01-05",
+                           "exit_date": "2021-01-07", "pnl_usd": 1.0}],
+            baseline_trades=[],
+            trade_date_index={"2021-01-05": 0, "2021-01-06": 1,
+                              "2021-01-07": 2},
+        )
+
+
 def test_pair_orders_refuse_corporate_event_during_hold():
     intent = {"symbol_a": "AAPL", "symbol_b": "AMZN",
               "short_symbol": "AAPL", "long_symbol": "AMZN",
@@ -245,6 +284,280 @@ def test_replay_refuses_drifted_structural_rows_before_sources(tmp_path, monkeyp
     assert not (tmp_path / "out").exists()
 
 
+def test_replay_refuses_altered_calendar_before_sources(tmp_path, monkeypatch):
+    """Reporting windows are part of the immutable replay identity."""
+    import hashlib
+    import json
+    from statistical_arbitrage.backtest import TechReplayPipeline
+
+    def pin(path):
+        return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    structural = tmp_path / "structural.json"
+    structural.write_text("{}", encoding="utf-8")
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text("{}\n", encoding="utf-8")
+    calendar = tmp_path / "calendar.json"
+    calendar.write_text("{}", encoding="utf-8")
+    stock = tmp_path / "stock.json"
+    stock.write_text("{}", encoding="utf-8")
+    theta = tmp_path / "theta.json"
+    theta.write_text("{}", encoding="utf-8")
+    resolved = tmp_path / "resolved.json"
+    resolved.write_text("{\"data_fingerprint\": {}}", encoding="utf-8")
+    config = tmp_path / "backtest.json"
+    config.write_text(json.dumps({
+        "structural_config": pin(structural),
+        "structural_rows": {name: pin(rows) for name in TechReplayPipeline._ROWS},
+        "source_configs": {"stock": pin(stock), "theta": pin(theta)},
+        "structural_resolved": pin(resolved),
+        "validation_calendar": pin(calendar),
+    }), encoding="utf-8")
+    calendar.write_text("{\"blocks\": []}", encoding="utf-8")
+    monkeypatch.setattr(TechReplayPipeline, "_load_inputs",
+                        lambda self, structural: pytest.fail("sources read before pin check"))
+    with pytest.raises(ValueError, match="sha256"):
+        TechReplayPipeline(config).run()
+
+
+def test_replay_refuses_changed_manifest_plan_before_reader_run():
+    """A changed source fingerprint cannot be replayed under saved results."""
+    from statistical_arbitrage.backtest import TechReplayPipeline
+
+    class ChangedReader:
+        def fingerprint(self):
+            return {"kind": "ParquetRows", "sha256": "new"}
+
+        def run(self, ctx, inputs):
+            pytest.fail("drifted source was read")
+
+    with pytest.raises(ValueError, match="source fingerprint"):
+        TechReplayPipeline._verified_reader(
+            "prices_aapl", ChangedReader(),
+            {"prices_aapl": {"kind": "ParquetRows", "sha256": "old"}})
+
+
+@pytest.mark.parametrize("drifted", ["prices_aapl", "rates_raw", "chain"])
+def test_replay_source_reader_plan_check_uses_saved_resolved_identity(
+    tmp_path, monkeypatch, drifted,
+):
+    """Every reader refuses changed plan identity before executing that reader."""
+    import json
+    from pathlib import Path
+    from statistical_arbitrage.backtest import TechReplayPipeline
+    import dskit.pipeline.libs.parquet as parquet_module
+    import dskit.pipeline.libs.observations as observations_module
+    import dskit.pipeline.libs.chain_parquet as chain_module
+
+    seen = []
+
+    class Reader:
+        def __init__(self, key, params):
+            self.key = key
+            self.members = params.get("members")
+
+        def fingerprint(self):
+            return ({"key": self.key, "members": self.members}
+                    if self.members is not None else {"key": self.key})
+
+        def run(self, ctx, inputs):
+            seen.append(self.key)
+            return {"records": []}
+
+    monkeypatch.setattr(parquet_module, "ParquetRows", Reader)
+    monkeypatch.setattr(observations_module, "ObservationRows", Reader)
+    monkeypatch.setattr(chain_module, "ParquetChainRows", Reader)
+    config_path = tmp_path / "backtest.json"
+    config_path.write_text(json.dumps({"evaluation": {"end_before": "2021-01-08"},
+        "execution": {"max_rate_age_days": 5}}), encoding="utf-8")
+    runner = TechReplayPipeline(config_path)
+    stock = {"onboarding_root": "/ob", "source": "stocks", "stream": "files",
+             "symbols": ["AAPL", "AMZN"],
+             "required_columns": ["symbol", "date", "adjusted_close",
+                                  "split_coefficient", "dividend_amount"],
+             "factor": {"symbol": "QQQ", "source": "factor", "stream": "files",
+                        "relpath": "qqq/prices.parquet"}}
+    theta = {"symbols": ["AAPL", "AMZN"], "start": "2016-01-01",
+             "end_before": "2026-01-01",
+             "parquet_export": {"directories": ["/theta"],
+                                "sealed_from": "2026-01-01"},
+             "rate": {"date_field": "observation_date", "value_field": "DGS3MO",
+                      "scale": 0.01, "strictly_prior": True, "max_age_days": 5,
+                      "onboarding_root": "/ob", "source": "rates",
+                      "stream": "dgs3mo"}}
+    runner._source_documents = {"stock": (Path(config_path), stock),
+                                "theta": (Path(config_path), theta)}
+    names = {"prices_aapl": "replay_price_aapl",
+             "prices_amzn": "replay_price_amzn",
+             "prices_qqq": "replay_price_qqq",
+             "rates_raw": "replay_rates", "chain": "replay_chain"}
+    runner._resolved_fingerprints = {
+        key: {"key": value if key != drifted else "prior-plan",
+              **({"members": ["old.parquet"]} if key == "chain" else {})}
+        for key, value in names.items()
+    }
+    def price(port, symbol):
+        source = "factor" if symbol == "QQQ" else "stocks"
+        relpath = "qqq/prices.parquet" if symbol == "QQQ" else f"{port}/prices.parquet"
+        return {"uses": "dskit.pipeline.libs.parquet:ParquetRows", "params": {
+            "root": "/ob", "source": source, "stream": "files",
+            "relpath_by_key": {symbol: relpath},
+            "columns": {name: name for name in stock["required_columns"]},
+            "read_bounds": {"date": {"end_before": "2021-01-08"}}}}
+    structural = {"pipeline": {
+        "returns": {"params": {"ports": {"aapl": "AAPL", "amzn": "AMZN",
+                                         "qqq": "QQQ"}}},
+        **{f"prices_{port}": price(port, symbol)
+           for port, symbol in (("aapl", "AAPL"), ("amzn", "AMZN"),
+                                ("qqq", "QQQ"))},
+        "rates_raw": {"uses": "dskit.pipeline.libs.observations:ObservationRows",
+                      "params": {"root": "/ob", "source": "rates", "stream": "dgs3mo"}},
+        "chain": {"uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+                  "params": {"symbols": ["AAPL", "AMZN"], "directories": ["/theta"],
+                             "start": "2018-01-01", "end_before": "2021-01-08",
+                             "sealed_from": "2026-01-01"}},
+    }}
+    with pytest.raises(ValueError, match=f"source fingerprint mismatch for {drifted}"):
+        runner._load_inputs(structural)
+    assert names[drifted] not in seen
+
+
+def test_replay_chain_uses_resolved_members_despite_extra_and_refuses_missing(
+    tmp_path, monkeypatch,
+):
+    """The child streams the original source vintage even after another root lands."""
+    import datetime as dt
+    import json
+    from pathlib import Path
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import dskit.pipeline.libs.parquet as parquet_module
+    import dskit.pipeline.libs.observations as observations_module
+    from dskit.pipeline.libs.chain_parquet import ParquetChainRows
+    from statistical_arbitrage.backtest import TechReplayPipeline
+
+    class EmptyReader:
+        def __init__(self, key, params):
+            self.key = key
+
+        def fingerprint(self):
+            return {"key": self.key}
+
+        def run(self, ctx, inputs):
+            return {"records": []}
+
+    monkeypatch.setattr(parquet_module, "ParquetRows", EmptyReader)
+    monkeypatch.setattr(observations_module, "ObservationRows", EmptyReader)
+    directory = tmp_path / "theta"
+    directory.mkdir()
+    def snapshot(name, symbol):
+        row = {"symbol": symbol, "date": dt.date(2021, 1, 4),
+               "expiration": dt.date(2021, 2, 5), "strike": 100.0,
+               "right": "call", "bid": 1.0, "ask": 1.2,
+               "underlying_price": 100.0}
+        table = pa.Table.from_pylist([row]).replace_schema_metadata({
+            "dskit.export.windows": json.dumps({symbol: ["2021-01-04", "2021-01-04"]}),
+            "dskit.export.manifest_sha256": "m" * 64,
+            "dskit.export.snapshot_hash": "s" * 64,
+        })
+        path = directory / name
+        pq.write_table(table, path)
+        return path
+
+    first = snapshot("20210105T000000Z-backfill-aaaaaaaa.parquet", "AAPL")
+    chain_params = {"directories": [str(directory)],
+                    "fields": ["symbol", "date", "expiration", "strike", "right",
+                               "bid", "ask", "underlying_price"],
+                    "symbol_field": "symbol", "date_field": "date",
+                    "symbols": ["AAPL"], "start": "2020-01-01",
+                    "end_before": "2025-12-16", "sealed_from": "2026-01-01"}
+    pinned = ParquetChainRows("chain", chain_params).fingerprint()
+    snapshot("20210106T000000Z-backfill-bbbbbbbb.parquet", "MGM")
+    config = tmp_path / "backtest.json"
+    config.write_text(json.dumps({"evaluation": {"end_before": "2025-12-16"},
+                                  "execution": {"max_rate_age_days": 5}}), encoding="utf-8")
+    runner = TechReplayPipeline(config)
+    stock = {"onboarding_root": "/ob", "source": "stocks", "stream": "files",
+             "symbols": ["AAPL"], "required_columns": ["symbol", "date",
+             "adjusted_close", "split_coefficient", "dividend_amount"],
+             "factor": {"symbol": "QQQ", "source": "factor", "stream": "files",
+                        "relpath": "qqq/prices.parquet"}}
+    theta = {"symbols": ["AAPL"], "start": "2016-01-01",
+             "end_before": "2026-01-01",
+             "parquet_export": {"directories": [str(directory)],
+                                "sealed_from": "2026-01-01"},
+             "rate": {"date_field": "observation_date", "value_field": "DGS3MO",
+                      "scale": 0.01, "strictly_prior": True, "max_age_days": 5,
+                      "onboarding_root": "/ob", "source": "rates",
+                      "stream": "dgs3mo"}}
+    runner._source_documents = {"stock": (Path(config), stock),
+                                "theta": (Path(config), theta)}
+    runner._resolved_fingerprints = {
+        "prices_aapl": {"key": "replay_price_aapl"},
+        "prices_qqq": {"key": "replay_price_qqq"},
+        "rates_raw": {"key": "replay_rates"}, "chain": pinned,
+    }
+    def price(port, symbol):
+        return {"uses": "dskit.pipeline.libs.parquet:ParquetRows", "params": {
+            "root": "/ob", "source": "factor" if symbol == "QQQ" else "stocks",
+            "stream": "files",
+            "relpath_by_key": {symbol: "qqq/prices.parquet" if symbol == "QQQ"
+                               else "aapl/prices.parquet"},
+            "columns": {name: name for name in stock["required_columns"]},
+            "read_bounds": {"date": {"end_before": "2025-12-16"}}}}
+    structural = {"pipeline": {
+        "returns": {"params": {"ports": {"aapl": "AAPL", "qqq": "QQQ"}}},
+        "prices_aapl": price("aapl", "AAPL"), "prices_qqq": price("qqq", "QQQ"),
+        "rates_raw": {"uses": "dskit.pipeline.libs.observations:ObservationRows",
+                      "params": {"root": "/ob", "source": "rates", "stream": "dgs3mo"}},
+        "chain": {"uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+                  "params": chain_params},
+    }}
+    _, _, chain = runner._load_inputs(structural)
+    assert [row["symbol"] for row in chain] == ["AAPL"]
+    assert runner._reader_fingerprints["chain"] == pinned
+    first.unlink()
+    with pytest.raises(ValueError, match="missing.*member"):
+        runner._load_inputs(structural)
+
+
+def test_replay_output_is_atomic_retryable_and_immutable(tmp_path, monkeypatch):
+    """A failed plot cannot leave a completed-looking result directory."""
+    import json
+    from statistical_arbitrage.backtest import TechReplayPipeline
+    from statistical_arbitrage.report import PerformanceReporter
+
+    root = tmp_path / "out"
+    config = tmp_path / "backtest.json"
+    config.write_text(json.dumps({
+        "name": "fixture", "output_dir": str(root),
+        "evaluation": {"initial_capital_usd": 100.0, "sessions_per_year": 252},
+        "variants": {"atm": {"network": "atm_network_rows.jsonl"},
+                     "skew": {"network": "skew_network_rows.jsonl"}},
+        "signal": {"entry_z": 2.0},
+    }), encoding="utf-8")
+    runner = TechReplayPipeline(config)
+    provenance = {"backtest_config_sha256": runner._digest(config)}
+    rows = {"atm_network_rows.jsonl": [], "skew_network_rows.jsonl": [],
+            "graph_fits.jsonl": []}
+    structural = {"pipeline": {"graph": {"params": {"symbols": ["AAPL", "AMZN"]}}}}
+    def fail_plot(self, path, *args, **kwargs):
+        (path / "partial.png").write_bytes(b"partial")
+        raise RuntimeError("plot failed")
+    monkeypatch.setattr(PerformanceReporter, "save_plots", fail_plot)
+    with pytest.raises(RuntimeError, match="plot failed"):
+        runner._write_output({"name": "fixture"}, rows, structural, provenance)
+    assert not list(root.iterdir())
+    monkeypatch.setattr(PerformanceReporter, "save_plots", lambda *args, **kwargs: [])
+    result = {"name": "fixture"}
+    target = runner._write_output(result, rows, structural, provenance)
+    saved = (target / "evaluation.json").read_bytes()
+    with pytest.raises(FileExistsError):
+        runner._write_output({"name": "different"}, rows, structural, provenance)
+    assert (target / "evaluation.json").read_bytes() == saved
+    assert not any(path.name.startswith(".fixture-") for path in root.iterdir())
+
+
 def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
     """A single ledger sees all four books and annual and subfold scores are written."""
     import hashlib
@@ -309,11 +622,21 @@ def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
     calendar = tmp_path / "calendar.json"
     calendar.write_text(json.dumps({"blocks": [{"block": 1,
         "origin_start": days[0], "origin_end_before": "2021-01-08"}]}), encoding="utf-8")
+    stock = tmp_path / "stock.json"
+    stock.write_text("{}", encoding="utf-8")
+    theta = tmp_path / "theta.json"
+    theta.write_text("{}", encoding="utf-8")
+    resolved = tmp_path / "resolved.json"
+    resolved.write_text('{"data_fingerprint": {}}', encoding="utf-8")
+    def pin(path):
+        return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     config = tmp_path / "backtest.json"
     config.write_text(json.dumps({
         "name": "fixture", "structural_config": {"path": str(structural),
             "sha256": hashlib.sha256(structural.read_bytes()).hexdigest()},
-        "structural_rows": pinned, "source_configs": {},
+        "structural_rows": pinned,
+        "source_configs": {"stock": pin(stock), "theta": pin(theta)},
+        "structural_resolved": pin(resolved),
         "variants": {variant: {"network": f"{variant}_network_rows.jsonl",
                                "baseline": f"{variant}_baseline_rows.jsonl"}
                      for variant in ("atm", "skew")},
@@ -330,7 +653,7 @@ def test_replay_four_books_one_chain_pass_and_folds(tmp_path, monkeypatch):
                       "require_prior_rate": False, "max_rate_age_days": 5,
                       "refuse_corporate_events": True},
         "ledger": {"ledger_params": {}},
-        "validation_calendar": str(calendar),
+        "validation_calendar": pin(calendar),
         "output_dir": str(tmp_path / "out"),
     }), encoding="utf-8")
     chain = SinglePass()

@@ -89,8 +89,13 @@ class PerformanceReporter:
         baseline_trades: Sequence[Mapping[str, Any]],
         qqq_symbol: str = "QQQ",
         prior_adjusted_prices: Mapping[str, float] | None = None,
+        trade_date_index: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
-        """Measure paired books and adjusted-price benchmarks on matching dates."""
+        """Score daily marks in-window; trade cohorts are supplied by close date.
+
+        ``trade_date_index`` is the full session calendar, so a trade opening
+        before the reporting window still has its true duration.
+        """
         import numpy as np
 
         days = list(dates)
@@ -99,6 +104,16 @@ class PerformanceReporter:
         n = len(days)
         if len(model_pnl) != n or len(baseline_pnl) != n:
             raise ValueError("P&L streams must match dates")
+        cohort = [*model_trades, *baseline_trades]
+        close_days = set(days)
+        if any(trade.get("exit_date") not in close_days for trade in cohort):
+            raise ValueError("trade close date falls outside reporting cohort")
+        if trade_date_index is not None and any(
+            trade.get("entry_date") not in trade_date_index
+            or trade.get("exit_date") not in trade_date_index
+            for trade in cohort
+        ):
+            raise ValueError("trade duration needs both dates in global session index")
         if qqq_symbol not in adjusted_prices or len(adjusted_prices) < 2:
             raise ValueError("QQQ and at least one equity benchmark symbol required")
         price = {symbol: np.asarray(values, dtype=float)
@@ -139,13 +154,17 @@ class PerformanceReporter:
         baseline_returns = baseline_cash / np.r_[self.capital_usd, baseline_equity[:-1]]
         market_equity = self.capital_usd * np.cumprod(1 + market_returns)
         qqq_equity = self.capital_usd * np.cumprod(1 + qqq_returns)
-        index = {day: i for i, day in enumerate(days)}
+        index = trade_date_index if trade_date_index is not None else {
+            day: i for i, day in enumerate(days)
+        }
         zero_trades: list[dict] = []
         model = self._metrics(model_returns, model_equity, model_trades, index, market_returns)
         model["information_ratio_vs_baseline"] = self._metrics(
             model_returns, model_equity, model_trades, index, baseline_returns
         )["information_ratio"]
         return {
+            "trade_cohort_policy": "close_date",
+            "pnl_cohort_policy": "daily_mark_date",
             "model": model,
             "baseline": self._metrics(
                 baseline_returns, baseline_equity, baseline_trades, index, market_returns

@@ -5,6 +5,10 @@
     "path": "configs/run-tech-structural.json",
     "sha256": "282794c01f439adbe5387feae0998b9a4ebe28c39cd5405bdbe9cd5f9a1b476c"
   },
+  "structural_resolved": {
+    "path": "/home/russell/data/statistical_arbitrage/pipeline_runs/tech-structural-causal-retry-20261020-2025-12-16-0f928572/resolved.json",
+    "sha256": "6709804dd300525e7893f8787e586897f4601966531df66dd1c3974cdf2bb0d0"
+  },
   "structural_rows": {
     "surface_rows.jsonl": {
       "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/surface_rows.jsonl",
@@ -32,8 +36,14 @@
     }
   },
   "source_configs": {
-    "stock": "configs/source-stock-daily.json",
-    "theta": "configs/source-theta-chain.json"
+    "stock": {
+      "path": "configs/source-stock-daily.json",
+      "sha256": "aeaa728347892a3a5cafbb6e583ee7bdbe9c15b4f2d72bdaba0eb0d7f6bb423f"
+    },
+    "theta": {
+      "path": "configs/source-theta-chain.json",
+      "sha256": "9337b9bb47d2a248a68f07c1c6ea9f95e5bcc60c538cb3dd26ea6cbb006f7128"
+    }
   },
   "variants": {
     "atm": {
@@ -130,6 +140,10 @@
         "fee_per_share": 0.005
       }
     }
+  },
+  "validation_calendar": {
+    "path": "configs/validation-calendar.json",
+    "sha256": "a06f6f6f1d406e42b69db3c320b0fe1ef130a2d0de96388c661812e49eb6dc1e"
   },
   "output_dir": "/home/russell/data/statistical_arbitrage/replay-20261020"
 }

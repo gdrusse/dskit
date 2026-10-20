@@ -11,8 +11,11 @@ from datetime import date
 from hashlib import sha256
 import json
 from math import isfinite
+import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 from typing import Iterable
 
 from dskit.pipeline.libs.pair_option_ledger import PairedOptionLedger
@@ -288,38 +291,74 @@ class TechReplayPipeline:
             return self.path.parent.parent / path
         return self.path.parent / path
 
-    def _pinned_path(self, declaration: dict) -> Path:
+    def _pinned_bytes(self, declaration: dict) -> tuple[Path, bytes]:
+        """Return the exact verified bytes subsequently parsed by this replay."""
         if not isinstance(declaration, dict) or set(declaration) != {"path", "sha256"}:
             raise ValueError("pinned input requires path and sha256")
         expected = declaration["sha256"]
         if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
             raise ValueError("invalid sha256 pin")
         path = self._config_path(declaration["path"])
-        if self._digest(path) != expected:
+        raw = path.read_bytes()
+        if sha256(raw).hexdigest() != expected:
             raise ValueError(f"sha256 mismatch: {path}")
-        return path
+        return path, raw
+
+    def _pinned_json(self, declaration: dict) -> tuple[Path, dict]:
+        """Hash the same bytes that are parsed into the replay contract."""
+        path, raw = self._pinned_bytes(declaration)
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError(f"pinned JSON must be an object: {path}")
+        return path, data
 
     @staticmethod
-    def _jsonl(path: Path) -> list[dict]:
-        with path.open(encoding="utf-8") as stream:
-            rows = [json.loads(line) for line in stream if line.strip()]
+    def _jsonl(path: Path, raw: bytes) -> list[dict]:
+        rows = [json.loads(line) for line in raw.decode("utf-8").splitlines()
+                if line.strip()]
         if not all(isinstance(row, dict) for row in rows):
             raise ValueError(f"non-object JSONL row in {path}")
         return rows
 
     def _verified_structural(self) -> tuple[dict, dict[str, list[dict]], dict]:
         cfg = self.config
-        path = self._pinned_path(cfg["structural_config"])
-        with path.open(encoding="utf-8") as stream:
-            structural = json.load(stream)
+        _, structural = self._pinned_json(cfg["structural_config"])
         declared = cfg["structural_rows"]
         if not isinstance(declared, dict) or set(declared) != set(self._ROWS):
             raise ValueError("structural_rows must pin all six approved outputs")
-        paths = {name: self._pinned_path(declared[name]) for name in self._ROWS}
-        rows = {name: self._jsonl(path) for name, path in paths.items()}
+        rows = {name: self._jsonl(*self._pinned_bytes(declared[name]))
+                for name in self._ROWS}
+        source_declarations = cfg["source_configs"]
+        if set(source_declarations) != {"stock", "theta"}:
+            raise ValueError("source_configs must pin stock and theta")
+        self._source_documents = {
+            name: self._pinned_json(source_declarations[name])
+            for name in ("stock", "theta")
+        }
+        resolved_path, resolved = self._pinned_json(cfg["structural_resolved"])
+        fingerprints = resolved.get("data_fingerprint")
+        if not isinstance(fingerprints, dict):
+            raise ValueError("resolved structural run lacks data_fingerprint")
+        self._resolved_fingerprints = fingerprints
+        calendar_path, calendar = self._pinned_json(cfg["validation_calendar"])
+        self._calendar_record = {"data": calendar, "path": str(calendar_path),
+                                 "sha256": cfg["validation_calendar"]["sha256"]}
         return structural, rows, {"structural_config": cfg["structural_config"],
                                   "structural_rows": declared,
+                                  "structural_resolved": {"path": str(resolved_path),
+                                      "sha256": cfg["structural_resolved"]["sha256"]},
+                                  "source_configs": source_declarations,
+                                  "validation_calendar": cfg["validation_calendar"],
                                   "backtest_config_sha256": self._digest(self.path)}
+
+    @staticmethod
+    def _verified_reader(name: str, reader: object, fingerprints: dict) -> dict:
+        """Pin the source plan on the instance that will execute the read."""
+        expected = fingerprints.get(name)
+        actual = reader.fingerprint()
+        if expected is None or actual != expected:
+            raise ValueError(f"source fingerprint mismatch for {name}")
+        return actual
 
     @staticmethod
     def _valid_rate(row: dict, field: str) -> bool:
@@ -336,13 +375,8 @@ class TechReplayPipeline:
         from dskit.pipeline.libs.parquet import ParquetRows
 
         pipeline = structural["pipeline"]
-        sources = self.config["source_configs"]
-        stock_path = self._config_path(sources["stock"])
-        theta_path = self._config_path(sources["theta"])
-        with stock_path.open(encoding="utf-8") as stream:
-            stock = json.load(stream)
-        with theta_path.open(encoding="utf-8") as stream:
-            theta = json.load(stream)
+        stock_path, stock = self._source_documents["stock"]
+        theta_path, theta = self._source_documents["theta"]
         self._source_provenance = {
             "stock": {"path": str(stock_path), "sha256": self._digest(stock_path)},
             "theta": {"path": str(theta_path), "sha256": self._digest(theta_path)},
@@ -360,6 +394,7 @@ class TechReplayPipeline:
             raise ValueError("Theta and stock tradable symbols disagree")
         if pipeline["chain"]["params"]["end_before"] != self.config["evaluation"]["end_before"]:
             raise ValueError("chain end and evaluation end disagree")
+        self._reader_fingerprints: dict[str, dict] = {}
         prices: dict[str, list[dict]] = {}
         for port, symbol in ports.items():
             node = pipeline[f"prices_{port}"]
@@ -379,7 +414,10 @@ class TechReplayPipeline:
                 raise ValueError(f"price projection disagrees for {symbol}")
             if params["read_bounds"]["date"]["end_before"] != self.config["evaluation"]["end_before"]:
                 raise ValueError(f"price read bound disagrees for {symbol}")
-            prices[symbol] = ParquetRows(f"replay_price_{port}", params).run(None, {})["records"]
+            reader = ParquetRows(f"replay_price_{port}", params)
+            self._reader_fingerprints[f"prices_{port}"] = self._verified_reader(
+                f"prices_{port}", reader, self._resolved_fingerprints)
+            prices[symbol] = reader.run(None, {})["records"]
         rate_node = pipeline["rates_raw"]
         if rate_node["uses"] != "dskit.pipeline.libs.observations:ObservationRows":
             raise ValueError("unexpected rate reader")
@@ -387,14 +425,17 @@ class TechReplayPipeline:
                for field, field_name in (("root", "onboarding_root"),
                                          ("source", "source"), ("stream", "stream"))):
             raise ValueError("rate reader source disagrees")
-        rates = ObservationRows("replay_rates", rate_node["params"]).run(None, {})["records"]
+        rate_reader = ObservationRows("replay_rates", rate_node["params"])
+        self._reader_fingerprints["rates_raw"] = self._verified_reader(
+            "rates_raw", rate_reader, self._resolved_fingerprints)
+        rates = rate_reader.run(None, {})["records"]
         rate_field = theta["rate"]["value_field"]
         rates = [row for row in rates if self._valid_rate(row, rate_field)
                  and row.get(theta["rate"]["date_field"], "") < self.config["evaluation"]["end_before"]]
         chain_node = pipeline["chain"]
         if chain_node["uses"] != "dskit.pipeline.libs.chain_parquet:ParquetChainRows":
             raise ValueError("unexpected chain reader")
-        chain_params = chain_node["params"]
+        chain_params = dict(chain_node["params"])
         if set(chain_params["symbols"]) != set(theta["symbols"]) or (
             chain_params["directories"] != theta["parquet_export"]["directories"]
         ):
@@ -403,15 +444,26 @@ class TechReplayPipeline:
                 or chain_params["end_before"] > theta["end_before"]
                 or chain_params["sealed_from"] != theta["parquet_export"]["sealed_from"]):
             raise ValueError("Theta chain calendar disagrees")
-        chain = ParquetChainRows("replay_chain", chain_params).run(None, {})["records"]
+        frozen_chain = self._resolved_fingerprints.get("chain", {})
+        members = frozen_chain.get("members") if isinstance(frozen_chain, dict) else None
+        if not isinstance(members, list) or not members:
+            raise ValueError("pinned structural chain lacks exact members")
+        if "members" in chain_params and chain_params["members"] != members:
+            raise ValueError("structural chain members disagree with pinned resolved plan")
+        chain_params["members"] = list(members)
+        chain_reader = ParquetChainRows("replay_chain", chain_params)
+        self._reader_fingerprints["chain"] = self._verified_reader(
+            "chain", chain_reader, self._resolved_fingerprints)
+        chain = chain_reader.run(None, {})["records"]
         return prices, rates, chain
 
     def _calendar(self) -> dict:
-        named = self.config.get("validation_calendar", "validation-calendar.json")
-        path = self._config_path(named)
-        with path.open(encoding="utf-8") as stream:
-            calendar = json.load(stream)
-        return {"data": calendar, "path": str(path), "sha256": self._digest(path)}
+        return self._calendar_record
+
+    @staticmethod
+    def _closed_in_window(trades: list[dict], first: str, end: str) -> list[dict]:
+        """Assign full-trade win and duration to the fold of final close."""
+        return [trade for trade in trades if first <= trade["exit_date"] < end]
 
     @staticmethod
     def _block_unclosed(pairs: list[dict], outcome: dict) -> tuple[dict, list[dict]]:
@@ -459,6 +511,7 @@ class TechReplayPipeline:
         ):
             raise ValueError("phase-one replay requires ATM/skew network and baseline books")
         provenance["source_configs"] = getattr(self, "_source_provenance", {})
+        provenance["reader_fingerprints"] = getattr(self, "_reader_fingerprints", {})
         returns = TechAdjustedReturns("replay_returns", structural["pipeline"]["returns"]["params"])
         ports = returns.params["ports"]
         aligned = returns.run(None, {port: prices[symbol] for port, symbol in ports.items()})
@@ -514,6 +567,7 @@ class TechReplayPipeline:
                                        sessions_per_year=evaluation["sessions_per_year"])
         calendar = self._calendar()
         books_out = {}
+        global_session_index = {day: i for i, day in enumerate(days)}
         for key in keys:
             own_marks = [mark for mark in outcome["marks"] if mark["id"].startswith(key + ":")]
             daily_pnl = reporter.daily_pnl_from_marks(own_marks, days)
@@ -538,17 +592,14 @@ class TechReplayPipeline:
                 prior_prices = ({symbol: values[indices[0] - 1]
                                  for symbol, values in adjusted.items()}
                                 if indices[0] > 0 else None)
-                def trades_for(book: dict) -> list[dict]:
-                    return [trade for trade in book["trades"]
-                            if first <= trade["entry_date"]
-                            and trade["exit_date"] < end]
                 return reporter.evaluate(
                     dates=selected, model_pnl=[model["daily_pnl_usd"][i] for i in indices],
                     baseline_pnl=[baseline["daily_pnl_usd"][i] for i in indices],
                     adjusted_prices=selected_prices,
                     prior_adjusted_prices=prior_prices,
-                    model_trades=trades_for(model),
-                    baseline_trades=trades_for(baseline))
+                    trade_date_index=global_session_index,
+                    model_trades=self._closed_in_window(model["trades"], first, end),
+                    baseline_trades=self._closed_in_window(baseline["trades"], first, end))
             annual = {str(year): fold(f"{year}-01-01", f"{year + 1}-01-01")
                       for year in range(evaluation["development_year"],
                                         max(evaluation["validation_years"]) + 1)}
@@ -573,35 +624,53 @@ class TechReplayPipeline:
                 "blocked_later_pairs": blocked,
                 "cashflows": outcome["cashflows"]}
 
-    def run(self) -> dict:
-        """Verify, replay, then write one new, SHA-named result directory."""
+    def _write_output(self, result: dict, rows: dict, structural: dict,
+                      provenance: dict) -> Path:
+        """Publish plots and JSON together after writing a private sibling directory."""
         from statistical_arbitrage.report import PerformanceReporter
 
-        structural, rows, provenance = self._verified_structural()
-        prices, rates, chain = self._load_inputs(structural)
-        result = self._evaluate(rows, structural, prices, rates, chain, provenance)
         root = Path(self.config["output_dir"])
         name = self.config["name"]
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None:
             raise ValueError("unsafe replay name")
-        target = root / f"{name}-{provenance['backtest_config_sha256'][:12]}"
-        target.mkdir(parents=True, exist_ok=False)
-        reporter = PerformanceReporter(
-            capital_usd=self.config["evaluation"]["initial_capital_usd"],
-            sessions_per_year=self.config["evaluation"]["sessions_per_year"],
-        )
-        result["plots"] = reporter.save_plots(
-            target,
-            result,
-            {variant: rows[self.config["variants"][variant]["network"]]
-             for variant in ("atm", "skew")},
-            symbols=structural["pipeline"]["graph"]["params"]["symbols"],
-            graph_fits=rows["graph_fits.jsonl"],
-            entry_z=self.config["signal"]["entry_z"],
-        )
-        with (target / "evaluation.json").open("x", encoding="utf-8") as stream:
-            json.dump(result, stream, indent=2, sort_keys=True, allow_nan=False)
-        result["output_path"] = str(target)
+        stem = f"{name}-{provenance['backtest_config_sha256'][:12]}"
+        target = root / stem
+        if target.exists():
+            raise FileExistsError(f"completed replay already exists: {target}")
+        root.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix=f".{stem}.", dir=root))
+        try:
+            reporter = PerformanceReporter(
+                capital_usd=self.config["evaluation"]["initial_capital_usd"],
+                sessions_per_year=self.config["evaluation"]["sessions_per_year"],
+            )
+            result["plots"] = reporter.save_plots(
+                stage, result,
+                {variant: rows[self.config["variants"][variant]["network"]]
+                 for variant in ("atm", "skew")},
+                symbols=structural["pipeline"]["graph"]["params"]["symbols"],
+                graph_fits=rows["graph_fits.jsonl"],
+                entry_z=self.config["signal"]["entry_z"],
+            )
+            result["output_path"] = str(target)
+            with (stage / "evaluation.json").open("x", encoding="utf-8") as stream:
+                json.dump(result, stream, indent=2, sort_keys=True, allow_nan=False)
+            if target.exists():
+                raise FileExistsError(f"completed replay already exists: {target}")
+            os.rename(stage, target)
+        finally:
+            if (stage.exists() and not stage.is_symlink()
+                    and stage.resolve().parent == root.resolve()
+                    and stage.name.startswith(f".{stem}.")):
+                shutil.rmtree(stage)
+        return target
+
+    def run(self) -> dict:
+        """Verify pinned inputs, replay, then atomically publish a new result."""
+        structural, rows, provenance = self._verified_structural()
+        prices, rates, chain = self._load_inputs(structural)
+        result = self._evaluate(rows, structural, prices, rates, chain, provenance)
+        self._write_output(result, rows, structural, provenance)
         return result
 
 
