@@ -1,0 +1,4 @@
+group,cells,pass,expected_by_luck,luck_p95,beat_market_all_years,beat_baseline_all_years
+all,831,94,63.66,77.05,45,189
+kind=monthly,99,0,,,0,23
+kind=weekly,732,94,,,45,166

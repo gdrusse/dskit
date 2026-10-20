@@ -400,6 +400,33 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/memos/data/2026-10-20-walkforward/wf_tcn_perf_by_window.csv",
         "docs/memos/data/2026-10-20-walkforward/wf_tcn_training_curves.csv",
         "docs/memos/2026-10-20-walkforward-results.md",
+        "docs/memos/data/2026-10-20-walkforward/wf_tcn_gate_summary_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-walkforward/wf_tcn_gate_ticker_rank_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-walkforward/wf_tcn_lr1e4_gate_summary_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-walkforward/wf_tcn_lr1e4_gate_ticker_rank_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-adjustments/comparison_gate_summary.csv",
+        "docs/memos/data/2026-10-20-adjustments/comparison_perf_by_rank.csv",
+        "docs/memos/data/2026-10-20-adjustments/comparison_perf_by_window.csv",
+        "docs/memos/data/2026-10-20-adjustments/comparison_training_summary.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_calibration_by_window.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_cells_ticker_rank_year.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_gate_summary.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_gate_summary_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_gate_ticker_rank.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_gate_ticker_rank_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_perf_by_rank.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_perf_by_window.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r1_training_curves.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_calibration_by_window.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_cells_ticker_rank_year.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_gate_summary.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_gate_summary_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_gate_ticker_rank.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_gate_ticker_rank_vs_calibrated_market.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_perf_by_rank.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_perf_by_window.csv",
+        "docs/memos/data/2026-10-20-adjustments/wf_r2_training_curves.csv",
+        "docs/memos/2026-10-20-adjustments-results.md",
         "configs/strike-screen-folds-walkforward.jsonl", "configs/run-strike-screen-fits-walkforward.json",
         "configs/run-strike-region-scores-walkforward.json",
         "tests/test_strike_screen_fits.py",
@@ -449,7 +476,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the strike-region scores node, its document and its test = 581.
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
-    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase)
+    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase)
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

@@ -24,6 +24,8 @@ fit,1,fold,fold1,False,all,pooled,crps13,86798,419,116,0.596321,0.618732,3.62205
 fit,1,fold,fold1,False,all,pooled,tail_crps,86798,419,116,0.35705,0.370437,3.61396,0.463101,7.803825
 fit,1,fold,fold1,False,all,pooled,decision_strike_brier,86798,419,116,0.062492,0.065134,4.056126,0.481661,8.42113
 fit,1,fold,fold1,False,all,pooled,decision_wing_twcrps,86790,419,116,0.051298,0.053513,4.139843,0.512763,8.073597
+fit,1,fold,fold1,False,market_eligible,market_cal,twcrps,38810,419,90,0.512565,0.518902,1.221415,0.540441,2.260035
+fit,1,fold,fold1,False,market_eligible,market_cal,crps13,38810,419,90,0.606175,0.61569,1.545393,0.541828,2.852183
 fit,2,fold,fold2,True,market_eligible,market,twcrps,41449,669,95,0.512721,0.53395,3.97577,0.423899,9.379041
 fit,2,fold,fold2,True,market_eligible,market,crps13,41449,669,95,0.607041,0.632534,4.030191,0.414467,9.723791
 fit,2,fold,fold2,True,market_eligible,market,tail_crps,41449,669,95,0.364062,0.378952,3.929155,0.442668,8.876077
@@ -49,6 +51,8 @@ fit,2,fold,fold2,True,all,pooled,crps13,85321,669,116,0.596412,0.631166,5.506349
 fit,2,fold,fold2,True,all,pooled,tail_crps,85321,669,116,0.355016,0.378589,6.226649,0.434688,14.324418
 fit,2,fold,fold2,True,all,pooled,decision_strike_brier,85321,669,116,0.06774,0.071792,5.643857,0.378566,14.908506
 fit,2,fold,fold2,True,all,pooled,decision_wing_twcrps,85318,669,116,0.055777,0.05932,5.973451,0.406729,14.686554
+fit,2,fold,fold2,True,market_eligible,market_cal,twcrps,41449,669,95,0.512721,0.530903,3.424649,0.388801,8.808232
+fit,2,fold,fold2,True,market_eligible,market_cal,crps13,41449,669,95,0.607041,0.628863,3.469999,0.388891,8.922804
 fit,3,fold,fold3,True,market_eligible,market,twcrps,44004,920,103,0.524718,0.540157,2.858394,0.393602,7.26215
 fit,3,fold,fold3,True,market_eligible,market,crps13,44004,920,103,0.621645,0.640812,2.991103,0.394679,7.578564
 fit,3,fold,fold3,True,market_eligible,market,tail_crps,44004,920,103,0.371878,0.382342,2.736892,0.399236,6.85532
@@ -74,6 +78,8 @@ fit,3,fold,fold3,True,all,pooled,crps13,86519,920,117,0.602799,0.626836,3.834645
 fit,3,fold,fold3,True,all,pooled,tail_crps,86519,920,117,0.355105,0.372,4.541694,0.321256,14.137316
 fit,3,fold,fold3,True,all,pooled,decision_strike_brier,86519,920,117,0.073824,0.076667,3.707968,0.295923,12.53017
 fit,3,fold,fold3,True,all,pooled,decision_wing_twcrps,86515,920,117,0.061751,0.064295,3.955714,0.301914,13.102134
+fit,3,fold,fold3,True,market_eligible,market_cal,twcrps,44004,920,103,0.524718,0.536711,2.234558,0.377187,5.924268
+fit,3,fold,fold3,True,market_eligible,market_cal,crps13,44004,920,103,0.621645,0.636447,2.325722,0.381032,6.103737
 fit,4,fold,fold4,True,market_eligible,market,twcrps,53205,1176,109,0.499829,0.528645,5.450789,0.384991,14.158217
 fit,4,fold,fold4,True,market_eligible,market,crps13,53205,1176,109,0.593352,0.628876,5.648689,0.38813,14.553618
 fit,4,fold,fold4,True,market_eligible,market,tail_crps,53205,1176,109,0.353205,0.37227,5.121333,0.38075,13.450652
@@ -99,6 +105,8 @@ fit,4,fold,fold4,True,all,pooled,crps13,98551,1176,117,0.587816,0.619513,5.11646
 fit,4,fold,fold4,True,all,pooled,tail_crps,98551,1176,117,0.347006,0.368704,5.884796,0.280353,20.990638
 fit,4,fold,fold4,True,all,pooled,decision_strike_brier,98551,1176,117,0.072057,0.076121,5.33905,0.269219,19.831656
 fit,4,fold,fold4,True,all,pooled,decision_wing_twcrps,98549,1176,117,0.059505,0.063078,5.664976,0.296196,19.125764
+fit,4,fold,fold4,True,market_eligible,market_cal,twcrps,53205,1176,109,0.499829,0.520486,3.968678,0.292168,13.583547
+fit,4,fold,fold4,True,market_eligible,market_cal,crps13,53205,1176,109,0.593352,0.618395,4.04967,0.292859,13.828067
 fit,5,fold,fold5,True,market_eligible,market,twcrps,54431,1427,108,0.507314,0.529764,4.237671,0.279452,15.164199
 fit,5,fold,fold5,True,market_eligible,market,crps13,54431,1427,108,0.602171,0.629516,4.343892,0.278444,15.600591
 fit,5,fold,fold5,True,market_eligible,market,tail_crps,54431,1427,108,0.357573,0.372817,4.088686,0.285601,14.3161
@@ -124,6 +132,8 @@ fit,5,fold,fold5,True,all,pooled,crps13,97002,1427,116,0.591388,0.619913,4.60135
 fit,5,fold,fold5,True,all,pooled,tail_crps,97002,1427,116,0.348517,0.368247,5.357809,0.24786,21.616317
 fit,5,fold,fold5,True,all,pooled,decision_strike_brier,97002,1427,116,0.072885,0.076488,4.71084,0.231363,20.361241
 fit,5,fold,fold5,True,all,pooled,decision_wing_twcrps,96998,1427,116,0.058601,0.061811,5.193113,0.260421,19.941252
+fit,5,fold,fold5,True,market_eligible,market_cal,twcrps,54431,1427,108,0.507314,0.524693,3.312204,0.199125,16.633812
+fit,5,fold,fold5,True,market_eligible,market_cal,crps13,54431,1427,108,0.602171,0.623215,3.376731,0.201212,16.781923
 val,1,fold,fold1,False,market_eligible,market,twcrps,94168,249,95,0.50793,0.498698,-1.851114,0.851398,-2.174207
 val,1,fold,fold1,False,market_eligible,market,crps13,94168,249,95,0.604461,0.594903,-1.606718,0.837617,-1.918202
 val,1,fold,fold1,False,market_eligible,market,tail_crps,94168,249,95,0.356171,0.348275,-2.267196,0.886583,-2.557229
@@ -149,6 +159,8 @@ val,1,fold,fold1,False,all,pooled,crps13,160754,249,116,0.601226,0.596498,-0.792
 val,1,fold,fold1,False,all,pooled,tail_crps,160754,249,116,0.351868,0.352081,0.060689,0.42431,0.14303
 val,1,fold,fold1,False,all,pooled,decision_strike_brier,160754,249,116,0.075322,0.074706,-0.825504,0.552753,-1.493441
 val,1,fold,fold1,False,all,pooled,decision_wing_twcrps,160748,249,116,0.064442,0.064085,-0.557344,0.539069,-1.033902
+val,1,fold,fold1,False,market_eligible,market_cal,twcrps,94168,249,95,0.50793,0.489065,-3.857189,0.783592,-4.922446
+val,1,fold,fold1,False,market_eligible,market_cal,crps13,94168,249,95,0.604461,0.582092,-3.842949,0.766855,-5.011313
 val,2,fold,fold2,True,market_eligible,market,twcrps,100950,253,103,0.571596,0.571644,0.008333,0.621971,0.013398
 val,2,fold,fold2,True,market_eligible,market,crps13,100950,253,103,0.677573,0.678564,0.146117,0.679663,0.214984
 val,2,fold,fold2,True,market_eligible,market,tail_crps,100950,253,103,0.405334,0.404299,-0.256075,0.554759,-0.461596
@@ -174,6 +186,8 @@ val,2,fold,fold2,True,all,pooled,crps13,177194,253,116,0.652338,0.647827,-0.6964
 val,2,fold,fold2,True,all,pooled,tail_crps,177194,253,116,0.383666,0.385613,0.504906,0.470815,1.072408
 val,2,fold,fold2,True,all,pooled,decision_strike_brier,177194,253,116,0.093535,0.092205,-1.442885,0.7065,-2.042299
 val,2,fold,fold2,True,all,pooled,decision_wing_twcrps,177189,253,116,0.079149,0.078353,-1.015675,0.639088,-1.589257
+val,2,fold,fold2,True,market_eligible,market_cal,twcrps,100950,253,103,0.571596,0.567498,-0.722205,0.589078,-1.225993
+val,2,fold,fold2,True,market_eligible,market_cal,crps13,100950,253,103,0.677573,0.672618,-0.736695,0.652092,-1.12974
 val,3,fold,fold3,True,market_eligible,market,twcrps,119812,252,107,0.505329,0.516697,2.200156,0.712857,3.08639
 val,3,fold,fold3,True,market_eligible,market,crps13,119812,252,107,0.601469,0.61494,2.190692,0.705283,3.106118
 val,3,fold,fold3,True,market_eligible,market,tail_crps,119812,252,107,0.35484,0.362774,2.186983,0.729835,2.996547
@@ -199,6 +213,8 @@ val,3,fold,fold3,True,all,pooled,crps13,181285,252,117,0.595003,0.597017,0.33735
 val,3,fold,fold3,True,all,pooled,tail_crps,181285,252,117,0.348655,0.352745,1.159455,0.44737,2.591716
 val,3,fold,fold3,True,all,pooled,decision_strike_brier,181285,252,117,0.072512,0.072441,-0.096755,0.535874,-0.180555
 val,3,fold,fold3,True,all,pooled,decision_wing_twcrps,181285,252,117,0.05455,0.054759,0.381184,0.564646,0.675085
+val,3,fold,fold3,True,market_eligible,market_cal,twcrps,119812,252,107,0.505329,0.505964,0.125578,0.541843,0.231761
+val,3,fold,fold3,True,market_eligible,market_cal,crps13,119812,252,107,0.601469,0.601674,0.034134,0.536014,0.063681
 val,4,fold,fold4,True,market_eligible,market,twcrps,117775,251,104,0.529273,0.507178,-4.356545,0.601226,-7.246102
 val,4,fold,fold4,True,market_eligible,market,crps13,117775,251,104,0.63204,0.604331,-4.585156,0.61654,-7.436919
 val,4,fold,fold4,True,market_eligible,market,tail_crps,117775,251,104,0.369017,0.355041,-3.936491,0.586424,-6.712708
@@ -224,6 +240,8 @@ val,4,fold,fold4,True,all,pooled,crps13,181588,251,117,0.62038,0.61454,-0.950282
 val,4,fold,fold4,True,all,pooled,tail_crps,181588,251,117,0.359827,0.358809,-0.283501,0.317167,-0.893854
 val,4,fold,fold4,True,all,pooled,decision_strike_brier,181588,251,117,0.080085,0.079218,-1.093777,0.430661,-2.539761
 val,4,fold,fold4,True,all,pooled,decision_wing_twcrps,181588,251,117,0.056523,0.056378,-0.258394,0.403558,-0.64029
+val,4,fold,fold4,True,market_eligible,market_cal,twcrps,117775,251,104,0.529273,0.520223,-1.739598,0.367049,-4.739414
+val,4,fold,fold4,True,market_eligible,market_cal,crps13,117775,251,104,0.63204,0.621903,-1.629991,0.392435,-4.15353
 val,5,fold,fold5,True,market_eligible,market,twcrps,110961,249,102,0.533278,0.530057,-0.60772,0.606083,-1.0027
 val,5,fold,fold5,True,market_eligible,market,crps13,110961,249,102,0.631612,0.627263,-0.693382,0.620387,-1.11766
 val,5,fold,fold5,True,market_eligible,market,tail_crps,110961,249,102,0.378363,0.376946,-0.375903,0.588359,-0.638901
@@ -249,6 +267,8 @@ val,5,fold,fold5,True,all,pooled,crps13,171118,249,116,0.623982,0.631594,1.20509
 val,5,fold,fold5,True,all,pooled,tail_crps,171118,249,116,0.372787,0.380166,1.940886,0.481373,4.031975
 val,5,fold,fold5,True,all,pooled,decision_strike_brier,171118,249,116,0.060995,0.061671,1.097113,0.587865,1.866268
 val,5,fold,fold5,True,all,pooled,decision_wing_twcrps,170988,249,116,0.043474,0.043978,1.144095,0.566838,2.018382
+val,5,fold,fold5,True,market_eligible,market_cal,twcrps,110961,249,102,0.533278,0.529113,-0.787131,0.562747,-1.39873
+val,5,fold,fold5,True,market_eligible,market_cal,crps13,110961,249,102,0.631612,0.626255,-0.855461,0.585117,-1.462035
 val,1,year,y2019,False,market_eligible,market,twcrps,94168,249,95,0.50793,0.498698,-1.851114,0.851398,-2.174207
 val,1,year,y2019,False,market_eligible,market,crps13,94168,249,95,0.604461,0.594903,-1.606718,0.837617,-1.918202
 val,1,year,y2019,False,market_eligible,market,tail_crps,94168,249,95,0.356171,0.348275,-2.267196,0.886583,-2.557229
@@ -274,6 +294,8 @@ val,1,year,y2019,False,all,pooled,crps13,160754,249,116,0.601226,0.596498,-0.792
 val,1,year,y2019,False,all,pooled,tail_crps,160754,249,116,0.351868,0.352081,0.060689,0.42431,0.14303
 val,1,year,y2019,False,all,pooled,decision_strike_brier,160754,249,116,0.075322,0.074706,-0.825504,0.552753,-1.493441
 val,1,year,y2019,False,all,pooled,decision_wing_twcrps,160748,249,116,0.064442,0.064085,-0.557344,0.539069,-1.033902
+val,1,year,y2019,False,market_eligible,market_cal,twcrps,94168,249,95,0.50793,0.489065,-3.857189,0.783592,-4.922446
+val,1,year,y2019,False,market_eligible,market_cal,crps13,94168,249,95,0.604461,0.582092,-3.842949,0.766855,-5.011313
 val,2,year,y2020,True,market_eligible,market,twcrps,100950,253,103,0.571596,0.571644,0.008333,0.621971,0.013398
 val,2,year,y2020,True,market_eligible,market,crps13,100950,253,103,0.677573,0.678564,0.146117,0.679663,0.214984
 val,2,year,y2020,True,market_eligible,market,tail_crps,100950,253,103,0.405334,0.404299,-0.256075,0.554759,-0.461596
@@ -299,6 +321,8 @@ val,2,year,y2020,True,all,pooled,crps13,177194,253,116,0.652338,0.647827,-0.6964
 val,2,year,y2020,True,all,pooled,tail_crps,177194,253,116,0.383666,0.385613,0.504906,0.470815,1.072408
 val,2,year,y2020,True,all,pooled,decision_strike_brier,177194,253,116,0.093535,0.092205,-1.442885,0.7065,-2.042299
 val,2,year,y2020,True,all,pooled,decision_wing_twcrps,177189,253,116,0.079149,0.078353,-1.015675,0.639088,-1.589257
+val,2,year,y2020,True,market_eligible,market_cal,twcrps,100950,253,103,0.571596,0.567498,-0.722205,0.589078,-1.225993
+val,2,year,y2020,True,market_eligible,market_cal,crps13,100950,253,103,0.677573,0.672618,-0.736695,0.652092,-1.12974
 val,3,year,y2021,True,market_eligible,market,twcrps,119812,252,107,0.505329,0.516697,2.200156,0.712857,3.08639
 val,3,year,y2021,True,market_eligible,market,crps13,119812,252,107,0.601469,0.61494,2.190692,0.705283,3.106118
 val,3,year,y2021,True,market_eligible,market,tail_crps,119812,252,107,0.35484,0.362774,2.186983,0.729835,2.996547
@@ -324,6 +348,8 @@ val,3,year,y2021,True,all,pooled,crps13,181285,252,117,0.595003,0.597017,0.33735
 val,3,year,y2021,True,all,pooled,tail_crps,181285,252,117,0.348655,0.352745,1.159455,0.44737,2.591716
 val,3,year,y2021,True,all,pooled,decision_strike_brier,181285,252,117,0.072512,0.072441,-0.096755,0.535874,-0.180555
 val,3,year,y2021,True,all,pooled,decision_wing_twcrps,181285,252,117,0.05455,0.054759,0.381184,0.564646,0.675085
+val,3,year,y2021,True,market_eligible,market_cal,twcrps,119812,252,107,0.505329,0.505964,0.125578,0.541843,0.231761
+val,3,year,y2021,True,market_eligible,market_cal,crps13,119812,252,107,0.601469,0.601674,0.034134,0.536014,0.063681
 val,4,year,y2022,True,market_eligible,market,twcrps,117775,251,104,0.529273,0.507178,-4.356545,0.601226,-7.246102
 val,4,year,y2022,True,market_eligible,market,crps13,117775,251,104,0.63204,0.604331,-4.585156,0.61654,-7.436919
 val,4,year,y2022,True,market_eligible,market,tail_crps,117775,251,104,0.369017,0.355041,-3.936491,0.586424,-6.712708
@@ -349,6 +375,8 @@ val,4,year,y2022,True,all,pooled,crps13,181588,251,117,0.62038,0.61454,-0.950282
 val,4,year,y2022,True,all,pooled,tail_crps,181588,251,117,0.359827,0.358809,-0.283501,0.317167,-0.893854
 val,4,year,y2022,True,all,pooled,decision_strike_brier,181588,251,117,0.080085,0.079218,-1.093777,0.430661,-2.539761
 val,4,year,y2022,True,all,pooled,decision_wing_twcrps,181588,251,117,0.056523,0.056378,-0.258394,0.403558,-0.64029
+val,4,year,y2022,True,market_eligible,market_cal,twcrps,117775,251,104,0.529273,0.520223,-1.739598,0.367049,-4.739414
+val,4,year,y2022,True,market_eligible,market_cal,crps13,117775,251,104,0.63204,0.621903,-1.629991,0.392435,-4.15353
 val,5,year,y2023,True,market_eligible,market,twcrps,110961,249,102,0.533278,0.530057,-0.60772,0.606083,-1.0027
 val,5,year,y2023,True,market_eligible,market,crps13,110961,249,102,0.631612,0.627263,-0.693382,0.620387,-1.11766
 val,5,year,y2023,True,market_eligible,market,tail_crps,110961,249,102,0.378363,0.376946,-0.375903,0.588359,-0.638901
@@ -374,6 +402,8 @@ val,5,year,y2023,True,all,pooled,crps13,171118,249,116,0.623982,0.631594,1.20509
 val,5,year,y2023,True,all,pooled,tail_crps,171118,249,116,0.372787,0.380166,1.940886,0.481373,4.031975
 val,5,year,y2023,True,all,pooled,decision_strike_brier,171118,249,116,0.060995,0.061671,1.097113,0.587865,1.866268
 val,5,year,y2023,True,all,pooled,decision_wing_twcrps,170988,249,116,0.043474,0.043978,1.144095,0.566838,2.018382
+val,5,year,y2023,True,market_eligible,market_cal,twcrps,110961,249,102,0.533278,0.529113,-0.787131,0.562747,-1.39873
+val,5,year,y2023,True,market_eligible,market_cal,crps13,110961,249,102,0.631612,0.626255,-0.855461,0.585117,-1.462035
 val,-1,regime,S0_pre_crash,True,market_eligible,market,twcrps,13658,31,88,1.028184,0.994341,-3.403561,0.924823,-3.680231
 val,-1,regime,S0_pre_crash,True,market_eligible,market,crps13,13658,31,88,1.162479,1.125458,-3.289467,0.949195,-3.465533
 val,-1,regime,S0_pre_crash,True,market_eligible,market,tail_crps,13658,31,88,0.793593,0.766364,-3.552899,0.880919,-4.033172
@@ -399,6 +429,8 @@ val,-1,regime,S0_pre_crash,True,all,pooled,crps13,21624,31,115,1.10781,1.126748,
 val,-1,regime,S0_pre_crash,True,all,pooled,tail_crps,21624,31,115,0.747748,0.755129,0.977487,0.953813,1.02482
 val,-1,regime,S0_pre_crash,True,all,pooled,decision_strike_brier,21624,31,115,0.137309,0.139383,1.48791,0.983717,1.512538
 val,-1,regime,S0_pre_crash,True,all,pooled,decision_wing_twcrps,21624,31,115,0.120764,0.122882,1.723876,0.97824,1.762223
+val,-1,regime,S0_pre_crash,True,market_eligible,market_cal,twcrps,13658,31,88,1.028184,1.019921,-0.810115,0.990194,-0.818137
+val,-1,regime,S0_pre_crash,True,market_eligible,market_cal,crps13,13658,31,88,1.162479,1.157556,-0.425308,1.020817,-0.416635
 val,-1,regime,S1_covid_crash,True,market_eligible,market,twcrps,33119,94,99,0.528618,0.515717,-2.501695,1.048217,-2.386619
 val,-1,regime,S1_covid_crash,True,market_eligible,market,crps13,33119,94,99,0.638245,0.624932,-2.130256,1.133293,-1.879704
 val,-1,regime,S1_covid_crash,True,market_eligible,market,tail_crps,33119,94,99,0.362737,0.351116,-3.309668,1.222963,-2.706269
@@ -424,6 +456,8 @@ val,-1,regime,S1_covid_crash,True,all,pooled,crps13,65343,94,115,0.597242,0.5875
 val,-1,regime,S1_covid_crash,True,all,pooled,tail_crps,65343,94,115,0.329613,0.330563,0.287317,0.740128,0.388199
 val,-1,regime,S1_covid_crash,True,all,pooled,decision_strike_brier,65343,94,115,0.099976,0.097028,-3.038498,1.260651,-2.410262
 val,-1,regime,S1_covid_crash,True,all,pooled,decision_wing_twcrps,65338,94,115,0.087348,0.085805,-1.797788,0.960363,-1.871987
+val,-1,regime,S1_covid_crash,True,market_eligible,market_cal,twcrps,33119,94,99,0.528618,0.516141,-2.417324,0.93135,-2.595506
+val,-1,regime,S1_covid_crash,True,market_eligible,market_cal,crps13,33119,94,99,0.638245,0.623686,-2.334345,1.056641,-2.209214
 val,-1,regime,S2_recovery,True,market_eligible,market,twcrps,173985,380,107,0.498301,0.511269,2.536576,0.58648,4.325083
 val,-1,regime,S2_recovery,True,market_eligible,market,crps13,173985,380,107,0.594586,0.609878,2.507476,0.58233,4.305935
 val,-1,regime,S2_recovery,True,market_eligible,market,tail_crps,173985,380,107,0.348192,0.357404,2.577556,0.59667,4.319903
@@ -449,6 +483,8 @@ val,-1,regime,S2_recovery,True,all,pooled,crps13,271512,380,117,0.591041,0.59027
 val,-1,regime,S2_recovery,True,all,pooled,tail_crps,271512,380,117,0.344302,0.347487,0.916577,0.437045,2.097213
 val,-1,regime,S2_recovery,True,all,pooled,decision_strike_brier,271512,380,117,0.074462,0.074091,-0.500329,0.496796,-1.007112
 val,-1,regime,S2_recovery,True,all,pooled,decision_wing_twcrps,271512,380,117,0.057437,0.05726,-0.309945,0.541395,-0.572493
+val,-1,regime,S2_recovery,True,market_eligible,market_cal,twcrps,173985,380,107,0.498301,0.499384,0.216897,0.455495,0.476179
+val,-1,regime,S2_recovery,True,market_eligible,market_cal,crps13,173985,380,107,0.594586,0.59501,0.071293,0.453438,0.157228
 val,-1,regime,S3_rate_shock,True,market_eligible,market,twcrps,117775,251,104,0.529273,0.507178,-4.356545,0.601226,-7.246102
 val,-1,regime,S3_rate_shock,True,market_eligible,market,crps13,117775,251,104,0.63204,0.604331,-4.585156,0.61654,-7.436919
 val,-1,regime,S3_rate_shock,True,market_eligible,market,tail_crps,117775,251,104,0.369017,0.355041,-3.936491,0.586424,-6.712708
@@ -474,6 +510,8 @@ val,-1,regime,S3_rate_shock,True,all,pooled,crps13,181588,251,117,0.62038,0.6145
 val,-1,regime,S3_rate_shock,True,all,pooled,tail_crps,181588,251,117,0.359827,0.358809,-0.283501,0.317167,-0.893854
 val,-1,regime,S3_rate_shock,True,all,pooled,decision_strike_brier,181588,251,117,0.080085,0.079218,-1.093777,0.430661,-2.539761
 val,-1,regime,S3_rate_shock,True,all,pooled,decision_wing_twcrps,181588,251,117,0.056523,0.056378,-0.258394,0.403558,-0.64029
+val,-1,regime,S3_rate_shock,True,market_eligible,market_cal,twcrps,117775,251,104,0.529273,0.520223,-1.739598,0.367049,-4.739414
+val,-1,regime,S3_rate_shock,True,market_eligible,market_cal,crps13,117775,251,104,0.63204,0.621903,-1.629991,0.392435,-4.15353
 val,-1,regime,S4_2023,True,market_eligible,market,twcrps,110961,249,102,0.533278,0.530057,-0.60772,0.606083,-1.0027
 val,-1,regime,S4_2023,True,market_eligible,market,crps13,110961,249,102,0.631612,0.627263,-0.693382,0.620387,-1.11766
 val,-1,regime,S4_2023,True,market_eligible,market,tail_crps,110961,249,102,0.378363,0.376946,-0.375903,0.588359,-0.638901
@@ -499,6 +537,8 @@ val,-1,regime,S4_2023,True,all,pooled,crps13,171118,249,116,0.623982,0.631594,1.
 val,-1,regime,S4_2023,True,all,pooled,tail_crps,171118,249,116,0.372787,0.380166,1.940886,0.481373,4.031975
 val,-1,regime,S4_2023,True,all,pooled,decision_strike_brier,171118,249,116,0.060995,0.061671,1.097113,0.587865,1.866268
 val,-1,regime,S4_2023,True,all,pooled,decision_wing_twcrps,170988,249,116,0.043474,0.043978,1.144095,0.566838,2.018382
+val,-1,regime,S4_2023,True,market_eligible,market_cal,twcrps,110961,249,102,0.533278,0.529113,-0.787131,0.562747,-1.39873
+val,-1,regime,S4_2023,True,market_eligible,market_cal,crps13,110961,249,102,0.631612,0.626255,-0.855461,0.585117,-1.462035
 fit,-2,pooled,ranked_folds_2_5,True,market_eligible,market,twcrps,193089,1427,110,0.510379,0.532723,4.194316,0.317318,13.218023
 fit,-2,pooled,ranked_folds_2_5,True,market_eligible,market,crps13,193089,1427,110,0.605224,0.632562,4.321678,0.315847,13.682833
 fit,-2,pooled,ranked_folds_2_5,True,market_eligible,market,tail_crps,193089,1427,110,0.361022,0.376154,4.022655,0.320861,12.537057
@@ -524,6 +564,8 @@ fit,-2,pooled,ranked_folds_2_5,True,all,pooled,crps13,367393,1427,118,0.594284,0
 fit,-2,pooled,ranked_folds_2_5,True,all,pooled,tail_crps,367393,1427,118,0.351172,0.371655,5.511217,0.28717,19.191492
 fit,-2,pooled,ranked_folds_2_5,True,all,pooled,decision_strike_brier,367393,1427,118,0.071689,0.075341,4.847241,0.254866,19.018762
 fit,-2,pooled,ranked_folds_2_5,True,all,pooled,decision_wing_twcrps,367380,1427,118,0.058929,0.062157,5.193097,0.279546,18.576869
+fit,-2,pooled,ranked_folds_2_5,True,market_eligible,market_cal,twcrps,193089,1427,110,0.510379,0.527605,3.265112,0.269735,12.104882
+fit,-2,pooled,ranked_folds_2_5,True,market_eligible,market_cal,crps13,193089,1427,110,0.605224,0.626115,3.336508,0.271618,12.283816
 val,-2,pooled,ranked_folds_2_5,True,market_eligible,market,twcrps,449498,1005,110,0.533385,0.529841,-0.668819,0.302834,-2.208532
 val,-2,pooled,ranked_folds_2_5,True,market_eligible,market,crps13,449498,1005,110,0.634012,0.629491,-0.718121,0.30714,-2.338088
 val,-2,pooled,ranked_folds_2_5,True,market_eligible,market,tail_crps,449498,1005,110,0.375701,0.373572,-0.570044,0.301834,-1.888601
@@ -549,3 +591,5 @@ val,-2,pooled,ranked_folds_2_5,True,all,pooled,crps13,711185,1005,118,0.622741,0
 val,-2,pooled,ranked_folds_2_5,True,all,pooled,tail_crps,711185,1005,118,0.366037,0.36908,0.824554,0.219183,3.761951
 val,-2,pooled,ranked_folds_2_5,True,all,pooled,decision_strike_brier,711185,1005,118,0.076912,0.076505,-0.533018,0.283706,-1.878771
 val,-2,pooled,ranked_folds_2_5,True,all,pooled,decision_wing_twcrps,711050,1005,118,0.05852,0.058459,-0.104867,0.266653,-0.39327
+val,-2,pooled,ranked_folds_2_5,True,market_eligible,market_cal,twcrps,449498,1005,110,0.533385,0.529234,-0.784224,0.249469,-3.14358
+val,-2,pooled,ranked_folds_2_5,True,market_eligible,market_cal,crps13,449498,1005,110,0.634012,0.628975,-0.800768,0.258262,-3.100604
