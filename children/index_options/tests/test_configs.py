@@ -384,6 +384,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-strike-screen-fits-matrix.json", "configs/run-strike-region-scores-matrix.json",
         "docs/memos/2026-10-19-strike-screen-matrix-results.md",
         "docs/research/distribution-modeling/2026-10-20-strike-screen-technical-design.md",
+        "configs/strike-screen-folds-walkforward.jsonl", "configs/run-strike-screen-fits-walkforward.json",
+        "configs/run-strike-region-scores-walkforward.json",
         "tests/test_strike_screen_fits.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
@@ -431,7 +433,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the strike-region scores node, its document and its test = 581.
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
-    assert len(actual) == 578 + 3 + 5 + 1 + 4   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase)
+    assert len(actual) == 578 + 3 + 5 + 1 + 7   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase)
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

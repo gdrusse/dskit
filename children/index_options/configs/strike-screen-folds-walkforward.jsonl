@@ -1,0 +1,5 @@
+{"fold": 1, "role": "warmup", "train_start": "2017-01-03", "train_end": "2018-12-31", "val_start": "2019-01-02", "val_end": "2019-12-31"}
+{"fold": 2, "role": "scored", "train_start": "2017-01-03", "train_end": "2019-12-31", "val_start": "2020-01-02", "val_end": "2020-12-31"}
+{"fold": 3, "role": "scored", "train_start": "2017-01-03", "train_end": "2020-12-31", "val_start": "2021-01-04", "val_end": "2021-12-31"}
+{"fold": 4, "role": "scored", "train_start": "2017-01-03", "train_end": "2021-12-31", "val_start": "2022-01-03", "val_end": "2022-12-30"}
+{"fold": 5, "role": "scored", "train_start": "2017-01-03", "train_end": "2022-12-30", "val_start": "2023-01-03", "val_end": "2023-12-29"}
