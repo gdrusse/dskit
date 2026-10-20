@@ -2,6 +2,8 @@
 
 ## TL;DR
 
+**Superseded for the model-vs-market question by `2026-10-20-walkforward-results.md` (yearly retraining, long schedule, regimes, gate).** The text below is the stale-model screen.
+
 Against the market-implied curve the models do NOT win overall: on the proper scores (CRPS family, strike Brier) the market is better in every cell, by 0.8-3.3% weighted CRPS. One replicated pocket stands out: left-tail regions (z from -2.0 to -1.0) at 36-60 DTE, where models beat the raw market's region Brier by about 1-2% in both folds. The raw market curve is badly calibrated and a recalibrated market is not built, so no cell is a production candidate yet.
 
 ## Execution contract
