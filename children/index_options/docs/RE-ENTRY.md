@@ -9,6 +9,7 @@ Updated: 2026-10-19 by Claude Fable 5.1 / Sonnet 5.5. Previous note in docs/arch
 - Protocol configs/strike-screen-protocol.json revision 5 (sha 073d39cb). R5 stays consumed; R6 packet never launched.
 - Matrix fits 20/20 (model vs per-name baseline +0.1..0.9% fold 1, +1.2..2.2% fold 2) and scoring 20/20 on a 50,000-row validation sample per cell (validation_band_sample).
 - VS THE MARKET-IMPLIED CURVE: the market wins on every proper score (weighted CRPS by 0.8-3.3%); models win only region Brier in a left-tail pocket at 36-60 DTE (z -2.0..-1.0, about +2%, both folds). Models are far better calibrated than the RAW market (reliability), which a recalibrated market would erase: market_calibrated not built, so no production candidate yet.
+- Per name vs the raw market (chain arm): BX and KKR beat it in both folds at t>3 (+5..7%, +7..10%); COST, APO, JPM, BLK, COF, AMAT positive in both but fading; 13 of 109 names win both folds, about chance.
 - Speed-ups landed (bit-identical): CUDA-graph step, lean panel load, vectorized raw-chain prepare, nearest-horizon baseline rule.
 
 ## Next
