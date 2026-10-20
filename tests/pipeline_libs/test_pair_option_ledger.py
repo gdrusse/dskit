@@ -112,7 +112,11 @@ def test_one_unsettled_leg_refuses_entire_pair():
         if r["symbol"] == "B" and r["date"] == EXP:
             r["underlying_price"] = None
     out = run([pair()], rows)
-    assert out["trades"] == out["marks"] == out["cashflows"] == []
+    assert out["trades"] == []
+    assert out["exposures"][0]["status"] == "not_closed"
+    assert out["exposures"][0]["marked_pnl_usd"] == pytest.approx(848)
+    assert out["marks"][-1]["pnl_usd"] == pytest.approx(848)
+    assert len(out["cashflows"]) == 3  # both opens and the short settlement
     assert out["refusals"][0]["status"] == "not_closed"
 
 
@@ -205,6 +209,69 @@ def test_requested_exit_fallback_to_expiry_is_not_a_paired_exit():
     assert out["trades"] == []
     assert out["refusals"][0]["status"] == "not_closed"
     assert out["summary"]["pairs_refused"] == 1
+    exposure = out["exposures"][0]
+    assert exposure["short_trade"]["close_date"] == MID
+    assert exposure["long_trade"]["close_date"] == EXP
+    assert exposure["marked_pnl_usd"] == pytest.approx(out["marks"][-1]["pnl_usd"])
+    assert sum(row["cash_usd"] - row["fees_usd"] for row in out["cashflows"]) == pytest.approx(exposure["marked_pnl_usd"])
+
+
+def test_hedge_skip_after_open_is_not_counted_as_completed_pair():
+    from datetime import date
+    from dskit.pipeline.option_pricing import black76
+
+    expiration = "2020-02-03"
+    rows = []
+    for symbol in ("A", "B"):
+        for day in (OPEN, MID, expiration):
+            years = max((date.fromisoformat(expiration) - date.fromisoformat(day)).days, 1) / 365
+            mid = black76("call", 100, 100, 0.3, years)
+            rows.append({"symbol": symbol, "date": day, "expiration": expiration,
+                         "strike": 100, "right": "call", "bid": max(mid - 0.01, 0.001),
+                         "ask": mid + 0.01,
+                         "underlying_price": None if symbol == "B" and day == MID else 100})
+    order = pair()
+    for side in ("short_order", "long_order"):
+        order[side]["expiration"] = expiration
+        order[side]["exit"] = MID
+    cfg = {**LEDGER, "close_rule": "exit", "order_fields": {**ORDER_FIELDS, "exit": "exit"},
+           "hedge": {"rebalance": "daily", "rate": 0.0, "fee_per_share": 0.0}}
+    out = run([order], rows, ledger_params=cfg)
+    assert not out["trades"]
+    assert out["refusals"][0]["status"] == "hedge_failed"
+    assert out["exposures"][0]["hedge_skipped"]["long"]["missing_underlying_at_close"] == 1
+    assert out["marks"] and out["cashflows"]
+
+
+@pytest.mark.parametrize("bad_field,bad_value", [
+    ("underlying_price", None), ("bid", 110.0),
+])
+def test_hedge_prerequisite_failure_at_entry_refuses_pair_before_fills(
+    bad_field, bad_value
+):
+    from datetime import date
+    from dskit.pipeline.option_pricing import black76
+
+    expiry = "2020-02-03"
+    years = (date.fromisoformat(expiry) - date.fromisoformat(OPEN)).days / 365
+    mid = black76("call", 100, 100, 0.3, years)
+    rows = [
+        {"symbol": symbol, "date": OPEN, "expiration": expiry, "strike": 100,
+         "right": "call", "bid": mid - 0.01, "ask": mid + 0.01,
+         "underlying_price": 100}
+        for symbol in ("A", "B")
+    ]
+    rows[1][bad_field] = bad_value
+    if bad_field == "bid":
+        rows[1]["ask"] = 111.0  # valid NBBO, impossible Black IV
+    order = pair()
+    for side in ("short_order", "long_order"):
+        order[side]["expiration"] = expiry
+    cfg = {**LEDGER, "hedge": {"rebalance": "daily", "rate": 0.0,
+                               "fee_per_share": 0.0}}
+    out = run([order], rows, ledger_params=cfg)
+    assert out["trades"] == out["exposures"] == out["marks"] == out["cashflows"] == []
+    assert out["refusals"][0]["status"] == "long_refused"
 
 
 def test_stream_preserves_first_valid_underlying_even_on_unordered_contract():

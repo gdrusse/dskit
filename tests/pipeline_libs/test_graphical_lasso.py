@@ -105,3 +105,41 @@ def test_next_year_refit_uses_only_previous_year_rows():
     assert first["fits"][1]["refit"] is True
     assert first["fits"][1]["fit_date"] == "2021-01-01"
     assert first["fits"][1]["trained_through"] == "2020-12-31"
+
+
+def test_cv_training_features_ignore_future_fold_observations(monkeypatch):
+    """Later validation rows cannot alter features passed for earlier CV training."""
+    import numpy as np
+    import sklearn.covariance
+
+    captured = []
+
+    class CaptureLasso:
+        def __init__(self, **kwargs):
+            self.precision_ = np.array([[1.0, -0.2, -0.2],
+                                        [-0.2, 1.0, -0.2],
+                                        [-0.2, -0.2, 1.0]])
+            self.alpha_ = 0.1
+            self.n_iter_ = 1
+            self.cv_results_ = {"mean_test_score": np.array([1.0])}
+
+        def fit(self, matrix):
+            captured.append(np.asarray(matrix).copy())
+            return self
+
+        def score(self, matrix):
+            return 1.0
+
+    monkeypatch.setattr(sklearn.covariance, "GraphicalLassoCV", CaptureLasso)
+    node = RollingPrecisionGraph("graph", _params())
+    rows = _rows()
+    node.run(None, {"records": rows})
+    changed = [dict(row) for row in rows]
+    for row in changed:
+        if "2020-01-31" <= row["day"] < "2020-02-10":
+            row["ret"] *= 15
+            row["qqq_ret"] *= -7
+    node.run(None, {"records": changed})
+    assert len(captured) == 2
+    np.testing.assert_allclose(captured[0][:10], captured[1][:10], rtol=0, atol=1e-12)
+    assert not np.allclose(captured[0][-5:], captured[1][-5:])

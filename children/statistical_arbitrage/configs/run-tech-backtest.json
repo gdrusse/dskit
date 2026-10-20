@@ -1,33 +1,33 @@
 {
-  "name": "tech-paired-option-replay-20261020",
-  "notes": "ADR-0271 approved quote-based retrospective replay. Primary ATM-IV and secondary skew variants use identical next-session order, costs, capital and refusal rules against a no-network all-pairs baseline. No untouched OOS, live fill guarantee or paper/live order.",
+  "name": "tech-paired-option-replay-20261020-v3",
+  "notes": "ADR-0271 approved quote-based retrospective replay. Primary ATM-IV and secondary skew variants use identical next-session order, costs, capital and refusal rules against a no-network all-pairs baseline. No untouched OOS, live fill guarantee or paper/live order. Corrected causal graph supersedes the 2026-10-19 network diagnostics.",
   "structural_config": {
     "path": "configs/run-tech-structural.json",
-    "sha256": "da8e353050139277e14ddd92ebe57100e09a32e2fe5be898e8d879e34d96ee85"
+    "sha256": "282794c01f439adbe5387feae0998b9a4ebe28c39cd5405bdbe9cd5f9a1b476c"
   },
   "structural_rows": {
     "surface_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/surface_rows.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/surface_rows.jsonl",
       "sha256": "517f705cfe37aa6bad6f3f62d06d0a0920f7ef45f790e6238a58051059fbc86a"
     },
     "graph_fits.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/graph_fits.jsonl",
-      "sha256": "4715fd566d6c6f98b832abbd1410b62efb7d04540f3106a364a41760b4279ac2"
+      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/graph_fits.jsonl",
+      "sha256": "c97ca2d93c3b67e9a0cd26311a8001be525d813a6f05b38f63a7869ba4dae23d"
     },
     "atm_network_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/atm_network_rows.jsonl",
-      "sha256": "5f6bee744c786043b4fcd7465e5c71f58e04eeba6303e59ec57510d9b88fb489"
+      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/atm_network_rows.jsonl",
+      "sha256": "00cce4ecc2438b1125f84648f063421f69f49c7e5519aa2b510b13a51141094a"
     },
     "atm_baseline_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/atm_baseline_rows.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/atm_baseline_rows.jsonl",
       "sha256": "9fa2697748c2dab0efae40f9882d7dfd8667fa6a6e9e0fe5447eeca95ccd8c36"
     },
     "skew_network_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/skew_network_rows.jsonl",
-      "sha256": "b467e593ffe997f0af55b16acaf6c1c0172ae0a18f81d15b54cafcda385a4d32"
+      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/skew_network_rows.jsonl",
+      "sha256": "52481478701d4c1f674beb8d243912fb352cbb3389509d889fede9408aeb4f4d"
     },
     "skew_baseline_rows.jsonl": {
-      "path": "/home/russell/data/statistical_arbitrage/structural-20261019/skew_baseline_rows.jsonl",
+      "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/skew_baseline_rows.jsonl",
       "sha256": "e0b6b380e8e092f53ddb0521bc8e15982473161394239a21b03a42d5b3a5fa20"
     }
   },

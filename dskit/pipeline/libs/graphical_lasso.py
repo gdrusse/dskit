@@ -218,13 +218,10 @@ class RollingPrecisionGraph(Node):
         if np.std(factor, ddof=1) <= 1e-12:
             fit["status"] = "factor_degenerate"
             return fit, [], []
-        design = np.column_stack((np.ones(len(factor)), factor))
-        residual = matrix - design @ np.linalg.lstsq(design, matrix, rcond=None)[0]
-        scale = np.std(residual, axis=0, ddof=1)
-        if np.any(scale <= 1e-12):
-            fit["status"] = "residual_degenerate"
+        standardized = self._causal_features(factor, matrix, np)
+        if len(standardized) <= self.params["cv_splits"] + 1:
+            fit["status"] = "insufficient_causal_features"
             return fit, [], []
-        standardized = residual / scale
         estimator = GraphicalLassoCV(cv=TimeSeriesSplit(n_splits=self.params["cv_splits"]),
                                      max_iter=self.params["max_iter"], tol=self.params["tol"])
         try:
@@ -283,6 +280,25 @@ class RollingPrecisionGraph(Node):
                               for name in sorted(symbols)]
                 return fit, sorted(candidates, key=lambda r: (r["symbol_a"], r["symbol_b"])), centrality
         return fit, [], []
+
+    @staticmethod
+    def _causal_features(factor, matrix, np):
+        """Standardize each return using factor OLS and scale fitted before its date."""
+        minimum_history = 2 * matrix.shape[1]
+        rows = []
+        for index in range(minimum_history, len(factor)):
+            historical_factor = factor[:index]
+            if np.std(historical_factor, ddof=1) <= 1e-12:
+                continue
+            design = np.column_stack((np.ones(index), historical_factor))
+            beta = np.linalg.lstsq(design, matrix[:index], rcond=None)[0]
+            historical_residual = matrix[:index] - design @ beta
+            scale = np.std(historical_residual, axis=0, ddof=1)
+            if np.any(scale <= 1e-12):
+                continue
+            current_residual = matrix[index] - np.array([1.0, factor[index]]) @ beta
+            rows.append(current_residual / scale)
+        return np.asarray(rows, dtype=float).reshape(-1, matrix.shape[1])
 
     def _panel(self, rows):
         """Validate and index the long panel; non-finite values remain incomplete cells."""

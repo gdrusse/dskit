@@ -1,6 +1,6 @@
 {
-  "name": "tech-structural-20261019",
-  "notes": "Phase-one AAPL/AMZN/GOOGL annual precision graph, Theta 30-DTE IV/skew, network pair z-scores and all-pairs baseline. QQQ factor. Source and signal clocks are retrospective; no option order or P&L. Bounded to last QQQ close 2025-12-15.",
+  "name": "tech-structural-causal-retry-20261020",
+  "notes": "Phase-one AAPL/AMZN/GOOGL annual precision graph, Theta 30-DTE IV/skew, network pair z-scores and all-pairs baseline. QQQ factor. Source and signal clocks are retrospective; no option order or P&L. Bounded to last QQQ close 2025-12-15. Causal factor residual preprocessing per review correction; earlier diagnostics superseded on difference. Retry after creating the predeclared output directory.",
   "outputs": {
     "run_root": "/home/russell/data/statistical_arbitrage/pipeline_runs"
   },
@@ -387,9 +387,9 @@
         "records": "$surface.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/surface_rows.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/surface_rows.jsonl",
         "overwrite": false,
-        "source": "ADR-0271 structural surface.records; retrospective research, no trade or P&L"
+        "source": "ADR-0271 corrected causal structural evidence; earlier results are provisional"
       },
       "notes": "Immutable structural evidence for diagnostics and later paired replay."
     },
@@ -399,9 +399,9 @@
         "records": "$graph.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/graph_fits.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/graph_fits.jsonl",
         "overwrite": false,
-        "source": "ADR-0271 structural graph.fits; retrospective research, no trade or P&L"
+        "source": "ADR-0271 corrected causal structural evidence; earlier results are provisional"
       },
       "notes": "Immutable structural evidence for diagnostics and later paired replay."
     },
@@ -411,9 +411,9 @@
         "records": "$atm_network.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/atm_network_rows.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/atm_network_rows.jsonl",
         "overwrite": false,
-        "source": "ADR-0271 structural atm_network.records; retrospective research, no trade or P&L"
+        "source": "ADR-0271 corrected causal structural evidence; earlier results are provisional"
       },
       "notes": "Immutable structural evidence for diagnostics and later paired replay."
     },
@@ -423,9 +423,9 @@
         "records": "$atm_baseline.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/atm_baseline_rows.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/atm_baseline_rows.jsonl",
         "overwrite": false,
-        "source": "ADR-0271 structural atm_baseline.records; retrospective research, no trade or P&L"
+        "source": "ADR-0271 corrected causal structural evidence; earlier results are provisional"
       },
       "notes": "Immutable structural evidence for diagnostics and later paired replay."
     },
@@ -435,9 +435,9 @@
         "records": "$skew_network.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/skew_network_rows.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/skew_network_rows.jsonl",
         "overwrite": false,
-        "source": "ADR-0271 structural skew_network.records; retrospective research, no trade or P&L"
+        "source": "ADR-0271 corrected causal structural evidence; earlier results are provisional"
       },
       "notes": "Immutable structural evidence for diagnostics and later paired replay."
     },
@@ -447,9 +447,9 @@
         "records": "$skew_baseline.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/structural-20261019/skew_baseline_rows.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/structural-causal-20261020/skew_baseline_rows.jsonl",
         "overwrite": false,
-        "source": "ADR-0271 structural skew_baseline.records; retrospective research, no trade or P&L"
+        "source": "ADR-0271 corrected causal structural evidence; earlier results are provisional"
       },
       "notes": "Immutable structural evidence for diagnostics and later paired replay."
     }

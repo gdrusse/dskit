@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from math import sqrt
+from datetime import date
+from math import isfinite, sqrt
+from pathlib import Path
 from typing import Any
 
 
@@ -86,6 +88,7 @@ class PerformanceReporter:
         model_trades: Sequence[Mapping[str, Any]],
         baseline_trades: Sequence[Mapping[str, Any]],
         qqq_symbol: str = "QQQ",
+        prior_adjusted_prices: Mapping[str, float] | None = None,
     ) -> dict[str, Any]:
         """Measure paired books and adjusted-price benchmarks on matching dates."""
         import numpy as np
@@ -103,13 +106,27 @@ class PerformanceReporter:
         if any(len(v) != n or not np.isfinite(v).all() or (v <= 0).any()
                for v in price.values()):
             raise ValueError("adjusted prices must be positive finite and match dates")
+        if prior_adjusted_prices is not None and (
+            set(prior_adjusted_prices) != set(price)
+            or any(not np.isfinite(value) or value <= 0
+                   for value in prior_adjusted_prices.values())
+        ):
+            raise ValueError("prior adjusted prices must match symbols and be positive finite")
         stock = [v for symbol, v in price.items() if symbol != qqq_symbol]
         if not stock:
             raise ValueError("equal-weight benchmark has no stocks")
-        stock_returns = np.stack([np.r_[0.0, v[1:] / v[:-1] - 1.0] for v in stock])
+        stock_returns = np.stack([
+            np.r_[v[0] / prior_adjusted_prices[symbol] - 1.0
+                  if prior_adjusted_prices is not None else 0.0,
+                  v[1:] / v[:-1] - 1.0]
+            for symbol, v in price.items() if symbol != qqq_symbol
+        ])
         market_returns = stock_returns.mean(axis=0)
         qqq = price[qqq_symbol]
-        qqq_returns = np.r_[0.0, qqq[1:] / qqq[:-1] - 1.0]
+        qqq_returns = np.r_[
+            qqq[0] / prior_adjusted_prices[qqq_symbol] - 1.0
+            if prior_adjusted_prices is not None else 0.0,
+            qqq[1:] / qqq[:-1] - 1.0]
         model_cash = np.asarray(model_pnl, dtype=float)
         baseline_cash = np.asarray(baseline_pnl, dtype=float)
         if not np.isfinite(model_cash).all() or not np.isfinite(baseline_cash).all():
@@ -145,3 +162,157 @@ class PerformanceReporter:
                 for i, day in enumerate(days)
             ],
         }
+
+    def save_plots(
+        self,
+        output_dir: str | Path,
+        evaluation: Mapping[str, Any],
+        network_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        symbols: Sequence[str],
+        graph_fits: Sequence[Mapping[str, Any]] = (),
+        entry_z: float | None = None,
+    ) -> list[str]:
+        """Save descriptive plots from scored books and pinned structural rows.
+
+        Edge widths are deliberately uniform: pair signal rows retain membership,
+        but not fitted partial-correlation weights. Trade flags mark actual fill
+        dates at the most recent strictly earlier close Z for the selected pair.
+        """
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib import pyplot as plt
+        import networkx as nx
+
+        output = Path(output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        if not set(network_rows) >= {"atm", "skew"}:
+            raise ValueError("ATM and skew pinned network rows required")
+        names: list[str] = []
+        atm = list(network_rows["atm"])
+        refits = [row for row in graph_fits if row.get("refit") is True]
+        fit_date = (max(row["fit_date"] for row in refits)
+                    if refits else max((row["fit_date"] for row in atm), default=None))
+        edges = sorted({(row["symbol_a"], row["symbol_b"])
+                        for row in atm if row.get("fit_date") == fit_date
+                        and row.get("status") == "ok"})
+        graph = nx.Graph()
+        graph.add_nodes_from(symbols)
+        graph.add_edges_from(edges)
+        figure, axis = plt.subplots(figsize=(7, 5))
+        try:
+            locations = nx.spring_layout(graph, seed=23)
+            nx.draw_networkx(graph, pos=locations, ax=axis, with_labels=True,
+                             node_color="#b9d9f3", edge_color="#356b9b",
+                             width=2.0, node_size=1400, font_size=11)
+            axis.set_title(f"Selected ATM network at fit {fit_date or 'none'}")
+            axis.text(0.5, -0.08,
+                      "Equal-width links show selected pairs; saved rows have no edge weights.",
+                      transform=axis.transAxes, ha="center", fontsize=8)
+            axis.axis("off")
+            figure.tight_layout()
+            name = "network-atm.png"
+            figure.savefig(output / name, dpi=150, bbox_inches="tight")
+            names.append(name)
+        finally:
+            plt.close(figure)
+
+        for variant in ("atm", "skew"):
+            book = evaluation["books"][f"{variant}_network"]
+            rows = [row for row in network_rows[variant]
+                    if row.get("status") == "ok" and row.get("z") is not None
+                    and isfinite(float(row["z"]))]
+            pairs = sorted({(row["symbol_a"], row["symbol_b"]) for row in rows})
+            trade_counts = {
+                pair: sum(trade.get("id", "").endswith(f":{pair[0]}:{pair[1]}")
+                          for trade in book["trades"])
+                for pair in pairs
+            }
+            selected = max(pairs, key=lambda pair: (
+                trade_counts[pair],
+                sum((row["symbol_a"], row["symbol_b"]) == pair for row in rows),
+                pair,
+            )) if pairs else None
+            series = sorted(
+                (row for row in rows
+                 if (row["symbol_a"], row["symbol_b"]) == selected),
+                key=lambda row: row["date"],
+            )
+            figure, axis = plt.subplots(figsize=(11, 4))
+            try:
+                if series:
+                    x = [date.fromisoformat(row["date"]) for row in series]
+                    y = [float(row["z"]) for row in series]
+                    axis.plot(x, y, color="#285f9e", linewidth=1,
+                              label=f"{selected[0]} − {selected[1]} close Z")
+                    known = {row["date"]: float(row["z"]) for row in series}
+                    selected_trades = [trade for trade in book["trades"]
+                                       if trade.get("id", "").endswith(
+                                           f":{selected[0]}:{selected[1]}")]
+                    for field, marker, color, label in (
+                        ("entry_date", "^", "#15803d", "entry fill"),
+                        ("exit_date", "v", "#b91c1c", "exit fill"),
+                    ):
+                        points = []
+                        for trade in selected_trades:
+                            fill = trade.get(field)
+                            prior = (max((day for day in known if day < fill), default=None)
+                                     if fill else None)
+                            if prior is not None:
+                                points.append((date.fromisoformat(fill), known[prior]))
+                        if points:
+                            axis.scatter([point[0] for point in points],
+                                         [point[1] for point in points],
+                                         marker=marker, color=color, s=45, label=label,
+                                         zorder=3)
+                else:
+                    axis.text(0.5, 0.5, "No valid pinned Z series", ha="center",
+                              va="center", transform=axis.transAxes)
+                axis.axhline(0, color="#555555", linewidth=0.8)
+                if entry_z is not None:
+                    axis.axhline(entry_z, color="#9a6700", linestyle="--",
+                                 linewidth=0.8)
+                    axis.axhline(-entry_z, color="#9a6700", linestyle="--",
+                                 linewidth=0.8)
+                axis.set_title(f"{variant.upper()} rolling pair Z")
+                axis.set_ylabel("Z score")
+                axis.set_xlabel("Session")
+                axis.text(0.5, -0.28,
+                          "Most-traded selected pair; flags at fills use prior-close Z.",
+                          transform=axis.transAxes, ha="center", fontsize=8)
+                if axis.get_legend_handles_labels()[0]:
+                    axis.legend(loc="best")
+                figure.autofmt_xdate()
+                figure.tight_layout()
+                name = f"z-{variant}-network.png"
+                figure.savefig(output / name, dpi=150, bbox_inches="tight")
+                names.append(name)
+            finally:
+                plt.close(figure)
+
+        figure, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+        try:
+            for axis, variant in zip(axes, ("atm", "skew")):
+                daily = evaluation["books"][f"{variant}_network"]["full"]["daily"]
+                days = [date.fromisoformat(row["date"]) for row in daily]
+                for field, label in (
+                    ("model_equity", f"{variant.upper()} network"),
+                    ("baseline_equity", f"{variant.upper()} all-pairs baseline"),
+                    ("equal_weight_equity", "Equal-weight tech"),
+                    ("qqq_equity", "QQQ"),
+                ):
+                    axis.plot(days, [row[field] for row in daily], label=label)
+                axis.set_title(f"{variant.upper()} scored cumulative equity")
+                axis.set_ylabel("USD")
+                axis.grid(alpha=0.25)
+                axis.legend(loc="best")
+            axes[-1].set_xlabel("Session")
+            figure.autofmt_xdate()
+            figure.tight_layout()
+            name = "cumulative-equity.png"
+            figure.savefig(output / name, dpi=150, bbox_inches="tight")
+            names.append(name)
+        finally:
+            plt.close(figure)
+        return names

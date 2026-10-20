@@ -1,9 +1,10 @@
-"""Atomic research pairing of two existing option-structure ledger outcomes.
+"""Research pairing of two existing option-structure ledger outcomes.
 
 This pack delegates quote selection, NBBO fills, option marks, expiry/exit cash, fees and
 optional Black-76 delta hedge to :class:`OptionStructureLedger`. A pair appears in the
-trade output only if both delegated orders open and close as requested. A refused or
-unsettled side excludes both from realized performance, with a counted reason. Outputs
+completed trade output only if both delegated orders open, hedge successfully, and
+close as requested. Any opened but incomplete pair remains in ``exposures`` with
+its actual marks and cashflows, so its P&L cannot disappear. Outputs
 include *structure-level* cashflows; the delegated ledger does not expose individual
 contract fill tickets. Settlement is its European cash approximation, with no financing.
 """
@@ -43,10 +44,11 @@ class PairedOptionLedger(Node):
             "long_order": long_order, "short_contracts": 1,
             "long_contracts": 1}], "chain": chain_rows})
         # -> out["trades"] contains one result only if both legs close
+        # -> out["exposures"] retains opened but incomplete pairs
     """
 
     role = "transform"
-    outputs = ("trades", "marks", "cashflows", "refusals", "summary")
+    outputs = ("trades", "exposures", "marks", "cashflows", "refusals", "summary")
     _PARAMS = (
         "ledger_params",
         "pair_id_field",
@@ -103,7 +105,7 @@ class PairedOptionLedger(Node):
         return problems
 
     def run(self, ctx, inputs):
-        """Replay both orders per pair and retain only matched closed results.
+        """Replay both orders per pair and retain opened exposure separately.
 
         Parameters
         ----------
@@ -115,8 +117,8 @@ class PairedOptionLedger(Node):
         Returns
         -------
         dict
-            Closed pair ``trades``, combined daily ``marks``, structure-level
-            ``cashflows``, counted ``refusals`` and ``summary``.
+            Closed pair ``trades``, incomplete opened ``exposures``, combined daily
+            ``marks``, structure-level ``cashflows``, counted ``refusals`` and ``summary``.
 
         Raises
         ------
@@ -131,7 +133,7 @@ class PairedOptionLedger(Node):
         if chain is None or isinstance(chain, (str, bytes, Mapping)):
             raise ValueError(f"{self.key}: chain must be an iterable of rows")
         prepared = []
-        trades, marks, cashflows, refusals = [], [], [], []
+        trades, exposures, marks, cashflows, refusals = [], [], [], [], []
         reasons = Counter()
         ids = set()
         for index, pair in enumerate(pairs):
@@ -165,20 +167,39 @@ class PairedOptionLedger(Node):
                         "long_detail": long_problem,
                         "short_status": short["trades"][0]["status"] if short else None,
                         "long_status": long["trades"][0]["status"] if long else None,
+                        "hedge_skipped": {
+                            "short": self._hedge_skips(short),
+                            "long": self._hedge_skips(long),
+                        },
                     }
                 )
-                continue
+                if short is None or long is None:
+                    continue  # Entry is all-or-none when either side cannot open.
             short_trade, long_trade = short["trades"][0], long["trades"][0]
-            trade = self._combine_trade(pair_id, short_trade, long_trade)
             pair_marks = self._combine_marks(pair_id, short["marks"], long["marks"])
-            if (
-                not pair_marks
-                or abs(pair_marks[-1]["pnl_usd"] - trade["pnl_usd"]) > 1e-7
-            ):
-                raise ValueError(
-                    f"{self.key}: paired marks do not reconcile for {pair_id!r}"
-                )
-            trades.append(trade)
+            if not pair_marks:
+                raise ValueError(f"{self.key}: no paired marks for {pair_id!r}")
+            if status is None:
+                trade = self._combine_trade(pair_id, short_trade, long_trade)
+                if abs(pair_marks[-1]["pnl_usd"] - trade["pnl_usd"]) > 1e-7:
+                    raise ValueError(
+                        f"{self.key}: paired marks do not reconcile for {pair_id!r}"
+                    )
+                trades.append(trade)
+            else:
+                exposures.append({
+                    "id": pair_id,
+                    "status": status,
+                    "open_date": short_trade["open_date"],
+                    "short_trade": short_trade,
+                    "long_trade": long_trade,
+                    "marked_pnl_usd": pair_marks[-1]["pnl_usd"],
+                    "last_mark_date": pair_marks[-1]["date"],
+                    "hedge_skipped": {
+                        "short": self._hedge_skips(short),
+                        "long": self._hedge_skips(long),
+                    },
+                })
             marks.extend(pair_marks)
             cashflows.extend(self._cashflows(pair_id, "short", short_trade))
             cashflows.extend(self._cashflows(pair_id, "long", long_trade))
@@ -194,17 +215,22 @@ class PairedOptionLedger(Node):
         }
         return {
             "trades": trades,
+            "exposures": exposures,
             "marks": marks,
             "cashflows": cashflows,
             "refusals": refusals,
             "summary": {
                 "pairs_in": len(pairs),
                 "pairs_closed": len(trades),
+                "pairs_with_open_exposure": len(exposures),
                 "pairs_refused": len(refusals),
                 "refused_by_reason": dict(reasons),
                 "chain_rows_seen": compact["rows_seen"] if compact else 0,
                 "chain_rows_retained": len(compact["retained"]) if compact else 0,
                 "totals": total,
+                "incomplete_marked_pnl_usd": sum(
+                    exposure["marked_pnl_usd"] for exposure in exposures
+                ),
             },
         }
 
@@ -369,9 +395,17 @@ class PairedOptionLedger(Node):
         if hedge_rate is not None:
             params["hedge"] = {**params["hedge"], "rate": float(hedge_rate)}
         try:
-            result = OptionStructureLedger(f"{self.key}_leg", params).run(
-                ctx, {"chain": chain, "orders": [order]}
-            )
+            ledger = OptionStructureLedger(f"{self.key}_leg", params)
+            if params.get("hedge"):
+                chain_day = params["chain_fields"]["date"]
+                order_day = params["order_fields"]["date"]
+                entry_rows = [row for row in chain
+                              if str(row.get(chain_day)) == str(order[order_day])]
+                entry = ledger.run(ctx, {"chain": entry_rows, "orders": [order]})
+                skipped = entry["summary"].get("hedge", {}).get("skipped", {})
+                if skipped:
+                    return None, f"hedge_prerequisite:{skipped}"
+            result = ledger.run(ctx, {"chain": chain, "orders": [order]})
         except ValueError as exc:
             message = str(exc)
             if "every order was refused" in message or "no chain rows" in message:
@@ -379,8 +413,20 @@ class PairedOptionLedger(Node):
             raise
         return result, None
 
-    @staticmethod
-    def _status(short, long, short_problem, long_problem):
+    def _hedge_skips(self, result):
+        """Return failed hedge prerequisites or rebalances for one opened side."""
+        if result is None or not self.params["ledger_params"].get("hedge"):
+            return {}
+        skipped = dict(result["summary"].get("hedge", {}).get("skipped", {}))
+        missing_marks = sum(
+            row["underlying"] is None for row in result["marks"]
+            if row["phase"] in ("exit", "settle")
+        )
+        if missing_marks:
+            skipped["missing_underlying_at_close"] = missing_marks
+        return skipped
+
+    def _status(self, short, long, short_problem, long_problem):
         """Say why a pair cannot be counted as one completed trade."""
         if short_problem and long_problem:
             return "both_refused"
@@ -388,6 +434,8 @@ class PairedOptionLedger(Node):
             return "short_refused"
         if long_problem:
             return "long_refused"
+        if self._hedge_skips(short) or self._hedge_skips(long):
+            return "hedge_failed"
         a, b = short["trades"][0], long["trades"][0]
         if (
             a["status"] != "closed"
@@ -464,16 +512,16 @@ class PairedOptionLedger(Node):
     @staticmethod
     def _cashflows(pair_id, leg, trade):
         """Return structure-level fills and settlement plus delegated hedge accrual."""
-        rows = [
-            {
-                "id": pair_id,
-                "leg": leg,
-                "phase": "open_fill",
-                "date": trade["open_date"],
-                "cash_usd": trade["premium_usd"],
-                "fees_usd": trade["open_fees_usd"],
-            },
-            {
+        rows = [{
+            "id": pair_id,
+            "leg": leg,
+            "phase": "open_fill",
+            "date": trade["open_date"],
+            "cash_usd": trade["premium_usd"],
+            "fees_usd": trade["open_fees_usd"],
+        }]
+        if trade["close_date"] is not None:
+            rows.append({
                 "id": pair_id,
                 "leg": leg,
                 "phase": "exit_fill"
@@ -482,9 +530,10 @@ class PairedOptionLedger(Node):
                 "date": trade["close_date"],
                 "cash_usd": trade["close_cash_usd"],
                 "fees_usd": trade["close_fees_usd"],
-            },
-        ]
-        if trade["hedge_pnl_usd"] or trade["hedge_fees_usd"]:
+            })
+        if trade["close_date"] is not None and (
+            trade["hedge_pnl_usd"] or trade["hedge_fees_usd"]
+        ):
             rows.append(
                 {
                     "id": pair_id,

@@ -8,9 +8,14 @@ from __future__ import annotations
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from datetime import date
+from hashlib import sha256
+import json
 from math import isfinite
+from pathlib import Path
+import re
 from typing import Iterable
 
+from dskit.pipeline.libs.pair_option_ledger import PairedOptionLedger
 from dskit.pipeline.option_pricing import black76_vega
 
 
@@ -194,23 +199,27 @@ class VolatilityArbitrageBacktester:
                 refused["invalid_vega"] += 1
                 continue
             candidates = []
+            within_vega = False
             for q_short in range(1, max_contracts + 1):
                 for q_long in range(1, max_contracts + 1):
                     short_v, long_v = vegas[0] * q_short, vegas[1] * q_long
                     mismatch = abs(short_v - long_v) / max(short_v, long_v)
-                    candidates.append((mismatch, q_short + q_long, q_short, q_long))
-            mismatch, _sum, q_short, q_long = min(candidates)
-            if mismatch > max_vega_mismatch:
-                refused["vega_mismatch"] += 1
+                    if mismatch > max_vega_mismatch:
+                        continue
+                    within_vega = True
+                    gross = 100 * (
+                        q_short * float(short["atm_strike"]) +
+                        q_long * float(long["atm_strike"])
+                    )
+                    if (max_gross_notional_usd is not None
+                            and gross > max_gross_notional_usd):
+                        continue
+                    candidates.append((mismatch, q_short + q_long,
+                                       q_short, q_long, gross))
+            if not candidates:
+                refused["gross_notional" if within_vega else "vega_mismatch"] += 1
                 continue
-            gross_notional = 100 * (
-                q_short * float(short["atm_strike"]) +
-                q_long * float(long["atm_strike"])
-            )
-            if (max_gross_notional_usd is not None
-                    and gross_notional > max_gross_notional_usd):
-                refused["gross_notional"] += 1
-                continue
+            mismatch, _sum, q_short, q_long, gross_notional = min(candidates)
             def order(row: dict, structure: str) -> dict:
                 return {
                     "date": entry,
@@ -240,3 +249,367 @@ class VolatilityArbitrageBacktester:
             "accepted": len(pairs),
             "refused": dict(sorted(refused.items())),
         }}
+
+
+class TechReplayPipeline:
+    """Consume a pinned structural run and replay four identical-cost research books.
+
+    The CLI entry point is ``python -m statistical_arbitrage.backtest CONFIG``.
+    It refuses changed structural bytes before opening any market data, reads the
+    Theta chain once for all books, and creates a new evidence directory only
+    after the replay and reports succeed.
+    """
+
+    _ROWS = ("surface_rows.jsonl", "graph_fits.jsonl",
+             "atm_network_rows.jsonl", "atm_baseline_rows.jsonl",
+             "skew_network_rows.jsonl", "skew_baseline_rows.jsonl")
+
+    def __init__(self, config_path: str | Path) -> None:
+        self.path = Path(config_path).resolve()
+        with self.path.open(encoding="utf-8") as stream:
+            self.config = json.load(stream)
+        if not isinstance(self.config, dict):
+            raise ValueError("backtest config must be an object")
+
+    @staticmethod
+    def _digest(path: Path) -> str:
+        hash_ = sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                hash_.update(block)
+        return hash_.hexdigest()
+
+    def _config_path(self, named: str) -> Path:
+        """Resolve child-local paths without relying on the process working directory."""
+        path = Path(named)
+        if path.is_absolute():
+            return path
+        if path.parts and path.parts[0] == "configs":
+            return self.path.parent.parent / path
+        return self.path.parent / path
+
+    def _pinned_path(self, declaration: dict) -> Path:
+        if not isinstance(declaration, dict) or set(declaration) != {"path", "sha256"}:
+            raise ValueError("pinned input requires path and sha256")
+        expected = declaration["sha256"]
+        if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+            raise ValueError("invalid sha256 pin")
+        path = self._config_path(declaration["path"])
+        if self._digest(path) != expected:
+            raise ValueError(f"sha256 mismatch: {path}")
+        return path
+
+    @staticmethod
+    def _jsonl(path: Path) -> list[dict]:
+        with path.open(encoding="utf-8") as stream:
+            rows = [json.loads(line) for line in stream if line.strip()]
+        if not all(isinstance(row, dict) for row in rows):
+            raise ValueError(f"non-object JSONL row in {path}")
+        return rows
+
+    def _verified_structural(self) -> tuple[dict, dict[str, list[dict]], dict]:
+        cfg = self.config
+        path = self._pinned_path(cfg["structural_config"])
+        with path.open(encoding="utf-8") as stream:
+            structural = json.load(stream)
+        declared = cfg["structural_rows"]
+        if not isinstance(declared, dict) or set(declared) != set(self._ROWS):
+            raise ValueError("structural_rows must pin all six approved outputs")
+        paths = {name: self._pinned_path(declared[name]) for name in self._ROWS}
+        rows = {name: self._jsonl(path) for name, path in paths.items()}
+        return structural, rows, {"structural_config": cfg["structural_config"],
+                                  "structural_rows": declared,
+                                  "backtest_config_sha256": self._digest(self.path)}
+
+    @staticmethod
+    def _valid_rate(row: dict, field: str) -> bool:
+        """Accept only numeric finite FRED observations."""
+        try:
+            return isfinite(float(row.get(field)))
+        except (TypeError, ValueError):
+            return False
+
+    def _load_inputs(self, structural: dict) -> tuple[dict, list[dict], Iterable[dict]]:
+        """Use the very same manifest-verified DSKit readers as the structural run."""
+        from dskit.pipeline.libs.chain_parquet import ParquetChainRows
+        from dskit.pipeline.libs.observations import ObservationRows
+        from dskit.pipeline.libs.parquet import ParquetRows
+
+        pipeline = structural["pipeline"]
+        sources = self.config["source_configs"]
+        stock_path = self._config_path(sources["stock"])
+        theta_path = self._config_path(sources["theta"])
+        with stock_path.open(encoding="utf-8") as stream:
+            stock = json.load(stream)
+        with theta_path.open(encoding="utf-8") as stream:
+            theta = json.load(stream)
+        self._source_provenance = {
+            "stock": {"path": str(stock_path), "sha256": self._digest(stock_path)},
+            "theta": {"path": str(theta_path), "sha256": self._digest(theta_path)},
+        }
+        if (theta["rate"]["date_field"] != "observation_date"
+                or theta["rate"]["value_field"] != "DGS3MO"
+                or theta["rate"]["scale"] != 0.01
+                or theta["rate"]["strictly_prior"] is not True
+                or theta["rate"]["max_age_days"] != self.config["execution"]["max_rate_age_days"]):
+            raise ValueError("rate source and replay rate policy disagree")
+        ports = pipeline["returns"]["params"]["ports"]
+        if set(ports.values()) != set(stock["symbols"]) | {stock["factor"]["symbol"]}:
+            raise ValueError("stock source and structural universe disagree")
+        if set(theta["symbols"]) != set(stock["symbols"]):
+            raise ValueError("Theta and stock tradable symbols disagree")
+        if pipeline["chain"]["params"]["end_before"] != self.config["evaluation"]["end_before"]:
+            raise ValueError("chain end and evaluation end disagree")
+        prices: dict[str, list[dict]] = {}
+        for port, symbol in ports.items():
+            node = pipeline[f"prices_{port}"]
+            if node["uses"] != "dskit.pipeline.libs.parquet:ParquetRows":
+                raise ValueError(f"unexpected price reader for {symbol}")
+            params = node["params"]
+            expected = stock["factor"] if symbol == stock["factor"]["symbol"] else stock
+            if (params["root"] != stock["onboarding_root"]
+                    or params["source"] != expected["source"]
+                    or params["stream"] != expected["stream"]):
+                raise ValueError(f"price source disagrees for {symbol}")
+            if symbol == stock["factor"]["symbol"] and (
+                params["relpath_by_key"][symbol] != stock["factor"]["relpath"]
+            ):
+                raise ValueError("factor file disagrees")
+            if set(params["columns"].values()) != set(stock["required_columns"]):
+                raise ValueError(f"price projection disagrees for {symbol}")
+            if params["read_bounds"]["date"]["end_before"] != self.config["evaluation"]["end_before"]:
+                raise ValueError(f"price read bound disagrees for {symbol}")
+            prices[symbol] = ParquetRows(f"replay_price_{port}", params).run(None, {})["records"]
+        rate_node = pipeline["rates_raw"]
+        if rate_node["uses"] != "dskit.pipeline.libs.observations:ObservationRows":
+            raise ValueError("unexpected rate reader")
+        if any(rate_node["params"][field] != theta["rate"][field_name]
+               for field, field_name in (("root", "onboarding_root"),
+                                         ("source", "source"), ("stream", "stream"))):
+            raise ValueError("rate reader source disagrees")
+        rates = ObservationRows("replay_rates", rate_node["params"]).run(None, {})["records"]
+        rate_field = theta["rate"]["value_field"]
+        rates = [row for row in rates if self._valid_rate(row, rate_field)
+                 and row.get(theta["rate"]["date_field"], "") < self.config["evaluation"]["end_before"]]
+        chain_node = pipeline["chain"]
+        if chain_node["uses"] != "dskit.pipeline.libs.chain_parquet:ParquetChainRows":
+            raise ValueError("unexpected chain reader")
+        chain_params = chain_node["params"]
+        if set(chain_params["symbols"]) != set(theta["symbols"]) or (
+            chain_params["directories"] != theta["parquet_export"]["directories"]
+        ):
+            raise ValueError("Theta export and structural chain disagree")
+        if (chain_params["start"] < theta["start"]
+                or chain_params["end_before"] > theta["end_before"]
+                or chain_params["sealed_from"] != theta["parquet_export"]["sealed_from"]):
+            raise ValueError("Theta chain calendar disagrees")
+        chain = ParquetChainRows("replay_chain", chain_params).run(None, {})["records"]
+        return prices, rates, chain
+
+    def _calendar(self) -> dict:
+        named = self.config.get("validation_calendar", "validation-calendar.json")
+        path = self._config_path(named)
+        with path.open(encoding="utf-8") as stream:
+            calendar = json.load(stream)
+        return {"data": calendar, "path": str(path), "sha256": self._digest(path)}
+
+    @staticmethod
+    def _block_unclosed(pairs: list[dict], outcome: dict) -> tuple[dict, list[dict]]:
+        """Suppress entries while an earlier pair remains open in the same book.
+
+        A failed stock hedge can disqualify a completed trade without extending
+        its actual option exposure beyond the two delegated close dates.
+        """
+        intervals: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
+        for exposure in outcome["exposures"]:
+            book = exposure["id"].split(":", 1)[0]
+            sides = (exposure.get("short_trade", {}), exposure.get("long_trade", {}))
+            closes = [side.get("close_date") for side in sides]
+            end = max(closes) if all(closes) else None
+            intervals[book].append((exposure["open_date"], end))
+        blocked = [
+            {"id": pair["id"], "status": "blocked_by_unclosed_exposure"}
+            for pair in pairs
+            if any(
+                pair["entry_date"] > start
+                and (end is None or pair["entry_date"] <= end)
+                for start, end in intervals.get(pair["id"].split(":", 1)[0], ())
+            )
+        ]
+        blocked_ids = {row["id"] for row in blocked}
+        filtered = dict(outcome)
+        for key in ("trades", "exposures", "marks", "cashflows", "refusals"):
+            filtered[key] = [row for row in outcome[key] if row["id"] not in blocked_ids]
+        filtered["refusals"].extend(blocked)
+        filtered["summary"] = {"raw_ledger": outcome["summary"],
+                               "blocked_later_pairs": len(blocked),
+                               "pairs_in": len(pairs),
+                               "trades_retained": len(filtered["trades"]),
+                               "exposures_retained": len(filtered["exposures"])}
+        return filtered, blocked
+
+    def _evaluate(self, rows: dict, structural: dict, prices: dict,
+                  rates: list[dict], chain: Iterable[dict], provenance: dict) -> dict:
+        from statistical_arbitrage.data import TechAdjustedReturns
+        from statistical_arbitrage.report import PerformanceReporter
+
+        cfg, evaluation = self.config, self.config["evaluation"]
+        if set(cfg["variants"]) != {"atm", "skew"} or any(
+            set(books) != {"network", "baseline"} for books in cfg["variants"].values()
+        ):
+            raise ValueError("phase-one replay requires ATM/skew network and baseline books")
+        provenance["source_configs"] = getattr(self, "_source_provenance", {})
+        returns = TechAdjustedReturns("replay_returns", structural["pipeline"]["returns"]["params"])
+        ports = returns.params["ports"]
+        aligned = returns.run(None, {port: prices[symbol] for port, symbol in ports.items()})
+        benchmark = aligned["benchmark"]
+        days = [row["date"] for row in benchmark
+                if evaluation["start"] <= row["date"] < evaluation["end_before"]]
+        if not days or days != sorted(set(days)):
+            raise ValueError("evaluation has no ordered common price calendar")
+        panel = {symbol: {} for symbol in ports.values()}
+        for row in [*aligned["records"], *benchmark]:
+            panel[row["symbol"]][row["date"]] = row["adjusted_close"]
+        adjusted = {symbol: [panel[symbol][day] for day in days] for symbol in panel}
+        orderer = VolatilityArbitrageBacktester(
+            entry_z=cfg["signal"]["entry_z"], stop_z=cfg["signal"]["stop_z"],
+            max_hold_sessions=cfg["signal"]["max_hold_sessions"])
+        if cfg["signal"]["one_active_pair_per_book"] is not True:
+            raise ValueError("only one active pair per book is implemented")
+        execution = cfg["execution"]
+        all_pairs, order_summaries = [], {}
+        keys = {}
+        for variant, books in cfg["variants"].items():
+            for book, row_name in books.items():
+                if row_name not in rows or book not in ("network", "baseline"):
+                    raise ValueError("variant references an unpinned book")
+                key = f"{variant}_{book}"
+                keys[key] = row_name
+                yearly = {}
+                for year in range(evaluation["development_year"],
+                                  max(evaluation["validation_years"]) + 1):
+                    sessions = [day for day in days if day[:4] == str(year)]
+                    if not sessions:
+                        continue
+                    signals = [row for row in rows[row_name] if row.get("date") in set(sessions)]
+                    intents = orderer.intents(signals, sessions)
+                    generated = orderer.pair_orders(
+                        intents, rows["surface_rows.jsonl"],
+                        max_contracts=execution["max_contracts_per_leg"],
+                        max_vega_mismatch=execution["max_initial_vega_mismatch"],
+                        max_half_spread_over_premium=execution["max_half_spread_over_premium"],
+                        max_gross_notional_usd=execution["max_gross_underlying_notional_usd"],
+                        corporate_events=aligned["corporate_events"] if execution["refuse_corporate_events"] else (),
+                        rates=rates, require_rate=execution["require_prior_rate"],
+                        max_rate_age_days=execution["max_rate_age_days"])
+                    yearly[str(year)] = generated["summary"]
+                    for pair in generated["pairs"]:
+                        pair["id"] = f"{key}:{pair['id']}"
+                        all_pairs.append(pair)
+                order_summaries[key] = yearly
+        ledger = PairedOptionLedger("replay_pairs", cfg["ledger"])
+        outcome = ledger.run(None, {"pairs": all_pairs, "chain": chain})
+        outcome, blocked = self._block_unclosed(all_pairs, outcome)
+        reporter = PerformanceReporter(capital_usd=evaluation["initial_capital_usd"],
+                                       sessions_per_year=evaluation["sessions_per_year"])
+        calendar = self._calendar()
+        books_out = {}
+        for key in keys:
+            own_marks = [mark for mark in outcome["marks"] if mark["id"].startswith(key + ":")]
+            daily_pnl = reporter.daily_pnl_from_marks(own_marks, days)
+            own_trades = [dict(trade, entry_date=trade["open_date"],
+                               exit_date=trade["close_date"])
+                          for trade in outcome["trades"] if trade["id"].startswith(key + ":")]
+            books_out[key] = {"daily_pnl_usd": daily_pnl, "trades": own_trades,
+                              "order_summary": order_summaries[key],
+                              "exposures": [exposure for exposure in outcome["exposures"]
+                                            if exposure["id"].startswith(key + ":")],
+                              "refusals": [refusal for refusal in outcome["refusals"]
+                                           if refusal["id"].startswith(key + ":")]}
+        for variant in cfg["variants"]:
+            model, baseline = books_out[f"{variant}_network"], books_out[f"{variant}_baseline"]
+            def fold(first: str, end: str) -> dict | None:
+                indices = [i for i, day in enumerate(days) if first <= day < end]
+                if not indices:
+                    return None
+                selected = [days[i] for i in indices]
+                selected_prices = {symbol: [values[i] for i in indices]
+                                   for symbol, values in adjusted.items()}
+                prior_prices = ({symbol: values[indices[0] - 1]
+                                 for symbol, values in adjusted.items()}
+                                if indices[0] > 0 else None)
+                def trades_for(book: dict) -> list[dict]:
+                    return [trade for trade in book["trades"]
+                            if first <= trade["entry_date"]
+                            and trade["exit_date"] < end]
+                return reporter.evaluate(
+                    dates=selected, model_pnl=[model["daily_pnl_usd"][i] for i in indices],
+                    baseline_pnl=[baseline["daily_pnl_usd"][i] for i in indices],
+                    adjusted_prices=selected_prices,
+                    prior_adjusted_prices=prior_prices,
+                    model_trades=trades_for(model),
+                    baseline_trades=trades_for(baseline))
+            annual = {str(year): fold(f"{year}-01-01", f"{year + 1}-01-01")
+                      for year in range(evaluation["development_year"],
+                                        max(evaluation["validation_years"]) + 1)}
+            subfolds = {str(block["block"]): fold(block["origin_start"],
+                                                  block["origin_end_before"])
+                        for block in calendar["data"]["blocks"]}
+            model["annual"], model["subfolds"] = annual, subfolds
+            model["full"] = fold(f"{evaluation['development_year']}-01-01",
+                                 evaluation["end_before"])
+        fits = [row for row in rows["graph_fits.jsonl"] if row.get("refit") is True]
+        diagnostics = [{name: fit.get(name) for name in
+                        ("date", "fit_date", "trained_through", "status", "alpha",
+                         "cv_score", "train_log_likelihood", "n_iter", "n_window",
+                         "n_edges", "warning")}
+                       for fit in fits]
+        return {"name": cfg["name"], "calendar": calendar,
+                "provenance": provenance, "dates": days,
+                "training_cv_diagnostics": diagnostics,
+                "training_epoch_loss": None,
+                "training_note": "GraphicalLassoCV is not an epoch-trained neural model.",
+                "books": books_out, "ledger_summary": outcome["summary"],
+                "blocked_later_pairs": blocked,
+                "cashflows": outcome["cashflows"]}
+
+    def run(self) -> dict:
+        """Verify, replay, then write one new, SHA-named result directory."""
+        from statistical_arbitrage.report import PerformanceReporter
+
+        structural, rows, provenance = self._verified_structural()
+        prices, rates, chain = self._load_inputs(structural)
+        result = self._evaluate(rows, structural, prices, rates, chain, provenance)
+        root = Path(self.config["output_dir"])
+        name = self.config["name"]
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None:
+            raise ValueError("unsafe replay name")
+        target = root / f"{name}-{provenance['backtest_config_sha256'][:12]}"
+        target.mkdir(parents=True, exist_ok=False)
+        reporter = PerformanceReporter(
+            capital_usd=self.config["evaluation"]["initial_capital_usd"],
+            sessions_per_year=self.config["evaluation"]["sessions_per_year"],
+        )
+        result["plots"] = reporter.save_plots(
+            target,
+            result,
+            {variant: rows[self.config["variants"][variant]["network"]]
+             for variant in ("atm", "skew")},
+            symbols=structural["pipeline"]["graph"]["params"]["symbols"],
+            graph_fits=rows["graph_fits.jsonl"],
+            entry_z=self.config["signal"]["entry_z"],
+        )
+        with (target / "evaluation.json").open("x", encoding="utf-8") as stream:
+            json.dump(result, stream, indent=2, sort_keys=True, allow_nan=False)
+        result["output_path"] = str(target)
+        return result
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Pinned retrospective tech option replay")
+    parser.add_argument("config", type=Path)
+    arguments = parser.parse_args()
+    completed = TechReplayPipeline(arguments.config).run()
+    print(completed["output_path"])
