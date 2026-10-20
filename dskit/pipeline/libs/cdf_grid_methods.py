@@ -578,9 +578,11 @@ class _Panel:
             self._derived[PERIOD_COLUMN] = _DatePeriods(periods)
 
     def numeric(self, column):
-        """Return a parquet column as float64 (converted once)."""
+        """Return a column as float64: one joined from a feature source, else a scored-rows column (converted once)."""
         import pandas as pd
 
+        if column in self.extra:
+            return self.extra[column]
         if column not in self._numbers:
             self._numbers[column] = pd.to_numeric(self.frame[column]).to_numpy(dtype=float)
         return self._numbers[column]
@@ -1011,6 +1013,75 @@ class _Fitted:
         self.state = state
         self.model = model
         self.artifacts = artifacts or {}
+
+
+class _FeatureSourced(ABC):
+    """The one owner of ``feature_source``: extra feature columns joined onto the scored rows from a parquet.
+
+    A kind that takes row features lists them in its ``features``-like key and may add ``feature_source``,
+    ``{path, sha256, keys}``: the file is hash-checked, read up to ``end_before`` and left-joined by ``keys`` (which
+    must include the date column and may not name a feature), and the joined columns land in ``panel.extra``,
+    where :meth:`_Panel.numeric` finds them. The features are then read from the source alone, not the scored
+    rows; a scored row with no match has the feature missing. The class implements :meth:`source_columns`, and
+    puts :meth:`source_keys` into its ``needed_columns``.
+    """
+
+    _SOURCE_KEYS = ("path", "sha256", "keys")
+
+    @classmethod
+    def _source_problems(cls, problems, source, params, label, columns, required):
+        """Append the problems of the ``feature_source`` mapping for the features ``columns`` named under ``label``.
+
+        A source without features is refused; features without a source only when the kind ``required`` one.
+        """
+        if not columns:
+            if source is not None:
+                problems.append(f"method.feature_source is given but method.{label} is empty")
+            return
+        if source is None and not required:
+            return
+        keys = source.get("keys") if isinstance(source, dict) else None
+        if not (isinstance(source, dict) and set(source) == set(cls._SOURCE_KEYS) and _is_name(source["path"])
+                and isinstance(source["sha256"], str) and _SHA256.match(source["sha256"])
+                and isinstance(keys, list) and keys and all(_is_name(k) for k in keys)):
+            problems.append(f"method.feature_source must be exactly {list(cls._SOURCE_KEYS)} with a hex sha256")
+            return
+        date = params.get("columns", {}).get("date") if isinstance(params.get("columns"), dict) else None
+        if date is not None and date not in keys:
+            problems.append(f"method.feature_source.keys must include the date column {date!r}, so end_before "
+                            "bounds the feature read")
+        if set(columns) & set(keys):
+            problems.append(f"method.{label} may not name a key column")
+
+    @abstractmethod
+    def source_columns(self):
+        """Return the feature columns read from the source."""
+
+    def source_keys(self):
+        """Return the source's key columns, read from the scored rows to join on (none without a source)."""
+        source = self.spec.get("feature_source")
+        return list(source["keys"]) if source else []
+
+    def prepare(self, panel):
+        """Join the source's feature columns onto the rows by the declared keys."""
+        source = self.spec.get("feature_source")
+        if not source:
+            return
+        import pandas as pd
+
+        _Source.verify(source["path"], source["sha256"], "feature source")
+        date = self.params["columns"]["date"]
+        keys, names = source["keys"], self.source_columns()
+        table = _Source.read(source["path"], [*keys, *names], [date], self.params["end_before"])
+        right = table.to_pandas(date_as_object=False)
+        if right.duplicated(subset=keys).any():
+            raise ValueError(f"feature source {source['path']} holds duplicate keys {keys}")
+        left = pd.DataFrame({k: panel.frame[k].to_numpy() for k in keys})
+        for frame in (left, right):
+            frame[date] = _Dates.day_numbers(frame[date])
+        joined = left.merge(right, on=keys, how="left", sort=False)
+        for name in names:
+            panel.extra[name] = pd.to_numeric(joined[name]).to_numpy(dtype=float)
 
 
 class _Method(ABC):
@@ -1807,11 +1878,12 @@ class _LocationScaleObjective(_PoolObjective):
         return {f"{self.BASELINE}_objective": base_value}
 
 
-class _RowMethod(_Method):
+class _RowMethod(_FeatureSourced, _Method):
     """A method over rows that may bucket by a category and read a few numeric row columns (its features).
 
     A subclass names, in ``FEATURE_KEY``, the spec key that lists its features; when the key is present the
     features are a :class:`_FeatureSet`, otherwise ``features`` is None. Rows missing a feature cannot teach.
+    A kind that lists ``feature_source`` in its keys reads every feature from that file (:class:`_FeatureSourced`).
     """
 
     #: The spec key listing the features ("" for a kind without any).
@@ -1824,14 +1896,29 @@ class _RowMethod(_Method):
         self.features = None if entries is None else _FeatureSet(entries)
 
     @classmethod
-    def _feature_problems(cls, problems, spec, allow_empty):
-        """Append the problems of the feature list under :attr:`FEATURE_KEY`, when it is given."""
+    def _feature_problems(cls, problems, spec, allow_empty, params):
+        """Append the problems of the feature list under :attr:`FEATURE_KEY`, when it is given, and of the source."""
         if spec.get(cls.FEATURE_KEY) is not None:
             problems += _FeatureSet.problems(spec[cls.FEATURE_KEY], cls.FEATURE_KEY, allow_empty)
+        cls._row_source_problems(problems, spec, params)
+
+    @classmethod
+    def _row_source_problems(cls, problems, spec, params):
+        """Append the problems of ``feature_source`` against the features under :attr:`FEATURE_KEY`."""
+        entries = spec.get(cls.FEATURE_KEY)
+        if entries is not None and _FeatureSet.problems(entries, cls.FEATURE_KEY, allow_empty=True):
+            return  # malformed features are already refused
+        columns = [] if entries is None else _FeatureSet(entries).columns()
+        cls._source_problems(problems, spec.get("feature_source"), params, cls.FEATURE_KEY, columns, required=False)
+
+    def source_columns(self):
+        """Return the feature columns."""
+        return [] if self.features is None else self.features.columns()
 
     def needed_columns(self):
-        """Return the bucket column and the feature columns."""
-        return self.cells.columns() + ([] if self.features is None else self.features.columns())
+        """Return the bucket column, the feature columns of the scored rows and the feature-source keys."""
+        own = [] if self.spec.get("feature_source") else self.source_columns()
+        return self.cells.columns() + own + self.source_keys()
 
     def _teachable(self, panel, rows, weights):
         """Return the learning ``rows`` (and their ``weights``) that have every feature."""
@@ -1914,9 +2001,9 @@ class _PoolBase(_RowMethod):
                 cls._name_problems(problems, "components", part, names)
 
     @classmethod
-    def _weight_feature_problems(cls, problems, spec):
+    def _weight_feature_problems(cls, problems, spec, params):
         """Append the problems of ``weight_features``, which excludes every other way of varying the weights."""
-        cls._feature_problems(problems, spec, allow_empty=False)
+        cls._feature_problems(problems, spec, False, params)
         if spec.get(cls.FEATURE_KEY) is not None:
             problems += [f"method.{cls.FEATURE_KEY} is exclusive with method.{key}"
                          for key in cls.FEATURE_EXCLUSIVE if spec.get(key) not in (None, False)]
@@ -2023,7 +2110,7 @@ class _LinearPoolMethod(_PoolBase):
 
     KIND = "linear_pool"
     _KEYS = ("components", "by", "per_threshold", "shrink_rows", "quantile_by", "min_rows", "weight_features",
-             "max_learning_rows")
+             "feature_source", "max_learning_rows")
     _REQUIRED = ("components", "min_rows")
     _DEFAULTS = {"per_threshold": False}
 
@@ -2041,7 +2128,7 @@ class _LinearPoolMethod(_PoolBase):
                 problems.append("method.shrink_rows must be a number >= 0")
             if spec.get("by") is None and spec.get("quantile_by") is None:
                 problems.append("method.shrink_rows needs by or quantile_by")
-        cls._weight_feature_problems(problems, spec)
+        cls._weight_feature_problems(problems, spec, params)
         if "max_learning_rows" in spec:
             check_int_param(problems, "method.max_learning_rows", spec["max_learning_rows"], ge=1)
             if spec.get("weight_features") is None:
@@ -2122,7 +2209,7 @@ class _ParametricPoolMethod(_CellFitting, _PoolBase):
         cls._rows_problem(problems, spec)
         cls._cell_problems(problems, spec, single=True)
         check_int_param(problems, "method.max_learning_rows", spec.get("max_learning_rows"), ge=1)
-        cls._weight_feature_problems(problems, spec)
+        cls._weight_feature_problems(problems, spec, params)
         return problems + cls._shape_problems(spec)
 
     @classmethod
@@ -2162,7 +2249,7 @@ class _QuantileAverageMethod(_ParametricPoolMethod):
     """
 
     KIND = "quantile_average"
-    _KEYS = _ParametricPoolMethod._KEYS + ("levels", "level_bands", "weight_features")
+    _KEYS = _ParametricPoolMethod._KEYS + ("levels", "level_bands", "weight_features", "feature_source")
     _DEFAULTS = {**_ParametricPoolMethod._DEFAULTS, "levels": DEFAULT_LEVELS}
 
     @classmethod
@@ -2241,7 +2328,7 @@ class _LocationScaleMethod(_CellFitting, _RowMethod):
 
     KIND = "location_scale"
     FEATURE_KEY = "features"
-    _KEYS = ("base", "features", "by", "min_rows", "max_learning_rows")
+    _KEYS = ("base", "features", "feature_source", "by", "min_rows", "max_learning_rows")
     _REQUIRED = ("base", "features", "min_rows")
     _DEFAULTS = {"max_learning_rows": DEFAULT_MAX_LEARNING_ROWS}
 
@@ -2253,6 +2340,7 @@ class _LocationScaleMethod(_CellFitting, _RowMethod):
         cls._cell_problems(problems, spec, single=True)
         check_int_param(problems, "method.max_learning_rows", spec.get("max_learning_rows"), ge=1)
         problems += _FeatureSet.problems(spec.get("features"), "features", allow_empty=True)
+        cls._row_source_problems(problems, spec, params)
         return problems
 
     def used(self):
@@ -2373,14 +2461,13 @@ class _BestComponentMethod(_Method):
         return stack[np.arange(len(rows)), pick]
 
 
-class _BinaryGbmMethod(_Method):
+class _BinaryGbmMethod(_FeatureSourced, _Method):
     """A monotone LightGBM classifier of ``1{y <= z_k}`` over (threshold, base logit, extra features)."""
 
     KIND = "binary_gbm"
     _KEYS = ("base", "features", "feature_source", "lgbm_params", "seed", "max_learning_rows")
     _REQUIRED = ("base", "lgbm_params", "seed", "max_learning_rows")
     _DEFAULTS = {"features": []}
-    _SOURCE_KEYS = ("path", "sha256", "keys")
     #: Settings the pack sets itself on the classifier, after the document's own.
     _FORCED = {"objective": "binary", "n_jobs": 1, "deterministic": True, "force_row_wise": True,
                "verbosity": -1}
@@ -2394,28 +2481,10 @@ class _BinaryGbmMethod(_Method):
         features = spec["features"]
         if not (isinstance(features, list) and all(_is_name(f) for f in features) and len(set(features)) == len(features)):
             problems.append("method.features must be a list of distinct column names")
-        elif features:
-            cls._source_problems(problems, spec.get("feature_source"), params, features)
-        elif spec.get("feature_source") is not None:
-            problems.append("method.feature_source is given but method.features is empty")
+        else:
+            cls._source_problems(problems, spec.get("feature_source"), params, "features", features, required=True)
         problems += cls._lgbm_problems(spec.get("lgbm_params"))
         return problems
-
-    @classmethod
-    def _source_problems(cls, problems, source, params, features):
-        """Append the problems of the feature source mapping."""
-        keys = source.get("keys") if isinstance(source, dict) else None
-        if not (isinstance(source, dict) and set(source) == set(cls._SOURCE_KEYS) and _is_name(source["path"])
-                and isinstance(source["sha256"], str) and _SHA256.match(source["sha256"])
-                and isinstance(keys, list) and keys and all(_is_name(k) for k in keys)):
-            problems.append(f"method.feature_source must be exactly {list(cls._SOURCE_KEYS)} with a hex sha256")
-            return
-        date = params.get("columns", {}).get("date") if isinstance(params.get("columns"), dict) else None
-        if date is not None and date not in keys:
-            problems.append(f"method.feature_source.keys must include the date column {date!r}, so end_before "
-                            "bounds the feature read")
-        if set(features) & set(keys):
-            problems.append("method.features may not name a key column")
 
     @staticmethod
     def _lgbm_problems(extra):
@@ -2439,34 +2508,16 @@ class _BinaryGbmMethod(_Method):
         return problems
 
     def needed_columns(self):
-        """Return the feature-source key columns, read from the scored rows to join on."""
-        source = self.spec.get("feature_source")
-        return list(source["keys"]) if source else []
+        """Return the feature-source key columns."""
+        return self.source_keys()
+
+    def source_columns(self):
+        """Return the ``features``."""
+        return self.spec["features"]
 
     def used(self):
         """Return the base component."""
         return [self.spec["base"]]
-
-    def prepare(self, panel):
-        """Join the extra feature columns onto the rows by the declared keys."""
-        source = self.spec.get("feature_source")
-        if not source:
-            return
-        import pandas as pd
-
-        _Source.verify(source["path"], source["sha256"], "feature source")
-        date = self.params["columns"]["date"]
-        keys, names = source["keys"], self.spec["features"]
-        table = _Source.read(source["path"], [*keys, *names], [date], self.params["end_before"])
-        right = table.to_pandas(date_as_object=False)
-        if right.duplicated(subset=keys).any():
-            raise ValueError(f"feature source {source['path']} holds duplicate keys {keys}")
-        left = pd.DataFrame({k: panel.frame[k].to_numpy() for k in keys})
-        for frame in (left, right):
-            frame[date] = _Dates.day_numbers(frame[date])
-        joined = left.merge(right, on=keys, how="left", sort=False)
-        for name in names:
-            panel.extra[name] = pd.to_numeric(joined[name]).to_numpy(dtype=float)
 
     def _examples(self, panel, rows):
         """Return the ``(rows * points, 2 + features)`` matrix of threshold, base logit and extras."""
@@ -2939,7 +2990,13 @@ class GridCDFMethod(Node):
     ``by`` and ``level_bands``); ``linear_pool`` also takes ``weight_features?`` (exclusive with ``by``,
     ``quantile_by``, ``per_threshold`` and ``shrink_rows``) and then ``max_learning_rows?``;
     ``location_scale`` (``base`` a component, ``features`` a possibly empty list as above, ``min_rows``,
-    ``by?``, ``max_learning_rows?``).
+    ``by?``, ``max_learning_rows?``). Every kind that takes features (``binary_gbm`` ``features``,
+    ``location_scale`` ``features``, ``quantile_average`` and ``linear_pool`` ``weight_features``) may add
+    ``feature_source?`` ``{path, sha256, keys}``, a parquet of extra columns (a Greek, IV, volume or open
+    interest): it is hash-checked, read before ``end_before`` and left-joined onto the scored rows by ``keys``
+    (which must include the date column and no feature, and be unique in the file), and then every listed
+    feature is read from it, not from the scored rows; a row with no match has the feature missing. A
+    ``binary_gbm`` with features requires it; the other kinds read their scored rows without it.
 
     ``fit.json`` holds, per fold, the first block's ``learning_rows``, ``fitted`` and ``state`` and the row
     totals; for ``rolling`` also ``blocks``, each ``{start, learning_rows, fitted, reason, rows, rows_fitted,

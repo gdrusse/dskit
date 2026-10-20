@@ -3345,10 +3345,13 @@ def test_three_features_each_read_their_own_column_through_the_panel(tmp_path, k
 def test_the_panel_converts_each_column_once_and_returns_that_column():
     frame = pd.DataFrame({"a": [1, 2, 3], "b": ["4", "5", "6"]})
     panel = cgm._Panel.__new__(cgm._Panel)
-    panel.frame, panel._numbers = frame, {}
+    panel.frame, panel._numbers, panel.extra = frame, {}, {}
     first, second = panel.numeric("a"), panel.numeric("b")
     assert first.tolist() == [1.0, 2.0, 3.0] and second.tolist() == [4.0, 5.0, 6.0]
     assert panel.numeric("a") is first and panel.numeric("b") is second and first.dtype == float
+    joined_column = np.array([7.0, 8.0, 9.0])
+    panel.extra["c"] = joined_column  # a column joined from a feature source is read as it is
+    assert panel.numeric("c") is joined_column
 
 
 def test_a_feature_set_reads_log1p_as_log_of_one_plus_the_value():
@@ -3453,3 +3456,118 @@ def test_the_location_scale_bounds_are_the_grid_span_for_the_location_and_the_lo
                                             np.ones((4, 2)))
     span = Z[-1] - Z[0]
     assert objective.bounds() == [(-span, span)] * 2 + [(-3.0, 3.0)] * 2
+
+
+# ------------------------------------------------------------------- feature_source for the row kinds
+
+
+def sourced(tmp_path, df, method, columns=("feat",), keys=("row_id", "quote_date"), rename=None, **over):
+    """Move ``columns`` out of the scored rows into a feature parquet and point ``method`` at it.
+
+    ``rename`` maps a moved column to the name the source holds it under.
+    """
+    tmp_path.mkdir(exist_ok=True)
+    rename = rename or {}
+    feats = df[[*keys, *columns]].rename(columns=rename)
+    path = tmp_path / "ext_features.parquet"
+    feats.to_parquet(path, index=False)
+    source = {"path": str(path), "sha256": sha(path), "keys": list(keys)}
+    return params_for(tmp_path, df.drop(columns=list(columns)), {**method, "feature_source": source}, **over)
+
+
+def test_location_scale_reads_its_features_from_a_feature_source(tmp_path):
+    df = ls_frame(np.random.default_rng(660), lambda d: 0.6 * d["feat"], lambda d: 1.0, n_fit=1500, n_val=500)
+    for name in ("inline", "plain"):
+        (tmp_path / name).mkdir()
+    inline = params_for(tmp_path / "inline", df, ls_method())
+    plain = params_for(tmp_path / "plain", df, ls_method(features=[]))
+    external = sourced(tmp_path / "ext", df, ls_method(features=["ext"]), rename={"feat": "ext"})
+    for params in (inline, plain, external):
+        run(params)
+    got, fit, _ = read_out(external)
+    cell = fit["folds"]["2"]["state"]["global"]
+    assert cell["features"] == ["ext"] and cell["rows_missing_features"] == 0
+    assert abs(raw_coefficients(cell, "location")[1][0] - 0.6) < 0.1
+    assert np.abs(cdf_columns(got) - cdf_columns(read_out(plain)[0])).max() > 0.05  # it changes the forecast
+    assert np.allclose(cdf_columns(got), cdf_columns(read_out(inline)[0]), atol=1e-12)  # same as the inline column
+    val = val_rows(got, df)
+    assert tw(cdf_columns(val), val["y"]).mean() < 0.9 * tw(cdfs(val, "mkt"), val["y"]).mean()
+
+
+@pytest.mark.parametrize("kind", ["quantile_average", "linear_pool"])
+def test_weight_features_read_from_a_feature_source(tmp_path, kind):
+    df, _ = feature_frame(np.random.default_rng(661), "linear" if kind == "linear_pool" else "quantile",
+                          n_fit=1500, n_val=400)
+    method = featured_method(kind, weight_features=["ext"])
+    (tmp_path / "inline").mkdir()
+    inline = params_for(tmp_path / "inline", df.assign(ext=df["feat"]), method)
+    external = sourced(tmp_path / "ext", df.assign(ext=df["feat"]), method, columns=("ext",))
+    run(inline)
+    run(external)
+    got, fit, _ = read_out(external)
+    cell = fit["folds"]["2"]["state"]["global"]
+    assert cell["features"] == ["ext"] and cell["rows_missing_features"] == 0
+    assert np.abs(np.array(cell["coefficients"])).max() > 0.5
+    assert np.allclose(cdf_columns(got), cdf_columns(read_out(inline)[0]), atol=1e-12)
+
+
+def test_a_feature_source_row_without_a_match_is_missing_its_features(tmp_path):
+    df, _ = feature_frame(np.random.default_rng(662), "quantile", n_fit=600, n_val=200, folds=(1,))
+    feats = df[["row_id", "quote_date", "feat"]].iloc[::2]
+    path = tmp_path / "half.parquet"
+    feats.to_parquet(path, index=False)
+    source = {"path": str(path), "sha256": sha(path), "keys": ["row_id", "quote_date"]}
+    params = params_for(tmp_path, df.drop(columns=["feat"]),
+                        {**featured_method("quantile_average"), "feature_source": source})
+    run(params)
+    cell = read_out(params)[1]["folds"]["1"]["state"]["global"]
+    learn = df[(df["fold"] == 1) & (df["band"] == "fit")]
+    assert cell["rows_missing_features"] == int((~learn["row_id"].isin(feats["row_id"])).sum()) > 0
+
+
+def test_a_feature_source_checks_its_hash_and_its_duplicate_keys(tmp_path):
+    df, _ = feature_frame(np.random.default_rng(663), "quantile", n_fit=300, n_val=100, folds=(1,))
+    params = sourced(tmp_path, df, featured_method("quantile_average"))
+    params["method"]["feature_source"]["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="sha256"):
+        run(params)
+    pd.concat([df[["row_id", "quote_date", "feat"]]] * 2).to_parquet(tmp_path / "ext_features.parquet", index=False)
+    params["method"]["feature_source"]["sha256"] = sha(tmp_path / "ext_features.parquet")
+    with pytest.raises(ValueError, match="duplicate"):
+        run(params)
+
+
+FEATURE_SOURCE_REFUSALS = {
+    "keys omit the date": (lambda s, m, k: s.update(keys=["row_id"]), "date column"),
+    "keys empty": (lambda s, m, k: s.update(keys=[]), "feature_source"),
+    "unknown source key": (lambda s, m, k: s.update(surprise=1), "feature_source"),
+    "missing sha256": (lambda s, m, k: s.pop("sha256"), "feature_source"),
+    "malformed sha256": (lambda s, m, k: s.update(sha256="abc"), "feature_source"),
+    "feature names a key": (lambda s, m, k: m.update({k: ["row_id"]}), "key column"),
+    "source not a mapping": (lambda s, m, k: m.update(feature_source="x.parquet"), "feature_source"),
+}
+
+
+@pytest.mark.parametrize("kind", ["location_scale", "quantile_average", "linear_pool"])
+@pytest.mark.parametrize("name", sorted(FEATURE_SOURCE_REFUSALS))
+def test_a_malformed_feature_source_is_refused_by_every_feature_taking_kind(tmp_path, kind, name):
+    df, _ = feature_frame(np.random.default_rng(664), "quantile", n_fit=200, n_val=50, folds=(1,))
+    key = "features" if kind == "location_scale" else "weight_features"
+    method = ls_method() if kind == "location_scale" else featured_method(kind)
+    params = sourced(tmp_path, df, method)
+    change, text = FEATURE_SOURCE_REFUSALS[name]
+    change(params["method"]["feature_source"], params["method"], key)
+    problems = GridCDFMethod.validate_params(params)
+    assert any(text in p for p in problems), problems
+    with pytest.raises(ConfigError):
+        GridCDFMethod("g", params)
+
+
+def test_a_feature_source_without_features_is_refused_and_a_kind_without_features_refuses_the_key(tmp_path):
+    df, _ = feature_frame(np.random.default_rng(665), "quantile", n_fit=200, n_val=50, folds=(1,))
+    empty = sourced(tmp_path, df, ls_method(features=[]))
+    assert any("features is empty" in p for p in GridCDFMethod.validate_params(empty))
+    for kind in ("beta_pool", "pit_map"):
+        params = sourced(tmp_path, df, {**pool_method(kind=kind)} if kind == "beta_pool" else
+                         {"kind": "pit_map", "learn": "fit_band", "component": "market", "knots": 21, "min_rows": 10})
+        assert any("feature_source" in p for p in GridCDFMethod.validate_params(params))
