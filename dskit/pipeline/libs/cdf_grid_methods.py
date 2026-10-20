@@ -45,6 +45,17 @@ sample than the linear pool it starts from. ``quantile_average`` averages the co
 CDF back at the grid points. A component may name a ``path``: its columns are then read from another scored-rows
 parquet (hash-verified, same ``end_before`` bound, unique ``keys``) and left-joined; an unmatched row is NaN.
 
+Two options let the quantile average (and, for the second, the linear pool) weigh the components differently
+where the evidence says so. ``level_bands`` cuts the quantile levels at the given probabilities and fits one
+weight vector per band (lower tail, body, upper tail), all bands jointly; the pooled quantile function is read
+as its running maximum where neighbouring bands make it dip. ``weight_features`` makes the weights
+``softmax(B x + c)`` of each row's standardized numeric columns ``x`` (optionally ``log`` or ``log1p`` of
+a column), fitted jointly from the constant-weight pool; a row missing a feature takes the intercepts alone and
+a learning row missing one does not teach. The kind ``location_scale`` adjusts ONE component instead of pooling:
+``F(z) = G((z - mu) / s)`` with ``G`` its CDF on the extended line (linear in the tails as in the PIT), ``mu``
+and ``log s`` linear in the standardized features, fitted on the weighted grid twCRPS from the component itself
+(``mu = 0``, ``s = 1``).
+
 The output is one new directory, built beside it and published by one rename: ``forecasts.parquet``,
 ``tables/<name>.csv`` plus ``tables/windows.csv``, ``fit.json`` and ``summary.json``.
 
@@ -96,8 +107,8 @@ WINDOWS_TABLE = "windows"
 PERIOD_COLUMN, YEAR_COLUMN = "period", "year"
 #: The component name the new forecaster takes in the tables; no declared component may use it.
 METHOD_NAME = "method"
-#: Pool sizes above this are refused: every support of the simplex is solved exactly (2^K - 1 of them).
-MAX_POOL_COMPONENTS = 6
+#: Pool sizes above this are refused: every support of the simplex is solved exactly (2^K - 1 of them, 255 at 8).
+MAX_POOL_COMPONENTS = 8
 #: The base probability is clipped to this before the logit.
 LOGIT_CLIP = 1e-4
 #: Rows scored or predicted per call, bounding the working arrays.
@@ -115,6 +126,8 @@ MAX_ITERATIONS, LOGIT_BOUND, WEIGHT_FLOOR = 100, 30.0, 1e-4
 #: The beta pool's ``log a`` and ``log b`` stay within this, the probability clip of its density, and the
 #: relative step of its forward difference in the shapes.
 BETA_LOG_BOUND, PROB_CLIP, SHAPE_STEP = 3.0, 1e-9, 1e-6
+#: Each coefficient of the location-scale log scale stays within this (a factor of about 20 per standardized unit).
+SCALE_LOG_BOUND = 3.0
 _TABLE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -274,6 +287,7 @@ class _Grid:
         self.weights = np.asarray(weights, dtype=float)
         self.plain = np.ones(self.points)
         self.tail = float(tail)
+        self.line = np.concatenate([[self.z[0] - self.tail], self.z, [self.z[-1] + self.tail]])
         gaps = np.diff(self.z)
         self.trapezoid = np.zeros(self.points)
         self.trapezoid[:-1] += gaps / 2
@@ -323,14 +337,46 @@ class _Grid:
         """
         import numpy as np
 
-        n, k = cdf.shape
-        x = np.concatenate([[self.z[0] - self.tail], self.z, [self.z[-1] + self.tail]])
-        full = np.concatenate([np.zeros((n, 1)), cdf, np.ones((n, 1))], axis=1)
-        y = np.asarray(y, dtype=float)
-        seg = np.clip(np.searchsorted(x, y, side="right") - 1, 0, k)
-        t = np.clip((y - x[seg]) / (x[seg + 1] - x[seg]), 0.0, 1.0)
-        lo = np.take_along_axis(full, seg[:, None], axis=1)[:, 0]
-        hi = np.take_along_axis(full, (seg + 1)[:, None], axis=1)[:, 0]
+        return self.extended(cdf, np.asarray(y, dtype=float)[:, None])[:, 0]
+
+    def extend(self, cdf):
+        """Return ``cdf`` with a 0 column on the left and a 1 column on the right: the values at the two tail ends."""
+        import numpy as np
+
+        n = cdf.shape[0]
+        return np.concatenate([np.zeros((n, 1)), cdf, np.ones((n, 1))], axis=1)
+
+    def segments(self, u):
+        """Return ``(segment, raw)`` of the points ``u``: the piece of the extended line holding each, and the unclipped position in it."""
+        import numpy as np
+
+        x = self.line
+        seg = np.clip(np.searchsorted(x, u, side="right") - 1, 0, self.points)
+        return seg, (u - x[seg]) / (x[seg + 1] - x[seg])
+
+    def extended(self, cdf, u):
+        """Return each row's CDF evaluated at the points ``u[row]``, a proper CDF on the whole line.
+
+        Parameters
+        ----------
+        cdf : numpy.ndarray
+            ``(rows, points)`` CDF values on the grid.
+        u : numpy.ndarray
+            ``(rows, m)`` evaluation points in z units.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(rows, m)`` values: linear between grid points, linear in the tails from 0 at ``z_first - tail``
+            and to 1 at ``z_last + tail``, and 0 or 1 beyond those.
+        """
+        import numpy as np
+
+        full = self.extend(cdf)
+        seg, raw = self.segments(u)
+        t = np.clip(raw, 0.0, 1.0)
+        lo = np.take_along_axis(full, seg, axis=1)
+        hi = np.take_along_axis(full, seg + 1, axis=1)
         return lo + t * (hi - lo)
 
     def region_masses(self, cdf):
@@ -520,6 +566,7 @@ class _Panel:
         self.extra = {}
         self.external_pit = {}
         self._finite = {}
+        self._numbers = {}
         self._categories = {}
         self._derived = {name: _EdgeBuckets(spec["column"], spec["edges"]) for name, spec in buckets.items()}
         self._derived[YEAR_COLUMN] = _CalendarYears()
@@ -527,10 +574,12 @@ class _Panel:
             self._derived[PERIOD_COLUMN] = _DatePeriods(periods)
 
     def numeric(self, column):
-        """Return a parquet column as float64."""
+        """Return a parquet column as float64 (converted once)."""
         import pandas as pd
 
-        return pd.to_numeric(self.frame[column]).to_numpy(dtype=float)
+        if column not in self._numbers:
+            self._numbers[column] = pd.to_numeric(self.frame[column]).to_numpy(dtype=float)
+        return self._numbers[column]
 
     def category(self, name):
         """Return ``(codes, labels)`` of a derived or parquet column, code -1 where missing."""
@@ -853,6 +902,101 @@ class _Cells:
         return "|".join(self.decode(panel, key, states).values())
 
 
+class _FeatureSet:
+    """Numeric row columns, each optionally log-transformed, standardized on the learning rows.
+
+    An entry is a column name or ``{"column": name, "transform": "log" | "log1p"}``. A value that is not finite
+    after the transform (a null, a ``log`` of zero) is missing; a row with any missing feature is standardized to
+    all zeros, the feature means, so it is forecast by the intercepts alone.
+
+    Parameters
+    ----------
+    entries : list
+        The declared entries.
+
+    Examples
+    --------
+    Standardize a column and the log of another::
+
+        features = _FeatureSet(["market_sd_z", {"column": "actual_calendar_dte", "transform": "log"}])
+        state = features.standardizer(panel, learning_rows)
+        # -> {"features": ["market_sd_z", "log(actual_calendar_dte)"], "feature_mean": [...], "feature_sd": [...]}
+        x = features.design(panel, rows, state)
+    """
+
+    #: Transform name -> the numpy function it applies.
+    TRANSFORMS = {"log": "log", "log1p": "log1p"}
+    ENTRY_KEYS = {"column", "transform"}
+
+    def __init__(self, entries):
+        self.entries = [{"column": e, "transform": None} if isinstance(e, str)
+                        else {"column": e["column"], "transform": e.get("transform")} for e in entries]
+
+    @classmethod
+    def problems(cls, entries, label, allow_empty):
+        """Return the problems with a declared feature list under the key ``label``."""
+        if not isinstance(entries, list) or (not entries and not allow_empty):
+            return [f"method.{label} must be a {'' if allow_empty else 'non-empty '}list of column names or "
+                    "{column, transform} entries"]
+        for entry in entries:
+            ok = _is_name(entry) or (isinstance(entry, dict) and _is_name(entry.get("column"))
+                                      and set(entry) <= cls.ENTRY_KEYS
+                                      and entry.get("transform") in (None, *cls.TRANSFORMS))
+            if not ok:
+                return [f"method.{label} entries must be a column name or {{column, transform: one of "
+                        f"{sorted(cls.TRANSFORMS)}}}, got {entry!r}"]
+        names = cls(entries).names()
+        if len(set(names)) != len(names):
+            return [f"method.{label} must not repeat a feature, got {names}"]
+        return []
+
+    def columns(self):
+        """Return the distinct parquet columns the features read."""
+        return list(dict.fromkeys(e["column"] for e in self.entries))
+
+    def names(self):
+        """Return each feature's label: the column, or ``<transform>(<column>)``."""
+        return [f"{e['transform']}({e['column']})" if e["transform"] else e["column"] for e in self.entries]
+
+    def raw(self, panel, rows):
+        """Return the ``(len(rows), features)`` transformed values, NaN where not finite."""
+        import numpy as np
+
+        out = np.empty((len(rows), len(self.entries)))
+        for j, entry in enumerate(self.entries):
+            values = panel.numeric(entry["column"])[rows]
+            if entry["transform"]:
+                with np.errstate(all="ignore"):
+                    values = getattr(np, self.TRANSFORMS[entry["transform"]])(values)
+            out[:, j] = np.where(np.isfinite(values), values, np.nan)
+        return out
+
+    def present(self, panel, rows):
+        """Return the rows whose every feature is finite."""
+        import numpy as np
+
+        return np.isfinite(self.raw(panel, rows)).all(axis=1)
+
+    def standardizer(self, panel, rows):
+        """Return the state ``{features, feature_mean, feature_sd}`` from the rows with every feature (sd 0 becomes 1)."""
+        import numpy as np
+
+        raw = self.raw(panel, rows)
+        kept = raw[np.isfinite(raw).all(axis=1)]
+        mean, sd = kept.mean(axis=0), kept.std(axis=0)
+        sd = np.where(np.isfinite(sd) & (sd > 0), sd, 1.0)
+        return {"features": self.names(), "feature_mean": mean.tolist(), "feature_sd": sd.tolist()}
+
+    def design(self, panel, rows, state):
+        """Return the standardized ``(len(rows), features)`` values, zeros for a row missing any feature."""
+        import numpy as np
+
+        raw = self.raw(panel, rows)
+        z = (raw - np.asarray(state["feature_mean"], dtype=float)) / np.asarray(state["feature_sd"], dtype=float)
+        z[~np.isfinite(raw).all(axis=1)] = 0.0
+        return z
+
+
 # ------------------------------------------------------------------------------------------------ methods
 
 
@@ -1084,10 +1228,31 @@ class _QuantileGrid:
 
         self.z = grid.z
         self.levels = int(levels)
-        self.inner = np.arange(1, self.levels + 1) / (self.levels + 1)
+        self.inner = np.asarray(self.inner_levels(self.levels))
         self.p = np.concatenate([[0.0], self.inner, [1.0]])
         self.x = np.concatenate([[grid.z[0] - grid.tail], grid.z, [grid.z[-1] + grid.tail]])
         self.width = self.levels + 2
+
+    @staticmethod
+    def inner_levels(levels):
+        """Return the interior probabilities ``l / (levels + 1)`` as a list of floats (no numpy needed)."""
+        return [i / (levels + 1) for i in range(1, levels + 1)]
+
+    @classmethod
+    def band_counts(cls, levels, cuts):
+        """Return how many interior levels fall in each of the ``len(cuts) + 1`` bands the ``cuts`` make."""
+        import bisect
+
+        counts = [0] * (len(cuts) + 1)
+        for level in cls.inner_levels(levels):
+            counts[bisect.bisect_right(cuts, level)] += 1
+        return counts
+
+    def bands(self, cuts):
+        """Return the band of every one of the ``levels + 2`` knots: ``searchsorted(cuts, p, side='right')``."""
+        import numpy as np
+
+        return np.searchsorted(np.asarray(cuts, dtype=float), self.p, side="right")
 
     def invert(self, cdf):
         """Return the ``(rows, levels + 2)`` quantiles of the grid CDFs in the rows of ``cdf``."""
@@ -1133,12 +1298,14 @@ class _PoolObjective(ABC):
     """The weighted mean grid twCRPS of a pool with a few parameters, with its gradient.
 
     ``stack`` is ``(rows, components, points)``; ``row_weights`` the learning weights (None for equal). The
-    parameters are a vector ``theta`` of softmax logits followed by the kind's own shape parameters; the
+    parameters are a vector ``theta``, usually softmax logits followed by the kind's own shape parameters; the
     kind says how a start, the bounds and the final description derive from it.
     """
 
     #: What the comparison optimum is called in the state: ``<name>_weights`` and ``<name>_objective``.
     BASELINE = ""
+    #: The key of the weights in :meth:`unpack` and :meth:`baseline`, and of the comparison's in the state.
+    WEIGHTS_KEY = "weights"
 
     def __init__(self, grid, stack, y, row_weights):
         import numpy as np
@@ -1189,8 +1356,13 @@ class _PoolObjective(ABC):
         base, base_value = self.baseline(weights)
         better = value < base_value
         return {**(found if better else base), "objective": value if better else base_value,
-                f"{self.BASELINE}_weights": base["weights"], f"{self.BASELINE}_objective": base_value,
+                **self._baseline_fields(base, base_value),
                 "iterations": int(result.nit), "converged": bool(result.success)}
+
+    def _baseline_fields(self, base, base_value):
+        """Return the comparison point's entries of the state: its weights and its objective."""
+        return {f"{self.BASELINE}_{self.WEIGHTS_KEY}": base[self.WEIGHTS_KEY],
+                f"{self.BASELINE}_objective": base_value}
 
 
 class _BetaPoolObjective(_PoolObjective):
@@ -1277,24 +1449,32 @@ class _QuantileAverageObjective(_PoolObjective):
         """Return the objective at explicit weights."""
         return float(self.weight @ (self._evaluate(weights)[2].ravel() - self.indicator) ** 2)
 
+    def _segment(self, pooled, position, cdf):
+        """Return ``(step, gap, t)`` of the pooled quantile segment holding each CDF value.
+
+        ``step`` is the level spacing of the segment, ``gap`` the rise of the pooled quantile function across it
+        (floored so a flat segment does not divide by zero) and ``t`` the position of the CDF value inside it.
+        """
+        import numpy as np
+
+        local = position % self.inverse.width
+        p_low = self.inverse.p[local]
+        step = self.inverse.p[local + 1] - p_low
+        flat = pooled.ravel()
+        gap = np.maximum(flat[position + 1] - flat[position], 1e-300)
+        return step, gap, (cdf - p_low) / step
+
     def value_and_grad(self, theta):
         """Return the objective and its gradient.
 
         With the CDF value ``F`` solving ``sum_i w_i Q_i(F) = z``, ``dF/dw_i = -Q_i(F) / Q'(F)``, where
         ``Q'`` is the slope of the pooled quantile function in the segment holding ``F``.
         """
-        import numpy as np
-
         w = _SoftmaxWeights.of(theta)
         pooled, position, cdf = self._evaluate(w)
         resid = (cdf.ravel() - self.indicator)
         slope = (2.0 * self.weight * resid).reshape(cdf.shape)
-        local = position % self.inverse.width
-        p_low = self.inverse.p[local]
-        step = self.inverse.p[local + 1] - p_low
-        flat = pooled.ravel()
-        gap = np.maximum(flat[position + 1] - flat[position], 1e-300)
-        t = (cdf - p_low) / step
+        step, gap, t = self._segment(pooled, position, cdf)
         lower, upper = self.quantiles[:, position], self.quantiles[:, position + 1]
         at_cdf = lower + t * (upper - lower)
         grad_w = -((at_cdf / (gap / step)) * slope).sum(axis=(1, 2))
@@ -1317,26 +1497,412 @@ class _QuantileAverageObjective(_PoolObjective):
         return {"weights": weights}, self.loss(weights)
 
 
-class _PoolBase(_Method):
-    """A method that pools 2 to 6 named components; the shared stack, moments and exact linear-pool solve."""
+class _BandedQuantileAverageObjective(_QuantileAverageObjective):
+    """``Q(p) = sum_i w_{b(p), i} Q_i(p)``: one weight vector on the simplex per band of quantile levels.
+
+    The ``cuts`` split the levels into ``len(cuts) + 1`` bands; ``theta`` is the softmax logits of every band,
+    band after band. Weights that differ between neighbouring bands can make the pooled quantile function dip
+    at a band edge, so it is read as its running maximum (a flat piece is a jump of the CDF), and the gradient
+    follows each knot back to the knot that holds the maximum.
+    """
+
+    BASELINE = "start"
+    WEIGHTS_KEY = "band_weights"
+
+    def __init__(self, grid, stack, y, row_weights, levels, cuts):
+        self.cuts = [float(c) for c in cuts]
+        self.bands = len(self.cuts) + 1
+        super().__init__(grid, stack, y, row_weights, levels)
+        self.band_of = self.inverse.bands(self.cuts)
+
+    def _matrix(self, theta):
+        """Return the ``(bands, components)`` weights of the logits ``theta``."""
+        import numpy as np
+
+        return np.stack([_SoftmaxWeights.of(row) for row in theta.reshape(self.bands, self.components)])
+
+    def _combine(self, w):
+        """Return the ``(rows, levels + 2)`` pooled quantiles, level ``p`` using its band's row of ``w``."""
+        per_level = w[self.band_of]
+        q = self.quantiles.reshape(self.components, self.rows, self.inverse.width)
+        pooled = per_level[:, 0][None, :] * q[0]
+        for j in range(1, self.components):
+            pooled = pooled + per_level[:, j][None, :] * q[j]
+        return pooled
+
+    def _evaluate(self, w):
+        """Return ``(running maximum of the pooled quantiles, position, cdf)`` for band weights ``w``."""
+        import numpy as np
+
+        running = np.maximum.accumulate(self._combine(w), axis=1)
+        position, cdf = self.inverse.locate(running)
+        return running, position, cdf
+
+    def _holders(self, pooled):
+        """Return, per knot, the flat index of the knot at or before it that holds the running maximum."""
+        import numpy as np
+
+        width = self.inverse.width
+        held = np.where(pooled >= np.maximum.accumulate(pooled, axis=1), np.arange(width)[None, :], 0)
+        return (np.maximum.accumulate(held, axis=1) + np.arange(self.rows)[:, None] * width).ravel()
+
+    def value_and_grad(self, theta):
+        """Return the objective and its gradient.
+
+        The CDF value ``F`` in the segment between knots ``c`` and ``c + 1`` of the running maximum moves with
+        the weight of band ``b`` and component ``i`` by ``-(step / gap) * ((1 - t) Q_i(c') [band(c') = b] +
+        t Q_i(c'') [band(c'') = b])``, where ``c'`` and ``c''`` are the knots holding the two running maxima.
+        """
+        import numpy as np
+
+        w = self._matrix(theta)
+        pooled = self._combine(w)
+        running = np.maximum.accumulate(pooled, axis=1)
+        position, cdf = self.inverse.locate(running)
+        resid = cdf.ravel() - self.indicator
+        scale = (2.0 * self.weight * resid).reshape(cdf.shape)
+        step, gap, t = self._segment(running, position, cdf)
+        scale = scale * step / gap
+        holder = self._holders(pooled)
+        low, up = holder[position], holder[position + 1]
+        low_band = self.band_of[low % self.inverse.width].ravel()
+        up_band = self.band_of[up % self.inverse.width].ravel()
+        grad = np.empty((self.bands, self.components))
+        for j in range(self.components):
+            q = self.quantiles[j]
+            grad[:, j] = -(np.bincount(low_band, weights=((1.0 - t) * scale * q[low]).ravel(), minlength=self.bands)
+                           + np.bincount(up_band, weights=(t * scale * q[up]).ravel(), minlength=self.bands))
+        back = np.concatenate([_SoftmaxWeights.backprop(w[b], grad[b]) for b in range(self.bands)])
+        return float(self.weight @ resid ** 2), back
+
+    def start(self, weights):
+        """Return the linear-pool logits repeated in every band."""
+        import numpy as np
+
+        return np.tile(_SoftmaxWeights.logits(weights), self.bands)
+
+    def bounds(self):
+        """Return wide logit bounds."""
+        return [(-LOGIT_BOUND, LOGIT_BOUND)] * (self.bands * self.components)
+
+    def unpack(self, theta):
+        """Return the cut points and the weights of every band."""
+        return {"level_bands": list(self.cuts), "band_weights": self._matrix(theta)}
+
+    def baseline(self, weights):
+        """Return the quantile average at the linear-pool weights in every band, and its objective."""
+        import numpy as np
+
+        w = np.tile(weights, (self.bands, 1))
+        return {"level_bands": list(self.cuts), "band_weights": w}, self.loss(w)
+
+
+class _RowWeights:
+    """Per-row weights on the simplex: ``softmax(B x + c)`` of a standardized design ``x``."""
+
+    @staticmethod
+    def of(design, bias, coefficients):
+        """Return the ``(rows, components)`` weights of ``design`` ``(rows, features)``, ``bias`` and ``coefficients``."""
+        import numpy as np
+
+        logits = design @ coefficients.T + bias
+        e = np.exp(logits - logits.max(axis=1, keepdims=True))
+        return e / e.sum(axis=1, keepdims=True)
+
+    @staticmethod
+    def backprop(weights, grad):
+        """Return the gradient with respect to the row logits from the gradient with respect to the weights."""
+        return weights * (grad - (weights * grad).sum(axis=1, keepdims=True))
+
+
+class _FeatureWeightLaw:
+    """The parameters ``theta = [c, B]`` of feature-conditioned weights, mixed into a pool objective.
+
+    ``c`` holds one intercept logit per component and ``B`` the ``(components, features)`` coefficients on the
+    standardized design, row-major after ``c``. The start is ``c`` at the linear-pool logits and ``B`` zero, so
+    it reproduces the constant-weight pool; the comparison point is that start.
+    """
+
+    BASELINE = "start"
+
+    def _split(self, theta):
+        """Return ``(c, B)`` of ``theta``."""
+        j = self.components
+        return theta[:j], theta[j:].reshape(j, self.design.shape[1])
+
+    def row_weights(self, theta):
+        """Return the ``(rows, components)`` weights of ``theta``."""
+        bias, coefficients = self._split(theta)
+        return _RowWeights.of(self.design, bias, coefficients)
+
+    def theta_grad(self, weights, grad_w):
+        """Return the gradient with respect to ``theta`` from the one with respect to the row weights."""
+        import numpy as np
+
+        g = _RowWeights.backprop(weights, grad_w)
+        return np.concatenate([g.sum(axis=0), (g.T @ self.design).ravel()])
+
+    def start(self, weights):
+        """Return the linear-pool logits with zero coefficients."""
+        import numpy as np
+
+        return np.concatenate([_SoftmaxWeights.logits(weights), np.zeros(self.components * self.design.shape[1])])
+
+    def bounds(self):
+        """Return wide logit bounds on every entry."""
+        return [(-LOGIT_BOUND, LOGIT_BOUND)] * (self.components * (1 + self.design.shape[1]))
+
+    def unpack(self, theta):
+        """Return the intercept-only weights, the intercepts and the coefficients."""
+        bias, coefficients = self._split(theta)
+        return {"weights": _SoftmaxWeights.of(bias), "bias": bias, "coefficients": coefficients}
+
+    def baseline(self, weights):
+        """Return the start (the constant-weight pool) and its objective."""
+        theta = self.start(weights)
+        return self.unpack(theta), self.value_and_grad(theta)[0]
+
+
+class _FeatureLinearObjective(_FeatureWeightLaw, _PoolObjective):
+    """``F = sum_i w_i(x) F_i`` with row weights ``w(x) = softmax(B x + c)`` (``design`` is ``x``, ``(rows, features)``)."""
+
+    def __init__(self, grid, stack, y, row_weights, design):
+        import numpy as np
+
+        self.design = np.asarray(design, dtype=float)
+        super().__init__(grid, stack, y, row_weights)
+
+    def _setup(self, stack):
+        import numpy as np
+
+        self.stack = np.ascontiguousarray(np.clip(stack, 0.0, 1.0))
+        self.cell_weight = self.weight.reshape(self.rows, self.points)
+        self.cell_indicator = self.indicator.reshape(self.rows, self.points)
+
+    def value_and_grad(self, theta):
+        """Return the objective and its gradient."""
+        import numpy as np
+
+        w = self.row_weights(theta)
+        resid = np.einsum("rj,rjk->rk", w, self.stack) - self.cell_indicator
+        grad_w = np.einsum("rk,rjk->rj", 2.0 * self.cell_weight * resid, self.stack)
+        return float((self.cell_weight * resid ** 2).sum()), self.theta_grad(w, grad_w)
+
+
+class _FeatureQuantileObjective(_FeatureWeightLaw, _QuantileAverageObjective):
+    """``Q = sum_i w_i(x) Q_i`` with row weights ``w(x) = softmax(B x + c)``, read back as a CDF on the grid."""
+
+    def __init__(self, grid, stack, y, row_weights, levels, design):
+        import numpy as np
+
+        self.design = np.asarray(design, dtype=float)
+        super().__init__(grid, stack, y, row_weights, levels)
+
+    def _evaluate(self, w):
+        """Return ``(pooled quantiles, position, cdf)`` for row weights ``w`` ``(rows, components)``."""
+        q = self.quantiles.reshape(self.components, self.rows, self.inverse.width)
+        pooled = w[:, 0:1] * q[0]
+        for j in range(1, self.components):
+            pooled = pooled + w[:, j:j + 1] * q[j]
+        position, cdf = self.inverse.locate(pooled)
+        return pooled, position, cdf
+
+    def value_and_grad(self, theta):
+        """Return the objective and its gradient (the single-vector gradient kept per row instead of summed)."""
+        w = self.row_weights(theta)
+        pooled, position, cdf = self._evaluate(w)
+        resid = cdf.ravel() - self.indicator
+        slope = (2.0 * self.weight * resid).reshape(cdf.shape)
+        step, gap, t = self._segment(pooled, position, cdf)
+        lower, upper = self.quantiles[:, position], self.quantiles[:, position + 1]
+        at_cdf = lower + t * (upper - lower)
+        grad_w = -((at_cdf / (gap / step)) * slope).sum(axis=2).T
+        return float(self.weight @ resid ** 2), self.theta_grad(w, grad_w)
+
+
+class _LocationScaleObjective(_PoolObjective):
+    """``F(z) = G((z - mu) / s)``: the single component's extended-line CDF ``G``, shifted and scaled per row.
+
+    ``design`` is ``(rows, features + 1)``, the standardized features and a last column of ones; ``mu = design . a``
+    and ``log s = design . b``, and ``theta = [a, b]``. The start is zero (``mu = 0``, ``s = 1``): the component
+    itself. ``stack`` is ``(rows, 1, points)``. ``G`` is made monotone by a running maximum first, so the output
+    is a proper CDF whatever the input.
+    """
+
+    BASELINE = "start"
+
+    def __init__(self, grid, stack, y, row_weights, design):
+        import numpy as np
+
+        self.grid = grid
+        self.design = np.asarray(design, dtype=float)
+        super().__init__(grid, stack, y, row_weights)
+
+    def _setup(self, stack):
+        import numpy as np
+
+        self.base = np.maximum.accumulate(np.clip(stack[:, 0, :], 0.0, 1.0), axis=1)
+        self.full = self.grid.extend(self.base)
+        self.rise = np.diff(self.full, axis=1) / np.diff(self.grid.line)
+        self.cell_weight = self.weight.reshape(self.rows, self.points)
+        self.cell_indicator = self.indicator.reshape(self.rows, self.points)
+
+    def value_and_grad(self, theta):
+        """Return the objective and its gradient (``dF/dmu = -G'/s``, ``dF/dlog s = -G' u``)."""
+        import numpy as np
+
+        n = self.design.shape[1]
+        mu, scale = self.design @ theta[:n], np.exp(self.design @ theta[n:])
+        u = (self.grid.z[None, :] - mu[:, None]) / scale[:, None]
+        seg, raw = self.grid.segments(u)
+        lo, hi = np.take_along_axis(self.full, seg, axis=1), np.take_along_axis(self.full, seg + 1, axis=1)
+        resid = lo + np.clip(raw, 0.0, 1.0) * (hi - lo) - self.cell_indicator
+        density = np.where((raw >= 0.0) & (raw <= 1.0), np.take_along_axis(self.rise, seg, axis=1), 0.0)
+        g = 2.0 * self.cell_weight * resid * density
+        grad = np.concatenate([self.design.T @ -(g.sum(axis=1) / scale), self.design.T @ -(g * u).sum(axis=1)])
+        return float((self.cell_weight * resid ** 2).sum()), grad
+
+    def start(self, weights):
+        """Return zero location and log scale coefficients (``weights`` is not used)."""
+        import numpy as np
+
+        return np.zeros(2 * self.design.shape[1])
+
+    def bounds(self):
+        """Return a location bound of the grid's span and a log-scale bound of :data:`SCALE_LOG_BOUND` per coefficient."""
+        n, span = self.design.shape[1], float(self.grid.z[-1] - self.grid.z[0])
+        return [(-span, span)] * n + [(-SCALE_LOG_BOUND, SCALE_LOG_BOUND)] * n
+
+    def unpack(self, theta):
+        """Return the location and log-scale intercepts (the last entries) and coefficients."""
+        n = self.design.shape[1]
+        a, b = theta[:n], theta[n:]
+        return {"location_intercept": float(a[-1]), "location_coefficients": a[:-1],
+                "log_scale_intercept": float(b[-1]), "log_scale_coefficients": b[:-1]}
+
+    def baseline(self, weights):
+        """Return the component itself (zero parameters) and its objective."""
+        theta = self.start(weights)
+        return self.unpack(theta), self.value_and_grad(theta)[0]
+
+    def _baseline_fields(self, base, base_value):
+        """Return only the objective: there are no weights to compare."""
+        return {f"{self.BASELINE}_objective": base_value}
+
+
+class _RowMethod(_Method):
+    """A method over rows that may bucket by a category and read a few numeric row columns (its features).
+
+    A subclass names, in ``FEATURE_KEY``, the spec key that lists its features; when the key is present the
+    features are a :class:`_FeatureSet`, otherwise ``features`` is None. Rows missing a feature cannot teach.
+    """
+
+    #: The spec key listing the features ("" for a kind without any).
+    FEATURE_KEY = ""
 
     def __init__(self, spec, params, grid):
         super().__init__(spec, params, grid)
         self.cells = _Cells.from_spec(self.spec)
+        entries = self.spec.get(self.FEATURE_KEY)
+        self.features = None if entries is None else _FeatureSet(entries)
+
+    @classmethod
+    def _feature_problems(cls, problems, spec, allow_empty):
+        """Append the problems of the feature list under :attr:`FEATURE_KEY`, when it is given."""
+        if spec.get(cls.FEATURE_KEY) is not None:
+            problems += _FeatureSet.problems(spec[cls.FEATURE_KEY], cls.FEATURE_KEY, allow_empty)
+
+    def needed_columns(self):
+        """Return the bucket column and the feature columns."""
+        return self.cells.columns() + ([] if self.features is None else self.features.columns())
+
+    def _teachable(self, panel, rows, weights):
+        """Return the learning ``rows`` (and their ``weights``) that have every feature."""
+        if self.features is None:
+            return rows, weights
+        keep = self.features.present(panel, rows)
+        return rows[keep], None if weights is None else weights[keep]
+
+    def _strided(self, rows, weights):
+        """Return a deterministic stride of ``rows`` (and ``weights``) of at most ``max_learning_rows``."""
+        stride = max(1, math.ceil(len(rows) / self.spec.get("max_learning_rows", DEFAULT_MAX_LEARNING_ROWS)))
+        return rows[::stride], None if weights is None else weights[::stride]
+
+
+class _CellFitting:
+    """The cell loop of a :class:`_RowMethod`: one fit per bucket of ``by`` with enough rows, and one global fit.
+
+    The subclass implements ``_fit_cell(panel, rows, weights)``, which returns one cell's plain state dict, and
+    ``_apply(panel, rows, params)``, which returns the ``(len(rows), points)`` CDF under one cell's ``params``.
+    Fewer than ``min_rows`` teachable learning rows decline.
+    """
+
+    def fit(self, panel, rows, fold, weights=None, tag=None):
+        """Fit the global cell and each bucket with enough rows; None when the teachable rows are below ``min_rows``."""
+        learned = len(rows)
+        rows, weights = self._teachable(panel, rows, weights)
+        if len(rows) < self.spec["min_rows"]:
+            return None
+        states = self.cells.fit(panel, rows)
+        groups = _Groups(self.cells.keys(panel, rows, states))
+        glob = self._fit_cell(panel, rows, weights)
+        if self.features is not None:
+            glob["rows_missing_features"] = learned - len(rows)
+        buckets = {int(k): self._fit_cell(panel, rows[m], None if weights is None else weights[m])
+                   for k, m in zip(groups.keys, groups.members()) if len(m) >= self.spec["min_rows"]}
+        state = {"components": self.used(),
+                 "bucketing": self.cells.dimensions[0].describe(states[0]) if states else None,
+                 "global": glob,
+                 "buckets": {self.cells.name_of(panel, k, states): b for k, b in buckets.items()}}
+        return _Fitted(state, {"global": glob, "buckets": buckets, "states": states})
+
+    def predict(self, panel, rows, fitted):
+        """Apply the row's bucket parameters, the global ones where its bucket has none."""
+        import numpy as np
+
+        out = np.empty((len(rows), self.grid.points))
+        covered = np.zeros(len(rows), dtype=bool)
+        if fitted.model["buckets"]:
+            keys = self.cells.keys(panel, rows, fitted.model["states"])
+            for key, params in fitted.model["buckets"].items():
+                hit = keys == key
+                if hit.any():
+                    out[hit] = self._apply(panel, rows[hit], params)
+                    covered |= hit
+        if not covered.all():
+            out[~covered] = self._apply(panel, rows[~covered], fitted.model["global"])
+        return out
+
+
+class _PoolBase(_RowMethod):
+    """A method that pools 2 to 8 named components; the shared stack, moments and exact linear-pool solve.
+
+    With ``weight_features`` the pool weights are not constant but ``softmax(B x + c)`` of the standardized
+    features ``x`` of each row, fitted by the optimizer from the exact constant-weight pool.
+    """
+
+    FEATURE_KEY = "weight_features"
+    #: The keys that give a weight per cell or per level; a feature-conditioned pool is one global cell.
+    FEATURE_EXCLUSIVE = ("by", "quantile_by", "per_threshold", "shrink_rows", "level_bands")
 
     @classmethod
     def _component_list_problems(cls, problems, spec, names):
-        """Append the problems of ``components``: 2 to 6 distinct declared names."""
+        """Append the problems of ``components``: 2 to :data:`MAX_POOL_COMPONENTS` distinct declared names."""
         parts = spec.get("components")
-        if not (isinstance(parts, list) and 2 <= len(parts) <= MAX_POOL_COMPONENTS and len(set(map(str, parts))) == len(parts)):
+        if not (isinstance(parts, list) and 2 <= len(parts) <= MAX_POOL_COMPONENTS
+                and len(set(map(str, parts))) == len(parts)):
             problems.append(f"method.components must be 2 to {MAX_POOL_COMPONENTS} distinct component names")
         else:
             for part in parts:
                 cls._name_problems(problems, "components", part, names)
 
-    def needed_columns(self):
-        """Return the bucket column."""
-        return self.cells.columns()
+    @classmethod
+    def _weight_feature_problems(cls, problems, spec):
+        """Append the problems of ``weight_features``, which excludes every other way of varying the weights."""
+        cls._feature_problems(problems, spec, allow_empty=False)
+        if spec.get(cls.FEATURE_KEY) is not None:
+            problems += [f"method.{cls.FEATURE_KEY} is exclusive with method.{key}"
+                         for key in cls.FEATURE_EXCLUSIVE if spec.get(key) not in (None, False)]
 
     def used(self):
         """Return the pooled components."""
@@ -1405,12 +1971,42 @@ class _PoolBase(_Method):
         total, _, _, _ = self._moments(panel, rows, np.full(len(rows), -1, dtype=np.int64), weights)
         return self._solve(total, self._mass(rows, weights))
 
+    @abstractmethod
+    def _objective(self, panel, rows, weights, design):
+        """Return the :class:`_PoolObjective` over the (already strided) learning ``rows``.
+
+        ``design`` is the standardized ``(rows, features)`` matrix of a feature-conditioned pool, else None.
+        """
+
+    def _feature_state(self, panel, rows, used):
+        """Return ``(design of used, standardization state)`` from all learning ``rows``; ``(None, {})`` without features."""
+        if self.features is None:
+            return None, {}
+        state = self.features.standardizer(panel, rows)
+        return self.features.design(panel, used, state), state
+
+    def _fit_cell(self, panel, rows, weights):
+        """Fit one cell on a deterministic stride of ``rows`` and return its state dict."""
+        used, used_weights = self._strided(rows, weights)
+        start = self._exact_weights(panel, used, used_weights)
+        design, standard = self._feature_state(panel, rows, used)
+        solved = self._objective(panel, used, used_weights, design).solve(start)
+        return {"rows": len(rows), "rows_used": len(used), **standard, **solved}
+
+    def _row_weights(self, panel, rows, cell):
+        """Return the ``(len(rows), components)`` weights ``softmax(B x + c)`` of a fitted feature cell."""
+        import numpy as np
+
+        return _RowWeights.of(self.features.design(panel, rows, cell), np.asarray(cell["bias"], dtype=float),
+                              np.asarray(cell["coefficients"], dtype=float))
+
 
 class _LinearPoolMethod(_PoolBase):
     """Mix components with weights on the simplex that minimize the mean grid score."""
 
     KIND = "linear_pool"
-    _KEYS = ("components", "by", "per_threshold", "shrink_rows", "quantile_by", "min_rows")
+    _KEYS = ("components", "by", "per_threshold", "shrink_rows", "quantile_by", "min_rows", "weight_features",
+             "max_learning_rows")
     _REQUIRED = ("components", "min_rows")
     _DEFAULTS = {"per_threshold": False}
 
@@ -1428,10 +2024,31 @@ class _LinearPoolMethod(_PoolBase):
                 problems.append("method.shrink_rows must be a number >= 0")
             if spec.get("by") is None and spec.get("quantile_by") is None:
                 problems.append("method.shrink_rows needs by or quantile_by")
+        cls._weight_feature_problems(problems, spec)
+        if "max_learning_rows" in spec:
+            check_int_param(problems, "method.max_learning_rows", spec["max_learning_rows"], ge=1)
+            if spec.get("weight_features") is None:
+                problems.append("method.max_learning_rows needs weight_features: only a fitted pool samples its rows")
         return problems
+
+    def _objective(self, panel, rows, weights, design):
+        """Return the feature-conditioned linear pool's objective."""
+        return _FeatureLinearObjective(self.grid, self._stack(panel, rows), panel.y[rows], weights, design)
+
+    def _fit_featured(self, panel, rows, weights):
+        """Fit the one feature-conditioned cell; None when the rows with every feature are below ``min_rows``."""
+        learned = len(rows)
+        rows, weights = self._teachable(panel, rows, weights)
+        if len(rows) < self.spec["min_rows"]:
+            return None
+        cell = {**self._fit_cell(panel, rows, weights), "rows_missing_features": learned - len(rows)}
+        state = {"components": self.used(), "per_threshold": False, "bucketing": None, "global": cell, "buckets": {}}
+        return _Fitted(state, {"global": cell})
 
     def fit(self, panel, rows, fold, weights=None, tag=None):
         """Solve the global weights and each bucket's (shrunk toward the global ones)."""
+        if self.features is not None:
+            return self._fit_featured(panel, rows, weights)
         states = self.cells.fit(panel, rows)
         keys = self.cells.keys(panel, rows, states)
         total, per_key, counts, masses = self._moments(panel, rows, keys, weights)
@@ -1455,6 +2072,9 @@ class _LinearPoolMethod(_PoolBase):
         """Pool the components with the row's bucket weights (the global ones when it has none)."""
         import numpy as np
 
+        if self.features is not None:
+            return np.einsum("mj,mjk->mk", self._row_weights(panel, rows, fitted.model["global"]),
+                             self._stack(panel, rows))
         weights = np.broadcast_to(fitted.model["global"], (len(rows), *fitted.model["global"].shape)).copy()
         if fitted.model["buckets"]:
             keys = self.cells.keys(panel, rows, fitted.model["states"])
@@ -1466,7 +2086,7 @@ class _LinearPoolMethod(_PoolBase):
         return np.einsum("mj,mjk->mk", weights, stack)
 
 
-class _ParametricPoolMethod(_PoolBase):
+class _ParametricPoolMethod(_CellFitting, _PoolBase):
     """A pool whose few parameters are fitted numerically on a strided sample of the learning rows.
 
     Subclasses name the objective (:meth:`_objective`) and how fitted parameters turn into CDFs
@@ -1485,6 +2105,7 @@ class _ParametricPoolMethod(_PoolBase):
         cls._rows_problem(problems, spec)
         cls._cell_problems(problems, spec, single=True)
         check_int_param(problems, "method.max_learning_rows", spec.get("max_learning_rows"), ge=1)
+        cls._weight_feature_problems(problems, spec)
         return problems + cls._shape_problems(spec)
 
     @classmethod
@@ -1493,53 +2114,8 @@ class _ParametricPoolMethod(_PoolBase):
         return []
 
     @abstractmethod
-    def _objective(self, panel, rows, weights):
-        """Return the :class:`_PoolObjective` over the (already strided) learning ``rows``."""
-
-    @abstractmethod
     def _apply(self, panel, rows, params):
         """Return the ``(len(rows), points)`` CDF under one cell's fitted ``params`` (a state dict)."""
-
-    def _fit_cell(self, panel, rows, weights):
-        """Fit one cell on a deterministic stride of ``rows`` and return its state dict."""
-        stride = max(1, math.ceil(len(rows) / self.spec["max_learning_rows"]))
-        used = rows[::stride]
-        used_weights = None if weights is None else weights[::stride]
-        start = self._exact_weights(panel, used, used_weights)
-        solved = self._objective(panel, used, used_weights).solve(start)
-        return {"rows": len(rows), "rows_used": len(used), **solved}
-
-    def fit(self, panel, rows, fold, weights=None, tag=None):
-        """Fit the global cell and each bucket with enough rows; None when ``rows`` are below ``min_rows``."""
-        if len(rows) < self.spec["min_rows"]:
-            return None
-        states = self.cells.fit(panel, rows)
-        groups = _Groups(self.cells.keys(panel, rows, states))
-        glob = self._fit_cell(panel, rows, weights)
-        buckets = {int(k): self._fit_cell(panel, rows[m], None if weights is None else weights[m])
-                   for k, m in zip(groups.keys, groups.members()) if len(m) >= self.spec["min_rows"]}
-        state = {"components": self.used(),
-                 "bucketing": self.cells.dimensions[0].describe(states[0]) if states else None,
-                 "global": glob,
-                 "buckets": {self.cells.name_of(panel, k, states): b for k, b in buckets.items()}}
-        return _Fitted(state, {"global": glob, "buckets": buckets, "states": states})
-
-    def predict(self, panel, rows, fitted):
-        """Apply the row's bucket parameters, the global ones where its bucket has none."""
-        import numpy as np
-
-        out = np.empty((len(rows), self.grid.points))
-        covered = np.zeros(len(rows), dtype=bool)
-        if fitted.model["buckets"]:
-            keys = self.cells.keys(panel, rows, fitted.model["states"])
-            for key, params in fitted.model["buckets"].items():
-                hit = keys == key
-                if hit.any():
-                    out[hit] = self._apply(panel, rows[hit], params)
-                    covered |= hit
-        if not covered.all():
-            out[~covered] = self._apply(panel, rows[~covered], fitted.model["global"])
-        return out
 
 
 class _BetaPoolMethod(_ParametricPoolMethod):
@@ -1547,7 +2123,7 @@ class _BetaPoolMethod(_ParametricPoolMethod):
 
     KIND = "beta_pool"
 
-    def _objective(self, panel, rows, weights):
+    def _objective(self, panel, rows, weights, design):
         return _BetaPoolObjective(self.grid, self._stack(panel, rows), panel.y[rows], weights)
 
     def _apply(self, panel, rows, params):
@@ -1561,42 +2137,136 @@ class _BetaPoolMethod(_ParametricPoolMethod):
 
 
 class _QuantileAverageMethod(_ParametricPoolMethod):
-    """The weighted average of the components' quantile functions, read back as a CDF on the grid."""
+    """The weighted average of the components' quantile functions, read back as a CDF on the grid.
+
+    The weights are one vector on the simplex (per bucket of ``by``), one vector per band of quantile levels
+    when ``level_bands`` cuts the levels, or ``softmax(B x + c)`` of each row's standardized features when
+    ``weight_features`` is given.
+    """
 
     KIND = "quantile_average"
-    _KEYS = _ParametricPoolMethod._KEYS + ("levels",)
+    _KEYS = _ParametricPoolMethod._KEYS + ("levels", "level_bands", "weight_features")
     _DEFAULTS = {**_ParametricPoolMethod._DEFAULTS, "levels": DEFAULT_LEVELS}
 
     @classmethod
     def _shape_problems(cls, spec):
         problems = []
         check_int_param(problems, "method.levels", spec.get("levels"), ge=MIN_LEVELS)
+        cuts = spec.get("level_bands")
+        if cuts is not None:
+            ok = (isinstance(cuts, list) and cuts and all(number_ok(c) and 0 < c < 1 for c in cuts)
+                  and all(a < b for a, b in zip(cuts, cuts[1:])))
+            if not ok:
+                problems.append("method.level_bands must be a non-empty ascending list of probabilities in (0, 1)")
+            elif not problems and min(_QuantileGrid.band_counts(int(spec["levels"]), cuts)) == 0:
+                problems.append(f"method.level_bands leaves a band without an interior level at "
+                                f"levels={spec['levels']}: widen the bands or raise levels")
         return problems
 
     def __init__(self, spec, params, grid):
         super().__init__(spec, params, grid)
         self.inverse = _QuantileGrid(grid, self.spec["levels"])
 
-    def _objective(self, panel, rows, weights):
-        return _QuantileAverageObjective(self.grid, self._stack(panel, rows), panel.y[rows], weights,
-                                         self.spec["levels"])
+    def _objective(self, panel, rows, weights, design):
+        stack, y, levels = self._stack(panel, rows), panel.y[rows], self.spec["levels"]
+        if design is not None:
+            return _FeatureQuantileObjective(self.grid, stack, y, weights, levels, design)
+        if self.spec.get("level_bands") is not None:
+            return _BandedQuantileAverageObjective(self.grid, stack, y, weights, levels, self.spec["level_bands"])
+        return _QuantileAverageObjective(self.grid, stack, y, weights, levels)
 
     def _fit_cell(self, panel, rows, weights):
         """Fit one cell and record the number of quantile levels it used."""
         return {**super()._fit_cell(panel, rows, weights), "levels": int(self.spec["levels"])}
 
+    def _component_weights(self, panel, part, params):
+        """Return one weight per component, each broadcasting against the ``(rows, levels + 2)`` quantiles.
+
+        A single vector gives plain numbers, level bands a ``(1, levels + 2)`` row per component and
+        features a ``(rows, 1)`` column per component.
+        """
+        import numpy as np
+
+        if self.features is not None:
+            w = self._row_weights(panel, part, params)
+            return [w[:, j:j + 1] for j in range(w.shape[1])]
+        if self.spec.get("level_bands") is not None:
+            per_level = np.asarray(params["band_weights"])[self.inverse.bands(params["level_bands"])]
+            return [per_level[:, j][None, :] for j in range(per_level.shape[1])]
+        return list(params["weights"])
+
     def _apply(self, panel, rows, params):
-        """Return the CDF of the pooled quantile function ``sum_i w_i Q_i``, in chunks of rows."""
+        """Return the CDF of the pooled quantile function ``sum_i w_i Q_i``, in chunks of rows.
+
+        The pooled quantile function is read as its running maximum, which only differs from it where weights
+        that change with the level make it dip.
+        """
         import numpy as np
 
         out = np.empty((len(rows), self.grid.points))
         for start in range(0, len(rows), QUANTILE_CHUNK):
             part = rows[start:start + QUANTILE_CHUNK]
             pooled = 0.0
-            for w, name in zip(params["weights"], self.spec["components"]):
+            for w, name in zip(self._component_weights(panel, part, params), self.spec["components"]):
                 pooled = pooled + w * self.inverse.invert(panel.cdf[name][part])
-            out[start:start + QUANTILE_CHUNK] = self.inverse.locate(pooled)[1]
+            out[start:start + QUANTILE_CHUNK] = self.inverse.locate(np.maximum.accumulate(pooled, axis=1))[1]
         return out
+
+
+class _LocationScaleMethod(_CellFitting, _RowMethod):
+    """The base component's CDF shifted and scaled in z by a linear function of a few row features.
+
+    ``F(z) = G((z - mu) / s)`` where ``G`` is the base component's CDF on the extended line, ``mu = a . x`` and
+    ``log s = b . x`` with ``x`` the standardized features and an intercept, fitted by the optimizer on the
+    weighted grid twCRPS from ``mu = 0`` and ``s = 1`` (the base itself). A row missing a feature takes the
+    intercepts alone.
+    """
+
+    KIND = "location_scale"
+    FEATURE_KEY = "features"
+    _KEYS = ("base", "features", "by", "min_rows", "max_learning_rows")
+    _REQUIRED = ("base", "features", "min_rows")
+    _DEFAULTS = {"max_learning_rows": DEFAULT_MAX_LEARNING_ROWS}
+
+    @classmethod
+    def _extra_problems(cls, spec, params, names):
+        problems = []
+        cls._name_problems(problems, "base", spec.get("base"), names)
+        cls._rows_problem(problems, spec)
+        cls._cell_problems(problems, spec, single=True)
+        check_int_param(problems, "method.max_learning_rows", spec.get("max_learning_rows"), ge=1)
+        problems += _FeatureSet.problems(spec.get("features"), "features", allow_empty=True)
+        return problems
+
+    def used(self):
+        """Return the base component."""
+        return [self.spec["base"]]
+
+    def _design(self, panel, rows, state):
+        """Return the standardized features with a last column of ones."""
+        import numpy as np
+
+        x = self.features.design(panel, rows, state)
+        return np.concatenate([x, np.ones((len(rows), 1))], axis=1)
+
+    def _fit_cell(self, panel, rows, weights):
+        """Fit one cell on a deterministic stride of ``rows`` and return its state dict."""
+        used, used_weights = self._strided(rows, weights)
+        standard = self.features.standardizer(panel, rows)
+        base = panel.cdf[self.spec["base"]][used][:, None, :]
+        objective = _LocationScaleObjective(self.grid, base, panel.y[used], used_weights,
+                                            self._design(panel, used, standard))
+        return {"rows": len(rows), "rows_used": len(used), **standard, **objective.solve(None)}
+
+    def _apply(self, panel, rows, params):
+        """Return the base CDF at ``(z - mu) / s`` for each row, on the extended line."""
+        import numpy as np
+
+        x = self._design(panel, rows, params)
+        mu = x @ np.append(params["location_coefficients"], params["location_intercept"])
+        scale = np.exp(x @ np.append(params["log_scale_coefficients"], params["log_scale_intercept"]))
+        base = np.maximum.accumulate(np.clip(panel.cdf[self.spec["base"]][rows], 0.0, 1.0), axis=1)
+        return self.grid.extended(base, (self.grid.z[None, :] - mu[:, None]) / scale[:, None])
 
 
 class _BestComponentMethod(_Method):
@@ -1835,7 +2505,7 @@ class _BinaryGbmMethod(_Method):
 
 #: The method kinds a document may name, kind -> class.
 METHOD_KINDS = {cls.KIND: cls for cls in (_PitMapMethod, _LinearPoolMethod, _BestComponentMethod, _BinaryGbmMethod,
-                                          _BetaPoolMethod, _QuantileAverageMethod)}
+                                          _BetaPoolMethod, _QuantileAverageMethod, _LocationScaleMethod)}
 
 
 # --------------------------------------------------------------------------------------- components
@@ -2244,9 +2914,15 @@ class GridCDFMethod(Node):
     ``min_rows``, ``by?``, ``quantile_by?``, ``per_threshold?``, ``shrink_rows?``, where ``shrink_rows``
     counts weight mass under a half life); ``best_component`` (``components``, ``by``, ``default``,
     ``min_rows``, ``margin``); ``binary_gbm`` (``base``, ``lgbm_params``, ``seed``, ``max_learning_rows``,
-    ``features?``, ``feature_source?``); ``beta_pool`` (``components`` 2 to 6, ``min_rows``, ``by?``,
-    ``max_learning_rows?``, default :data:`DEFAULT_MAX_LEARNING_ROWS`); ``quantile_average`` (the same plus
-    ``levels?`` interior probabilities, default :data:`DEFAULT_LEVELS`).
+    ``features?``, ``feature_source?``); ``beta_pool`` (``components`` 2 to :data:`MAX_POOL_COMPONENTS`,
+    ``min_rows``, ``by?``, ``max_learning_rows?``, default :data:`DEFAULT_MAX_LEARNING_ROWS`);
+    ``quantile_average`` (the same plus ``levels?`` interior probabilities, default :data:`DEFAULT_LEVELS`,
+    ``level_bands?`` an ascending list of cut probabilities in (0, 1), each band holding an interior level, and
+    ``weight_features?`` a list of column names or ``{column, transform: "log" | "log1p"}``, exclusive with
+    ``by`` and ``level_bands``); ``linear_pool`` also takes ``weight_features?`` (exclusive with ``by``,
+    ``quantile_by``, ``per_threshold`` and ``shrink_rows``) and then ``max_learning_rows?``;
+    ``location_scale`` (``base`` a component, ``features`` a possibly empty list as above, ``min_rows``,
+    ``by?``, ``max_learning_rows?``).
 
     ``fit.json`` holds, per fold, the first block's ``learning_rows``, ``fitted`` and ``state`` and the row
     totals; for ``rolling`` also ``blocks``, each ``{start, learning_rows, fitted, reason, rows, rows_fitted,
@@ -2254,7 +2930,15 @@ class GridCDFMethod(Node):
     is external, ``external`` maps its name to ``{path, sha256, keys, rows_read, coverage: {fold: share of
     the fold's rows with a matched, finite CDF}}``. A parametric pool's ``state`` carries ``weights`` (and
     ``a``, ``b`` for ``beta_pool``), ``rows``, ``rows_used``, the ``objective`` reached and the objective of
-    its comparison start (``linear_pool_objective`` or ``start_objective``).
+    its comparison start (``linear_pool_objective`` or ``start_objective``). With ``level_bands`` the cell holds
+    ``level_bands`` and ``band_weights`` (one vector per band) and ``start_band_weights`` in place of
+    ``weights``. With ``weight_features`` it holds ``features`` (labels), ``feature_mean``, ``feature_sd``
+    (over the learning rows with every feature), ``bias`` (``c``), ``coefficients`` (``B``, components by
+    features), ``weights`` (``softmax(c)``, what a row missing a feature gets), ``start_weights`` and
+    ``rows_missing_features`` (global cell only). A ``location_scale`` cell holds ``features``, ``feature_mean``,
+    ``feature_sd``, ``location_intercept``, ``location_coefficients`` (``a``), ``log_scale_intercept``,
+    ``log_scale_coefficients`` (``b``), ``objective``, ``start_objective`` (the component itself),
+    ``iterations``, ``converged`` and ``rows_missing_features`` (global cell only).
 
     Examples
     --------
