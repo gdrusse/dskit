@@ -26,8 +26,24 @@ as a CDF made monotone by a running maximum.
 Learning is causal by declaration. ``fit_band`` learns on the target fold's fit band. ``prior_validation``
 learns on earlier folds' validation rows whose settlement precedes the first validation quote date of the
 target fold (purged), so a fold with no earlier evidence keeps the declared fallback and is flagged
-``fitted`` false. Rows are read under an ``end_before`` bound pushed into the parquet scan, so no row at or
+``fitted`` false. ``rolling`` refits as outcomes settle: the target fold's validation rows are cut into
+consecutive blocks of ``refit_days`` calendar days from the fold's first validation quote, and each block is
+fitted on the validation rows of this and every earlier fold that settled strictly before the block starts
+(so earlier blocks of the same fold teach it once they have settled); the fold's fit-band rows use the first
+block's state. A block with too little to learn from keeps the fallback, ``fitted`` false. Any rule takes
+``half_life_days``: a learning row is weighted ``0.5 ** ((reference - settlement) / half_life_days)``, the
+reference being the block start for ``rolling`` and the target fold's first validation quote otherwise; every
+kind uses the weights (``min_rows`` still counts rows, and quantile bucket edges stay unweighted).
+Rows are read under an ``end_before`` bound pushed into the parquet scan, so no row at or
 after it is ever decoded; rows with a null date are not read at all.
+
+Two more kinds pool components with parameters found by a numerical optimizer (L-BFGS-B from the exact
+linear-pool weights, deterministic) on a strided sample of the learning rows. ``beta_pool`` is the beta
+transform of a linear pool, ``BetaCDF_{a,b}(sum_i w_i F_i)`` (Ranjan and Gneiting 2010), never worse on the
+sample than the linear pool it starts from. ``quantile_average`` averages the components' quantile functions,
+``sum_i w_i Q_i``, each obtained by inverting its grid CDF with the PIT tail convention, and reads the pooled
+CDF back at the grid points. A component may name a ``path``: its columns are then read from another scored-rows
+parquet (hash-verified, same ``end_before`` bound, unique ``keys``) and left-joined; an unmatched row is NaN.
 
 The output is one new directory, built beside it and published by one rename: ``forecasts.parquet``,
 ``tables/<name>.csv`` plus ``tables/windows.csv``, ``fit.json`` and ``summary.json``.
@@ -88,6 +104,17 @@ LOGIT_CLIP = 1e-4
 CHUNK_ROWS = 50_000
 #: A row-support candidate whose smallest weight is below this (numerical noise) is clipped to zero.
 SIMPLEX_NOISE = 1e-12
+#: Parametric pools fit on at most this many learning rows per cell unless the document sets ``max_learning_rows``.
+DEFAULT_MAX_LEARNING_ROWS = 20_000
+#: Interior quantile levels of ``quantile_average`` unless the document sets ``levels``, and the fewest allowed.
+DEFAULT_LEVELS, MIN_LEVELS = 199, 3
+#: Rows of a quantile average inverted and located per call, bounding the working arrays.
+QUANTILE_CHUNK = 10_000
+#: Optimizer settings of the parametric pools: iteration cap, softmax logit bound and floor of a zero weight.
+MAX_ITERATIONS, LOGIT_BOUND, WEIGHT_FLOOR = 100, 30.0, 1e-4
+#: The beta pool's ``log a`` and ``log b`` stay within this, the probability clip of its density, and the
+#: relative step of its forward difference in the shapes.
+BETA_LOG_BOUND, PROB_CLIP, SHAPE_STEP = 3.0, 1e-9, 1e-6
 _TABLE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -155,6 +182,11 @@ class _Dates:
     def epoch_days(cls, text):
         """Return the day number (days since 1970-01-01) of an ISO date text."""
         return (cls.parse(text) - cls.EPOCH).days
+
+    @classmethod
+    def iso(cls, day):
+        """Return the ISO text of a day number (days since 1970-01-01)."""
+        return (cls.EPOCH + datetime.timedelta(days=int(day))).isoformat()
 
     @staticmethod
     def day_numbers(series):
@@ -486,6 +518,7 @@ class _Panel:
         self.eligible = frame[roles["eligible"]].fillna(False).astype(bool).to_numpy()
         self.cdf = {}
         self.extra = {}
+        self.external_pit = {}
         self._finite = {}
         self._categories = {}
         self._derived = {name: _EdgeBuckets(spec["column"], spec["edges"]) for name, spec in buckets.items()}
@@ -534,29 +567,76 @@ class _Panel:
 
         return self.ready(names) & self.eligible & np.isfinite(self.y)
 
+    def declared_pit(self, name):
+        """Return the full-length PIT column component ``name`` declares (an external file's included), else None."""
+        if name in self.external_pit:
+            return self.external_pit[name]
+        column = self.components[name].get("pit_column")
+        return self.numeric(column) if column else None
+
     def pit(self, name, rows):
         """Return the PIT of the outcome under component ``name`` at ``rows``.
 
         A raw component with a declared ``pit_column`` reads it; any other is read off its grid CDF.
         """
-        spec = self.components[name]
-        if spec.get("pit_column") and "pit_map" not in spec:
-            return self.numeric(spec["pit_column"])[rows]
+        declared = None if "pit_map" in self.components[name] else self.declared_pit(name)
+        if declared is not None:
+            return declared[rows]
         return self.grid.pit(self.cdf[name][rows], self.y[rows])
 
 
 # ----------------------------------------------------------------------------------------- learning rows
 
 
+class _Block:
+    """One refit unit of a target fold: the rows it forecasts, the rows that may teach it, its reference day."""
+
+    def __init__(self, target, learn, reference, tag):
+        self.target = target
+        self.learn = learn
+        self.reference = reference
+        self.tag = tag
+
+
 class _LearningRule(ABC):
-    """Which rows of the panel may teach a method for one target fold."""
+    """Which rows of the panel may teach a method for one target fold, and in how many refit blocks."""
+
+    #: The extra method keys this rule reads.
+    KEYS = ()
+    #: Whether ``fit.json`` lists the fold's blocks; a rule with one block per fold has nothing to list.
+    LISTS_BLOCKS = False
+
+    def problems(self, spec):
+        """Return the problems with the rule's own keys in a method ``spec``; the default has none."""
+        return []
+
+    @abstractmethod
+    def blocks(self, panel, fold, spec):
+        """Return the fold's :class:`_Block` list, first block first (the fit band uses the first)."""
+
+    @staticmethod
+    def first_validation_day(panel, fold):
+        """Return the day of the fold's first validation quote (its first quote of any band if none)."""
+        target = panel.is_val & (panel.fold == fold)
+        return int(panel.date_days[target if target.any() else panel.fold == fold].min())
+
+
+class _SingleBlockRule(_LearningRule):
+    """A rule that fits once per fold, from the rows its :meth:`mask` allows."""
 
     @abstractmethod
     def mask(self, panel, fold):
         """Return the boolean mask of rows allowed to teach the target ``fold``."""
 
+    def blocks(self, panel, fold, spec):
+        """Return the one block: every row of the fold, referenced at its first validation quote."""
+        import numpy as np
 
-class _FitBandRule(_LearningRule):
+        return [_Block(np.flatnonzero(panel.fold == fold), self.mask(panel, fold),
+                       self.first_validation_day(panel, fold), f"fold_{fold}")]
+
+
+class _FitBandRule(_SingleBlockRule):
     """The target fold's own fit band."""
 
     def mask(self, panel, fold):
@@ -564,7 +644,7 @@ class _FitBandRule(_LearningRule):
         return panel.is_fit & (panel.fold == fold)
 
 
-class _PriorValidationRule(_LearningRule):
+class _PriorValidationRule(_SingleBlockRule):
     """Earlier folds' validation rows that settled before the target fold's first validation quote."""
 
     def mask(self, panel, fold):
@@ -578,7 +658,50 @@ class _PriorValidationRule(_LearningRule):
         return panel.is_val & (panel.fold < fold) & (panel.settle_days < first)
 
 
-LEARNING_RULES = {"fit_band": _FitBandRule(), "prior_validation": _PriorValidationRule()}
+class _RollingRule(_LearningRule):
+    """Refit every ``refit_days`` calendar days of the target fold's validation quotes.
+
+    The fold's validation rows are cut into consecutive blocks of ``refit_days`` days from the fold's first
+    validation quote. A block is taught by the validation rows of this and every earlier fold whose
+    settlement falls strictly before the block's start, so earlier blocks of the same fold teach it once
+    they have settled. Rows of the fold that are not validation rows (its fit band) take the first block.
+    """
+
+    KEYS = ("refit_days",)
+    LISTS_BLOCKS = True
+
+    def problems(self, spec):
+        """Require ``refit_days`` to be an int of at least one."""
+        problems = []
+        check_int_param(problems, "method.refit_days", spec.get("refit_days"), ge=1)
+        return problems
+
+    def blocks(self, panel, fold, spec):
+        """Return one block per non-empty ``refit_days`` window of the fold's validation quotes."""
+        import numpy as np
+
+        every = int(spec["refit_days"])
+        target = np.flatnonzero(panel.fold == fold)
+        anchor = np.flatnonzero(panel.is_val & (panel.fold == fold))
+        if not anchor.size:
+            anchor = target
+        quote = panel.date_days[anchor]
+        first = int(quote.min())
+        window = (quote - first) // every
+        taught = panel.is_val & (panel.fold <= fold)
+        rest = np.setdiff1d(target, anchor)
+        out = []
+        for index in np.unique(window):
+            start = first + int(index) * every
+            rows = anchor[window == index]
+            if not out:
+                rows = np.union1d(rows, rest)
+            out.append(_Block(rows, taught & (panel.settle_days < start), start, f"fold_{fold}_block_{len(out)}"))
+        return out
+
+
+LEARNING_RULES = {"fit_band": _FitBandRule(), "prior_validation": _PriorValidationRule(),
+                  "rolling": _RollingRule()}
 
 
 # ------------------------------------------------------------------------------------------ cell bucketing
@@ -747,6 +870,8 @@ class _Method(ABC):
 
     A subclass declares ``KIND``, its extra spec keys in ``_KEYS`` (those in ``_REQUIRED`` must be given,
     the others take ``_DEFAULTS``) and implements ``_extra_problems``, ``used``, ``fit`` and ``predict``.
+    ``fit`` receives the learning ``weights`` (None for equal weights, which every kind must leave on its
+    unweighted path) and the ``tag`` that names the block's artifacts.
     """
 
     KIND = ""
@@ -763,12 +888,19 @@ class _Method(ABC):
     def problems(cls, spec, params, names):
         """Return the problems with a method spec: the shared keys, then the kind's own."""
         problems = []
-        reject_unknown_params(problems, spec, ("kind", "learn", *cls._KEYS))
+        learn = spec.get("learn")
+        rule = LEARNING_RULES.get(learn) if isinstance(learn, str) else None
+        reject_unknown_params(problems, spec, ("kind", "learn", "half_life_days", *(rule.KEYS if rule else ()),
+                                               *cls._KEYS))
         missing = sorted(set(cls._REQUIRED) - set(spec))
         if missing:
             problems.append(f"method needs {missing}")
-        if spec.get("learn") not in LEARNING_RULES:
-            problems.append(f"method.learn must be one of {sorted(LEARNING_RULES)}, got {spec.get('learn')!r}")
+        if rule is None:
+            problems.append(f"method.learn must be one of {sorted(LEARNING_RULES)}, got {learn!r}")
+        else:
+            problems += rule.problems(spec)
+        if "half_life_days" in spec and not (number_ok(spec["half_life_days"]) and spec["half_life_days"] > 0):
+            problems.append(f"method.half_life_days must be a number above zero, got {spec['half_life_days']!r}")
         return problems + cls._extra_problems({**cls._DEFAULTS, **spec}, params, names)
 
     @classmethod
@@ -817,8 +949,8 @@ class _Method(ABC):
         """Return the component names a row must have finite CDFs for."""
 
     @abstractmethod
-    def fit(self, panel, rows, fold):
-        """Learn from the learning ``rows`` for target ``fold``; return a :class:`_Fitted` or None."""
+    def fit(self, panel, rows, fold, weights=None, tag=None):
+        """Learn from the learning ``rows`` (weighted by ``weights``) for target ``fold``; return a :class:`_Fitted` or None."""
 
     @abstractmethod
     def predict(self, panel, rows, fitted):
@@ -834,11 +966,15 @@ class _PitMap:
         self.knots = int(knots)
         self.p = np.linspace(0.0, 1.0, self.knots)
 
-    def fit(self, pit):
-        """Return G at the knots (side right) from the learned PIT values."""
+    def fit(self, pit, weights=None):
+        """Return G at the knots (side right) from the learned PIT values, weighted when ``weights`` is given."""
         import numpy as np
 
-        return np.searchsorted(np.sort(pit), self.p, side="right") / len(pit)
+        if weights is None:
+            return np.searchsorted(np.sort(pit), self.p, side="right") / len(pit)
+        order = np.argsort(pit, kind="stable")
+        mass = np.concatenate([[0.0], np.cumsum(weights[order])])
+        return mass[np.searchsorted(pit[order], self.p, side="right")] / mass[-1]
 
     def apply(self, cdf, g):
         """Return ``interp(F, p, G)`` elementwise."""
@@ -876,16 +1012,16 @@ class _PitMapMethod(_Method):
         """Return the recalibrated component."""
         return [self.spec["component"]]
 
-    def fit(self, panel, rows, fold):
+    def fit(self, panel, rows, fold, weights=None, tag=None):
         """Learn the global map and one map per bucket holding at least ``min_rows`` rows."""
         pit = panel.pit(self.spec["component"], rows)
         states = self.cells.fit(panel, rows)
         keys = self.cells.keys(panel, rows, states)
         groups = _Groups(keys)
-        buckets = {int(k): self.map.fit(pit[m]) for k, m in zip(groups.keys, groups.members())
-                   if len(m) >= self.spec["min_rows"]}
+        buckets = {int(k): self.map.fit(pit[m], None if weights is None else weights[m])
+                   for k, m in zip(groups.keys, groups.members()) if len(m) >= self.spec["min_rows"]}
         sizes = {int(k): len(m) for k, m in zip(groups.keys, groups.members())}
-        glob = self.map.fit(pit)
+        glob = self.map.fit(pit, weights)
         state = {"component": self.spec["component"], "knots": self.map.knots,
                  "bucketing": [d.describe(s) for d, s in zip(self.cells.dimensions, states)],
                  "global": {"rows": len(rows), "g": glob},
@@ -906,38 +1042,297 @@ class _PitMapMethod(_Method):
         return out
 
 
-class _LinearPoolMethod(_Method):
-    """Mix components with weights on the simplex that minimize the mean grid score."""
+# --------------------------------------------------------------------------------- parametric pool numerics
 
-    KIND = "linear_pool"
-    _KEYS = ("components", "by", "per_threshold", "shrink_rows", "quantile_by", "min_rows")
-    _REQUIRED = ("components", "min_rows")
-    _DEFAULTS = {"per_threshold": False}
+
+class _SoftmaxWeights:
+    """Weights on the probability simplex parametrized by unconstrained logits."""
+
+    @staticmethod
+    def of(logits):
+        """Return the softmax of ``logits``."""
+        import numpy as np
+
+        e = np.exp(logits - logits.max())
+        return e / e.sum()
+
+    @staticmethod
+    def logits(weights):
+        """Return logits whose softmax is ``weights``, with zeros lifted to :data:`WEIGHT_FLOOR`."""
+        import numpy as np
+
+        return np.log(np.maximum(weights, WEIGHT_FLOOR))
+
+    @staticmethod
+    def backprop(weights, grad):
+        """Return the gradient with respect to the logits from the gradient with respect to the weights."""
+        return weights * (grad - weights @ grad)
+
+
+class _QuantileGrid:
+    """Quantile functions of grid CDFs at equally spaced levels, and the CDFs of quantile functions.
+
+    A grid CDF is the piecewise-linear curve through ``(z_k, F_k)`` closed by the PIT tails: ``0`` at
+    ``z_first - tail`` and ``1`` at ``z_last + tail``. Its quantile function is the left-continuous
+    inverse ``inf {z : F(z) >= p}``, so a flat part inverts to its left end and the answer never depends on
+    how ties are met. ``levels`` interior levels ``l / (levels + 1)`` get the knots ``p = 0`` and ``p = 1``
+    at the two tail ends, ``levels + 2`` columns in all.
+    """
+
+    def __init__(self, grid, levels):
+        import numpy as np
+
+        self.z = grid.z
+        self.levels = int(levels)
+        self.inner = np.arange(1, self.levels + 1) / (self.levels + 1)
+        self.p = np.concatenate([[0.0], self.inner, [1.0]])
+        self.x = np.concatenate([[grid.z[0] - grid.tail], grid.z, [grid.z[-1] + grid.tail]])
+        self.width = self.levels + 2
+
+    def invert(self, cdf):
+        """Return the ``(rows, levels + 2)`` quantiles of the grid CDFs in the rows of ``cdf``."""
+        import numpy as np
+
+        n, k = cdf.shape
+        clean = np.maximum.accumulate(np.clip(cdf, 0.0, 1.0), axis=1)
+        f = np.concatenate([np.zeros((n, 1)), clean, np.ones((n, 1))], axis=1)
+        base = np.arange(n)[:, None]
+        # Each row's knots lie in [0, 1]; a shift of two per row makes the whole array sorted, so one search
+        # serves every row.
+        position = np.searchsorted((f + 2.0 * base).ravel(), (self.inner[None, :] + 2.0 * base).ravel(),
+                                   side="left").reshape(n, self.levels)
+        local = np.clip(position - base * (k + 2), 1, k + 1)
+        flat = f.ravel()
+        upper, lower = flat[base * (k + 2) + local], flat[base * (k + 2) + local - 1]
+        t = np.clip((self.inner[None, :] - lower) / np.maximum(upper - lower, 1e-300), 0.0, 1.0)
+        inner = self.x[local - 1] + t * (self.x[local] - self.x[local - 1])
+        return np.concatenate([np.full((n, 1), self.x[0]), inner, np.full((n, 1), self.x[-1])], axis=1)
+
+    def locate(self, pooled):
+        """Return ``(position, cdf)``: the CDF at every grid point of the quantile functions in ``pooled``.
+
+        ``pooled`` is ``(rows, levels + 2)`` and non-decreasing along each row. ``position`` is the flat index
+        into ``pooled`` of the last knot at or below each grid point, so the CDF there interpolates level
+        ``p`` linearly between that knot and the next (the right-continuous CDF: ties take the larger level).
+        """
+        import numpy as np
+
+        n = pooled.shape[0]
+        span = self.x[-1] - self.x[0] + 1.0
+        shift = np.arange(n)[:, None] * span
+        position = np.searchsorted((pooled + shift).ravel(), (self.z[None, :] + shift).ravel(),
+                                   side="right").reshape(n, len(self.z)) - 1
+        flat = pooled.ravel()
+        lower, upper = flat[position], flat[position + 1]
+        local = position % self.width
+        t = np.clip((self.z[None, :] - lower) / np.maximum(upper - lower, 1e-300), 0.0, 1.0)
+        return position, self.p[local] + t * (self.p[local + 1] - self.p[local])
+
+
+class _PoolObjective(ABC):
+    """The weighted mean grid twCRPS of a pool with a few parameters, with its gradient.
+
+    ``stack`` is ``(rows, components, points)``; ``row_weights`` the learning weights (None for equal). The
+    parameters are a vector ``theta`` of softmax logits followed by the kind's own shape parameters; the
+    kind says how a start, the bounds and the final description derive from it.
+    """
+
+    #: What the comparison optimum is called in the state: ``<name>_weights`` and ``<name>_objective``.
+    BASELINE = ""
+
+    def __init__(self, grid, stack, y, row_weights):
+        import numpy as np
+
+        self.components = stack.shape[1]
+        self.points = grid.points
+        omega = np.ones(len(y)) if row_weights is None else np.asarray(row_weights, dtype=float)
+        self.rows = len(y)
+        self.weight = ((omega / omega.sum())[:, None] * grid.quadratic_weights()[None, :]).ravel()
+        self.indicator = grid.indicator(y).ravel()
+        self._setup(stack)
+
+    @abstractmethod
+    def _setup(self, stack):
+        """Keep whatever the objective needs from the ``(rows, components, points)`` ``stack``."""
+
+    @abstractmethod
+    def value_and_grad(self, theta):
+        """Return ``(objective, gradient)`` at ``theta``."""
+
+    @abstractmethod
+    def start(self, weights):
+        """Return the starting ``theta`` from the linear-pool ``weights``."""
+
+    @abstractmethod
+    def bounds(self):
+        """Return the ``(low, high)`` bound of every entry of ``theta``."""
+
+    @abstractmethod
+    def unpack(self, theta):
+        """Return the plain description (weights and shape parameters) of ``theta``."""
+
+    @abstractmethod
+    def baseline(self, weights):
+        """Return ``(description, objective)`` of the comparison point the optimum may not be worse than."""
+
+    def solve(self, weights):
+        """Minimize the objective from the linear-pool ``weights`` and return the state dict.
+
+        The optimizer is L-BFGS-B from a fixed start, so the answer is deterministic. The comparison point
+        is kept when the optimizer does not beat it.
+        """
+        from scipy.optimize import minimize
+
+        result = minimize(self.value_and_grad, self.start(weights), jac=True, method="L-BFGS-B",
+                          bounds=self.bounds(), options={"maxiter": MAX_ITERATIONS})
+        found, value = self.unpack(result.x), float(result.fun)
+        base, base_value = self.baseline(weights)
+        better = value < base_value
+        return {**(found if better else base), "objective": value if better else base_value,
+                f"{self.BASELINE}_weights": base["weights"], f"{self.BASELINE}_objective": base_value,
+                "iterations": int(result.nit), "converged": bool(result.success)}
+
+
+class _BetaPoolObjective(_PoolObjective):
+    """``F = BetaCDF_{a,b}(sum_i w_i F_i)``: logits, ``log a``, ``log b``."""
+
+    BASELINE = "linear_pool"
+
+    def _setup(self, stack):
+        import numpy as np
+
+        self.stack = np.ascontiguousarray(np.clip(stack, 0.0, 1.0).transpose(1, 0, 2).reshape(self.components, -1))
+
+    def loss(self, weights, a, b):
+        """Return the objective at explicit weights and shapes."""
+        from scipy import special
+
+        pooled = (weights @ self.stack).clip(0.0, 1.0)
+        return float(self.weight @ (special.betainc(a, b, pooled) - self.indicator) ** 2)
+
+    def value_and_grad(self, theta):
+        """Return the objective and its gradient (exact in the weights, a forward difference in the shapes)."""
+        import numpy as np
+        from scipy import special
+
+        j = self.components
+        w = _SoftmaxWeights.of(theta[:j])
+        a, b = np.exp(theta[j:])
+        pooled = (w @ self.stack).clip(0.0, 1.0)
+        g = special.betainc(a, b, pooled)
+        resid = g - self.indicator
+        slope = 2.0 * self.weight * resid
+        inside = np.clip(pooled, PROB_CLIP, 1.0 - PROB_CLIP)
+        density = np.exp(special.xlogy(a - 1.0, inside) + special.xlog1py(b - 1.0, -inside) - special.betaln(a, b))
+        grad_w = self.stack @ (slope * density)
+        step_a, step_b = SHAPE_STEP * a, SHAPE_STEP * b
+        grad_a = a * (slope @ ((special.betainc(a + step_a, b, pooled) - g) / step_a))
+        grad_b = b * (slope @ ((special.betainc(a, b + step_b, pooled) - g) / step_b))
+        return float(self.weight @ resid ** 2), np.concatenate([_SoftmaxWeights.backprop(w, grad_w), [grad_a, grad_b]])
+
+    def start(self, weights):
+        """Return the linear-pool logits with ``a = b = 1``."""
+        import numpy as np
+
+        return np.concatenate([_SoftmaxWeights.logits(weights), [0.0, 0.0]])
+
+    def bounds(self):
+        """Return wide logit bounds and ``log a``, ``log b`` within :data:`BETA_LOG_BOUND`."""
+        return [(-LOGIT_BOUND, LOGIT_BOUND)] * self.components + [(-BETA_LOG_BOUND, BETA_LOG_BOUND)] * 2
+
+    def unpack(self, theta):
+        """Return the weights, ``a`` and ``b`` of ``theta``."""
+        import numpy as np
+
+        j = self.components
+        return {"weights": _SoftmaxWeights.of(theta[:j]), "a": float(np.exp(theta[j])), "b": float(np.exp(theta[j + 1]))}
+
+    def baseline(self, weights):
+        """Return the exact linear pool (``a = b = 1``) and its objective."""
+        return {"weights": weights, "a": 1.0, "b": 1.0}, self.loss(weights, 1.0, 1.0)
+
+
+class _QuantileAverageObjective(_PoolObjective):
+    """``Q = sum_i w_i Q_i`` at ``levels`` equally spaced probabilities, read back as a CDF on the grid."""
+
+    BASELINE = "start"
+
+    def __init__(self, grid, stack, y, row_weights, levels):
+        self.inverse = _QuantileGrid(grid, levels)
+        super().__init__(grid, stack, y, row_weights)
+
+    def _setup(self, stack):
+        import numpy as np
+
+        self.quantiles = np.stack([self.inverse.invert(stack[:, j, :]) for j in range(self.components)])
+        self.quantiles = self.quantiles.reshape(self.components, -1)
+
+    def _evaluate(self, w):
+        """Return ``(pooled quantiles, position, cdf)`` of the pool with weights ``w``."""
+        pooled = (w @ self.quantiles).reshape(self.rows, self.inverse.width)
+        position, cdf = self.inverse.locate(pooled)
+        return pooled, position, cdf
+
+    def loss(self, weights):
+        """Return the objective at explicit weights."""
+        return float(self.weight @ (self._evaluate(weights)[2].ravel() - self.indicator) ** 2)
+
+    def value_and_grad(self, theta):
+        """Return the objective and its gradient.
+
+        With the CDF value ``F`` solving ``sum_i w_i Q_i(F) = z``, ``dF/dw_i = -Q_i(F) / Q'(F)``, where
+        ``Q'`` is the slope of the pooled quantile function in the segment holding ``F``.
+        """
+        import numpy as np
+
+        w = _SoftmaxWeights.of(theta)
+        pooled, position, cdf = self._evaluate(w)
+        resid = (cdf.ravel() - self.indicator)
+        slope = (2.0 * self.weight * resid).reshape(cdf.shape)
+        local = position % self.inverse.width
+        p_low = self.inverse.p[local]
+        step = self.inverse.p[local + 1] - p_low
+        flat = pooled.ravel()
+        gap = np.maximum(flat[position + 1] - flat[position], 1e-300)
+        t = (cdf - p_low) / step
+        lower, upper = self.quantiles[:, position], self.quantiles[:, position + 1]
+        at_cdf = lower + t * (upper - lower)
+        grad_w = -((at_cdf / (gap / step)) * slope).sum(axis=(1, 2))
+        return float(self.weight @ resid ** 2), _SoftmaxWeights.backprop(w, grad_w)
+
+    def start(self, weights):
+        """Return the linear-pool logits."""
+        return _SoftmaxWeights.logits(weights)
+
+    def bounds(self):
+        """Return wide logit bounds."""
+        return [(-LOGIT_BOUND, LOGIT_BOUND)] * self.components
+
+    def unpack(self, theta):
+        """Return the weights of ``theta``."""
+        return {"weights": _SoftmaxWeights.of(theta)}
+
+    def baseline(self, weights):
+        """Return the quantile average at the linear-pool weights and its objective."""
+        return {"weights": weights}, self.loss(weights)
+
+
+class _PoolBase(_Method):
+    """A method that pools 2 to 6 named components; the shared stack, moments and exact linear-pool solve."""
+
+    def __init__(self, spec, params, grid):
+        super().__init__(spec, params, grid)
+        self.cells = _Cells.from_spec(self.spec)
 
     @classmethod
-    def _extra_problems(cls, spec, params, names):
-        problems = []
+    def _component_list_problems(cls, problems, spec, names):
+        """Append the problems of ``components``: 2 to 6 distinct declared names."""
         parts = spec.get("components")
         if not (isinstance(parts, list) and 2 <= len(parts) <= MAX_POOL_COMPONENTS and len(set(map(str, parts))) == len(parts)):
             problems.append(f"method.components must be 2 to {MAX_POOL_COMPONENTS} distinct component names")
         else:
             for part in parts:
                 cls._name_problems(problems, "components", part, names)
-        cls._rows_problem(problems, spec)
-        cls._cell_problems(problems, spec, single=True)
-        if not isinstance(spec["per_threshold"], bool):
-            problems.append("method.per_threshold must be a boolean")
-        shrink = spec.get("shrink_rows")
-        if shrink is not None:
-            if not (number_ok(shrink) and shrink >= 0):
-                problems.append("method.shrink_rows must be a number >= 0")
-            if spec.get("by") is None and spec.get("quantile_by") is None:
-                problems.append("method.shrink_rows needs by or quantile_by")
-        return problems
-
-    def __init__(self, spec, params, grid):
-        super().__init__(spec, params, grid)
-        self.cells = _Cells.from_spec(self.spec)
 
     def needed_columns(self):
         """Return the bucket column."""
@@ -962,47 +1357,93 @@ class _LinearPoolMethod(_Method):
         import numpy as np
 
         resid = self._stack(panel, rows) - self.grid.indicator(panel.y[rows])[:, None, :]
-        if self.spec["per_threshold"]:
+        if self.spec.get("per_threshold", False):
             return np.einsum("cjk,clk->ckjl", resid, resid).reshape(len(rows), -1)
         return np.einsum("cjk,clk,k->cjl", resid, resid, self.grid.quadratic_weights()).reshape(len(rows), -1)
 
-    def _moments(self, panel, rows, keys):
-        """Return the summed moments of all rows and of each bucket key, with the row counts."""
-        total, per_key, counts = 0.0, {}, {}
+    def _moments(self, panel, rows, keys, weights=None):
+        """Return the summed moments of all rows and of each bucket key, with the row counts and masses.
+
+        With learning ``weights`` each row's moment is scaled by its weight and a mass is the weight sum;
+        without, a mass is the row count.
+        """
+        total, per_key, counts, masses = 0.0, {}, {}, {}
         for start in range(0, len(rows), CHUNK_ROWS):
             part = slice(start, start + CHUNK_ROWS)
             moments = self._row_moments(panel, rows[part])
+            if weights is not None:
+                moments = moments * weights[part][:, None]
             total = total + moments.sum(axis=0)
             groups = _Groups(keys[part])
-            for key, row_sum, n in zip(groups.keys, groups.sums(moments), groups.counts):
-                per_key[int(key)] = per_key.get(int(key), 0.0) + row_sum
-                counts[int(key)] = counts.get(int(key), 0) + int(n)
-        return total, per_key, counts
+            mass = groups.counts if weights is None else groups.sums(weights[part][:, None])[:, 0]
+            for key, row_sum, n, m in zip(groups.keys, groups.sums(moments), groups.counts, mass):
+                k = int(key)
+                per_key[k] = per_key.get(k, 0.0) + row_sum
+                counts[k] = counts.get(k, 0) + int(n)
+                masses[k] = masses.get(k, 0) + (int(n) if weights is None else float(m))
+        return total, per_key, counts, masses
 
     def _solve(self, moment, n):
-        """Return the optimal weights (a vector, or one per threshold) from summed moments of ``n`` rows."""
+        """Return the optimal weights (a vector, or one per threshold) from summed moments of mass ``n``."""
         import numpy as np
 
         j = len(self.spec["components"])
-        if self.spec["per_threshold"]:
+        if self.spec.get("per_threshold", False):
             q = (moment / n).reshape(self.grid.points, j, j)
             return np.array([_SimplexQuadratic.solve(qk) for qk in q])
         return _SimplexQuadratic.solve((moment / n).reshape(j, j))
 
-    def fit(self, panel, rows, fold):
+    @staticmethod
+    def _mass(rows, weights):
+        """Return the learning mass of ``rows``: their count, or their weight sum."""
+        return len(rows) if weights is None else float(weights.sum())
+
+    def _exact_weights(self, panel, rows, weights):
+        """Return the exact linear-pool weights on ``rows`` (one vector, whatever ``per_threshold`` says)."""
+        import numpy as np
+
+        total, _, _, _ = self._moments(panel, rows, np.full(len(rows), -1, dtype=np.int64), weights)
+        return self._solve(total, self._mass(rows, weights))
+
+
+class _LinearPoolMethod(_PoolBase):
+    """Mix components with weights on the simplex that minimize the mean grid score."""
+
+    KIND = "linear_pool"
+    _KEYS = ("components", "by", "per_threshold", "shrink_rows", "quantile_by", "min_rows")
+    _REQUIRED = ("components", "min_rows")
+    _DEFAULTS = {"per_threshold": False}
+
+    @classmethod
+    def _extra_problems(cls, spec, params, names):
+        problems = []
+        cls._component_list_problems(problems, spec, names)
+        cls._rows_problem(problems, spec)
+        cls._cell_problems(problems, spec, single=True)
+        if not isinstance(spec["per_threshold"], bool):
+            problems.append("method.per_threshold must be a boolean")
+        shrink = spec.get("shrink_rows")
+        if shrink is not None:
+            if not (number_ok(shrink) and shrink >= 0):
+                problems.append("method.shrink_rows must be a number >= 0")
+            if spec.get("by") is None and spec.get("quantile_by") is None:
+                problems.append("method.shrink_rows needs by or quantile_by")
+        return problems
+
+    def fit(self, panel, rows, fold, weights=None, tag=None):
         """Solve the global weights and each bucket's (shrunk toward the global ones)."""
         states = self.cells.fit(panel, rows)
         keys = self.cells.keys(panel, rows, states)
-        total, per_key, counts = self._moments(panel, rows, keys)
-        glob = self._solve(total, len(rows))
+        total, per_key, counts, masses = self._moments(panel, rows, keys, weights)
+        glob = self._solve(total, self._mass(rows, weights))
         shrink = self.spec.get("shrink_rows")
         buckets = {}
         for key, moment in per_key.items():
-            n = counts[key]
+            n, mass = counts[key], masses[key]
             if n < self.spec["min_rows"]:
                 continue
-            w = self._solve(moment, n)
-            buckets[key] = w if not shrink else (n * w + shrink * glob) / (n + shrink)
+            w = self._solve(moment, mass)
+            buckets[key] = w if not shrink else (mass * w + shrink * glob) / (mass + shrink)
         state = {"components": self.used(), "per_threshold": self.spec["per_threshold"],
                  "bucketing": self.cells.dimensions[0].describe(states[0]) if states else None,
                  "global": {"rows": len(rows), "weights": glob},
@@ -1023,6 +1464,139 @@ class _LinearPoolMethod(_Method):
         if self.spec["per_threshold"]:
             return _rearranged(np.einsum("mkj,mjk->mk", weights, stack))
         return np.einsum("mj,mjk->mk", weights, stack)
+
+
+class _ParametricPoolMethod(_PoolBase):
+    """A pool whose few parameters are fitted numerically on a strided sample of the learning rows.
+
+    Subclasses name the objective (:meth:`_objective`) and how fitted parameters turn into CDFs
+    (:meth:`_apply`). The fit is the optimizer's start from the exact linear-pool weights, per bucket of
+    ``by`` with at least ``min_rows`` rows and once globally; fewer than ``min_rows`` learning rows decline.
+    """
+
+    _KEYS = ("components", "by", "min_rows", "max_learning_rows")
+    _REQUIRED = ("components", "min_rows")
+    _DEFAULTS = {"max_learning_rows": DEFAULT_MAX_LEARNING_ROWS}
+
+    @classmethod
+    def _extra_problems(cls, spec, params, names):
+        problems = []
+        cls._component_list_problems(problems, spec, names)
+        cls._rows_problem(problems, spec)
+        cls._cell_problems(problems, spec, single=True)
+        check_int_param(problems, "method.max_learning_rows", spec.get("max_learning_rows"), ge=1)
+        return problems + cls._shape_problems(spec)
+
+    @classmethod
+    def _shape_problems(cls, spec):
+        """Return the problems with the kind's own keys; the default kind has none."""
+        return []
+
+    @abstractmethod
+    def _objective(self, panel, rows, weights):
+        """Return the :class:`_PoolObjective` over the (already strided) learning ``rows``."""
+
+    @abstractmethod
+    def _apply(self, panel, rows, params):
+        """Return the ``(len(rows), points)`` CDF under one cell's fitted ``params`` (a state dict)."""
+
+    def _fit_cell(self, panel, rows, weights):
+        """Fit one cell on a deterministic stride of ``rows`` and return its state dict."""
+        stride = max(1, math.ceil(len(rows) / self.spec["max_learning_rows"]))
+        used = rows[::stride]
+        used_weights = None if weights is None else weights[::stride]
+        start = self._exact_weights(panel, used, used_weights)
+        solved = self._objective(panel, used, used_weights).solve(start)
+        return {"rows": len(rows), "rows_used": len(used), **solved}
+
+    def fit(self, panel, rows, fold, weights=None, tag=None):
+        """Fit the global cell and each bucket with enough rows; None when ``rows`` are below ``min_rows``."""
+        if len(rows) < self.spec["min_rows"]:
+            return None
+        states = self.cells.fit(panel, rows)
+        groups = _Groups(self.cells.keys(panel, rows, states))
+        glob = self._fit_cell(panel, rows, weights)
+        buckets = {int(k): self._fit_cell(panel, rows[m], None if weights is None else weights[m])
+                   for k, m in zip(groups.keys, groups.members()) if len(m) >= self.spec["min_rows"]}
+        state = {"components": self.used(),
+                 "bucketing": self.cells.dimensions[0].describe(states[0]) if states else None,
+                 "global": glob,
+                 "buckets": {self.cells.name_of(panel, k, states): b for k, b in buckets.items()}}
+        return _Fitted(state, {"global": glob, "buckets": buckets, "states": states})
+
+    def predict(self, panel, rows, fitted):
+        """Apply the row's bucket parameters, the global ones where its bucket has none."""
+        import numpy as np
+
+        out = np.empty((len(rows), self.grid.points))
+        covered = np.zeros(len(rows), dtype=bool)
+        if fitted.model["buckets"]:
+            keys = self.cells.keys(panel, rows, fitted.model["states"])
+            for key, params in fitted.model["buckets"].items():
+                hit = keys == key
+                if hit.any():
+                    out[hit] = self._apply(panel, rows[hit], params)
+                    covered |= hit
+        if not covered.all():
+            out[~covered] = self._apply(panel, rows[~covered], fitted.model["global"])
+        return out
+
+
+class _BetaPoolMethod(_ParametricPoolMethod):
+    """A beta-transformed linear pool (Ranjan and Gneiting 2010): ``BetaCDF_{a,b}(sum_i w_i F_i)``."""
+
+    KIND = "beta_pool"
+
+    def _objective(self, panel, rows, weights):
+        return _BetaPoolObjective(self.grid, self._stack(panel, rows), panel.y[rows], weights)
+
+    def _apply(self, panel, rows, params):
+        """Return the beta transform of the pool at the cell's weights, ``a`` and ``b``."""
+        from scipy import special
+
+        import numpy as np
+
+        pooled = np.einsum("j,mjk->mk", np.asarray(params["weights"]), self._stack(panel, rows)).clip(0.0, 1.0)
+        return special.betainc(params["a"], params["b"], pooled)
+
+
+class _QuantileAverageMethod(_ParametricPoolMethod):
+    """The weighted average of the components' quantile functions, read back as a CDF on the grid."""
+
+    KIND = "quantile_average"
+    _KEYS = _ParametricPoolMethod._KEYS + ("levels",)
+    _DEFAULTS = {**_ParametricPoolMethod._DEFAULTS, "levels": DEFAULT_LEVELS}
+
+    @classmethod
+    def _shape_problems(cls, spec):
+        problems = []
+        check_int_param(problems, "method.levels", spec.get("levels"), ge=MIN_LEVELS)
+        return problems
+
+    def __init__(self, spec, params, grid):
+        super().__init__(spec, params, grid)
+        self.inverse = _QuantileGrid(grid, self.spec["levels"])
+
+    def _objective(self, panel, rows, weights):
+        return _QuantileAverageObjective(self.grid, self._stack(panel, rows), panel.y[rows], weights,
+                                         self.spec["levels"])
+
+    def _fit_cell(self, panel, rows, weights):
+        """Fit one cell and record the number of quantile levels it used."""
+        return {**super()._fit_cell(panel, rows, weights), "levels": int(self.spec["levels"])}
+
+    def _apply(self, panel, rows, params):
+        """Return the CDF of the pooled quantile function ``sum_i w_i Q_i``, in chunks of rows."""
+        import numpy as np
+
+        out = np.empty((len(rows), self.grid.points))
+        for start in range(0, len(rows), QUANTILE_CHUNK):
+            part = rows[start:start + QUANTILE_CHUNK]
+            pooled = 0.0
+            for w, name in zip(params["weights"], self.spec["components"]):
+                pooled = pooled + w * self.inverse.invert(panel.cdf[name][part])
+            out[start:start + QUANTILE_CHUNK] = self.inverse.locate(pooled)[1]
+        return out
 
 
 class _BestComponentMethod(_Method):
@@ -1076,7 +1650,7 @@ class _BestComponentMethod(_Method):
             chosen[i] = best if best != default and gain > self.spec["margin"] else default
         return chosen
 
-    def fit(self, panel, rows, fold):
+    def fit(self, panel, rows, fold, weights=None, tag=None):
         """Score every component on the learning rows by cell and choose per cell."""
         import numpy as np
 
@@ -1084,7 +1658,10 @@ class _BestComponentMethod(_Method):
         scores = np.column_stack([self.grid.score(panel.cdf[n][rows], panel.y[rows]) for n in names])
         states = self.cells.fit(panel, rows)
         groups = _Groups(self.cells.keys(panel, rows, states))
-        means = groups.sums(scores) / np.maximum(groups.counts, 1)[:, None]
+        if weights is None:
+            means = groups.sums(scores) / np.maximum(groups.counts, 1)[:, None]
+        else:
+            means = groups.sums(scores * weights[:, None]) / np.maximum(groups.sums(weights[:, None]), 1e-300)
         chosen = self._choices(means, groups.counts)
         learned = chosen >= 0
         cells = [{"cell": self.cells.decode(panel, k, states), "rows": int(n), "chosen": names[c],
@@ -1223,9 +1800,10 @@ class _BinaryGbmMethod(_Method):
         return {**DEFAULT_LGBM_PARAMS, **self.spec["lgbm_params"], **self._FORCED,
                 "random_state": self.spec["seed"], "monotone_constraints": monotone}
 
-    def fit(self, panel, rows, fold):
-        """Fit the booster on a deterministic stride subsample of the learning rows."""
+    def fit(self, panel, rows, fold, weights=None, tag=None):
+        """Fit the booster on a deterministic stride subsample of the learning rows (sample-weighted if asked)."""
         import lightgbm
+        import numpy as np
 
         stride = max(1, math.ceil(len(rows) / self.spec["max_learning_rows"]))
         used = rows[::stride]
@@ -1234,9 +1812,12 @@ class _BinaryGbmMethod(_Method):
         if label.min() == label.max():
             return None
         model = lightgbm.LGBMClassifier(**self._classifier_params())
-        model.fit(x, label)
+        if weights is None:
+            model.fit(x, label)
+        else:
+            model.fit(x, label, sample_weight=np.repeat(weights[::stride], self.grid.points))
         text = model.booster_.model_to_string()
-        name = f"fold_{fold}_booster.txt"
+        name = f"{tag or f'fold_{fold}'}_booster.txt"
         state = {"booster_sha256": hashlib.sha256(text.encode()).hexdigest(), "booster_file": name,
                  "learning_rows_total": len(rows), "learning_rows_used": len(used),
                  "examples": int(len(label)), "base": self.spec["base"],
@@ -1253,28 +1834,52 @@ class _BinaryGbmMethod(_Method):
 
 
 #: The method kinds a document may name, kind -> class.
-METHOD_KINDS = {cls.KIND: cls for cls in (_PitMapMethod, _LinearPoolMethod, _BestComponentMethod, _BinaryGbmMethod)}
+METHOD_KINDS = {cls.KIND: cls for cls in (_PitMapMethod, _LinearPoolMethod, _BestComponentMethod, _BinaryGbmMethod,
+                                          _BetaPoolMethod, _QuantileAverageMethod)}
 
 
 # --------------------------------------------------------------------------------------- components
 
 
 class _Components:
-    """The declared forecasters: each source's raw CDF, and the per-fold PIT-mapped variants."""
+    """The declared forecasters: each source's raw CDF, the external ones joined in, the per-fold PIT maps.
+
+    A component is internal (its ``<source>_cdf_<label>`` columns are in the main rows) or, when it names a
+    ``path``, external: the same columns are read from another rows parquet and left-joined by ``keys``.
+    Internally everything is keyed by the component NAME, so an internal and an external component may share
+    a source prefix and stay distinct.
+    """
 
     def __init__(self, specs, grid):
         self.specs = specs
         self.grid = grid
+        self.internal = [s for s in specs if "path" not in s]
+        self.external = [s for s in specs if "path" in s]
+
+    @staticmethod
+    def verify_external(specs):
+        """Raise ValueError unless every external component's file has the sha256 its spec declares."""
+        for spec in specs:
+            if "path" in spec:
+                _Source.verify(spec["path"], spec["sha256"], f"component {spec['name']!r} file")
+
+    def key_columns(self):
+        """Return the identity columns the external joins read from the main rows."""
+        return list(dict.fromkeys(k for s in self.external for k in s["keys"]))
+
+    def _cdf_columns(self, spec):
+        """Return the ``<source>_cdf_<label>`` column names of one component."""
+        return [f"{spec['source']}_cdf_{label}" for label in self.grid.labels]
 
     def source_columns(self):
-        """Return every ``<source>_cdf_<label>`` column and PIT column the components read."""
-        columns = [f"{s['source']}_cdf_{label}" for s in self.specs for label in self.grid.labels]
-        columns += [s["pit_column"] for s in self.specs if s.get("pit_column")]
+        """Return every internal ``<source>_cdf_<label>`` column and PIT column the main read must carry."""
+        columns = [c for s in self.internal for c in self._cdf_columns(s)]
+        columns += [s["pit_column"] for s in self.internal if s.get("pit_column")]
         return list(dict.fromkeys(columns))
 
     def pit_columns(self):
-        """Return the declared PIT columns, which the panel reads row by row."""
-        return list(dict.fromkeys(s["pit_column"] for s in self.specs if s.get("pit_column")))
+        """Return the internal components' declared PIT columns, which the panel reads row by row."""
+        return list(dict.fromkeys(s["pit_column"] for s in self.internal if s.get("pit_column")))
 
     def raw_matrix(self, table, source):
         """Return the ``(rows, points)`` float64 CDF matrix of one source forecaster."""
@@ -1282,6 +1887,47 @@ class _Components:
 
         return np.column_stack([table[f"{source}_cdf_{label}"].to_numpy().astype(float, copy=False)
                                 for label in self.grid.labels])
+
+    def internal_matrices(self, table):
+        """Return ``{component name: raw CDF matrix}`` of the internal components (one matrix per source)."""
+        by_source, raw = {}, {}
+        for spec in self.internal:
+            if spec["source"] not in by_source:
+                by_source[spec["source"]] = self.raw_matrix(table, spec["source"])
+            raw[spec["name"]] = by_source[spec["source"]]
+        return raw
+
+    def attach_external(self, panel, raw, end_before):
+        """Join each external component's CDFs onto the panel's rows; return the coverage record.
+
+        The file is read under the same ``end_before`` bound as the main rows (on the date key), its keys
+        must be unique after that bound, and the join is a left join on ``keys``: a row with no match gets
+        NaN, so it can neither teach nor be forecast, and falls back where the method needs the component.
+        """
+        import numpy as np
+        import pandas as pd
+
+        date = panel.roles["date"]
+        record = {}
+        for spec in self.external:
+            keys, names = spec["keys"], self._cdf_columns(spec)
+            wanted = [*keys, *names, *([spec["pit_column"]] if spec.get("pit_column") else [])]
+            right = _Source.read(spec["path"], list(dict.fromkeys(wanted)), [date], end_before).to_pandas(
+                date_as_object=False)
+            if right.duplicated(subset=keys).any():
+                raise ValueError(f"component {spec['name']!r} file {spec['path']} holds duplicate keys {keys}")
+            left = pd.DataFrame({k: panel.frame[k].to_numpy() for k in keys})
+            for frame in (left, right):
+                frame[date] = _Dates.day_numbers(frame[date])
+            joined = left.merge(right, on=keys, how="left", sort=False)
+            raw[spec["name"]] = np.column_stack([pd.to_numeric(joined[n]).to_numpy(dtype=float) for n in names])
+            if spec.get("pit_column"):
+                panel.external_pit[spec["name"]] = pd.to_numeric(joined[spec["pit_column"]]).to_numpy(dtype=float)
+            matched = np.isfinite(raw[spec["name"]]).all(axis=1)
+            record[spec["name"]] = {
+                "path": spec["path"], "sha256": spec["sha256"], "keys": list(keys), "rows_read": int(len(right)),
+                "coverage": {str(int(f)): float(matched[panel.fold == f].mean()) for f in np.unique(panel.fold)}}
+        return record
 
     def build(self, panel, raw):
         """Fill ``panel.cdf`` with every component and return the per-fold map record.
@@ -1294,10 +1940,10 @@ class _Components:
         record = {}
         for spec in self.specs:
             if "pit_map" not in spec:
-                panel.cdf[spec["name"]] = raw[spec["source"]]
+                panel.cdf[spec["name"]] = raw[spec["name"]]
                 continue
-            out = np.full_like(raw[spec["source"]], np.nan)
-            record[spec["name"]] = self._fold_maps(panel, raw[spec["source"]], spec, out)
+            out = np.full_like(raw[spec["name"]], np.nan)
+            record[spec["name"]] = self._fold_maps(panel, raw[spec["name"]], spec, out)
             panel.cdf[spec["name"]] = out
         return record
 
@@ -1323,9 +1969,8 @@ class _Components:
 
     def _source_pit(self, panel, source_cdf, spec):
         """Return the PIT of the source: the declared column when named, else read off the grid CDF."""
-        if spec.get("pit_column"):
-            return panel.numeric(spec["pit_column"])
-        return self.grid.pit(source_cdf, panel.y)
+        declared = panel.declared_pit(spec["name"])
+        return self.grid.pit(source_cdf, panel.y) if declared is None else declared
 
 
 # ---------------------------------------------------------------------------------------------- tables
@@ -1580,13 +2225,36 @@ class GridCDFMethod(Node):
         roles ``identity`` (list), ``date``, ``settlement``, ``fold``, ``band``, ``outcome``, ``dte``,
         ``group``, ``eligible``); ``z_grid`` (ascending floats), ``grid_labels`` (column suffixes),
         ``score_weights`` (one per point), ``pit_tail`` (float > 0, the PIT's linear tail width);
-        ``components`` (list of ``{name, source, pit_map?: {knots, learn: "fit_band"}, pit_column?}``);
-        ``fallback`` (component used where the method is not fitted or a needed CDF is missing);
-        ``method`` (``{kind, learn: "fit_band" | "prior_validation", ...}`` with the kind's own keys, see
+        ``components`` (list of ``{name, source, pit_map?: {knots, learn: "fit_band"}, pit_column?, path?,
+        sha256?, keys?}``; ``path``, ``sha256`` and ``keys`` come together and make the component external:
+        its ``<source>_cdf_<label>`` columns (and ``pit_column``) are read from that scored-rows parquet,
+        hash-verified and bounded by ``end_before`` on the date key, whose ``keys`` (identity columns that
+        include the date column) must be unique there and are left-joined onto the main rows, an unmatched
+        row being NaN; components are keyed by ``name``, so an external and an internal one may share a
+        ``source`` prefix); ``fallback`` (component used where the method is not fitted or a needed CDF is
+        missing); ``method`` (``{kind, learn: "fit_band" | "prior_validation" | "rolling", refit_days (rolling
+        only, int >= 1), half_life_days? (number > 0), ...}`` with the kind's own keys, see
         :data:`METHOD_KINDS`); ``comparators`` (component names) and ``ranked_folds`` (ints) for the tables;
         ``tables`` (list of ``{name, by, regions, region_groups?}``; a region group sums named regions into
         a strike zone); optional ``buckets`` (derived bucketed columns,
         ``{name: {column, edges: [[lo, hi], ...]}}``) and ``periods`` (``{name: [start, end]}``).
+
+    The kinds and their keys (all take ``learn`` and ``half_life_days``; ``min_rows`` counts rows):
+    ``pit_map`` (``component``, ``knots``, ``min_rows``, ``by?``); ``linear_pool`` (``components``,
+    ``min_rows``, ``by?``, ``quantile_by?``, ``per_threshold?``, ``shrink_rows?``, where ``shrink_rows``
+    counts weight mass under a half life); ``best_component`` (``components``, ``by``, ``default``,
+    ``min_rows``, ``margin``); ``binary_gbm`` (``base``, ``lgbm_params``, ``seed``, ``max_learning_rows``,
+    ``features?``, ``feature_source?``); ``beta_pool`` (``components`` 2 to 6, ``min_rows``, ``by?``,
+    ``max_learning_rows?``, default :data:`DEFAULT_MAX_LEARNING_ROWS`); ``quantile_average`` (the same plus
+    ``levels?`` interior probabilities, default :data:`DEFAULT_LEVELS`).
+
+    ``fit.json`` holds, per fold, the first block's ``learning_rows``, ``fitted`` and ``state`` and the row
+    totals; for ``rolling`` also ``blocks``, each ``{start, learning_rows, fitted, reason, rows, rows_fitted,
+    state}``; a ``half_life_days`` on a single-block rule adds the fold's ``reference`` date; when a component
+    is external, ``external`` maps its name to ``{path, sha256, keys, rows_read, coverage: {fold: share of
+    the fold's rows with a matched, finite CDF}}``. A parametric pool's ``state`` carries ``weights`` (and
+    ``a``, ``b`` for ``beta_pool``), ``rows``, ``rows_used``, the ``objective`` reached and the objective of
+    its comparison start (``linear_pool_objective`` or ``start_objective``).
 
     Examples
     --------
@@ -1615,7 +2283,8 @@ class GridCDFMethod(Node):
                "score_weights", "pit_tail", "components", "fallback", "method", "comparators", "ranked_folds",
                "tables", "buckets", "periods")
     _OPTIONAL = ("buckets", "periods")
-    _COMPONENT_KEYS = ("name", "source", "pit_map", "pit_column")
+    _COMPONENT_KEYS = ("name", "source", "pit_map", "pit_column", "path", "sha256", "keys")
+    _EXTERNAL_KEYS = ("path", "sha256", "keys")
 
     @classmethod
     def validate_params(cls, params):
@@ -1638,7 +2307,7 @@ class GridCDFMethod(Node):
             problems.append(f"missing parameters: {missing}")
         cls._file_problems(problems, params)
         cls._grid_problems(problems, params)
-        names = cls._component_problems(problems, params.get("components"))
+        names = cls._component_problems(problems, params.get("components"), params.get("columns"))
         if "fallback" in params and params["fallback"] not in names:
             problems.append(f"fallback names {params['fallback']!r}, not a declared component {sorted(names)}")
         cls._comparator_problems(problems, params, names)
@@ -1693,7 +2362,7 @@ class GridCDFMethod(Node):
             problems.append("pit_tail must be a number above zero")
 
     @classmethod
-    def _component_problems(cls, problems, components):
+    def _component_problems(cls, problems, components, columns):
         """Append the components' problems; return the set of declared names."""
         if components is None:
             return set()
@@ -1707,6 +2376,7 @@ class GridCDFMethod(Node):
             reject_unknown_params(problems, spec, cls._COMPONENT_KEYS)
             if not (_is_name(spec.get("name")) and _is_name(spec.get("source"))):
                 problems.append(f"components[{index}] needs a name and a source")
+            cls._external_problems(problems, index, spec, columns.get("date") if isinstance(columns, dict) else None)
             if "pit_column" in spec and not _is_name(spec["pit_column"]):
                 problems.append(f"components[{index}].pit_column must be a column name")
             if "pit_map" in spec:
@@ -1720,6 +2390,26 @@ class GridCDFMethod(Node):
         if len(set(names)) != len(names):
             problems.append(f"duplicate component names in {names}")
         return {n for n in names if _is_name(n)}
+
+    @classmethod
+    def _external_problems(cls, problems, index, spec, date):
+        """Append the problems of a component's ``path``, ``sha256`` and ``keys``: all or none, keys with the date."""
+        given = [k for k in cls._EXTERNAL_KEYS if k in spec]
+        if not given:
+            return
+        if len(given) != len(cls._EXTERNAL_KEYS):
+            problems.append(f"components[{index}] needs path, sha256 and keys together, got only {given}")
+            return
+        if not _is_name(spec["path"]):
+            problems.append(f"components[{index}].path must be a non-empty string")
+        if not (isinstance(spec["sha256"], str) and _SHA256.match(spec["sha256"])):
+            problems.append(f"components[{index}].sha256 must be 64 lowercase hex characters")
+        keys = spec["keys"]
+        if not (isinstance(keys, list) and keys and all(_is_name(k) for k in keys) and len(set(keys)) == len(keys)):
+            problems.append(f"components[{index}].keys must be a non-empty list of distinct column names")
+        elif date is not None and date not in keys:
+            problems.append(f"components[{index}].keys must include the date column {date!r}, so end_before "
+                            "bounds the read")
 
     @classmethod
     def _comparator_problems(cls, problems, params, names):
@@ -1838,6 +2528,7 @@ class GridCDFMethod(Node):
         if work.exists():
             raise ValueError(f"{self.key}: {work} is a partial directory from an interrupted run; remove it first")
         _Source.verify(p["source"], p["source_sha256"], "source")
+        _Components.verify_external(p["components"])
         output.parent.mkdir(parents=True, exist_ok=True)
         work.mkdir()
         try:
@@ -1857,6 +2548,7 @@ class GridCDFMethod(Node):
         wanted = [*roles["identity"], *(roles[r] for r in COLUMN_ROLES if r != "identity")]
         derived = {*p.get("buckets", {}), YEAR_COLUMN, PERIOD_COLUMN}
         wanted += [spec["column"] for spec in p.get("buckets", {}).values()]
+        wanted += _Components(p["components"], None).key_columns()
         wanted += [c for c in method.needed_columns() if c not in derived]
         wanted += [c for table in p["tables"] for c in table["by"] if c not in derived]
         return list(dict.fromkeys(wanted))
@@ -1869,7 +2561,7 @@ class GridCDFMethod(Node):
         frame_columns += [c for c in components.pit_columns() if c not in frame_columns]
         table = _Source.read(p["source"], list(dict.fromkeys([*frame_columns, *components.source_columns()])),
                              [roles["date"], roles["settlement"]], p["end_before"])
-        raw = {s["source"]: components.raw_matrix(table, s["source"]) for s in components.specs}
+        raw = components.internal_matrices(table)
         return _Panel(table.select(frame_columns).to_pandas(date_as_object=False), p, grid), raw
 
     def _publish(self, work, started):
@@ -1880,6 +2572,7 @@ class GridCDFMethod(Node):
         method = METHOD_KINDS[p["method"]["kind"]](p["method"], p, grid)
         components = _Components(p["components"], grid)
         panel, raw = self._load(method, components, grid)
+        external_record = components.attach_external(panel, raw, p["end_before"])
         component_record = components.build(panel, raw)
         method.prepare(panel)
         cdf, fitted, folds = self._forecast(panel, method)
@@ -1890,7 +2583,9 @@ class GridCDFMethod(Node):
             for name, text in record.pop("artifacts").items():
                 (work / name).write_text(text)
         self._write_json(work / "fit.json", {"schema_version": SCHEMA_VERSION, "method": p["method"],
-                                             "components": component_record, "folds": folds})
+                                             "components": component_record,
+                                             **({"external": external_record} if external_record else {}),
+                                             "folds": folds})
         not_fitted = int((~fitted).sum())
         summary = {"schema_version": SCHEMA_VERSION, "source": p["source"], "source_sha256": p["source_sha256"],
                    "params_identity": value_hash(p), "method_kind": p["method"]["kind"], "rows": int(panel.rows),
@@ -1904,31 +2599,73 @@ class GridCDFMethod(Node):
         return summary
 
     def _forecast(self, panel, method):
-        """Fit the method per fold and return ``(cdf, fitted flags, per-fold record)``."""
+        """Fit the method per fold and block and return ``(cdf, fitted flags, per-fold record)``."""
         import numpy as np
 
-        p = self.params
-        rule = LEARNING_RULES[p["method"]["learn"]]
+        spec = self.params["method"]
+        rule = LEARNING_RULES[spec["learn"]]
         teach, ready = panel.usable(method.used()), panel.ready(method.used())
-        cdf = panel.cdf[p["fallback"]].copy()
+        cdf = panel.cdf[self.params["fallback"]].copy()
         fitted_rows = np.zeros(panel.rows, dtype=bool)
         record = {}
         for fold in np.unique(panel.fold):
-            learn = np.flatnonzero(rule.mask(panel, fold) & teach)
-            target = np.flatnonzero(panel.fold == fold)
-            fit = method.fit(panel, learn, int(fold)) if len(learn) else None
-            if fit is not None:
-                rows = target[ready[target]]
-                for start in range(0, len(rows), CHUNK_ROWS):
-                    part = rows[start:start + CHUNK_ROWS]
-                    cdf[part] = np.clip(method.predict(panel, part, fit), 0.0, 1.0)
-                fitted_rows[rows] = True
-            record[str(int(fold))] = {
-                "learn": p["method"]["learn"], "learning_rows": int(len(learn)), "fitted": fit is not None,
-                "reason": None if fit else ("no learning rows" if not len(learn) else "the method declined to fit"),
-                "rows": int(len(target)), "rows_fitted": int(fitted_rows[target].sum()),
-                "state": fit.state if fit else None, "artifacts": fit.artifacts if fit else {}}
+            blocks = [self._fit_block(panel, method, block, int(fold), teach, ready, cdf, fitted_rows)
+                      for block in rule.blocks(panel, fold, spec)]
+            record[str(int(fold))] = self._fold_record(rule, spec, blocks)
         return cdf, fitted_rows, record
+
+    def _learning_weights(self, panel, learn, reference):
+        """Return ``0.5 ** ((reference - settlement) / half_life_days)`` per learning row, None without a half life."""
+        import numpy as np
+
+        half_life = self.params["method"].get("half_life_days")
+        if half_life is None:
+            return None
+        with np.errstate(over="ignore", under="ignore"):
+            return 0.5 ** ((reference - panel.settle_days[learn]) / half_life)
+
+    def _fit_block(self, panel, method, block, fold, teach, ready, cdf, fitted_rows):
+        """Fit one block from the rows allowed to teach it, forecast its rows into ``cdf`` and describe it.
+
+        A learning row whose weight underflows to zero is dropped (it teaches nothing and would only empty a
+        cell's mass); a block left with no learning rows, or that the method declines, keeps the fallback.
+        """
+        import numpy as np
+
+        learn = np.flatnonzero(block.learn & teach)
+        weights = self._learning_weights(panel, learn, block.reference)
+        if weights is not None:
+            keep = np.isfinite(weights) & (weights > 0)
+            learn, weights = learn[keep], weights[keep]
+        fit = method.fit(panel, learn, fold, weights, block.tag) if len(learn) else None
+        rows = block.target[ready[block.target]] if fit is not None else block.target[:0]
+        for start in range(0, len(rows), CHUNK_ROWS):
+            part = rows[start:start + CHUNK_ROWS]
+            cdf[part] = np.clip(method.predict(panel, part, fit), 0.0, 1.0)
+        fitted_rows[rows] = True
+        return {"reference": _Dates.iso(block.reference), "learning_rows": int(len(learn)), "fitted": fit is not None,
+                "reason": None if fit else ("no learning rows" if not len(learn) else "the method declined to fit"),
+                "rows": int(len(block.target)), "rows_fitted": int(len(rows)),
+                "state": fit.state if fit else None, "artifacts": fit.artifacts if fit else {}}
+
+    @staticmethod
+    def _fold_record(rule, spec, blocks):
+        """Return the fold's ``fit.json`` record.
+
+        It carries the first block's fit (the one the fit band uses), the row totals and, for a rule with
+        several blocks, the list of blocks (``start`` is a block's first day and its weight reference).
+        """
+        first = blocks[0]
+        record = {"learn": spec["learn"], "learning_rows": first["learning_rows"], "fitted": first["fitted"],
+                  "reason": first["reason"], "rows": sum(b["rows"] for b in blocks),
+                  "rows_fitted": sum(b["rows_fitted"] for b in blocks), "state": first["state"],
+                  "artifacts": {name: text for b in blocks for name, text in b["artifacts"].items()}}
+        if "half_life_days" in spec and not rule.LISTS_BLOCKS:
+            record["reference"] = first["reference"]
+        if rule.LISTS_BLOCKS:
+            keys = ("learning_rows", "fitted", "reason", "rows", "rows_fitted", "state")
+            record["blocks"] = [{"start": b["reference"], **{k: b[k] for k in keys}} for b in blocks]
+        return record
 
     def _write_tables(self, work, tables):
         """Write the declared tables and the windows table; return the names."""
