@@ -55,9 +55,8 @@ run.
 
 ## Blocked / owner decisions
 
-Owner 2026-10-21: do NOT acknowledge the Theta crossed-quotes alarm or
-resume the universe backfill; never use data we are dubious of (alarmed
-batches, e.g. MRVL 20261020T222113Z and META 2026-10-18, stay out of studies).
+Owner 2026-10-21: do NOT clear the Theta crossed-quotes alarm or resume the
+backfill; never use dubious data (alarmed MRVL/META batches stay out).
 Disclosed Minor backlog: ADR-0272/0273/0274 review items (boundary and
 default-deny tests, the Kalman floor/clamp/phi-bound paths untested, pin
 coverage of DAG wiring, the universe document and skill knobs, an
