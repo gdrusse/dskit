@@ -299,6 +299,42 @@ def test_the_fingerprint_moves_with_the_files_and_not_with_the_clock(tree):
                                 "20260101T000002Z-backfill-bbbbbbbb.parquet"]
 
 
+def test_exact_members_keep_original_fingerprint_and_rows_after_unlisted_file(tree):
+    """A later unrelated batch cannot change a pinned source vintage."""
+    original = ParquetChainRows("chain", params(tree))
+    identity = original.fingerprint()
+    expected_rows = list(original.run(CTX, {})["records"])
+    write_snapshot(tree, "20260101T000009Z-backfill-99999999",
+                   [chain_row("MGM", "2024-12-20")])
+    selected = ParquetChainRows("chain", params(tree, members=identity["members"]))
+    assert selected.fingerprint() == identity
+    assert list(selected.run(CTX, {})["records"]) == expected_rows
+    # A malformed unlisted file is never parsed, either.
+    (tree / "20260101T000010Z-backfill-badbad00.parquet").write_bytes(b"bad")
+    assert ParquetChainRows("chain", params(tree, members=identity["members"])).fingerprint() == identity
+
+
+def test_exact_members_refuse_missing_or_ambiguous_listed_basename(tree, tmp_path):
+    names = ParquetChainRows("chain", params(tree)).fingerprint()["members"]
+    (tree / names[0]).unlink()
+    with pytest.raises(ValueError, match="missing.*member"):
+        ParquetChainRows("chain", params(tree, members=names)).fingerprint()
+    other = tmp_path / "other"
+    write_snapshot(other, names[1][:-8], [chain_row("AAA", "2020-03-03")])
+    with pytest.raises(ValueError, match="duplicate.*member"):
+        ParquetChainRows("chain", params(tree, directories=[str(tree), str(other)],
+                                          members=[names[1]])).fingerprint()
+
+
+@pytest.mark.parametrize("bad", [[], ["x.parquet", "x.parquet"],
+                                  ["../x.parquet"], ["sub/x.parquet"],
+                                  ["sub\\x.parquet"], [".hidden.parquet"],
+                                  ["x.txt"], [1]])
+def test_exact_members_validate_distinct_visible_parquet_basenames(tree, bad):
+    with pytest.raises(ConfigError, match="members"):
+        ParquetChainRows("chain", params(tree, members=bad))
+
+
 # -- stitching -----------------------------------------------------------------------------------
 
 

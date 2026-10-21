@@ -326,6 +326,63 @@ def test_the_hedge_pnl_is_shares_held_times_the_underlying_change(ctx):
     assert out["summary"]["hedge"]["rebalances"] == DAYS
 
 
+def test_ex_date_dividends_accrue_on_held_hedge_shares_for_long_and_short(ctx):
+    chain, _ = hedge_world(up_days=18, seed=5)
+    events = [
+        {"symbol": "ABC", "date": day(0).isoformat(), "dividend_amount": 2.0},
+        {"symbol": "ABC", "date": day(1).isoformat(), "dividend_amount": 0.5},
+        {"symbol": "ABC", "date": day(DAYS).isoformat(), "dividend_amount": 0.1},
+        {"symbol": "OTHER", "date": day(1).isoformat(), "dividend_amount": 7.0},
+    ]
+    for signs in ([1, 1], [-1, -1]):
+        structures = {"position": [["put", signs[0]], ["call", signs[1]]]}
+        requested = order(strikes=(100, 100), structure="position", expiration=DAYS)
+        params = {"contracts": 1, "fee_per_contract": 0.0, "structures": structures,
+                  "hedge": {"rebalance": "daily", "rate": RATE}}
+        plain = run(ctx, chain, [requested], **params)
+        paid = OptionStructureLedger("ledger", {**BASE, **params}).run(
+            ctx, {"chain": chain, "orders": [requested], "dividends": events})
+        expected = plain["marks"][0]["hedge_shares"] * 0.5
+        expected += plain["marks"][-2]["hedge_shares"] * 0.1
+        assert paid["trades"][0]["hedge_dividend_usd"] == pytest.approx(expected)
+        assert paid["trades"][0]["hedge_pnl_usd"] - plain["trades"][0]["hedge_pnl_usd"] == pytest.approx(expected)
+        assert paid["trades"][0]["pnl_usd"] - plain["trades"][0]["pnl_usd"] == pytest.approx(expected)
+        assert paid["marks"][0]["hedge_dividend_usd"] == 0.0
+        assert paid["marks"][1]["hedge_dividend_usd"] == pytest.approx(
+            plain["marks"][0]["hedge_shares"] * 0.5)
+        assert paid["marks"][-1]["hedge_dividend_usd"] == pytest.approx(expected)
+
+
+def test_dividend_cash_on_unquoted_mark_day_survives_to_open_exposure(ctx):
+    chain, _ = hedge_world(up_days=18, seed=5)
+    chain = [row for row in chain if row["date"] <= day(2).isoformat()]
+    for row in chain:
+        if row["date"] == day(2).isoformat():
+            row["underlying_price"] = None
+    params = {"contracts": 1, "fee_per_contract": 0.0,
+              "hedge": {"rebalance": "daily", "rate": RATE}}
+    plain = run(ctx, chain, [HEDGE_ORDER], **params)
+    paid = OptionStructureLedger("ledger", {**BASE, **params}).run(ctx, {
+        "chain": chain, "orders": [HEDGE_ORDER], "dividends": [
+            {"symbol": "ABC", "date": day(2).isoformat(), "dividend_amount": 0.25}]})
+    cash = plain["marks"][1]["hedge_shares"] * 0.25
+    assert paid["trades"][0]["status"] == "open_at_end"
+    assert paid["trades"][0]["hedge_dividend_usd"] == pytest.approx(cash)
+    assert paid["trades"][0]["marked_pnl_usd"] - plain["trades"][0]["marked_pnl_usd"] == pytest.approx(cash)
+    assert paid["marks"][-1]["hedge_dividend_usd"] == pytest.approx(cash)
+
+
+def test_malformed_or_duplicate_dividends_fail_closed(ctx):
+    chain, _ = hedge_world(up_days=18, seed=5)
+    node = OptionStructureLedger("ledger", {**BASE, "contracts": 1,
+        "hedge": {"rebalance": "daily", "rate": RATE}})
+    good = {"symbol": "ABC", "date": day(1).isoformat(), "dividend_amount": 0.2}
+    for events in ([good, good], [{**good, "dividend_amount": -0.1}],
+                   [{**good, "date": "not-a-date"}]):
+        with pytest.raises(ValueError, match="dividend"):
+            node.run(ctx, {"chain": chain, "orders": [HEDGE_ORDER], "dividends": events})
+
+
 def test_hedge_fees_are_per_share_traded_and_enter_the_total(ctx):
     chain, _ = hedge_world(up_days=21)
     free = run(ctx, chain, [HEDGE_ORDER], contracts=1, fee_per_contract=0.0,

@@ -1,0 +1,33 @@
+{
+  "onboarding_root": "/home/russell/data/thetadata/options-tested",
+  "source": "theta",
+  "stream": "option_eod",
+  "symbols": [
+    "AAPL",
+    "AMZN",
+    "GOOGL"
+  ],
+  "start": "2016-01-04",
+  "end_before": "2026-01-01",
+  "greeks": true,
+  "open_interest": true,
+  "notes": "Completed AAPL, AMZN and GOOGL Theta daily option chains, 2016-01-04..2025-12-31. Read the immutable Parquet export through ParquetChainRows with 2026 sealed. ChainDayFeatures computes 30 +/- 7 DTE ATM and 25-delta put-minus-call skew using bid/ask mids, parity forward, and strictly prior DGS3MO. Quote presence was audited; usable surface coverage must be measured from the feature output.",
+  "parquet_export": {
+    "directories": [
+      "/home/russell/data/thetadata/parquet-v2/options-tested/theta"
+    ],
+    "reader": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+    "sealed_from": "2026-01-01"
+  },
+  "rate": {
+    "onboarding_root": "/home/russell/data/index_options/ob",
+    "source": "fred-market-features",
+    "stream": "dgs3mo",
+    "reader": "dskit.pipeline.libs.observations:ObservationRows",
+    "value_field": "DGS3MO",
+    "date_field": "observation_date",
+    "scale": 0.01,
+    "strictly_prior": true,
+    "max_age_days": 5
+  }
+}

@@ -1,0 +1,158 @@
+{
+  "name": "tech-structural-universe-20261021",
+  "notes": "ADR-0274 data pass: 30-DTE surfaces for the fifteen-name cohort from the Theta options-tested tree, bounded to 2025-12-16. No fit, no pair signal, no order.",
+  "outputs": {
+    "run_root": "/home/russell/data/statistical_arbitrage/pipeline_runs"
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/thetadata/parquet-v2/options-tested/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "open_interest",
+          "volume",
+          "underlying_price"
+        ],
+        "symbols": [
+          "AAPL",
+          "AMZN",
+          "GOOGL",
+          "ISRG",
+          "CMG",
+          "BA",
+          "GS",
+          "CHTR",
+          "CAT",
+          "AVGO",
+          "BIDU",
+          "ABBV",
+          "GILD",
+          "CRM",
+          "HUM"
+        ],
+        "start": "2018-01-01",
+        "end_before": "2025-12-16",
+        "sealed_from": "2026-01-01"
+      },
+      "notes": "Fifteen names: the three phase-one names plus the twelve ADR-0274 cohort roots. No member pin: the reader plans every file in the tree under sealed_from and the run's resolved.json records the planned members and fingerprint, which the study documents pin."
+    },
+    "rates_raw": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "source": "fred-market-features",
+        "stream": "dgs3mo",
+        "key_fields": [
+          "observation_date"
+        ]
+      },
+      "notes": "Onboarded FRED DGS3MO. The surface processor uses only prior observations."
+    },
+    "rates": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$rates_raw.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "observation_date",
+            "op": "<",
+            "value": "2025-12-16"
+          },
+          {
+            "field": "DGS3MO",
+            "op": "!=",
+            "value": "."
+          }
+        ]
+      },
+      "notes": "Filter missing FRED prints and bound the rate series for this structural run."
+    },
+    "surface": {
+      "uses": "statistical_arbitrage.surface:TechOptionSurface",
+      "inputs": {
+        "records": "$chain.records",
+        "rates": "$rates.records"
+      },
+      "params": {
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "expiration_field": "expiration",
+        "strike_field": "strike",
+        "right_field": "right",
+        "bid_field": "bid",
+        "ask_field": "ask",
+        "open_interest_field": "open_interest",
+        "volume_field": "volume",
+        "underlying_price_field": "underlying_price",
+        "call_values": [
+          "call"
+        ],
+        "put_values": [
+          "put"
+        ],
+        "end_before": "2025-12-16",
+        "targets": [
+          {
+            "dte": 30,
+            "tolerance": 7
+          }
+        ],
+        "target_field": "target_dte",
+        "atm_band": 0.05,
+        "wing_delta": 0.25,
+        "min_forward_pairs": 5,
+        "oi_lag_sessions": 5,
+        "oi_lag_max_days": 10,
+        "fields": {
+          "expiration": "expiration",
+          "dte": "dte",
+          "spot": "spot",
+          "forward": "forward",
+          "atm_strike": "atm_strike",
+          "atm_iv": "atm_iv",
+          "put_wing_iv": "put25_iv",
+          "call_wing_iv": "call25_iv",
+          "risk_reversal": "risk_reversal",
+          "half_spread_over_premium": "half_spread_over_premium"
+        },
+        "status_field": "status",
+        "symbol_contiguous": true,
+        "rate_date_field": "observation_date",
+        "rate_value_field": "DGS3MO",
+        "rate_max_age_days": 5,
+        "rate_scale": 0.01,
+        "oi_scope": "expiry",
+        "stale_spot_tolerance": 0.05,
+        "stale_spot_field": "stale_spot",
+        "max_symbol_rows": 10000000
+      },
+      "notes": "The ADR-0271 30-DTE surface, unchanged params, over the fifteen names (ADR-0274 C)."
+    },
+    "write_surface": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$surface.records"
+      },
+      "params": {
+        "path": "/home/russell/data/statistical_arbitrage/structural-universe-20261021/surface_universe_rows.jsonl",
+        "overwrite": false,
+        "source": "ADR-0274 fifteen-name 30-DTE surfaces"
+      },
+      "notes": "Immutable structural evidence; a second run must name a new directory."
+    }
+  }
+}

@@ -1,0 +1,203 @@
+{
+  "notes": "ADR-0275 development selection, frozen after the single development run on the next-session label. Rule per target: for each Ridge method and the pooled model the grid alpha in {10, 100, 1000} maximizing the mean over horizons 5 and 20 of the pooled-group 2020-development r2oos (ties to the larger alpha); for the two-stage model the second-stage alpha by the same rule; for the blend, given the pooled model's selected alpha, the weight in {0.25, 0.5, 0.75} maximizing the same mean (ties to the larger weight). development_document_hash is the document identity hash, not the file digest.",
+  "selected": {
+    "atm": {
+      "m01_term": 1000.0,
+      "m02_legs": 100.0,
+      "m03_term_legs": 1000.0,
+      "m04_curve": 1000.0,
+      "m05_vskew": 1000.0,
+      "m06_basis": 100.0,
+      "m07_convexity": 100.0,
+      "m08_profile": 100.0,
+      "m09_flow": 1000.0,
+      "m10_carry": 100.0,
+      "m11_vxindex": 1000.0,
+      "m12_market": 1000.0,
+      "m13_pooled_scaled": 1000.0,
+      "m15_residual": 1000.0,
+      "m14_blend": 0.75
+    },
+    "skew": {
+      "m01_term": 100.0,
+      "m02_legs": 100.0,
+      "m03_term_legs": 100.0,
+      "m04_curve": 1000.0,
+      "m05_vskew": 1000.0,
+      "m06_basis": 1000.0,
+      "m07_convexity": 100.0,
+      "m08_profile": 1000.0,
+      "m09_flow": 1000.0,
+      "m10_carry": 100.0,
+      "m11_vxindex": 100.0,
+      "m12_market": 1000.0,
+      "m13_pooled_scaled": 1000.0,
+      "m15_residual": 1000.0,
+      "m14_blend": 0.25
+    }
+  },
+  "development_means": {
+    "atm": {
+      "m01_term": {
+        "a10": 0.0222,
+        "a100": 0.059,
+        "a1000": 0.0803
+      },
+      "m02_legs": {
+        "a10": 0.0323,
+        "a100": 0.045,
+        "a1000": 0.0303
+      },
+      "m03_term_legs": {
+        "a10": 0.0046,
+        "a100": 0.0424,
+        "a1000": 0.0708
+      },
+      "m04_curve": {
+        "a10": 0.0017,
+        "a100": 0.0464,
+        "a1000": 0.0817
+      },
+      "m05_vskew": {
+        "a10": -0.1036,
+        "a100": -0.0446,
+        "a1000": 0.011
+      },
+      "m06_basis": {
+        "a10": 0.0482,
+        "a100": 0.0612,
+        "a1000": 0.056
+      },
+      "m07_convexity": {
+        "a10": 0.0365,
+        "a100": 0.0593,
+        "a1000": 0.0456
+      },
+      "m08_profile": {
+        "a10": 0.0649,
+        "a100": 0.0737,
+        "a1000": 0.048
+      },
+      "m09_flow": {
+        "a10": -0.1368,
+        "a100": -0.0637,
+        "a1000": -0.0029
+      },
+      "m10_carry": {
+        "a10": 0.1269,
+        "a100": 0.1355,
+        "a1000": 0.1228
+      },
+      "m11_vxindex": {
+        "a10": -0.0195,
+        "a100": -0.0097,
+        "a1000": 0.0143
+      },
+      "m12_market": {
+        "a10": -0.3153,
+        "a100": -0.0623,
+        "a1000": 0.0269
+      },
+      "m13_pooled_scaled": {
+        "a10": 0.1845,
+        "a100": 0.1846,
+        "a1000": 0.1856
+      },
+      "m15_residual": {
+        "a10": -0.0674,
+        "a100": -0.0249,
+        "a1000": 0.0398
+      },
+      "m14_blend": {
+        "w25": 0.1106,
+        "w50": 0.1426,
+        "w75": 0.1676
+      },
+      "mean": 0.0,
+      "lagged": 0.1118,
+      "scaled": 0.0716
+    },
+    "skew": {
+      "m01_term": {
+        "a10": -0.0086,
+        "a100": 0.0243,
+        "a1000": 0.019
+      },
+      "m02_legs": {
+        "a10": 0.0602,
+        "a100": 0.0801,
+        "a1000": 0.0462
+      },
+      "m03_term_legs": {
+        "a10": 0.0134,
+        "a100": 0.042,
+        "a1000": 0.0236
+      },
+      "m04_curve": {
+        "a10": -0.0273,
+        "a100": 0.0291,
+        "a1000": 0.0322
+      },
+      "m05_vskew": {
+        "a10": -0.2777,
+        "a100": -0.1033,
+        "a1000": 0.0575
+      },
+      "m06_basis": {
+        "a10": -0.1061,
+        "a100": -0.0666,
+        "a1000": -0.0038
+      },
+      "m07_convexity": {
+        "a10": 0.0026,
+        "a100": 0.0316,
+        "a1000": 0.0307
+      },
+      "m08_profile": {
+        "a10": -0.02,
+        "a100": 0.0172,
+        "a1000": 0.0248
+      },
+      "m09_flow": {
+        "a10": -0.0476,
+        "a100": 0.0155,
+        "a1000": 0.0265
+      },
+      "m10_carry": {
+        "a10": 0.0204,
+        "a100": 0.0462,
+        "a1000": 0.0335
+      },
+      "m11_vxindex": {
+        "a10": 0.0168,
+        "a100": 0.0543,
+        "a1000": 0.0355
+      },
+      "m12_market": {
+        "a10": -0.1311,
+        "a100": -0.0239,
+        "a1000": 0.0187
+      },
+      "m13_pooled_scaled": {
+        "a10": 0.0332,
+        "a100": 0.0342,
+        "a1000": 0.0421
+      },
+      "m15_residual": {
+        "a10": -0.0155,
+        "a100": 0.0169,
+        "a1000": 0.0549
+      },
+      "m14_blend": {
+        "w25": 0.0596,
+        "w50": 0.0589,
+        "w75": 0.0531
+      },
+      "mean": 0.0,
+      "lagged": 0.0463,
+      "scaled": 0.0551
+    }
+  },
+  "development_run": "tech-prediction-fifteen-development-20261021-2026-10-21-ab28a09c",
+  "development_document_hash": "f7ce2ac53e2044ef268d834cfe760ad788942720d68d7dd74b38186cdcf54e5a"
+}

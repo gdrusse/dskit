@@ -226,6 +226,8 @@ from dskit.pipeline.node import (
 from dskit.pipeline.records import number_ok
 
 __all__ = [
+    "StandardizedEstimator",
+    "TwoStageResidualEstimator",
     "ColumnSubsetEstimator",
     "DEFAULT_LOGIT_CLIP",
     "DEFAULT_REFIT_ESTIMATOR_PARAMS",
@@ -2149,6 +2151,221 @@ def _rows_problems(rows):
         "rows must be a list of feature rows (a one-shot iterable "
         f"would be consumed by validation), got {rows!r}"
     ]
+
+
+class StandardizedEstimator:
+    """Fit any dotted-path estimator on train-standardized columns (ADR-0273).
+
+    A plain estimator, not a node: ``fit`` learns each column's mean and
+    standard deviation on the training matrix only (a zero-spread column
+    scales by 1, never by 0), fits the wrapped estimator on the
+    standardized matrix, and ``predict`` applies the same shift and scale.
+    The wrapped class is named by DOTTED import path (``module.ClassName``,
+    never the ``module:Class`` colon form), constructed from the remaining
+    keyword arguments, and exposed as ``estimator_``; ``coef_`` and
+    ``intercept_`` are forwarded when the inner estimator has them, in
+    standardized units. ``get_params`` returns the path and the inner
+    knobs flat, so :class:`SklearnExpandingRefit` and :class:`SklearnFit`
+    construct it from ``estimator_params`` like any other estimator.
+
+    Parameters
+    ----------
+    estimator : str
+        Dotted import path of the wrapped estimator class.
+    **estimator_params
+        Keyword arguments for that class.
+
+    Examples
+    --------
+    A Ridge whose penalty means the same thing on every column::
+
+        est = StandardizedEstimator(estimator="sklearn.linear_model.Ridge", alpha=10.0)
+        est.fit(matrix, labels).predict(matrix)
+    """
+
+    def __init__(self, estimator, **estimator_params):
+        if not isinstance(estimator, str) or ":" in estimator or "." not in estimator:
+            raise ValueError(
+                f"estimator must be a dotted import path such as 'sklearn.linear_model.Ridge', got {estimator!r}"
+            )
+        self.estimator = estimator
+        self.estimator_params = dict(estimator_params)
+        self.estimator_ = None
+        self.mean_ = None
+        self.scale_ = None
+
+    def get_params(self, deep=True):
+        """Return the path and the inner knobs as one flat mapping."""
+        return {"estimator": self.estimator, **self.estimator_params}
+
+    def set_params(self, **params):
+        """Set the path or inner knobs; returns self."""
+        if "estimator" in params:
+            self.estimator = params.pop("estimator")
+        self.estimator_params.update(params)
+        return self
+
+    def _standardize(self, matrix):
+        """Apply the fitted shift and scale, refusing a matrix of another width."""
+        import numpy
+
+        x = numpy.asarray(matrix, dtype=float)
+        if x.ndim != 2 or x.shape[1] != self.mean_.shape[0]:
+            raise ValueError(
+                f"StandardizedEstimator: expected {self.mean_.shape[0]} columns, got a matrix of shape {x.shape}"
+            )
+        return (x - self.mean_) / self.scale_
+
+    def fit(self, matrix, labels):
+        """Learn column statistics on ``matrix``, then fit the inner estimator on the standardized copy."""
+        import numpy
+
+        x = numpy.asarray(matrix, dtype=float)
+        if x.ndim != 2:
+            raise ValueError(f"StandardizedEstimator: fit needs a 2-D matrix, got shape {x.shape}")
+        self.mean_ = x.mean(axis=0)
+        scale = x.std(axis=0)
+        scale[scale == 0.0] = 1.0
+        self.scale_ = scale
+        cls_ = _import_object(self.estimator, "StandardizedEstimator")
+        self.estimator_ = _construct(cls_, dict(self.estimator_params), self.estimator,
+                                     "StandardizedEstimator", "estimator_params")
+        self.estimator_.fit(self._standardize(x), labels)
+        return self
+
+    def predict(self, matrix):
+        """Predict with the inner estimator on the standardized matrix."""
+        if self.estimator_ is None:
+            raise ValueError("StandardizedEstimator: predict before fit")
+        return self.estimator_.predict(self._standardize(matrix))
+
+    def __getattr__(self, name):
+        """Forward ``coef_`` / ``intercept_`` from the fitted inner estimator."""
+        if name in ("coef_", "intercept_"):
+            inner = self.__dict__.get("estimator_")
+            if inner is not None and hasattr(inner, name):
+                return getattr(inner, name)
+        raise AttributeError(name)
+
+
+class TwoStageResidualEstimator:
+    """A first estimator on the leading columns, a second on its in-sample residual (ADR-0275).
+
+    A plain estimator, not a node. ``fit`` fits ``first_estimator`` on the first
+    ``first_columns`` columns against the label, then ``second_estimator`` on the
+    remaining columns against the label minus the first stage's in-sample
+    prediction; ``predict`` sums the two. The point is separate shrinkage: a
+    frozen base model keeps its own coefficients while the additions are
+    penalised on what the base left over. Both classes are named by DOTTED
+    import path and constructed from their own kwargs; ``coef_`` is the
+    concatenation and ``intercept_`` the sum when both stages expose them.
+    ``get_params`` is flat, so :class:`StandardizedEstimator` and the refit
+    nodes construct it from ``estimator_params`` like any other estimator.
+
+    Parameters
+    ----------
+    first_estimator : str
+        Dotted import path of the first-stage class.
+    first_params : dict
+        Its keyword arguments.
+    first_columns : int
+        How many leading columns the first stage reads (>= 1, fewer than the matrix width).
+    second_estimator : str
+        Dotted import path of the second-stage class.
+    second_params : dict
+        Its keyword arguments.
+
+    Examples
+    --------
+    A heavily shrunk base on two columns, a lighter Ridge on the rest::
+
+        est = TwoStageResidualEstimator(first_estimator="sklearn.linear_model.Ridge",
+                                        first_params={"alpha": 100.0}, first_columns=2,
+                                        second_estimator="sklearn.linear_model.Ridge",
+                                        second_params={"alpha": 10.0})
+        est.fit(matrix, labels).predict(matrix)
+    """
+
+    def __init__(self, first_estimator, first_params, first_columns, second_estimator, second_params):
+        for path in (first_estimator, second_estimator):
+            if not isinstance(path, str) or ":" in path or "." not in path:
+                raise ValueError(
+                    f"estimator must be a dotted import path such as 'sklearn.linear_model.Ridge', got {path!r}"
+                )
+        if type(first_columns) is not int or first_columns < 1:
+            raise ValueError(f"first_columns must be an integer >= 1, got {first_columns!r}")
+        if not isinstance(first_params, dict) or not isinstance(second_params, dict):
+            raise ValueError("first_params and second_params must be dicts of constructor kwargs")
+        self.first_estimator = first_estimator
+        self.first_params = dict(first_params)
+        self.first_columns = first_columns
+        self.second_estimator = second_estimator
+        self.second_params = dict(second_params)
+        self.first_ = None
+        self.second_ = None
+
+    def get_params(self, deep=True):
+        """Return the five construction knobs as one flat mapping."""
+        return {"first_estimator": self.first_estimator, "first_params": dict(self.first_params),
+                "first_columns": self.first_columns, "second_estimator": self.second_estimator,
+                "second_params": dict(self.second_params)}
+
+    def set_params(self, **params):
+        """Set any of the five knobs; returns self."""
+        for name, value in params.items():
+            if name not in self.get_params():
+                raise ValueError(f"TwoStageResidualEstimator has no parameter {name!r}")
+            setattr(self, name, value)
+        return self
+
+    def _split(self, matrix):
+        """Return the two column blocks, refusing a matrix the split cannot address."""
+        import numpy
+
+        x = numpy.asarray(matrix, dtype=float)
+        if x.ndim != 2 or x.shape[1] <= self.first_columns:
+            raise ValueError(
+                f"TwoStageResidualEstimator: first_columns={self.first_columns} needs a 2-D matrix wider "
+                f"than that, got shape {x.shape}"
+            )
+        return x[:, :self.first_columns], x[:, self.first_columns:]
+
+    def fit(self, matrix, labels):
+        """Fit the first stage on the leading block, the second on the residual over the rest."""
+        import numpy
+
+        first_x, second_x = self._split(matrix)
+        y = numpy.asarray(labels, dtype=float)
+        where = "TwoStageResidualEstimator"
+        self.first_ = _construct(_import_object(self.first_estimator, where), dict(self.first_params),
+                                 self.first_estimator, where, "first_params")
+        self.first_.fit(first_x, y)
+        self.second_ = _construct(_import_object(self.second_estimator, where), dict(self.second_params),
+                                  self.second_estimator, where, "second_params")
+        self.second_.fit(second_x, y - numpy.asarray(self.first_.predict(first_x), dtype=float))
+        return self
+
+    def predict(self, matrix):
+        """Sum the two stages' predictions."""
+        import numpy
+
+        if self.first_ is None or self.second_ is None:
+            raise ValueError("TwoStageResidualEstimator: predict before fit")
+        first_x, second_x = self._split(matrix)
+        return (numpy.asarray(self.first_.predict(first_x), dtype=float)
+                + numpy.asarray(self.second_.predict(second_x), dtype=float))
+
+    def __getattr__(self, name):
+        """Forward ``coef_`` (concatenated) and ``intercept_`` (summed) from the fitted stages."""
+        first, second = self.__dict__.get("first_"), self.__dict__.get("second_")
+        if first is not None and second is not None and hasattr(first, name) and hasattr(second, name):
+            if name == "coef_":
+                import numpy
+
+                return numpy.concatenate([numpy.ravel(first.coef_), numpy.ravel(second.coef_)])
+            if name == "intercept_":
+                return first.intercept_ + second.intercept_
+        raise AttributeError(name)
 
 
 class SklearnFit(TrainableNode):

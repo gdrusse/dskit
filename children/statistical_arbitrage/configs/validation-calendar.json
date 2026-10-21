@@ -1,0 +1,154 @@
+{
+  "name": "tech-phase-one-chronological-research",
+  "source_template": "children/index_options/configs/theta-ml-pocket-calendar.json",
+  "end_before": "2026-01-01",
+  "initial_development": {
+    "history_start": "2016-01-04",
+    "warmup": {
+      "train_end_before": "2019-01-01",
+      "score_start": "2019-01-02",
+      "score_end_before": "2020-01-01"
+    },
+    "selection": {
+      "train_end_before": "2020-01-01",
+      "score_start": "2020-01-02",
+      "score_end_before": "2021-01-01"
+    }
+  },
+  "blocks": [
+    {
+      "block": 1,
+      "origin_start": "2021-01-04",
+      "origin_end_before": "2021-03-15",
+      "next_decision": "2021-04-19",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 2,
+      "origin_start": "2021-04-19",
+      "origin_end_before": "2021-06-28",
+      "next_decision": "2021-08-02",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 3,
+      "origin_start": "2021-08-02",
+      "origin_end_before": "2021-10-11",
+      "next_decision": "2021-11-15",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 4,
+      "origin_start": "2021-11-15",
+      "origin_end_before": "2022-01-24",
+      "next_decision": "2022-02-28",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 5,
+      "origin_start": "2022-02-28",
+      "origin_end_before": "2022-05-09",
+      "next_decision": "2022-06-13",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 6,
+      "origin_start": "2022-06-13",
+      "origin_end_before": "2022-08-22",
+      "next_decision": "2022-09-26",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 7,
+      "origin_start": "2022-09-26",
+      "origin_end_before": "2022-12-05",
+      "next_decision": "2023-01-09",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 8,
+      "origin_start": "2023-01-09",
+      "origin_end_before": "2023-03-20",
+      "next_decision": "2023-04-24",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 9,
+      "origin_start": "2023-04-24",
+      "origin_end_before": "2023-07-03",
+      "next_decision": "2023-08-07",
+      "status": "proposed_research_only"
+    },
+    {
+      "block": 10,
+      "origin_start": "2023-08-07",
+      "origin_end_before": "2023-10-16",
+      "next_decision": "2023-11-20",
+      "status": "proposed_research_only"
+    }
+  ],
+  "authorized_fit_attempts": 7,
+  "independent_final_test": null,
+  "notes": "Owner-approved ADR-0271 and yearly cadence. 2019 warmup, 2020 development scoring, 2021-25 annual retrospective validation. Ten index_options 2021-23 blocks are reporting subfolds, not extra retrains. Graph fits use the prior 252 complete sessions; Z-score uses prior observations. No untouched holdout or GPU training is claimed.",
+  "retraining": {
+    "cadence": "yearly",
+    "decision": "first common trading session on or after January 1",
+    "training_window_sessions": 252,
+    "training_rows_strictly_before_decision": true,
+    "refit_years": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "max_fits": 7,
+    "fit_dates": [
+      "2019-01-02",
+      "2020-01-02",
+      "2021-01-04",
+      "2022-01-03",
+      "2023-01-03",
+      "2024-01-02",
+      "2025-01-02"
+    ],
+    "cv_splits": 3,
+    "max_iter": 400,
+    "tol": 0.01,
+    "edge_min_weight": 0.01
+  },
+  "annual_validation": [
+    {
+      "year": 2021,
+      "start": "2021-01-01",
+      "end_before": "2022-01-01",
+      "status": "retrospective_validation"
+    },
+    {
+      "year": 2022,
+      "start": "2022-01-01",
+      "end_before": "2023-01-01",
+      "status": "retrospective_validation"
+    },
+    {
+      "year": 2023,
+      "start": "2023-01-01",
+      "end_before": "2024-01-01",
+      "status": "retrospective_validation"
+    },
+    {
+      "year": 2024,
+      "start": "2024-01-01",
+      "end_before": "2025-01-01",
+      "status": "retrospective_validation"
+    },
+    {
+      "year": 2025,
+      "start": "2025-01-01",
+      "end_before": "2026-01-01",
+      "status": "retrospective_validation"
+    }
+  ]
+}

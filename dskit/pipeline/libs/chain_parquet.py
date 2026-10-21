@@ -32,6 +32,10 @@ footers before anything is read, and overlapping old and new ranges refuse.
 decoded. ``sealed_from`` (optional) goes further: a file whose footer window reaches it is refused WHOLE, named
 by acquisition id, whatever the bounds, and ``end_before`` may not exceed it.
 
+**Exact members.** Optional ``members`` freezes the planned file basenames to a prior fingerprint. Added files
+outside the allowlist are ignored without reading their footers; a missing or ambiguous listed basename refuses.
+This preserves the original snapshot plan when an unrelated acquisition lands later.
+
 **Two views.** Iterating the source yields row dicts; :meth:`~ChainRowSource.batches` yields the same rows as
 Arrow tables (dates as ISO text), for a consumer that works on columns. Both count into :meth:`report`.
 
@@ -354,6 +358,8 @@ class ParquetChainRows(Node):
         ``start`` (ISO, optional): inclusive lower bound. ``sealed_from`` (ISO, optional, at or after
         ``end_before``): a file whose footer window reaches it refuses. ``symbols`` (non-empty list, optional):
         the OUTPUT symbols to read; a name with no data is counted in ``report()['symbols_missing']``.
+        ``members`` (non-empty list, optional): exact distinct Parquet basenames to plan; extras are ignored,
+        missing or duplicate listed basenames across directories refuse.
         ``renames_file``, ``renames_key`` and ``renames_sha256`` (all or none): the stitch map; ``pending_key`` (optional): the
         member of entries awaiting proof, only reported (never applied); ``breaks_key``
         (optional): the member of the same file holding the reuse breaks (a root cut into an earlier and a later series). ``batch_size``
@@ -374,7 +380,7 @@ class ParquetChainRows(Node):
     role = "data"
     outputs = ("records",)
     _PARAMS = ("directories", "fields", "symbol_field", "date_field", "end_before", "start", "sealed_from",
-               "symbols", "batch_size", "renames_file", "renames_key", "renames_sha256", "breaks_key",
+               "symbols", "members", "batch_size", "renames_file", "renames_key", "renames_sha256", "breaks_key",
                "pending_key")
     _RENAMES = ("renames_file", "renames_key", "renames_sha256")
 
@@ -395,6 +401,15 @@ class ParquetChainRows(Node):
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         cls._list_problems(problems, params)
+        if "members" in params:
+            members = params["members"]
+            if (not isinstance(members, (list, tuple)) or not members
+                    or not all(isinstance(name, str) and name.endswith(".parquet")
+                               and not name.startswith(".") and name == os.path.basename(name)
+                               and "\\" not in name and "/" not in name
+                               for name in members)
+                    or len(set(members)) != len(members)):
+                problems.append("members must be a non-empty list of distinct visible Parquet basenames")
         for name in ("symbol_field", "date_field"):
             if not isinstance(params.get(name), str) or not params.get(name):
                 problems.append(f"{name} must be a non-empty string, got {params.get(name)!r}")
@@ -490,11 +505,26 @@ class ParquetChainRows(Node):
     def _list_files(self):
         """Return the tree's Parquet paths in acquisition-id order across every directory."""
         paths = []
+        members = set(self.params["members"]) if "members" in self.params else None
+        selected = {}
         for directory in self.params["directories"]:
             if not os.path.isdir(directory):
                 raise ValueError(f"{self.key}: {directory} is not a directory")
-            paths += [os.path.join(directory, n) for n in os.listdir(directory)
-                      if n.endswith(".parquet") and not n.startswith(".")]
+            for name in os.listdir(directory):
+                if name.endswith(".parquet") and not name.startswith(".") and (
+                    members is None or name in members
+                ):
+                    path = os.path.join(directory, name)
+                    paths.append(path)
+                    if members is not None:
+                        selected.setdefault(name, []).append(path)
+        if members is not None:
+            missing = sorted(members - set(selected))
+            duplicate = sorted(name for name, found in selected.items() if len(found) > 1)
+            if missing:
+                raise ValueError(f"{self.key}: missing listed member(s): {missing}")
+            if duplicate:
+                raise ValueError(f"{self.key}: duplicate listed member basename(s): {duplicate}")
         if not paths:
             raise ValueError(f"{self.key}: no Parquet files under {self.params['directories']}")
         return sorted(paths, key=lambda p: (os.path.basename(p), p))

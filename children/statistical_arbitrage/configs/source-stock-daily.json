@@ -1,0 +1,35 @@
+{
+  "onboarding_root": "/home/russell/data/index_options/ob",
+  "source": "stock-daily-bars",
+  "stream": "files",
+  "symbols": [
+    "AAPL",
+    "AMZN",
+    "GOOGL"
+  ],
+  "field": "adjusted_close",
+  "end_before": "2026-01-01",
+  "factor": {
+    "source": "philippdubach-options",
+    "stream": "files",
+    "symbol": "QQQ",
+    "relpath": "qqq/underlying_prices.parquet",
+    "field": "adjusted_close",
+    "required_columns": [
+      "symbol",
+      "date",
+      "adjusted_close",
+      "split_coefficient",
+      "dividend_amount"
+    ]
+  },
+  "notes": "Manifest-verified onboarding payloads in index_options/ob. Project all required_columns into TechAdjustedReturns. Use adjusted_close for stocks and QQQ: stored raw close has split discontinuities (AAPL 2020-08-31; AMZN and GOOGL 2022). Preserve split/dividend fields so option replay can refuse corporate-event crossings. Read only common dates; no stale QQQ fill. Sealed at 2026-01-01. max_forward_fill_sessions=0 in phase one because all four price streams share 2,503 dates through 2025-12-15; a positive value would flag internal fills and never extend past a source last date.",
+  "required_columns": [
+    "symbol",
+    "date",
+    "adjusted_close",
+    "split_coefficient",
+    "dividend_amount"
+  ],
+  "max_forward_fill_sessions": 0
+}

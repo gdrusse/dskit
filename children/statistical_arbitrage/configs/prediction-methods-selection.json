@@ -1,0 +1,155 @@
+{
+  "notes": "ADR-0273 development selection, frozen after the single development run of run-tech-prediction-methods-development.json on the next-session label. Rule: per target and method, the grid value maximizing the mean over horizons 5 and 20 of the pooled-group 2020-development r2oos; ties to the larger value. The table lists the development means per grid value, with the frozen lagged baseline for reference.",
+  "selected": {
+    "atm": {
+      "m01_multiscale": 100.0,
+      "m02_legs": 10.0,
+      "m03_smile": 0.1,
+      "m04_changes": 0.1,
+      "m05_term": 100.0,
+      "m06_positioning": 100.0,
+      "m07_realized": 0.1,
+      "m08_pooled": 100.0,
+      "m09_lasso": 0.01,
+      "m10_boost": 50
+    },
+    "skew": {
+      "m01_multiscale": 100.0,
+      "m02_legs": 10.0,
+      "m03_smile": 0.1,
+      "m04_changes": 100.0,
+      "m05_term": 10.0,
+      "m06_positioning": 100.0,
+      "m07_realized": 100.0,
+      "m08_pooled": 100.0,
+      "m09_lasso": 0.001,
+      "m10_boost": 50
+    }
+  },
+  "development_means": {
+    "atm": {
+      "m01_multiscale": {
+        "a0p1": 0.1334,
+        "a1": 0.1344,
+        "a10": 0.1399,
+        "a100": 0.1461
+      },
+      "m02_legs": {
+        "a0p1": 0.0979,
+        "a1": 0.0988,
+        "a10": 0.1019,
+        "a100": 0.0947
+      },
+      "m03_smile": {
+        "a0p1": 0.065,
+        "a1": 0.0649,
+        "a10": 0.0639,
+        "a100": 0.0571
+      },
+      "m04_changes": {
+        "a0p1": 0.1239,
+        "a1": 0.1238,
+        "a10": 0.1232,
+        "a100": 0.1167
+      },
+      "m05_term": {
+        "a0p1": 0.1236,
+        "a1": 0.1244,
+        "a10": 0.131,
+        "a100": 0.1512
+      },
+      "m06_positioning": {
+        "a0p1": 0.0507,
+        "a1": 0.053,
+        "a10": 0.0705,
+        "a100": 0.1126
+      },
+      "m07_realized": {
+        "a0p1": 0.0784,
+        "a1": 0.0704,
+        "a10": 0.0346,
+        "a100": 0.0331
+      },
+      "m08_pooled": {
+        "a0p1": 0.1531,
+        "a1": 0.1533,
+        "a10": 0.1548,
+        "a100": 0.1581
+      },
+      "m09_lasso": {
+        "l1em5": -0.2527,
+        "l1em4": -0.1569,
+        "l1em3": 0.0726,
+        "l1em2": 0.1118
+      },
+      "m10_boost": {
+        "it50": 0.0695,
+        "it150": 0.0245
+      },
+      "lagged": 0.1156
+    },
+    "skew": {
+      "m01_multiscale": {
+        "a0p1": -0.1216,
+        "a1": -0.1182,
+        "a10": -0.0988,
+        "a100": -0.0512
+      },
+      "m02_legs": {
+        "a0p1": 0.0549,
+        "a1": 0.0551,
+        "a10": 0.0555,
+        "a100": 0.0495
+      },
+      "m03_smile": {
+        "a0p1": 0.0513,
+        "a1": 0.0512,
+        "a10": 0.0509,
+        "a100": 0.0464
+      },
+      "m04_changes": {
+        "a0p1": 0.0412,
+        "a1": 0.0414,
+        "a10": 0.0432,
+        "a100": 0.0482
+      },
+      "m05_term": {
+        "a0p1": 0.0287,
+        "a1": 0.0288,
+        "a10": 0.0297,
+        "a100": 0.026
+      },
+      "m06_positioning": {
+        "a0p1": 0.0277,
+        "a1": 0.0292,
+        "a10": 0.0371,
+        "a100": 0.0413
+      },
+      "m07_realized": {
+        "a0p1": 0.0038,
+        "a1": 0.0069,
+        "a10": 0.0161,
+        "a100": 0.0306
+      },
+      "m08_pooled": {
+        "a0p1": -0.0298,
+        "a1": -0.0296,
+        "a10": -0.0271,
+        "a100": -0.0136
+      },
+      "m09_lasso": {
+        "l1em5": -0.1724,
+        "l1em4": -0.0611,
+        "l1em3": 0.0306,
+        "l1em2": -0.001
+      },
+      "m10_boost": {
+        "it50": -0.0367,
+        "it150": -0.0663
+      },
+      "lagged": 0.0503
+    }
+  },
+  "development_run": "tech-prediction-methods-development-20261020-2026-10-20-ac9633d0",
+  "development_document_sha256": "b9c46393b23ba5a3fb3a60045777a60b32e1a1a0e56792e2ca009753ebecb740"
+}

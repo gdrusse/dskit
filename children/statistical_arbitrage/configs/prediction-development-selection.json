@@ -1,0 +1,9 @@
+{
+  "notes": "ADR-0272 development selection, frozen after the single development run tech-prediction-development-20261020 (run dir tech-prediction-development-20261020-2026-10-20-6f0ae301, document hash dd0d3918ea907ee718818248574909ccc8cb0dd8ffb6b20e8b7750e4a76f993b). Rule: per target, the grid alpha maximizing the mean over horizons 5 and 20 of the pooled-group 2020-development r2oos of the lagged model. ATM: 0.1 -> 0.1184, 1 -> 0.1192, 10 -> 0.1194, 100 -> 0.1234. Skew: 0.1 -> 0.1413, 1 -> 0.1381, 10 -> 0.1363, 100 -> 0.1289. Applied unchanged to the lagged, correlation and precision models of the validation document.",
+  "alpha": {
+    "atm": 100.0,
+    "skew": 0.1
+  },
+  "development_run": "tech-prediction-development-20261020-2026-10-20-6f0ae301",
+  "development_document_sha256": "dd0d3918ea907ee718818248574909ccc8cb0dd8ffb6b20e8b7750e4a76f993b"
+}

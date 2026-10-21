@@ -50,7 +50,7 @@ from statistics import NormalDist
 
 from dskit.pipeline.records import number_ok, price_ok
 
-__all__ = ["RIGHTS", "VolIndexSmileQuotes", "black76", "black76_delta", "black76_implied_vol"]
+__all__ = ["RIGHTS", "VolIndexSmileQuotes", "black76", "black76_delta", "black76_implied_vol", "black76_vega"]
 
 #: The two option rights.
 RIGHTS = ("put", "call")
@@ -154,6 +154,17 @@ def black76_delta(right, forward, strike, vol, years, rate=0.0):
     if right == "call":
         return discount * cdf(d1)
     return -discount * cdf(-d1)
+
+
+def black76_vega(right, forward, strike, vol, years, rate=0.0):
+    """Return price sensitivity to one unit of annualized volatility.
+
+    Uses the same validated Black-76 inputs as :func:`black76`. The
+    result is per underlying unit; multiply by the contract multiplier
+    and signed quantity when sizing a position.
+    """
+    d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
+    return discount * forward * _STANDARD_NORMAL.pdf(d1) * math.sqrt(years)
 
 
 #: Newton / bisection steps :func:`black76_implied_vol` takes before it gives up.

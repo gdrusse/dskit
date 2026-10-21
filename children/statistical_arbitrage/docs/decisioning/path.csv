@@ -1,0 +1,2 @@
+id,label,purpose,relevant_files,locked,current_work,criteria
+A0001,Phase-one tech scope,"Keep universe, source clock, reuse boundary and validation intent fixed while implementation contracts are reviewed",../../docs/architecture/decision-log.md#ADR-0270; README.md; configs/asset-model.json; configs/validation-calendar.json,Y,,judgemental

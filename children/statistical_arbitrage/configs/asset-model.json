@@ -1,0 +1,48 @@
+{
+  "name": "tech-phase-one",
+  "tradable_nodes": [
+    "AAPL",
+    "AMZN",
+    "GOOGL"
+  ],
+  "factor_nodes": [
+    "QQQ"
+  ],
+  "benchmark": {
+    "kind": "equal_weight_total_return",
+    "symbols": [
+      "AAPL",
+      "AMZN",
+      "GOOGL"
+    ]
+  },
+  "future_nodes": [
+    "MSFT",
+    "NVDA"
+  ],
+  "future_universe": {
+    "name": "energy",
+    "symbols": [
+      "XOM",
+      "CVX",
+      "COP"
+    ],
+    "factor": "XLE",
+    "enabled": false
+  },
+  "option_target": {
+    "dte": 30,
+    "tolerance_days": 7,
+    "atm_band": 0.05,
+    "wing_delta": 0.25
+  },
+  "edge_policy": {
+    "graph_input": "daily_log_returns",
+    "factor_residualize": [
+      "QQQ"
+    ],
+    "min_pair_coverage": "TBD_BY_ADR_0271"
+  },
+  "execution_status": "research_only",
+  "notes": "ADR-0270. QQQ has no option leg in phase one. Exact graph and pair policy waits for generic tier-2 implementation contract."
+}

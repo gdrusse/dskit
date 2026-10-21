@@ -26,12 +26,15 @@ The rules, fixed by the node and not by the data:
 * **Delta hedge** (optional ``hedge``): Black-76 deltas from each leg's own mid-implied vol
   (:func:`~dskit.pipeline.option_pricing.black76_implied_vol`, forward ``S exp(rate T)``), the
   hedge held in the underlying column's price and rebalanced by a declared rule. The hedge pays no
-  financing; its P&L is ``shares held * change in the underlying``.
+  financing; its P&L is ``shares held * (raw price change + ex-date cash dividend)``.
 
 The calendar is the union of dates the chain shows for the ordered symbols. When rows of one symbol and day
 disagree on the underlying, the first in input order is used and the disagreement is counted. The chain is read once
 and only the contracts and dates the orders need are kept. Settlement is European and cash-like: no
-early exercise, no dividend and no delivery model (the child's American charge is not applied here).
+early exercise or delivery model (the child's American charge is not applied here).
+Optional ``dividends`` inputs are observed ex-date cash amounts per raw share;
+they affect held stock hedges only, never option quotes or opening eligibility.
+The chain's ``underlying`` must be an unadjusted raw price when dividends are supplied.
 
 Import cost: stdlib and dskit only.
 """
@@ -129,6 +132,7 @@ class _Chain:
     def __init__(self):
         self.quotes = {}
         self.under = {}
+        self.dividends = {}
         self.seen = set()
         self.days = set()
         self.sorted_days = []
@@ -167,7 +171,7 @@ class _Chain:
 class _Hedge:
     """The delta hedge of one trade: shares held, their P&L and fees, and the rebalance rule."""
 
-    def __init__(self, spec, year_days, multiplier, contracts):
+    def __init__(self, spec, year_days, multiplier, contracts, dividends=()):
         self.spec = spec
         self.rate = float(spec.get("rate", 0.0))
         self.fee = float(spec.get("fee_per_share", 0.0))
@@ -176,11 +180,26 @@ class _Hedge:
         self.shares = 0.0
         self.last_under = None
         self.pnl = 0.0
+        self.dividend_pnl = 0.0
         self.fees = 0.0
         self.steps = 0
+        self.dividend_days = tuple(day for day, _amount in dividends)
+        self.dividend_amounts = tuple(amount for _day, amount in dividends)
+        self.last_day = None
 
-    def accrue(self, under):
-        """Book the held shares' P&L from the last underlying to ``under``."""
+    def accrue(self, day, under):
+        """Book raw stock movement and ex-date cash on shares held before ``day``.
+
+        Opening-day events are excluded: the hedge opens after that day's close.
+        The dividend interval is advanced even if today's underlying is missing.
+        """
+        if self.last_day is not None:
+            lo = bisect.bisect_right(self.dividend_days, self.last_day)
+            hi = bisect.bisect_right(self.dividend_days, day)
+            cash = self.shares * math.fsum(self.dividend_amounts[lo:hi])
+            self.dividend_pnl += cash
+            self.pnl += cash
+        self.last_day = day
         if under is not None:
             if self.last_under is not None:
                 self.pnl += self.shares * (under - self.last_under)
@@ -238,7 +257,8 @@ class _Trade:
         self.units = sum(abs(sign) for _right, sign in order.legs)
         self.keys = tuple((order.expiration, k, right)
                           for (right, _sign), k in zip(order.legs, order.strikes, strict=True))
-        self.hedge = (_Hedge(self.p["hedge"], int(self.p.get("year_days", 365)), self.mult, self.n)
+        self.hedge = (_Hedge(self.p["hedge"], int(self.p.get("year_days", 365)), self.mult, self.n,
+                             chain.dividends.get(order.symbol, ()))
                       if self.p.get("hedge") else None)
         self.marks = []
         self.premium = 0.0
@@ -319,7 +339,7 @@ class _Trade:
         self.last_value = self.mult * self.n * self._mid_value(quotes)
         if self.hedge:
             under = self.chain.underlying(o.symbol, o.opened)
-            self.hedge.accrue(under)
+            self.hedge.accrue(o.opened, under)
             self._rebalance(o.opened, under, quotes)
         self._row(o.opened, "open", self.last_value, 0.0, False, None)
         return None
@@ -351,6 +371,7 @@ class _Trade:
             "order_index": self.order.index, "symbol": symbol, "date": day.isoformat(),
             "phase": phase, "mark_value_usd": value, "option_pnl_usd": option_pnl,
             "hedge_shares": hedge.shares if hedge else 0.0, "hedge_pnl_usd": hedge_pnl,
+            "hedge_dividend_usd": hedge.dividend_pnl if hedge else 0.0,
             "pnl_usd": option_pnl + hedge_pnl - hedge_fees,
             "underlying": self.chain.underlying(symbol, day),
             "carried": carried, "carry_reason": reason})
@@ -360,7 +381,7 @@ class _Trade:
         quotes, reason = self._usable(day)
         under = self.chain.underlying(self.order.symbol, day)
         if self.hedge:
-            self.hedge.accrue(under)
+            self.hedge.accrue(day, under)
         if quotes is None:
             self.carried_days += 1
             self.tally[f"marks_carried:{reason}"] += 1
@@ -400,7 +421,7 @@ class _Trade:
         """Book the closing row, flatten the hedge and return the realized record parts."""
         under = self.chain.underlying(self.order.symbol, day)
         if self.hedge:
-            self.hedge.accrue(under)
+            self.hedge.accrue(day, under)
             self.hedge.flatten()
         self._row(day, phase, cash, fees, False, None)
         return cash, fees
@@ -455,6 +476,7 @@ class _Trade:
             "premium_usd": self.premium, "credit_usd": credit_usd,
             "open_fees_usd": self.open_fees, "close_cash_usd": None, "close_fees_usd": None,
             "option_pnl_usd": None, "hedge_pnl_usd": self.hedge.pnl if self.hedge else 0.0,
+            "hedge_dividend_usd": self.hedge.dividend_pnl if self.hedge else 0.0,
             "hedge_fees_usd": self.hedge.fees if self.hedge else 0.0, "fees_usd": None,
             "pnl_usd": None, "pnl_over_premium": None,
             "max_loss_usd": None if math.isinf(loss) else loss * self.n,
@@ -479,7 +501,9 @@ class OptionStructureLedger(Node):
     Wired by import path (``dskit.pipeline.libs.option_ledger:OptionStructureLedger``). Inputs
     ``chain`` (rows with a symbol, date, expiration, strike, right, bid, ask and an underlying
     price) and ``orders`` (one row per structure to open: open date, symbol, expiration, one strike
-    per leg and a structure name). The module docstring states the open, mark, close and hedge rules.
+    per leg and a structure name). Optional ``dividends`` rows carry ``symbol``, ISO ex-date
+    ``date`` and nonnegative cash-per-share ``dividend_amount``. The module docstring states
+    the open, mark, close and hedge rules.
     Fully deterministic: orders are processed in input order and a trade's index is its order's
     position; every refusal is counted in ``summary``. A chain row for an ordered symbol that cannot
     be read (a bad date, strike, right or expiration) is dropped and counted; a second row for one
@@ -493,7 +517,8 @@ class OptionStructureLedger(Node):
         ``exit`` or null), ``status`` (``closed``, ``open_at_end``, ``unsettled``),
         ``premium_usd`` (signed cash at the fills, a debit negative), ``credit_usd`` (premium less
         open fees), ``open_fees_usd``, ``close_cash_usd``, ``close_fees_usd``, ``option_pnl_usd``,
-        ``hedge_pnl_usd`` (gross), ``hedge_fees_usd``, ``fees_usd`` (all fees), ``pnl_usd`` (net of
+        ``hedge_pnl_usd`` (price plus dividend), ``hedge_dividend_usd`` (included in hedge P&L),
+        ``hedge_fees_usd``, ``fees_usd`` (all fees), ``pnl_usd`` (net of
         everything), ``pnl_over_premium`` (``pnl_usd`` over the absolute premium),
         ``max_loss_usd`` (:func:`~dskit.pipeline.option_structures.structure_max_loss` on the
         credit net of open fees, times contracts; null with ``max_loss_unbounded`` when
@@ -503,7 +528,8 @@ class OptionStructureLedger(Node):
         One row per trade and calendar date from the open to the close: ``phase`` (``open``,
         ``mark``, ``exit``, ``settle``), ``mark_value_usd`` (cash of closing at the mid; the
         realized cash on a closing row), ``option_pnl_usd``, ``hedge_shares``, ``hedge_pnl_usd``,
-        ``pnl_usd`` (running total), ``underlying``, ``carried`` and ``carry_reason``.
+        ``hedge_dividend_usd`` (cumulative ex-date cash), ``pnl_usd`` (running total),
+        ``underlying``, ``carried`` and ``carry_reason``.
     ``summary``
         Counts: orders in and opened, ``refused_at_open`` and ``exit_refused`` and ``unsettled``
         and ``marks_carried`` by reason, ``closed`` by rule, ``open_at_end``, the hedge's
@@ -758,6 +784,38 @@ class OptionStructureLedger(Node):
         return chain
 
     @staticmethod
+    def _dividends(rows, plan):
+        """Validate point-in-time ex-date cash and retain ordered events for held symbols.
+
+        Each observation has ``symbol``, ISO ``date`` and nonnegative
+        ``dividend_amount``. A duplicate symbol/date is ambiguous, including
+        when its amount is zero, and is refused rather than double booked.
+        """
+        if rows is None:
+            return {}
+        if not isinstance(rows, (list, tuple)):
+            raise ValueError("dividends must be a list or tuple of event rows")
+        seen = set()
+        retained = {}
+        for index, row in enumerate(rows):
+            if not isinstance(row, Mapping):
+                raise ValueError(f"dividend row {index} must be a mapping")
+            symbol = row.get("symbol")
+            day = _day(row.get("date"))
+            amount = _number(row.get("dividend_amount"))
+            if not isinstance(symbol, str) or not symbol or day is None or (
+                    amount is None or amount < 0):
+                raise ValueError(f"invalid dividend row {index}")
+            key = symbol, day
+            if key in seen:
+                raise ValueError(f"duplicate dividend for {symbol} on {day}")
+            seen.add(key)
+            entry = plan.get(symbol)
+            if entry is not None and entry["lo"] < day <= entry["hi"] and amount:
+                retained.setdefault(symbol, []).append((day, amount))
+        return {symbol: tuple(sorted(events)) for symbol, events in retained.items()}
+
+    @staticmethod
     def _take(chain, entry, symbol, day, row, f, expirations):
         """Keep one in-window row: its day, its underlying and, if needed, its quote."""
         chain.seen.add((symbol, day))
@@ -795,7 +853,8 @@ class OptionStructureLedger(Node):
         ctx : NodeContext
             The run frame; unused.
         inputs : dict
-            ``chain`` and ``orders`` (both REQUIRED, non-empty lists of mapping rows).
+            ``chain`` and ``orders`` (both REQUIRED, non-empty lists of mapping rows),
+            optional ``dividends`` (a list of point-in-time ex-date rows).
 
         Returns
         -------
@@ -810,7 +869,10 @@ class OptionStructureLedger(Node):
             a needed contract quoted twice on one day.
         """
         orders, refused = self._orders(inputs["orders"])
-        chain = self._chain(inputs["chain"], self._plan(orders))
+        plan = self._plan(orders)
+        dividends = self._dividends(inputs.get("dividends"), plan)
+        chain = self._chain(inputs["chain"], plan)
+        chain.dividends = dividends
         tally = Counter()
         trades, marks = [], []
         for order in orders:
