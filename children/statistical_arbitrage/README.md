@@ -37,6 +37,15 @@ benchmark. MSFT/NVDA and Energy are separate later additions through JSON.
   state (`KalmanSpreadState`), and pooled / blended Ridge fit across the
   cohort's 105 pairs and scored on the three phase-one pairs; knobs frozen in
   `configs/prediction-adr0274-selection.json`.
+- `configs/run-tech-structural-vendor.json` reads the 444 Theta members once more
+  for 14/30/60/90-DTE surfaces, a strike-by-expiry positioning profile, near-money
+  convexity exposures and the vendor-delta IV surface (`ChainDayDeltaSurface`);
+  `run-tech-prediction-fifteen-{development,validation}.json` are the ADR-0275
+  fifteen-method study on the vol-scaled label against `mean`, the frozen
+  `lagged` and the ADR-0274 `scaled` models (term curve, leg Z, vendor smile and
+  basis, convexity, gamma profile, flow, carry, Cboe single-stock indices, market
+  regime, pooled-on-scaled, its blend, a two-stage residual model); knobs frozen
+  in `configs/prediction-fifteen-selection.json`.
 - `statistical_arbitrage/{data,network,surface,backtest,report}.py` wraps
   generic DSKit readers, graph, pair spread and option ledger mechanisms.
 - `docs/decisioning/` records scope; `docs/memos/` records evaluation.

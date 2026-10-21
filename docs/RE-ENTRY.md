@@ -10,7 +10,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-16: R6seed29 packet reviewed;44tests,107pins; exactmanifest/order approval pending; no training/R5retry |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
-| statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: v6 audited (no-go stands); ADR-0272/0273/0274 prediction-only studies: lagged-Z reversion of the ATM spread, vol-scaled label passes its rule on ATM 20d (R²oos 0.20→0.24), term slope a candidate, Greeks/OI, Kalman and cohort pooling add nothing; no edge claim |
+| statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now two-stage residual / pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27); Theta Greeks/flow/market features add nothing; skew none; no edge claim |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
 | intraday_equities | `children/intraday_equities/docs/RE-ENTRY.md` | 2026-10-12: fill-window relabel: next-bar-fill IC 0.01-0.02 (5-min rows), 0.002-0.005 (1-min rows); no fill-reachable edge |
 | pmquant | `children/pmquant/docs/RE-ENTRY.md` | 2026-09-04: child landed; waits on PREDEXON_API_KEY and the real-data twin |

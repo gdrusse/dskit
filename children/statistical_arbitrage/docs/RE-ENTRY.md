@@ -2,8 +2,7 @@
 
 ## Now
 
-2026-10-20 (late): three things landed or are landing on top of the integrated
-v6 evidence. (1) `2665b869` on main: two read-only audits of v6 (no arithmetic
+2026-10-21: on top of the integrated v6 evidence. (1) `2665b869` on main: two read-only audits of v6 (no arithmetic
 or lookahead error; two Major interpretation findings: skew books trade ATM
 straddles, nothing tradable before 2022-06-27; no-go unchanged) and the
 ADR-0272 prediction-only study (lagged-spread Z carries multi-week ATM-spread
@@ -35,15 +34,20 @@ Sonnet lenses on `fbdc46db`, zero Critical/Major. (5) Data inventory
 missing for the three pairs or the cohort; stock bars, VIX family, rates and
 Theta Greeks are on disk; the open gaps are owner decisions (universe backfill
 177 roots, about 50 h, stopped on a hard crossed-quotes alarm; 2026 sealed;
-signed flow has no stream).
+signed flow has no stream). (6) ADR-0275 (proposed): fifteen methods built
+on those patterns, against the vol-scaled model as baseline. Rule met on ATM
+only: two-stage residual (5d +0.091→+0.110, 20d +0.246→+0.274), term curve
+(5d, 5/5 folds) and the pooled-scaled blend (20d, the one fix for 2021–22).
+The unused Theta fields (vendor-delta smile, convexity, gamma profiles,
+flow, carry, Cboe and VIX regime) all lose; skew stays out of reach. Memo:
+`docs/memos/2026-10-21-tech-prediction-fifteen-methods.md`.
 
 ## Next
 
-Owner: ratify or amend ADR-0272, ADR-0273 and ADR-0274 (all "proposed"). The
-two candidates worth one separately registered confirmation each on the ATM
-20-session target: the vol-scaled label (passed its rule) and the term-slope
-feature; the obvious combination to register next is pooled fitting on scaled
-labels across the cohort. No re-tuning on 2021–2025.
+Owner: ratify or amend ADR-0272 to ADR-0275 (all "proposed"). The
+one candidate worth a separately registered single-hypothesis confirmation
+on the ATM 20-session target is the two-stage residual (or the blend), on
+data not used to choose it. No re-tuning on 2021–2025.
 Correct the ADR-0271 stock-data prose and `source-stock-daily.json` (pinned
 `close` and `dividend_amount` are already split-adjusted) before any pre-split
 run.
@@ -62,10 +66,10 @@ red in a full `tests/pipeline_libs` run.
 ## Read first
 
 - Root AGENTS.md and docs/skills/implementation-workflow.md
+- docs/memos/2026-10-21-tech-prediction-fifteen-methods.md
 - docs/memos/2026-10-21-tech-prediction-adr0274.md
-- docs/memos/2026-10-20-tech-prediction-ten-methods.md
 - docs/research/prediction-methods/2026-10-21-better-models.md
-- docs/architecture/decision-log.md, ADR-0272, ADR-0273, ADR-0274
+- docs/architecture/decision-log.md, ADR-0272 to ADR-0275
 
 ## Do not
 

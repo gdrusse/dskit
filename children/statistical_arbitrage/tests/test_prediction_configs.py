@@ -427,3 +427,183 @@ def test_adr74_scaled_label_and_direct_forecast_wiring_is_exact(adr74_document):
     for key, node in raw["pipeline"].items():
         if node["uses"] in ("records-write", "table-write"):
             assert node["params"]["overwrite"] is False, (name, key)
+
+
+# -- ADR-0275 documents: fifteen methods on the vol-scaled label ---------------------------------------
+
+FIFTEEN_DEVELOPMENT = "run-tech-prediction-fifteen-development.json"
+FIFTEEN_VALIDATION = "run-tech-prediction-fifteen-validation.json"
+FIFTEEN_SELECTION = "prediction-fifteen-selection.json"
+VENDOR_PASS = "run-tech-structural-vendor.json"
+VENDOR_DIR = "/home/russell/data/statistical_arbitrage/structural-vendor-20261021/"
+FIFTEEN_RIDGE = ["m01_term", "m02_legs", "m03_term_legs", "m04_curve", "m05_vskew", "m06_basis", "m07_convexity",
+                 "m08_profile", "m09_flow", "m10_carry", "m11_vxindex", "m12_market"]
+FIFTEEN = FIFTEEN_RIDGE + ["m13_pooled_scaled", "m14_blend", "m15_residual"]
+TWO_STAGE = "dskit.pipeline.libs.sklearn.TwoStageResidualEstimator"
+REFIT = "dskit.pipeline.libs.sklearn:SklearnExpandingRefit"
+
+
+@pytest.fixture(params=[FIFTEEN_DEVELOPMENT, FIFTEEN_VALIDATION], ids=["fifteen-dev", "fifteen-val"])
+def fifteen_document(request):
+    return request.param, load_document(_path(request.param)), _raw(request.param)
+
+
+def test_vendor_pass_reads_the_same_theta_members_and_only_aggregates_vendor_numbers():
+    raw, base = _raw(VENDOR_PASS), _raw("run-tech-structural.json")
+    chain = raw["pipeline"]["chain"]["params"]
+    assert chain["members"] == base["pipeline"]["chain"]["params"]["members"]
+    assert chain["end_before"] == base["pipeline"]["chain"]["params"]["end_before"] == "2025-12-16"
+    assert set(chain["fields"]) >= {"implied_vol", "iv_error", "open_interest", "volume", "count", "bid_size", "ask_size",
+                                    "delta", "gamma", "vega", "theta", "vanna", "vomma"}
+    curve = raw["pipeline"]["surface_curve"]["params"]
+    assert [t["dte"] for t in curve["targets"]] == [14, 30, 60, 90] and curve["term_pair"] == [30, 90]
+    base_surface = base["pipeline"]["surface"]["params"]
+    assert {k: v for k, v in curve.items() if k not in ("targets", "term_pair", "fields")} == \
+        {k: v for k, v in base_surface.items() if k not in ("targets", "fields")}
+    profile = raw["pipeline"]["positioning_profile"]["params"]
+    assert profile["profiles"] == {"moneyness_edges": [-0.05, -0.025, 0.0, 0.025, 0.05], "dte_edges": [1, 31, 61], "greeks": ["gamma", "vanna"]}
+    assert profile["spot_power"] == {"gamma": 2, "vanna": 1} and profile["moneyness_band"] == 0.15 and profile["iv_error_max"] == 0.01
+    near = raw["pipeline"]["positioning_near"]["params"]
+    assert near["moneyness_band"] == 0.05 and near["greek_fields"] == ["vega", "vanna", "vomma", "gamma"] and "profiles" not in near
+    delta = raw["pipeline"]["delta_surface"]
+    assert delta["uses"] == "dskit.pipeline.libs.chain_greeks:ChainDayDeltaSurface"
+    assert delta["params"]["deltas"] == [0.1, 0.25, 0.4, 0.5] and delta["params"]["target_dte"] == 30 and delta["params"]["tolerance"] == 7
+    for key, node in raw["pipeline"].items():
+        assert node["params"].get("end_before", "2025-12-16") == "2025-12-16", key
+        if node["uses"] == "records-write":
+            assert node["params"]["overwrite"] is False and node["params"]["path"].startswith(VENDOR_DIR), key
+    assert load_document(_path(VENDOR_PASS)).hash and plan(load_document(_path(VENDOR_PASS)))
+
+
+def test_fifteen_documents_plan_pin_every_input_and_keep_the_three_baselines(fifteen_document):
+    name, doc, raw = fifteen_document
+    assert doc.hash and plan(doc)
+    backtest = _raw("run-tech-backtest.json")
+    assert raw["pipeline"]["surface"]["params"]["sha256"] == backtest["structural_rows"]["surface_rows.jsonl"]["sha256"]
+    adr74 = _raw(ADR74_VALIDATION)["pipeline"]["surface_universe"]["params"]
+    assert raw["pipeline"]["surface_universe"]["params"]["sha256"] == adr74["sha256"]
+    for key in ("surface_curve", "positioning_profile", "positioning_near", "delta_surface"):
+        node = raw["pipeline"][key]
+        assert node["uses"] == "dskit.pipeline.kinds_table:RecordsFile" and node["params"]["path"].startswith(VENDOR_DIR), key
+        if os.path.exists(node["params"]["path"]):
+            with open(node["params"]["path"], "rb") as fh:
+                assert hashlib.sha256(fh.read()).hexdigest() == node["params"]["sha256"], (name, key)
+    cboe = raw["pipeline"]["cboe"]["params"]
+    assert cboe["source"] == "cboe-index-wide" and cboe["stream"] == "index_daily" and cboe["key_fields"] == ["symbol", "date"]
+    assert isinstance(cboe["as_of_acquisition_ms"], int)
+    refits = {k: v for k, v in raw["pipeline"].items() if v["uses"] == REFIT}
+    for target in TARGETS:
+        for h in HORIZONS:
+            lagged = refits[f"{target}_h{h}_lagged"]["params"]
+            assert lagged["estimator"] == "sklearn.linear_model.Ridge" and lagged["label"] == f"y_{h}"
+            assert lagged["estimator_params"] == {"alpha": {"atm": 100.0, "skew": 0.1}[target]}
+            assert [f["field"] for f in lagged["features"]] == ["z", "spread_change_5"]
+            assert refits[f"{target}_h{h}_mean"]["params"]["estimator"] == "sklearn.dummy.DummyRegressor"
+            scaled = refits[f"{target}_h{h}_scaled"]["params"]
+            assert scaled["estimator"] == STANDARDIZED and scaled["label"] == f"ys_{h}" and scaled["output_field"] == "fr_scaled"
+            assert scaled["estimator_params"] == {"estimator": "sklearn.linear_model.Ridge", "alpha": 100.0}
+            assert [f["field"] for f in scaled["features"]] == ["z", "spread_change_5"]
+
+
+def test_fifteen_refits_share_the_clock_nest_the_frozen_features_and_scale_every_method(fifteen_document):
+    name, _, raw = fifteen_document
+    own = {"atm": "sd60_atm", "skew": "sd60_rr"}
+    week, year = 7 * 86_400_000, 52 * 7 * 86_400_000
+    for key, node in raw["pipeline"].items():
+        if node["uses"] != REFIT:
+            continue
+        p = node["params"]
+        cohort = key.startswith("u_")
+        target = key.split("_")[1 if cohort else 0]
+        h = int(p["label"].split("_")[1])
+        assert p["known_field"] == f"known_ms_{h}" and p["time_field"] == "decision_ms" and p["block_origin_ms"] == 1_546_214_400_000
+        model = key.split("_", 3 if cohort else 2)[-1]
+        if cohort:
+            assert "group_field" not in p and p["block_ms"] == year and p["min_train_blocks"] == 1 and p["label"] == f"ys_{h}"
+            assert model.startswith("m13_pooled_scaled") and p["estimator"] == STANDARDIZED
+            continue
+        assert p["group_field"] == "pair" and p["block_ms"] == week and p["min_train_blocks"] == 52
+        if model in ("mean", "lagged"):
+            assert p["label"] == f"y_{h}"
+            continue
+        fields = [f["field"] for f in p["features"]]
+        assert fields[:2] == ["z", "spread_change_5"] and p["label"] == f"ys_{h}" and p["output_field"] == f"fr_{model}", key
+        assert p["estimator"] == STANDARDIZED, key
+        if model.startswith("m15_residual"):
+            inner = p["estimator_params"]
+            assert inner["estimator"] == TWO_STAGE and inner["first_columns"] == 2
+            assert inner["first_params"] == {"alpha": 100.0} and inner["first_estimator"] == inner["second_estimator"] == "sklearn.linear_model.Ridge"
+        else:
+            assert p["estimator_params"]["estimator"] == "sklearn.linear_model.Ridge"
+        back = raw["pipeline"][f"back_{target}_h{h}"]["params"]["fields"]
+        assert back[f"f_{model}"] == {"op": "mul", "args": [{"field": f"fr_{model}"}, {"field": own[target]}]}, key
+    for target in TARGETS:
+        scale = raw["pipeline"][f"compute_{target}"]["params"]["fields"]
+        for h in HORIZONS:
+            assert scale[f"ys_{h}"] == {"op": "div", "args": [{"field": f"y_{h}"}, {"field": own[target]}]}
+        assert raw["pipeline"][f"rows_{target}"]["params"]["label_offset"] == 1
+        assert raw["pipeline"][f"rows_u_{target}"]["params"]["label_offset"] == 1
+        assert raw["pipeline"][f"spread_u_{target}"]["params"]["symbols"] == ["AAPL", "AMZN", "GOOGL"] + COHORT
+        for h in HORIZONS:
+            assert raw["pipeline"][f"three_u_{target}_h{h}"]["params"]["where"] == [{"field": "pair", "op": "in", "value": THREE}]
+
+
+def test_fifteen_folds_families_and_writes_follow_the_documents_role(fifteen_document):
+    name, _, raw = fifteen_document
+    calendar = _raw("validation-calendar.json")
+    annual = {str(b["year"]): {"start": b["start"], "end_before": b["end_before"]} for b in calendar["annual_validation"]}
+    dev = calendar["initial_development"]["selection"]
+    expected = ({"2020-development": {"start": dev["score_start"], "end_before": dev["score_end_before"]}}
+                if name == FIFTEEN_DEVELOPMENT else annual)
+    skills = {k: v for k, v in raw["pipeline"].items() if v["uses"] == "dskit.pipeline.kinds_stats:ChronologicalForecastSkill"}
+    assert len(skills) == 4
+    for key, node in skills.items():
+        p = node["params"]
+        assert p["folds"] == expected and p["benchmark"] == "mean" and p["alpha"] == 0.05
+        assert set(p["forecasts"]) >= {"mean", "lagged", "scaled"}
+        if name == FIFTEEN_VALIDATION:
+            assert p["comparisons"] == [[m, "scaled"] for m in FIFTEEN]
+            assert set(p["forecasts"]) == {"mean", "lagged", "scaled", *FIFTEEN}
+        else:
+            assert p["comparisons"] == []
+    for key, node in raw["pipeline"].items():
+        uses = node["uses"].lower()
+        assert not any(word in uses for word in ("ledger", "order", "backtest", "replay", "capital")), (name, key)
+        if node["uses"] in ("records-write", "table-write"):
+            assert node["params"]["overwrite"] is False, key
+            assert node["params"]["path"].startswith("/home/russell/data/statistical_arbitrage/prediction-fifteen-20261021/"
+                                                     + ("development" if name == FIFTEEN_DEVELOPMENT else "validation") + "-r2/")
+
+
+def test_fifteen_validation_freezes_the_recorded_selection_and_development_covers_the_grids():
+    raw, selection = _raw(FIFTEEN_VALIDATION), _raw(FIFTEEN_SELECTION)["selected"]
+    with open(_path(FIFTEEN_SELECTION), "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+    assert raw["pipeline"]["fifteen_selection"]["params"]["sha256"] == digest
+    for key, node in raw["pipeline"].items():
+        if node["uses"] != REFIT:
+            continue
+        cohort = key.startswith("u_")
+        target = key.split("_")[1 if cohort else 0]
+        model = key.split("_", 3 if cohort else 2)[-1]
+        if model in ("mean", "lagged", "scaled"):
+            continue
+        knob = node["params"]["estimator_params"]["second_params"]["alpha"] if model == "m15_residual" else node["params"]["estimator_params"]["alpha"]
+        assert knob == selection[target][model], key
+    for target in TARGETS:
+        for h in HORIZONS:
+            blend = raw["pipeline"][f"blend_{target}_h{h}"]["params"]["fields"]["f_m14_blend"]
+            w = selection[target]["m14_blend"]
+            assert blend == {"op": "add", "args": [{"op": "mul", "args": [{"const": w}, {"field": "f_m13_pooled_scaled"}]},
+                                                    {"op": "mul", "args": [{"const": 1.0 - w}, {"field": "f_scaled"}]}]}
+    dev = _raw(FIFTEEN_DEVELOPMENT)
+    tags = {}
+    for key, node in dev["pipeline"].items():
+        if node["uses"] == REFIT:
+            model = key.split("_", 3 if key.startswith("u_") else 2)[-1]
+            for m in FIFTEEN_RIDGE + ["m13_pooled_scaled", "m15_residual"]:
+                if model.startswith(m + "_"):
+                    tags.setdefault(m, set()).add(model[len(m) + 1:])
+    assert all(tags[m] == {"a10", "a100", "a1000"} for m in FIFTEEN_RIDGE + ["m13_pooled_scaled", "m15_residual"]), tags
+    blends = dev["pipeline"]["blend_atm_h20"]["params"]["fields"]
+    assert len(blends) == 9 and all(k.startswith("f_m14_blend_") for k in blends)

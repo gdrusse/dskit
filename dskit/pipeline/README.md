@@ -290,6 +290,19 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+ADR-0275 adds, by import path: `libs/chain_greeks.py:ChainDayDeltaSurface` (per
+symbol-day the expiry nearest a declared target, the vendor IV linearly
+interpolated in absolute vendor delta at declared delta points per right, the
+OI-vega-weighted vendor IV and the OI-weighted theta-over-vega carry of that
+expiry; placeholder IVs, residuals, missing open interest or delta excluded and
+counted), a `profiles` knob on `ChainDayPositioning` (half-open log-moneyness x
+days-to-expiry buckets, each with open interest, volume, trade count and the
+OI-weighted sums of the declared profile Greeks per right; `bid_size_sum` and
+`ask_size_sum` beside the imbalance) and `libs/sklearn.py:TwoStageResidualEstimator`
+(a first dotted-path estimator on the leading columns, a second on its in-sample
+residual over the rest, predictions summed, `coef_` concatenated; wraps inside
+`StandardizedEstimator`). Nothing here trades.
+
 ADR-0274 adds, by import path, `libs/kalman_spread.py:KalmanSpreadState`: each
 pair's spread filtered as a random-walk level plus an AR(1) deviation plus
 measurement noise, the four parameters fitted by maximum likelihood on the
@@ -1090,7 +1103,7 @@ dskit/pipeline/
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257),
 │                      chain_census (ChainCensus + quote_state: per-root coverage and quote quality of a daily option-chain stream, by import path, ADR-0265),
 │                      chain_features (ChainDayFeatures: ATM/wing IV, skew, term, straddle, spread, OI/volume per symbol-date-DTE from NBBO mids, by import path, ADR-0265),
-│                      chain_greeks (ChainDayPositioning: vendor EOD Greeks x open interest per symbol-day, per-Greek spot powers, OI/volume ratios, counted exclusions, by import path, ADR-0273),
+│                      chain_greeks (ChainDayPositioning: vendor EOD Greeks x open interest per symbol-day, per-Greek spot powers, OI/volume ratios, counted exclusions, by import path, ADR-0273; `profiles` strike-by-expiry buckets + ChainDayDeltaSurface: vendor IV at fixed vendor deltas, vega-weighted IV, theta/vega carry, ADR-0275),
 │                      kalman_spread (KalmanSpreadState: random-walk level + AR(1) deviation per pair, parameters fitted on prior-only windows at declared fit dates, expected h-session change, by import path, ADR-0274),
 │                      chain_events (ChainEventDetector + ChainEventCalibrator: earnings-like events from the front-IV crush in the chain-day features, no calendar; a retrospective labeller, by import path, ADR-0265)
 │                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3

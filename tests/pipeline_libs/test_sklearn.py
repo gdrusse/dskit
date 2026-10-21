@@ -5131,3 +5131,56 @@ def test_standardized_estimator_refuses_a_colon_path_and_a_changed_width():
     with pytest.raises(ValueError, match="columns"):
         est.predict([[1.0]])
     assert not hasattr(StandardizedEstimator(estimator="sklearn.dummy.DummyRegressor").fit([[1.0], [2.0]], [1.0, 2.0]), "coef_")
+
+
+# -- TwoStageResidualEstimator: a first stage on leading columns, a second on its residual (ADR-0275) ----
+
+from dskit.pipeline.libs.sklearn import TwoStageResidualEstimator  # noqa: E402
+
+
+def test_two_stage_residual_fits_the_second_stage_on_the_first_stages_in_sample_residual():
+    pytest.importorskip("sklearn")
+    import numpy as np
+    from sklearn.linear_model import Ridge
+
+    rng = np.random.default_rng(1)
+    x = rng.normal(size=(300, 4))
+    y = 1.0 * x[:, 0] - 0.5 * x[:, 1] + 0.3 * x[:, 2] + rng.normal(0, 0.1, 300)
+    est = TwoStageResidualEstimator(first_estimator="sklearn.linear_model.Ridge", first_params={"alpha": 100.0},
+                                    first_columns=2, second_estimator="sklearn.linear_model.Ridge",
+                                    second_params={"alpha": 1.0}).fit(x, y)
+    first = Ridge(alpha=100.0).fit(x[:, :2], y)
+    second = Ridge(alpha=1.0).fit(x[:, 2:], y - first.predict(x[:, :2]))
+    probe = rng.normal(size=(5, 4))
+    assert est.predict(probe) == pytest.approx(first.predict(probe[:, :2]) + second.predict(probe[:, 2:]))
+    assert est.coef_ == pytest.approx(np.concatenate([first.coef_, second.coef_]))
+    assert est.intercept_ == pytest.approx(first.intercept_ + second.intercept_)
+    assert est.get_params() == {"first_estimator": "sklearn.linear_model.Ridge", "first_params": {"alpha": 100.0},
+                                "first_columns": 2, "second_estimator": "sklearn.linear_model.Ridge",
+                                "second_params": {"alpha": 1.0}}
+    assert "TwoStageResidualEstimator" in __import__("dskit.pipeline.libs.sklearn", fromlist=["x"]).__all__
+
+
+def test_two_stage_residual_works_inside_the_standardized_wrapper_and_refuses_bad_shapes():
+    pytest.importorskip("sklearn")
+    import numpy as np
+
+    x = np.array([[1.0, 10.0, 100.0], [2.0, 30.0, 50.0], [3.0, 20.0, 10.0], [4.0, 40.0, 70.0]])
+    y = np.array([1.0, 2.0, 2.5, 4.0])
+    wrapped = StandardizedEstimator(estimator="dskit.pipeline.libs.sklearn.TwoStageResidualEstimator",
+                                    first_estimator="sklearn.linear_model.Ridge", first_params={"alpha": 1.0},
+                                    first_columns=1, second_estimator="sklearn.linear_model.Ridge",
+                                    second_params={"alpha": 1.0}).fit(x, y)
+    assert wrapped.predict(x).shape == (4,) and len(wrapped.coef_) == 3
+    with pytest.raises(ValueError, match="first_columns"):
+        TwoStageResidualEstimator(first_estimator="sklearn.linear_model.Ridge", first_params={}, first_columns=0,
+                                  second_estimator="sklearn.linear_model.Ridge", second_params={})
+    with pytest.raises(ValueError, match="first_columns"):
+        TwoStageResidualEstimator(first_estimator="sklearn.linear_model.Ridge", first_params={}, first_columns=3,
+                                  second_estimator="sklearn.linear_model.Ridge", second_params={}).fit(x, y)
+    with pytest.raises(ValueError, match="dotted"):
+        TwoStageResidualEstimator(first_estimator="sklearn.linear_model:Ridge", first_params={}, first_columns=1,
+                                  second_estimator="sklearn.linear_model.Ridge", second_params={})
+    with pytest.raises(ValueError, match="before fit"):
+        TwoStageResidualEstimator(first_estimator="sklearn.linear_model.Ridge", first_params={}, first_columns=1,
+                                  second_estimator="sklearn.linear_model.Ridge", second_params={}).predict(x)
