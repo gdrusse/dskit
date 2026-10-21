@@ -4,7 +4,7 @@ Fifteen methods built on the patterns of ADR-0272/0273/0274 were registered (ADR
 
 ## Execution contract
 
-- **Authority:** ADR-0275 (proposed 2026-10-21, written before code under the owner's request to analyze the patterns and register fifteen new methods) with Amendments 1 and 2. Next-session label (`label_offset` 1), folds, weekly refit clock (7-day blocks from 2018-12-31, 52 warm-up blocks), scorer and drop rules as ADR-0272. Scored on the three phase-one pairs.
+- **Authority:** ADR-0275 (proposed 2026-10-21; ratified by the owner on 2026-10-21, written before code under the owner's request to analyze the patterns and register fifteen new methods) with Amendments 1 and 2. Next-session label (`label_offset` 1), folds, weekly refit clock (7-day blocks from 2018-12-31, 52 warm-up blocks), scorer and drop rules as ADR-0272. Scored on the three phase-one pairs.
 - **Authorship:** design, nodes, documents and all runs were done by a Claude Fable 5.1 subagent, which hit an API session limit before writing up; this memo, the lane note, the journal row and the commit were completed by Claude Opus 5.5 from the agent's artifacts, scratch notes and ADR text. No run was repeated or altered in the hand-over.
 - **Baselines in every cell:** `mean`; the frozen `lagged` (raw Ridge, alpha 100 ATM / 0.1 skew); and `scaled` (ADR-0274: `StandardizedEstimator(Ridge)` alpha 100 on `y_h / sd60`, back-transformed), the comparator.
 - **"Improves"** (pre-registered): pooled 2021–2025 R²oos above `scaled`, BH-rejected Diebold–Mariano versus `scaled` (family of 32 per cell: fifteen versus `scaled` plus every non-benchmark model versus `mean`), and per-fold R²oos above `scaled` in at least four of five folds.
