@@ -12,12 +12,13 @@ from bisect import bisect_left
 from collections import Counter
 from datetime import date, datetime, timezone
 from itertools import combinations
+from math import log
 from statistics import fmean, stdev
 
 from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
-__all__ = ["NODE_KINDS", "PairSpreadHorizonRows", "RollingPairSpread"]
+__all__ = ["NODE_KINDS", "PairPanelFeatures", "PairSpreadHorizonRows", "RollingPairSpread"]
 NODE_KINDS = ()
 
 
@@ -539,3 +540,201 @@ class PairSpreadHorizonRows(Node):
         except ValueError as exc:
             raise ValueError(f"{self.key}: invalid ISO date {value!r}") from exc
         return value
+
+
+def _log_or_none(value):
+    """Return the natural log of a positive value, else ``None``."""
+    return log(value) if value > 0.0 else None
+
+
+#: The closed set of per-value transforms a ``fields`` entry may name.
+_PANEL_TRANSFORMS = {"identity": lambda v: v, "log": _log_or_none}
+
+
+class PairPanelFeatures(Node):
+    """Pair differences, leg values and prior-only window statistics from a symbol-date panel (role ``transform``).
+
+    From a panel of ``{date, symbol, <value fields>}`` rows (option surfaces, positioning rows,
+    log returns) and a declared symbol list, one row per (date, unordered pair) for every date
+    on which BOTH symbols of the pair have a panel row (whatever their status); window
+    statistics count the panel's union of dates, so a date on which a leg is absent is a hole
+    in the window, never bridged. For each declared field ``name`` (an output
+    name mapped to a panel field): ``d_<name>`` (first symbol minus second, symbols in sorted
+    order), ``a_<name>`` and ``b_<name>`` (the legs); for each ``lookbacks`` entry ``L``:
+    ``z<L>_<name>`` and ``sd<L>_<name>`` (the difference's Z and sample standard deviation over
+    exactly the ``L`` immediately preceding panel dates, both legs present on every one, never
+    a shrunken window); for each ``leg_lookbacks`` entry: ``za<L>_<name>``, ``zb<L>_<name>``,
+    ``sda<L>_<name>``, ``sdb<L>_<name>`` (the same per leg; the standard deviation of a leg's
+    log returns is its realized volatility); for each ``change_lags`` entry ``k``:
+    ``chg<k>_<name>`` (difference now minus difference ``k`` panel dates earlier). A value on a
+    row whose status is not the ``ok_value``, or that is not a finite number, is ``None`` and
+    every statistic reaching it is ``None``. A zero scale leaves the Z ``None`` and the
+    standard deviation ``0.0``. By import path (ADR-0273). Nothing here forecasts or trades.
+
+    Parameters
+    ----------
+    params : dict
+        ``symbols`` (at least two distinct, REQUIRED); ``fields`` (``{output name: panel field}`` or
+        ``{output name: {"field": panel field, "transform": "identity" | "log"}}``; ``log`` takes the
+        natural log of a positive value and leaves anything else ``None``, so a ratio such as put/call
+        open interest is differenced in log space and a reset day cannot dominate; non-empty, names
+        are identifier-like, REQUIRED); optional ``lookbacks``, ``leg_lookbacks``
+        (distinct ints >= 2), ``change_lags`` (distinct ints >= 1), ``date_field``,
+        ``symbol_field``, ``status_field`` with ``ok_value``, ``target_field`` with ``target_value``.
+
+    Examples
+    --------
+    Realized volatility of each leg from a log-return panel::
+
+        node = PairPanelFeatures("rv", {"symbols": ["AAPL", "AMZN", "GOOGL"],
+                                        "fields": {"ret": "log_return"}, "leg_lookbacks": [20]})
+        out = node.run(ctx, {"panel": return_rows})   # rows carry sda20_ret and sdb20_ret
+    """
+
+    role = "transform"
+    outputs = ("records", "summary")
+    _PARAMS = ("symbols", "fields", "lookbacks", "leg_lookbacks", "change_lags", "date_field",
+               "symbol_field", "status_field", "ok_value", "target_field", "target_value")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Default-deny: refuse unknown, missing and malformed knobs."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        symbols = params.get("symbols")
+        if (not isinstance(symbols, list) or len(symbols) < 2
+                or any(not isinstance(x, str) or not x for x in symbols) or len(set(symbols)) != len(symbols)):
+            problems.append("symbols must list at least two distinct non-empty names")
+        fields = params.get("fields")
+        if not isinstance(fields, dict) or not fields:
+            problems.append("fields must be a non-empty mapping")
+        else:
+            for k, v in fields.items():
+                spec = {"field": v, "transform": "identity"} if isinstance(v, str) else v
+                if (not isinstance(k, str) or not k.isidentifier() or not isinstance(spec, dict)
+                        or set(spec) != {"field", "transform"} or not isinstance(spec["field"], str)
+                        or not spec["field"] or spec["transform"] not in _PANEL_TRANSFORMS):
+                    problems.append(f"fields[{k!r}] must be a panel field name or {{field, transform in "
+                                    f"{sorted(_PANEL_TRANSFORMS)}}} under an identifier-like output name")
+        for name, floor in (("lookbacks", 2), ("leg_lookbacks", 2), ("change_lags", 1)):
+            value = params.get(name, [])
+            if (not isinstance(value, list) or any(type(v) is not int or v < floor for v in value)
+                    or len(set(value)) != len(value)):
+                problems.append(f"{name} must be a list of distinct integers >= {floor}")
+        for name in ("date_field", "symbol_field", "status_field", "target_field"):
+            if name in params and (not isinstance(params[name], str) or not params[name]):
+                problems.append(f"{name} must be a non-empty string")
+        if ("ok_value" in params) != ("status_field" in params):
+            problems.append("status_field and ok_value must be declared together")
+        if ("target_value" in params) != ("target_field" in params):
+            problems.append("target_field and target_value must be declared together")
+        return problems
+
+    def run(self, ctx, inputs):
+        """Index the panel, then emit every pair-date with its differences and window statistics.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused.
+        inputs : dict
+            ``panel``: rows of ``{date, symbol, ...}``.
+
+        Returns
+        -------
+        dict
+            ``records`` (date order, pairs in sorted order within a date) and ``summary``.
+
+        Raises
+        ------
+        ValueError
+            A missing input, a malformed date, or a repeated (date, symbol) key.
+        """
+        p = self.params
+        if "panel" not in inputs:
+            raise ValueError(f"{self.key}: panel input is required")
+        wanted = set(p["symbols"])
+        values, days, present = self._index(inputs["panel"], wanted)
+        pairs = list(combinations(sorted(wanted), 2))
+        ordered = sorted(days)
+        position = {day: i for i, day in enumerate(ordered)}
+        series = {}
+        for a, b in pairs:
+            for name in p["fields"]:
+                leg_a = [values.get((day, a, name)) for day in ordered]
+                leg_b = [values.get((day, b, name)) for day in ordered]
+                diff = [x - y if x is not None and y is not None else None for x, y in zip(leg_a, leg_b)]
+                series[(a, b, name)] = (leg_a, leg_b, diff)
+        out = []
+        per_pair = Counter()
+        for day in ordered:
+            i = position[day]
+            for a, b in pairs:
+                if (day, a) not in present or (day, b) not in present:
+                    continue
+                record = {"date": day, "pair": f"{a}|{b}", "symbol_a": a, "symbol_b": b}
+                for name in p["fields"]:
+                    leg_a, leg_b, diff = series[(a, b, name)]
+                    record[f"d_{name}"], record[f"a_{name}"], record[f"b_{name}"] = diff[i], leg_a[i], leg_b[i]
+                    for lb in p.get("lookbacks", []):
+                        z, sd = self._window(diff, i, lb)
+                        record[f"z{lb}_{name}"], record[f"sd{lb}_{name}"] = z, sd
+                    for lb in p.get("leg_lookbacks", []):
+                        za, sda = self._window(leg_a, i, lb)
+                        zb, sdb = self._window(leg_b, i, lb)
+                        record[f"za{lb}_{name}"], record[f"sda{lb}_{name}"] = za, sda
+                        record[f"zb{lb}_{name}"], record[f"sdb{lb}_{name}"] = zb, sdb
+                    for lag in p.get("change_lags", []):
+                        earlier = diff[i - lag] if i - lag >= 0 else None
+                        record[f"chg{lag}_{name}"] = (
+                            diff[i] - earlier if diff[i] is not None and earlier is not None else None
+                        )
+                out.append(record)
+                per_pair[f"{a}|{b}"] += 1
+        return {"records": out,
+                "summary": {"rows": len(out), "dates": len(ordered), "pairs": len(pairs),
+                            "per_pair": dict(per_pair), "fields": list(p["fields"])}}
+
+    @staticmethod
+    def _window(values, i, lookback):
+        """Return (Z, sample sd) of ``values[i]`` against exactly the ``lookback`` prior entries."""
+        if i < lookback or values[i] is None:
+            return None, None
+        prior = values[i - lookback:i]
+        if any(v is None for v in prior):
+            return None, None
+        sd = stdev(prior)
+        if sd == 0.0:
+            return None, 0.0
+        return (values[i] - fmean(prior)) / sd, sd
+
+    def _index(self, rows, wanted):
+        """Return ``({(day, symbol, name): value}, {days}, {(day, symbol)})`` for the wanted symbols."""
+        p = self.params
+        date_field, symbol_field = p.get("date_field", "date"), p.get("symbol_field", "symbol")
+        values, days, seen = {}, set(), set()
+        for row in rows:
+            if "target_field" in p and row.get(p["target_field"]) != p.get("target_value"):
+                continue
+            symbol = row.get(symbol_field)
+            if not isinstance(symbol, str) or not symbol:
+                raise ValueError(f"{self.key}: symbol must be a non-empty string")
+            if symbol not in wanted:
+                continue
+            day = row.get(date_field)
+            try:
+                if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day:
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError(f"{self.key}: invalid ISO date {day!r}") from exc
+            if (day, symbol) in seen:
+                raise ValueError(f"{self.key}: duplicate panel key {(day, symbol)!r}")
+            seen.add((day, symbol))
+            days.add(day)
+            ok = "status_field" not in p or row.get(p["status_field"]) == p.get("ok_value")
+            for name, spec in p["fields"].items():
+                field, transform = (spec, "identity") if isinstance(spec, str) else (spec["field"], spec["transform"])
+                value = row.get(field)
+                values[(day, symbol, name)] = (_PANEL_TRANSFORMS[transform](float(value))
+                                               if ok and number_ok(value) else None)
+        return values, days, seen

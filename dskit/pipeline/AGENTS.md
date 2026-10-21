@@ -176,6 +176,7 @@ dskit/pipeline/
 │                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0257),
 │                      chain_census (ChainCensus + quote_state: per-root coverage and quote quality of a daily option-chain stream, by import path, ADR-0265),
 │                      chain_features (ChainDayFeatures: ATM/wing IV, skew, term, straddle, spread, OI/volume per symbol-date-DTE from NBBO mids, by import path, ADR-0265),
+│                      chain_greeks (ChainDayPositioning: vendor EOD Greeks x open interest per symbol-day, per-Greek spot powers, OI/volume ratios, counted exclusions, by import path, ADR-0273),
 │                      chain_events (ChainEventDetector + ChainEventCalibrator: earnings-like events from the front-IV crush in the chain-day features, no calendar; a retrospective labeller, by import path, ADR-0265)
 │                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3
 │                      chain_orders (ChainStructureOrders: expiry + strike selection by atm / delta / max open interest / mirror from a daily chain, orders for the ledger, by import path, ADR-0265 Amendment 5); ParquetStreamRows takes `include` / `iso_fields` / `where`; DailyBarFeatures takes `realized_vol`; QuoteBook is chain_features' public quote book

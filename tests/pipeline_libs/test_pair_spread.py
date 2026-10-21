@@ -293,3 +293,90 @@ def test_horizon_rows_default_deny_and_knob_checks():
     assert "PairSpreadHorizonRows" in __import__("dskit.pipeline.libs.pair_spread", fromlist=["x"]).__all__
     with pytest.raises(ValueError, match="precision"):
         PairSpreadHorizonRows("h", HORIZON).run(None, {"spreads": spread_rows()})
+
+
+# -- PairPanelFeatures: pair differences, legs, prior-only Z/std at lookbacks, changes (ADR-0273) ----
+
+from dskit.pipeline.libs.pair_spread import PairPanelFeatures  # noqa: E402
+
+PANEL = {"symbols": ["A", "B"], "fields": {"iv": "atm_iv"}, "lookbacks": [2], "leg_lookbacks": [2],
+         "change_lags": [1]}
+
+
+def panel(values, symbol_values=None):
+    out = []
+    for day, av, bv in values:
+        out.append({"date": day, "symbol": "A", "atm_iv": av, "status": "ok", "target_dte": 30})
+        out.append({"date": day, "symbol": "B", "atm_iv": bv, "status": "ok", "target_dte": 30})
+    return out
+
+
+def features(rows, **over):
+    node = PairPanelFeatures("pf", {**PANEL, **over})
+    return node.run(NodeContext(name="t", asof="2025-12-31", run_dir="/nonexistent"), {"panel": rows})
+
+
+def test_pair_panel_differences_legs_and_prior_only_statistics():
+    rows = panel([("2020-01-02", 0.30, 0.20), ("2020-01-03", 0.40, 0.20), ("2020-01-06", 0.60, 0.20),
+                  ("2020-01-07", 0.10, 0.20)])
+    out = features(rows)
+    r = out["records"]
+    assert [x["pair"] for x in r] == ["A|B"] * 4 and r[0]["symbol_a"] == "A"
+    assert r[2]["d_iv"] == pytest.approx(0.40) and r[2]["a_iv"] == pytest.approx(0.60) and r[2]["b_iv"] == pytest.approx(0.20)
+    # prior-only window of 2: mean of (0.10, 0.20) = 0.15, sample sd = 0.0707
+    assert r[2]["z2_iv"] == pytest.approx((0.40 - 0.15) / 0.07071067811865477)
+    assert r[2]["sd2_iv"] == pytest.approx(0.07071067811865477)
+    assert r[1]["z2_iv"] is None and r[1]["sd2_iv"] is None  # only one prior session
+    assert r[2]["za2_iv"] == pytest.approx((0.60 - 0.35) / 0.07071067811865477)
+    assert r[2]["zb2_iv"] is None and r[2]["sdb2_iv"] == pytest.approx(0.0)  # B is constant: zero scale, no Z
+    assert r[2]["sda2_iv"] == pytest.approx(0.07071067811865477)
+    assert r[1]["chg1_iv"] == pytest.approx(0.10) and r[0]["chg1_iv"] is None
+    assert out["summary"]["rows"] == 4 and out["summary"]["pairs"] == 1
+    assert "A|B" in out["summary"]["per_pair"]
+
+
+def test_pair_panel_status_gate_target_filter_and_gaps_are_not_bridged():
+    rows = panel([("2020-01-02", 0.30, 0.20), ("2020-01-03", 0.40, 0.20), ("2020-01-06", 0.60, 0.20),
+                  ("2020-01-07", 0.10, 0.20)])
+    rows[3]["status"] = "no_rate"                     # B on Jan 3 unusable
+    rows.append({"date": "2020-01-08", "symbol": "A", "atm_iv": 0.5, "status": "ok", "target_dte": 90})
+    r = features(rows, status_field="status", ok_value="ok", target_field="target_dte", target_value=30)["records"]
+    assert len(r) == 4 and r[1]["d_iv"] is None and r[1]["b_iv"] is None and r[1]["a_iv"] == pytest.approx(0.40)
+    assert r[2]["z2_iv"] is None   # the prior window has a hole: refused, not shrunk
+    assert r[2]["chg1_iv"] is None and r[3]["chg1_iv"] == pytest.approx((0.10 - 0.20) - 0.40)
+    with pytest.raises(ValueError, match="duplicate"):
+        features(rows + rows[:1])
+
+
+def test_pair_panel_three_symbols_make_three_pairs_and_missing_symbol_days_are_absent():
+    rows = panel([("2020-01-02", 0.3, 0.2), ("2020-01-03", 0.4, 0.2)])
+    rows.append({"date": "2020-01-03", "symbol": "C", "atm_iv": 0.9, "status": "ok", "target_dte": 30})
+    r = features(rows, symbols=["A", "B", "C"])["records"]
+    assert [(x["date"], x["pair"]) for x in r] == [("2020-01-02", "A|B"), ("2020-01-03", "A|B"),
+                                                   ("2020-01-03", "A|C"), ("2020-01-03", "B|C")]
+    assert r[2]["d_iv"] == pytest.approx(0.4 - 0.9)
+
+
+def test_pair_panel_log_transform_differences_in_log_space_and_refuses_non_positive():
+    rows = panel([("2020-01-02", 2.0, 0.5), ("2020-01-03", 0.0, 4.0)])
+    r = features(rows, fields={"lr": {"field": "atm_iv", "transform": "log"}}, lookbacks=[], leg_lookbacks=[],
+                 change_lags=[])["records"]
+    import math
+    assert r[0]["d_lr"] == pytest.approx(math.log(2.0) - math.log(0.5))
+    assert r[0]["a_lr"] == pytest.approx(math.log(2.0))
+    assert r[1]["a_lr"] is None and r[1]["d_lr"] is None and r[1]["b_lr"] == pytest.approx(math.log(4.0))
+
+
+def test_pair_panel_default_denies_and_checks_knobs():
+    assert PairPanelFeatures.validate_params(PANEL) == []
+    assert PairPanelFeatures.validate_params({"symbols": ["A", "B"], "fields": {"x": "y"}}) == []
+    assert PairPanelFeatures.validate_params({"symbols": ["A", "B"], "fields": {"x": {"field": "y", "transform": "log"}}}) == []
+    for bad in ({**PANEL, "extra": 1}, {**PANEL, "symbols": ["A"]}, {**PANEL, "fields": {}},
+                {**PANEL, "fields": {"a b": "x"}}, {**PANEL, "lookbacks": [1]}, {**PANEL, "leg_lookbacks": [0]},
+                {**PANEL, "fields": {"x": {"field": "atm_iv", "transform": "exp"}}},
+                {**PANEL, "fields": {"x": {"field": "atm_iv"}}},
+                {**PANEL, "change_lags": [1, 1]}, {**PANEL, "target_value": 30},
+                {**PANEL, "ok_value": "ok"}, {k: v for k, v in PANEL.items() if k != "symbols"}):
+        assert PairPanelFeatures.validate_params(bad), bad
+    assert PairPanelFeatures.role == "transform" and PairPanelFeatures.outputs == ("records", "summary")
+    assert "PairPanelFeatures" in __import__("dskit.pipeline.libs.pair_spread", fromlist=["x"]).__all__

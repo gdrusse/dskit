@@ -226,6 +226,7 @@ from dskit.pipeline.node import (
 from dskit.pipeline.records import number_ok
 
 __all__ = [
+    "StandardizedEstimator",
     "ColumnSubsetEstimator",
     "DEFAULT_LOGIT_CLIP",
     "DEFAULT_REFIT_ESTIMATOR_PARAMS",
@@ -2149,6 +2150,101 @@ def _rows_problems(rows):
         "rows must be a list of feature rows (a one-shot iterable "
         f"would be consumed by validation), got {rows!r}"
     ]
+
+
+class StandardizedEstimator:
+    """Fit any dotted-path estimator on train-standardized columns (ADR-0273).
+
+    A plain estimator, not a node: ``fit`` learns each column's mean and
+    standard deviation on the training matrix only (a zero-spread column
+    scales by 1, never by 0), fits the wrapped estimator on the
+    standardized matrix, and ``predict`` applies the same shift and scale.
+    The wrapped class is named by DOTTED import path (``module.ClassName``,
+    never the ``module:Class`` colon form), constructed from the remaining
+    keyword arguments, and exposed as ``estimator_``; ``coef_`` and
+    ``intercept_`` are forwarded when the inner estimator has them, in
+    standardized units. ``get_params`` returns the path and the inner
+    knobs flat, so :class:`SklearnExpandingRefit` and :class:`SklearnFit`
+    construct it from ``estimator_params`` like any other estimator.
+
+    Parameters
+    ----------
+    estimator : str
+        Dotted import path of the wrapped estimator class.
+    **estimator_params
+        Keyword arguments for that class.
+
+    Examples
+    --------
+    A Ridge whose penalty means the same thing on every column::
+
+        est = StandardizedEstimator(estimator="sklearn.linear_model.Ridge", alpha=10.0)
+        est.fit(matrix, labels).predict(matrix)
+    """
+
+    def __init__(self, estimator, **estimator_params):
+        if not isinstance(estimator, str) or ":" in estimator or "." not in estimator:
+            raise ValueError(
+                f"estimator must be a dotted import path such as 'sklearn.linear_model.Ridge', got {estimator!r}"
+            )
+        self.estimator = estimator
+        self.estimator_params = dict(estimator_params)
+        self.estimator_ = None
+        self.mean_ = None
+        self.scale_ = None
+
+    def get_params(self, deep=True):
+        """Return the path and the inner knobs as one flat mapping."""
+        return {"estimator": self.estimator, **self.estimator_params}
+
+    def set_params(self, **params):
+        """Set the path or inner knobs; returns self."""
+        if "estimator" in params:
+            self.estimator = params.pop("estimator")
+        self.estimator_params.update(params)
+        return self
+
+    def _standardize(self, matrix):
+        """Apply the fitted shift and scale, refusing a matrix of another width."""
+        import numpy
+
+        x = numpy.asarray(matrix, dtype=float)
+        if x.ndim != 2 or x.shape[1] != self.mean_.shape[0]:
+            raise ValueError(
+                f"StandardizedEstimator: expected {self.mean_.shape[0]} columns, got a matrix of shape {x.shape}"
+            )
+        return (x - self.mean_) / self.scale_
+
+    def fit(self, matrix, labels):
+        """Learn column statistics on ``matrix``, then fit the inner estimator on the standardized copy."""
+        import numpy
+
+        x = numpy.asarray(matrix, dtype=float)
+        if x.ndim != 2:
+            raise ValueError(f"StandardizedEstimator: fit needs a 2-D matrix, got shape {x.shape}")
+        self.mean_ = x.mean(axis=0)
+        scale = x.std(axis=0)
+        scale[scale == 0.0] = 1.0
+        self.scale_ = scale
+        cls_ = _import_object(self.estimator, "StandardizedEstimator")
+        self.estimator_ = _construct(cls_, dict(self.estimator_params), self.estimator,
+                                     "StandardizedEstimator", "estimator_params")
+        self.estimator_.fit(self._standardize(x), labels)
+        return self
+
+    def predict(self, matrix):
+        """Predict with the inner estimator on the standardized matrix."""
+        if self.estimator_ is None:
+            raise ValueError("StandardizedEstimator: predict before fit")
+        return self.estimator_.predict(self._standardize(matrix))
+
+    def __getattr__(self, name):
+        """Forward ``coef_`` / ``intercept_`` from the fitted inner estimator."""
+        if name in ("coef_", "intercept_"):
+            inner = self.__dict__.get("estimator_")
+            if inner is not None and hasattr(inner, name):
+                return getattr(inner, name)
+        raise AttributeError(name)
 
 
 class SklearnFit(TrainableNode):

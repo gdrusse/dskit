@@ -167,3 +167,135 @@ def test_the_offset_document_differs_from_validation_only_by_the_executable_cloc
             assert other["params"]["path"] == node["params"]["path"].replace("/validation/", "/validation-offset1/")
         else:
             assert node["params"] == other["params"], key
+
+
+# -- ADR-0273 ten-method documents --------------------------------------------------------------
+
+METHODS_DEVELOPMENT = "run-tech-prediction-methods-development.json"
+METHODS_VALIDATION = "run-tech-prediction-methods-validation.json"
+METHODS_SAMEDAY = "run-tech-prediction-methods-validation-sameday.json"
+METHODS_SELECTION = "prediction-methods-selection.json"
+GREEKS_PASS = "run-tech-structural-greeks.json"
+METHOD_KEYS = ["m01_multiscale", "m02_legs", "m03_smile", "m04_changes", "m05_term", "m06_positioning",
+               "m07_realized", "m08_pooled", "m09_lasso", "m10_boost"]
+STANDARDIZED = "dskit.pipeline.libs.sklearn.StandardizedEstimator"
+
+
+@pytest.fixture(params=[METHODS_DEVELOPMENT, METHODS_VALIDATION, METHODS_SAMEDAY],
+                ids=["m-development", "m-validation", "m-sameday"])
+def methods_document(request):
+    return request.param, load_document(_path(request.param)), _raw(request.param)
+
+
+def _methods_refits(raw):
+    return {k: v for k, v in raw["pipeline"].items()
+            if v["uses"] == "dskit.pipeline.libs.sklearn:SklearnExpandingRefit"}
+
+
+def test_greeks_pass_reads_the_same_theta_members_and_only_sums_vendor_numbers():
+    raw, base = _raw(GREEKS_PASS), _raw("run-tech-structural.json")
+    assert raw["pipeline"]["chain"]["params"]["members"] == base["pipeline"]["chain"]["params"]["members"]
+    assert raw["pipeline"]["chain"]["params"]["end_before"] == base["pipeline"]["chain"]["params"]["end_before"]
+    assert set(raw["pipeline"]["chain"]["params"]["fields"]) >= {"implied_vol", "iv_error", "open_interest",
+                                                                 "volume", "delta", "gamma", "vega", "vanna"}
+    pos = raw["pipeline"]["positioning"]
+    assert pos["uses"] == "dskit.pipeline.libs.chain_greeks:ChainDayPositioning"
+    assert pos["params"]["spot_power"] == {"gamma": 2, "delta": 1, "vanna": 1, "charm": 1}
+    assert pos["params"]["end_before"] == "2025-12-16" and pos["params"]["iv_error_max"] == 0.01
+    term = raw["pipeline"]["surface_term"]["params"]
+    assert term["term_pair"] == [30, 90] and [t["dte"] for t in term["targets"]] == [30, 90]
+    assert load_document(_path(GREEKS_PASS)).hash
+
+
+def test_methods_documents_plan_pin_every_input_and_keep_the_frozen_baselines(methods_document):
+    name, doc, raw = methods_document
+    assert doc.hash and plan(doc)
+    backtest = _raw("run-tech-backtest.json")
+    for key, artifact in READS.items():
+        node = raw["pipeline"][key]
+        assert node["params"]["sha256"] == backtest["structural_rows"][artifact]["sha256"], (name, key)
+    for key in ("surface_term", "positioning"):
+        node = raw["pipeline"][key]
+        assert node["uses"] == "dskit.pipeline.kinds_table:RecordsFile"
+        assert node["params"]["path"].startswith("/home/russell/data/statistical_arbitrage/structural-greeks-20261020/")
+        with open(node["params"]["path"], "rb") as fh:
+            assert hashlib.sha256(fh.read()).hexdigest() == node["params"]["sha256"], (name, key)
+    base = _raw("run-tech-structural.json")["pipeline"]
+    for key in ("prices_aapl", "prices_amzn", "prices_googl", "prices_qqq", "returns"):
+        assert raw["pipeline"][key] == base[key], (name, key)
+    refits = _methods_refits(raw)
+    for target in TARGETS:
+        for h in HORIZONS:
+            lagged = refits[f"{target}_h{h}_lagged"]["params"]
+            assert lagged["estimator"] == "sklearn.linear_model.Ridge"
+            assert lagged["estimator_params"] == {"alpha": {"atm": 100.0, "skew": 0.1}[target]}
+            assert [f["field"] for f in lagged["features"]] == ["z", "spread_change_5"]
+            mean = refits[f"{target}_h{h}_mean"]["params"]
+            assert mean["estimator"] == "sklearn.dummy.DummyRegressor"
+
+
+def test_methods_refits_share_the_clock_nest_the_lagged_features_and_standardize(methods_document):
+    name, _, raw = methods_document
+    clocks = set()
+    for key, node in _methods_refits(raw).items():
+        p = node["params"]
+        target, horizon, model = key.split("_", 2)
+        h = int(horizon[1:])
+        assert p["label"] == f"y_{h}" and p["known_field"] == f"known_ms_{h}" and p["time_field"] == "decision_ms"
+        clocks.add((p["block_ms"], p["block_origin_ms"], p["min_train_blocks"]))
+        if model in ("mean", "lagged"):
+            continue
+        fields = [f["field"] for f in p["features"]]
+        assert fields[:2] == ["z", "spread_change_5"], key
+        if model.startswith("m10_boost"):
+            assert p["estimator"] == "sklearn.ensemble.HistGradientBoostingRegressor"
+        else:
+            assert p["estimator"] == STANDARDIZED, key
+            assert p["estimator_params"]["estimator"] in ("sklearn.linear_model.Ridge", "sklearn.linear_model.Lasso")
+        assert ("group_field" not in p) == model.startswith("m08_pooled"), key
+    assert clocks == {(7 * 86_400_000, 1_546_214_400_000, 52)}
+
+
+def test_methods_folds_and_label_clock_follow_the_documents_role(methods_document):
+    name, _, raw = methods_document
+    calendar = _raw("validation-calendar.json")
+    annual = {str(b["year"]): {"start": b["start"], "end_before": b["end_before"]} for b in calendar["annual_validation"]}
+    dev = calendar["initial_development"]["selection"]
+    expected = ({"2020-development": {"start": dev["score_start"], "end_before": dev["score_end_before"]}}
+                if name == METHODS_DEVELOPMENT else annual)
+    for key, node in raw["pipeline"].items():
+        if node["uses"] == "dskit.pipeline.kinds_stats:ChronologicalForecastSkill":
+            assert node["params"]["folds"] == expected, (name, key)
+            assert node["params"]["benchmark"] == "mean"
+            if name != METHODS_DEVELOPMENT:
+                assert node["params"]["comparisons"] == [[m, "lagged"] for m in METHOD_KEYS]
+    for target in TARGETS:
+        rows = raw["pipeline"][f"rows_{target}"]["params"]
+        assert rows.get("label_offset", 0) == (0 if name == METHODS_SAMEDAY else 1), name
+
+
+def test_methods_validation_freezes_the_recorded_selection():
+    selection = _raw(METHODS_SELECTION)["selected"]
+    with open(_path(METHODS_SELECTION), "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+    for name in (METHODS_VALIDATION, METHODS_SAMEDAY):
+        raw = _raw(name)
+        pin = raw["pipeline"]["methods_selection"]
+        assert pin["uses"] == "table-file" and pin["params"]["sha256"] == digest
+        for key, node in _methods_refits(raw).items():
+            target, _, model = key.split("_", 2)
+            if model in ("mean", "lagged"):
+                continue
+            knob = {"m09_lasso": "alpha", "m10_boost": "max_iter"}.get(model, "alpha")
+            assert node["params"]["estimator_params"][knob] == selection[target][model], (name, key)
+    dev = _raw(METHODS_DEVELOPMENT)
+    grid_models = {k.split("_", 2)[2] for k in _methods_refits(dev)}
+    for method in METHOD_KEYS:
+        assert sum(1 for m in grid_models if m.startswith(method + "_")) == (2 if method == "m10_boost" else 4), method
+
+
+def test_methods_documents_never_reach_a_ledger_order_or_backtest(methods_document):
+    name, _, raw = methods_document
+    for key, node in raw["pipeline"].items():
+        uses = node["uses"].lower()
+        assert not any(word in uses for word in ("ledger", "order", "backtest", "replay", "capital")), (name, key)

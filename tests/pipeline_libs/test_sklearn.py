@@ -5096,3 +5096,38 @@ def test_point_is_the_owning_number_rule(make, owner, kind, cell):
         assert got[:2] == expected
     else:
         assert got == expected
+
+
+# -- StandardizedEstimator: train-only column scaling in front of any dotted-path estimator (ADR-0273) ----
+
+from dskit.pipeline.libs.sklearn import StandardizedEstimator  # noqa: E402
+
+
+def test_standardized_estimator_scales_on_train_statistics_only_and_exposes_coef():
+    pytest.importorskip("sklearn")
+    import numpy as np
+    from sklearn.linear_model import Ridge
+
+    rng = np.random.default_rng(0)
+    x = np.column_stack([rng.normal(0, 1, 200), rng.normal(0, 1000, 200), np.full(200, 7.0)])
+    y = 0.5 * x[:, 0] - 0.002 * x[:, 1] + rng.normal(0, 0.1, 200)
+    wrapped = StandardizedEstimator(estimator="sklearn.linear_model.Ridge", alpha=1.0).fit(x, y)
+    mean, scale = x.mean(axis=0), x.std(axis=0)
+    scale[scale == 0] = 1.0
+    plain = Ridge(alpha=1.0).fit((x - mean) / scale, y)
+    probe = np.array([[1.0, -500.0, 7.0], [0.0, 0.0, 9.0]])
+    assert wrapped.predict(probe) == pytest.approx(plain.predict((probe - mean) / scale))
+    assert wrapped.coef_ == pytest.approx(plain.coef_) and wrapped.intercept_ == pytest.approx(plain.intercept_)
+    assert wrapped.scale_[2] == 1.0  # a constant column is not divided by zero
+    assert wrapped.get_params()["estimator"] == "sklearn.linear_model.Ridge"
+    assert wrapped.get_params()["alpha"] == 1.0
+
+
+def test_standardized_estimator_refuses_a_colon_path_and_a_changed_width():
+    pytest.importorskip("sklearn")
+    with pytest.raises(ValueError, match="dotted"):
+        StandardizedEstimator(estimator="sklearn.linear_model:Ridge")
+    est = StandardizedEstimator(estimator="sklearn.linear_model.Ridge").fit([[1.0, 2.0], [2.0, 4.0], [3.0, 7.0]], [1.0, 2.0, 3.0])
+    with pytest.raises(ValueError, match="columns"):
+        est.predict([[1.0]])
+    assert not hasattr(StandardizedEstimator(estimator="sklearn.dummy.DummyRegressor").fit([[1.0], [2.0]], [1.0, 2.0]), "coef_")

@@ -22,6 +22,14 @@ benchmark. MSFT/NVDA and Energy are separate later additions through JSON.
   document scores 2021–2025 once; `run-tech-prediction-validation-offset1.json`
   is the disclosed post-hoc next-session-label robustness run. No trade rule,
   P&L or edge claim.
+- `configs/run-tech-structural-greeks.json` reads the same 444 Theta members
+  once more for Theta's EOD Greeks, vendor IV, quotes, volume and open interest:
+  30/90-DTE surfaces with term slope and OI aggregates, and vendor-Greek
+  positioning per symbol-day. `run-tech-prediction-methods-{development,
+  validation,validation-sameday}.json` are the ADR-0273 ten-method study on
+  top of ADR-0272 (multi-scale Z, leg Z, smile shape, change profile, term
+  structure, Greeks/OI positioning, realized vol, pooled Ridge, Lasso, boosting),
+  knobs frozen in `configs/prediction-methods-selection.json`.
 - `statistical_arbitrage/{data,network,surface,backtest,report}.py` wraps
   generic DSKit readers, graph, pair spread and option ledger mechanisms.
 - `docs/decisioning/` records scope; `docs/memos/` records evaluation.
