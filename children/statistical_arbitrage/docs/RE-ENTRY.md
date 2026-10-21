@@ -47,16 +47,17 @@ all lose; skew stays out of reach. Memo:
 
 ADR-0272 to ADR-0275 were ratified by the owner on 2026-10-21. The
 one candidate worth a separately registered single-hypothesis confirmation
-on the ATM 20-session target is the pooled-scaled blend, on data not used
-to choose it. No re-tuning on 2021–2025.
+on the ATM 20-session target is the pooled-scaled blend; owner 2026-10-21:
+not yet (2026 stays sealed). No re-tuning on 2021–2025.
 Correct the ADR-0271 stock-data prose and `source-stock-daily.json` (pinned
 `close` and `dividend_amount` are already split-adjusted) before any pre-split
 run.
 
 ## Blocked / owner decisions
 
-Whether to acknowledge the Theta crossed-quotes alarm and
-resume the universe backfill; whether to unseal 2026 for a confirmation set.
+Owner 2026-10-21: do NOT acknowledge the Theta crossed-quotes alarm or
+resume the universe backfill; never use data we are dubious of (alarmed
+batches, e.g. MRVL 20261020T222113Z and META 2026-10-18, stay out of studies).
 Disclosed Minor backlog: ADR-0272/0273/0274 review items (boundary and
 default-deny tests, the Kalman floor/clamp/phi-bound paths untested, pin
 coverage of DAG wiring, the universe document and skill knobs, an
