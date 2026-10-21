@@ -18,8 +18,11 @@ the term-structure slope difference is the only candidate (ATM 20-session
 +0.069 R²oos over the baseline, four of five folds, DM p 0.035 before BH;
 BH-significant on the secondary same-day label); vendor-Greek positioning,
 realized vol, Lasso and boosting are worse. Memo:
-`docs/memos/2026-10-20-tech-prediction-ten-methods.md`. (3) The review state
-of the ADR-0273 candidate is recorded in that memo's handoff section.
+`docs/memos/2026-10-20-tech-prediction-ten-methods.md`. Two fresh Sonnet
+lenses on `e10f795b`: zero Critical/Major; Minor backlog in the memo. (3) A
+research note on better model families (universe-pooled partial pooling,
+Kalman-OU spread state, vol-scaled labels with CRPS, surface-factor VAR):
+`docs/research/prediction-methods/2026-10-21-better-models.md`.
 
 ## Next
 
@@ -32,10 +35,12 @@ run.
 
 ## Blocked / owner decisions
 
-ADR ratification. Disclosed Minor backlog: ADR-0272 review items (test
-coverage gaps, `r2oos_pool` docstring, opt-in edge guards); v6 audit items
-A3–A10; the positioning features are net sums (no strike profile, no signed
-flow).
+ADR ratification. Disclosed Minor backlog: ADR-0272 and ADR-0273 review
+items (boundary tests, pin coverage of DAG wiring and `overwrite:false`, an
+`__all__` pin, an all-zero-OI status flag in `ChainDayPositioning`); v6 audit
+items A3–A10; positioning features are net sums (no strike profile, no signed
+flow); main's pyomo tests are an order-dependent red in a full
+`tests/pipeline_libs` run.
 
 ## Read first
 
