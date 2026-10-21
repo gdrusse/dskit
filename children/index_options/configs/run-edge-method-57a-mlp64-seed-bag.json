@@ -111,7 +111,7 @@
             "source": "model",
             "pit_column": "model_pit",
             "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/strike-region-scores-wf-wide-mlp64-s29/rows.parquet",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "sha256": "ddc6a309cfcb2b6826ddf4c8697f62b96bdcfdb3acad3114e43553d42c86704a",
             "keys": [
               "symbol",
               "quote_date",
@@ -125,7 +125,7 @@
             "source": "model",
             "pit_column": "model_pit",
             "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/strike-region-scores-wf-wide-mlp64-s47/rows.parquet",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "sha256": "2dac4ccb01343cefa3acc31d768e98c1278c60a6aea4ad5a8969ba0a2af8ab8c",
             "keys": [
               "symbol",
               "quote_date",

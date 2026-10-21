@@ -110,7 +110,7 @@
             "name": "seed_bag",
             "source": "method",
             "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/edge-method-57a-mlp64-seed-bag/forecasts.parquet",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "sha256": "d3124003b96536ab77539183a9df6e272e43f26287f9aec33481466f1d561cd7",
             "keys": [
               "symbol",
               "quote_date",

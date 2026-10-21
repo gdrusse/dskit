@@ -506,6 +506,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-strike-screen-fits-wf-wider-mlp64.json",
         "configs/run-strike-region-scores-wf-wider-mlp64.json",
         "docs/memos/2026-10-20-edge-methods-round4-results.md",
+        "docs/memos/2026-10-21-edge-methods-round5-results.md",
         "configs/run-edge-method-10-gbm-market.json",
         "configs/run-edge-method-11-stack-rolling.json",
         "configs/run-edge-method-12-stack-rolling-by-dte.json",
@@ -601,7 +602,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the strike-region scores node, its document and its test = 581.
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
-    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15 + 25 + 26 + 7 + 6 + 24   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase); + round 3: 21 edge documents, memo and three variant CSVs
+    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15 + 25 + 26 + 7 + 6 + 24 + 1   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase); + round 3: 21 edge documents, memo and three variant CSVs
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
