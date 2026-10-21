@@ -149,10 +149,11 @@
           "2025-01-02"
         ],
         "max_iter": 200,
+        "label_offset": 1,
         "status_field": "status",
         "ok_value": "ok"
       },
-      "notes": "(B) level + AR(1) deviation, parameters fitted on the 252 sessions before each ADR-0271 fit date, filtered through every session."
+      "notes": "(B) level + AR(1) deviation, parameters fitted on the 252 sessions before each ADR-0271 fit date, filtered through every session; the expected change is aligned to the next-session label (phi^1 (phi^h - 1) x_hat), ADR-0274 Amendment 1."
     },
     "kalman_keep_atm": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
@@ -310,7 +311,7 @@
         "records": "$atm_h5_mean.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_mean.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_mean.jsonl",
         "overwrite": false,
         "source": "atm_h5_mean per-block fits"
       },
@@ -354,7 +355,7 @@
         "records": "$atm_h5_lagged.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_lagged.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_lagged.jsonl",
         "overwrite": false,
         "source": "atm_h5_lagged per-block fits"
       },
@@ -399,7 +400,7 @@
         "records": "$atm_h5_scaledraw_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_scaledraw_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_scaledraw_a0p1.jsonl",
         "overwrite": false,
         "source": "atm_h5_scaledraw_a0p1 per-block fits"
       },
@@ -444,7 +445,7 @@
         "records": "$atm_h5_scaledraw_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_scaledraw_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_scaledraw_a1.jsonl",
         "overwrite": false,
         "source": "atm_h5_scaledraw_a1 per-block fits"
       },
@@ -489,7 +490,7 @@
         "records": "$atm_h5_scaledraw_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_scaledraw_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_scaledraw_a10.jsonl",
         "overwrite": false,
         "source": "atm_h5_scaledraw_a10 per-block fits"
       },
@@ -534,7 +535,7 @@
         "records": "$atm_h5_scaledraw_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_scaledraw_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_scaledraw_a100.jsonl",
         "overwrite": false,
         "source": "atm_h5_scaledraw_a100 per-block fits"
       },
@@ -645,7 +646,7 @@
         "records": "$atm_h5_kalman_ridge_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_kalman_ridge_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_kalman_ridge_a0p1.jsonl",
         "overwrite": false,
         "source": "atm_h5_kalman_ridge_a0p1 per-block fits"
       },
@@ -698,7 +699,7 @@
         "records": "$atm_h5_kalman_ridge_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_kalman_ridge_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_kalman_ridge_a1.jsonl",
         "overwrite": false,
         "source": "atm_h5_kalman_ridge_a1 per-block fits"
       },
@@ -751,7 +752,7 @@
         "records": "$atm_h5_kalman_ridge_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_kalman_ridge_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_kalman_ridge_a10.jsonl",
         "overwrite": false,
         "source": "atm_h5_kalman_ridge_a10 per-block fits"
       },
@@ -804,7 +805,7 @@
         "records": "$atm_h5_kalman_ridge_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_kalman_ridge_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_kalman_ridge_a100.jsonl",
         "overwrite": false,
         "source": "atm_h5_kalman_ridge_a100 per-block fits"
       },
@@ -861,7 +862,7 @@
         "records": "$atm_h5_kalman_ridge_a100.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/rows_atm_h5.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/rows_atm_h5.jsonl",
         "overwrite": false,
         "source": "scored rows with every forecast"
       },
@@ -873,7 +874,7 @@
         "records": "$skill_atm_h5.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_atm_h5.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_atm_h5.jsonl",
         "overwrite": false,
         "source": "skill records"
       },
@@ -885,7 +886,7 @@
         "table": "$skill_atm_h5.summary"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_atm_h5.json",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_atm_h5.json",
         "overwrite": false,
         "source": "skill summary"
       },
@@ -925,7 +926,7 @@
         "records": "$atm_h20_mean.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_mean.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_mean.jsonl",
         "overwrite": false,
         "source": "atm_h20_mean per-block fits"
       },
@@ -969,7 +970,7 @@
         "records": "$atm_h20_lagged.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_lagged.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_lagged.jsonl",
         "overwrite": false,
         "source": "atm_h20_lagged per-block fits"
       },
@@ -1014,7 +1015,7 @@
         "records": "$atm_h20_scaledraw_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_scaledraw_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_scaledraw_a0p1.jsonl",
         "overwrite": false,
         "source": "atm_h20_scaledraw_a0p1 per-block fits"
       },
@@ -1059,7 +1060,7 @@
         "records": "$atm_h20_scaledraw_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_scaledraw_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_scaledraw_a1.jsonl",
         "overwrite": false,
         "source": "atm_h20_scaledraw_a1 per-block fits"
       },
@@ -1104,7 +1105,7 @@
         "records": "$atm_h20_scaledraw_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_scaledraw_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_scaledraw_a10.jsonl",
         "overwrite": false,
         "source": "atm_h20_scaledraw_a10 per-block fits"
       },
@@ -1149,7 +1150,7 @@
         "records": "$atm_h20_scaledraw_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_scaledraw_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_scaledraw_a100.jsonl",
         "overwrite": false,
         "source": "atm_h20_scaledraw_a100 per-block fits"
       },
@@ -1260,7 +1261,7 @@
         "records": "$atm_h20_kalman_ridge_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_kalman_ridge_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_kalman_ridge_a0p1.jsonl",
         "overwrite": false,
         "source": "atm_h20_kalman_ridge_a0p1 per-block fits"
       },
@@ -1313,7 +1314,7 @@
         "records": "$atm_h20_kalman_ridge_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_kalman_ridge_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_kalman_ridge_a1.jsonl",
         "overwrite": false,
         "source": "atm_h20_kalman_ridge_a1 per-block fits"
       },
@@ -1366,7 +1367,7 @@
         "records": "$atm_h20_kalman_ridge_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_kalman_ridge_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_kalman_ridge_a10.jsonl",
         "overwrite": false,
         "source": "atm_h20_kalman_ridge_a10 per-block fits"
       },
@@ -1419,7 +1420,7 @@
         "records": "$atm_h20_kalman_ridge_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_kalman_ridge_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_kalman_ridge_a100.jsonl",
         "overwrite": false,
         "source": "atm_h20_kalman_ridge_a100 per-block fits"
       },
@@ -1476,7 +1477,7 @@
         "records": "$atm_h20_kalman_ridge_a100.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/rows_atm_h20.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/rows_atm_h20.jsonl",
         "overwrite": false,
         "source": "scored rows with every forecast"
       },
@@ -1488,7 +1489,7 @@
         "records": "$skill_atm_h20.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_atm_h20.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_atm_h20.jsonl",
         "overwrite": false,
         "source": "skill records"
       },
@@ -1500,7 +1501,7 @@
         "table": "$skill_atm_h20.summary"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_atm_h20.json",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_atm_h20.json",
         "overwrite": false,
         "source": "skill summary"
       },
@@ -1594,7 +1595,7 @@
         "records": "$atm_h5_u_mean.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_mean.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_mean.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_mean per-block fits"
       },
@@ -1638,7 +1639,7 @@
         "records": "$atm_h5_u_lagged.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_lagged.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_lagged.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_lagged per-block fits"
       },
@@ -1683,7 +1684,7 @@
         "records": "$atm_h5_u_pair_yearly_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_pair_yearly_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_pair_yearly_a0p1.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_pair_yearly_a0p1 per-block fits"
       },
@@ -1728,7 +1729,7 @@
         "records": "$atm_h5_u_pair_yearly_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_pair_yearly_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_pair_yearly_a1.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_pair_yearly_a1 per-block fits"
       },
@@ -1773,7 +1774,7 @@
         "records": "$atm_h5_u_pair_yearly_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_pair_yearly_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_pair_yearly_a10.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_pair_yearly_a10 per-block fits"
       },
@@ -1818,7 +1819,7 @@
         "records": "$atm_h5_u_pair_yearly_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_pair_yearly_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_pair_yearly_a100.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_pair_yearly_a100 per-block fits"
       },
@@ -1862,7 +1863,7 @@
         "records": "$atm_h5_u_pooled_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_pooled_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_pooled_a0p1.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_pooled_a0p1 per-block fits"
       },
@@ -1906,7 +1907,7 @@
         "records": "$atm_h5_u_pooled_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_pooled_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_pooled_a1.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_pooled_a1 per-block fits"
       },
@@ -1950,7 +1951,7 @@
         "records": "$atm_h5_u_pooled_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_pooled_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_pooled_a10.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_pooled_a10 per-block fits"
       },
@@ -1994,7 +1995,7 @@
         "records": "$atm_h5_u_pooled_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h5_u_pooled_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h5_u_pooled_a100.jsonl",
         "overwrite": false,
         "source": "atm_h5_u_pooled_a100 per-block fits"
       },
@@ -3425,7 +3426,7 @@
         "records": "$three_atm_h5.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/rows_u_atm_h5.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/rows_u_atm_h5.jsonl",
         "overwrite": false,
         "source": "scored three-pair rows with every forecast"
       },
@@ -3437,7 +3438,7 @@
         "records": "$skill_u_atm_h5.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_u_atm_h5.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_u_atm_h5.jsonl",
         "overwrite": false,
         "source": "skill records"
       },
@@ -3449,7 +3450,7 @@
         "table": "$skill_u_atm_h5.summary"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_u_atm_h5.json",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_u_atm_h5.json",
         "overwrite": false,
         "source": "skill summary"
       },
@@ -3489,7 +3490,7 @@
         "records": "$atm_h20_u_mean.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_mean.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_mean.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_mean per-block fits"
       },
@@ -3533,7 +3534,7 @@
         "records": "$atm_h20_u_lagged.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_lagged.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_lagged.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_lagged per-block fits"
       },
@@ -3578,7 +3579,7 @@
         "records": "$atm_h20_u_pair_yearly_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_pair_yearly_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_pair_yearly_a0p1.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_pair_yearly_a0p1 per-block fits"
       },
@@ -3623,7 +3624,7 @@
         "records": "$atm_h20_u_pair_yearly_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_pair_yearly_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_pair_yearly_a1.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_pair_yearly_a1 per-block fits"
       },
@@ -3668,7 +3669,7 @@
         "records": "$atm_h20_u_pair_yearly_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_pair_yearly_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_pair_yearly_a10.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_pair_yearly_a10 per-block fits"
       },
@@ -3713,7 +3714,7 @@
         "records": "$atm_h20_u_pair_yearly_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_pair_yearly_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_pair_yearly_a100.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_pair_yearly_a100 per-block fits"
       },
@@ -3757,7 +3758,7 @@
         "records": "$atm_h20_u_pooled_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_pooled_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_pooled_a0p1.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_pooled_a0p1 per-block fits"
       },
@@ -3801,7 +3802,7 @@
         "records": "$atm_h20_u_pooled_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_pooled_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_pooled_a1.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_pooled_a1 per-block fits"
       },
@@ -3845,7 +3846,7 @@
         "records": "$atm_h20_u_pooled_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_pooled_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_pooled_a10.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_pooled_a10 per-block fits"
       },
@@ -3889,7 +3890,7 @@
         "records": "$atm_h20_u_pooled_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_atm_h20_u_pooled_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_atm_h20_u_pooled_a100.jsonl",
         "overwrite": false,
         "source": "atm_h20_u_pooled_a100 per-block fits"
       },
@@ -5320,7 +5321,7 @@
         "records": "$three_atm_h20.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/rows_u_atm_h20.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/rows_u_atm_h20.jsonl",
         "overwrite": false,
         "source": "scored three-pair rows with every forecast"
       },
@@ -5332,7 +5333,7 @@
         "records": "$skill_u_atm_h20.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_u_atm_h20.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_u_atm_h20.jsonl",
         "overwrite": false,
         "source": "skill records"
       },
@@ -5344,7 +5345,7 @@
         "table": "$skill_u_atm_h20.summary"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_u_atm_h20.json",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_u_atm_h20.json",
         "overwrite": false,
         "source": "skill summary"
       },
@@ -5413,10 +5414,11 @@
           "2025-01-02"
         ],
         "max_iter": 200,
+        "label_offset": 1,
         "status_field": "status",
         "ok_value": "ok"
       },
-      "notes": "(B) level + AR(1) deviation, parameters fitted on the 252 sessions before each ADR-0271 fit date, filtered through every session."
+      "notes": "(B) level + AR(1) deviation, parameters fitted on the 252 sessions before each ADR-0271 fit date, filtered through every session; the expected change is aligned to the next-session label (phi^1 (phi^h - 1) x_hat), ADR-0274 Amendment 1."
     },
     "kalman_keep_skew": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
@@ -5574,7 +5576,7 @@
         "records": "$skew_h5_mean.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_mean.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_mean.jsonl",
         "overwrite": false,
         "source": "skew_h5_mean per-block fits"
       },
@@ -5618,7 +5620,7 @@
         "records": "$skew_h5_lagged.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_lagged.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_lagged.jsonl",
         "overwrite": false,
         "source": "skew_h5_lagged per-block fits"
       },
@@ -5663,7 +5665,7 @@
         "records": "$skew_h5_scaledraw_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_scaledraw_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_scaledraw_a0p1.jsonl",
         "overwrite": false,
         "source": "skew_h5_scaledraw_a0p1 per-block fits"
       },
@@ -5708,7 +5710,7 @@
         "records": "$skew_h5_scaledraw_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_scaledraw_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_scaledraw_a1.jsonl",
         "overwrite": false,
         "source": "skew_h5_scaledraw_a1 per-block fits"
       },
@@ -5753,7 +5755,7 @@
         "records": "$skew_h5_scaledraw_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_scaledraw_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_scaledraw_a10.jsonl",
         "overwrite": false,
         "source": "skew_h5_scaledraw_a10 per-block fits"
       },
@@ -5798,7 +5800,7 @@
         "records": "$skew_h5_scaledraw_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_scaledraw_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_scaledraw_a100.jsonl",
         "overwrite": false,
         "source": "skew_h5_scaledraw_a100 per-block fits"
       },
@@ -5909,7 +5911,7 @@
         "records": "$skew_h5_kalman_ridge_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_kalman_ridge_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_kalman_ridge_a0p1.jsonl",
         "overwrite": false,
         "source": "skew_h5_kalman_ridge_a0p1 per-block fits"
       },
@@ -5962,7 +5964,7 @@
         "records": "$skew_h5_kalman_ridge_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_kalman_ridge_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_kalman_ridge_a1.jsonl",
         "overwrite": false,
         "source": "skew_h5_kalman_ridge_a1 per-block fits"
       },
@@ -6015,7 +6017,7 @@
         "records": "$skew_h5_kalman_ridge_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_kalman_ridge_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_kalman_ridge_a10.jsonl",
         "overwrite": false,
         "source": "skew_h5_kalman_ridge_a10 per-block fits"
       },
@@ -6068,7 +6070,7 @@
         "records": "$skew_h5_kalman_ridge_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_kalman_ridge_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_kalman_ridge_a100.jsonl",
         "overwrite": false,
         "source": "skew_h5_kalman_ridge_a100 per-block fits"
       },
@@ -6125,7 +6127,7 @@
         "records": "$skew_h5_kalman_ridge_a100.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/rows_skew_h5.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/rows_skew_h5.jsonl",
         "overwrite": false,
         "source": "scored rows with every forecast"
       },
@@ -6137,7 +6139,7 @@
         "records": "$skill_skew_h5.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_skew_h5.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_skew_h5.jsonl",
         "overwrite": false,
         "source": "skill records"
       },
@@ -6149,7 +6151,7 @@
         "table": "$skill_skew_h5.summary"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_skew_h5.json",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_skew_h5.json",
         "overwrite": false,
         "source": "skill summary"
       },
@@ -6189,7 +6191,7 @@
         "records": "$skew_h20_mean.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_mean.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_mean.jsonl",
         "overwrite": false,
         "source": "skew_h20_mean per-block fits"
       },
@@ -6233,7 +6235,7 @@
         "records": "$skew_h20_lagged.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_lagged.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_lagged.jsonl",
         "overwrite": false,
         "source": "skew_h20_lagged per-block fits"
       },
@@ -6278,7 +6280,7 @@
         "records": "$skew_h20_scaledraw_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_scaledraw_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_scaledraw_a0p1.jsonl",
         "overwrite": false,
         "source": "skew_h20_scaledraw_a0p1 per-block fits"
       },
@@ -6323,7 +6325,7 @@
         "records": "$skew_h20_scaledraw_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_scaledraw_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_scaledraw_a1.jsonl",
         "overwrite": false,
         "source": "skew_h20_scaledraw_a1 per-block fits"
       },
@@ -6368,7 +6370,7 @@
         "records": "$skew_h20_scaledraw_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_scaledraw_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_scaledraw_a10.jsonl",
         "overwrite": false,
         "source": "skew_h20_scaledraw_a10 per-block fits"
       },
@@ -6413,7 +6415,7 @@
         "records": "$skew_h20_scaledraw_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_scaledraw_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_scaledraw_a100.jsonl",
         "overwrite": false,
         "source": "skew_h20_scaledraw_a100 per-block fits"
       },
@@ -6524,7 +6526,7 @@
         "records": "$skew_h20_kalman_ridge_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_kalman_ridge_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_kalman_ridge_a0p1.jsonl",
         "overwrite": false,
         "source": "skew_h20_kalman_ridge_a0p1 per-block fits"
       },
@@ -6577,7 +6579,7 @@
         "records": "$skew_h20_kalman_ridge_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_kalman_ridge_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_kalman_ridge_a1.jsonl",
         "overwrite": false,
         "source": "skew_h20_kalman_ridge_a1 per-block fits"
       },
@@ -6630,7 +6632,7 @@
         "records": "$skew_h20_kalman_ridge_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_kalman_ridge_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_kalman_ridge_a10.jsonl",
         "overwrite": false,
         "source": "skew_h20_kalman_ridge_a10 per-block fits"
       },
@@ -6683,7 +6685,7 @@
         "records": "$skew_h20_kalman_ridge_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_kalman_ridge_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_kalman_ridge_a100.jsonl",
         "overwrite": false,
         "source": "skew_h20_kalman_ridge_a100 per-block fits"
       },
@@ -6740,7 +6742,7 @@
         "records": "$skew_h20_kalman_ridge_a100.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/rows_skew_h20.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/rows_skew_h20.jsonl",
         "overwrite": false,
         "source": "scored rows with every forecast"
       },
@@ -6752,7 +6754,7 @@
         "records": "$skill_skew_h20.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_skew_h20.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_skew_h20.jsonl",
         "overwrite": false,
         "source": "skill records"
       },
@@ -6764,7 +6766,7 @@
         "table": "$skill_skew_h20.summary"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_skew_h20.json",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_skew_h20.json",
         "overwrite": false,
         "source": "skill summary"
       },
@@ -6858,7 +6860,7 @@
         "records": "$skew_h5_u_mean.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_mean.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_mean.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_mean per-block fits"
       },
@@ -6902,7 +6904,7 @@
         "records": "$skew_h5_u_lagged.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_lagged.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_lagged.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_lagged per-block fits"
       },
@@ -6947,7 +6949,7 @@
         "records": "$skew_h5_u_pair_yearly_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_pair_yearly_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_pair_yearly_a0p1.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_pair_yearly_a0p1 per-block fits"
       },
@@ -6992,7 +6994,7 @@
         "records": "$skew_h5_u_pair_yearly_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_pair_yearly_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_pair_yearly_a1.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_pair_yearly_a1 per-block fits"
       },
@@ -7037,7 +7039,7 @@
         "records": "$skew_h5_u_pair_yearly_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_pair_yearly_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_pair_yearly_a10.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_pair_yearly_a10 per-block fits"
       },
@@ -7082,7 +7084,7 @@
         "records": "$skew_h5_u_pair_yearly_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_pair_yearly_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_pair_yearly_a100.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_pair_yearly_a100 per-block fits"
       },
@@ -7126,7 +7128,7 @@
         "records": "$skew_h5_u_pooled_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_pooled_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_pooled_a0p1.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_pooled_a0p1 per-block fits"
       },
@@ -7170,7 +7172,7 @@
         "records": "$skew_h5_u_pooled_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_pooled_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_pooled_a1.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_pooled_a1 per-block fits"
       },
@@ -7214,7 +7216,7 @@
         "records": "$skew_h5_u_pooled_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_pooled_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_pooled_a10.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_pooled_a10 per-block fits"
       },
@@ -7258,7 +7260,7 @@
         "records": "$skew_h5_u_pooled_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h5_u_pooled_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h5_u_pooled_a100.jsonl",
         "overwrite": false,
         "source": "skew_h5_u_pooled_a100 per-block fits"
       },
@@ -8689,7 +8691,7 @@
         "records": "$three_skew_h5.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/rows_u_skew_h5.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/rows_u_skew_h5.jsonl",
         "overwrite": false,
         "source": "scored three-pair rows with every forecast"
       },
@@ -8701,7 +8703,7 @@
         "records": "$skill_u_skew_h5.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_u_skew_h5.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_u_skew_h5.jsonl",
         "overwrite": false,
         "source": "skill records"
       },
@@ -8713,7 +8715,7 @@
         "table": "$skill_u_skew_h5.summary"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_u_skew_h5.json",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_u_skew_h5.json",
         "overwrite": false,
         "source": "skill summary"
       },
@@ -8753,7 +8755,7 @@
         "records": "$skew_h20_u_mean.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_mean.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_mean.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_mean per-block fits"
       },
@@ -8797,7 +8799,7 @@
         "records": "$skew_h20_u_lagged.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_lagged.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_lagged.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_lagged per-block fits"
       },
@@ -8842,7 +8844,7 @@
         "records": "$skew_h20_u_pair_yearly_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_pair_yearly_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_pair_yearly_a0p1.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_pair_yearly_a0p1 per-block fits"
       },
@@ -8887,7 +8889,7 @@
         "records": "$skew_h20_u_pair_yearly_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_pair_yearly_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_pair_yearly_a1.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_pair_yearly_a1 per-block fits"
       },
@@ -8932,7 +8934,7 @@
         "records": "$skew_h20_u_pair_yearly_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_pair_yearly_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_pair_yearly_a10.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_pair_yearly_a10 per-block fits"
       },
@@ -8977,7 +8979,7 @@
         "records": "$skew_h20_u_pair_yearly_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_pair_yearly_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_pair_yearly_a100.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_pair_yearly_a100 per-block fits"
       },
@@ -9021,7 +9023,7 @@
         "records": "$skew_h20_u_pooled_a0p1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_pooled_a0p1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_pooled_a0p1.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_pooled_a0p1 per-block fits"
       },
@@ -9065,7 +9067,7 @@
         "records": "$skew_h20_u_pooled_a1.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_pooled_a1.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_pooled_a1.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_pooled_a1 per-block fits"
       },
@@ -9109,7 +9111,7 @@
         "records": "$skew_h20_u_pooled_a10.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_pooled_a10.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_pooled_a10.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_pooled_a10 per-block fits"
       },
@@ -9153,7 +9155,7 @@
         "records": "$skew_h20_u_pooled_a100.fits"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/fits_skew_h20_u_pooled_a100.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/fits_skew_h20_u_pooled_a100.jsonl",
         "overwrite": false,
         "source": "skew_h20_u_pooled_a100 per-block fits"
       },
@@ -10584,7 +10586,7 @@
         "records": "$three_skew_h20.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/rows_u_skew_h20.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/rows_u_skew_h20.jsonl",
         "overwrite": false,
         "source": "scored three-pair rows with every forecast"
       },
@@ -10596,7 +10598,7 @@
         "records": "$skill_u_skew_h20.records"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_u_skew_h20.jsonl",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_u_skew_h20.jsonl",
         "overwrite": false,
         "source": "skill records"
       },
@@ -10608,7 +10610,7 @@
         "table": "$skill_u_skew_h20.summary"
       },
       "params": {
-        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development/skill_u_skew_h20.json",
+        "path": "/home/russell/data/statistical_arbitrage/prediction-adr0274-20261021/development-r2/skill_u_skew_h20.json",
         "overwrite": false,
         "source": "skill summary"
       },

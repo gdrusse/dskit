@@ -5,9 +5,11 @@ moving level), ``x_t = phi x_{t-1} + w_t`` (a mean-reverting deviation) and Gaus
 deviations ``sigma_mu``, ``sigma_x`` and ``sigma_obs``. The four parameters are estimated by maximum
 likelihood on the ``window`` sessions strictly before each declared ``fit_date`` and carried until the
 next fit; the Kalman filter then runs through every session with the current parameters, so the state
-at ``t`` uses the spread through ``t`` and nothing later. The expected change over ``h`` sessions is
-``(phi**h - 1) * x_hat_t``: the deviation decays, the level is a martingale. Numpy and scipy load only
-inside ``run``. Nothing here trades.
+at ``t`` uses the spread through ``t`` and nothing later. The expected change of the observed spread
+between sessions ``t+k`` and ``t+k+h``, given the state at ``t``, is ``phi**k * (phi**h - 1) * x_hat_t``:
+the deviation decays, the level is a martingale, and the measurement noise at both ends is future. ``k``
+is ``label_offset`` (0 means the change from ``t`` itself, which then also carries the unforecastable
+``-e_t`` term). Numpy and scipy load only inside ``run``. Nothing here trades.
 """
 
 from __future__ import annotations
@@ -28,6 +30,10 @@ _OK = "ok"
 _NO_SPREAD = "no_spread"
 _DEGENERATE = "degenerate"
 _PHI_MIN, _PHI_MAX = 0.01, 0.995
+#: The deviation sd, relative to the sd of the window's first differences, below which a fit is degenerate.
+_SIGMA_X_FLOOR = 1e-3
+#: Optimizer coordinates are clamped to this magnitude before the exponential transforms.
+_COORD_BOUND = 40.0
 
 
 class KalmanSpreadState(Node):
@@ -38,7 +44,8 @@ class KalmanSpreadState(Node):
     params : dict
         ``horizons`` (distinct positive ints, REQUIRED), ``window`` (int >= 20, sessions strictly before a
         fit date, REQUIRED), ``fit_dates`` (strictly increasing ISO dates, REQUIRED), ``max_iter``
-        (int >= 1, optimizer iterations, REQUIRED); optional ``date_field``, ``symbol_a_field``,
+        (int >= 1, optimizer iterations, REQUIRED); optional ``label_offset`` (int >= 0, default 0: the
+        session after ``t`` at which the forecast change starts), ``date_field``, ``symbol_a_field``,
         ``symbol_b_field``, ``spread_field``, ``status_field`` with ``ok_value``.
 
     Outputs
@@ -62,7 +69,7 @@ class KalmanSpreadState(Node):
 
     role = "transform"
     outputs = ("records", "summary")
-    _PARAMS = ("horizons", "window", "fit_dates", "max_iter", "date_field", "symbol_a_field",
+    _PARAMS = ("horizons", "window", "fit_dates", "max_iter", "label_offset", "date_field", "symbol_a_field",
                "symbol_b_field", "spread_field", "status_field", "ok_value")
     _REQUIRED = ("horizons", "window", "fit_dates", "max_iter")
 
@@ -83,6 +90,8 @@ class KalmanSpreadState(Node):
             check_int_param(problems, "window", params["window"], ge=20)
         if "max_iter" in params:
             check_int_param(problems, "max_iter", params["max_iter"], ge=1)
+        if "label_offset" in params:
+            check_int_param(problems, "label_offset", params["label_offset"], ge=0)
         fit_dates = params.get("fit_dates")
         if "fit_dates" in params:
             ok = isinstance(fit_dates, list) and bool(fit_dates)
@@ -168,9 +177,10 @@ class KalmanSpreadState(Node):
 
     @staticmethod
     def _unpack(theta):
-        """Map unconstrained optimizer coordinates to (phi, sigma_x, sigma_mu, sigma_obs)."""
-        phi = _PHI_MIN + (_PHI_MAX - _PHI_MIN) / (1.0 + math.exp(-theta[0]))
-        return phi, math.exp(theta[1]), math.exp(theta[2]), math.exp(theta[3])
+        """Map unconstrained optimizer coordinates to (phi, sigma_x, sigma_mu, sigma_obs), clamped against overflow."""
+        clamped = [min(max(float(v), -_COORD_BOUND), _COORD_BOUND) for v in theta]
+        phi = _PHI_MIN + (_PHI_MAX - _PHI_MIN) / (1.0 + math.exp(-clamped[0]))
+        return phi, math.exp(clamped[1]), math.exp(clamped[2]), math.exp(clamped[3])
 
     @staticmethod
     def _filter_step(state, cov, obs, phi, var_mu, var_x, var_obs):
@@ -225,8 +235,10 @@ class KalmanSpreadState(Node):
         phi, sigma_x, sigma_mu, sigma_obs = self._unpack(result.x)
         record.update(phi=phi, sigma_x=sigma_x, sigma_mu=sigma_mu, sigma_obs=sigma_obs,
                       loglik=-float(result.fun), iterations=int(result.nit))
+        # a deviation variance at its lower bound means the fit found no mean-reverting component;
+        # the level and measurement variances may legitimately sit at zero (nested models)
         degenerate = (not bool(result.success) or not (_PHI_MIN + 1e-6 < phi < _PHI_MAX - 1e-6)
-                      or not math.isfinite(result.fun) or sigma_x <= 1e-9 * scale)
+                      or not math.isfinite(result.fun) or sigma_x <= _SIGMA_X_FLOOR * scale)
         record["converged"] = not degenerate
         return record, (None if degenerate else (phi, sigma_x, sigma_mu, sigma_obs))
 
@@ -236,6 +248,7 @@ class KalmanSpreadState(Node):
 
         p = self.params
         horizons = p["horizons"]
+        offset = int(p.get("label_offset", 0))
         days = [d for d, _ in rows]
         fits, params_at = [], []
         for fit_date in p["fit_dates"]:
@@ -297,6 +310,6 @@ class KalmanSpreadState(Node):
                           kf_sigma_mu=sigma_mu, kf_sigma_obs=sigma_obs,
                           kf_halflife=math.log(0.5) / math.log(phi))
             for h in horizons:
-                record[f"kf_fc_{h}"] = (phi ** h - 1.0) * dev
+                record[f"kf_fc_{h}"] = (phi ** offset) * (phi ** h - 1.0) * dev
             out.append(record)
         return out, fits

@@ -58,6 +58,10 @@ def test_recovers_simulated_parameters_and_forecasts_the_deviation_decay():
     late = r[days[-1]]
     assert late["kf_fc_1"] == pytest.approx((late["kf_phi"] - 1.0) * late["kf_dev"])
     assert late["kf_fc_5"] == pytest.approx((late["kf_phi"] ** 5 - 1.0) * late["kf_dev"])
+    # with a label that starts k sessions later, the expectation decays by phi**k first
+    shifted = {x["date"]: x for x in run(rows, label_offset=1)["records"]}[days[-1]]
+    assert shifted["kf_fc_5"] == pytest.approx(late["kf_phi"] * (late["kf_phi"] ** 5 - 1.0) * late["kf_dev"])
+    assert shifted["kf_dev"] == pytest.approx(late["kf_dev"])
     assert abs(late["kf_level"] + late["kf_dev"] - late["spread"]) < 3 * late["kf_sigma_obs"] + 1.0
     assert out["summary"]["fits"][0]["converged"] is True and out["summary"]["fits"][0]["n"] == 400
     assert r[days[0]]["status"] == "before_first_fit" and r[days[0]]["kf_fc_1"] is None
@@ -99,6 +103,23 @@ def test_a_missing_spread_is_skipped_by_the_filter_and_a_degenerate_fit_is_a_sta
     assert all(x["status"] in ("before_first_fit", "degenerate") for x in flat["records"])
 
 
+def test_a_deviation_variance_at_its_bound_is_a_degenerate_fit(monkeypatch):
+    """The rule: sigma_x below the floor (relative to the window's difference sd) is counted, never carried as ok."""
+    import scipy.optimize
+    from types import SimpleNamespace
+
+    def at_bound(fun, x0, **kwargs):
+        x = list(x0)
+        x[1] = -40.0   # sigma_x -> exp(-40): no mean-reverting component found
+        return SimpleNamespace(x=x, fun=float(fun(x)), success=True, nit=3)
+
+    monkeypatch.setattr(scipy.optimize, "minimize", at_bound)
+    days = sessions(1000)
+    out = run(spread_rows(simulate(1000), days))
+    assert all(f["converged"] is False and f["phi"] is not None for f in out["summary"]["fits"])
+    assert all(x["status"] in ("before_first_fit", "degenerate") for x in out["records"])
+
+
 def test_pairs_are_filtered_independently_and_the_summary_counts_them():
     days = sessions(1000)
     rows = spread_rows(simulate(1000, seed=1), days) + spread_rows(simulate(1000, phi=0.5, seed=2), days, pair=("A", "C"))
@@ -112,7 +133,9 @@ def test_pairs_are_filtered_independently_and_the_summary_counts_them():
 
 def test_kalman_default_denies_and_checks_knobs():
     assert KalmanSpreadState.validate_params(PARAMS) == []
+    assert KalmanSpreadState.validate_params({**PARAMS, "label_offset": 1}) == []
     for bad in ({**PARAMS, "extra": 1}, {**PARAMS, "horizons": []}, {**PARAMS, "window": 10},
+                {**PARAMS, "label_offset": -1}, {**PARAMS, "label_offset": 1.5},
                 {**PARAMS, "fit_dates": []}, {**PARAMS, "fit_dates": ["2021-1-4"]},
                 {**PARAMS, "fit_dates": ["2022-01-03", "2021-01-04"]}, {**PARAMS, "max_iter": 0},
                 {k: v for k, v in PARAMS.items() if k != "window"}):
@@ -120,3 +143,59 @@ def test_kalman_default_denies_and_checks_knobs():
     assert KalmanSpreadState.role == "transform" and KalmanSpreadState.outputs == ("records", "summary")
     mod = __import__("dskit.pipeline.libs.kalman_spread", fromlist=["x"])
     assert "KalmanSpreadState" in mod.__all__ and "NODE_KINDS" in mod.__all__
+
+
+def _optimizer(plan):
+    """A fake optimizer: per call, either the honest fit or a sigma_x-at-bound fit, in the order given."""
+    import scipy.optimize
+    from types import SimpleNamespace
+
+    real, calls = scipy.optimize.minimize, iter(plan)
+
+    def fake(fun, x0, **kwargs):
+        mode = next(calls)
+        if mode == "ok":
+            return real(fun, x0, **kwargs)
+        x = list(x0)
+        x[1] = -40.0
+        return SimpleNamespace(x=x, fun=float(fun(x)), success=True, nit=1)
+
+    return fake
+
+
+def test_a_later_degenerate_fit_carries_the_previous_parameters(monkeypatch):
+    import scipy.optimize
+
+    monkeypatch.setattr(scipy.optimize, "minimize", _optimizer(["ok", "bad"]))
+    days = sessions(1000)
+    out = run(spread_rows(simulate(1000), days))
+    fits = out["summary"]["fits"]
+    assert fits[0]["converged"] is True and fits[1]["converged"] is False
+    late = [x for x in out["records"] if x["date"] >= "2022-01-03"]
+    assert late and all(x["status"] in ("ok", "no_spread") for x in late)
+    assert all(x["fit_date"] == "2021-01-04" and x["kf_phi"] == pytest.approx(fits[0]["phi"]) for x in late if x["status"] == "ok")
+
+
+def test_a_degenerate_first_fit_emits_nothing_until_a_valid_one(monkeypatch):
+    import scipy.optimize
+
+    monkeypatch.setattr(scipy.optimize, "minimize", _optimizer(["bad", "ok"]))
+    days = sessions(1000)
+    out = run(spread_rows(simulate(1000), days))
+    first = [x for x in out["records"] if "2021-01-04" <= x["date"] < "2022-01-03"]
+    assert first and all(x["status"] == "degenerate" and x["kf_fc_1"] is None for x in first)
+    later = [x for x in out["records"] if x["date"] >= "2022-01-03" and x["status"] == "ok"]
+    assert later and all(x["fit_date"] == "2022-01-03" for x in later)
+
+
+def test_a_hole_propagates_the_state_instead_of_updating_on_zero():
+    days = sessions(1000)
+    values = simulate(1000)   # level near 10, deviations of order 1
+    rows = spread_rows(values, days)
+    hole = 600
+    rows[hole]["spread"] = None
+    rows[hole]["status"] = "incomplete_window"
+    r = {x["date"]: x for x in run(rows)["records"]}
+    before, after = r[days[hole - 1]], r[days[hole + 1]]
+    assert abs(after["kf_level"] - before["kf_level"]) < 1.0   # a zero "observation" would drag the level toward 0
+    assert abs(after["kf_dev"]) < 6.0

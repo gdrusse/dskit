@@ -352,7 +352,7 @@ def test_adr74_documents_plan_pin_inputs_and_score_only_the_three_pairs(adr74_do
         if node["uses"] == "dskit.pipeline.libs.pair_spread:PairSpreadHorizonRows":
             assert node["params"]["label_offset"] == 1 and "edges" not in node["params"]
         if node["uses"] == "dskit.pipeline.libs.kalman_spread:KalmanSpreadState":
-            assert node["params"]["window"] == 252
+            assert node["params"]["window"] == 252 and node["params"]["label_offset"] == 1
             assert node["params"]["fit_dates"] == _raw("validation-calendar.json")["retraining"]["fit_dates"]
         if node["uses"] == "dskit.pipeline.kinds_stats:ChronologicalForecastSkill":
             assert node["params"]["benchmark"] == "mean"
@@ -404,3 +404,26 @@ def test_adr74_validation_freezes_the_recorded_selection():
         for h in (5, 20):
             blend = raw["pipeline"][f"blend_{target}_h{h}"]["params"]["fields"]["f_blend"]
             assert blend["args"][0]["args"][0]["const"] == selection[target]["blend_weight"]
+
+
+def test_adr74_scaled_label_and_direct_forecast_wiring_is_exact(adr74_document):
+    """The headline result's arithmetic: ys_h = y_h / sd60(own), f_scaled = f_scaledraw * sd60(own), f_kalman_direct = kf_fc_h."""
+    name, _, raw = adr74_document
+    own = {"atm": "sd60_atm_c", "skew": "sd60_rr_c"}
+    for target in TARGETS:
+        scale = raw["pipeline"][f"scale_{target}"]["params"]["fields"]
+        for h in HORIZONS:
+            assert scale[f"ys_{h}"] == {"op": "div", "args": [{"field": f"y_{h}"}, {"field": own[target]}]}, (name, target, h)
+            fields = raw["pipeline"][f"compute_{target}_h{h}"]["params"]["fields"]
+            assert fields["f_kalman_direct"] == {"field": f"kf_fc_{h}"}
+            for out, expr in fields.items():
+                if out.startswith("f_scaled"):
+                    assert expr == {"op": "mul", "args": [{"field": out.replace("f_scaled", "f_scaledraw")}, {"field": own[target]}]}, (name, out)
+            if name == ADR74_VALIDATION:
+                blend = raw["pipeline"][f"blend_{target}_h{h}"]["params"]["fields"]["f_blend"]
+                w = blend["args"][0]["args"][0]["const"]
+                assert blend == {"op": "add", "args": [{"op": "mul", "args": [{"const": w}, {"field": "f_pooled"}]},
+                                                        {"op": "mul", "args": [{"const": 1.0 - w}, {"field": "f_pair_yearly"}]}]}
+    for key, node in raw["pipeline"].items():
+        if node["uses"] in ("records-write", "table-write"):
+            assert node["params"]["overwrite"] is False, (name, key)
