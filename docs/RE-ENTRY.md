@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-16: ADR-0268 perf sweep landed 471dd655 (26 units, two clean lenses each); owner purges remote branches |
-| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-20: 39 edge methods, six architectures, Theta Greeks checked; quantile average per dispersion bucket +0.59% over the recalibrated market (t 9.4), seven methods positive in every regime, gate 241 vs 28 luck; no model or input beats the market alone; combined recipe then holdout next |
+| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-21: 50 edge methods; wide (Greeks) inputs help an MLP, not a TCN: wide MLP alone +0.18% over the recalibrated market, M48 stack +0.64% (t 11.1), positive in every regime incl. 2022, gate 252 vs 31 luck; Greeks as weight features or corrections stop; combined recipe, three seed/width fits, then holdout |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |

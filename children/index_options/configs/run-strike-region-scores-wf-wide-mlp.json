@@ -1,0 +1,120 @@
+{
+  "name": "strike-region-scores",
+  "notes": "ADR-0270 execution path decision (2026-10-18): the strike-level assessment of the screen's CDFExperiment fits, a tier-3 child node over existing owners, no dskit change and no fit. It reloads every (fold, arm, candidate) cell of one CDFExperiment output root, verifies each artifact against the cell identity it recomputes (AtomicFitStore), rebuilds the fit and validation bands through the experiment's own methods, restores the TorchCDF checkpoint, and scores BOTH bands: the model mixture, the per-symbol horizon_empirical baseline refit from that fold's fit rows, and the pooled standardized empirical (one HorizonEmpiricalCDF per fold on all admitted symbols' fit rows) and the market-implied curve from the panel's rn_q quantiles (raw: the transported variant stays with the market stage), each with CRPS, tail CRPS, PIT, threshold Brier at the protocol's strike_grid_z, the 14 region masses against the realized region, per-threshold reliability (mean F(z) against the realized frequency of y <= z), sharpness, and the decision strike Brier and wing twCRPS at the row's listed strikes (valid-quote strikes of the chain archive, equal weight, z = log(K / spot) / reference_scale with the spot from the panel). Cells follow strike-screen-protocol.json (cells.dte_slices x 14 regions x ticker group, per window, per sub-period and per year) with paired differences model-market, model-baseline and market-baseline, support, and standard errors clustered by symbol and by quote date (the study's date field; the wider is reported, NaN unless both have two clusters; the settlement-date one-way error is kept as a third column and never decides; two-way clustering is a documented gap; the protocol's market_calibrated comparison comes from the market stage and is joined by identity). curves.json carries the per-epoch losses by seed and the no-learning and overfit signatures (rules inside). One document per experiment document: this one scores the L1 fits (run-strike-screen-fits-wf-wide-mlp.json); its sibling run-strike-region-scores-L3.json is identical except name, run_root, experiment_document, output and this sentence (a test pins that). experiment_document is the RESOLVED copy of the repo document of the same file name, written to $ROOT/documents/study/ by the registration step (panel_sha256, source_hashes and dependencies filled; the repo copy carries zero placeholders and refuses to construct), and panel must equal that document's panel: the cached frame the panel stage of strike-screen-panel-source.json writes, <panel experiment.output>/panel-cache/frame.parquet. PLACEHOLDERS: every path below is under the pilot root and is filled when the fits are registered; manifest_sha256 pins are zero until the converter outputs are onboarded; ticker_groups is empty until the fit-band liquidity terciles are registered (then it maps each symbol to a group name, and cells are also reported per group). Run from children/index_options: python -m dskit.pipeline run configs/run-strike-region-scores.json --asof 2023-12-31 (after the L1 fits are complete; the L3 sibling after the L3 fits). Within the revision-3 runbook, rows at or after end_before (2024-01-01, the sealed holdout) are never returned, emitted, written or used: end_before may not be earlier than the experiment document's own read bounds, and the owner's reader pushes those bounds into the scan (the converter's output holds no such row either). The node writes nothing outside the new output directory.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/run-wf-wide-mlp",
+    "notes": "The pipeline run directory (run report and fingerprints); the score tables go to the node's output. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "scores": {
+      "uses": "index_options.strike_region_scores:StrikeRegionScores",
+      "params": {
+        "experiment_document": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-wide-mlp.json",
+        "panel": "/home/russell/data/index_options/theta-strike-screen-20261018/panel/panel-cache/frame.parquet",
+        "output": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/strike-region-scores-wf-wide-mlp",
+        "z_grid": [
+          -3,
+          -2.5,
+          -2,
+          -1.5,
+          -1,
+          -0.5,
+          0,
+          0.5,
+          1,
+          1.5,
+          2,
+          2.5,
+          3
+        ],
+        "dte_slices": [
+          [
+            1,
+            7
+          ],
+          [
+            8,
+            14
+          ],
+          [
+            15,
+            21
+          ],
+          [
+            22,
+            35
+          ],
+          [
+            36,
+            60
+          ]
+        ],
+        "sub_periods": {
+          "S0_pre_crash": [
+            "2020-01-02",
+            "2020-02-14"
+          ],
+          "S1_covid_crash": [
+            "2020-02-15",
+            "2020-06-30"
+          ],
+          "S2_recovery": [
+            "2020-07-01",
+            "2021-12-31"
+          ],
+          "S3_rate_shock": [
+            "2022-01-03",
+            "2022-12-30"
+          ],
+          "S4_2023": [
+            "2023-01-03",
+            "2023-12-29"
+          ]
+        },
+        "ticker_groups": {},
+        "market": {
+          "probabilities": [
+            0.01,
+            0.025,
+            0.05,
+            0.1,
+            0.15,
+            0.2,
+            0.25,
+            0.3,
+            0.4,
+            0.5,
+            0.6,
+            0.7,
+            0.75,
+            0.8,
+            0.85,
+            0.9,
+            0.95,
+            0.975,
+            0.99
+          ],
+          "prefix": "rn_q_",
+          "eligible_field": "rn_proxy_eligible",
+          "units": "z",
+          "tail_width": 4.0
+        },
+        "listed_strikes": {
+          "source": "archive",
+          "archive_root": {
+            "source": "theta-exact-expiry-archive",
+            "stream": "files",
+            "manifest_sha256": "700f1b7dd3ae371d3423937270063c89a7270db814bbdd914c93aa96fccb216a"
+          },
+          "data_root": "/home/russell/data/index_options/theta-strike-screen-20261018/ob",
+          "min_valid_strikes": 2
+        },
+        "fit_band_sample": 100000,
+        "end_before": "2024-01-01",
+        "chunk_rows": 4096,
+        "stored_tolerance": 0.0001
+      },
+      "notes": "z_grid, dte_slices and sub_periods are the protocol's strike_grid_z, cells.dte_slices and windows.validation.sub_periods (a test pins them); the grid gives 12 inner 0.5-wide bins and two tails. market: the 19 proxy probabilities of the panel-source document (raw_chain.proxy_probabilities), the panel's rn_q_<pppp> columns already standardized by the reference scale (units z), completed by a 4-wide linear tail (the OptionImpliedTransportCDF default) beyond the outermost quantiles: the two tail regions' market masses depend on that completion. listed_strikes: the converter's chain archive (archive_relpath layout) through the onboarding store, strikes with bid > 0 and ask >= bid on either side, at least two. fit_band_sample bounds the fit-band rows scored per cell by a deterministic stride (the whole validation band is always scored); chunk_rows bounds memory; stored_tolerance is how closely the re-scored validation CRPS must reproduce the shards the queue stored (a larger gap is an integrity error). end_before is the protocol's screen holdout_start and must not be earlier than the experiment document's own read bounds, so no panel row at or after it is returned. The validation rows must also reproduce the stored mixture parameters (1e-6) and CRPS."
+    }
+  }
+}

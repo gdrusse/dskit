@@ -469,6 +469,19 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-edge-method-37-gbm-greeks.json",
         "configs/run-edge-method-38-location-scale-greeks.json",
         "configs/run-edge-method-39-qa-greeks-weights.json",
+        "configs/run-edge-method-40-qa-greeks-few-a.json",
+        "configs/run-edge-method-41-qa-greeks-few-b.json",
+        "configs/run-edge-method-42-qa-greeks-weights-300k.json",
+        "configs/run-edge-method-43-gbm-greeks-on-stack.json",
+        "configs/run-edge-method-44-gbm-greeks-on-model.json",
+        "configs/run-edge-method-45-ls-greeks-on-model.json",
+        "configs/run-edge-method-46-lp-greeks-weights.json",
+        "configs/run-edge-method-47-wide-mlp.json",
+        "configs/run-edge-method-48-wide-mlp64.json",
+        "configs/run-edge-method-49-wide-tcn32.json",
+        "configs/run-edge-method-50a-wide-bag.json",
+        "configs/run-edge-method-50-qa-wide-bag.json",
+        "docs/memos/2026-10-20-edge-methods-round4-results.md",
         "configs/run-edge-method-10-gbm-market.json",
         "configs/run-edge-method-11-stack-rolling.json",
         "configs/run-edge-method-12-stack-rolling-by-dte.json",
@@ -491,6 +504,32 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-edge-method-09-best-by-ticker-dte.json",
         "configs/strike-screen-folds-walkforward.jsonl", "configs/run-strike-screen-fits-walkforward.json",
         "configs/run-strike-region-scores-walkforward.json",
+        "configs/run-strike-region-scores-wf-gru.json",
+        "configs/run-strike-region-scores-wf-l3.json",
+        "configs/run-strike-region-scores-wf-mix5.json",
+        "configs/run-strike-region-scores-wf-mlp.json",
+        "configs/run-strike-region-scores-wf-r1.json",
+        "configs/run-strike-region-scores-wf-r1s29.json",
+        "configs/run-strike-region-scores-wf-r2.json",
+        "configs/run-strike-region-scores-wf-s47.json",
+        "configs/run-strike-region-scores-wf-tcn-lr1e4.json",
+        "configs/run-strike-region-scores-wf-wide-mlp.json",
+        "configs/run-strike-region-scores-wf-wide-mlp64.json",
+        "configs/run-strike-region-scores-wf-wide-tcn32.json",
+        "configs/run-strike-region-scores-wf-wide.json",
+        "configs/run-strike-screen-fits-wf-gru.json",
+        "configs/run-strike-screen-fits-wf-l3.json",
+        "configs/run-strike-screen-fits-wf-mix5.json",
+        "configs/run-strike-screen-fits-wf-mlp.json",
+        "configs/run-strike-screen-fits-wf-r1.json",
+        "configs/run-strike-screen-fits-wf-r1s29.json",
+        "configs/run-strike-screen-fits-wf-r2.json",
+        "configs/run-strike-screen-fits-wf-s47.json",
+        "configs/run-strike-screen-fits-wf-tcn-lr1e4.json",
+        "configs/run-strike-screen-fits-wf-wide-mlp.json",
+        "configs/run-strike-screen-fits-wf-wide-mlp64.json",
+        "configs/run-strike-screen-fits-wf-wide-tcn32.json",
+        "configs/run-strike-screen-fits-wf-wide.json",
         "tests/test_strike_screen_fits.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
@@ -538,7 +577,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the strike-region scores node, its document and its test = 581.
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
-    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15 + 25   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase); + round 3: 21 edge documents, memo and three variant CSVs
+    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15 + 25 + 26 + 7 + 6   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase); + round 3: 21 edge documents, memo and three variant CSVs
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
