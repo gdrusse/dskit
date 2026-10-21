@@ -1,0 +1,91 @@
+{
+  "notes": "ADR-0274 development selection, frozen after the single development run on the next-session label. Rule per target: for scaled, kalman_ridge, pooled and pair_yearly the grid alpha maximizing the mean over horizons 5 and 20 of the pooled-group 2020-development r2oos (ties to the larger alpha); for the blend, given the stand-alone pooled and pair_yearly selections, the weight in {0.25, 0.5, 0.75} maximizing the same mean (ties to the larger weight).",
+  "selected": {
+    "atm": {
+      "scaled": 100.0,
+      "kalman_ridge": 100.0,
+      "pooled": 100.0,
+      "pair_yearly": 0.1,
+      "blend_weight": 0.75
+    },
+    "skew": {
+      "scaled": 100.0,
+      "kalman_ridge": 100.0,
+      "pooled": 100.0,
+      "pair_yearly": 10.0,
+      "blend_weight": 0.5
+    }
+  },
+  "development_means": {
+    "atm": {
+      "scaled": {
+        "a0p1": 0.0103,
+        "a1": 0.0108,
+        "a10": 0.0147,
+        "a100": 0.0342
+      },
+      "kalman_ridge": {
+        "a0p1": 0.0433,
+        "a1": 0.05,
+        "a10": 0.0645,
+        "a100": 0.0735
+      },
+      "pooled": {
+        "a0p1": 0.1203,
+        "a1": 0.1203,
+        "a10": 0.1203,
+        "a100": 0.1207
+      },
+      "pair_yearly": {
+        "a0p1": 0.0963,
+        "a1": 0.0963,
+        "a10": 0.0958,
+        "a100": 0.0905
+      },
+      "blend": {
+        "w25": 0.1156,
+        "w50": 0.126,
+        "w75": 0.1278
+      },
+      "lagged": 0.097,
+      "lagged_u": 0.097,
+      "kalman_direct": -0.015
+    },
+    "skew": {
+      "scaled": {
+        "a0p1": 0.0091,
+        "a1": 0.0096,
+        "a10": 0.0137,
+        "a100": 0.0301
+      },
+      "kalman_ridge": {
+        "a0p1": -0.2505,
+        "a1": -0.1736,
+        "a10": -0.0916,
+        "a100": -0.0392
+      },
+      "pooled": {
+        "a0p1": 0.0459,
+        "a1": 0.0459,
+        "a10": 0.0459,
+        "a100": 0.046
+      },
+      "pair_yearly": {
+        "a0p1": 0.047,
+        "a1": 0.0471,
+        "a10": 0.0475,
+        "a100": 0.0464
+      },
+      "blend": {
+        "w25": 0.0488,
+        "w50": 0.049,
+        "w75": 0.0481
+      },
+      "lagged": 0.038,
+      "lagged_u": 0.0384,
+      "kalman_direct": -0.0406
+    }
+  },
+  "development_run": "tech-prediction-adr0274-development-20261021-2026-10-21-955c3959",
+  "development_document_sha256": "906ee320fa14bea38353ad4be47d583abb8ded50b394607fe04f9c1f9d04e968"
+}

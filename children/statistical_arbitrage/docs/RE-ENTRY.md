@@ -22,13 +22,20 @@ realized vol, Lasso and boosting are worse. Memo:
 lenses on `e10f795b`: zero Critical/Major; Minor backlog in the memo. (3) A
 research note on better model families (universe-pooled partial pooling,
 Kalman-OU spread state, vol-scaled labels with CRPS, surface-factor VAR):
-`docs/research/prediction-methods/2026-10-21-better-models.md`.
+`docs/research/prediction-methods/2026-10-21-better-models.md`. (4) ADR-0274
+(proposed) implemented and run: the vol-scaled label meets the pre-registered
+rule on ATM 20-session (R²oos +0.199 → +0.242, BH, 4/5 folds); the Kalman-OU
+state (`KalmanSpreadState`) adds nothing; pooling across a twelve-name cohort
+is marginal at 5 sessions and collapses at 20 (scale mixing). Memo:
+`docs/memos/2026-10-21-tech-prediction-adr0274.md`.
 
 ## Next
 
-Owner: ratify or amend ADR-0272 and ADR-0273 (both "proposed"). If anything
-is carried forward it is one single-hypothesis confirmation of the term-slope
-feature on the ATM 20-session target, separately registered, no re-tuning.
+Owner: ratify or amend ADR-0272, ADR-0273 and ADR-0274 (all "proposed"). The
+two candidates worth one separately registered confirmation each on the ATM
+20-session target: the vol-scaled label (passed its rule) and the term-slope
+feature; the obvious combination to register next is pooled fitting on scaled
+labels across the cohort. No re-tuning on 2021–2025.
 Correct the ADR-0271 stock-data prose and `source-stock-daily.json` (pinned
 `close` and `dividend_amount` are already split-adjusted) before any pre-split
 run.

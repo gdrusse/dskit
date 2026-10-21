@@ -299,3 +299,108 @@ def test_methods_documents_never_reach_a_ledger_order_or_backtest(methods_docume
     for key, node in raw["pipeline"].items():
         uses = node["uses"].lower()
         assert not any(word in uses for word in ("ledger", "order", "backtest", "replay", "capital")), (name, key)
+
+
+# -- ADR-0274 documents: scaled label, Kalman-OU state, cohort pooling -------------------------------
+
+ADR74_DEVELOPMENT = "run-tech-prediction-adr0274-development.json"
+ADR74_VALIDATION = "run-tech-prediction-adr0274-validation.json"
+ADR74_SELECTION = "prediction-adr0274-selection.json"
+UNIVERSE_PASS = "run-tech-structural-universe.json"
+COHORT = ["ISRG", "CMG", "BA", "GS", "CHTR", "CAT", "AVGO", "BIDU", "ABBV", "GILD", "CRM", "HUM"]
+THREE = ["AAPL|AMZN", "AAPL|GOOGL", "AMZN|GOOGL"]
+
+
+@pytest.fixture(params=[ADR74_DEVELOPMENT, ADR74_VALIDATION], ids=["adr74-dev", "adr74-val"])
+def adr74_document(request):
+    return request.param, load_document(_path(request.param)), _raw(request.param)
+
+
+def test_cohort_rule_reproduces_from_the_census_and_the_universe_pass_reads_it():
+    census = "/home/russell/data/index_options/theta-strike-screen-20261018/features/census/census-roots.jsonl"
+    if not os.path.exists(census):
+        pytest.skip("census artifact not on this machine")
+    with open(census, encoding="utf-8") as fh:
+        rows = [json.loads(line) for line in fh]
+    ok = [r for r in rows if r["first_quoted_date"] <= "2018-01-02" and r["last_quoted_date"] >= "2025-12-15"
+          and r["symbol"] not in ("AAPL", "AMZN", "GOOGL", "GOOG") and not r["never_quoted"]]
+    ok.sort(key=lambda r: -r["median_quoted_development"])
+    assert [r["symbol"] for r in ok[:12]] == COHORT
+    raw = _raw(UNIVERSE_PASS)
+    assert raw["pipeline"]["chain"]["params"]["symbols"] == ["AAPL", "AMZN", "GOOGL"] + COHORT
+    assert "members" not in raw["pipeline"]["chain"]["params"]
+    assert raw["pipeline"]["chain"]["params"]["sealed_from"] == "2026-01-01"
+    base = _raw("run-tech-structural.json")["pipeline"]["surface"]["params"]
+    assert raw["pipeline"]["surface"]["params"] == base
+    assert load_document(_path(UNIVERSE_PASS)).hash
+
+
+def test_adr74_documents_plan_pin_inputs_and_score_only_the_three_pairs(adr74_document):
+    name, doc, raw = adr74_document
+    assert doc.hash and plan(doc)
+    backtest = _raw("run-tech-backtest.json")
+    assert raw["pipeline"]["surface"]["params"]["sha256"] == backtest["structural_rows"]["surface_rows.jsonl"]["sha256"]
+    uni = raw["pipeline"]["surface_universe"]
+    assert uni["uses"] == "dskit.pipeline.kinds_table:RecordsFile"
+    with open(uni["params"]["path"], "rb") as fh:
+        assert hashlib.sha256(fh.read()).hexdigest() == uni["params"]["sha256"]
+    for key, node in raw["pipeline"].items():
+        if node["uses"] == "filter" and key.startswith("three_"):
+            assert node["params"]["where"] == [{"field": "pair", "op": "in", "value": THREE}]
+        if node["uses"] == "dskit.pipeline.libs.pair_spread:RollingPairSpread":
+            assert node["params"]["symbols"] in (["AAPL", "AMZN", "GOOGL"], ["AAPL", "AMZN", "GOOGL"] + COHORT)
+        if node["uses"] == "dskit.pipeline.libs.pair_spread:PairSpreadHorizonRows":
+            assert node["params"]["label_offset"] == 1 and "edges" not in node["params"]
+        if node["uses"] == "dskit.pipeline.libs.kalman_spread:KalmanSpreadState":
+            assert node["params"]["window"] == 252
+            assert node["params"]["fit_dates"] == _raw("validation-calendar.json")["retraining"]["fit_dates"]
+        if node["uses"] == "dskit.pipeline.kinds_stats:ChronologicalForecastSkill":
+            assert node["params"]["benchmark"] == "mean"
+            calendar = _raw("validation-calendar.json")
+            annual = {str(b["year"]): {"start": b["start"], "end_before": b["end_before"]} for b in calendar["annual_validation"]}
+            dev = calendar["initial_development"]["selection"]
+            assert node["params"]["folds"] == ({"2020-development": {"start": dev["score_start"], "end_before": dev["score_end_before"]}}
+                                               if name == ADR74_DEVELOPMENT else annual)
+        uses = node["uses"].lower()
+        assert not any(word in uses for word in ("ledger", "order", "backtest", "replay", "capital")), (name, key)
+
+
+def test_adr74_refits_keep_the_frozen_baselines_and_the_declared_cadences(adr74_document):
+    name, _, raw = adr74_document
+    refits = {k: v for k, v in raw["pipeline"].items() if v["uses"] == "dskit.pipeline.libs.sklearn:SklearnExpandingRefit"}
+    week, year = 7 * 86_400_000, 52 * 7 * 86_400_000
+    for key, node in refits.items():
+        p = node["params"]
+        model = key.split("_", 2)[2]
+        if model.endswith("lagged"):
+            assert p["estimator"] == "sklearn.linear_model.Ridge" and p["block_ms"] == week
+            assert p["estimator_params"] == {"alpha": {"atm": 100.0, "skew": 0.1}[key.split("_")[0]]}
+        elif model.endswith("mean"):
+            assert p["estimator"] == "sklearn.dummy.DummyRegressor" and p["block_ms"] == week
+        elif "pooled" in model:
+            assert "group_field" not in p and p["block_ms"] == year and p["min_train_blocks"] == 1
+        elif "pair_yearly" in model:
+            assert p["group_field"] == "pair" and p["block_ms"] == year and p["min_train_blocks"] == 1
+        elif "scaledraw" in model:
+            assert p["label"].startswith("ys_") and p["known_field"] == "known_ms_" + p["label"][3:]
+        else:
+            assert p["block_ms"] == week and p["group_field"] == "pair", key
+        assert p["block_origin_ms"] == 1_546_214_400_000 and p["time_field"] == "decision_ms"
+
+
+def test_adr74_validation_freezes_the_recorded_selection():
+    raw, selection = _raw(ADR74_VALIDATION), _raw(ADR74_SELECTION)["selected"]
+    with open(_path(ADR74_SELECTION), "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+    assert raw["pipeline"]["adr0274_selection"]["params"]["sha256"] == digest
+    for key, node in raw["pipeline"].items():
+        if node["uses"] != "dskit.pipeline.libs.sklearn:SklearnExpandingRefit":
+            continue
+        target, model = key.split("_")[0], key.split("_", 2)[2]
+        want = {"scaledraw": "scaled", "kalman_ridge": "kalman_ridge", "u_pooled": "pooled", "u_pair_yearly": "pair_yearly"}.get(model)
+        if want:
+            assert node["params"]["estimator_params"]["alpha"] == selection[target][want], key
+    for target in ("atm", "skew"):
+        for h in (5, 20):
+            blend = raw["pipeline"][f"blend_{target}_h{h}"]["params"]["fields"]["f_blend"]
+            assert blend["args"][0]["args"][0]["const"] == selection[target]["blend_weight"]

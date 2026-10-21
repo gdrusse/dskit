@@ -290,6 +290,15 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+ADR-0274 adds, by import path, `libs/kalman_spread.py:KalmanSpreadState`: each
+pair's spread filtered as a random-walk level plus an AR(1) deviation plus
+measurement noise, the four parameters fitted by maximum likelihood on the
+window strictly before each declared fit date and carried until the next, the
+filter run through every session, and the expected change over each declared
+horizon `(phi^h − 1)·x̂_t` written beside the state, parameters, half-life and a
+status (`before_first_fit`, `ok`, `no_spread`, `degenerate`). Numpy and scipy
+load inside `run` only. Nothing here trades.
+
 ADR-0273 adds, by import path: `libs/chain_greeks.py:ChainDayPositioning`
 (one pass over a vendor EOD chain: open-interest-weighted sums of the vendor's
 own Greeks per right, net and signed total, with optional per-Greek spot powers
@@ -1081,6 +1090,7 @@ dskit/pipeline/
 │                      chain_census (ChainCensus + quote_state: per-root coverage and quote quality of a daily option-chain stream, by import path, ADR-0265),
 │                      chain_features (ChainDayFeatures: ATM/wing IV, skew, term, straddle, spread, OI/volume per symbol-date-DTE from NBBO mids, by import path, ADR-0265),
 │                      chain_greeks (ChainDayPositioning: vendor EOD Greeks x open interest per symbol-day, per-Greek spot powers, OI/volume ratios, counted exclusions, by import path, ADR-0273),
+│                      kalman_spread (KalmanSpreadState: random-walk level + AR(1) deviation per pair, parameters fitted on prior-only windows at declared fit dates, expected h-session change, by import path, ADR-0274),
 │                      chain_events (ChainEventDetector + ChainEventCalibrator: earnings-like events from the front-IV crush in the chain-day features, no calendar; a retrospective labeller, by import path, ADR-0265)
 │                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3
 │                      chain_orders (ChainStructureOrders: expiry + strike selection by atm / delta / max open interest / mirror from a daily chain, orders for the ledger, by import path, ADR-0265 Amendment 5); ParquetStreamRows takes `include` / `iso_fields`; DailyBarFeatures takes `realized_vol`; QuoteBook is chain_features' public quote book

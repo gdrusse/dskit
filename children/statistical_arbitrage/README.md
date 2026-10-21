@@ -30,6 +30,13 @@ benchmark. MSFT/NVDA and Energy are separate later additions through JSON.
   top of ADR-0272 (multi-scale Z, leg Z, smile shape, change profile, term
   structure, Greeks/OI positioning, realized vol, pooled Ridge, Lasso, boosting),
   knobs frozen in `configs/prediction-methods-selection.json`.
+- `configs/run-tech-structural-universe.json` reads 30-DTE surfaces for the
+  three names plus the twelve rule-selected cohort roots (ADR-0274);
+  `run-tech-prediction-adr0274-{development,validation}.json` test the
+  research note's three model changes: a vol-scaled label, a Kalman-OU spread
+  state (`KalmanSpreadState`), and pooled / blended Ridge fit across the
+  cohort's 105 pairs and scored on the three phase-one pairs; knobs frozen in
+  `configs/prediction-adr0274-selection.json`.
 - `statistical_arbitrage/{data,network,surface,backtest,report}.py` wraps
   generic DSKit readers, graph, pair spread and option ledger mechanisms.
 - `docs/decisioning/` records scope; `docs/memos/` records evaluation.
