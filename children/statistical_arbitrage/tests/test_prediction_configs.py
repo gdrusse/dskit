@@ -607,3 +607,31 @@ def test_fifteen_validation_freezes_the_recorded_selection_and_development_cover
     assert all(tags[m] == {"a10", "a100", "a1000"} for m in FIFTEEN_RIDGE + ["m13_pooled_scaled", "m15_residual"]), tags
     blends = dev["pipeline"]["blend_atm_h20"]["params"]["fields"]
     assert len(blends) == 9 and all(k.startswith("f_m14_blend_") for k in blends)
+
+
+#: The identity hashes the ADR-0275 round-2 runs recorded in their resolved.json (memo and Amendment 2).
+#: A hash pin freezes every feature list, formula, knob and wire of the scored documents at once.
+FIFTEEN_FROZEN_HASHES = {
+    FIFTEEN_DEVELOPMENT: "f7ce2ac53e2044ef268d834cfe760ad788942720d68d7dd74b38186cdcf54e5a",
+    FIFTEEN_VALIDATION: "b755d360a3db0e7454226f5f5222ee85b5bc0e3d2ac88a0bf2cb1070f8c133b7",
+    "run-tech-structural-vendor.json": "ba4e01d4eb255d249571f4347797ffe2876a3d91d13847b7ab3890ae6792e4ca",
+}
+
+
+@pytest.mark.parametrize("name", sorted(FIFTEEN_FROZEN_HASHES))
+def test_fifteen_documents_are_the_ones_that_were_scored(name):
+    assert load_document(_path(name)).hash == FIFTEEN_FROZEN_HASHES[name], name
+
+
+@pytest.mark.parametrize("name", [FIFTEEN_DEVELOPMENT, FIFTEEN_VALIDATION])
+def test_fifteen_market_panel_is_built_on_the_common_vix_vxn_sessions(name):
+    """Amendment 2: each index series is inner-joined to the other's dates before the panel, so a Cboe
+    holiday print on one series cannot open a hole that voids the 60-session Z for the next 60 sessions."""
+    p = _raw(name)["pipeline"]
+    for key, rows, other in (("vix_aligned", "$vix_rows.records", "$key_vxn.table"),
+                             ("vxn_aligned", "$vxn_rows.records", "$key_vix.table")):
+        assert p[key]["uses"] == "join" and p[key]["params"] == {"key": "date", "how": "inner"}, key
+        assert p[key]["inputs"] == {"records": rows, "other_close": other}, key
+    assert p["mkt_rows"]["inputs"] == {"vix": "$vix_aligned.records", "vxn": "$vxn_aligned.records"}
+    assert p["panel_mkt"]["inputs"] == {"panel": "$mkt_rows.merged"}
+    assert p["panel_mkt"]["params"]["symbols"] == ["VIX", "VXN"] and p["panel_mkt"]["params"]["lookbacks"] == [60]

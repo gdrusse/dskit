@@ -37,17 +37,18 @@ Theta Greeks are on disk; the open gaps are owner decisions (universe backfill
 signed flow has no stream). (6) ADR-0275 (proposed): fifteen methods built
 on those patterns, against the vol-scaled model as baseline. Rule met on ATM
 only: two-stage residual (5d +0.091→+0.110, 20d +0.246→+0.274), term curve
-(5d, 5/5 folds) and the pooled-scaled blend (20d, the one fix for 2021–22).
-The unused Theta fields (vendor-delta smile, convexity, gamma profiles,
-flow, carry, Cboe and VIX regime) all lose; skew stays out of reach. Memo:
+(5d) and the pooled-scaled blend (20d, fixes 2021–22; the only pass that
+survives BH over the fifteen baseline comparisons alone).
+Unused Theta fields (smile, convexity, profiles, flow, carry, Cboe, VIX)
+all lose; skew stays out of reach. Memo:
 `docs/memos/2026-10-21-tech-prediction-fifteen-methods.md`.
 
 ## Next
 
 Owner: ratify or amend ADR-0272 to ADR-0275 (all "proposed"). The
 one candidate worth a separately registered single-hypothesis confirmation
-on the ATM 20-session target is the two-stage residual (or the blend), on
-data not used to choose it. No re-tuning on 2021–2025.
+on the ATM 20-session target is the pooled-scaled blend, on data not used
+to choose it. No re-tuning on 2021–2025.
 Correct the ADR-0271 stock-data prose and `source-stock-daily.json` (pinned
 `close` and `dividend_amount` are already split-adjusted) before any pre-split
 run.
@@ -65,7 +66,6 @@ red in a full `tests/pipeline_libs` run.
 
 ## Read first
 
-- Root AGENTS.md and docs/skills/implementation-workflow.md
 - docs/memos/2026-10-21-tech-prediction-fifteen-methods.md
 - docs/memos/2026-10-21-tech-prediction-adr0274.md
 - docs/research/prediction-methods/2026-10-21-better-models.md
