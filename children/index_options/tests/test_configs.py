@@ -444,6 +444,31 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/memos/data/2026-10-20-edge-methods/edge_windows.csv",
         "docs/memos/data/2026-10-20-edge-methods/edge_year_dte_zone.csv",
         "docs/memos/2026-10-20-edge-methods-round2-results.md",
+        "docs/memos/2026-10-20-edge-methods-round3-results.md",
+        "docs/memos/data/2026-10-20-edge-methods/edge_variant_gate_summary.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_variant_perf_by_window.csv",
+        "docs/memos/data/2026-10-20-edge-methods/edge_variant_training_curves.csv",
+        "configs/run-edge-method-21-gru.json",
+        "configs/run-edge-method-22-mlp.json",
+        "configs/run-edge-method-23-mix5.json",
+        "configs/run-edge-method-24-l3-loss.json",
+        "configs/run-edge-method-25-seed-bag.json",
+        "configs/run-edge-method-26-qa-rolling-by-dte.json",
+        "configs/run-edge-method-27-qa-level-bands-by-dte.json",
+        "configs/run-edge-method-28-qa-by-ticker.json",
+        "configs/run-edge-method-29-qa-by-dispersion.json",
+        "configs/run-edge-method-30-qa-rolling-pit.json",
+        "configs/run-edge-method-31-qa-rolling-market.json",
+        "configs/run-edge-method-31a-market-roll.json",
+        "configs/run-edge-method-32-qa-six-by-dte.json",
+        "configs/run-edge-method-33-qa-model-bag.json",
+        "configs/run-edge-method-33a-model-bag.json",
+        "configs/run-edge-method-34-qa-feature-weights.json",
+        "configs/run-edge-method-35-location-scale-market.json",
+        "configs/run-edge-method-36-wide-inputs.json",
+        "configs/run-edge-method-37-gbm-greeks.json",
+        "configs/run-edge-method-38-location-scale-greeks.json",
+        "configs/run-edge-method-39-qa-greeks-weights.json",
         "configs/run-edge-method-10-gbm-market.json",
         "configs/run-edge-method-11-stack-rolling.json",
         "configs/run-edge-method-12-stack-rolling-by-dte.json",
@@ -513,7 +538,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the strike-region scores node, its document and its test = 581.
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
-    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase)
+    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15 + 25   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase); + round 3: 21 edge documents, memo and three variant CSVs
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

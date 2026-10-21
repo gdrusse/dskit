@@ -1,0 +1,449 @@
+{
+  "name": "edge-method-39-qa-greeks-weights",
+  "notes": "ADR-0270 edge methods round 3 (2026-10-20). A GridCDFMethod document over the R1 walk-forward scored rows (TCN chain arm, shared head, seed 11, five yearly folds; scores/strike-region-scores-wf-r1/rows.parquet, sha256 pinned). The method builds one new forecast on the 13-point z grid per fold; learning is causal (prior_validation: earlier folds' validation rows whose settlement precedes the target fold's first validation date; fit_band: the fold's own training-window rows). Fold 1 (2019 warm-up) has no earlier evidence for prior_validation methods and keeps the fallback (flagged, never ranked, Path A0008). Score: Path A0002 twCRPS on the grid (weights 1 on |z| 0.5-2.5, tapering to 0.25), CRPS13 and region Brier on the 14 grid regions; edges against the raw market, the recalibrated market (21-knot PIT map per fold, the analysis-stage comparator), the per-name and pooled baselines and the base model, by DTE week, ticker, strike zone and time range (year, regime). Tables per (ticker, DTE week, strike region) and (ticker, DTE week) are descriptive (A0002 keeps regions a decomposition); the A0007 gate per (ticker, expiry rank) comes from the walk-forward analysis script run with --method-rows. Predictability only. end_before 2024-01-01 (holdout sealed). Run from children/index_options: python -m dskit.pipeline run configs/<this file> --asof 2023-12-31. M39 the M34 feature-conditioned weights with panel features only: a softmax of log DTE, log ATM IV, 25-delta skew and the ten Theta chain inputs (Greeks, volume, open interest, depth, own IV).",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/run-edge-method-39-qa-greeks-weights",
+    "notes": "The pipeline run directory; the tables go to the node's output. Excluded from the identity hash."
+  },
+  "pipeline": {
+    "method": {
+      "uses": "dskit.pipeline.libs.cdf_grid_methods:GridCDFMethod",
+      "params": {
+        "source": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/strike-region-scores-wf-r1/rows.parquet",
+        "source_sha256": "7fb5d977243141c23a562ae895f785a9d1133b974b53c0a7e242193088eceab6",
+        "output": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/edge-method-39-qa-greeks-weights",
+        "end_before": "2024-01-01",
+        "columns": {
+          "identity": [
+            "symbol",
+            "quote_date",
+            "expiry",
+            "fold",
+            "band"
+          ],
+          "date": "quote_date",
+          "settlement": "settlement_date",
+          "fold": "fold",
+          "band": "band",
+          "outcome": "y",
+          "dte": "actual_calendar_dte",
+          "group": "symbol",
+          "eligible": "market_eligible"
+        },
+        "z_grid": [
+          -3,
+          -2.5,
+          -2,
+          -1.5,
+          -1,
+          -0.5,
+          0,
+          0.5,
+          1,
+          1.5,
+          2,
+          2.5,
+          3
+        ],
+        "grid_labels": [
+          "zm3",
+          "zm2.5",
+          "zm2",
+          "zm1.5",
+          "zm1",
+          "zm0.5",
+          "zp0",
+          "zp0.5",
+          "zp1",
+          "zp1.5",
+          "zp2",
+          "zp2.5",
+          "zp3"
+        ],
+        "score_weights": [
+          0.25,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.25,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.25
+        ],
+        "pit_tail": 4.0,
+        "components": [
+          {
+            "name": "model",
+            "source": "model",
+            "pit_column": "model_pit"
+          },
+          {
+            "name": "market",
+            "source": "market",
+            "pit_column": "market_pit"
+          },
+          {
+            "name": "market_cal",
+            "source": "market",
+            "pit_map": {
+              "knots": 21,
+              "learn": "fit_band"
+            },
+            "pit_column": "market_pit"
+          },
+          {
+            "name": "pooled",
+            "source": "pooled",
+            "pit_column": "pooled_pit"
+          },
+          {
+            "name": "baseline",
+            "source": "baseline",
+            "pit_column": "baseline_pit"
+          }
+        ],
+        "fallback": "model",
+        "method": {
+          "kind": "quantile_average",
+          "learn": "prior_validation",
+          "components": [
+            "model",
+            "market_cal",
+            "pooled",
+            "baseline"
+          ],
+          "min_rows": 5000,
+          "levels": 199,
+          "max_learning_rows": 100000,
+          "weight_features": [
+            {
+              "column": "actual_calendar_dte",
+              "transform": "log"
+            },
+            "chain_log_atm_iv",
+            "chain_log_skew25",
+            "chain_log_delta_oi",
+            "chain_log_gamma_oi",
+            "chain_log_vega_oi",
+            "chain_log_volume",
+            "chain_put_call_volume_imbalance",
+            "chain_log_open_interest",
+            "chain_log_lag_oi_change",
+            "chain_log_quote_depth",
+            "own_iv",
+            "implied_minus_realized_variance"
+          ],
+          "feature_source": {
+            "path": "/home/russell/data/index_options/theta-strike-screen-20261018/panel/panel-cache/frame.parquet",
+            "sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+            "keys": [
+              "symbol",
+              "quote_date",
+              "expiry"
+            ]
+          }
+        },
+        "buckets": {
+          "dte_bucket": {
+            "column": "actual_calendar_dte",
+            "edges": [
+              [
+                1,
+                7
+              ],
+              [
+                8,
+                14
+              ],
+              [
+                15,
+                21
+              ],
+              [
+                22,
+                28
+              ],
+              [
+                29,
+                35
+              ],
+              [
+                36,
+                42
+              ],
+              [
+                43,
+                49
+              ],
+              [
+                50,
+                60
+              ]
+            ]
+          }
+        },
+        "periods": {
+          "S0_pre_crash": [
+            "2020-01-02",
+            "2020-02-14"
+          ],
+          "S1_covid_crash": [
+            "2020-02-15",
+            "2020-06-30"
+          ],
+          "S2_recovery": [
+            "2020-07-01",
+            "2021-12-31"
+          ],
+          "S3_rate_shock": [
+            "2022-01-03",
+            "2022-12-30"
+          ],
+          "S4_2023": [
+            "2023-01-03",
+            "2023-12-29"
+          ]
+        },
+        "ranked_folds": [
+          2,
+          3,
+          4,
+          5
+        ],
+        "comparators": [
+          "market",
+          "market_cal",
+          "baseline",
+          "pooled",
+          "model"
+        ],
+        "tables": [
+          {
+            "name": "ticker_dte_region",
+            "by": [
+              "symbol",
+              "dte_bucket"
+            ],
+            "regions": true
+          },
+          {
+            "name": "ticker_dte_zone",
+            "by": [
+              "symbol",
+              "dte_bucket"
+            ],
+            "regions": false,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
+          },
+          {
+            "name": "ticker_dte",
+            "by": [
+              "symbol",
+              "dte_bucket"
+            ],
+            "regions": false
+          },
+          {
+            "name": "dte_region",
+            "by": [
+              "dte_bucket"
+            ],
+            "regions": true,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
+          },
+          {
+            "name": "ticker",
+            "by": [
+              "symbol"
+            ],
+            "regions": false,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
+          },
+          {
+            "name": "ticker_year",
+            "by": [
+              "symbol",
+              "year"
+            ],
+            "regions": false,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
+          },
+          {
+            "name": "year_dte_zone",
+            "by": [
+              "year",
+              "dte_bucket"
+            ],
+            "regions": false,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
+          },
+          {
+            "name": "period_dte_zone",
+            "by": [
+              "period",
+              "dte_bucket"
+            ],
+            "regions": false,
+            "region_groups": {
+              "left_wing": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "left_shoulder": [
+                4,
+                5
+              ],
+              "body": [
+                6,
+                7
+              ],
+              "right_shoulder": [
+                8,
+                9
+              ],
+              "right_wing": [
+                10,
+                11,
+                12,
+                13
+              ]
+            }
+          }
+        ]
+      },
+      "notes": "DTE weeks 1-7 ... 43-49 and 50-60 (weekly expiry ranks 1-8 for weekly names); strike zones group the 14 grid regions: left_wing z <= -1.5, left_shoulder -1.5..-0.5, body -0.5..0.5, right_shoulder 0.5..1.5, right_wing > 1.5 (each zone's score is the per-row sum of its regions' Brier scores); periods are the A0007 regimes; comparators market (raw), market_cal (recalibrated), baseline (per-name horizon empirical), pooled (pooled standardized empirical) and model (the base TCN). Every result is a predictive score difference; no trading or P&L."
+    }
+  }
+}

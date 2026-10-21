@@ -4,18 +4,17 @@ Updated: 2026-10-20 by Claude Opus 5.5 (earlier work Sonnet 5.5, Fable 5.1). Pre
 
 ## Now
 
-- ADR-0270 strike screen. Latest: children/index_options/docs/memos/2026-10-20-edge-methods-results.md (ten methods, CSVs in docs/memos/data/2026-10-20-edge-methods/). Before: memos/2026-10-20-adjustments-results.md (R1/R2), memos/2026-10-20-walkforward-results.md.
-- Path (locked): A0001 approach, A0002 evaluation (twCRPS, regions a decomposition), A0003 windows, A0004 fold rungs, A0005 promotion rule, A0006 cell (ticker, expiry rank), A0007 gate, A0008 yearly retraining.
-- First edge over the market: M08 (model + recalibrated market + pooled empirical + per-name baseline, simplex weights per DTE week, learned on earlier years) beats the recalibrated market +0.48% twCRPS (t 8.4), raw market +0.59%; gate 215/831 vs 29 by luck. Pools M02-M06 +0.30..0.37%. Edge grows with DTE (peak 36-49 days, +0.6..1.0%), largest in the right shoulder/wing; ties 2022. Losers: model PIT map M07, LightGBM M10, per-cell switch M09.
-- Node dskit/pipeline/libs/cdf_grid_methods.py (GridCDFMethod); documents configs/run-edge-method-NN-*.json over the R1 rows; analysis_wf.py --method-rows for the gate.
-- R1 = shared head, wd 0.3, dropout 0.2 (ties market alone); R2 adds design inputs (fold 1 skipped).
-- Pilot root /home/russell/data/index_options/theta-strike-screen-20261018: scores/edge-method-*, analysis/edge-method-*, superseded set moved to scores/superseded-edge-methods-nozones-20261020/.
+- ADR-0270 strike screen. Latest: children/index_options/docs/memos/2026-10-20-edge-methods-round2-results.md (20 methods; CSVs in docs/memos/data/2026-10-20-edge-methods/). Before: edge-methods-results.md (round 1), adjustments-results.md (R1/R2), walkforward-results.md.
+- Path (locked): A0001-A0008 (twCRPS score, (ticker, expiry rank) cell, simple gate, yearly retraining).
+- Best: M16 quantile average of model + recalibrated market + pooled + per-name baseline, weights per DTE week, learned on earlier years: vs recalibrated market +0.55% twCRPS (t 9.6), raw market +0.66%, per-name baseline +2.6%; positive in all five regimes; gate 238/831 vs 28 luck. Rolling 21-day stacks M11/M12 +0.50%, 2022 positive. Seed 29 reproduces the stack (M20). Edge largest at 36-49 DTE and in the right tail; 2022 beyond 4 weeks still loses.
+- Node dskit/pipeline/libs/cdf_grid_methods.py (GridCDFMethod: pit_map, linear_pool, best_component, binary_gbm, beta_pool, quantile_average; rolling refits, recency weights, external components); documents configs/run-edge-method-01..20-*.json; analysis_wf.py --method-rows for the gate.
+- Pilot root /home/russell/data/index_options/theta-strike-screen-20261018: scores/edge-method-*, analysis/edge-method-*, fits/wf-r1s29 (seed 29; fold 1 skipped). Evidence 14.9 of 16 GB (owner raised the cap); superseded sets moved under scores/superseded-*.
 
 ## Next
 
-1. Owner: evidence cap breach (scores/ 10.4 GB > 8 GB): raise or move superseded outputs off the evidence root.
-2. Second seed (29) of R1, rerun M08/M02 on it; then the 2024-25 holdout once for M08 and M02.
-3. Build the recalibrated market into the scorer; registration and serving of the stack (four CDFs + a weight table per DTE week).
+1. Rolling quantile average per DTE week (M16 + M12); a regime input for long-DTE weights in rate shocks; raise the warm-up fold ceiling so seed 29 / R2 have 2019.
+2. Holdout 2024-25 once for M16, rolling M16, M08 (owner opens it).
+3. Recalibrated market inside the scorer; a serving document for the stack (four CDFs + weight table per DTE week).
 
 ## Blocked / owner decisions
 
