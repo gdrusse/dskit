@@ -481,6 +481,30 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-edge-method-49-wide-tcn32.json",
         "configs/run-edge-method-50a-wide-bag.json",
         "configs/run-edge-method-50-qa-wide-bag.json",
+        "configs/run-edge-method-51-qa-mlp64-by-dispersion.json",
+        "configs/run-edge-method-52-qa-mlp64-rolling.json",
+        "configs/run-edge-method-53-qa-mlp64-rolling-by-dispersion.json",
+        "configs/run-edge-method-54-qa-mlp64-half-life.json",
+        "configs/run-edge-method-55-qa-mlp64-zone-bands.json",
+        "configs/run-edge-method-56-qa-two-mlps.json",
+        "configs/run-edge-method-57a-mlp64-seed-bag.json",
+        "configs/run-edge-method-57-qa-mlp64-seed-bag.json",
+        "configs/run-edge-method-58-qa-mlp64-by-market-width.json",
+        "configs/run-edge-method-59-qa-mlp64-by-strike-density.json",
+        "configs/run-edge-method-60-qa-mlp64-by-vol-level.json",
+        "configs/run-edge-method-61-lp-mlp64-per-threshold.json",
+        "configs/run-edge-method-62-qa-mlp64-feature-weights.json",
+        "configs/run-edge-method-63-qa-mlp64-rn-shape-weights.json",
+        "configs/run-edge-method-64-mlp64-66-inputs.json",
+        "configs/run-edge-method-65-wider-mlp64.json",
+        "configs/run-strike-screen-fits-wf-wide-mlp64-s29.json",
+        "configs/run-strike-region-scores-wf-wide-mlp64-s29.json",
+        "configs/run-strike-screen-fits-wf-wide-mlp64-s47.json",
+        "configs/run-strike-region-scores-wf-wide-mlp64-s47.json",
+        "configs/run-strike-screen-fits-wf-mlp64-d03.json",
+        "configs/run-strike-region-scores-wf-mlp64-d03.json",
+        "configs/run-strike-screen-fits-wf-wider-mlp64.json",
+        "configs/run-strike-region-scores-wf-wider-mlp64.json",
         "docs/memos/2026-10-20-edge-methods-round4-results.md",
         "configs/run-edge-method-10-gbm-market.json",
         "configs/run-edge-method-11-stack-rolling.json",
@@ -577,7 +601,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the strike-region scores node, its document and its test = 581.
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
-    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15 + 25 + 26 + 7 + 6   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase); + round 3: 21 edge documents, memo and three variant CSVs
+    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15 + 25 + 26 + 7 + 6 + 24   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase); + round 3: 21 edge documents, memo and three variant CSVs
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
