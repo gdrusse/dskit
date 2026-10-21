@@ -25,9 +25,17 @@ Kalman-OU spread state, vol-scaled labels with CRPS, surface-factor VAR):
 `docs/research/prediction-methods/2026-10-21-better-models.md`. (4) ADR-0274
 (proposed) implemented and run: the vol-scaled label meets the pre-registered
 rule on ATM 20-session (R²oos +0.199 → +0.242, BH, 4/5 folds); the Kalman-OU
-state (`KalmanSpreadState`) adds nothing; pooling across a twelve-name cohort
-is marginal at 5 sessions and collapses at 20 (scale mixing). Memo:
-`docs/memos/2026-10-21-tech-prediction-adr0274.md`.
+state (`KalmanSpreadState`, forecast aligned to the next-session label in a
+second round) adds nothing; pooling across a twelve-name cohort is marginal
+at 5 sessions and collapses at 20 (scale mixing). Memo:
+`docs/memos/2026-10-21-tech-prediction-adr0274.md`. Two review rounds: the
+first caught a Major (forecast clock) fixed and rerun; the second, two fresh
+Sonnet lenses on `fbdc46db`, zero Critical/Major. (5) Data inventory
+(`docs/research/data-inventory/2026-10-21-theta-and-sources.md`): nothing is
+missing for the three pairs or the cohort; stock bars, VIX family, rates and
+Theta Greeks are on disk; the open gaps are owner decisions (universe backfill
+177 roots, about 50 h, stopped on a hard crossed-quotes alarm; 2026 sealed;
+signed flow has no stream).
 
 ## Next
 
@@ -42,20 +50,22 @@ run.
 
 ## Blocked / owner decisions
 
-ADR ratification. Disclosed Minor backlog: ADR-0272 and ADR-0273 review
-items (boundary tests, pin coverage of DAG wiring and `overwrite:false`, an
-`__all__` pin, an all-zero-OI status flag in `ChainDayPositioning`); v6 audit
-items A3–A10; positioning features are net sums (no strike profile, no signed
-flow); main's pyomo tests are an order-dependent red in a full
-`tests/pipeline_libs` run.
+ADR ratification; whether to acknowledge the Theta crossed-quotes alarm and
+resume the universe backfill; whether to unseal 2026 for a confirmation set.
+Disclosed Minor backlog: ADR-0272/0273/0274 review items (boundary and
+default-deny tests, the Kalman floor/clamp/phi-bound paths untested, pin
+coverage of DAG wiring, the universe document and skill knobs, an
+all-zero-OI status flag in `ChainDayPositioning`); v6 audit items A3–A10;
+positioning features are net sums; main's pyomo tests are an order-dependent
+red in a full `tests/pipeline_libs` run.
 
 ## Read first
 
 - Root AGENTS.md and docs/skills/implementation-workflow.md
+- docs/memos/2026-10-21-tech-prediction-adr0274.md
 - docs/memos/2026-10-20-tech-prediction-ten-methods.md
-- docs/memos/2026-10-20-tech-prediction-only-study.md
-- docs/memos/2026-10-20-v6-independent-audit.md
-- docs/architecture/decision-log.md, ADR-0271, ADR-0272, ADR-0273
+- docs/research/prediction-methods/2026-10-21-better-models.md
+- docs/architecture/decision-log.md, ADR-0272, ADR-0273, ADR-0274
 
 ## Do not
 

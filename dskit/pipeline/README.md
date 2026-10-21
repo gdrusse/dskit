@@ -294,9 +294,10 @@ ADR-0274 adds, by import path, `libs/kalman_spread.py:KalmanSpreadState`: each
 pair's spread filtered as a random-walk level plus an AR(1) deviation plus
 measurement noise, the four parameters fitted by maximum likelihood on the
 window strictly before each declared fit date and carried until the next, the
-filter run through every session, and the expected change over each declared
-horizon `(phi^h − 1)·x̂_t` written beside the state, parameters, half-life and a
-status (`before_first_fit`, `ok`, `no_spread`, `degenerate`). Numpy and scipy
+filter run through every session, and the expected change of the spread between
+sessions `t+k` and `t+k+h` (`label_offset` k, default 0) `phi^k·(phi^h − 1)·x̂_t`
+written beside the state, parameters, half-life and a status (`before_first_fit`,
+`ok`, `no_spread`, `degenerate`). Numpy and scipy
 load inside `run` only. Nothing here trades.
 
 ADR-0273 adds, by import path: `libs/chain_greeks.py:ChainDayPositioning`
