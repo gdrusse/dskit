@@ -156,9 +156,9 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # its ZooVariant PerTickerZoo, run-perticker-zoo-417.json, workflow- and
                            # report-spec-perticker-zoo-417.json, the same zoo per ticker (ADR-0236
                            # amendment 3, 2026-10-05); never hand-edit)
-                           # theta_exact_expiry.py (ADR-0270: ThetaExactExpiryTables, frozen Theta chains -> the
+                           # theta_exact_expiry.py (ADR-0276: ThetaExactExpiryTables, frozen Theta chains -> the
                            # exact-expiry surface, lifecycle, chain archive and own_iv series; no model)
-                           # strike_region_scores.py (ADR-0270: StrikeRegionScores, saved CDFExperiment fits scored around the
+                           # strike_region_scores.py (ADR-0276: StrikeRegionScores, saved CDFExperiment fits scored around the
                            # listed strikes on fit and validation rows; rows/cells/curves/summary; no fit)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
@@ -186,13 +186,13 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # run-theta-chain-events.json (ADR-0265 node 5: the earnings-like events of
                            # the sample root from the front-IV crush, retrospective labels) with
                            # theta-earnings-labels-2016-2020.json (dev-period announcement dates)
-                           # run-theta-exact-expiry-tables.json (ADR-0270: frozen Theta export through
+                           # run-theta-exact-expiry-tables.json (ADR-0276: frozen Theta export through
                            # ThetaExactExpiryTables; a new output_root per run)
-                           # strike-screen-panel-source.json + strike-screen-folds-screen.jsonl (ADR-0270: the arms study repurposed; ONLY materializes the
+                           # strike-screen-panel-source.json + strike-screen-folds-screen.jsonl (ADR-0276: the arms study repurposed; ONLY materializes the
                            # exact-expiry panel through cdf_study --stage panel; pinned to strike-screen-protocol.json by tests/test_strike_screen_panel_source.py)
-                           # run-strike-screen-fits-{L1,L3,timing,control}.json (ADR-0270: the CDFExperiment fit documents, L1 and L3 losses,
+                           # run-strike-screen-fits-{L1,L3,timing,control}.json (ADR-0276: the CDFExperiment fit documents, L1 and L3 losses,
                            # the L1 timing pilot and the block-shift label control; placeholder pins; tests/test_strike_screen_fits.py; no fit until registered)
-                           # run-strike-region-scores.json + run-strike-region-scores-L3.json (ADR-0270: StrikeRegionScores over one CDFExperiment output each;
+                           # run-strike-region-scores.json + run-strike-region-scores-L3.json (ADR-0276: StrikeRegionScores over one CDFExperiment output each;
                            # placeholder paths)
                            # run-theta-h{0..7}-*.json (development, end_before 2021-01-01) + -validation twins (start 2021-01-04,
                            # end_before 2026-01-01) + theta-h{0..7}-validation-args.json (the overlay each twin is made from),
