@@ -67,7 +67,7 @@ __all__ = ["FILL_BAR_KEYS", "ExactDteBarChain", "CondorExpirySettle", "CondorBac
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
-           "RobustCondorBatchSelect", "RobustCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "liquid_leg_haircut", "mean_or_zero",
+           "RobustCondorBatchSelect", "RobustCondorSelect", "CDFQuoteCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "liquid_leg_haircut", "mean_or_zero",
            "t_or_zero"]
 
 
@@ -4349,3 +4349,318 @@ class ExactDteBarChain(Node):
             raise ValueError("fill row disagrees with its contract's symbol, expiry, right or strike")
         return {"fill_session": session,
                 "fill": {key: bar[key] for key in FILL_BAR_KEYS}}
+
+
+class CDFQuoteCondorSelect(Node):
+    """Bridge bounded grid CDFs and Theta EOD quotes to a nominal condor and ledger.
+
+    One symbol, one serial position. Inputs are already date-bounded records from
+    the saved method forecast, scored-row context, converted Theta archive and
+    split-adjusted daily bars. The output is research-only: the next-session EOD
+    NBBO is a fill *proxy*, and early American assignment is not simulated.
+    """
+
+    role = "transform"
+    outputs = ("decisions", "orders", "ledger_chain", "stress_extra_cost_usd", "skips", "summary")
+    _PARAMS = ("symbol", "start", "end_before", "protected_end_before", "fold",
+               "require_fitted", "z_grid", "grid_labels", "target_dte", "dte_tolerance",
+               "max_abs_z", "max_relative_spread", "min_quote_size",
+               "stress_spread_fraction", "projection", "solver")
+    _INPUTS = ("forecasts", "contexts", "chain", "bars")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Refuse incomplete chronology, quote policy, projection or solver knobs."""
+        from dskit.pipeline.libs.predictive_cdf import NominalStrikeMasses
+
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for name in cls._PARAMS:
+            if name not in params:
+                problems.append(f"{name} is required")
+        if not isinstance(params.get("symbol"), str) or not params.get("symbol"):
+            problems.append("symbol must be nonempty")
+        for name in ("start", "end_before", "protected_end_before"):
+            if not _iso_day(params.get(name)):
+                problems.append(f"{name} must be an ISO date")
+        if all(_iso_day(params.get(n)) for n in ("start", "end_before", "protected_end_before")):
+            if not params["start"] < params["end_before"] <= params["protected_end_before"]:
+                problems.append("decision window reaches protected boundary")
+        if type(params.get("fold")) is not int or params["fold"] < 1:
+            problems.append("fold must be a positive integer")
+        if type(params.get("require_fitted")) is not bool:
+            problems.append("require_fitted must be boolean")
+        z, labels = params.get("z_grid"), params.get("grid_labels")
+        if (not isinstance(z, list) or len(z) < 2
+                or any(not number_ok(v) for v in z)
+                or any(a >= b for a, b in zip(z, z[1:]))):
+            problems.append("z_grid must increase strictly")
+        if (not isinstance(labels, list) or not isinstance(z, list)
+                or len(labels) != len(z) or len(set(labels)) != len(labels)
+                or any(not isinstance(x, str) or not x for x in labels)):
+            problems.append("grid_labels must be unique and match z_grid")
+        for name in ("target_dte", "dte_tolerance", "min_quote_size"):
+            floor = 0 if name == "dte_tolerance" else 1
+            if type(params.get(name)) is not int or params[name] < floor:
+                problems.append(f"{name} must be an integer >= {floor}")
+        for name in ("max_abs_z", "max_relative_spread", "stress_spread_fraction"):
+            value = params.get(name)
+            floor = 0 if name == "stress_spread_fraction" else 0.0000001
+            if not number_ok(value) or value < floor:
+                problems.append(f"{name} must be finite and >= {floor}")
+        if isinstance(params.get("projection"), dict):
+            problems.extend(NominalStrikeMasses.validate_params(params["projection"]))
+        else:
+            problems.append("projection must be a mapping")
+        if isinstance(params.get("solver"), dict):
+            problems.extend(RobustCondorSelect.validate_params(params["solver"]))
+            if params["solver"].get("multiplier") != 100:
+                problems.append("standard Theta equity contracts require multiplier 100")
+        else:
+            problems.append("solver must be a mapping")
+        return problems
+
+    def _bounded(self, inputs):
+        """Validate the intake boundary and select one validation fold only."""
+        if not isinstance(inputs, dict) or set(inputs) != set(self._INPUTS):
+            raise ValueError("inputs require forecasts/contexts/chain/bars")
+        p = self.params
+        for name in self._INPUTS:
+            rows = inputs[name]
+            if not isinstance(rows, (list, tuple)) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError(f"{name} must be a sequence of records")
+            field = "date" if name in ("chain", "bars") else "quote_date"
+            if any(not _iso_day(row.get(field)) or row[field] >= p["protected_end_before"]
+                   for row in rows):
+                raise ValueError(f"{name} crosses protected date at intake")
+        if any(not _iso_day(row.get("expiry")) or row["expiry"] >= p["protected_end_before"]
+               for name in ("forecasts", "contexts") for row in inputs[name]):
+            raise ValueError("forecast expiry crosses protected date at intake")
+        if any(not _iso_day(row.get("settlement_date"))
+               or row["settlement_date"] >= p["protected_end_before"]
+               for row in inputs["contexts"]):
+            raise ValueError("forecast settlement crosses protected date at intake")
+        def selected(row):
+            return (row.get("symbol") == p["symbol"]
+                    and p["start"] <= row["quote_date"] < p["end_before"]
+                    and row.get("fold") == p["fold"] and row.get("band") == "val")
+        forecasts, contexts = {}, {}
+        for name, dest in (("forecasts", forecasts), ("contexts", contexts)):
+            for row in inputs[name]:
+                if not selected(row):
+                    continue
+                key = row["quote_date"], row.get("expiry")
+                if not _iso_day(key[1]) or key in dest:
+                    raise ValueError(f"{name} has invalid or duplicate validation context")
+                dest[key] = row
+        return forecasts, contexts
+
+    def _market(self, inputs):
+        """Index archive quotes and daily closes while checking duplicate identities."""
+        p = self.params
+        quotes, factors, bars = {}, {}, {}
+        for row in inputs["chain"]:
+            if row.get("symbol") != p["symbol"]:
+                continue
+            day, expiry, right, strike = (row.get(k) for k in
+                                          ("date", "expiration", "type", "strike_raw"))
+            factor = row.get("basis_factor")
+            if (not _iso_day(expiry) or expiry >= p["protected_end_before"]
+                    or right not in ("put", "call") or not price_ok(strike)
+                    or not price_ok(factor) or not price_ok(row.get("strike"))
+                    or not math.isclose(float(row["strike"]), float(strike)*float(factor),
+                                        rel_tol=1e-8)):
+                raise ValueError("invalid or unprotected Theta archive row")
+            factor = float(factor)
+            if day in factors and not math.isclose(factors[day], factor, rel_tol=1e-9):
+                raise ValueError("inconsistent basis factor on one quote date")
+            factors[day] = factor
+            key = day, expiry, right, float(strike)
+            if key in quotes:
+                raise ValueError("duplicate Theta contract-day")
+            quotes[key] = row
+        for row in inputs["bars"]:
+            if row.get("symbol") != p["symbol"]:
+                continue
+            day, close = row["date"], row.get("close")
+            if day in bars or not price_ok(close):
+                raise ValueError("duplicate or invalid daily close")
+            bars[day] = float(close)
+        return quotes, factors, bars
+
+    def _usable_quote(self, row, factor):
+        """Return raw (bid, ask) only for a one-lot, two-sided quoted contract."""
+        p = self.params
+        if row is None or not math.isclose(float(row.get("basis_factor", math.nan)), factor,
+                                         rel_tol=1e-9):
+            return None
+        bid, ask = row.get("bid"), row.get("ask")
+        if (not number_ok(bid) or not number_ok(ask) or bid <= 0 or ask < bid
+                or any(type(row.get(k)) is not int or row[k] < p["min_quote_size"]
+                       for k in ("bid_size", "ask_size"))):
+            return None
+        bid, ask = float(bid)/factor, float(ask)/factor
+        if (ask-bid)/((ask+bid)/2) > p["max_relative_spread"]:
+            return None
+        return bid, ask
+
+    def _one(self, forecast, context, day, expiry, quotes, factors):
+        """Project the CDF and solve exactly one selected expiry at date D."""
+        import numpy as np
+        from dskit.pipeline.libs.predictive_cdf import MeanPreservingCDFGrid
+
+        p = self.params
+        factor = factors.get(day)
+        spot, scale = context.get("spot"), context.get("reference_scale")
+        if not price_ok(factor) or not price_ok(spot) or not price_ok(scale):
+            raise ValueError("missing spot, scale or basis")
+        if p["require_fitted"] and forecast.get("fitted") is not True:
+            raise ValueError("method_not_fitted")
+        if type(forecast.get("fitted")) is not bool:
+            raise ValueError("invalid fitted flag")
+        cdf = np.array([forecast.get(f"method_cdf_{label}") for label in p["grid_labels"]], dtype=float)
+        if (not np.isfinite(cdf).all() or (cdf < 0).any() or (cdf > 1).any()
+                or (np.diff(cdf) < 0).any()):
+            raise ValueError("incoherent method CDF")
+        spot_raw = float(spot)/factor
+        eligible = {}
+        for (quote_day, quote_expiry, right, strike), row in quotes.items():
+            if quote_day != day or quote_expiry != expiry:
+                continue
+            z = math.log(strike/spot_raw)/float(scale)
+            if (abs(z) > p["max_abs_z"] or (right == "put" and strike >= spot_raw)
+                    or (right == "call" and strike <= spot_raw)):
+                continue
+            market = self._usable_quote(row, factor)
+            if market is not None:
+                eligible[right, strike] = market
+        strikes = sorted({strike for _, strike in eligible})
+        if (len([1 for right, _ in eligible if right == "put"]) < 2
+                or len([1 for right, _ in eligible if right == "call"]) < 2):
+            raise ValueError("insufficient_eligible_legs")
+        support = sorted({*strikes, spot_raw*math.exp(float(scale)*p["z_grid"][0]),
+                          spot_raw*math.exp(float(scale)*p["z_grid"][-1])})
+        knots = [spot_raw*math.exp(float(scale)*z) for z in p["z_grid"]
+                 if support[0] < spot_raw*math.exp(float(scale)*z) < support[-1]]
+        def probability(price):
+            z = math.log(price/spot_raw)/float(scale)
+            return float(np.interp(z, p["z_grid"], cdf, left=0., right=1.))
+        projection = MeanPreservingCDFGrid(
+            support, probability, spot=spot_raw, breakpoints=knots, **p["projection"])
+        index = {strike: i for i, strike in enumerate(support)}
+        legs = {role: [] for role in RobustCondorSelect._ROLES}
+        for (right, strike), (bid, ask) in eligible.items():
+            mid, half = (bid+ask)/2, (ask-bid)/2
+            roles = ("LP", "SP") if right == "put" else ("SC", "LC")
+            for role in roles:
+                legs[role].append({"index": index[strike], "price": mid,
+                                   "haircut": half,
+                                   "contract_id": f"{p['symbol']}:{expiry}:{right}:{strike:g}"})
+        decision_id = value_hash({"symbol": p["symbol"], "date": day, "expiry": expiry,
+                                  "fold": p["fold"], "cdf": cdf.tolist()})
+        solver_context = {"decision_id": decision_id, "arm_id": "grid_cdf_nominal",
+                          "symbol": p["symbol"], "quote_date": day, "expiry": expiry,
+                          "grid": support, "masses": projection.masses.tolist(),
+                          "spot": spot_raw, "rho": 0., "legs": legs}
+        solved = RobustCondorSelect("condor", p["solver"]).run(None, {"context": solver_context})
+        decision = solved["decision"]
+        decision.update(method_fitted=forecast["fitted"], projection=projection.evidence,
+                        solver_evidence=solved["evidence"])
+        return decision
+
+    def run(self, ctx, inputs):
+        """Solve serial decisions; freeze contracts, then price the D+1 quote proxy."""
+        forecasts, contexts = self._bounded(inputs)
+        quotes, factors, bars = self._market(inputs)
+        p = self.params
+        dates = sorted({day for day, _ in contexts})
+        decisions, orders, ledger_chain, stress_costs, skips = [], [], [], [], []
+        refused = Counter()
+        next_allowed = p["start"]
+        for day in dates:
+            if day < next_allowed:
+                continue
+            choices = []
+            for (d, expiry), context in contexts.items():
+                if d != day or (d, expiry) not in forecasts:
+                    continue
+                dte = (date.fromisoformat(expiry)-date.fromisoformat(day)).days
+                if (abs(dte-p["target_dte"]) <= p["dte_tolerance"]
+                        and context.get("settlement_date") == expiry
+                        and expiry < p["protected_end_before"]):
+                    choices.append((abs(dte-p["target_dte"]), expiry, context))
+            if not choices:
+                refused["no_eligible_expiry"] += 1
+                continue
+            _, expiry, context = min(choices, key=lambda x: (x[0], x[1]))
+            try:
+                decision = self._one(forecasts[day, expiry], context, day, expiry, quotes, factors)
+            except (ValueError, KeyError, TypeError, OverflowError) as exc:
+                reason = str(exc)
+                refused[reason] += 1
+                skips.append({"symbol": p["symbol"], "quote_date": day,
+                              "expiry": expiry, "reason": reason})
+                continue
+            decisions.append(decision)
+            if decision["status"] != "trade":
+                refused[decision["status"]] += 1
+                continue
+            at = bisect_right(sorted(bars), day)
+            fill_day = sorted(bars)[at] if at < len(bars) else None
+            factor = factors.get(day)
+            if fill_day is None or fill_day >= expiry:
+                reason = "missing_next_session"
+            elif (not price_ok(factors.get(fill_day)) or not price_ok(factors.get(expiry))
+                  or not math.isclose(factor, factors[fill_day], rel_tol=1e-9)
+                  or not math.isclose(factor, factors[expiry], rel_tol=1e-9)):
+                reason = "basis_change"
+            elif expiry not in bars:
+                reason = "missing_settlement"
+            else:
+                reason = None
+            fills = []
+            if reason is None:
+                for leg in decision["legs"]:
+                    row = quotes.get((fill_day, expiry, leg["right"], leg["strike"]))
+                    market = self._usable_quote(row, factor)
+                    if market is None:
+                        reason = "missing_fill_quote"
+                        break
+                    fills.append((leg, market))
+            if reason is not None:
+                decision.update(status="unfilled", unfilled_reason=reason)
+                refused[reason] += 1
+                skips.append({"symbol": p["symbol"], "quote_date": day,
+                              "expiry": expiry, "reason": reason})
+                continue
+            decision_credit = p["solver"]["multiplier"]*sum(
+                (1 if leg["side"] == "sell" else -1)*leg["price_usd_per_share"]
+                for leg, _ in fills)
+            fill_credit = p["solver"]["multiplier"]*sum(
+                bid if leg["side"] == "sell" else -ask
+                for leg, (bid, ask) in fills)
+            decision["fill_date"] = fill_day
+            decision["decision_credit_usd"] = decision_credit
+            decision["fill_credit_usd"] = fill_credit
+            decision["slippage_usd"] = decision_credit-fill_credit
+            orders.append({"date": fill_day, "symbol": p["symbol"],
+                           "expiration": expiry, "strikes": [leg["strike"] for leg, _ in fills],
+                           "structure": "condor"})
+            stress_costs.append(p["solver"]["multiplier"]*p["stress_spread_fraction"]
+                                *sum(ask-bid for _, (bid, ask) in fills))
+            for leg, (bid, ask) in fills:
+                ledger_chain.append({"symbol": p["symbol"], "date": fill_day,
+                                     "expiration": expiry, "strike": leg["strike"],
+                                     "right": leg["right"], "bid": bid, "ask": ask,
+                                     "underlying": bars[fill_day]/factor})
+            ledger_chain.append({"symbol": p["symbol"], "date": expiry,
+                                 "expiration": expiry, "strike": None, "right": None,
+                                 "bid": None, "ask": None, "underlying": bars[expiry]/factor})
+            next_allowed = expiry
+        summary = {"decisions": len(decisions), "orders": len(orders),
+                   "refused": dict(sorted(refused.items())),
+                   "method_fitted": sum(bool(d["method_fitted"]) for d in decisions),
+                   "research_only": True, "fill_proxy": "next_session_theta_eod_nbbo",
+                   "american_assignment_unmodeled": True}
+        return {"decisions": decisions, "orders": orders, "ledger_chain": ledger_chain,
+                "stress_extra_cost_usd": stress_costs, "skips": skips, "summary": summary}

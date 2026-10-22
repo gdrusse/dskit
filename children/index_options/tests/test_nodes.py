@@ -2226,3 +2226,131 @@ def test_condor_batch_refuses_a_fill_without_or_off_its_session(edit, fragment):
     edit(row)
     with pytest.raises(ValueError, match=fragment):
         RobustCondorBatchSelect("batch", params).run(None, inputs)
+
+
+def _cdf_quote_fixture(*, missing_fill=False, split_on_expiry=False):
+    grid = [-3., -2., -1., 0., 1., 2., 3.]
+    labels = ["m3", "m2", "m1", "z0", "p1", "p2", "p3"]
+    forecast = {"symbol": "SYN", "quote_date": "2019-01-02", "expiry": "2019-02-01",
+                "fold": 1, "band": "val", "fitted": False}
+    forecast.update(dict(zip((f"method_cdf_{x}" for x in labels),
+                             [.01, .05, .16, .5, .84, .95, .99])))
+    context = {"symbol": "SYN", "quote_date": "2019-01-02", "expiry": "2019-02-01",
+               "fold": 1, "band": "val", "spot": 25., "reference_scale": .1,
+               "settlement_date": "2019-02-01"}
+    chain = []
+    quotes = [("put", 80., .4, .5), ("put", 90., 3., 3.1),
+              ("call", 110., 3., 3.1), ("call", 120., .4, .5)]
+    for day in ("2019-01-02", "2019-01-03"):
+        for right, strike, bid, ask in quotes:
+            if missing_fill and day == "2019-01-03" and right == "call" and strike == 120.:
+                continue
+            chain.append({"symbol": "SYN", "date": day, "expiration": "2019-02-01",
+                          "type": right, "strike_raw": strike, "strike": strike*.25,
+                          "bid": bid*.25, "ask": ask*.25, "bid_size": 10,
+                          "ask_size": 10, "basis_factor": .25,
+                          "underlying_price": 25.})
+    chain.append({"symbol": "SYN", "date": "2019-02-01",
+                  "expiration": "2019-02-01", "type": "put", "strike_raw": 80.,
+                  "strike": 40. if split_on_expiry else 20.,
+                  "bid": .01, "ask": .02, "bid_size": 10,
+                  "ask_size": 10, "basis_factor": .5 if split_on_expiry else .25,
+                  "underlying_price": 25.})
+    bars = [{"symbol": "SYN", "date": day, "close": 25.}
+            for day in ("2019-01-02", "2019-01-03", "2019-02-01")]
+    params = {"symbol": "SYN", "start": "2019-01-01", "end_before": "2019-02-01",
+              "protected_end_before": "2020-01-01", "fold": 1, "require_fitted": False,
+              "z_grid": grid, "grid_labels": labels, "target_dte": 30,
+              "dte_tolerance": 2, "max_abs_z": 2.5, "max_relative_spread": .5,
+              "min_quote_size": 1, "stress_spread_fraction": .25,
+              "projection": {"quadrature_tolerance": 1e-8,
+                             "payoff_tolerance": 1e-6, "cdf_tolerance": None,
+                             "w1_tolerance": None, "integration_limit": 100},
+              "solver": {"multiplier": 100, "fee_per_contract_usd": .65,
+                         "tie_tolerance_usd": 1e-6, "max_absolute_gap_usd": 1e-7,
+                         "max_relative_gap": 1e-8, "objective_parity_usd": 1e-5}}
+    return params, {"forecasts": [forecast], "contexts": [context],
+                    "chain": chain, "bars": bars}
+
+
+def test_cdf_quote_condor_wires_next_session_raw_nbbo_to_ledger():
+    from index_options.nodes import CDFQuoteCondorSelect
+    from dskit.pipeline.libs.option_ledger import OptionStructureLedger
+
+    params, inputs = _cdf_quote_fixture()
+    out = CDFQuoteCondorSelect("bridge", params).run(None, inputs)
+    assert len(out["orders"]) == 1
+    order = out["orders"][0]
+    assert order == {"date": "2019-01-03", "symbol": "SYN", "expiration": "2019-02-01",
+                     "strikes": [80., 90., 110., 120.], "structure": "condor"}
+    assert out["decisions"][0]["quote_date"] == "2019-01-02"
+    assert out["decisions"][0]["fill_date"] == "2019-01-03"
+    assert out["decisions"][0]["method_fitted"] is False
+    assert out["stress_extra_cost_usd"][0] == pytest.approx(10.)
+    ledger = OptionStructureLedger("ledger", {
+        "chain_fields": {k: k for k in ("symbol", "date", "expiration", "strike",
+                                         "right", "bid", "ask", "underlying")},
+        "order_fields": {k: k for k in ("date", "symbol", "expiration", "strikes", "structure")},
+        "structures": {"condor": [["put", 1], ["put", -1],
+                                  ["call", -1], ["call", 1]]},
+        "multiplier": 100, "fee_per_contract": .65, "fill": "nbbo",
+        "close_rule": "expiry"})
+    booked = ledger.run(None, {"chain": out["ledger_chain"], "orders": out["orders"]})
+    assert booked["trades"][0]["status"] == "closed"
+    assert booked["trades"][0]["pnl_usd"] == pytest.approx(497.4)
+
+
+@pytest.mark.parametrize("change,reason", [("missing_fill", "missing_fill_quote"),
+                                           ("split_on_expiry", "basis_change")])
+def test_cdf_quote_condor_refuses_unfillable_or_split_crossing_trade(change, reason):
+    from index_options.nodes import CDFQuoteCondorSelect
+
+    params, inputs = _cdf_quote_fixture(**{change: True})
+    out = CDFQuoteCondorSelect("bridge", params).run(None, inputs)
+    assert out["orders"] == []
+    assert out["summary"]["refused"][reason] == 1
+
+
+def test_cdf_quote_condor_refuses_protected_decision_window():
+    from index_options.nodes import CDFQuoteCondorSelect
+
+    params, _inputs = _cdf_quote_fixture()
+    params["end_before"] = "2024-02-01"
+    with pytest.raises(ValueError, match="protected"):
+        CDFQuoteCondorSelect("bridge", params)
+
+
+def test_cdf_quote_condor_excludes_itm_shorts_and_requires_displayed_size():
+    from index_options.nodes import CDFQuoteCondorSelect
+
+    params, inputs = _cdf_quote_fixture()
+    for day in ("2019-01-02", "2019-01-03"):
+        inputs["chain"].append({"symbol": "SYN", "date": day,
+                                "expiration": "2019-02-01", "type": "put",
+                                "strike_raw": 105., "strike": 26.25,
+                                "bid": 5., "ask": 5.025, "bid_size": 10,
+                                "ask_size": 10, "basis_factor": .25,
+                                "underlying_price": 25.})
+    out = CDFQuoteCondorSelect("bridge", params).run(None, inputs)
+    assert out["orders"][0]["strikes"] == [80., 90., 110., 120.]
+    for row in inputs["chain"]:
+        if row["date"] == "2019-01-02" and row["type"] == "put" and row["strike_raw"] == 90.:
+            row["bid_size"] = 0
+    out = CDFQuoteCondorSelect("bridge", params).run(None, inputs)
+    assert out["orders"] == []
+    assert out["summary"]["refused"]["insufficient_eligible_legs"] == 1
+
+
+def test_cdf_quote_condor_refuses_future_settlement_and_serially_skips_overlap():
+    from index_options.nodes import CDFQuoteCondorSelect
+
+    params, inputs = _cdf_quote_fixture()
+    inputs["contexts"][0]["settlement_date"] = "2020-01-02"
+    with pytest.raises(ValueError, match="settlement crosses protected"):
+        CDFQuoteCondorSelect("bridge", params).run(None, inputs)
+    inputs["contexts"][0]["settlement_date"] = "2019-02-01"
+    second = dict(inputs["forecasts"][0], quote_date="2019-01-03")
+    inputs["forecasts"].append(second)
+    inputs["contexts"].append(dict(inputs["contexts"][0], quote_date="2019-01-03"))
+    out = CDFQuoteCondorSelect("bridge", params).run(None, inputs)
+    assert len(out["decisions"]) == len(out["orders"]) == 1
