@@ -407,6 +407,15 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   unconstrained peak reservation. It is not a margin, mark-to-market or delivery
   model.
 
+- Grid-CDF prescription bridge (ADR-0276, research only):
+  `CDFQuoteCondorSelect` takes bounded saved CDF rows, scored-row spot/scale,
+  Theta quotes and daily bars. It projects the CDF to eligible raw strikes,
+  delegates one nominal condor or no-trade choice to `RobustCondorSelect`, then
+  freezes those legs for the next session's EOD NBBO fill proxy. Its orders and
+  raw-basis quote rows go to `OptionStructureLedger`; it reports refusals and
+  a 25% extra-spread sensitivity. The 2019 warm-up uses the base-model fallback;
+  the January 2020 M51 replay is only a diagnostic, not a profit claim.
+
 > Data rule: every dataset a run reads is an onboarded source and configs name it by catalog
 > source, never by an absolute path (repo `CLAUDE.md`, "Data enters through onboarding").
 > Inputs that still break it are listed in `docs/plans/README.md`, "Data-source debt".
@@ -548,7 +557,7 @@ on the finished ingest (ADR-0187 step 0: at most 30 minutes and 6 GB).
 ```text
 pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
-index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
+index_options/             # __init__.py, contracts.py, observations.py, nodes.py (CDFQuoteCondorSelect, ADR-0276),
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258);
