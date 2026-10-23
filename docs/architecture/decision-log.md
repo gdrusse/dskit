@@ -31748,3 +31748,127 @@ The signal is frozen after date D close. The same four contracts can enter only 
 Implementation stays in existing child node/test files. Source tables already under the frozen pilot root are read only, with an explicit `end_before` at intake and a settlement boundary. Source hashes and resolved policy are recorded below; a versioned run document awaits the new-file approval required by repository instructions. Focused synthetic tests cover CDF/payoff projection, quote sides and sizes, missing D+1 legs, basis changes, expiry settlement, protected dates and nonoverlap. The initial output reports decisions, refusals, ledger P&L and extra-spread sensitivity separately; no selection of parameters on the 2020–23 diagnostic or sealed years.
 
 **ADR-0276 bounded execution (2026-10-22).** Frozen provisional knobs: one AAPL lot, 30 ± 2 calendar DTE, `max_abs_z=2.5`, relative spread at most 0.5, bid and ask size at least 1, nominal radius 0, $0.65 per leg, 25% extra quoted-spread stress, `appsi_highs` with objective parity 1e-5 USD. Source SHA256: M51 forecast `8360a63d7b42bf66a58f59855942bac2b44ca702dcb57c27638d26d2ec4fcc40`; scored rows `f0db364e4d149fe7dc22a34e2de90ef117599d32a2ab6705fe8da8e03f7b2c85`; AAPL archives 2019 `11fa930ca2097b7aa06af073f14496595a2198e6456a195b386d9701424b8bf0`, 2020 `451fa817969508ad6de8fbad3be404a14cf4b118762c7d335414a24a420e7ff3`; price shard `86095c76daa24841a35942eb894427f9880efa6977fbf0292c5d04a90805902e`. January 2019 warm-up: 2 decisions, 1 missing D+1 leg, 1 filled Jan 4 and settled Feb 1; ledger net +$323.40, declared max loss $2,876.60, extra stress cost $6.00. This is the base-model fallback, not M51. Code checkpoint `0a74c69f` was frozen before the January 2020 diagnostic: 6 fitted M51 decisions, 5 no-trade and 1 filled Jan 13 and settled Feb 7; 1 additional context refused as unfitted; ledger net +$703.40, max loss $2,546.60, extra stress cost $13.50. These are one-trade anecdotes, not evidence of economic edge or fill probability. They used filtered Arrow projections of only the forecast CDF, identity, spot, scale, quotes and closes; no 2024–25/2026 rows or outcome columns were read. Host load was about 1.2 and C: had 113 GiB free, above the 30 GiB floor. The focused `test_nodes.py` suite passed 410/410 and Ruff passed; no full suite run.
+
+**ADR-0276 monthly warm-up sweep (2026-10-22).** Owner requested one iron-condor opportunity per month per eligible ticker, allowing the MIO to choose no trade. This is a development replay on the 2019 fold-1 validation band only. All 2019 M51 forecast rows used here have `fitted=false` and equal the wide MLP64 base-model CDF, so this sweep does not measure fitted M51 performance.
+
+Universe: among 110 scored names, 88 qualified using only 2019 outcomes settled before 2020-01-01: 85 had positive weekly-mean weighted-CRPS difference versus the per-name baseline, 17 had an exploratory t > 2 on weekly means versus the raw market, and 14 met both. The t screen is unadjusted for multiplicity and time dependence. Since the same year sets the universe and evaluates trades, all P&L here is descriptive strategy-development evidence.
+
+Schedule and costs were fixed after an AAPL mechanics pilot: for each eligible symbol and calendar month, take the first scored date with a matching 30 +/- 2 calendar-day expiry after its prior filled position expires; make one MIO decision and do not retry that month. The MIO may select no trade when forecast expected net value after quoted bid/ask and $0.65 per leg is nonpositive. If it selects a condor, attempt the same four contracts at the next stock session EOD NBBO, book intrinsic settlement at expiry, and report an additional 25% of the quoted spread as entry stress. Require both quote sizes >= 1, relative spread <= 0.5, and the unchanged factor on decision, fill and expiry dates. December has no eligible 2019-settling 30-day expiry, so all 88 December cells are no-context. The four-leg structure is one lot per ticker, serial within ticker, without a dollar risk cap.
+
+Result: 88 tickers, 1056 ticker-month slots (968 January-November opportunities); 435 explicit no-trade decisions, 220 refusals for insufficient eligible legs, 161 selected but unfilled (160 missing next-session leg quote, one basis change), 152 filled and settled proxies. 99 of 152 trades earned positive realized net cash, yet aggregate ledger P&L was -$10859.19 and the extra-spread-stressed P&L was -$15066.44. Summed declared per-trade max losses were $367111.20 (not a portfolio capital denominator). Forty-eight names traded; 27 finished positive, 21 negative, 40 stayed flat. Gross winning cash was +$47803.60 and losing cash -$58662.79.
+
+The worst single trade was AMZN in May: -$14065.60 against $17572.60 declared max loss. All May trades together lost -$30528.20; this dominates the full-year total. A positive trade frequency alone did not overcome the loss sizes. No parameter was changed after observing the sweep.
+
+Monthly census and ledger net USD (T trade, N no-trade, U unfilled, R refused, - no context):
+
+```text
+month    T   N   U   R    net USD     stress USD
+2019-01   8  39  24  17    -$6552.80      -$7067.55
+2019-02   6  53   4  25    +$1391.40      +$1229.40
+2019-03   5  43  15  25     +$435.00       +$245.75
+2019-04  11  43  17  17    +$9242.40      +$8695.90
+2019-05  17  42   8  21   -$30528.20     -$31147.95
+2019-06  17  37  16  18    +$4298.80      +$4083.55
+2019-07  14  43  12  19    -$2138.40      -$2321.15
+2019-08  17  36  15  20    +$1806.80      +$1350.30
+2019-09  17  35  18  18     -$164.19       -$852.94
+2019-10  24  28  18  18    +$9332.60      +$8893.10
+2019-11  16  36  14  22    +$2017.40      +$1825.15
+2019-12   0   0   0   0       +$0.00         +$0.00
+```
+
+Per-ticker month statuses run January through December. Cash and summed max loss are USD:
+
+```text
+symbol statuses      T      net       stress      max loss
+AAPL   UNTNTTNUTTT-  6  -$2710.60    -$2771.35     $12735.60
+ABT    NNNUNTTUUTN-  3   +$393.20     +$368.95      $1106.80
+ABUS   RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+ACN    UNNNNTNNTUN-  2   -$126.20     -$197.45      $4090.20
+ADBE   UUNUTTUTTTU-  5   +$649.00     +$486.50     $13056.00
+ADI    NRNNUNNUNNN-  0     +$0.00       +$0.00         $0.00
+AEO    NNNNNNNRNNN-  0     +$0.00       +$0.00         $0.00
+AG     RRRRRRRNNNN-  0     +$0.00       +$0.00         $0.00
+AKAM   RNNNNNNNNNN-  0     +$0.00       +$0.00         $0.00
+ALB    NTRUNRNNNTN-  2   +$592.80     +$564.05      $1365.20
+ALLY   NNRNNNNNNNN-  0     +$0.00       +$0.00         $0.00
+AMGN   NNUNRNNNNTR-  1   +$374.40     +$354.90      $1375.60
+AMKR   RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+AMZN   UUTTTTTTTTT-  9  -$1229.40    -$1964.90    $167904.40
+ANET   UTTUTNUNNNN-  3  -$4687.80    -$5037.80      $8187.80
+APH    NRRNNNNNRRR-  0     +$0.00       +$0.00         $0.00
+APO    RRNNRRNRNNN-  0     +$0.00       +$0.00         $0.00
+AVAV   TNNNUNRTRRN-  2   -$235.20     -$290.20      $1035.20
+AXP    NNNUNTTTNTT-  5   +$820.00     +$777.00      $3948.00
+AXTI   RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+BA     TNUUTUTUTUN-  4  -$3681.40    -$3856.40     $15478.40
+BAC    TNNTNNUUUUT-  3   -$329.80     -$338.30       $476.80
+BIDU   UUUNUNNTTNT-  3   +$959.20     +$923.20      $3540.80
+BLK    UNNNNUNTUTN-  2   -$474.20     -$674.20      $7230.20
+BX     NNNNNNNNNNU-  0     +$0.00       +$0.00         $0.00
+C      NNUUNTTUTTT-  5    -$49.00      -$75.00      $2130.00
+CAG    NRUNNNNNNNN-  0     +$0.00       +$0.00         $0.00
+CAT    UNNTTUTTTUU-  5   -$323.00     -$379.75      $4777.00
+CCL    NNNNNTNNNNU-  1   -$326.60     -$336.60       $467.60
+CDE    RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+CHTR   TRNNTUNUTNN-  3  -$2577.80    -$2976.55      $9982.80
+CIEN   NNNNRTNRTUN-  2   +$232.80     +$198.80      $1067.20
+CLF    NNNUNNNUUTN-  1    +$62.40      +$59.65        $80.60
+CLS    RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+CMCSA  NNNNNUTNUTT-  3   +$253.20     +$238.45       $961.80
+CME    NRUNRNUNNNU-  0     +$0.00       +$0.00         $0.00
+CMG    TNNTTUTUTTU-  6   +$227.40     -$623.85     $47275.60
+CNC    NNRUUNNNNUN-  0     +$0.00       +$0.00         $0.00
+COF    NNNUNNNUNTT-  2   +$175.80     +$160.30      $1074.20
+COP    NNUTTUUNTTU-  4    +$71.60      +$38.60      $2174.40
+CPB    NNRNNNNRNNR-  0     +$0.00       +$0.00         $0.00
+CRM    UNUUNUTTUUN-  2    +$70.80      +$54.55      $2072.20
+CSCO   UNUNTNNTNUN-  2   -$211.20     -$218.70       $714.20
+CVE    RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+CVS    UNNTUUTTUUU-  3   +$378.20     +$352.20      $1255.80
+DAL    NNNNNNNTNTU-  2   +$217.80     +$194.30       $584.20
+DE     NTNNNUUNTNT-  3   +$172.20      +$98.20      $3932.80
+DHR    NNRNNNUNRUU-  0     +$0.00       +$0.00         $0.00
+DHT    RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+DIS    NNNUNNNNTTT-  3     +$2.20      -$25.05      $3524.80
+DKS    UNNNNNNRUNU-  0     +$0.00       +$0.00         $0.00
+EIX    NNRNNNRNNRN-  0     +$0.00       +$0.00         $0.00
+EOG    UNNTTTUTUUT-  5   +$667.00     +$592.25      $4640.00
+EQT    NNNNNRNNNRR-  0     +$0.00       +$0.00         $0.00
+EXPE   NTUNNNNNNUT-  2   -$500.20     -$551.45      $2300.20
+F      NNRNNNNNRNR-  0     +$0.00       +$0.00         $0.00
+FCEL   RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+FCX    TNUTTNNUNTN-  4   -$177.40     -$189.40       $576.40
+FDX    NNNNTNUTTNU-  3  -$1951.79    -$2021.79      $5501.80
+FRO    RRRRRRRRRUR-  0     +$0.00       +$0.00         $0.00
+FSLR   UTUTNUUNUUT-  3   -$699.80     -$736.55      $1658.80
+FTNT   UNNUNNNNNNN-  0     +$0.00       +$0.00         $0.00
+GE     UNNNNNNNNNN-  0     +$0.00       +$0.00         $0.00
+GILD   UNTNUTNTUTN-  4   +$473.60     +$441.35      $1727.40
+GIS    NRNNRTRNTNN-  2   +$360.80     +$347.05       $889.20
+GLW    NNNNNTNNTTN-  3    -$31.80      -$44.05       $721.80
+GME    RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+GPRO   UNNNNNRNRNR-  0     +$0.00       +$0.00         $0.00
+GS     UNTTUUTTUTU-  5  +$1604.00    +$1528.25      $9747.00
+HAL    TNNUTTTUUUU-  4   -$499.40     -$517.65       $946.40
+HL     RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+HON    NRNNNTUTUTN-  3   +$379.20     +$346.95      $4023.80
+HPQ    NRNRRNRRNTN-  1    +$33.40      +$27.90        $66.60
+HUM    NNRNNNNNUNN-  0     +$0.00       +$0.00         $0.00
+IBM    NNUUTTNNUTT-  4    +$43.60       -$4.65      $3201.40
+INTC   UNUTNUTUNUN-  2   +$206.80     +$197.30       $493.20
+INTU   UUNNUUUNUUT-  1   +$632.40     +$586.15      $2117.60
+ISRG   NNNNNUNUNUN-  0     +$0.00       +$0.00         $0.00
+JBLU   RRRRNRNRRRR-  0     +$0.00       +$0.00         $0.00
+JPM    UNUUNTTTUTT-  5   +$628.00     +$597.00      $3275.00
+KGC    RRRRRRRRNRR-  0     +$0.00       +$0.00         $0.00
+KHC    NNRRNNNNNRN-  0     +$0.00       +$0.00         $0.00
+KKR    NRNNRNNNNNN-  0     +$0.00       +$0.00         $0.00
+KMI    UNNNNNNNNNR-  0     +$0.00       +$0.00         $0.00
+KO     NNNNNNNNNNN-  0     +$0.00       +$0.00         $0.00
+KR     TNNNTNNNNNR-  2   -$148.20     -$159.70       $398.20
+KSS    UTNUTUNUNNN-  2   -$570.20     -$608.95      $1220.20
+KTOS   RRRRRRRRRRR-  0     +$0.00       +$0.00         $0.00
+```
+
+Reproducibility: code commit `31418889711a8b248533c26afd5736839c285d1a`; saved M51 forecast and scored-row hashes are in the bounded execution above. For the 88 names in table order, the SHA256 of each relative archive path plus file SHA256 and each corresponding price-shard path plus file SHA256, concatenated with a newline per path, is `1cf35482c47137d63aea7a81d83597d8cbf9647d1c2471f6674b2796d2738184` over 176 files. Arrow reads were limited to 2019 decision and pre-2020 settlement rows; archives and bars were filtered to 2019 and pre-2020 expiries. No 2020-23 diagnostic or 2024-26 holdout rows were opened for this sweep. The repeated audit run reproduced the exact trade count and cash totals. EOD NBBO remains a fill proxy, and early assignment is unmodeled.
