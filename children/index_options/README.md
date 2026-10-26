@@ -198,6 +198,11 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   Dskit's `OptionScenarioReprice` fully revalues each leg with Black-76
   (intrinsic at expiry) and reports each scenario and the worst declared loss.
   These are model-mark changes, not fill P&L or a probability-based risk bound.
+  Invalid or numerically unsafe JSON is refused: before expiry, total IV ×
+  square-root years must be 1e-4–3, absolute standardized moneyness ≤3 and
+  absolute rate × years ≤10; gross model value per state must stay ≤1e9 in
+  the declared currency, and integer counts must fit within 2^53. Subnormal
+  levels, marks and exposures are refused.
 - Distribution zoo (ADR-0181): `run-synthetic-har.json` (log-HAR scale) and
   `run-synthetic-lightgbm.json` (needs the `lightgbm` extra) differ from the
   harness only in `model`; `python -m dskit.pipeline staged

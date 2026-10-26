@@ -46,6 +46,7 @@ Import cost: stdlib only.
 """
 
 import math
+import sys
 from statistics import NormalDist
 
 from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
@@ -61,7 +62,7 @@ _STANDARD_NORMAL = NormalDist()
 
 
 def _black76_terms(right, forward, strike, vol, years, rate):
-    """Refuse a bad input; return stable log-moneyness terms and log discount."""
+    """Refuse a bad input; return ``(d1, d2, discount)`` — the one owner of the checks."""
     if right not in RIGHTS:
         raise ValueError(f"right must be one of {list(RIGHTS)}, got {right!r}")
     for name, value in (("forward", forward), ("strike", strike), ("vol", vol),
@@ -71,50 +72,8 @@ def _black76_terms(right, forward, strike, vol, years, rate):
     if not number_ok(rate):
         raise ValueError(f"rate must be a finite number, got {rate!r}")
     sd = vol * math.sqrt(years)
-    if not price_ok(sd):
-        raise ValueError("volatility times sqrt(years) must be positive and finite")
-    difference = forward - strike
-    log_moneyness = (math.log1p(difference / strike)
-                     if abs(difference) <= 0.5 * min(forward, strike)
-                     else math.log(forward) - math.log(strike))
-    center = log_moneyness / sd
-    log_discount = -rate * years
-    if not number_ok(center) or not number_ok(log_discount):
-        raise ValueError("Black-76 moneyness and discount must be finite")
-    return center, sd, log_discount
-
-
-def _discount_value(undiscounted, log_discount):
-    """Apply a continuous discount without overflowing an intermediate factor."""
-    if not number_ok(undiscounted) or undiscounted < 0:
-        raise ValueError("Black-76 undiscounted value must be nonnegative and finite")
-    if undiscounted == 0:
-        return 0.0
-    if -700.0 <= log_discount <= 700.0:
-        result = undiscounted * math.exp(log_discount)
-        if price_ok(result):
-            return result
-    try:
-        result = math.exp(math.log(undiscounted) + log_discount)
-    except OverflowError as exc:
-        raise ValueError("Black-76 discounted value exceeds finite range") from exc
-    if not number_ok(result):
-        raise ValueError("Black-76 discounted value exceeds finite range")
-    return result
-
-
-def _small_normal_interval(center, width):
-    """Integrate the normal density over a narrow interval without CDF subtraction."""
-    half = width / 2
-    side = half * math.sqrt(3 / 5)
-    pdf = _STANDARD_NORMAL.pdf
-    return half * (5 * pdf(center - side) / 9 + 8 * pdf(center) / 9
-                   + 5 * pdf(center + side) / 9)
-
-
-def _normal_cdf(value):
-    """Evaluate the normal lower tail without subtracting it from one."""
-    return math.erfc(-value / math.sqrt(2)) / 2
+    d1 = (math.log(forward / strike) + sd * sd / 2) / sd
+    return d1, d1 - sd, math.exp(-rate * years)
 
 
 def black76(right, forward, strike, vol, years, rate=0.0):
@@ -142,8 +101,7 @@ def black76(right, forward, strike, vol, years, rate=0.0):
     Raises
     ------
     ValueError
-        On an unknown right, non-positive / non-finite input, or value that
-        cannot be computed as a finite model price.
+        On an unknown right or a non-positive / non-finite input.
 
     Examples
     --------
@@ -151,31 +109,11 @@ def black76(right, forward, strike, vol, years, rate=0.0):
 
         black76("call", 100.0, 100.0, 0.2, 1.0)  # ~7.9656
     """
-    center, sd, log_discount = _black76_terms(
-        right, forward, strike, vol, years, rate)
-    d1, d2 = center + sd / 2, center - sd / 2
-    cdf = _normal_cdf
-    if forward == strike:
-        undiscounted = forward * math.erf(sd / (2 * math.sqrt(2)))
-    elif sd < 1e-4:
-        gap = _small_normal_interval(center, sd)
-        if forward < strike:
-            out_of_money = math.fsum(((forward - strike) * cdf(d1), strike * gap))
-            undiscounted = (out_of_money if right == "call"
-                            else (strike - forward) + out_of_money)
-        else:
-            out_of_money = math.fsum(((strike - forward) * cdf(-d2), forward * gap))
-            undiscounted = (out_of_money if right == "put"
-                            else (forward - strike) + out_of_money)
-    elif forward < strike:
-        out_of_money = math.fsum((forward * cdf(d1), -strike * cdf(d2)))
-        undiscounted = (out_of_money if right == "call"
-                        else (strike - forward) + out_of_money)
-    else:
-        out_of_money = math.fsum((strike * cdf(-d2), -forward * cdf(-d1)))
-        undiscounted = (out_of_money if right == "put"
-                        else (forward - strike) + out_of_money)
-    return _discount_value(undiscounted, log_discount)
+    d1, d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
+    cdf = _STANDARD_NORMAL.cdf
+    if right == "call":
+        return discount * (forward * cdf(d1) - strike * cdf(d2))
+    return discount * (strike * cdf(-d2) - forward * cdf(-d1))
 
 
 def black76_delta(right, forward, strike, vol, years, rate=0.0):
@@ -206,7 +144,7 @@ def black76_delta(right, forward, strike, vol, years, rate=0.0):
     Raises
     ------
     ValueError
-        On invalid Black-76 inputs or an unrepresentable finite-range delta.
+        On exactly the inputs :func:`black76` refuses, with its messages.
 
     Examples
     --------
@@ -214,13 +152,11 @@ def black76_delta(right, forward, strike, vol, years, rate=0.0):
 
         black76_delta("put", 100.0, 100.0, 0.2, 1.0)  # ~-0.4602
     """
-    center, sd, log_discount = _black76_terms(
-        right, forward, strike, vol, years, rate)
-    d1 = center + sd / 2
-    cdf = _normal_cdf
+    d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
+    cdf = _STANDARD_NORMAL.cdf
     if right == "call":
-        return _discount_value(cdf(d1), log_discount)
-    return -_discount_value(cdf(-d1), log_discount)
+        return discount * cdf(d1)
+    return -discount * cdf(-d1)
 
 
 def black76_vega(right, forward, strike, vol, years, rate=0.0):
@@ -230,10 +166,8 @@ def black76_vega(right, forward, strike, vol, years, rate=0.0):
     result is per underlying unit; multiply by the contract multiplier
     and signed quantity when sizing a position.
     """
-    center, sd, log_discount = _black76_terms(
-        right, forward, strike, vol, years, rate)
-    undiscounted = forward * _STANDARD_NORMAL.pdf(center + sd / 2) * math.sqrt(years)
-    return _discount_value(undiscounted, log_discount)
+    d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
+    return discount * forward * _STANDARD_NORMAL.pdf(d1) * math.sqrt(years)
 
 
 #: Newton / bisection steps :func:`black76_implied_vol` takes before it gives up.
@@ -297,12 +231,15 @@ def black76_implied_vol(right, price, forward, strike, years, rate=0.0, vol_min=
         return None
     low, high = vol_min, vol_max
     vol = 0.5 * (low + high)
+    root_years = math.sqrt(years)
+    discount = math.exp(-rate * years)
     for _ in range(_IMPLIED_VOL_STEPS):
         gap = black76(right, forward, strike, vol, years, rate) - price
         if abs(gap) <= tolerance:
             return vol
         low, high = (low, vol) if gap > 0 else (vol, high)
-        vega = black76_vega(right, forward, strike, vol, years, rate)
+        d1 = (math.log(forward / strike) + vol * vol * years / 2) / (vol * root_years)
+        vega = discount * forward * _STANDARD_NORMAL.pdf(d1) * root_years
         step = vol - gap / vega if vega > 0 else None
         vol = step if step is not None and low < step < high else 0.5 * (low + high)
     return None
@@ -512,6 +449,13 @@ class OptionScenarioReprice(Node):
     (0.10 means ten percentage points), and ``rate_shift`` is in continuous
     rate units. The report keeps every leg's contribution and the worst
     declared scenario; that worst loss has no probability or coverage claim.
+    To keep floating-point repricing resolved, each pre-expiry leg must have
+    ``iv * sqrt(remaining_days / year_basis_days)`` in ``[1e-4, 3]``,
+    absolute standardized log-moneyness at most 3 and absolute rate × years
+    at most 10. Baseline and scenario gross marks must each be at most 1e9
+    quote-currency units; integer counts must fit exactly within 2^53.
+    Subnormal price levels, marks and exposures are refused. A book outside
+    this numeric envelope is refused, not approximated.
 
     Parameters
     ----------
@@ -545,10 +489,22 @@ class OptionScenarioReprice(Node):
                       "rate_shift", "notes")
     _SHOCK_DEFAULTS = {"forward_return": 0.0, "iv_shift": 0.0,
                        "days_elapsed": 0, "rate_shift": 0.0}
+    # Keep the ordinary Black-76 implementation on a range where its CDF
+    # subtraction and discount stay numerically resolved. These are validity
+    # limits for this diagnostic, not strategy or trading thresholds.
+    _MIN_TOTAL_VOL = 1e-4
+    _MAX_TOTAL_VOL = 3.0
+    _MAX_STANDARDIZED_MONEYNESS = 3.0
+    _MAX_DISCOUNT_EXPONENT = 10.0
+    _MAX_GROSS_VALUE = 1e9
+    _MAX_EXACT_INTEGER = 2 ** 53
+    _MIN_NORMAL = sys.float_info.min
 
-    @staticmethod
-    def _numeric_ok(value, rule):
-        """Apply the shared numeric rule, treating unfloatable integers as invalid."""
+    @classmethod
+    def _numeric_ok(cls, value, rule):
+        """Apply the shared numeric rule without rounding JSON integers."""
+        if type(value) is int and abs(value) > cls._MAX_EXACT_INTEGER:
+            return False
         try:
             return rule(value)
         except OverflowError:
@@ -583,11 +539,11 @@ class OptionScenarioReprice(Node):
                 if not cls._numeric_ok(leg.get(field), price_ok):
                     problems.append(f"{where}.{field} must be positive and finite")
             days = leg.get("days_to_expiry")
-            if type(days) is not int or days <= 0:
-                problems.append(f"{where}.days_to_expiry must be a positive integer")
+            if type(days) is not int or not 0 < days <= cls._MAX_EXACT_INTEGER:
+                problems.append(f"{where}.days_to_expiry must be a positive integer <= 2^53")
             quantity = leg.get("quantity")
-            if type(quantity) is not int or quantity == 0:
-                problems.append(f"{where}.quantity must be a nonzero integer")
+            if type(quantity) is not int or not 0 < abs(quantity) <= cls._MAX_EXACT_INTEGER:
+                problems.append(f"{where}.quantity must be a nonzero integer with magnitude <= 2^53")
         return problems
 
     @classmethod
@@ -621,9 +577,43 @@ class OptionScenarioReprice(Node):
                                        number_ok):
                     problems.append(f"{where}.{field} must be finite")
             days = scenario.get("days_elapsed", cls._SHOCK_DEFAULTS["days_elapsed"])
-            if type(days) is not int or days < 0:
-                problems.append(f"{where}.days_elapsed must be an integer >= 0")
+            if type(days) is not int or not 0 <= days <= cls._MAX_EXACT_INTEGER:
+                problems.append(f"{where}.days_elapsed must be an integer from 0 to 2^53")
         return problems
+
+    @classmethod
+    def _checked_report(cls, params):
+        """Return a priced report or all structural problems before a run."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if not cls._numeric_ok(params.get("forward"), price_ok):
+            problems.append("forward must be positive and finite")
+        if not cls._numeric_ok(params.get("rate"), number_ok):
+            problems.append("rate must be finite")
+        currency = params.get("currency")
+        if (not isinstance(currency, str) or len(currency) != 3 or
+                not currency.isascii() or not currency.isalpha() or
+                not currency.isupper()):
+            problems.append("currency must be a three-letter uppercase quote currency")
+        basis = params.get("year_basis_days")
+        if type(basis) is not int or not 0 < basis <= cls._MAX_EXACT_INTEGER:
+            problems.append("year_basis_days must be a positive integer <= 2^53")
+        problems.extend(cls._leg_problems(params.get("legs")))
+        problems.extend(cls._scenario_problems(params.get("scenarios")))
+        if problems:
+            return problems, None
+        earliest_expiry = min(leg["days_to_expiry"] for leg in params["legs"])
+        for index, scenario in enumerate(params["scenarios"]):
+            if scenario.get("days_elapsed", 0) > earliest_expiry:
+                problems.append(
+                    f"scenarios[{index}].days_elapsed exceeds earliest leg expiry "
+                    f"({earliest_expiry} days); expiry settlement needs its own forward")
+        if problems:
+            return problems, None
+        try:
+            return [], cls._evaluate(params)
+        except (OverflowError, ValueError, ZeroDivisionError) as exc:
+            return [str(exc)], None
 
     @classmethod
     def validate_params(cls, params):
@@ -639,69 +629,11 @@ class OptionScenarioReprice(Node):
         list of str
             Every known problem; empty when the declaration can be priced.
         """
-        problems = []
-        reject_unknown_params(problems, params, cls._PARAMS)
-        if not cls._numeric_ok(params.get("forward"), price_ok):
-            problems.append("forward must be positive and finite")
-        if not cls._numeric_ok(params.get("rate"), number_ok):
-            problems.append("rate must be finite")
-        currency = params.get("currency")
-        if (not isinstance(currency, str) or len(currency) != 3 or
-                not currency.isascii() or not currency.isalpha() or
-                not currency.isupper()):
-            problems.append("currency must be a three-letter uppercase quote currency")
-        basis = params.get("year_basis_days")
-        if type(basis) is not int or basis <= 0:
-            problems.append("year_basis_days must be a positive integer")
-        problems.extend(cls._leg_problems(params.get("legs")))
-        problems.extend(cls._scenario_problems(params.get("scenarios")))
-        if problems:
-            return problems
-        earliest_expiry = min(leg["days_to_expiry"] for leg in params["legs"])
-        for index, scenario in enumerate(params["scenarios"]):
-            if scenario.get("days_elapsed", 0) > earliest_expiry:
-                problems.append(
-                    f"scenarios[{index}].days_elapsed exceeds earliest leg expiry "
-                    f"({earliest_expiry} days); expiry settlement needs its own forward")
-        if problems:
-            return problems
-        baseline_marks = [None] * len(params["legs"])
-        for index, scenario in enumerate((None, *params["scenarios"])):
-            before, values, deltas = len(problems), [], []
-            for leg_index, leg in enumerate(params["legs"]):
-                try:
-                    mark = cls._mark(params, leg, scenario)
-                    if not number_ok(mark):
-                        raise ValueError("non-finite model price")
-                    value = mark * leg["quantity"] * leg["multiplier"]
-                    if not number_ok(value):
-                        raise ValueError("non-finite signed contract value")
-                    values.append(value)
-                    if index == 0:
-                        baseline_marks[leg_index] = mark
-                    elif baseline_marks[leg_index] is not None:
-                        delta = (mark - baseline_marks[leg_index]) * leg["quantity"] * leg["multiplier"]
-                        if not number_ok(delta):
-                            raise ValueError("non-finite leg P&L")
-                        deltas.append(delta)
-                except (OverflowError, ValueError, ZeroDivisionError) as exc:
-                    label = "baseline" if index == 0 else f"scenarios[{index - 1}]"
-                    problems.append(f"{label} cannot price leg {leg['name']!r}: {exc}")
-            if len(problems) == before:
-                for field, amounts in (("value", values), ("P&L", deltas)):
-                    if field == "P&L" and index == 0:
-                        continue
-                    try:
-                        total = math.fsum(amounts)
-                        if not number_ok(total):
-                            raise ValueError("non-finite sum")
-                    except (OverflowError, ValueError) as exc:
-                        label = "baseline" if index == 0 else f"scenarios[{index - 1}]"
-                        problems.append(f"{label} portfolio {field} cannot be summed: {exc}")
+        problems, _report = cls._checked_report(params)
         return problems
 
     def validate_inputs(self, inputs):
-        """Use resolved JSON parameters; reject pipeline input ports.
+        """Require the scenario book to come solely from declared JSON.
 
         Parameters
         ----------
@@ -719,12 +651,25 @@ class OptionScenarioReprice(Node):
     def _mark(cls, params, leg, scenario):
         """Price one leg at the baseline or one fully shocked market state."""
         shock = scenario or {}
-        forward = params["forward"] * (1.0 + shock.get(
-            "forward_return", cls._SHOCK_DEFAULTS["forward_return"]))
-        rate = params["rate"] + shock.get("rate_shift", cls._SHOCK_DEFAULTS["rate_shift"])
-        vol = leg["iv"] + shock.get("iv_shift", cls._SHOCK_DEFAULTS["iv_shift"])
+        move = shock.get("forward_return", cls._SHOCK_DEFAULTS["forward_return"])
+        factor = 1.0 + move
+        forward = params["forward"] * factor
+        rate_shift = shock.get("rate_shift", cls._SHOCK_DEFAULTS["rate_shift"])
+        rate = params["rate"] + rate_shift
+        iv_shift = shock.get("iv_shift", cls._SHOCK_DEFAULTS["iv_shift"])
+        vol = leg["iv"] + iv_shift
+        if move != 0 and (factor == 1.0 or forward == params["forward"]):
+            raise ValueError("forward_return is rounded away in the shocked forward")
+        if rate_shift != 0 and rate == params["rate"]:
+            raise ValueError("rate_shift is rounded away in the shocked rate")
+        if iv_shift != 0 and vol == leg["iv"]:
+            raise ValueError("iv_shift is rounded away in the shocked IV")
         if not price_ok(forward):
             raise ValueError("shocked forward must remain positive and finite")
+        if forward < cls._MIN_NORMAL:
+            raise ValueError("shocked forward is outside normal range")
+        if leg["strike"] < cls._MIN_NORMAL:
+            raise ValueError("strike is outside normal range")
         if not number_ok(rate):
             raise ValueError("shocked rate must remain finite")
         if not price_ok(vol):
@@ -736,20 +681,113 @@ class OptionScenarioReprice(Node):
         if remaining == 0:
             intrinsic = (forward - leg["strike"] if leg["right"] == "call"
                          else leg["strike"] - forward)
+            if not number_ok(intrinsic):
+                raise ValueError("expiry intrinsic value is non-finite")
             return max(0.0, intrinsic)
-        mark = black76(leg["right"], forward, leg["strike"], vol,
-                       remaining / params["year_basis_days"], rate)
+        years = remaining / params["year_basis_days"]
+        if (shock.get("days_elapsed", 0) and
+                years == leg["days_to_expiry"] / params["year_basis_days"]):
+            raise ValueError("days_elapsed is rounded away in time to expiry")
+        total_vol = vol * math.sqrt(years)
+        if not cls._MIN_TOTAL_VOL <= total_vol <= cls._MAX_TOTAL_VOL:
+            raise ValueError("volatility time scale is outside numeric envelope [1e-4, 3]")
+        standardized = (math.log(forward) - math.log(leg["strike"])) / total_vol
+        if not number_ok(standardized) or abs(standardized) > cls._MAX_STANDARDIZED_MONEYNESS:
+            raise ValueError("standardized moneyness is outside numeric envelope [-3, 3]")
+        discount_exponent = rate * years
+        if not number_ok(discount_exponent) or abs(discount_exponent) > cls._MAX_DISCOUNT_EXPONENT:
+            raise ValueError("discount exponent is outside numeric envelope [-10, 10]")
+        mark = black76(leg["right"], forward, leg["strike"], vol, years, rate)
         if not price_ok(mark):
             raise ValueError("pre-expiry model price must be positive and finite")
+        if mark < cls._MIN_NORMAL:
+            raise ValueError("pre-expiry model price is outside normal range")
         return mark
 
+    @classmethod
+    def _portfolio_total(cls, values, label):
+        """Sum signed marks while bounding cancellation by gross book size."""
+        try:
+            gross = math.fsum(abs(value) for value in values)
+        except OverflowError as exc:
+            raise ValueError(f"{label} portfolio gross value exceeds numeric envelope (1e9)") from exc
+        if not number_ok(gross) or gross > cls._MAX_GROSS_VALUE:
+            raise ValueError(f"{label} portfolio gross value exceeds numeric envelope (1e9)")
+        total = math.fsum(values)
+        if not number_ok(total):
+            raise ValueError(f"{label} portfolio value is non-finite")
+        return total
+
+    @staticmethod
+    def _position_value(mark, exposure):
+        """Reject a lost or overflowing signed position value."""
+        value = mark * exposure
+        if not number_ok(value) or (mark != 0 and value == 0):
+            raise ValueError("signed position value overflows or underflows")
+        if value != 0 and abs(value) < sys.float_info.min:
+            raise ValueError("signed position value is outside normal range")
+        return value
+
+    @classmethod
+    def _evaluate(cls, params):
+        """Use the same guarded arithmetic for constructor validation and run."""
+        baseline_marks, exposures, baseline_values = [], [], []
+        for leg in params["legs"]:
+            try:
+                exposure = float(leg["quantity"]) * float(leg["multiplier"])
+                if not number_ok(exposure) or exposure == 0:
+                    raise ValueError("signed quantity × multiplier exposure is non-finite or zero")
+                if abs(exposure) < cls._MIN_NORMAL:
+                    raise ValueError("signed quantity × multiplier exposure is outside normal range")
+                mark = cls._mark(params, leg, None)
+                value = cls._position_value(mark, exposure)
+            except (OverflowError, ValueError, ZeroDivisionError) as exc:
+                raise ValueError(f"baseline cannot price leg {leg['name']!r}: {exc}") from exc
+            baseline_marks.append(mark)
+            exposures.append(exposure)
+            baseline_values.append(value)
+        base_value = cls._portfolio_total(baseline_values, "baseline")
+        rows = []
+        for index, scenario in enumerate(params["scenarios"]):
+            leg_rows, values = [], []
+            for leg, base_mark, exposure in zip(params["legs"], baseline_marks, exposures):
+                try:
+                    mark = cls._mark(params, leg, scenario)
+                    value = cls._position_value(mark, exposure)
+                    mark_change = mark - base_mark
+                    pnl = mark_change * exposure
+                    if not number_ok(pnl) or (mark_change != 0 and pnl == 0):
+                        raise ValueError("leg P&L overflows or underflows")
+                except (OverflowError, ValueError, ZeroDivisionError) as exc:
+                    raise ValueError(
+                        f"scenarios[{index}] cannot price leg {leg['name']!r}: {exc}") from exc
+                values.append(value)
+                leg_rows.append({"name": leg["name"], "base_mark": base_mark,
+                                 "scenario_mark": mark, "pnl": pnl})
+            value = cls._portfolio_total(values, f"scenarios[{index}]")
+            pnl = math.fsum(row["pnl"] for row in leg_rows)
+            if not number_ok(pnl):
+                raise ValueError(f"scenarios[{index}] portfolio P&L is non-finite")
+            rows.append({"name": scenario["name"], "shocks": {
+                key: scenario.get(key, default) for key, default in cls._SHOCK_DEFAULTS.items()},
+                "value": value, "pnl": pnl, "legs": leg_rows})
+        worst = min(rows, key=lambda row: row["pnl"])
+        metrics = {"n_scenarios": len(rows), "base_value": base_value,
+                   "worst_pnl": worst["pnl"],
+                   "worst_loss": max(0.0, -worst["pnl"])}
+        return {"kind": "option_scenario_reprice", "decision_eligible": False,
+                "pricing": "black76_forward", "currency": params["currency"],
+                "basis": "model mid; excludes fills, fees, liquidity and margin",
+                "base_value": base_value, "worst_scenario": worst["name"],
+                "scenarios": rows, "metrics": metrics}
+
     def run(self, ctx, inputs):
-        """Return per-scenario, per-leg hypothetical quote-currency P&L and worst loss.
+        """Return per-scenario, per-leg hypothetical USD P&L and worst loss.
 
         Parameters
         ----------
         ctx : NodeContext or None
-            Unused; the analysis uses resolved JSON parameters.
+            Unused; the analysis is fully declared in the JSON document.
         inputs : dict
             Must be empty.
 
@@ -766,31 +804,7 @@ class OptionScenarioReprice(Node):
         problems = self.validate_inputs(inputs)
         if problems:
             raise ValueError("; ".join(problems))
-        params = self.params
-        baseline_marks = [self._mark(params, leg, None) for leg in params["legs"]]
-        base_value = math.fsum(
-            mark * leg["quantity"] * leg["multiplier"]
-            for leg, mark in zip(params["legs"], baseline_marks))
-        rows = []
-        for scenario in params["scenarios"]:
-            leg_rows, values = [], []
-            for leg, base_mark in zip(params["legs"], baseline_marks):
-                mark = self._mark(params, leg, scenario)
-                pnl = (mark - base_mark) * leg["quantity"] * leg["multiplier"]
-                values.append(mark * leg["quantity"] * leg["multiplier"])
-                leg_rows.append({"name": leg["name"], "base_mark": base_mark,
-                                 "scenario_mark": mark, "pnl": pnl})
-            pnl = math.fsum(row["pnl"] for row in leg_rows)
-            rows.append({"name": scenario["name"], "shocks": {
-                key: scenario.get(key, default) for key, default in self._SHOCK_DEFAULTS.items()},
-                "value": math.fsum(values), "pnl": pnl, "legs": leg_rows})
-        worst = min(rows, key=lambda row: row["pnl"])
-        metrics = {"n_scenarios": len(rows), "base_value": base_value,
-                   "worst_pnl": worst["pnl"],
-                   "worst_loss": max(0.0, -worst["pnl"])}
-        report = {"kind": "option_scenario_reprice", "decision_eligible": False,
-                  "pricing": "black76_forward", "currency": params["currency"],
-                  "basis": "model mid; excludes fills, fees, liquidity and margin",
-                  "base_value": base_value, "worst_scenario": worst["name"],
-                  "scenarios": rows, "metrics": metrics}
-        return {"metrics": metrics, "report": JsonArtifact(report)}
+        problems, report = self._checked_report(self.params)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return {"metrics": report["metrics"], "report": JsonArtifact(report)}

@@ -298,7 +298,14 @@ pass the earliest leg expiry. It returns per-leg and total model-mark P&L plus
 the worst loss among the declared scenarios; expiry uses intrinsic payoff.
 The result is a hypothetical diagnostic, with no probability, fill, fee or
 margin claim. A pre-expiry mark that underflows to zero is refused because
-scaling that zero by a large position would misstate P&L.
+scaling that zero by a large position would misstate P&L. The node also
+refuses books outside its conservative numeric envelope: total volatility
+`iv * sqrt(remaining_days / year_basis_days)` in `[1e-4, 3]`, absolute
+standardized log-moneyness ≤3, absolute `rate * years` ≤10, and gross
+baseline/scenario model value ≤1e9 in the declared quote currency. Integer
+counts must be exactly representable (magnitude ≤2^53). These are numeric
+validity limits, not trading or margin thresholds. Subnormal levels, marks
+and exposures are refused as well.
 
 ADR-0276 adds `option_structures.classify_option_strategy(legs, strikes)` for
 post-solve labels of a same-underlying, same-expiry option book. It nets exact

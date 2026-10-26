@@ -97,7 +97,7 @@ def test_option_scenario_reprice_refuses_a_horizon_after_any_leg_expires():
         option_pricing.OptionScenarioReprice("stress", params)
 
 
-def test_option_scenario_reprice_handles_large_integer_position_consistently():
+def test_option_scenario_reprice_refuses_integer_position_beyond_exact_float_range():
     params = copy.deepcopy(SCENARIO_BOOK)
     params["forward"] = 1e-200
     params["legs"] = [
@@ -105,15 +105,21 @@ def test_option_scenario_reprice_handles_large_integer_position_consistently():
          "iv": 0.2, "days_to_expiry": 30, "quantity": 10 ** 200,
          "multiplier": 10 ** 200}]
     params["scenarios"] = [{"name": "unchanged"}]
-    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
-    assert math.isfinite(report["base_value"])
-    assert report["scenarios"][0]["pnl"] == 0.0
+    with pytest.raises(ConfigError, match="quantity"):
+        option_pricing.OptionScenarioReprice("stress", params)
 
 
 def test_option_scenario_reprice_refuses_unrepresentable_integer_forward():
     params = copy.deepcopy(SCENARIO_BOOK)
     params["forward"] = 10 ** 400
     with pytest.raises(ConfigError, match="forward"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_refuses_integer_multiplier_that_would_round():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["legs"][0]["multiplier"] = 2 ** 53 + 1
+    with pytest.raises(ConfigError, match="multiplier"):
         option_pricing.OptionScenarioReprice("stress", params)
 
 
@@ -125,52 +131,168 @@ def test_option_scenario_reprice_labels_the_declared_currency():
     assert report["metrics"]["base_value"] == pytest.approx(report["base_value"])
 
 
-def test_option_scenario_reprice_reprices_an_extreme_volatility_without_false_loss():
+def test_option_scenario_reprice_refuses_volatility_outside_safe_envelope():
     params = copy.deepcopy(SCENARIO_BOOK)
     params["legs"] = [{"name": "call", "right": "call", "strike": 100.0, "iv": 0.2,
                        "days_to_expiry": 365, "quantity": 1, "multiplier": 100}]
     params["scenarios"] = [{"name": "very_high_vol", "iv_shift": 1e155}]
-    row = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value[
-        "scenarios"][0]
-    assert row["legs"][0]["scenario_mark"] == pytest.approx(100.0)
-    assert row["pnl"] > 0
+    with pytest.raises(ConfigError, match="volatility.*envelope"):
+        option_pricing.OptionScenarioReprice("stress", params)
 
 
-def test_option_scenario_reprice_near_zero_iv_keeps_a_positive_baseline():
+def test_option_scenario_reprice_refuses_near_zero_volatility():
     params = copy.deepcopy(SCENARIO_BOOK)
     params["forward"] = 99.99999999999999
     params["legs"] = [{"name": "call", "right": "call", "strike": 100.0, "iv": 1e-16,
                        "days_to_expiry": 365, "quantity": 1, "multiplier": 1e17}]
     params["scenarios"] = [{"name": "expiry", "days_elapsed": 365}]
-    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
-    assert report["base_value"] == pytest.approx(34.99830835, rel=1e-6)
-    assert report["scenarios"][0]["pnl"] == pytest.approx(-34.99830835, rel=1e-6)
-
-
-def test_option_scenario_reprice_refuses_a_discounted_mark_that_underflows():
-    params = copy.deepcopy(SCENARIO_BOOK)
-    params["rate"] = 750.0
-    params["legs"] = [{"name": "call", "right": "call", "strike": 100.0, "iv": 0.2,
-                       "days_to_expiry": 365, "quantity": 10 ** 300,
-                       "multiplier": 10 ** 300}]
-    params["scenarios"] = [{"name": "expiry", "days_elapsed": 365}]
-    with pytest.raises(ConfigError, match="model price|mark"):
+    with pytest.raises(ConfigError, match="volatility.*envelope"):
         option_pricing.OptionScenarioReprice("stress", params)
 
 
-def test_black76_extreme_inputs_preserve_finite_option_values():
-    assert black76("call", 100.0, 100.0, 1e155, 1.0) == pytest.approx(100.0)
-    assert black76("call", 100.0, 100.0, 1e-16, 1.0) == pytest.approx(
-        100.0 * math.erf(1e-16 / (2 * math.sqrt(2))), rel=1e-12, abs=0.0)
-    assert black76("put", 99.99999999999999, 100.0, 1e-16, 1.0) == pytest.approx(
-        1.45608377986809e-14, rel=1e-8, abs=0.0)
-    assert black76("call", 100.00000000000001, 100.0, 1e-16, 1.0) == pytest.approx(
-        1.45608377986809e-14, rel=1e-8, abs=0.0)
-    assert black76("put", 1e-300, 1e300, 0.2, 1.0) == pytest.approx(1e300)
-    assert black76("call", 100.0, 100.09004051215274, 9e-5, 1.0) == pytest.approx(
-        6.730132100525315e-27, rel=1e-6, abs=0.0)
-    assert black76("call", 1e-300, 1e-300, 0.2, 1.0, rate=-750.0) == pytest.approx(
-        4.188689298e24, rel=1e-8)
+def test_option_scenario_reprice_refuses_discount_outside_safe_envelope():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["rate"] = 750.0
+    params["legs"] = [{"name": "call", "right": "call", "strike": 100.0, "iv": 0.2,
+                       "days_to_expiry": 365, "quantity": 1,
+                       "multiplier": 100}]
+    params["scenarios"] = [{"name": "expiry", "days_elapsed": 365}]
+    with pytest.raises(ConfigError, match="discount.*envelope"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+@pytest.mark.parametrize("forward,strike,iv,rate,match", [
+    (100.0, 1.0, 1e-308, 0.0, "volatility.*envelope"),
+    (1e-300, 1e-300, 0.2, -750.0, "discount.*envelope"),
+    (100.0, 100.09004051215274, 9e-5, 0.0, "volatility.*envelope"),
+])
+def test_option_scenario_reprice_refuses_float_unsafe_extremes(
+        forward, strike, iv, rate, match):
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params.update(forward=forward, rate=rate)
+    params["legs"] = [{"name": "call", "right": "call", "strike": strike,
+                       "iv": iv, "days_to_expiry": 365,
+                       "quantity": 1, "multiplier": 1}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    with pytest.raises(ConfigError, match=match):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_refuses_forward_shock_rounded_to_zero():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["scenarios"] = [{"name": "tiny", "forward_return": 1e-16}]
+    with pytest.raises(ConfigError, match="forward_return.*rounded away"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+@pytest.mark.parametrize("shock,match", [
+    ({"iv_shift": 1e-18}, "iv_shift.*rounded away"),
+    ({"rate_shift": 1e-20}, "rate_shift.*rounded away"),
+])
+def test_option_scenario_reprice_refuses_shift_rounded_to_zero(shock, match):
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["rate"] = 0.01
+    params["scenarios"] = [{"name": "tiny", **shock}]
+    with pytest.raises(ConfigError, match=match):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_refuses_nonfinite_exposure_before_mark_multiplication():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["forward"] = 1e-300
+    params["legs"] = [{"name": "call", "right": "call", "strike": 1e-300,
+                       "iv": 0.2, "days_to_expiry": 365,
+                       "quantity": 10 ** 9, "multiplier": 1e300}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    with pytest.raises(ConfigError, match="exposure"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_refuses_subnormal_mark_before_position_scaling():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["forward"] = 1e-307
+    params["legs"] = [{"name": "call", "right": "call", "strike": 1e-307,
+                       "iv": 0.2, "days_to_expiry": 365,
+                       "quantity": 1, "multiplier": 1e307}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    with pytest.raises(ConfigError, match="model price.*normal range"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_refuses_subnormal_forward():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["forward"] = 1e-320
+    params["legs"] = [{"name": "put", "right": "put", "strike": 5e-322,
+                       "iv": 1.0, "days_to_expiry": 365,
+                       "quantity": 1, "multiplier": 1e307}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    with pytest.raises(ConfigError, match="forward.*normal range"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+@pytest.mark.parametrize("right,strike,iv,rate,expected", [
+    # Independent 100-digit normal-CDF/Black-76 reference values at the
+    # numeric envelope's volatility, moneyness and discount boundaries.
+    ("call", 100.0, 1e-4, 0.0, 0.0039894228023520675),
+    ("put", 100.0, 3.0, 0.0, 86.63855974622839),
+    ("call", 100 * math.exp(3 * 0.2), 0.2, 0.0, 0.010272529426060342),
+    ("call", 100.0, 0.2, -10.0, 175453.29909272136),
+    ("call", 100.0, 0.2, 10.0, 0.00036163620299375836),
+])
+def test_option_scenario_reprice_matches_high_precision_boundary_values(
+        right, strike, iv, rate, expected):
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["rate"] = rate
+    params["legs"] = [{"name": "edge", "right": right, "strike": strike,
+                       "iv": iv, "days_to_expiry": 365,
+                       "quantity": 1, "multiplier": 1}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
+    assert report["base_value"] == pytest.approx(expected, rel=2e-8)
+    assert report["scenarios"][0]["pnl"] == 0
+
+
+@pytest.mark.parametrize("shock,forward,iv,days,rate", [
+    ({"forward_return": 0.05}, 105, 0.2, 30, 0.01),
+    ({"iv_shift": 0.05}, 100, 0.25, 30, 0.01),
+    ({"days_elapsed": 1}, 100, 0.2, 29, 0.01),
+    ({"rate_shift": 0.02}, 100, 0.2, 30, 0.03),
+])
+def test_option_scenario_reprice_applies_each_shock_separately(
+        shock, forward, iv, days, rate):
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["rate"] = 0.01
+    params["legs"] = [{"name": "short_put", "right": "put", "strike": 95,
+                       "iv": 0.2, "days_to_expiry": 30,
+                       "quantity": -2, "multiplier": 100}]
+    params["scenarios"] = [{"name": "factor", **shock}]
+    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
+    row = report["scenarios"][0]
+    baseline_mark = black76("put", 100, 95, 0.2, 30 / 365, rate=0.01)
+    shocked_mark = black76("put", forward, 95, iv, days / 365, rate=rate)
+    assert row["value"] == pytest.approx(-200 * shocked_mark)
+    assert row["pnl"] == pytest.approx(-200 * (shocked_mark - baseline_mark))
+    assert row["legs"][0]["pnl"] == pytest.approx(row["pnl"])
+
+
+def test_option_scenario_reprice_refuses_gross_value_above_numeric_envelope():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["legs"] = [{"name": "call", "right": "call", "strike": 100,
+                       "iv": 0.2, "days_to_expiry": 365,
+                       "quantity": 10 ** 9, "multiplier": 100}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    with pytest.raises(ConfigError, match="portfolio gross value.*envelope"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_refuses_shocked_gross_value_above_numeric_envelope():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["legs"] = [{"name": "call", "right": "call", "strike": 100,
+                       "iv": 0.2, "days_to_expiry": 365,
+                       "quantity": 10 ** 6, "multiplier": 100}]
+    params["scenarios"] = [{"name": "rally", "forward_return": 0.5}]
+    with pytest.raises(ConfigError, match=r"scenarios\[0\] portfolio gross value.*envelope"):
+        option_pricing.OptionScenarioReprice("stress", params)
 
 
 @pytest.mark.parametrize("change,match", [
