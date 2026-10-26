@@ -61,7 +61,7 @@ _STANDARD_NORMAL = NormalDist()
 
 
 def _black76_terms(right, forward, strike, vol, years, rate):
-    """Refuse a bad input; return ``(d1, d2, discount)`` — the one owner of the checks."""
+    """Refuse a bad input; return stable log-moneyness terms and log discount."""
     if right not in RIGHTS:
         raise ValueError(f"right must be one of {list(RIGHTS)}, got {right!r}")
     for name, value in (("forward", forward), ("strike", strike), ("vol", vol),
@@ -71,8 +71,50 @@ def _black76_terms(right, forward, strike, vol, years, rate):
     if not number_ok(rate):
         raise ValueError(f"rate must be a finite number, got {rate!r}")
     sd = vol * math.sqrt(years)
-    d1 = (math.log(forward / strike) + sd * sd / 2) / sd
-    return d1, d1 - sd, math.exp(-rate * years)
+    if not price_ok(sd):
+        raise ValueError("volatility times sqrt(years) must be positive and finite")
+    difference = forward - strike
+    log_moneyness = (math.log1p(difference / strike)
+                     if abs(difference) <= 0.5 * min(forward, strike)
+                     else math.log(forward) - math.log(strike))
+    center = log_moneyness / sd
+    log_discount = -rate * years
+    if not number_ok(center) or not number_ok(log_discount):
+        raise ValueError("Black-76 moneyness and discount must be finite")
+    return center, sd, log_discount
+
+
+def _discount_value(undiscounted, log_discount):
+    """Apply a continuous discount without overflowing an intermediate factor."""
+    if not number_ok(undiscounted) or undiscounted < 0:
+        raise ValueError("Black-76 undiscounted value must be nonnegative and finite")
+    if undiscounted == 0:
+        return 0.0
+    if -700.0 <= log_discount <= 700.0:
+        result = undiscounted * math.exp(log_discount)
+        if price_ok(result):
+            return result
+    try:
+        result = math.exp(math.log(undiscounted) + log_discount)
+    except OverflowError as exc:
+        raise ValueError("Black-76 discounted value exceeds finite range") from exc
+    if not number_ok(result):
+        raise ValueError("Black-76 discounted value exceeds finite range")
+    return result
+
+
+def _small_normal_interval(center, width):
+    """Integrate the normal density over a narrow interval without CDF subtraction."""
+    half = width / 2
+    side = half * math.sqrt(3 / 5)
+    pdf = _STANDARD_NORMAL.pdf
+    return half * (5 * pdf(center - side) / 9 + 8 * pdf(center) / 9
+                   + 5 * pdf(center + side) / 9)
+
+
+def _normal_cdf(value):
+    """Evaluate the normal lower tail without subtracting it from one."""
+    return math.erfc(-value / math.sqrt(2)) / 2
 
 
 def black76(right, forward, strike, vol, years, rate=0.0):
@@ -100,7 +142,8 @@ def black76(right, forward, strike, vol, years, rate=0.0):
     Raises
     ------
     ValueError
-        On an unknown right or a non-positive / non-finite input.
+        On an unknown right, non-positive / non-finite input, or value that
+        cannot be computed as a finite model price.
 
     Examples
     --------
@@ -108,11 +151,31 @@ def black76(right, forward, strike, vol, years, rate=0.0):
 
         black76("call", 100.0, 100.0, 0.2, 1.0)  # ~7.9656
     """
-    d1, d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
-    cdf = _STANDARD_NORMAL.cdf
-    if right == "call":
-        return discount * (forward * cdf(d1) - strike * cdf(d2))
-    return discount * (strike * cdf(-d2) - forward * cdf(-d1))
+    center, sd, log_discount = _black76_terms(
+        right, forward, strike, vol, years, rate)
+    d1, d2 = center + sd / 2, center - sd / 2
+    cdf = _normal_cdf
+    if forward == strike:
+        undiscounted = forward * math.erf(sd / (2 * math.sqrt(2)))
+    elif sd < 1e-4:
+        gap = _small_normal_interval(center, sd)
+        if forward < strike:
+            out_of_money = math.fsum(((forward - strike) * cdf(d1), strike * gap))
+            undiscounted = (out_of_money if right == "call"
+                            else (strike - forward) + out_of_money)
+        else:
+            out_of_money = math.fsum(((strike - forward) * cdf(-d2), forward * gap))
+            undiscounted = (out_of_money if right == "put"
+                            else (forward - strike) + out_of_money)
+    elif forward < strike:
+        out_of_money = math.fsum((forward * cdf(d1), -strike * cdf(d2)))
+        undiscounted = (out_of_money if right == "call"
+                        else (strike - forward) + out_of_money)
+    else:
+        out_of_money = math.fsum((strike * cdf(-d2), -forward * cdf(-d1)))
+        undiscounted = (out_of_money if right == "put"
+                        else (forward - strike) + out_of_money)
+    return _discount_value(undiscounted, log_discount)
 
 
 def black76_delta(right, forward, strike, vol, years, rate=0.0):
@@ -143,7 +206,7 @@ def black76_delta(right, forward, strike, vol, years, rate=0.0):
     Raises
     ------
     ValueError
-        On exactly the inputs :func:`black76` refuses, with its messages.
+        On invalid Black-76 inputs or an unrepresentable finite-range delta.
 
     Examples
     --------
@@ -151,11 +214,13 @@ def black76_delta(right, forward, strike, vol, years, rate=0.0):
 
         black76_delta("put", 100.0, 100.0, 0.2, 1.0)  # ~-0.4602
     """
-    d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
-    cdf = _STANDARD_NORMAL.cdf
+    center, sd, log_discount = _black76_terms(
+        right, forward, strike, vol, years, rate)
+    d1 = center + sd / 2
+    cdf = _normal_cdf
     if right == "call":
-        return discount * cdf(d1)
-    return -discount * cdf(-d1)
+        return _discount_value(cdf(d1), log_discount)
+    return -_discount_value(cdf(-d1), log_discount)
 
 
 def black76_vega(right, forward, strike, vol, years, rate=0.0):
@@ -165,8 +230,10 @@ def black76_vega(right, forward, strike, vol, years, rate=0.0):
     result is per underlying unit; multiply by the contract multiplier
     and signed quantity when sizing a position.
     """
-    d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
-    return discount * forward * _STANDARD_NORMAL.pdf(d1) * math.sqrt(years)
+    center, sd, log_discount = _black76_terms(
+        right, forward, strike, vol, years, rate)
+    undiscounted = forward * _STANDARD_NORMAL.pdf(center + sd / 2) * math.sqrt(years)
+    return _discount_value(undiscounted, log_discount)
 
 
 #: Newton / bisection steps :func:`black76_implied_vol` takes before it gives up.
@@ -230,15 +297,12 @@ def black76_implied_vol(right, price, forward, strike, years, rate=0.0, vol_min=
         return None
     low, high = vol_min, vol_max
     vol = 0.5 * (low + high)
-    root_years = math.sqrt(years)
-    discount = math.exp(-rate * years)
     for _ in range(_IMPLIED_VOL_STEPS):
         gap = black76(right, forward, strike, vol, years, rate) - price
         if abs(gap) <= tolerance:
             return vol
         low, high = (low, vol) if gap > 0 else (vol, high)
-        d1 = (math.log(forward / strike) + vol * vol * years / 2) / (vol * root_years)
-        vega = discount * forward * _STANDARD_NORMAL.pdf(d1) * root_years
+        vega = black76_vega(right, forward, strike, vol, years, rate)
         step = vol - gap / vega if vega > 0 else None
         vol = step if step is not None and low < step < high else 0.5 * (low + high)
     return None
@@ -637,7 +701,7 @@ class OptionScenarioReprice(Node):
         return problems
 
     def validate_inputs(self, inputs):
-        """Require the scenario book to come solely from declared JSON.
+        """Use resolved JSON parameters; reject pipeline input ports.
 
         Parameters
         ----------
@@ -673,16 +737,19 @@ class OptionScenarioReprice(Node):
             intrinsic = (forward - leg["strike"] if leg["right"] == "call"
                          else leg["strike"] - forward)
             return max(0.0, intrinsic)
-        return black76(leg["right"], forward, leg["strike"], vol,
+        mark = black76(leg["right"], forward, leg["strike"], vol,
                        remaining / params["year_basis_days"], rate)
+        if not price_ok(mark):
+            raise ValueError("pre-expiry model price must be positive and finite")
+        return mark
 
     def run(self, ctx, inputs):
-        """Return per-scenario, per-leg hypothetical USD P&L and worst loss.
+        """Return per-scenario, per-leg hypothetical quote-currency P&L and worst loss.
 
         Parameters
         ----------
         ctx : NodeContext or None
-            Unused; the analysis is fully declared in the JSON document.
+            Unused; the analysis uses resolved JSON parameters.
         inputs : dict
             Must be empty.
 

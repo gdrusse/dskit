@@ -125,6 +125,54 @@ def test_option_scenario_reprice_labels_the_declared_currency():
     assert report["metrics"]["base_value"] == pytest.approx(report["base_value"])
 
 
+def test_option_scenario_reprice_reprices_an_extreme_volatility_without_false_loss():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["legs"] = [{"name": "call", "right": "call", "strike": 100.0, "iv": 0.2,
+                       "days_to_expiry": 365, "quantity": 1, "multiplier": 100}]
+    params["scenarios"] = [{"name": "very_high_vol", "iv_shift": 1e155}]
+    row = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value[
+        "scenarios"][0]
+    assert row["legs"][0]["scenario_mark"] == pytest.approx(100.0)
+    assert row["pnl"] > 0
+
+
+def test_option_scenario_reprice_near_zero_iv_keeps_a_positive_baseline():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["forward"] = 99.99999999999999
+    params["legs"] = [{"name": "call", "right": "call", "strike": 100.0, "iv": 1e-16,
+                       "days_to_expiry": 365, "quantity": 1, "multiplier": 1e17}]
+    params["scenarios"] = [{"name": "expiry", "days_elapsed": 365}]
+    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
+    assert report["base_value"] == pytest.approx(34.99830835, rel=1e-6)
+    assert report["scenarios"][0]["pnl"] == pytest.approx(-34.99830835, rel=1e-6)
+
+
+def test_option_scenario_reprice_refuses_a_discounted_mark_that_underflows():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["rate"] = 750.0
+    params["legs"] = [{"name": "call", "right": "call", "strike": 100.0, "iv": 0.2,
+                       "days_to_expiry": 365, "quantity": 10 ** 300,
+                       "multiplier": 10 ** 300}]
+    params["scenarios"] = [{"name": "expiry", "days_elapsed": 365}]
+    with pytest.raises(ConfigError, match="model price|mark"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_black76_extreme_inputs_preserve_finite_option_values():
+    assert black76("call", 100.0, 100.0, 1e155, 1.0) == pytest.approx(100.0)
+    assert black76("call", 100.0, 100.0, 1e-16, 1.0) == pytest.approx(
+        100.0 * math.erf(1e-16 / (2 * math.sqrt(2))), rel=1e-12, abs=0.0)
+    assert black76("put", 99.99999999999999, 100.0, 1e-16, 1.0) == pytest.approx(
+        1.45608377986809e-14, rel=1e-8, abs=0.0)
+    assert black76("call", 100.00000000000001, 100.0, 1e-16, 1.0) == pytest.approx(
+        1.45608377986809e-14, rel=1e-8, abs=0.0)
+    assert black76("put", 1e-300, 1e300, 0.2, 1.0) == pytest.approx(1e300)
+    assert black76("call", 100.0, 100.09004051215274, 9e-5, 1.0) == pytest.approx(
+        6.730132100525315e-27, rel=1e-6, abs=0.0)
+    assert black76("call", 1e-300, 1e-300, 0.2, 1.0, rate=-750.0) == pytest.approx(
+        4.188689298e24, rel=1e-8)
+
+
 @pytest.mark.parametrize("change,match", [
     (lambda p: p.update(forward=0), "forward"),
     (lambda p: p.pop("currency"), "currency"),
