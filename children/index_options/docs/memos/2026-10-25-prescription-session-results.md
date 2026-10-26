@@ -254,4 +254,15 @@ Both fresh independent final reviews passed with zero Critical/Major and no new 
 
 V11 launched at **2026-10-26 03:22:52 UTC** (October 25 locally) in WSL as index-options-2019-full-dte-v11.service. The journal confirms FRESH_PRE2019_FULL_DTE_INITIALIZED with the intake identity above and START M05 W1 .03 verified inputs. Launch PID: 2713844; invocation: bc5e40558c1844f08a8097651e6d1ebd. The service was active/running at the launch check. The completed result and independent audit are recorded above.
 
-V11 ended successfully at 13:36:49 UTC on October 26. The requested high-level memo and full results addendum were written before wrap. This closeout changes documentation only; runtime, tests and the completed report remain unchanged. The next authorized step after publication and wrap is a separate Claude/Fable research session for method selection, additional MIO proposals and solve-speed investigation. The existing heartbeat remains active until that launch is verified.
+V11 ended successfully at 13:36:49 UTC on October 26. The requested high-level memo and full results addendum were written before wrap. This closeout changes documentation only; runtime, tests and the completed report remain unchanged. The next authorized step after publication and wrap is a separate Claude/Fable research session for method selection, additional MIO proposals and solve-speed investigation. The launch was subsequently verified as recorded below; the completion heartbeat can now be paused.
+
+
+### Fable session launch receipt
+
+After both memos were published in commit 3aaff02508da09032d840746d5302ea51f6d9d2f and wrap completed, the requested research session started at **2026-10-26 14:07:03 UTC**. Actual assistant model verified from its transcript: **Claude Fable 5.1** (claude-fable-5-1); session **09563c01-7415-4275-a466-2db186f3c75d**. The trusted three-part prompt was received and the agent began read-only investigation.
+
+- Own checkout: /home/russell/wt/index-options-mio-fable-20261026, based on the published memo commit.
+- WSL service: index-options-mio-fable-20261026.service; invocation 885a028e0421423ebbe044dbd29f0888.
+- Launch/prompt/model receipts: /home/russell/.local/state/index-options-mio-fable-20261026/.
+- The dispatcher saves its eventual final answer as research-report.md in that receipt directory. At this launch check the investigation was running; no recommendation is claimed complete.
+- Scope: rank methods, propose additional MIO work and investigate solve speed. No runtime edits, new market backtests, holdout access, model substitution or unattended mutation flags.

@@ -87,4 +87,4 @@ This memo was written on October 26, 2026 before wrap, from saved completed resu
 
 Source: [saved research report](/home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-2019-condor-oracle.canvas.tsx), weeklyPriorFormulationRuns v6 derived_old_policy_comparison for the historical leader, and weeklyPortfolio v11 for the new result. Historical comparison identity: dc4063389d2d580229926d3a63e97be5568099da6a6f3f1c4d752702774396dc. V11 identity: 44d615b48bdcdf0e300081ecdedefd0d7b2d0194ab8f10d118d4e4fa29b94580.
 
-Next authorized step: publish both memos, wrap, then launch the requested separate Claude/Fable investigation of method selection, additional MIO work and solver speed.
+Both memos were published and wrap completed at commit 3aaff025. The separate Claude/Fable investigation then started at 14:07:03 UTC, with Claude Fable 5.1 confirmed. Session: 09563c01-7415-4275-a466-2db186f3c75d. It is investigating method selection, MIO improvements and solve speed; its recommendations are not yet complete. See the [launch receipt](2026-10-25-prescription-session-results.md#fable-session-launch-receipt).
