@@ -22,7 +22,7 @@ torch = ["torch>=2.0"]
 transformers = ["transformers>=4.30", "torch>=2.0"]
 neuralforecast = ["neuralforecast>=3.1.9,<3.2"]
 optuna = ["optuna>=3.0"]
-pyomo = ["pyomo>=6.7", "highspy>=1.7"]
+pyomo = ["pyomo>=6.7", "highspy>=1.7", "scipy>=1.10"]
 # The sb3 pack (dskit/pipeline/libs/sb3.py). Both bounds are upper-bounded
 # on purpose: the pack reads Gymnasium's reset/step return SHAPES and
 # stable-baselines3's predict signature directly, so a major or minor

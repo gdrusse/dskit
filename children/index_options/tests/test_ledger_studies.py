@@ -1948,3 +1948,47 @@ def test_weekly_portfolio_short_notional_fraction_floors_sold_legs_only():
     explicit["methods"][0]["short_notional_fraction"] = 0.
     same = ledger_studies.WeeklyOptionPortfolioStudy(explicit, inputs).run()["methods"][0]
     assert same["trades"] == base["trades"]
+
+
+def test_weekly_portfolio_group_screen_prunes_and_replays_with_charges(monkeypatch):
+    """A screened, charged method records, replays and refuses a mutated reserve or charge."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, inputs = _weekly_portfolio_fixture()
+    params = copy.deepcopy(params)
+    data = inputs["X"]
+    for name in ("forecasts", "contexts"):
+        row = copy.deepcopy(data[name][1])
+        row["quote_date"] = "2019-01-02"
+        data[name].append(row)
+    data["chain"].extend({**row, "date": "2019-01-02"} for row in list(data["chain"])
+                         if row["date"] == "2019-01-07" and row["expiration"] == "2019-02-08")
+    params["solver"]["group_screen"] = "lp"
+    params["bridge"]["dte_tolerance"] = 30  # both expiries compete on 2019-01-02
+    params["methods"][0].update(reserve_per_contract=400., short_notional_fraction=.1)
+    bound = TransportPortfolioSolve._group_lp_bound
+    monkeypatch.setattr(TransportPortfolioSolve, "_group_lp_bound",
+                        staticmethod(lambda g: -1. if g["id"].endswith("2019-02-08") else bound(g)))
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    original = study._method(params["methods"][0], None)
+    first = original["decisions"][0]
+    assert first["candidate_books"] == 2 and first["status"] == "selected"
+    assert first["certificates"][0]["variables"] < 2*len(first["selection"]["quantities"][0])
+    assert all(b["expiry"] != "2019-02-08" for b in first["books"])
+    assert all(t["reserve"] >= 400.*t["contracts"]-1e-9 for t in original["trades"])
+    replayed = study._method(params["methods"][0], None, recorded=copy.deepcopy(original))
+    assert replayed == original
+    bad = copy.deepcopy(original)
+    bad["trades"][0]["reserve"] /= 2
+    with pytest.raises(ValueError, match="recorded"):
+        study._method(params["methods"][0], None, recorded=bad)
+    other = copy.deepcopy(params["methods"][0])
+    other["reserve_per_contract"] = 0.
+    with pytest.raises(ValueError, match="recorded method or decision calendar differs"):
+        study._method(other, None, recorded=copy.deepcopy(original))
+    plain = copy.deepcopy(params)
+    plain["solver"]["group_screen"] = "none"
+    with pytest.raises(ValueError, match="recorded model dimensions differ"):
+        ledger_studies.WeeklyOptionPortfolioStudy(plain, inputs)._method(
+            params["methods"][0], None, recorded=copy.deepcopy(original))

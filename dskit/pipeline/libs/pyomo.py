@@ -3382,10 +3382,13 @@ class TransportPortfolioSolve(PyomoSolve):
         a non-executable timeout diagnostic when certification is unavailable.
         Optional group_screen is "none" (default) or "lp": before the joint
         integer program is built, each group's own LP relaxation is solved
-        alone (no shared caps); a group whose relaxed optimum is not
-        positive can never add value, so it is left out of the model and
-        reported with zero actions. The joint optimum is unchanged; only the
-        model size and the certificate's variable/constraint counts shrink.
+        alone (no shared caps); a group whose relaxed optimum is within
+        parity_tolerance of zero can never add more than that, so it is
+        left out of the model and reported with zero actions (when every
+        group is screened out the best one is kept so a solver certificate
+        still exists). The joint optimum is unchanged within
+        parity_tolerance; only the model size and the certificate's
+        variable/constraint counts shrink. Replay re-derives the screen.
         Inputs contain
         groups (id, grid, masses, radius, scale, credit, losses, capacity,
         exclusive, reserve_rows, linear_rows) and caps (groups, upper).
@@ -3550,7 +3553,9 @@ class TransportPortfolioSolve(PyomoSolve):
         if self.params.get("group_screen", "none") != "lp":
             return list(range(len(groups)))
         bounds = [self._group_lp_bound(g) for g in groups]
-        active = [i for i, b in enumerate(bounds) if b > 0.]
+        # A tolerance, not a strict zero: LP noise of 1e-8 must not change
+        # which groups a replay keeps across solver builds.
+        active = [i for i, b in enumerate(bounds) if b > self.params["parity_tolerance"]]
         if not active:
             # Keep the best group so that a solver certificate still exists.
             active = [max(range(len(groups)), key=lambda i: bounds[i])]

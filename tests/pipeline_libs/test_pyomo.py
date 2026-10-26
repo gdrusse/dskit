@@ -3790,7 +3790,7 @@ def _screen_params(screen):
             "group_screen": screen}
 
 
-@pytest.mark.parametrize("radius", [0., .1])
+@pytest.mark.parametrize("radius", [0., .03])
 def test_transport_portfolio_group_screen_matches_unscreened_optimum(radius):
     """LP screening drops only groups that cannot add value; the optimum is unchanged."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
@@ -3800,6 +3800,8 @@ def test_transport_portfolio_group_screen_matches_unscreened_optimum(radius):
     plain = TransportPortfolioSolve("plain", _screen_params("none")).run(None, inputs)["selection"]
     node = TransportPortfolioSolve("screen", _screen_params("lp"))
     screened = node.run(None, inputs)["selection"]
+    assert TransportPortfolioSolve._group_lp_bound(groups[0]) > 0., "the live group must be live"
+    assert plain["value"] > 0.
     assert node._active == [0]
     assert screened["value"] == pytest.approx(plain["value"], abs=1e-6)
     assert screened["quantities"] == plain["quantities"]
@@ -3825,6 +3827,12 @@ def test_transport_portfolio_group_screen_keeps_one_group_when_none_is_live():
     assert len(node._active) == 1
     assert result["value"] == 0. and result["quantities"] == [[0, 0], [0]]
     assert result["certificates"][0]["termination"] == "optimal"
+    # A wide radius kills every group, including the one that is live at .03.
+    groups, caps = _screen_groups(.1)
+    assert all(TransportPortfolioSolve._group_lp_bound(g) <= 0. for g in groups)
+    node = TransportPortfolioSolve("wide", _screen_params("lp"))
+    assert node.run(None, {"groups": groups, "caps": caps})["selection"]["value"] == 0.
+    assert len(node._active) == 1
 
 
 def test_transport_portfolio_group_screen_recorded_replay_refuses_pruned_actions():
