@@ -6,7 +6,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-10-16: ADR-0268 perf sweep landed 471dd655 (26 units, two clean lenses each); owner purges remote branches |
+| dskit core | "Core" below | 2026-10-26: main synced; 37 local/2 remote contained branches purged; unmerged/dirty work retained; sweep receipt below |
 | index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-26: Fable MIO/2020 evidence integrated with scenario repricer; candidate254f4ae4 two clean lenses, focused checks pass; shock net +$4,197 vs stock comparison +$7,354; holdout sealed |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
@@ -18,28 +18,26 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 ## Core (dskit itself)
 
-**Now.** 2026-10-16: the ADR-0268 equivalence-preserving performance sweep landed
-(`main` fast-forwarded to `471dd655`, from `claude/perf-sweep-20261014`). 34 units:
-26 landed, each through its own merge commit carrying the review record (frozen
-candidate, two Sonnet skeptic lenses, zero unresolved Critical/Major); 5 dropped
-(`pipeline-trust`, `pipeline-kinds`, `child-index-options-a/-b`, `libs-pyomo-rl-nlp`);
-3 no change (`production-execution`, `-guards`, `-cli-bundles`). Merged vs main:
-core tests and all 8 child suites fail exactly main's known reds and pass 516 more
-(the new pins). Record and per-unit outcomes: ADR-0268 in the decision log.
-Behaviour change to know: the faster sweep scorer can finish a big commit's
-commit-msg check that used to hit the hook's 12 s cap and pass unchecked.
-Known reds on main, untouched, each its own bounded task:
-`test_purity.py::test_core_never_reaches_outside_the_toolkit_at_any_depth`
-(`libs/parquet.py` imports `dskit.onboarding.snapshot`) and, on Python 3.13,
-`test_uncertainty_set.py::...::test_replace_without_the_arrays_cannot_recover_them`.
+**Now.** 2026-10-26: local main caught up 166 commits to published `8e14281c`.
+The completed Fable and scenario work is included. Removed 37 contained local
+branches and two contained remote branches; all 88 worktree directories remain.
+The 12 unmerged branches, two unmerged detached histories and 20 dirty checkouts
+are preserved (overlapping counts). No additional candidate with verified current
+two-lens approval was established. No runtime or study changes in this sweep.
 
-**Next.** Owner, from a machine with push rights: delete the contained remote
-branches listed in the archived 2026-10-11 note, plus `claude/perf-sweep-20261014`
-if still present. Optional follow-ups, each its own bounded task: the deferred
-pins named in the ADR-0268 merge commits; unproven saved patches (open-order index
-for `PaperExecutor._march`, money-check fast path) if long paper replays matter.
+**Next.** Reconcile retained work one bounded candidate at a time, then obtain
+current required reviews before merging. Dirty checkouts need their owner's
+closeout; do not reset or discard them. Prior ADR-0268 performance follow-ups
+and known baseline test failures remain historical open work, not retested here.
 
-**Blocked.** Nothing.
+**Blocked / owner decisions.** No additional merge-ready candidate established;
+see the exact retained heads and review gaps in the sweep memo.
+
+**Read first.** [Branch sweep receipt](memos/2026-10-26-repository-branch-sweep.md).
+
+**Do not.** Delete unmerged/dirty work or worktree artifacts; reopen protected
+data windows or run studies as part of cleanup. Historical core state is in
+`docs/archive/re-entry/dskit-core.md` when needed.
 
 ## Protocol
 

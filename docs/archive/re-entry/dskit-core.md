@@ -6,6 +6,35 @@ read at session start. Older history: `2026-10-10-consolidated-history.md`.
 
 ---
 
+# Core note - 2026-10-16 (replaced 2026-10-26 by repository branch sweep)
+
+## Core (dskit itself)
+
+**Now.** 2026-10-16: the ADR-0268 equivalence-preserving performance sweep landed
+(`main` fast-forwarded to `471dd655`, from `claude/perf-sweep-20261014`). 34 units:
+26 landed, each through its own merge commit carrying the review record (frozen
+candidate, two Sonnet skeptic lenses, zero unresolved Critical/Major); 5 dropped
+(`pipeline-trust`, `pipeline-kinds`, `child-index-options-a/-b`, `libs-pyomo-rl-nlp`);
+3 no change (`production-execution`, `-guards`, `-cli-bundles`). Merged vs main:
+core tests and all 8 child suites fail exactly main's known reds and pass 516 more
+(the new pins). Record and per-unit outcomes: ADR-0268 in the decision log.
+Behaviour change to know: the faster sweep scorer can finish a big commit's
+commit-msg check that used to hit the hook's 12 s cap and pass unchecked.
+Known reds on main, untouched, each its own bounded task:
+`test_purity.py::test_core_never_reaches_outside_the_toolkit_at_any_depth`
+(`libs/parquet.py` imports `dskit.onboarding.snapshot`) and, on Python 3.13,
+`test_uncertainty_set.py::...::test_replace_without_the_arrays_cannot_recover_them`.
+
+**Next.** Owner, from a machine with push rights: delete the contained remote
+branches listed in the archived 2026-10-11 note, plus `claude/perf-sweep-20261014`
+if still present. Optional follow-ups, each its own bounded task: the deferred
+pins named in the ADR-0268 merge commits; unproven saved patches (open-order index
+for `PaperExecutor._march`, money-check fast path) if long paper replays matter.
+
+**Blocked.** Nothing.
+
+---
+
 # Core note — 2026-10-11 (replaced 2026-10-16 by the ADR-0268 performance sweep wrap)
 
 **Now.** 2026-10-10 cleanup: `docs/RE-ENTRY.md` was 469,597 lines (4,431 unique)
