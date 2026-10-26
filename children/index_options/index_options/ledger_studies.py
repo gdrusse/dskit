@@ -1267,10 +1267,12 @@ class WeeklyOptionPortfolioStudy:
         correlation_min_pairs, correlation_threshold, solver, and methods.
         Each method declares id, rho, portfolio_fraction, name_fraction and
         component_fraction (null disables correlation grouping), and may add
-        reserve_per_contract: a nonnegative USD capital charge per gross
-        contract that the book's reserve can never fall below (0, the
-        default, keeps the terminal-loss reserve alone; it is what a broker
-        margin floor removes from zero-loss parity books).
+        two capital-charge floors the book's reserve can never fall below:
+        reserve_per_contract, a nonnegative USD charge per gross contract,
+        and short_notional_fraction, a nonnegative fraction of the sold
+        legs' strike notional (strike x multiplier x quantity). Both default
+        to 0, which keeps the terminal-loss reserve alone; they stand in for
+        the margin a broker would hold against zero-loss parity books.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1287,7 +1289,7 @@ class WeeklyOptionPortfolioStudy:
                "weekly_fraction", "correlation_lookback", "correlation_min_pairs",
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
-    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract"}
+    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction"}
 
     def __init__(self, params, inputs):
         import copy
@@ -1320,7 +1322,7 @@ class WeeklyOptionPortfolioStudy:
         for method in p["methods"]:
             if (not isinstance(method, dict)
                     or set(method)-self._OPTIONAL_METHOD_KEYS != self._METHOD_KEYS
-                    or not number_ok(self._charge(method)) or self._charge(method) < 0
+                    or any(not number_ok(v) or v < 0 for v in self._charge(method).values())
                     or not isinstance(method["id"], str) or not method["id"] or method["id"] in ids
                     or not number_ok(method["rho"]) or method["rho"] < 0
                     or any(not number_ok(method[k]) or not 0 < method[k] <= 1
@@ -1367,15 +1369,28 @@ class WeeklyOptionPortfolioStudy:
         # Prepared features are only a function of the current decision prefix.
         self._prepared_cache, self._component_cache = {}, {}
 
-    @staticmethod
-    def _charge(method):
-        """Return the method's per-contract capital charge, zero when undeclared."""
-        return method.get("reserve_per_contract", 0.)
+    @classmethod
+    def _charge(cls, method):
+        """Return the method's capital-charge floors, zero when undeclared."""
+        return {key: method.get(key, 0.) for key in sorted(cls._OPTIONAL_METHOD_KEYS)}
 
     @staticmethod
-    def _floor(reserve, charge, contracts):
+    def _charge_coefficients(charge, items, mult):
+        """Return one reserve row per declared floor, in solver item order."""
+        rows = []
+        if charge["reserve_per_contract"]:
+            rows.append([charge["reserve_per_contract"]]*len(items))
+        if charge["short_notional_fraction"]:
+            rows.append([charge["short_notional_fraction"]*i["strike"]*mult if i["sign"] < 0 else 0.
+                         for i in items])
+        return rows
+
+    @classmethod
+    def _floor(cls, reserve, charge, legs, mult):
         """Apply the one capital-charge floor the solver, books, fills and ledger share."""
-        return max(reserve, charge*contracts)
+        floors = [sum(row[j]*leg["quantity"] for j, leg in enumerate(legs))
+                  for row in cls._charge_coefficients(charge, legs, mult)]
+        return max(reserve, *floors) if floors else reserve
 
     def _components(self, day):
         """Build connected components from strictly earlier adjusted returns."""
@@ -1501,7 +1516,7 @@ class WeeklyOptionPortfolioStudy:
                 caps.append({"groups": keys, "upper": max(0., limit["upper"])})
         return caps
 
-    def _books(self, selection, metadata, charge=0.):
+    def _books(self, selection, metadata, charge=None):
         """Freeze selected positions and verify exact full-domain reserve parity."""
         from dskit.pipeline.option_structures import classify_option_strategy
 
@@ -1517,7 +1532,7 @@ class WeeklyOptionPortfolioStudy:
             count = sum(leg["quantity"] for leg in legs)
             credit = sum(-leg["sign"]*leg["price"]*mult*leg["quantity"] for leg in legs)-fee*count
             loss = structure_max_loss(signed, strikes, credit, mult)
-            reserve = self._floor(max(0., loss, -credit), charge, count)
+            reserve = self._floor(max(0., loss, -credit), charge or self._charge({}), legs, mult)
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
                 raise ValueError("selected physical-domain reserve parity failed")
             books.append({k: v for k, v in meta.items() if k not in ("items", "projection")})
@@ -1527,7 +1542,7 @@ class WeeklyOptionPortfolioStudy:
                             status="selected")
         return books
 
-    def _fill(self, book, day, charge=0.):
+    def _fill(self, book, day, charge=None):
         """Preflight one frozen book at the next session without seeing maturity."""
         import copy
 
@@ -1557,7 +1572,8 @@ class WeeklyOptionPortfolioStudy:
         loss = structure_max_loss([(leg["right"], leg["sign"]*leg["quantity"]) for leg in filled["legs"]],
                                   [leg["strike"] for leg in filled["legs"]], credit, mult)
         filled.update(fill_date=day, decision_credit=book["credit"], credit=credit,
-                      reserve=self._floor(max(0., loss, -credit), charge, book["contracts"]),
+                      reserve=self._floor(max(0., loss, -credit), charge or self._charge({}),
+                                          filled["legs"], mult),
                       max_loss=loss, premium=premium,
                       fees=fees, stress_extra=stress, status="filled")
         return filled, None
@@ -1580,7 +1596,7 @@ class WeeklyOptionPortfolioStudy:
                 legs, self._bars[symbol][day]/factor, strikes)
         return result
 
-    def _ledger(self, trades, charge=0.):
+    def _ledger(self, trades, charge=None):
         """Delegate fills, daily mid marks and terminal cashflow to the shared ledger."""
         from dskit.pipeline.libs.option_ledger import OptionStructureLedger
 
@@ -1626,7 +1642,8 @@ class WeeklyOptionPortfolioStudy:
             if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
                 raise ValueError("shared ledger/chronological account PnL mismatch")
             expected = self._floor(max(0., row["max_loss_usd"], -row["credit_usd"]),
-                                   charge, book["contracts"])
+                                   charge or self._charge({}), book["legs"],
+                                   self.params["bridge"]["solver"]["multiplier"])
             if abs(expected-book["reserve"]) > 1e-6:
                 raise ValueError("shared ledger/chronological reserve mismatch")
         return ledger
@@ -1720,10 +1737,11 @@ class WeeklyOptionPortfolioStudy:
                 elif not groups or day == self.calendar[-1]:
                     record["status"] = "no_eligible_candidates"
                 else:
+                    mult = p["bridge"]["solver"]["multiplier"]
                     configured = [{**g, "radius": method["rho"],
                                    "reserve_rows": g["reserve_rows"]
-                                   + ([[charge]*len(g["capacity"])] if charge else [])}
-                                  for g in groups]
+                                   + self._charge_coefficients(charge, meta["items"], mult)}
+                                  for g, meta in zip(groups, metadata)]
                     solver = TransportPortfolioSolve("portfolio", p["solver"])
                     program = {"groups": configured, "caps": self._caps(limits, metadata)}
                     if recorded_decisions is None:

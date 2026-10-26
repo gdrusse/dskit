@@ -1916,12 +1916,35 @@ def test_weekly_portfolio_reserve_per_contract_floors_every_reserve():
     assert max(floors)-1e-6 <= result["peak_reserve"] <= sum(floors)+1e-6
 
 
+@pytest.mark.parametrize("key", ["reserve_per_contract", "short_notional_fraction"])
 @pytest.mark.parametrize("charge", [-1., "1", None, float("nan")])
-def test_weekly_portfolio_reserve_per_contract_refuses_invalid(charge):
+def test_weekly_portfolio_reserve_per_contract_refuses_invalid(key, charge):
     import copy
 
     params, inputs = _weekly_portfolio_fixture()
     bad = copy.deepcopy(params)
-    bad["methods"][0]["reserve_per_contract"] = charge
+    bad["methods"][0][key] = charge
     with pytest.raises(ValueError, match="invalid fixed method"):
         ledger_studies.WeeklyOptionPortfolioStudy(bad, inputs)
+
+
+def test_weekly_portfolio_short_notional_fraction_floors_sold_legs_only():
+    """The notional floor charges sold strikes, leaves bought legs alone and binds the caps."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    charged = copy.deepcopy(params)
+    charged["methods"][0]["short_notional_fraction"] = .2
+    result = ledger_studies.WeeklyOptionPortfolioStudy(charged, inputs).run()["methods"][0]
+    assert result["trades"], "the charged method still trades"
+    mult = params["bridge"]["solver"]["multiplier"]
+    for book in result["trades"]:
+        short_notional = sum(.2*leg["strike"]*mult*leg["quantity"] for leg in book["legs"] if leg["sign"] < 0)
+        assert book["reserve"] == pytest.approx(max(0., book["max_loss"], -book["credit"], short_notional))
+    assert any(leg["sign"] < 0 for b in result["trades"] for leg in b["legs"])
+    assert result["contracts"] < base["contracts"]
+    explicit = copy.deepcopy(params)
+    explicit["methods"][0]["short_notional_fraction"] = 0.
+    same = ledger_studies.WeeklyOptionPortfolioStudy(explicit, inputs).run()["methods"][0]
+    assert same["trades"] == base["trades"]
