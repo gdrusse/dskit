@@ -1266,7 +1266,11 @@ class WeeklyOptionPortfolioStudy:
         deposit_every_days, weekly_fraction, correlation_lookback,
         correlation_min_pairs, correlation_threshold, solver, and methods.
         Each method declares id, rho, portfolio_fraction, name_fraction and
-        component_fraction (null disables correlation grouping).
+        component_fraction (null disables correlation grouping), and may add
+        reserve_per_contract: a nonnegative USD capital charge per gross
+        contract that the book's reserve can never fall below (0, the
+        default, keeps the terminal-loss reserve alone; it is what a broker
+        margin floor removes from zero-loss parity books).
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1283,6 +1287,7 @@ class WeeklyOptionPortfolioStudy:
                "weekly_fraction", "correlation_lookback", "correlation_min_pairs",
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
+    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract"}
 
     def __init__(self, params, inputs):
         import copy
@@ -1313,7 +1318,9 @@ class WeeklyOptionPortfolioStudy:
         if not isinstance(p["methods"], list) or not p["methods"]:
             raise ValueError("methods must be a nonempty declared list")
         for method in p["methods"]:
-            if (not isinstance(method, dict) or set(method) != self._METHOD_KEYS
+            if (not isinstance(method, dict)
+                    or set(method)-self._OPTIONAL_METHOD_KEYS != self._METHOD_KEYS
+                    or not number_ok(self._charge(method)) or self._charge(method) < 0
                     or not isinstance(method["id"], str) or not method["id"] or method["id"] in ids
                     or not number_ok(method["rho"]) or method["rho"] < 0
                     or any(not number_ok(method[k]) or not 0 < method[k] <= 1
@@ -1359,6 +1366,16 @@ class WeeklyOptionPortfolioStudy:
                 seen.add(week)
         # Prepared features are only a function of the current decision prefix.
         self._prepared_cache, self._component_cache = {}, {}
+
+    @staticmethod
+    def _charge(method):
+        """Return the method's per-contract capital charge, zero when undeclared."""
+        return method.get("reserve_per_contract", 0.)
+
+    @staticmethod
+    def _floor(reserve, charge, contracts):
+        """Apply the one capital-charge floor the solver, books, fills and ledger share."""
+        return max(reserve, charge*contracts)
 
     def _components(self, day):
         """Build connected components from strictly earlier adjusted returns."""
@@ -1484,7 +1501,7 @@ class WeeklyOptionPortfolioStudy:
                 caps.append({"groups": keys, "upper": max(0., limit["upper"])})
         return caps
 
-    def _books(self, selection, metadata):
+    def _books(self, selection, metadata, charge=0.):
         """Freeze selected positions and verify exact full-domain reserve parity."""
         from dskit.pipeline.option_structures import classify_option_strategy
 
@@ -1500,7 +1517,7 @@ class WeeklyOptionPortfolioStudy:
             count = sum(leg["quantity"] for leg in legs)
             credit = sum(-leg["sign"]*leg["price"]*mult*leg["quantity"] for leg in legs)-fee*count
             loss = structure_max_loss(signed, strikes, credit, mult)
-            reserve = max(0., loss, -credit)
+            reserve = self._floor(max(0., loss, -credit), charge, count)
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
                 raise ValueError("selected physical-domain reserve parity failed")
             books.append({k: v for k, v in meta.items() if k not in ("items", "projection")})
@@ -1510,7 +1527,7 @@ class WeeklyOptionPortfolioStudy:
                             status="selected")
         return books
 
-    def _fill(self, book, day):
+    def _fill(self, book, day, charge=0.):
         """Preflight one frozen book at the next session without seeing maturity."""
         import copy
 
@@ -1540,7 +1557,8 @@ class WeeklyOptionPortfolioStudy:
         loss = structure_max_loss([(leg["right"], leg["sign"]*leg["quantity"]) for leg in filled["legs"]],
                                   [leg["strike"] for leg in filled["legs"]], credit, mult)
         filled.update(fill_date=day, decision_credit=book["credit"], credit=credit,
-                      reserve=max(0., loss, -credit), max_loss=loss, premium=premium,
+                      reserve=self._floor(max(0., loss, -credit), charge, book["contracts"]),
+                      max_loss=loss, premium=premium,
                       fees=fees, stress_extra=stress, status="filled")
         return filled, None
 
@@ -1562,7 +1580,7 @@ class WeeklyOptionPortfolioStudy:
                 legs, self._bars[symbol][day]/factor, strikes)
         return result
 
-    def _ledger(self, trades):
+    def _ledger(self, trades, charge=0.):
         """Delegate fills, daily mid marks and terminal cashflow to the shared ledger."""
         from dskit.pipeline.libs.option_ledger import OptionStructureLedger
 
@@ -1607,13 +1625,15 @@ class WeeklyOptionPortfolioStudy:
         for book, row in zip(trades, ledger["trades"]):
             if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
                 raise ValueError("shared ledger/chronological account PnL mismatch")
-            if abs(max(0., row["max_loss_usd"], -row["credit_usd"])-book["reserve"]) > 1e-6:
+            expected = self._floor(max(0., row["max_loss_usd"], -row["credit_usd"]),
+                                   charge, book["contracts"])
+            if abs(expected-book["reserve"]) > 1e-6:
                 raise ValueError("shared ledger/chronological reserve mismatch")
         return ledger
 
     def _finish(self, method, account, decisions, rejected, snapshots):
         """Join shared-ledger daily marks with contribution-aware account snapshots."""
-        ledger = self._ledger(account.closed)
+        ledger = self._ledger(account.closed, self._charge(method))
         order_keys = [t["id"] for t in account.closed]
         marks = {(order_keys[m["order_index"]], m["date"]): m for m in ledger["marks"]}
         previous, nav, peak, max_dd = account.initial, 1., 1., 0.
@@ -1670,13 +1690,14 @@ class WeeklyOptionPortfolioStudy:
                 raise ValueError("recorded method or decision calendar differs")
             recorded_decisions = {d["date"]: d for d in recorded["decisions"]}
         account = FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], self.calendar[0])
+        charge = self._charge(method)
         decisions, rejected, snapshots, pending = [], [], [], None
         for day in self.calendar:
             deposited = account.advance(day, self._settlements(account, day))
             if pending is not None:
                 survivors = []
                 for book in pending["books"]:
-                    filled, reason = self._fill(book, day)
+                    filled, reason = self._fill(book, day, charge)
                     if filled is None:
                         rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
                     else:
@@ -1699,7 +1720,10 @@ class WeeklyOptionPortfolioStudy:
                 elif not groups or day == self.calendar[-1]:
                     record["status"] = "no_eligible_candidates"
                 else:
-                    configured = [{**g, "radius": method["rho"]} for g in groups]
+                    configured = [{**g, "radius": method["rho"],
+                                   "reserve_rows": g["reserve_rows"]
+                                   + ([[charge]*len(g["capacity"])] if charge else [])}
+                                  for g in groups]
                     solver = TransportPortfolioSolve("portfolio", p["solver"])
                     program = {"groups": configured, "caps": self._caps(limits, metadata)}
                     if recorded_decisions is None:
@@ -1710,7 +1734,7 @@ class WeeklyOptionPortfolioStudy:
                             raise ValueError("eligible decision lacks recorded solve evidence")
                         selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
                     timed_out = "timeout" in selection
-                    books = [] if timed_out else self._books(selection, metadata)
+                    books = [] if timed_out else self._books(selection, metadata, charge)
                     record.update(status="timeout_skipped" if timed_out else "selected" if books else "cash",
                                   selection={k: copy.deepcopy(v) for k, v in selection.items()
                                              if k != "certificates"},

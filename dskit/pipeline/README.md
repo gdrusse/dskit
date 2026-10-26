@@ -1148,4 +1148,6 @@ TransportPortfolioSolve offers feasible cash as a warm start, then returns one i
 
 TransportPortfolioSolve defaults to strict timeout refusal. Optional timeout_policy="return" (appsi_highs) returns non-executable diagnostics for unresolved native timeouts, including absent incumbents or bounds. Recorded replay audits any candidate and its evidence; callers decide whether to skip a decision.
 
+Optional group_screen="lp" solves every group's own LP relaxation first (caps ignored) and leaves out groups whose relaxed optimum is not positive, which can never add value: the joint optimum is unchanged, the model and its certificate counts shrink, and recorded replay rebuilds the same screen. Default "none" keeps historical certificates replayable.
+
 Prescription bridge and funded option-portfolio amendments are canonical ADR-0278 after the wrap merge; their historical ADR-0276 references are preserved in earlier evidence. ADR-0276 now identifies the predictive strike-screen study.

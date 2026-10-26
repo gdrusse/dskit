@@ -1878,3 +1878,50 @@ def test_weekly_portfolio_timeout_skips_orders_and_continues(monkeypatch, skip_i
         bad = copy.deepcopy(saved); mutate(bad)
         with pytest.raises(ValueError):
             study._method(params["methods"][0], None, recorded=bad)
+
+
+def test_weekly_portfolio_reserve_per_contract_default_is_identity():
+    """An undeclared or zero capital charge leaves every recorded field unchanged."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    explicit = copy.deepcopy(params)
+    explicit["methods"][0]["reserve_per_contract"] = 0.
+    same = ledger_studies.WeeklyOptionPortfolioStudy(explicit, inputs).run()["methods"][0]
+    assert same["decisions"][0]["selection"] == base["decisions"][0]["selection"]
+    timeless = lambda d: [{k: v for k, v in c.items() if k != "seconds"} for c in d["certificates"]]
+    assert timeless(same["decisions"][0]) == timeless(base["decisions"][0])
+    assert same["trades"] == base["trades"] and same["pnl"] == base["pnl"]
+
+
+def test_weekly_portfolio_reserve_per_contract_floors_every_reserve():
+    """A positive charge floors solver, book, fill and ledger reserves and binds the caps."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    charged = copy.deepcopy(params)
+    charged["methods"][0]["reserve_per_contract"] = 400.
+    result = ledger_studies.WeeklyOptionPortfolioStudy(charged, inputs).run()["methods"][0]
+    assert result["trades"], "the charged method still trades"
+    for book in result["trades"]:
+        assert book["reserve"] >= 400.*book["contracts"]-1e-9
+        assert book["reserve"] == pytest.approx(max(0., book["max_loss"], -book["credit"], 400.*book["contracts"]))
+    for decision in result["decisions"]:
+        for book in decision.get("books", []):
+            assert book["reserve"] >= 400.*book["contracts"]-1e-9
+    assert result["contracts"] < base["contracts"]
+    floors = [400.*b["contracts"] for b in result["trades"]]
+    assert max(floors)-1e-6 <= result["peak_reserve"] <= sum(floors)+1e-6
+
+
+@pytest.mark.parametrize("charge", [-1., "1", None, float("nan")])
+def test_weekly_portfolio_reserve_per_contract_refuses_invalid(charge):
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    bad = copy.deepcopy(params)
+    bad["methods"][0]["reserve_per_contract"] = charge
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy(bad, inputs)

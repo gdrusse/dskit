@@ -3380,6 +3380,12 @@ class TransportPortfolioSolve(PyomoSolve):
         and parity_tolerance in objective units. Optional timeout_policy is
         "raise" (default) or "return" (appsi_highs only). Return mode emits
         a non-executable timeout diagnostic when certification is unavailable.
+        Optional group_screen is "none" (default) or "lp": before the joint
+        integer program is built, each group's own LP relaxation is solved
+        alone (no shared caps); a group whose relaxed optimum is not
+        positive can never add value, so it is left out of the model and
+        reported with zero actions. The joint optimum is unchanged; only the
+        model size and the certificate's variable/constraint counts shrink.
         Inputs contain
         groups (id, grid, masses, radius, scale, credit, losses, capacity,
         exclusive, reserve_rows, linear_rows) and caps (groups, upper).
@@ -3400,7 +3406,8 @@ class TransportPortfolioSolve(PyomoSolve):
     role = "transform"
     outputs = ("selection",)
     _PARAMS = PyomoSolve._PARAMS + (
-        "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy")
+        "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
+        "group_screen")
 
     @classmethod
     def validate_params(cls, params):
@@ -3430,6 +3437,9 @@ class TransportPortfolioSolve(PyomoSolve):
             problems.append("timeout_policy must be raise or return")
         if policy == "return" and params.get("solver", DEFAULT_SOLVER) != "appsi_highs":
             problems.append("return timeout policy requires appsi_highs")
+        screen = params.get("group_screen", "none")
+        if not isinstance(screen, str) or screen not in ("none", "lp"):
+            problems.append("group_screen must be none or lp")
         return problems
 
     def _checked(self, inputs):
@@ -3491,6 +3501,63 @@ class TransportPortfolioSolve(PyomoSolve):
         return groups, caps, duals
 
     @staticmethod
+    def _group_lp_bound(group):
+        """Upper-bound one group's best value by its own LP relaxation, caps ignored.
+
+        The relaxation drops integrality only; it keeps capacities, linear
+        rows and the sparse W1 dual, so it is a valid bound on every integer
+        book of the group and is exact at radius zero up to integrality.
+        """
+        import numpy as np
+        from scipy.optimize import linprog
+        from scipy.sparse import csr_matrix, lil_matrix
+
+        grid = np.asarray(group["grid"], dtype=float)
+        losses = np.asarray(group["losses"], dtype=float)
+        n, m = len(group["capacity"]), len(grid)
+        width = n+m+1  # actions, potentials, gamma
+        rows = lil_matrix((m+2*(m-1)+len(group["linear_rows"]), width))
+        rhs, r = [], 0
+        for k in range(m):
+            rows[r, :n] = losses[k]
+            rows[r, n+k] = -1.
+            rhs.append(0.)
+            r += 1
+        distance = np.diff(grid)/float(group["scale"])
+        for j in range(m-1):
+            for sign in (1., -1.):
+                rows[r, n+j+1] = sign
+                rows[r, n+j] = -sign
+                rows[r, width-1] = -distance[j]
+                rhs.append(0.)
+                r += 1
+        for row in group["linear_rows"]:
+            rows[r, :n] = np.asarray(row["coefficients"], dtype=float)
+            rhs.append(float(row["upper"]))
+            r += 1
+        cost = np.r_[-np.asarray(group["credit"], dtype=float),
+                     np.asarray(group["masses"], dtype=float), float(group["radius"])]
+        bounds = ([(0., float(c)) for c in group["capacity"]]
+                  + [(None, None)]*m + [(0., None)])
+        result = linprog(cost, A_ub=csr_matrix(rows), b_ub=np.asarray(rhs),
+                         bounds=bounds, method="highs")
+        if not result.success or not np.isfinite(result.fun):
+            raise ValueError(f"group LP relaxation failed: {result.message}")
+        return float(-result.fun)
+
+    def _screened(self, groups):
+        """Return the indices of the groups the joint model keeps."""
+        if self.params.get("group_screen", "none") != "lp":
+            return list(range(len(groups)))
+        bounds = [self._group_lp_bound(g) for g in groups]
+        active = [i for i, b in enumerate(bounds) if b > 0.]
+        if not active:
+            # Keep the best group so that a solver certificate still exists.
+            active = [max(range(len(groups)), key=lambda i: bounds[i])]
+        self.log.info("group screen kept %d of %d groups", len(active), len(groups))
+        return active
+
+    @staticmethod
     def _costly_roundtrip(group, a, b):
         """Prove that cancelling equal opposite quantities improves the program.
 
@@ -3528,20 +3595,22 @@ class TransportPortfolioSolve(PyomoSolve):
 
         groups, caps, duals = self._checked(inputs)
         self._groups, self._caps, self._duals = groups, caps, duals
+        self._active = active = self._screened(groups)
         m = ConcreteModel()
-        indices = [(i, j) for i, g in enumerate(groups) for j in range(len(g["capacity"]))]
+        indices = [(i, j) for i in active for j in range(len(groups[i]["capacity"]))]
         m.x = Var(indices, domain=NonNegativeIntegers,
                   bounds=lambda m, i, j: (0, groups[i]["capacity"][j]))
-        m.reserve = Var(range(len(groups)), domain=NonNegativeReals)
+        m.reserve = Var(active, domain=NonNegativeReals)
         self._redundant = {(i, k) for i, g in enumerate(groups)
                            for k, (a, b) in enumerate(g["exclusive"])
                            if self._costly_roundtrip(g, a, b)}
-        pairs = [(i, k) for i, g in enumerate(groups) for k in range(len(g["exclusive"]))
+        pairs = [(i, k) for i in active for k in range(len(groups[i]["exclusive"]))
                  if (i, k) not in self._redundant]
         m.side = Var(pairs, domain=Binary)
         m.rows = ConstraintList()
         values = []
-        for i, (g, dual) in enumerate(zip(groups, duals)):
+        for i in active:
+            g, dual = groups[i], duals[i]
             def dot(row):
                 return sum(float(c)*m.x[i, j] for j, c in enumerate(row) if c != 0)
             for k, (a, b) in enumerate(g["exclusive"]):
@@ -3564,7 +3633,9 @@ class TransportPortfolioSolve(PyomoSolve):
             values.append(dot(g["credit"])-cost)
         lookup = {g["id"]: i for i, g in enumerate(groups)}
         for cap in caps:
-            m.rows.add(sum(m.reserve[lookup[key]] for key in cap["groups"]) <= cap["upper"])
+            members = [lookup[key] for key in cap["groups"] if lookup[key] in m.reserve]
+            if members:
+                m.rows.add(sum(m.reserve[i] for i in members) <= cap["upper"])
         m.profit = Expression(expr=sum(values))
         m.objective = Objective(expr=m.profit, sense=maximize)
         for variable in m.component_data_objects(Var):
@@ -3643,6 +3714,11 @@ class TransportPortfolioSolve(PyomoSolve):
         quantities, reserves, values = [], [], []
         cleanup = {"removed_contracts": 0, "profit_gain": 0., "pairs": []}
         for i, (g, dual) in enumerate(zip(self._groups, self._duals)):
+            if i not in self._active:
+                quantities.append([0]*len(g["capacity"]))
+                reserves.append(0.)
+                values.append(0.)
+                continue
             raw = [value(model.x[i, j]) for j in range(len(g["capacity"]))]
             if any(not number_ok(v) or abs(v-round(v)) > 1e-5 for v in raw):
                 raise ValueError("nonintegral incumbent")
@@ -3779,6 +3855,10 @@ class TransportPortfolioSolve(PyomoSolve):
             quantities[i][a] += pair["matched_quantity"]
             quantities[i][b] += pair["matched_quantity"]
         for i, group in enumerate(quantities):
+            if i not in self._active:
+                if any(group):
+                    raise ValueError("recorded actions in a screened-out group")
+                continue
             for j, quantity in enumerate(group):
                 model.x[i, j].set_value(quantity)
         audited = self._incumbent(model)
