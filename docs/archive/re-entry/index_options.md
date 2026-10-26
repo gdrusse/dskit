@@ -17,9 +17,9 @@ Updated: 2026-10-26 by GPT-6. Previous note: docs/archive/re-entry/index_options
 
 ## Next
 
-1. Publish both memos and finish documentation wrap, then launch the explicitly requested separate Claude Code session with --model fable in its own WSL checkout of published main.
+1. Both memos landed at3aaff025 and wrap completed. Claude/Fable launched14:07:03UTC in /home/russell/wt/index-options-mio-fable-20261026; session09563c01-7415-4275-a466-2db186f3c75d, actual modelclaude-fable-5-1 verified.
 2. Fable investigates candidate methods, additional MIO work and solve speed; deliver recommendations and a minimal benchmark plan. Preserve flexible leg/quantity choices and cash. Research/proposals only; no new long runs or implementation.
-3. Verify Fable's actual model/session and prompt receipt; record launch. Hourly thread follow-up finish-2019-options-run-memo stays active until delivery and confirmed launch, then pause it.
+3. Fable service index-options-mio-fable-20261026.service is active at handoff. Prompt/model/launch receipts and eventual research-report.md live in /home/russell/.local/state/index-options-mio-fable-20261026/. Pause the completed study heartbeat; do not duplicate the Fable job.
 4. Audit concentration, quote artifacts, large near-zero-debit books/boxes, fill failures and timeout selection. New universe/DTE/tie-break/timeout policies prevent attribution to DTE alone. Predictive packet six under ADR-0277 stays separate.
 
 ## Blocked / owner decisions
@@ -41,6 +41,7 @@ Updated: 2026-10-26 by GPT-6. Previous note: docs/archive/re-entry/index_options
 - Do not open holdout/2026, pull Theta data, modify Path/Current Work, or delete pilot/report data.
 - WSL2 only; /home/russell/dskit/.venv/bin/python -B, numerical threads1; one heavy study worker; C:≥30GiB.
 - Preserve completed evidence and other workloads. Fable must not silently substitute another model.
+
 
 ## Archived 2026-10-26 — v11 completion and Fable handoff
 
