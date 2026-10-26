@@ -1452,11 +1452,7 @@ class WeeklyOptionPortfolioStudy:
         if day in self._component_cache:
             return self._component_cache[day]
         p, symbols = self.params, self.params["symbols"]
-        past = [d for d in self.calendar if d < day][-p["correlation_lookback"]-1:]
-        returns = {}
-        for s in symbols:
-            prices = np.array([self._bars[s][d] for d in past], dtype=float)
-            returns[s] = np.diff(np.log(prices))
+        returns, observations = self._returns(day, p["correlation_lookback"])
         parent = {s: s for s in symbols}
         def root(s):
             while parent[s] != s:
@@ -1474,9 +1470,18 @@ class WeeklyOptionPortfolioStudy:
         groups = {}
         for s in symbols:
             groups.setdefault(root(s), []).append(s)
-        result = {"groups": sorted(groups.values()), "pairs": edges, "observations": max(0, len(past)-1)}
+        result = {"groups": sorted(groups.values()), "pairs": edges, "observations": observations}
         self._component_cache[day] = result
         return result
+
+    def _returns(self, day, lookback):
+        """Return each name's trailing log returns from sessions strictly before the day."""
+        import numpy as np
+
+        past = [d for d in self.calendar if d < day][-lookback-1:]
+        returns = {s: np.diff(np.log(np.array([self._bars[s][d] for d in past], dtype=float)))
+                   for s in self.params["symbols"]}
+        return returns, max(0, len(past)-1)
 
     def _betas(self, day, lookback):
         """Estimate each name's beta on the equal-weight basket from strictly earlier sessions."""
@@ -1485,10 +1490,7 @@ class WeeklyOptionPortfolioStudy:
         if (day, lookback) in self._beta_cache:
             return self._beta_cache[day, lookback]
         symbols = self.params["symbols"]
-        past = [d for d in self.calendar if d < day][-lookback-1:]
-        returns = {s: np.diff(np.log(np.array([self._bars[s][d] for d in past], dtype=float)))
-                   for s in symbols}
-        count = max(0, len(past)-1)
+        returns, count = self._returns(day, lookback)
         betas = {s: 1. for s in symbols}
         if count >= self.params["correlation_min_pairs"]:
             market = np.mean([returns[s] for s in symbols], axis=0)

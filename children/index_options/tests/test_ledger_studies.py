@@ -2134,3 +2134,59 @@ def test_weekly_portfolio_betas_use_only_earlier_sessions():
     other = ledger_studies.WeeklyOptionPortfolioStudy(params, moved)
     assert other._betas(late, 20) == out
     assert other._betas("2019-01-07", 20) == early
+
+
+def test_weekly_portfolio_shock_rows_apply_betas_to_each_leg():
+    """One group, beta 1.5, a sold put spread and a sold call spread, hand-priced at each move."""
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    mult, fee = 100, .65
+    items = [{"sign": -1, "right": "put", "strike": 95., "price": 2.},
+             {"sign": 1, "right": "put", "strike": 90., "price": 1.},
+             {"sign": -1, "right": "call", "strike": 105., "price": 1.5},
+             {"sign": 1, "right": "call", "strike": 110., "price": .5}]
+    credit = [-i["sign"]*i["price"]*mult-fee for i in items]
+    meta = [{"id": "g", "symbol": "A", "spot": 100., "items": items}]
+    shock = {"moves": [-.1, .1, -.3, -.9], "loss_fraction": .1, "beta_lookback": 5}
+    rows = study._shock_rows(shock, {"A": 1.5}, meta, [{"credit": credit}], mult, 1000.)
+    assert [r["id"] for r in rows] == ["shock:-0.1", "shock:0.1", "shock:-0.3", "shock:-0.9"]
+    # Shocked spots 85, 115, 55 and 0: the spreads lose their full width less
+    # the net premium of 2 - 1 + 1.5 - .5 = 2 per share, plus four fees.
+    for row in rows:
+        assert row["upper"] == 100.
+        assert sum(row["terms"]["g"]) == pytest.approx(500.-200.+4*fee)
+    unshocked = study._shock_rows({**shock, "moves": [.01]}, {"A": 1.5}, meta,
+                                  [{"credit": credit}], mult, 1000.)
+    assert sum(unshocked[0]["terms"]["g"]) == pytest.approx(-200.+4*fee)
+    assert sum(study._shock_rows(shock, {"A": 0.}, meta, [{"credit": credit}], mult, 1000.)[0]
+               ["terms"]["g"]) == pytest.approx(-200.+4*fee)
+
+
+def test_weekly_portfolio_shock_losses_use_estimated_betas_end_to_end():
+    """With betas fitted from two names, every recorded loss equals a leg-by-leg recomputation."""
+    import copy
+
+    params, inputs = _two_symbol_fixture()
+    params["correlation_min_pairs"] = 2
+    for k, row in enumerate(inputs["X"]["bars"]):
+        row["close"] = 100.+3.*(k % 2)
+    shock = {"moves": [-.1, .1], "loss_fraction": .08, "beta_lookback": 5}
+    params["methods"] = [{**params["methods"][0], "shock": shock}]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study.run()["methods"][0]
+    mult = params["bridge"]["solver"]["multiplier"]
+    solved = [d for d in result["decisions"] if "shock" in d]
+    assert solved and any(d["shock"]["betas"]["Y"] != 1. for d in solved)
+    for decision in solved:
+        betas, funding = decision["shock"]["betas"], decision["funding"]
+        assert decision["shock"]["limit"] == shock["loss_fraction"]*max(0., funding)
+        for move in shock["moves"]:
+            loss = 0.
+            for book in decision["books"]:
+                spot = max(0., book["spot"]*(1.+betas[book["symbol"]]*move))
+                loss -= book["credit"]
+                for leg in book["legs"]:
+                    payoff = max((leg["strike"]-spot) if leg["right"] == "put" else (spot-leg["strike"]), 0.)
+                    loss += -leg["sign"]*mult*payoff*leg["quantity"]
+            assert decision["shock"]["losses"][str(move)] == pytest.approx(loss, abs=1e-6)
+            assert loss <= decision["shock"]["limit"]+1e-6
+    assert study._method(params["methods"][0], None, recorded=copy.deepcopy(result)) == result
