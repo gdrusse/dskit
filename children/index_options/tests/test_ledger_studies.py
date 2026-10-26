@@ -1992,3 +1992,145 @@ def test_weekly_portfolio_group_screen_prunes_and_replays_with_charges(monkeypat
     with pytest.raises(ValueError, match="recorded model dimensions differ"):
         ledger_studies.WeeklyOptionPortfolioStudy(plain, inputs)._method(
             params["methods"][0], None, recorded=copy.deepcopy(original))
+
+
+_SHOCK = {"moves": [-.1, .1], "loss_fraction": .08, "beta_lookback": 20}
+
+
+def _solved(result):
+    """Return the decisions that carry a solved selection."""
+    return [d for d in result["decisions"] if "selection" in d]
+
+
+def test_weekly_portfolio_shock_default_is_identity():
+    """A method with no shock policy records no shock and replays byte-identically."""
+    params, inputs = _weekly_portfolio_fixture()
+    first = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    again = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    assert not any("shock" in d for d in first["decisions"])
+    timeless = lambda r: [{k: v for k, v in d.items() if k not in ("certificates",)}
+                          for d in r["decisions"]]
+    assert timeless(first) == timeless(again)
+    assert first["trades"] == again["trades"] and first["pnl"] == again["pnl"]
+
+
+def test_weekly_portfolio_shock_rows_bound_terminal_loss():
+    """The shock rows cap the selection's terminal loss at each move; a loose cap changes nothing."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    shocked = copy.deepcopy(params)
+    shocked["methods"][0]["shock"] = copy.deepcopy(_SHOCK)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(shocked, inputs).run()["methods"][0]
+    solved = _solved(result)
+    assert solved and all("shock" in d for d in solved)
+    first = solved[0]["shock"]
+    assert first["observations"] < params["correlation_min_pairs"]
+    assert first["betas"] == {"X": 1.}
+    assert set(first["losses"]) == {"-0.1", "0.1"}
+    for decision in solved:
+        shock = decision["shock"]
+        assert shock["limit"] == pytest.approx(_SHOCK["loss_fraction"]*decision["funding"])
+        for loss in shock["losses"].values():
+            assert loss <= shock["limit"]+1e-6
+    count = lambda r: sum(b["contracts"] for d in r["decisions"] for b in d.get("books", []))
+    assert 0 < count(result) < count(base)
+    assert max(v for d in solved for v in d["shock"]["losses"].values()) > 0
+    loose = copy.deepcopy(params)
+    loose["methods"][0]["shock"] = {**_SHOCK, "loss_fraction": 1.}
+    free = ledger_studies.WeeklyOptionPortfolioStudy(loose, inputs).run()["methods"][0]
+    assert [d["selection"]["quantities"] for d in _solved(free)] == \
+        [d["selection"]["quantities"] for d in _solved(base)]
+
+
+@pytest.mark.parametrize("shock", [
+    {"moves": [-.1], "loss_fraction": .1},
+    {"moves": [-.1], "loss_fraction": .1, "beta_lookback": 20, "extra": 1},
+    {"moves": [], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [0.], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [-1.], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [-.1, -.1], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [float("nan")], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [float("inf")], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [-.1], "loss_fraction": -.1, "beta_lookback": 20},
+    {"moves": [-.1], "loss_fraction": 1.5, "beta_lookback": 20},
+    {"moves": [-.1], "loss_fraction": .1, "beta_lookback": 1},
+    {"moves": [-.1], "loss_fraction": .1, "beta_lookback": True},
+    {"moves": [-.1], "loss_fraction": .1, "beta_lookback": 2.5},
+    None,
+])
+def test_weekly_portfolio_shock_refuses_invalid(shock):
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    bad = copy.deepcopy(params)
+    bad["methods"][0]["shock"] = shock
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy(bad, inputs)
+
+
+def test_weekly_portfolio_shock_record_replays_and_refuses_tamper():
+    """A shocked method replays equal and refuses a mutated loss, limit or beta."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0]["shock"] = copy.deepcopy(_SHOCK)
+    method = params["methods"][0]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    original = study._method(method, None)
+    assert study._method(method, None, recorded=copy.deepcopy(original)) == original
+    def tampered(edit):
+        bad = copy.deepcopy(original)
+        edit(next(d["shock"] for d in bad["decisions"] if "shock" in d))
+        return bad
+    edits = [lambda s: s["losses"].update({"-0.1": s["losses"]["-0.1"]+1.}),
+             lambda s: s.update(limit=s["limit"]+1.),
+             lambda s: s["betas"].update(X=2.)]
+    for edit in edits:
+        with pytest.raises(ValueError, match="recorded"):
+            study._method(method, None, recorded=tampered(edit))
+
+
+def _two_symbol_fixture():
+    """Fixture X plus a copy Y; X wobbles, Y trends, so their return paths differ."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    params = copy.deepcopy(params)
+    params["symbols"] = ["X", "Y"]
+    swapped = copy.deepcopy(inputs["X"])
+    for rows in swapped.values():
+        for row in rows:
+            row["symbol"] = "Y"
+    inputs["Y"] = swapped
+    for k, row in enumerate(inputs["X"]["bars"]):
+        row["close"] = 100.+(k % 3)
+    for k, row in enumerate(inputs["Y"]["bars"]):
+        row["close"] = 100.*(1+.01*k)
+    return params, inputs
+
+
+def test_weekly_portfolio_betas_use_only_earlier_sessions():
+    """Betas read the trailing window strictly before the day and average to one."""
+    import copy
+
+    params, inputs = _two_symbol_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    late = "2019-02-04"
+    prior = [d for d in study.calendar if d < late]
+    out = study._betas(late, 20)
+    assert out["observations"] == min(20, len(prior)-1)
+    assert all(math.isfinite(b) for b in out["betas"].values())
+    assert sum(out["betas"].values())/2 == pytest.approx(1., abs=1e-9)
+    assert out["betas"]["X"] != out["betas"]["Y"]
+    early = study._betas("2019-01-07", 20)
+    assert early["observations"] < params["correlation_min_pairs"]
+    assert early["betas"] == {"X": 1., "Y": 1.}
+    moved = copy.deepcopy(inputs)
+    for row in moved["Y"]["bars"]:
+        if row["date"] >= late:
+            row["close"] *= 3.
+    other = ledger_studies.WeeklyOptionPortfolioStudy(params, moved)
+    assert other._betas(late, 20) == out
+    assert other._betas("2019-01-07", 20) == early

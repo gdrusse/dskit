@@ -3863,3 +3863,111 @@ def test_transport_portfolio_group_screen_refuses_unknown_values(screen):
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     assert TransportPortfolioSolve.validate_params({**_screen_params("lp"), "group_screen": screen})
+
+
+def _joint_groups(radius=0.):
+    """Two independent one-item groups whose joint sum a cross-group row can cap."""
+    def group(key, credit):
+        return {"id": key, "grid": [0., 1.], "masses": [.5, .5], "radius": radius,
+                "scale": 1., "credit": [credit], "losses": [[0.], [0.]], "capacity": [4],
+                "exclusive": [], "reserve_rows": [[1.]], "linear_rows": []}
+    groups = [group("a", 3.), group("b", 2.)]
+    caps = [{"groups": ["a", "b"], "upper": 100.}]
+    return groups, caps
+
+
+def _joint_params(screen="none"):
+    return {"absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+            "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1},
+            "group_screen": screen}
+
+
+@pytest.mark.parametrize("screen", ["none", "lp"])
+def test_transport_portfolio_joint_row_binds_across_groups(screen):
+    """One linear row over both groups caps the joint integer optimum."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    free = TransportPortfolioSolve("free", _joint_params(screen)).run(
+        None, {"groups": groups, "caps": caps})["selection"]
+    assert free["quantities"] == [[4], [4]]
+    rows = [{"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}]
+    bound = TransportPortfolioSolve("bound", _joint_params(screen)).run(
+        None, {"groups": groups, "caps": caps, "joint_rows": rows})["selection"]
+    # Exhaustive oracle: maximize 3a + 2b with 2a + b <= 5, a, b in 0..4.
+    best = max(((3*a+2*b, a, b) for a in range(5) for b in range(5) if 2*a+b <= 5))
+    assert bound["value"] == pytest.approx(best[0])
+    assert 2*bound["quantities"][0][0]+bound["quantities"][1][0] <= 5
+    assert bound["certificates"][0]["constraints"] == free["certificates"][0]["constraints"]+1
+
+
+def test_transport_portfolio_joint_row_over_screened_group_is_ignored():
+    """A row whose only live term is in a screened-out group costs nothing."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _screen_groups(0.)
+    rows = [{"id": "dead-only", "terms": {"dead": [1., 1.]}, "upper": 0.},
+            {"id": "mixed", "terms": {"live": [0., 1.], "dead": [5., 5.]}, "upper": 1.}]
+    inputs = {"groups": groups, "caps": caps, "joint_rows": rows}
+    plain = TransportPortfolioSolve("plain", _joint_params("none")).run(None, inputs)["selection"]
+    screened = TransportPortfolioSolve("lp", _joint_params("lp")).run(None, inputs)["selection"]
+    assert screened["value"] == pytest.approx(plain["value"], abs=1e-5)
+    assert screened["quantities"] == plain["quantities"]
+    assert screened["quantities"][0][1] <= 1
+    assert screened["certificates"][0]["constraints"] < plain["certificates"][0]["constraints"]
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r.update(id=""),
+    lambda r: r.update(id=3),
+    lambda r: r.update(terms={}),
+    lambda r: r.update(terms={"c": [1.]}),
+    lambda r: r.update(terms={"a": [1., 1.]}),
+    lambda r: r.update(terms={"a": [float("nan")]}),
+    lambda r: r.update(upper=-1.),
+    lambda r: r.update(upper=float("inf")),
+    lambda r: r.update(extra=1),
+    lambda r: r.pop("upper"),
+])
+def test_transport_portfolio_joint_row_refuses_invalid(change):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    row = {"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}
+    change(row)
+    with pytest.raises(ValueError):
+        TransportPortfolioSolve("bad", _joint_params()).run(
+            None, {"groups": groups, "caps": caps, "joint_rows": [row]})
+
+
+def test_transport_portfolio_joint_rows_refuse_duplicate_ids_and_wrong_shape():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    row = {"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}
+    for rows in ([row, dict(row)], {"sum": row}, [["sum"]]):
+        with pytest.raises(ValueError):
+            TransportPortfolioSolve("bad", _joint_params()).run(
+                None, {"groups": groups, "caps": caps, "joint_rows": rows})
+
+
+def test_transport_portfolio_joint_row_recorded_replay_refuses_violation():
+    """Replay re-audits the saved actions against the joint rows it is given."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    rows = [{"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}]
+    inputs = {"groups": groups, "caps": caps, "joint_rows": rows}
+    node = TransportPortfolioSolve("joint", _joint_params())
+    selection = node.run(None, inputs)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"}
+                    for c in selection["certificates"]]
+    claimed = {k: v for k, v in selection.items() if k != "certificates"}
+    replay = node._recorded(inputs, claimed, certificates)
+    assert replay["quantities"] == selection["quantities"]
+    tighter = {**inputs, "joint_rows": [{**rows[0], "upper": 4.}]}
+    with pytest.raises(ValueError, match="joint row"):
+        node._recorded(tighter, claimed, certificates)
+    without = {"groups": groups, "caps": caps}
+    with pytest.raises(ValueError, match="dimensions"):
+        node._recorded(without, claimed, certificates)

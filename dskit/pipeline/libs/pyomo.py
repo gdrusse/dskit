@@ -3391,11 +3391,17 @@ class TransportPortfolioSolve(PyomoSolve):
         variable/constraint counts shrink. Replay re-derives the screen.
         Inputs contain
         groups (id, grid, masses, radius, scale, credit, losses, capacity,
-        exclusive, reserve_rows, linear_rows) and caps (groups, upper).
-        Each loss row is one outcome's linear loss coefficients. Reserve
-        rows are linear lower bounds on a nonnegative group reserve; linear
-        rows contain coefficients and a nonnegative upper bound. All actions
-        are nonnegative integers. Exclusive pairs cannot both be positive.
+        exclusive, reserve_rows, linear_rows), caps (groups, upper) and
+        optionally joint_rows (id, terms, upper). Each loss row is one
+        outcome's linear loss coefficients. Reserve rows are linear lower
+        bounds on a nonnegative group reserve; linear rows contain
+        coefficients and a nonnegative upper bound. A joint row is one
+        linear bound across groups: terms maps a group id to that group's
+        coefficients and the summed products may not exceed its
+        nonnegative upper bound (cash stays feasible); a screened-out group
+        contributes nothing and the LP screen ignores joint rows, which only
+        tighten the joint program. All actions are nonnegative integers.
+        Exclusive pairs cannot both be positive.
 
     Examples
     --------
@@ -3453,10 +3459,11 @@ class TransportPortfolioSolve(PyomoSolve):
         defects = self.validate_params(self.params)
         if defects:
             raise ValueError("; ".join(defects))
-        if (not isinstance(inputs, dict) or set(inputs) != {"groups", "caps"}
+        if (not isinstance(inputs, dict) or set(inputs)-{"joint_rows"} != {"groups", "caps"}
                 or not isinstance(inputs["groups"], list)):
             raise ValueError("inputs must contain groups and caps")
         groups, caps = copy.deepcopy(inputs["groups"]), copy.deepcopy(inputs["caps"])
+        joint = copy.deepcopy(inputs.get("joint_rows", []))
         if not groups or not isinstance(caps, list):
             raise ValueError("nonempty groups and a caps list required")
         ids, duals = set(), []
@@ -3501,7 +3508,31 @@ class TransportPortfolioSolve(PyomoSolve):
                 raise ValueError("invalid shared reserve cap")
         if ids != {key for c in caps for key in c["groups"]}:
             raise ValueError("every group must have a shared reserve cap")
-        return groups, caps, duals
+        sizes = {g["id"]: len(g["capacity"]) for g in groups}
+        self._checked_joint(joint, sizes)
+        return groups, caps, duals, joint
+
+    @staticmethod
+    def _checked_joint(joint, sizes):
+        """Refuse a malformed, unknown, non-finite or cash-infeasible joint row."""
+        import numpy as np
+
+        if not isinstance(joint, list):
+            raise ValueError("joint_rows must be a list")
+        seen = set()
+        for row in joint:
+            if (not isinstance(row, dict) or set(row) != {"id", "terms", "upper"}
+                    or not isinstance(row["id"], str) or not row["id"] or row["id"] in seen
+                    or not isinstance(row["terms"], dict) or not row["terms"]
+                    or set(row["terms"])-set(sizes)
+                    or not number_ok(row["upper"]) or row["upper"] < 0):
+                raise ValueError("invalid joint row")
+            seen.add(row["id"])
+            for key, coefficients in row["terms"].items():
+                a = np.asarray(coefficients, dtype=float)
+                if a.shape != (sizes[key],) or not np.isfinite(a).all():
+                    raise ValueError("invalid joint row coefficients")
+                row["terms"][key] = a.tolist()
 
     @staticmethod
     def _group_lp_bound(group):
@@ -3598,8 +3629,8 @@ class TransportPortfolioSolve(PyomoSolve):
             NonNegativeReals, Objective, Var, maximize,
         )
 
-        groups, caps, duals = self._checked(inputs)
-        self._groups, self._caps, self._duals = groups, caps, duals
+        groups, caps, duals, joint = self._checked(inputs)
+        self._groups, self._caps, self._duals, self._joint = groups, caps, duals, joint
         self._active = active = self._screened(groups)
         m = ConcreteModel()
         indices = [(i, j) for i in active for j in range(len(groups[i]["capacity"]))]
@@ -3641,6 +3672,11 @@ class TransportPortfolioSolve(PyomoSolve):
             members = [lookup[key] for key in cap["groups"] if lookup[key] in m.reserve]
             if members:
                 m.rows.add(sum(m.reserve[i] for i in members) <= cap["upper"])
+        for row in joint:
+            expr = sum(float(c)*m.x[lookup[key], j] for key, coefficients in row["terms"].items()
+                       if lookup[key] in m.reserve for j, c in enumerate(coefficients) if c != 0)
+            if not isinstance(expr, (int, float)):
+                m.rows.add(expr <= row["upper"])
         m.profit = Expression(expr=sum(values))
         m.objective = Objective(expr=m.profit, sense=maximize)
         for variable in m.component_data_objects(Var):
@@ -3763,6 +3799,12 @@ class TransportPortfolioSolve(PyomoSolve):
         for cap in self._caps:
             if sum(lookup[key] for key in cap["groups"]) > cap["upper"]+tolerance:
                 raise ValueError("incumbent violates shared reserve cap")
+        index = {g["id"]: i for i, g in enumerate(self._groups)}
+        for row in self._joint:
+            total = sum(float(np.dot(coefficients, quantities[index[key]]))
+                        for key, coefficients in row["terms"].items())
+            if total > row["upper"]+tolerance:
+                raise ValueError("incumbent violates joint row "+row["id"])
         return {"quantities": quantities, "reserves": reserves, "group_values": values,
                 "value": float(sum(values)), "canonicalization": cleanup}
 
