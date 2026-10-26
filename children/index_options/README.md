@@ -196,7 +196,8 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   zero. The `currency` covers every leg; the multiplier converts one forward
   point into that currency. `days_elapsed` cannot pass the earliest leg expiry.
   Dskit's `OptionScenarioReprice` fully revalues each leg with Black-76
-  (intrinsic at expiry) and reports each scenario and the worst declared loss.
+  (intrinsic at expiry; IV and rate shifts have no payoff effect) and reports
+  each scenario and the worst declared loss.
   These are model-mark changes, not fill P&L or a probability-based risk bound.
   Invalid or numerically unsafe JSON is refused: before expiry, total IV ×
   square-root years must be 1e-4–3, absolute standardized moneyness ≤3 and

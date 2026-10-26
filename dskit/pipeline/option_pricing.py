@@ -442,8 +442,8 @@ class OptionScenarioReprice(Node):
     shifts; ``days_elapsed`` reduces each leg's remaining life but cannot go
     past the earliest expiry. A leg at expiry uses intrinsic value. P&L is the
     change from the *model* baseline, excluding entry fills, fees, liquidity and
-    margin. This is a hypothetical diagnostic,
-    never an executable or decision-eligible trade result.
+    margin. IV and rate shocks have no effect at expiry. This is a
+    hypothetical diagnostic, never an executable or decision-eligible trade.
 
     A scenario's omitted shock is zero. ``iv_shift`` is in volatility units
     (0.10 means ten percentage points), and ``rate_shift`` is in continuous
@@ -654,26 +654,14 @@ class OptionScenarioReprice(Node):
         move = shock.get("forward_return", cls._SHOCK_DEFAULTS["forward_return"])
         factor = 1.0 + move
         forward = params["forward"] * factor
-        rate_shift = shock.get("rate_shift", cls._SHOCK_DEFAULTS["rate_shift"])
-        rate = params["rate"] + rate_shift
-        iv_shift = shock.get("iv_shift", cls._SHOCK_DEFAULTS["iv_shift"])
-        vol = leg["iv"] + iv_shift
         if move != 0 and (factor == 1.0 or forward == params["forward"]):
             raise ValueError("forward_return is rounded away in the shocked forward")
-        if rate_shift != 0 and rate == params["rate"]:
-            raise ValueError("rate_shift is rounded away in the shocked rate")
-        if iv_shift != 0 and vol == leg["iv"]:
-            raise ValueError("iv_shift is rounded away in the shocked IV")
         if not price_ok(forward):
             raise ValueError("shocked forward must remain positive and finite")
         if forward < cls._MIN_NORMAL:
             raise ValueError("shocked forward is outside normal range")
         if leg["strike"] < cls._MIN_NORMAL:
             raise ValueError("strike is outside normal range")
-        if not number_ok(rate):
-            raise ValueError("shocked rate must remain finite")
-        if not price_ok(vol):
-            raise ValueError("iv_shift leaves a nonpositive or non-finite IV")
         remaining = leg["days_to_expiry"] - shock.get(
             "days_elapsed", cls._SHOCK_DEFAULTS["days_elapsed"])
         if remaining < 0:
@@ -683,7 +671,24 @@ class OptionScenarioReprice(Node):
                          else leg["strike"] - forward)
             if not number_ok(intrinsic):
                 raise ValueError("expiry intrinsic value is non-finite")
-            return max(0.0, intrinsic)
+            mark = max(0.0, intrinsic)
+            if mark != 0 and mark < cls._MIN_NORMAL:
+                raise ValueError("expiry model price is outside normal range")
+            return mark
+        # Volatility and discount are irrelevant at expiry. Validate and apply
+        # those shocks only while the leg still has time value.
+        rate_shift = shock.get("rate_shift", cls._SHOCK_DEFAULTS["rate_shift"])
+        rate = params["rate"] + rate_shift
+        iv_shift = shock.get("iv_shift", cls._SHOCK_DEFAULTS["iv_shift"])
+        vol = leg["iv"] + iv_shift
+        if rate_shift != 0 and rate == params["rate"]:
+            raise ValueError("rate_shift is rounded away in the shocked rate")
+        if iv_shift != 0 and vol == leg["iv"]:
+            raise ValueError("iv_shift is rounded away in the shocked IV")
+        if not number_ok(rate):
+            raise ValueError("shocked rate must remain finite")
+        if not price_ok(vol):
+            raise ValueError("iv_shift leaves a nonpositive or non-finite IV")
         years = remaining / params["year_basis_days"]
         if (shock.get("days_elapsed", 0) and
                 years == leg["days_to_expiry"] / params["year_basis_days"]):
@@ -697,6 +702,9 @@ class OptionScenarioReprice(Node):
         discount_exponent = rate * years
         if not number_ok(discount_exponent) or abs(discount_exponent) > cls._MAX_DISCOUNT_EXPONENT:
             raise ValueError("discount exponent is outside numeric envelope [-10, 10]")
+        if (rate_shift != 0 and
+                math.exp(-discount_exponent) == math.exp(-params["rate"] * years)):
+            raise ValueError("rate_shift is rounded away in the discount factor")
         mark = black76(leg["right"], forward, leg["strike"], vol, years, rate)
         if not price_ok(mark):
             raise ValueError("pre-expiry model price must be positive and finite")

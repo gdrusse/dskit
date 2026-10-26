@@ -296,6 +296,7 @@ shocks. Each leg supplies its own strike, IV, days to expiry, signed quantity
 and multiplier in one declared quote currency. The scenario horizon cannot
 pass the earliest leg expiry. It returns per-leg and total model-mark P&L plus
 the worst loss among the declared scenarios; expiry uses intrinsic payoff.
+IV and rate shifts have no effect on an expired leg.
 The result is a hypothetical diagnostic, with no probability, fill, fee or
 margin claim. A pre-expiry mark that underflows to zero is refused because
 scaling that zero by a large position would misstate P&L. The node also

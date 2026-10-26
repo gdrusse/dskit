@@ -230,6 +230,40 @@ def test_option_scenario_reprice_refuses_subnormal_forward():
         option_pricing.OptionScenarioReprice("stress", params)
 
 
+def test_option_scenario_reprice_refuses_subnormal_expiry_intrinsic_mark():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["forward"] = 1e-307
+    params["legs"] = [{"name": "call", "right": "call", "strike": 9.9e-308,
+                       "iv": 3.0, "days_to_expiry": 365,
+                       "quantity": 1, "multiplier": 1e307}]
+    params["scenarios"] = [{"name": "expiry", "days_elapsed": 365}]
+    with pytest.raises(ConfigError, match="expiry model price.*normal range"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+@pytest.mark.parametrize("iv_shift", [-0.2, -0.3])
+def test_option_scenario_reprice_expiry_ignores_irrelevant_iv_shift(iv_shift):
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["legs"] = [{"name": "call", "right": "call", "strike": 100,
+                       "iv": 0.2, "days_to_expiry": 30,
+                       "quantity": 1, "multiplier": 100}]
+    params["scenarios"] = [{"name": "expiry", "days_elapsed": 30,
+                            "iv_shift": iv_shift}]
+    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
+    assert report["scenarios"][0]["legs"][0]["scenario_mark"] == 0
+    assert report["scenarios"][0]["pnl"] == pytest.approx(-report["base_value"])
+
+
+def test_option_scenario_reprice_refuses_rate_shift_rounded_in_discount_factor():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["legs"] = [{"name": "call", "right": "call", "strike": 100,
+                       "iv": 0.2, "days_to_expiry": 30,
+                       "quantity": 1, "multiplier": 100}]
+    params["scenarios"] = [{"name": "tiny", "rate_shift": 1e-16}]
+    with pytest.raises(ConfigError, match="rate_shift.*rounded away"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
 @pytest.mark.parametrize("right,strike,iv,rate,expected", [
     # Independent 100-digit normal-CDF/Black-76 reference values at the
     # numeric envelope's volatility, moneyness and discount boundaries.
