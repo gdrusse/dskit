@@ -32,7 +32,8 @@ def test_synthetic_scenario_stress_document_plans_and_reprices(child_root):
         "scenario_stress", document.pipeline["scenario_stress"].params)
     out = node.run(None, {})
     assert out["metrics"]["n_scenarios"] == 5
-    assert out["report"].value["scenarios"][0]["pnl_usd"] == pytest.approx(0)
+    assert out["report"].value["scenarios"][0]["pnl"] == pytest.approx(0)
+    assert out["report"].value["currency"] == "USD"
     assert out["report"].value["decision_eligible"] is False
 
 

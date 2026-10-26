@@ -193,7 +193,9 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   `python -m dskit.pipeline run configs/run-option-scenario-stress.json --asof 2026-10-26`.
   `forward_return` is a fraction; `iv_shift` and `rate_shift` are absolute
   decimal-point changes; `days_elapsed` is calendar days. Omitted shocks are
-  zero. Dskit's `OptionScenarioReprice` fully revalues each leg with Black-76
+  zero. The `currency` covers every leg; the multiplier converts one forward
+  point into that currency. `days_elapsed` cannot pass the earliest leg expiry.
+  Dskit's `OptionScenarioReprice` fully revalues each leg with Black-76
   (intrinsic at expiry) and reports each scenario and the worst declared loss.
   These are model-mark changes, not fill P&L or a probability-based risk bound.
 - Distribution zoo (ADR-0181): `run-synthetic-har.json` (log-HAR scale) and

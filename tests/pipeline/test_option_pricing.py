@@ -21,7 +21,7 @@ def test_option_scenario_reprice_is_available_by_import_path():
 
 
 SCENARIO_BOOK = {
-    "forward": 100.0, "rate": 0.0, "year_basis_days": 365,
+    "forward": 100.0, "rate": 0.0, "currency": "USD", "year_basis_days": 365,
     "legs": [
         {"name": "long_put", "right": "put", "strike": 90.0, "iv": 0.2,
          "days_to_expiry": 30, "quantity": 1, "multiplier": 100},
@@ -47,7 +47,7 @@ def test_option_scenario_reprice_fully_revalues_each_leg_and_reports_worst_loss(
     scenarios = {row["name"]: row for row in report["scenarios"]}
     assert report["decision_eligible"] is False
     assert report["pricing"] == "black76_forward"
-    assert scenarios["unchanged"]["pnl_usd"] == pytest.approx(0.0)
+    assert scenarios["unchanged"]["pnl"] == pytest.approx(0.0)
 
     base = sum(leg["quantity"] * leg["multiplier"] * black76(
         leg["right"], 100.0, leg["strike"], leg["iv"], 30 / 365)
@@ -55,19 +55,19 @@ def test_option_scenario_reprice_fully_revalues_each_leg_and_reports_worst_loss(
     shocked = sum(leg["quantity"] * leg["multiplier"] * black76(
         leg["right"], 90.0, leg["strike"], leg["iv"] + 0.1, 29 / 365,
         rate=0.01) for leg in SCENARIO_BOOK["legs"])
-    assert report["base_value_usd"] == pytest.approx(base)
-    assert scenarios["selloff"]["value_usd"] == pytest.approx(shocked)
-    assert scenarios["selloff"]["pnl_usd"] == pytest.approx(shocked - base)
-    assert sum(leg["pnl_usd"] for leg in scenarios["selloff"]["legs"]) == \
+    assert report["base_value"] == pytest.approx(base)
+    assert scenarios["selloff"]["value"] == pytest.approx(shocked)
+    assert scenarios["selloff"]["pnl"] == pytest.approx(shocked - base)
+    assert sum(leg["pnl"] for leg in scenarios["selloff"]["legs"]) == \
         pytest.approx(shocked - base)
 
     # At expiry this condor's put wing loses $500 in intrinsic value.
-    assert scenarios["expiry_crash"]["value_usd"] == pytest.approx(-500.0)
-    assert scenarios["expiry_crash"]["pnl_usd"] == pytest.approx(-500.0 - base)
-    pnls = [row["pnl_usd"] for row in report["scenarios"]]
-    assert out["metrics"]["worst_pnl_usd"] == pytest.approx(min(pnls))
-    assert out["metrics"]["worst_loss_usd"] == pytest.approx(max(0.0, -min(pnls)))
-    assert report["worst_scenario"] == min(report["scenarios"], key=lambda x: x["pnl_usd"])["name"]
+    assert scenarios["expiry_crash"]["value"] == pytest.approx(-500.0)
+    assert scenarios["expiry_crash"]["pnl"] == pytest.approx(-500.0 - base)
+    pnls = [row["pnl"] for row in report["scenarios"]]
+    assert out["metrics"]["worst_pnl"] == pytest.approx(min(pnls))
+    assert out["metrics"]["worst_loss"] == pytest.approx(max(0.0, -min(pnls)))
+    assert report["worst_scenario"] == min(report["scenarios"], key=lambda x: x["pnl"])["name"]
 
 
 def test_option_scenario_reprice_refuses_unused_inputs():
@@ -88,8 +88,47 @@ def test_option_scenario_reprice_refuses_an_overflowing_portfolio_total():
         option_pricing.OptionScenarioReprice("stress", params)
 
 
+def test_option_scenario_reprice_refuses_a_horizon_after_any_leg_expires():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["legs"][0]["days_to_expiry"] = 1
+    params["scenarios"] = [{"name": "later", "days_elapsed": 2,
+                            "forward_return": 0.1}]
+    with pytest.raises(ConfigError, match="days_elapsed.*expiry"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_handles_large_integer_position_consistently():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["forward"] = 1e-200
+    params["legs"] = [
+        {"name": "tiny_call", "right": "call", "strike": 1e-200,
+         "iv": 0.2, "days_to_expiry": 30, "quantity": 10 ** 200,
+         "multiplier": 10 ** 200}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
+    assert math.isfinite(report["base_value"])
+    assert report["scenarios"][0]["pnl"] == 0.0
+
+
+def test_option_scenario_reprice_refuses_unrepresentable_integer_forward():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["forward"] = 10 ** 400
+    with pytest.raises(ConfigError, match="forward"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_labels_the_declared_currency():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["currency"] = "EUR"
+    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
+    assert report["currency"] == "EUR"
+    assert report["metrics"]["base_value"] == pytest.approx(report["base_value"])
+
+
 @pytest.mark.parametrize("change,match", [
     (lambda p: p.update(forward=0), "forward"),
+    (lambda p: p.pop("currency"), "currency"),
+    (lambda p: p.update(currency="US dollars"), "currency"),
     (lambda p: p.update(year_basis_days=0), "year_basis_days"),
     (lambda p: p.update(typo=1), "unknown"),
     (lambda p: p.update(legs=[]), "legs"),

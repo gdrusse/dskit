@@ -434,12 +434,14 @@ class VolIndexSmileQuotes:
 class OptionScenarioReprice(Node):
     """Fully reprice a declared European option book under JSON market shocks.
 
-    One forward and rate apply to every leg. Each leg declares its own strike,
-    IV, days to expiry, signed contract quantity and multiplier. A scenario
-    applies a relative forward move and parallel absolute IV/rate shifts;
-    ``days_elapsed`` reduces each leg's remaining life. An expired leg uses
-    intrinsic value. P&L is the change from the *model* baseline, excluding
-    entry fills, fees, liquidity and margin. This is a hypothetical diagnostic,
+    One forward, rate and quote currency apply to every leg. Each leg declares
+    its own strike, IV, days to expiry, signed contract quantity and multiplier
+    (quote currency per forward point).
+    A scenario applies a relative forward move and parallel absolute IV/rate
+    shifts; ``days_elapsed`` reduces each leg's remaining life but cannot go
+    past the earliest expiry. A leg at expiry uses intrinsic value. P&L is the
+    change from the *model* baseline, excluding entry fills, fees, liquidity and
+    margin. This is a hypothetical diagnostic,
     never an executable or decision-eligible trade result.
 
     A scenario's omitted shock is zero. ``iv_shift`` is in volatility units
@@ -453,6 +455,7 @@ class OptionScenarioReprice(Node):
         Pipeline node key.
     params : dict
         ``forward`` and ``rate`` of one European-option underlying;
+        ``currency`` is the three-letter quote currency for all legs;
         ``year_basis_days`` converts declared calendar days to Black-76 years;
         ``legs`` is a non-empty list of named signed option contracts;
         ``scenarios`` is a non-empty list of named market shocks.
@@ -462,7 +465,7 @@ class OptionScenarioReprice(Node):
     Value a single long call under a 5% forward rise::
 
         node = OptionScenarioReprice("stress", {
-            "forward": 100, "rate": 0, "year_basis_days": 365,
+            "forward": 100, "rate": 0, "currency": "USD", "year_basis_days": 365,
             "legs": [{"name": "call", "right": "call", "strike": 100, "iv": 0.2,
                       "days_to_expiry": 30, "quantity": 1, "multiplier": 100}],
             "scenarios": [{"name": "up", "forward_return": 0.05}]})
@@ -471,13 +474,21 @@ class OptionScenarioReprice(Node):
 
     role = "transform"
     outputs = ("metrics", "report")
-    _PARAMS = ("forward", "rate", "year_basis_days", "legs", "scenarios")
+    _PARAMS = ("forward", "rate", "currency", "year_basis_days", "legs", "scenarios")
     _LEG_KEYS = ("name", "right", "strike", "iv", "days_to_expiry",
                  "quantity", "multiplier", "notes")
     _SCENARIO_KEYS = ("name", "forward_return", "iv_shift", "days_elapsed",
                       "rate_shift", "notes")
     _SHOCK_DEFAULTS = {"forward_return": 0.0, "iv_shift": 0.0,
                        "days_elapsed": 0, "rate_shift": 0.0}
+
+    @staticmethod
+    def _numeric_ok(value, rule):
+        """Apply the shared numeric rule, treating unfloatable integers as invalid."""
+        try:
+            return rule(value)
+        except OverflowError:
+            return False
 
     @classmethod
     def _leg_problems(cls, legs):
@@ -505,7 +516,7 @@ class OptionScenarioReprice(Node):
             if leg.get("right") not in RIGHTS:
                 problems.append(f"{where}.right must be one of {RIGHTS}")
             for field in ("strike", "iv", "multiplier"):
-                if not price_ok(leg.get(field)):
+                if not cls._numeric_ok(leg.get(field), price_ok):
                     problems.append(f"{where}.{field} must be positive and finite")
             days = leg.get("days_to_expiry")
             if type(days) is not int or days <= 0:
@@ -539,10 +550,11 @@ class OptionScenarioReprice(Node):
             if "notes" in scenario and not isinstance(scenario["notes"], str):
                 problems.append(f"{where}.notes must be a string")
             move = scenario.get("forward_return", cls._SHOCK_DEFAULTS["forward_return"])
-            if not number_ok(move) or move <= -1.0:
+            if not cls._numeric_ok(move, number_ok) or move <= -1.0:
                 problems.append(f"{where}.forward_return must be finite and > -1")
             for field in ("iv_shift", "rate_shift"):
-                if not number_ok(scenario.get(field, cls._SHOCK_DEFAULTS[field])):
+                if not cls._numeric_ok(scenario.get(field, cls._SHOCK_DEFAULTS[field]),
+                                       number_ok):
                     problems.append(f"{where}.{field} must be finite")
             days = scenario.get("days_elapsed", cls._SHOCK_DEFAULTS["days_elapsed"])
             if type(days) is not int or days < 0:
@@ -565,15 +577,28 @@ class OptionScenarioReprice(Node):
         """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
-        if not price_ok(params.get("forward")):
+        if not cls._numeric_ok(params.get("forward"), price_ok):
             problems.append("forward must be positive and finite")
-        if not number_ok(params.get("rate")):
+        if not cls._numeric_ok(params.get("rate"), number_ok):
             problems.append("rate must be finite")
+        currency = params.get("currency")
+        if (not isinstance(currency, str) or len(currency) != 3 or
+                not currency.isascii() or not currency.isalpha() or
+                not currency.isupper()):
+            problems.append("currency must be a three-letter uppercase quote currency")
         basis = params.get("year_basis_days")
         if type(basis) is not int or basis <= 0:
             problems.append("year_basis_days must be a positive integer")
         problems.extend(cls._leg_problems(params.get("legs")))
         problems.extend(cls._scenario_problems(params.get("scenarios")))
+        if problems:
+            return problems
+        earliest_expiry = min(leg["days_to_expiry"] for leg in params["legs"])
+        for index, scenario in enumerate(params["scenarios"]):
+            if scenario.get("days_elapsed", 0) > earliest_expiry:
+                problems.append(
+                    f"scenarios[{index}].days_elapsed exceeds earliest leg expiry "
+                    f"({earliest_expiry} days); expiry settlement needs its own forward")
         if problems:
             return problems
         baseline_marks = [None] * len(params["legs"])
@@ -642,7 +667,9 @@ class OptionScenarioReprice(Node):
             raise ValueError("iv_shift leaves a nonpositive or non-finite IV")
         remaining = leg["days_to_expiry"] - shock.get(
             "days_elapsed", cls._SHOCK_DEFAULTS["days_elapsed"])
-        if remaining <= 0:
+        if remaining < 0:
+            raise ValueError("scenario horizon passes leg expiry")
+        if remaining == 0:
             intrinsic = (forward - leg["strike"] if leg["right"] == "call"
                          else leg["strike"] - forward)
             return max(0.0, intrinsic)
@@ -675,27 +702,28 @@ class OptionScenarioReprice(Node):
         params = self.params
         baseline_marks = [self._mark(params, leg, None) for leg in params["legs"]]
         base_value = math.fsum(
-            leg["quantity"] * leg["multiplier"] * mark
+            mark * leg["quantity"] * leg["multiplier"]
             for leg, mark in zip(params["legs"], baseline_marks))
         rows = []
         for scenario in params["scenarios"]:
-            leg_rows = []
+            leg_rows, values = [], []
             for leg, base_mark in zip(params["legs"], baseline_marks):
                 mark = self._mark(params, leg, scenario)
-                pnl = leg["quantity"] * leg["multiplier"] * (mark - base_mark)
+                pnl = (mark - base_mark) * leg["quantity"] * leg["multiplier"]
+                values.append(mark * leg["quantity"] * leg["multiplier"])
                 leg_rows.append({"name": leg["name"], "base_mark": base_mark,
-                                 "scenario_mark": mark, "pnl_usd": pnl})
-            pnl = math.fsum(row["pnl_usd"] for row in leg_rows)
+                                 "scenario_mark": mark, "pnl": pnl})
+            pnl = math.fsum(row["pnl"] for row in leg_rows)
             rows.append({"name": scenario["name"], "shocks": {
                 key: scenario.get(key, default) for key, default in self._SHOCK_DEFAULTS.items()},
-                "value_usd": base_value + pnl, "pnl_usd": pnl, "legs": leg_rows})
-        worst = min(rows, key=lambda row: row["pnl_usd"])
-        metrics = {"n_scenarios": len(rows), "base_value_usd": base_value,
-                   "worst_pnl_usd": worst["pnl_usd"],
-                   "worst_loss_usd": max(0.0, -worst["pnl_usd"])}
+                "value": math.fsum(values), "pnl": pnl, "legs": leg_rows})
+        worst = min(rows, key=lambda row: row["pnl"])
+        metrics = {"n_scenarios": len(rows), "base_value": base_value,
+                   "worst_pnl": worst["pnl"],
+                   "worst_loss": max(0.0, -worst["pnl"])}
         report = {"kind": "option_scenario_reprice", "decision_eligible": False,
-                  "pricing": "black76_forward", "units": "USD",
+                  "pricing": "black76_forward", "currency": params["currency"],
                   "basis": "model mid; excludes fills, fees, liquidity and margin",
-                  "base_value_usd": base_value, "worst_scenario": worst["name"],
+                  "base_value": base_value, "worst_scenario": worst["name"],
                   "scenarios": rows, "metrics": metrics}
         return {"metrics": metrics, "report": JsonArtifact(report)}
