@@ -77,3 +77,15 @@ wide-mlp64-s47,raw_market,kind=weekly,732,86,,,27,159
 wide-mlp64-s47,recalibrated_market,all,831,92,63.933333,76.05,45,179
 wide-mlp64-s47,recalibrated_market,kind=monthly,99,1,,,1,20
 wide-mlp64-s47,recalibrated_market,kind=weekly,732,91,,,44,159
+mlp64-d03,raw_market,all,831,104,60.296667,73.05,40,181
+mlp64-d03,raw_market,kind=monthly,99,3,,,5,22
+mlp64-d03,raw_market,kind=weekly,732,101,,,35,159
+mlp64-d03,recalibrated_market,all,831,111,63.346667,76.0,55,181
+mlp64-d03,recalibrated_market,kind=monthly,99,0,,,0,22
+mlp64-d03,recalibrated_market,kind=weekly,732,111,,,55,159
+wider-mlp64,raw_market,all,831,107,64.013333,77.0,34,209
+wider-mlp64,raw_market,kind=monthly,99,2,,,4,21
+wider-mlp64,raw_market,kind=weekly,732,105,,,30,188
+wider-mlp64,recalibrated_market,all,831,117,65.403333,78.0,59,209
+wider-mlp64,recalibrated_market,kind=monthly,99,3,,,2,21
+wider-mlp64,recalibrated_market,kind=weekly,732,114,,,57,188

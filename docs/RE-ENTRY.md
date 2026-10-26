@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-16: ADR-0268 perf sweep landed 471dd655 (26 units, two clean lenses each); owner purges remote branches |
-| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-21 (wrap): 63 edge methods; combined recipe on the wide MLP 64 (dispersion buckets + 21-day refits) +0.69% over the recalibrated market, M51 +0.68% (t 10.7) gate 233 vs 36 luck, positive in every regime; seed bag alone +0.29%; three runs stopped at the C: floor; next: free disk, M57/M64/M65, then the holdout for M51/M53 |
+| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-25: ADR-0278 funded-option study; old M05 +$6,800 net/$404 stressed; full-DTE v11 running with $50 gap and 15-minute weekly skips; memo and background-run handoff in lane note; holdout sealed |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |

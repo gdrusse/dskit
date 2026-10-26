@@ -3,7 +3,7 @@
 The best completed funded weekly experiment made **$6,800.05 on $35,000 contributed**, but only **$403.80** after extra-spread stress and with a **65.88% maximum marked drawdown**. It is a development lead; the new full-DTE experiment has no completed empirical result yet. Its latest policy allows 15 minutes per solve and skips unresolved weeks.
 
 Session: October 22–25, 2026; logs extend into October 26 UTC.
-Owner: index_options, ADR-0276. Code checkpoint: 82ac1ee1.
+Owner: index_options, ADR-0278 (historically labeled ADR-0276). Code checkpoint: 82ac1ee1.
 The [interactive research report](/home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-2019-condor-oracle.canvas.tsx) retains raw results, detailed trades, oracle comparisons, source snapshots and failed attempts.
 
 ## Execution contract
@@ -180,6 +180,8 @@ V10 archive: 437532540c6e5cb519e93ef5b1704df405479820879b5b5f9e259d98b37bd81c.
 
 ## Closure status
 
-V11 is prepared and final independent review is in progress. No completed
-full-DTE P&L exists at this draft. Review, launch and publication receipts will
-follow; completion will receive a dated results addendum.
+Both fresh independent final reviews passed with zero Critical/Major and no new Minor/Nit findings; the two previously documented minors remain deferred. Code checkpoint 82ac1ee1404a1b545ee803902ebf15d9d578f3e7 passed 123 focused tests and 13 embedded verification families. Upstream d64ff302 integration changed documentation/evidence only; reviewed runtime and test identities are unchanged.
+
+V11 launched at **2026-10-26 03:22:52 UTC** (October 25 locally) in WSL as index-options-2019-full-dte-v11.service. The journal confirms FRESH_PRE2019_FULL_DTE_INITIALIZED with the intake identity above and START M05 W1 .03 verified inputs. Launch PID: 2713844; invocation: bc5e40558c1844f08a8097651e6d1ebd. The service was active/running at the launch check. No completed full-DTE P&L exists yet.
+
+The hourly thread follow-up finish-2019-options-run-memo will check completion, validate the saved result and accounting audit, and append actual full-DTE results or a documented terminal failure here. The active worktree is retained for the service. Runtime sources and the report remain frozen until it ends. A results addendum and its publication are still pending.

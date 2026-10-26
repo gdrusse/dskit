@@ -4,7 +4,7 @@
 
 - **The three levers add.** On the wide MLP 64 rows, weights per market-dispersion bucket (M51) give **+0.68% twCRPS over the recalibrated market (t 10.7)**, 21-day refits (M52) +0.66%, both together (M53) **+0.69% (t 9.8)**; round 4's M48 was +0.64%, round 3's M29 +0.59%. Buckets on the market's 90% width (M58) tie M51 at +0.68%. Nine of the twelve new stacks are positive in all five regimes; M51/M53/M58 hold +0.39% to +0.42% in the 2022 rate shock and +1.0% to +1.1% in the recovery.
 - **Gate:** M54 (one-year half-life) 237, M58 235, M51 233, M52 233, M56 232 of 831 cells against 30-36 by luck; M51 and M58 beat the recalibrated market in all four years in 142-144 cells and are positive on 91 of 110 tickers; M51 has 21 tickers positive in all four years and only 36 (ticker, DTE week) cells with t < -2 of 855 (M48: 44).
-- **Seeds of the wide MLP 64:** seed 29 alone is **+0.20%** over the recalibrated market (the best standalone fit so far), seed 11 +0.12%, seed 47 -0.02%. The three-seed bag M57a is +0.29% alone, the first model-only forecast above the market; its stack (M57) and the two input-isolation fits (66-input MLP 64, 106-input wider MLP 64) did not run: the host's C: drive reached the 30 GiB floor and the guard stopped them (owner: stop at the floor, wrap).
+- **Seeds and completion:** seed 29 alone is +0.20% over the recalibrated market, seed 11 +0.12%, seed 47 -0.02%; their bag M57a is +0.29% alone. After disk was freed on 2026-10-22, M57, the 66-input and 106-input fits, and M64/M65 completed. Their blends scored +0.58%, +0.55%, and +0.58% respectively, below M51/M53. The added inputs did not beat the 90-input model on the comparable M16 recipe.
 - **What does not help:** quantile bands mirroring the zones (M55 +0.58%, negative pre-crash and in 2022), a linear pool per strike threshold (M61 +0.56%), risk-neutral shape moments as weight features (M63 +0.60%, -0.12% in 2022), the seed bag without the market, and bucketing by strike density or vol level (M59, M60 +0.58-0.59%): the model slot and the dispersion/refit levers carry the gain; new conditioning does not.
 - Everything here is a predictive score difference on the 2020-23 validation years; nothing is about trading.
 
@@ -15,11 +15,11 @@
 - Three orthogonal levers existed and had never been combined: dispersion buckets (+0.04%), 21-day refits (+0.03%), a better base model (+0.09%). Round 5 confirms they add (+0.69%).
 - The 90 wide inputs (Greeks, volume, open interest, depth, own IV, strike nodes) help an MLP and not a TCN; as conditioning features in the stack they are exhausted (rounds 3-5).
 - The edge sits at 29-49 days, in the right shoulder and right wing, in the COVID crash and recovery; the wide MLP removed the 2022 long-DTE loss. Ticker leaders and laggards are the same in every stack (ENPH, CCJ, GE, FTNT, CPB always behind), which asks for a covariate in the weight law rather than per-ticker cells (needs an ADR: shrunk per-ticker term).
-- Unused panel columns remain: twelve risk-neutral shape moments (tried as weight features in M63, no gain), short skew and curvature changes, lagged open interest, strike nodes 0-2 and 6-8 (the wider fit, not run).
+- Unused panel columns remain: twelve risk-neutral shape moments (tried as weight features in M63, no gain), short skew and curvature changes, lagged open interest, strike nodes 0-2 and 6-8 (the 106-input wider fit ran on 2026-10-22; its one-seed result is reported below).
 
 ## What ran
 
-Two fits (wide MLP 64, seeds 29 and 47; 16-17 min each, all five folds), thirteen GridCDFMethod documents (13 s to 31 min; the two rolling documents M52 and M53 take about 30 min each) and fourteen gate analyses; every run rc 0. Packet 5 (`registration/wall-used-p5.txt`) holds 4,454 s. Evidence under `scores/` is 34.4 GB of the 40 GB cap (raised from 32 GB this round). Not run, stopped by the C: floor: fits mlp64-d03 (66 inputs, hidden 64, dropout 0.3) and wider-mlp64 (106 inputs), and documents M57, M64, M65 (committed, validated, ready for a later packet).
+At the 2026-10-21 wrap, two wide MLP 64 seed fits, thirteen GridCDFMethod documents, and fourteen gate analyses had run; M57 and M64/M65 were stopped at the C: floor. The 2026-10-22 completion ran those three documents and both remaining fits plus their scorers and analyses, all rc 0; see the addendum below. Packet 5 now totals 9,554 of 14,400 s. Evidence under scores/ is 37,968,358,276 bytes under the 40,000,000,000-byte cap.
 
 | # | Method (all on the wide MLP 64 scored rows; quantile average of model + recalibrated market + pooled + per-name baseline unless stated) |
 |---|---|
@@ -30,12 +30,12 @@ Two fits (wide MLP 64, seeds 29 and 47; 16-17 min each, all five folds), thirtee
 | M55 | five quantile-level bands mirroring the zones (0.1 / 0.3 / 0.7 / 0.9) with their own weights |
 | M56 | five components: wide MLP 32 and wide MLP 64 both in the slot |
 | M57a | bag of the wide MLP 64 seeds 11, 29, 47, no market (ingredient) |
-| M57 | the recipe with M57a in the model slot (not run) |
+| M57 | the M16 recipe with M57a in the model slot (completed 2026-10-22) |
 | M58, M59, M60 | weights per bucket of the market 90% width, the listed-strike count, the reference scale (vol level) |
 | M61 | linear pool per strike threshold |
 | M62 | M34's market-shape weight features (log DTE, market sd, 95-5 spread) |
 | M63 | weight features from the unused risk-neutral shape moments |
-| M64, M65 | the recipe on the 66-input MLP 64 and the 106-input wider MLP 64 (fits not run) |
+| M64, M65 | the M16 recipe on the 66-input MLP 64 and the 106-input wider MLP 64 (completed 2026-10-22) |
 
 ## 1. Overall (validation 2020-23, twCRPS edge %, t in brackets; positive = method better)
 
@@ -174,8 +174,8 @@ M51 and M58 beat the recalibrated market in all four years in 142 and 144 cells 
 
 ## 7. What to focus on next
 
-1. **Candidate pair for the holdout:** M51 (wide MLP 64, weights per dispersion bucket) on the cell criterion and M53 (plus 21-day refits) on the pooled score, with M48 and M29 as the lineage. The model slot should hold the three-seed bag once M57 runs (the bag alone is +0.29%, seed 11 alone +0.12%); expect about +0.7%.
-2. **Finish the three stopped runs when disk allows** (documents committed and validated): M57, and the fits mlp64-d03 and wider-mlp64 with M64/M65, which separate the width/dropout effect from the input effect and test the 16 unused panel columns.
+1. **Leading candidates remain M51 and M53:** M51 on the cell criterion and M53 on pooled score, with M48 and M29 as lineage. M57 underperformed, so the seed bag is an ingredient for a focused dispersion/rolling test, not an automatic replacement.
+2. **Next experiment:** ADR-0277 proposes five small, registered variants around M51/M53: seed bag with the winning weight laws, two coarser dispersion partitions, and a slower refit schedule. The 2024-25 holdout still requires a separate owner opening.
 3. **Stop:** new conditioning in the weight law (zone bands, strike density, vol level, risk-neutral shape moments, linear pools); seed spread (0.22%) is now the largest uncontrolled effect, so every future fit comparison needs three seeds or a bag.
 4. **Needs an ADR (not JSON):** a shrunk per-ticker term in the weight law (the same five laggards in every stack); buckets on panel columns; the strike-node surface as a sequence input.
 
@@ -183,16 +183,29 @@ M51 and M58 beat the recalibrated market in all four years in 142 and 144 cells 
 
 - **Candidate:** M51/M53, quantile averages of four CDFs with a weight table per dispersion bucket (and a 21-day refit schedule for M53), on a 3,273-parameter MLP over 90 Theta chain inputs; positive in every regime, 6-7 times luck at the gate, calibrated within one point of nominal, reproducible across seeds in the stack (the bag is the production model slot).
 - **Serving shape unchanged:** four CDFs per row, a weight table, refits on a schedule, all expressible in the existing node's JSON.
-- **Still missing:** the 2024-25 holdout, opened once by the owner; the recalibrated market inside the scorer; a serving document; the three stopped runs. Holdout and 2026 are untouched; no trading or P&L has been evaluated.
+- **Still missing:** the 2024-25 holdout, opened once by the owner; the recalibrated market inside the scorer; and a serving document. The three formerly stopped runs completed on 2026-10-22. Holdout and 2026 are untouched; no trading or P&L has been evaluated.
 
 ## Files
 
 | Step | Document (`children/index_options/configs/`) | Output (pilot root `/home/russell/data/index_options/theta-strike-screen-20261018/`) |
 |---|---|---|
-| Fits wide MLP 64 seeds 29, 47 (and the two not run) | `run-strike-screen-fits-wf-{wide-mlp64-s29,wide-mlp64-s47,mlp64-d03,wider-mlp64}.json` | `fits/wf-wide-mlp64-s29/`, `fits/wf-wide-mlp64-s47/` |
-| Score the fits | `run-strike-region-scores-wf-<tag>.json` | `scores/strike-region-scores-wf-wide-mlp64-s{29,47}/` |
-| Methods M51-M65 | `run-edge-method-51..65-*.json`, `run-edge-method-57a-mlp64-seed-bag.json` | `scores/edge-method-5*-*/`, `scores/edge-method-6*-*/` (M57, M64, M65 absent: not run) |
+| Fits wide MLP 64 seeds 29, 47 and 66/106-input MLP 64 | `run-strike-screen-fits-wf-{wide-mlp64-s29,wide-mlp64-s47,mlp64-d03,wider-mlp64}.json` | `fits/wf-*` (all four complete) |
+| Score the fits | `run-strike-region-scores-wf-<tag>.json` | `scores/strike-region-scores-wf-*` (all four complete) |
+| Methods M51-M65 | `run-edge-method-51..65-*.json`, `run-edge-method-57a-mlp64-seed-bag.json` | `scores/edge-method-5*-*/`, `scores/edge-method-6*-*/` (M57/M64/M65 complete) |
 | Gate analyses | `docs/memos/data/2026-10-20-walkforward/analysis_wf.py --method-rows --candidate wide_mlp64` | `analysis/edge-method-5N-*/`, `analysis/wf-wide-mlp64-s{29,47}/` |
-| Collected CSVs | `docs/memos/data/2026-10-20-edge-methods/` | `edge_*.csv[.gz]` cover M01-M63 (`edge_method` names the method); `edge_variant_*.csv` cover fourteen fitted variants |
+| Collected CSVs | `docs/memos/data/2026-10-20-edge-methods/` | `edge_*.csv[.gz]` cover M01-M65, including preserved historical rows after old score folders were offloaded; `edge_variant_*.csv` include the 66/106-input fits |
 
 Breakdowns by ticker, DTE week and zone for every method: `edge_ticker_dte.csv.gz`, `edge_ticker_dte_zone.csv.gz`, `edge_ticker_zone.csv.gz`, `edge_ticker_year.csv.gz`, `edge_year_dte_zone.csv`, `edge_period_dte_zone.csv`, `edge_dte_zone_region.csv`; gates in `edge_gate_vs_market.csv`, `edge_gate_vs_calibrated_market.csv`, `edge_gate_summary.csv`; calibration in `edge_calibration.csv`. Packet 5 tally `registration/wall-used-p5.txt`; the round-5 orchestration log is in the session scratchpad (not evidence).
+
+
+## 2026-10-22 completion: previously stopped runs
+
+**Contract.** This resumes the approved round-5 packet on already committed, clean Theta-era assets. Path A0002/A0003/A0007/A0008 still control the score, yearly walk-forward, gate and warm-up treatment. The ranked comparison is 449,498 validation rows from 2020-23; 2019 is an unranked warm-up. All documents set `end_before: 2024-01-01`; the 2024-25 holdout and 2026 were not opened. There is no trade rule or P&L.
+
+**Execution.** M57 used the existing three-seed bag M57a, completed in 156 s, and its A0007 analysis completed. The 66-input MLP 64 fit completed all five folds in 997 s (peak RSS about 8.0 GB), its scorer in 1,237 s, M64 in 300 s, and its analysis completed. Its scored-row SHA-256 is `33149634c53ce27f910818f9b92af3ce77e7aa59066b04a58a5844a504e6c2b4`. The 106-input MLP 64 fit completed all five folds in 1,040 s (peak RSS about 11.4 GB), its scorer in 1,258 s, M65 in 112 s, and its analysis completed. Its scored-row SHA-256 is `ede40a96ae867b464c8e6b73e6bf24a3a63dbec73df5be74b363bfe9638a1ceb`. M64/M65 ran from resolved document copies under pilot-root `documents/study/`; the repository placeholders retain zero source hashes and need resolution before reuse. Every completed command returned 0. Packet-5 wall tally is 9,554/14,400 s; `scores/` is 37,968,358,276/40,000,000,000 bytes; C: had 113 GiB free after these runs.
+
+**Results.** Values are pooled twCRPS skill against the recalibrated market on the ranked 2020-23 rows, positive meaning better forecast accuracy. M57 (bag in the M16 recipe) scored +0.58167% (t 10.50), with 245/831 A0007 cells passing against 27.89 expected by luck. M64 (66 inputs, M16 recipe) scored +0.54946% (t 10.18), gate 241/831 against 25.23 luck. M65 (106 inputs, M16 recipe) scored +0.57846% (t 10.69), gate 236/831 against 26.87 luck. All three were positive in each year and each of five regimes, but M57 and M65 weakened to +0.21% and +0.14% in 2022. Their pooled scores are below the same recipe's 90-input M48 (+0.63806%), and below the dispersion leaders M51 (+0.68435%; gate 233) and M53 (+0.69034%; gate 200). Gate counts and pooled scores are different criteria; M57's higher gate count does not reverse its lower pooled score.
+
+As standalone models, the 66-input fit scored +0.11294% against the recalibrated market (t 1.06; gate 111/831 against 63.35 luck); the 106-input fit scored +0.23925% (t 2.29; gate 117/831 against 65.40 luck). The 106-input fit looks better standalone, but each new architecture/input comparison has only one seed and the prior 90-input MLP 64 seeds ranged from -0.02% to +0.20%. These results do not isolate an input benefit from seed variation. No new blend displaced M51/M53.
+
+**Handoff.** The existing comparison CSVs append M57/M64/M65 and the two fits while retaining rows for older score folders that were offloaded to free disk. Full outputs remain at pilot-root `fits/wf-mlp64-d03/`, `fits/wf-wider-mlp64/`, `scores/strike-region-scores-wf-mlp64-d03/`, `scores/strike-region-scores-wf-wider-mlp64/`, `scores/edge-method-{57-qa-mlp64-seed-bag,64-mlp64-66-inputs,65-wider-mlp64}/` and matching `analysis/` folders. Next: seek owner approval of proposed ADR-0277 before creating five config files or running another packet. The 2024-25 holdout remains sealed.

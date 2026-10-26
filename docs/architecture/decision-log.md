@@ -31528,7 +31528,9 @@ R6 convergence checkpoint before correction2: fresh corrected-candidate integrat
 
 **Tests.** `tests/pipeline_libs/test_chain_greeks.py` (profile buckets and size totals; the delta surface's interpolation, bracketing, nearest expiry, filters, carry ratio, default-deny), `tests/pipeline_libs/test_sklearn.py` (two-stage fit, residual, prediction sum, coefficient exposure, refusals), child pins in `children/statistical_arbitrage/tests/test_prediction_configs.py` (vendor pass members and windows, artifact digests, three baselines, one clock, three-pair scoring, `label_offset` 1, frozen selection, `overwrite: false`, stdlib planning, no ledger/order/backtest kinds).
 
-## ADR-0270 — Proposed resource-bounded strike-region fast screen on already-available Theta-era assets
+## ADR-0276 — Proposed resource-bounded strike-region fast screen on already-available Theta-era assets
+
+**Number correction (2026-10-22).** This strike study was initially numbered ADR-0270. A merge revealed that ID already names the statistical-arbitrage phase-one lock. ADR-0276 is the canonical ID for this study; old evidence and config text retain their historical label to preserve hashes.
 
 **Status: PROPOSED 2026-10-18, design only. Fit budget ZERO until the registration below is approved and two final lenses pass.** Owner: Russell; writer: Claude Fable 5.1. Base 81c0e2eb, worktree claude/strike-fast-scan-20261018. Owner requested a cheap, registered way to screen features, architectures, loss functions and training recipes for predictive skill around option strike regions AND overall proper-score quality, on partial already-committed data while the Theta pull continues. This is a NEW bounded pilot: it does not launch, mutate or reuse R5 (INTERRUPTED, 4,528 consumed) or R6 (packet 07976b0e, not launched), and it is not profitability, P&L, backtest or strategy work. ADR-0269's "prepare matched market references before further HPO" is honoured inside this packet by a market stage that precedes any promotion rung. H0-H7 and the frozen 2018 family admission stay unchanged.
 
@@ -31737,7 +31739,22 @@ A0005,Promotion rule and uncertainty,"Eligible only if paired CRPS skill vs hori
 
 **ADR-0270 round 5 results (2026-10-21).** Memo `children/index_options/docs/memos/2026-10-21-edge-methods-round5-results.md`; CSVs cover M01-M63 and fourteen fitted variants. Ran: twelve methods (M51-M56, M58-M63), the seed bag M57a, two fits (wide MLP 64 seeds 29 and 47, all folds), fourteen gate analyses, every run rc 0; packet 5 at 4,454 s; evidence 34.4 of 40 GB. Stopped by the owner's C: floor (30 GiB free): the fits mlp64-d03 and wider-mlp64 and the documents M57, M64, M65 (committed and validated; owner: stop at the floor and wrap). Findings: the three levers add on the wide MLP 64 rows: dispersion buckets M51 +0.68% twCRPS over the recalibrated market (t 10.7), 21-day refits M52 +0.66%, both M53 +0.69% (t 9.8), against M48 +0.64%; market-width buckets (M58) equal M51; nine of twelve new stacks positive in all five regimes, M51/M53/M58 at +0.39-0.42% in 2022. Gate: M54 237, M58 235, M51 and M52 233 of 831 against 30-36 by luck; M53 200 (refits add pooled edge, not per-cell consistency). Seeds: seed 29 alone +0.20% (best standalone fit), seed 47 -0.02%, seed 11 +0.12%; the three-seed bag alone +0.29%, the first model-only forecast above the market; seed spread (0.22%) is the largest uncontrolled effect, so future fit comparisons need three seeds or a bag. No gain from zone-mirroring quantile bands, linear pools per threshold, strike-density or vol-level buckets, or risk-neutral shape moments as weight features. Candidates for the holdout: M51 (cell criterion) and M53 (pooled score), model slot to become the seed bag once M57 runs. Needs an ADR: a shrunk per-ticker term in the weight law, buckets on panel columns, the strike-node surface as a sequence input. Wrap: lane note rewritten, branch merged to main.
 
-## ADR-0276 — Research-only prescription bridge for the Theta strike screen (approved by Russell, 2026-10-22)
+
+## ADR-0277 — Proposed focused tuning of the best strike-region prediction recipes (2026-10-22)
+
+**Status: PROPOSED; owner approval required before new config files or runs.** Owner: Russell; writer: GPT-6. This follows the completed ADR-0276 round-5 memo. The 2020-23 validation leader is M53 at +0.69034% pooled twCRPS skill against the recalibrated market; M51 is +0.68435% with a stronger recalibrated-market gate (233/831 versus 200). M57/M64/M65 finished after disk was freed and scored +0.58167/+0.54946/+0.57846%; none replaces those leaders. One-seed 66/106-input fits are not sufficient evidence for an input change. Scope is prediction quality only.
+
+**Reuse.** Inventory: `dskit.pipeline.libs.cdf_grid_methods.GridCDFMethod` already implements quantile averaging, `by` buckets, external scored-method components and rolling `refit_days`; the configs for M51/M53/M57 and the 57a bag are templates. Sweep of edge-method, quantile average, dispersion, seed-bag and rolling-refit found the existing node/config family and no need for new library code. Subject to approval, add exactly five JSON run documents and their config registration pins, then run their focused validation and A0007 analysis. No fit, source-data pull, or new model implementation is proposed.
+
+**Pre-registered variants.** M66 is M51's three-bin market-dispersion law with M57a's three-seed bag in the model slot. M67 is M53's same three-bin law and 21-calendar-day refit schedule with that bag. M68 is M51 with two market_sd_z buckets [0,1.0] and [1.000001,100]. M69 is M51 with two buckets [0,1.3] and [1.300001,100]. M70 is M53 with a 42-calendar-day refit schedule in place of 21 days. Everything else, including four forecast components, 199 quantile levels, score grid, 5,000-row minimum and learning-row cap, stays at the parent document's value. M66/M67 reuse the pinned M57a forecast source; M68-M70 reuse the pinned 90-input MLP 64 scored rows. No variant is selected or adjusted after observing its own validation result.
+
+**Evaluation and decision.** Follow locked Path A0002/A0003/A0005/A0007/A0008: 2019 warm-up unranked, 2020-23 yearly expanding validation with settlement purge, twCRPS primary, full CRPS and strike-zone reliability beside it, A0005 pooled/annual eligibility, A0007 per-(ticker, expiry rank) gate versus raw market and per-name baseline with pass count next to expected luck. Report each variant against its direct parent (M51 for M66/M68/M69; M53 for M67/M70), against the M53 pooled-score leader, and by all four years, five regimes, ticker, DTE week and strike zone. Nominate a new leading recipe only if it exceeds M53's pooled twCRPS skill, passes A0005, is positive against the recalibrated market in all five regimes, and does not reduce M51's 233 recalibrated-market gate count; otherwise retain M51/M53. These are exploratory validation comparisons after many attempts, not an edge or production claim. Opening 2024-25 would require a separate owner decision; 2026 stays sealed.
+
+**Resources and stop rules.** Use the existing pilot root and one heavy WSL2 process at a time, existing clean Theta sources only, five method outputs estimated under 1 GB total. Before each run require at least 50 GiB free on C: and a forecast that `scores/` remains below the owner's 40,000,000,000-byte cap; stop and report if either fails. A new packet-6 wall tally has a 14,400 s ceiling. Preserve the historical comparison CSV rows when refreshing them because some score folders were offloaded. The root AGENTS.md's ADR-before-code and ask-before-new-files rules hold this proposal at the design step.
+
+## ADR-0278 — Research-only prescription bridge for the Theta strike screen (approved by Russell, 2026-10-22)
+
+**Number correction (2026-10-25).** The prescription work used ADR-0276 in its original commits and review artifacts. Upstream assigned ADR-0276 to the earlier prediction study and ADR-0277 to proposed prediction tuning. ADR-0278 is the canonical prescription ID. Historical ADR-0276 labels in the amendments below and sealed artifacts retain their original text; their approval and evidence apply to ADR-0278. No runtime or behavioral contract changes.
 
 The owner approved moving from predictive scoring to a research prescription and asked for implementation and an execution when CPU is available. A0002 remains the rule for ranking forecasts; this separate study measures whether a frozen forecast can select an option structure after costs. A0003/A0008 still protect the time windows. No Path row is edited. The first execution is a bounded 2019 warm-up mechanics replay; M51 falls back to its base model in that fold, so it cannot establish M51 trading value. No 2024–25 or 2026 read is authorized. A later holdout opening remains monthly with the rule frozen first.
 
@@ -32330,3 +32347,32 @@ aborted solution load. This is synthetic verification, not a market replay.
 Focused GREEN: 123 transport/weekly tests passed,450 deselected; no full suite. Generated synthetic normal and timeout workers each completed two methods, with independent auditors, later fills, and exact resume. TSX syntax/default render passed with visible900-second skip policy. Candidate 565e6a28c22ce307559d1b30b8361f388b0fa0295b6fa06ce7b6da5eb0aca61b.
 
 Code/test lock for timeout final lenses: {"children/index_options/README.md": "487fd0f8b4f666f543f9a391eb5224fc59fbf4d15967713821e96ba166499b7d", "children/index_options/index_options/ledger_studies.py": "49b14dfa341f3746d2d5ba2e4566e21742e8bfbc5e574c4ab1156abb3353ffb3", "children/index_options/index_options/nodes.py": "8453898fed2951df76a6717863b4359b7091d1175b0800581f98f8eb49ed52ff", "children/index_options/tests/test_ledger_studies.py": "2af4a9278145682b76d81c52f6e922472c958122b11b55b6caabf8cd79df8158", "children/index_options/tests/test_nodes.py": "7d75419ed325b388aa861480dadd77cc1ad9f7e6ce61954f1587aead76226905", "dskit/pipeline/AGENTS.md": "b3b1b61722c23b382016626efc5c7ba35c13950c32ab09aad1c1c1d4c4e3e129", "dskit/pipeline/CLAUDE.md": "87790714734301b13ac5093689609c943b9e43219b66463819b0e89673c71c04", "dskit/pipeline/README.md": "65d7f884685622557cd5f81835bec1c9f99fe4ab62c86de1f87efed2e470c37a", "dskit/pipeline/libs/option_ledger.py": "0fffab05ef878d05f84e8ae31a028c28ee2fc1f2faaaf31131c6d7936ebe6c47", "dskit/pipeline/libs/pyomo.py": "cbde475d961039ac61533a098e8f64ae16b331da38054e660395612a7cd6b552", "dskit/pipeline/option_structures.py": "0ebffbe128c7b1840717ce502f8342abb3111233f8015dbc7114acfce8dae96a", "tests/pipeline/test_option_structures.py": "b81a44766daf4462ae5e96004e66313d1fffd65f37d076966c7c2a361828f84a", "tests/pipeline_libs/test_option_ledger.py": "939b5e67208e2bf9237db95af8733e9ee46101ad425c76d04ab2da04a87c411b", "tests/pipeline_libs/test_pyomo.py": "04aaf8f3298de81ca12c3c1f3f0779332ea2637e876ab413a363762ee44fd6ab"}.
+
+
+#### ADR-0278 timeout candidate closure (2026-10-25)
+
+Code checkpoint82ac1ee1404a1b545ee803902ebf15d9d578f3e7 and activation
+565e6a28c22ce307559d1b30b8361f388b0fa0295b6fa06ce7b6da5eb0aca61b closed:
+both fresh independent lenses PASS C0/M0/new Minor0/Nit0.
+Correctness /root/timeout_skip_correctness:15 tests,97 independent malformed
+refusals,four missing-bound/no-incumbent first/second-week accounting cases,
+98 initializer/policy refusals and29 source/archive checks.
+Integration /root/timeout_skip_integration:15 tests,six workers/eight auditors,
+12 synthetic weekly solves,persisted comparison and main resume,18 malformed
+refusals,25 identity checks. Evidence chunks23b9ad,1235eb,c7bdfa,b02109,04802c;
+correctness chunksf8697b,b9b915,686d9b,cd21c7,277df5.
+Parent123 focused tests and13 embedded families passed. Existing Minor2 retained.
+No full suite or market data in verification. Production/test blobs unchanged
+through editorial README fixes and origin/main d64ff302 integration. Only ADR
+identifier collision corrected to0278; original sealed labels remain.
+Transient WSL connection errors recovered without restart; no study was active.
+Fresh v11 launch authorized and requested; no further optional testing.
+
+V11 launch receipt:2026-10-26T03:22:52.446627+00:00, WSL user service
+index-options-2019-full-dte-v11.service, PID2713844, invocation
+bc5e40558c1844f08a8097651e6d1ebd. Journal confirms fresh intake identity
+44d615b48bdcdf0e300081ecdedefd0d7b2d0194ab8f10d118d4e4fa29b94580
+and START M05 W1 .03 verified inputs; active/running. No completed v11 result
+yet. Hourly thread follow-up finish-2019-options-run-memo will validate terminal
+state, append the actual outcome and wrap the results memo. Active checkout
+retained; runtime/report frozen.
