@@ -4,38 +4,33 @@ Updated: 2026-10-26 by GPT-6. Previous note: docs/archive/re-entry/index_options
 
 ## Now
 
-- Prescription is canonical ADR-0278; historical sealed labels remain ADR-0276. Prediction is ADR-0276; proposed tuning ADR-0277.
-- High-level memo: docs/memos/2026-10-26-mio-high-level-status.md. It includes all 11 traded tickers and 17 dated books from the best funded MIO. Detailed history: docs/memos/2026-10-25-prescription-session-results.md.
-- Best completed funded experiment: old M05 rho .03 at 28–32 decision DTE; net $6,800.05, stressed $403.80, equity $41,800.05 on $35,000 contributed, time-weighted return 13.44%, marked drawdown 65.88%. Four of ten old methods completed; six unscored. Same-year screen and base-MLP fallback limit interpretation.
-- Full-DTE v11 COMPLETED: all 53 weeks/252 sessions; 17 selected, 34 timeout skips, one cash, one ineligible. 13/127 selected books filled; 256 contracts, eight tickers. Net −$7,804.40, stressed −$10,406.65, equity $27,195.60, TWR −16.29%, drawdown 62.18%; no open positions/errors.
-- Independent saved-record replay passed. Parent reconciled dates, quantities, fees, P&L/stress, deposits, NAV/drawdown and source identities. All 34 skipped weeks had positive feasible incumbents with gap above $50. Native bounds trusted as approved.
-- Service index-options-2019-full-dte-v11.service ended 2026-10-26 13:36:49 UTC. Peak memory9.5G/swap3.0G. All sources/tests/report remain unchanged; no optimization/full suite rerun for memo closeout.
-- Runtime/report: /home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-2019-condor-oracle.canvas.tsx. Raw value hash a4186a8c359d6cef1b206ce71d16bd05d346a105f4aa76bb6397e3a26773a25c. Code checkpoint82ac1ee1, approved activation565e6a28c22ce307559d1b30b8361f388b0fa0295b6fa06ce7b6da5eb0aca61b; both final code reviews C0/M0,123 focused tests/13 embedded families.
-- Prediction leaders remain M51 +0.68435% and M53 +0.69034% twCRPS versus recalibrated market, positive all five regimes; M57/M64/M65 did not improve them. The trading runs use base wide-MLP64 fallback, not fitted M51.
+- JSON scenario/stress diagnostic: `configs/run-option-scenario-stress.json` declares a synthetic same-expiry index condor and five forward/IV/time/rate scenarios. Generic `dskit.pipeline.option_pricing.OptionScenarioReprice` fully reprices each leg and reports hypothetical P&L and worst declared loss; never decision-eligible.
+- Reviewed candidate `a2b9f0a2` against base `857d9a6e`. Fresh correctness and integration lenses (`/root/scenario_final_correctness_a2`, `/root/scenario_final_integration_a2`) each found zero unresolved Critical/Major. Shared Black-76 and smile bodies match base.
+- Focused pricing, child config and docs checks: 174 passed, 6 skipped. Related shared callers: 638 passed, 10 skipped. WSL CLI validate/plan/run succeeded and persisted the JSON report. Ruff and diff checks passed. Full suite not run.
+- Synthetic sample's largest declared loss is $7,492.72 at the expiry selloff. This is a model-mark what-if, with no probability, fill, fee, liquidity or margin claim. Research: `docs/research/scenario-stress/2026-10-26-option-book-repricing.md`.
+- ADR-0278 full-DTE v11 remains a separate completed audit: net −$7,804.40, 34/53 timeout skips; best prior funded M05 net +$6,800.05 with $403.80 stress. Details: `docs/memos/2026-10-26-mio-high-level-status.md` and `docs/memos/2026-10-25-prescription-session-results.md`.
 
 ## Next
 
-1. Both memos landed at3aaff025 and wrap completed. Claude/Fable launched14:07:03UTC in /home/russell/wt/index-options-mio-fable-20261026; session09563c01-7415-4275-a466-2db186f3c75d, actual modelclaude-fable-5-1 verified.
-2. Fable investigates candidate methods, additional MIO work and solve speed; deliver recommendations and a minimal benchmark plan. Preserve flexible leg/quantity choices and cash. Research/proposals only; no new long runs or implementation.
-3. Fable service index-options-mio-fable-20261026.service is active at handoff. Prompt/model/launch receipts and eventual research-report.md live in /home/russell/.local/state/index-options-mio-fable-20261026/. Pause the completed study heartbeat; do not duplicate the Fable job.
-4. Audit concentration, quote artifacts, large near-zero-debit books/boxes, fill failures and timeout selection. New universe/DTE/tie-break/timeout policies prevent attribution to DTE alone. Predictive packet six under ADR-0277 stays separate.
+1. Edit the synthetic JSON book and named shocks for another hypothetical scenario; preserve the numeric refusal envelope and quote-currency units. Do not use the diagnostic as trading approval.
+2. Continue the separately authorized Fable 5.1 MIO/methods/speed investigation from its saved session; check its current service status before acting. Do not duplicate its job.
+3. Audit MIO concentration, quote artifacts, near-zero-debit books, fill failures and timeout selection before any further 2019 tuning. Predictive packet six under proposed ADR-0277 stays separate.
 
 ## Blocked / owner decisions
 
-- Owner approved offline2019 build/ADRs/execution, local native-bounds trust, $50 gap,900-second skips, both memos before wrap, and subsequent Fable investigation; do not ask again.
-- Deferred minors: tuple/list cleanup compatibility and auxiliary LP thread configuration. Quote-spread rounding boundary remains documented. American assignment/broker margin/intraday fills are unmodeled.
-- Holdout2024–25 stays closed; eventual January2024 then monthly testing only after rules freeze. 2026 stays sealed.
+- Minor review backlog: extremely small represented IV/rate shocks may survive input arithmetic yet leave the final float mark unchanged. The 1e9 gross-value envelope bounds the effect to float noise; no decision eligibility is claimed.
+- The child exact-manifest test omits two unrelated memo files already present at base `857d9a6e`; this predates the scenario build. No full suite rerun was requested.
+- Owner decisions for ADR-0278/Fable and the locked Path A0001–A0008 remain in force. Holdout 2024–25 and 2026 are sealed.
 
 ## Read first
 
-- Root/lane AGENTS.md and docs/skills/implementation-workflow.md.
-- docs/decisioning/path.csv: locked A0001–A0008.
-- docs/memos/2026-10-26-mio-high-level-status.md and detailed session memo.
-- docs/memos/2026-10-21-edge-methods-round5-results.md and completion addendum.
-- Canonical ADR-0278 and historical review locks in docs/architecture/decision-log.md.
+- Root and lane `AGENTS.md`; `docs/skills/implementation-workflow.md`.
+- `children/index_options/README.md` and `configs/run-option-scenario-stress.json`.
+- `docs/research/scenario-stress/2026-10-26-option-book-repricing.md`.
+- `docs/memos/2026-10-26-mio-high-level-status.md` and the detailed prescription memo.
+- `docs/decisioning/path.csv` and canonical ADR-0278 in `docs/architecture/decision-log.md`.
 
 ## Do not
 
-- Do not open holdout/2026, pull Theta data, modify Path/Current Work, or delete pilot/report data.
-- WSL2 only; /home/russell/dskit/.venv/bin/python -B, numerical threads1; one heavy study worker; C:≥30GiB.
-- Preserve completed evidence and other workloads. Fable must not silently substitute another model.
+- Do not open holdout/2026, pull Theta data, alter owner-only Path/Current Work or delete other studies' evidence.
+- WSL2 only; use the project's venv. Preserve other workloads and Fable's saved session.
