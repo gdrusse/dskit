@@ -52,6 +52,15 @@ def test_exact_manifest_and_agent_parity(child_root):
     expected = {
         "configs/run-theta-market-proxy.json",
         "configs/run-option-scenario-stress.json",
+        # Published prescription memos and saved 2020 shock-row evidence.
+        "docs/memos/2026-10-25-prescription-session-results.md",
+        "docs/memos/2026-10-26-mio-high-level-status.md",
+        "docs/memos/2026-10-26-shock-rows-2020-test.md",
+        "docs/memos/data/2026-10-26-shock-rows-2020/analyze2020.py",
+        "docs/memos/data/2026-10-26-shock-rows-2020/params-2020.json",
+        "docs/memos/data/2026-10-26-shock-rows-2020/result-2020-1d0146f2404a.json",
+        "docs/memos/data/2026-10-26-shock-rows-2020/run2020.log",
+        "docs/memos/data/2026-10-26-shock-rows-2020/run2020.py",
         "configs/run-theta-mixture-grid.json",
         "configs/run-theta-market-reference-scores.json",
         "configs/run-theta-paired-forecasts.json",
@@ -617,7 +626,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the strike-region scores node, its document and its test = 581.
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
-    assert len(actual) == 578 + 3 + 5 + 1 + 7 + 16 + 27 + 22 + 15 + 25 + 26 + 7 + 6 + 24 + 1   # + the matrix fit and scoring documents and their memo and the technical design (ADR-0270 rebase); + round 3: 21 edge documents, memo and three variant CSVs
+    # Exact approved inventory, including the prescription memos and 2020 evidence.
+    assert len(actual) == 773
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

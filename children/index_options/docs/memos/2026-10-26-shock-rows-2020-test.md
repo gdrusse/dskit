@@ -109,9 +109,9 @@ Working checkout: /home/russell/wt/index-options-fable-publish-20261026.
 The bounded task preserves both implementations and the saved study evidence,
 resolves the handoff documentation, verifies the affected interfaces, and
 publishes the combined main plus Fable's branch. Merge edits are limited to
-root/lane re-entry, their archive and this evidence addendum. All runtime,
-test, dependency, configuration and saved-result files must equal their
-owning parent blob. The combined READMEs must retain both parents' additions.
+root/lane re-entry, their archive, this evidence addendum and the exact file
+manifest correction below. Runtime, dependency, configuration, saved-result
+and other test files must equal their owning parent blob. The combined READMEs must retain both parents' additions.
 
 Acceptance matrix: preserve the optional MIO APIs and historical defaults;
 retain the scenario repricer and its numeric refusals; import and exercise
@@ -120,3 +120,14 @@ reconcile the handoff without widening execution authorization; push by
 fast-forward and verify both remote refs. No new backtest, holdout access,
 full suite, trading rule or other-worktree edit is authorized by this task.
 Final integration lenses and focused checks are pending.
+
+
+The first combined focused run returned 1,447 passed, 13 skipped and one
+failure in test_exact_manifest_and_agent_parity (53.62 seconds). The same
+isolated test failed on unchanged main 64f95755 (two old memos omitted) and
+Fable 1fd8d7ac (those plus the new memo and five evidence files). The correction
+adds those eight explicit approved paths to the existing expected set. The
+strict equality assertion and ignored directories remain unchanged; the
+companion count was independently stale (763 versus 765 entries already in
+the expected set) and now pins the complete 773-file inventory. Other test
+code is unchanged. No production code or study result changed.
