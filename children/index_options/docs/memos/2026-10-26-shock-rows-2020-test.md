@@ -131,3 +131,60 @@ strict equality assertion and ignored directories remain unchanged; the
 companion count was independently stale (763 versus 765 entries already in
 the expected set) and now pins the complete 773-file inventory. Other test
 code is unchanged. No production code or study result changed.
+
+
+### Final integration closure
+
+Frozen candidate: 254f4ae435ed8a1aec871b0e43bdf53eeaea62a9, including merge
+2fb22537640b543906cc11eb1398c3ca30469770 and the manifest correction.
+Both fresh independent GPT-6 reviews completed on this candidate:
+`/root/fable_publish_correctness` (correctness/authority) and
+`/root/fable_publish_integration` (test-quality/integration). Their retained
+outputs are in Codex task 01a1655d-cf03-7e33-bbd0-fdaed4505ea4.
+Each reports PASS, with zero new unresolved Critical/Major/Minor/Nit findings.
+The seven inherited Minor items remain deferred: four Fable coverage gaps,
+shock-move bound, restricted-certificate label and tiny scenario-shock rounding.
+
+Correctness lens independently verified parent blob preservation, both README
+contracts, original memo prefix, Path, archive histories and unchanged existing
+pricing definitions. Same-checkout in-memory probes covered scenario loss and
+expiry/wire refusals, absent charges/shocks, default LP-screen policy, valid
+joint rows and unknown-group rejection. No optimization or market reads.
+
+Integration lens independently verified 3,268 nonconflicting parent paths,
+both README additions and both archived handoffs. Its 21 targeted tests passed
+together in 2.79 seconds: imports, scenario document, exact inventory, charges
+and defaults, beta-shock rows, LP screen, joint-row integer oracle/cleanup,
+scenario pricing and numeric refusals. Six in-memory inventory probes
+accepted the exact inventory and ignored directories, and rejected an extra
+file, missing evidence, equal-count substitution and agent-parity mismatch.
+Two initial probe-harness attempts could not handle dynamic set expressions;
+the corrected harness passed. Candidate and worktree stayed unchanged.
+
+Parent checks: the original combined focused run passed 1,447 tests and
+skipped 13, with the inventory failure described above. After correction,
+the exact manifest plus docs checks passed all five. This verifies 1,448
+distinct focused tests across the two runs; the full batch was not repeated
+for a list/count-only correction. No full suite or historical replay was run.
+Interpreter /home/russell/dskit/.venv/bin/python -B; WSL Ubuntu-24.04;
+PYTHONPATH this checkout plus children/index_options; numerical threads 1.
+Dependencies: Pyomo 6.10.1, HiGHS 1.15.1, SciPy 1.18.1, NumPy 2.5.2,
+pytest 9.1.1.
+
+Retained SHA256 identities: pyomo.py
+cb414c1251d7089d241c23cea8362308208b033476edd6dda93a145976213ec8;
+ledger_studies.py
+38f4fc629c82da1a1a9f00070d91f535a4c342389ec79586c090791fb1e3695f;
+option_pricing.py
+775e3455012be4bb513ab37be7b618a3bb3f4c6b80ab2af7bbdf4ccfbdce63be;
+pyproject.toml
+c217adef026f3b611663810400c600bd1bb835c38aa5f4f78a01381ccfaa47a0.
+The publication closeout changes only this evidence addendum and root/lane
+handoff text; code, tests, contracts, configs, dependencies and saved evidence
+are compared against the reviewed candidate before the final commit.
+
+The owner-authorized targets are main with both parent histories and
+claude/index-options-mio-fable-20261026 at its original 1fd8d7ac head.
+The Fable branch and its working checkout are retained for continuation.
+Publishing uses a normal atomic push, followed by remote-ref verification;
+no force update, protected check bypass or other branch publication.
