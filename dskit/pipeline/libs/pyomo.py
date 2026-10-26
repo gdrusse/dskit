@@ -3398,9 +3398,14 @@ class TransportPortfolioSolve(PyomoSolve):
         coefficients and a nonnegative upper bound. A joint row is one
         linear bound across groups: terms maps a group id to that group's
         coefficients and the summed products may not exceed its
-        nonnegative upper bound (cash stays feasible); a screened-out group
-        contributes nothing and the LP screen ignores joint rows, which only
-        tighten the joint program. All actions are nonnegative integers.
+        nonnegative upper bound (cash stays feasible). The LP screen ignores
+        joint rows and a screened-out group contributes nothing, so with
+        joint rows the screen is a candidate restriction, not an exact
+        reduction: a group without standalone value is excluded even where a
+        negative joint coefficient would let it loosen a row for another
+        group (a hedge); the certificate then covers the restricted program.
+        The reduction stays exact when no screened group carries a negative
+        joint coefficient. All actions are nonnegative integers.
         Exclusive pairs cannot both be positive.
 
     Examples
@@ -3594,17 +3599,24 @@ class TransportPortfolioSolve(PyomoSolve):
         return active
 
     @staticmethod
-    def _costly_roundtrip(group, a, b):
+    def _costly_roundtrip(group, a, b, joint=()):
         """Prove that cancelling equal opposite quantities improves the program.
 
         Exact comparisons are required: a tiny residual can become material at
         large capacities. Subtraction comparisons avoid overflowing pair sums.
+        ``joint`` holds the group's coefficient lists from every joint row:
+        a pair that loosens one (a negative pair sum) is not a pure cost.
         """
         return (all(row[a] == -row[b] for row in group["losses"])
                 and group["credit"][a] < -group["credit"][b]
                 and all(float(row[a]) >= -float(row[b]) for row in group["reserve_rows"])
                 and all(float(row["coefficients"][a]) >= -float(row["coefficients"][b])
-                        for row in group["linear_rows"]))
+                        for row in group["linear_rows"])
+                and all(float(row[a]) >= -float(row[b]) for row in joint))
+
+    def _joint_terms(self, key):
+        """Return one group's coefficient list from each joint row that names it."""
+        return [row["terms"][key] for row in self._joint if key in row["terms"]]
 
     def build_model(self, inputs, params):
         """Build a joint finite bounded integer program.
@@ -3639,7 +3651,7 @@ class TransportPortfolioSolve(PyomoSolve):
         m.reserve = Var(active, domain=NonNegativeReals)
         self._redundant = {(i, k) for i, g in enumerate(groups)
                            for k, (a, b) in enumerate(g["exclusive"])
-                           if self._costly_roundtrip(g, a, b)}
+                           if self._costly_roundtrip(g, a, b, self._joint_terms(g["id"]))}
         pairs = [(i, k) for i in active for k in range(len(groups[i]["exclusive"]))
                  if (i, k) not in self._redundant]
         m.side = Var(pairs, domain=Binary)
@@ -3896,7 +3908,7 @@ class TransportPortfolioSolve(PyomoSolve):
             i, (a, b) = lookup[pair["group"]], pair["pair"]
             group = self._groups[i]
             if (pair["pair"] not in group["exclusive"] or (i, a, b) in seen
-                    or not self._costly_roundtrip(group, a, b)):
+                    or not self._costly_roundtrip(group, a, b, self._joint_terms(group["id"]))):
                 raise ValueError("unproved recorded cleanup pair")
             seen.add((i, a, b))
             quantities[i][a] += pair["matched_quantity"]

@@ -32416,7 +32416,11 @@ joint caps. Three changes, all configuration-driven, default-off, replayable:
    values diversification. Generic primitive: optional input `joint_rows`
    on `TransportPortfolioSolve`, each `{"id", "terms": {group_id:
    coefficients}, "upper" >= 0}`, one linear row across groups, audited in
-   the incumbent and replay checks, ignored by the LP screen. Child policy:
+   the incumbent, round-trip cleanup and replay checks. The LP screen
+   ignores joint rows, so with them it restricts candidates to groups with
+   standalone value (a negative-value hedge group is excluded); the
+   certificate covers that restricted program. The 2020 test runs under
+   this restriction; an exact screen with hedges is a later decision. Child policy:
    method key `shock` `{"moves", "loss_fraction", "beta_lookback"}`; for
    each common move m the portfolio's terminal loss at every name's
    spot x (1 + beta x m), net of credit, must stay within loss_fraction of

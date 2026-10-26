@@ -3971,3 +3971,39 @@ def test_transport_portfolio_joint_row_recorded_replay_refuses_violation():
     without = {"groups": groups, "caps": caps}
     with pytest.raises(ValueError, match="dimensions"):
         node._recorded(without, claimed, certificates)
+
+
+def test_transport_portfolio_joint_row_keeps_pair_that_loosens_it():
+    """A round-trip pair with a negative joint sum is not a pure cost and stays solvable."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    groups[1].update(credit=[-1., -.5], losses=[[1., -1.], [1., -1.]], capacity=[4, 1],
+                     exclusive=[[0, 1]], reserve_rows=[[1., 1.]])
+    rows = [{"id": "r", "terms": {"a": [1.], "b": [-1., -1.]}, "upper": 0.}]
+    node = TransportPortfolioSolve("pair", _joint_params())
+    selection = node.run(None, {"groups": groups, "caps": caps, "joint_rows": rows})["selection"]
+    # Oracle: credits 3a - b0 - .5 b1 less b's expected loss b0 - b1, with
+    # a <= b0 + b1, b0 b1 exclusive, a <= 4, b0 <= 4, b1 <= 1.
+    best = max(3*a-2*b0+.5*b1 for a in range(5) for b0 in range(5) for b1 in range(2)
+               if a <= b0+b1 and not (b0 and b1))
+    assert selection["value"] == pytest.approx(best)
+    assert selection["canonicalization"]["primary"]["removed_contracts"] == 0
+    assert (1, 0) not in node._redundant
+    plain = TransportPortfolioSolve("plain", _joint_params())
+    plain.run(None, {"groups": groups, "caps": caps})
+    assert (1, 0) in plain._redundant
+
+
+def test_transport_portfolio_group_screen_with_joint_rows_restricts_hedges():
+    """Documented restriction: the screen drops a hedge group without standalone value."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    groups[1].update(credit=[-1.])
+    rows = [{"id": "r", "terms": {"a": [1.], "b": [-10.]}, "upper": 0.}]
+    inputs = {"groups": groups, "caps": caps, "joint_rows": rows}
+    exact = TransportPortfolioSolve("none", _joint_params("none")).run(None, inputs)["selection"]
+    screened = TransportPortfolioSolve("lp", _joint_params("lp")).run(None, inputs)["selection"]
+    assert exact["quantities"] == [[4], [1]] and exact["value"] == pytest.approx(11.)
+    assert screened["value"] == 0. and screened["quantities"] == [[0], [0]]
