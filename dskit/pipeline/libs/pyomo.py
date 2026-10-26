@@ -129,6 +129,7 @@ __all__ = [
     "ScenarioUtilitySolve",
     "SolveRecord",
     "WassersteinDual",
+    "TransportPortfolioSolve",
     "register",
     "tangent_utility",
 ]
@@ -350,8 +351,7 @@ class SolveRecord:
 
         objective, sense = cls._objective(model)
         bound = cls._bound(results, sense)
-        gap = (None if objective is None or bound is None
-               else abs(objective - bound) / max(abs(objective), _GAP_FLOOR))
+        gap = cls._gap(objective, bound)
         duals = cls._duals(model)
         binding = tuple(
             cls._component_row(component, duals, tolerance, row_slacks)
@@ -371,6 +371,12 @@ class SolveRecord:
             constraints=sum(row["rows"] for row in binding),
             binding=binding,
         )
+
+    @staticmethod
+    def _gap(objective, bound):
+        """Use the same native relative-gap definition for live and saved solves."""
+        return (None if objective is None or bound is None
+                else abs(objective-bound)/max(abs(objective), _GAP_FLOOR))
 
     @staticmethod
     def _objective(model):
@@ -3267,7 +3273,7 @@ class WassersteinDual:
         self.bands = self.distribution.validate_bands(q_lo, q_hi)
         self.radius, self.scale = float(radius), float(scale)
 
-    def attach(self, model, losses, name="wasserstein"):
+    def attach(self, model, losses, name="wasserstein", *, sparse=False):
         """Add a block whose cost is the worst expected loss when minimized.
 
         Parameters
@@ -3278,6 +3284,9 @@ class WassersteinDual:
             One finite numeric constant or caller-owned linear expression per node.
         name : str
             Unique block component name.
+        sparse : bool
+            Use adjacent unrestricted potentials for the unbanded problem.
+            The default preserves the cumulative dual and supports CDF bands.
 
         Returns
         -------
@@ -3294,6 +3303,10 @@ class WassersteinDual:
         from pyomo.repn.standard_repn import generate_standard_repn
         from pyomo.core.expr.visitor import identify_variables
 
+        if type(sparse) is not bool:
+            raise ValueError("sparse must be a boolean")
+        if sparse and self.bands is not None:
+            raise ValueError("sparse attachment does not support CDF bands")
         grid = self.distribution.grid
         losses = list(losses)
         if len(losses) != len(grid) or not isinstance(name, str) or not name or hasattr(model, name):
@@ -3311,6 +3324,26 @@ class WassersteinDual:
         block = Block(concrete=True)
         model.add_component(name, block)
         indices = range(len(grid) - 1)
+        if sparse:
+            # Potentials are the cumulative dual levels after telescoping.
+            # Zero-mass support points remain admissible transport destinations.
+            block.potential = Var(range(len(grid)), domain=Reals)
+            block.gamma = Var(domain=NonNegativeReals)
+            block.loss_bound = Constraint(
+                range(len(grid)), rule=lambda b, k: b.potential[k] >= losses[k])
+            block.up = Constraint(
+                indices, rule=lambda b, j:
+                b.potential[j+1]-b.potential[j]
+                <= b.gamma * float(grid[j+1]-grid[j]) / self.scale)
+            block.down = Constraint(
+                indices, rule=lambda b, j:
+                b.potential[j]-b.potential[j+1]
+                <= b.gamma * float(grid[j+1]-grid[j]) / self.scale)
+            block.cost = Expression(
+                expr=sum(float(p)*block.potential[k]
+                         for k, p in enumerate(self.distribution.masses))
+                + self.radius*block.gamma)
+            return block
         block.level = Var(domain=Reals)
         block.alpha = Var(indices, domain=NonNegativeReals)
         block.beta = Var(indices, domain=NonNegativeReals)
@@ -3336,3 +3369,517 @@ class WassersteinDual:
                                + sum((block.alpha[j]-block.beta[j]) * float(cumulative[j])
                                      for j in indices) + band_cost)
         return block
+
+class TransportPortfolioSolve(PyomoSolve):
+    """Size integer actions with marginal W1 profits and shared reserves.
+
+    Parameters
+    ----------
+    params : dict
+        Solver policies plus required absolute_gap, relative_gap,
+        and parity_tolerance in objective units. Optional timeout_policy is
+        "raise" (default) or "return" (appsi_highs only). Return mode emits
+        a non-executable timeout diagnostic when certification is unavailable.
+        Inputs contain
+        groups (id, grid, masses, radius, scale, credit, losses, capacity,
+        exclusive, reserve_rows, linear_rows) and caps (groups, upper).
+        Each loss row is one outcome's linear loss coefficients. Reserve
+        rows are linear lower bounds on a nonnegative group reserve; linear
+        rows contain coefficients and a nonnegative upper bound. All actions
+        are nonnegative integers. Exclusive pairs cannot both be positive.
+
+    Examples
+    --------
+    Construct a selector without prescribing an application or policy::
+
+        solver = TransportPortfolioSolve("joint", {
+            "absolute_gap": .05, "relative_gap": .0001,
+            "parity_tolerance": .001})
+    """
+
+    role = "transform"
+    outputs = ("selection",)
+    _PARAMS = PyomoSolve._PARAMS + (
+        "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Check explicit numerical certificate policies.
+
+        Parameters
+        ----------
+        params : dict
+            Proposed configuration.
+
+        Returns
+        -------
+        list of str
+            All defects.
+
+        Raises
+        ------
+        TypeError
+            Configuration is not a mapping.
+        """
+        problems = super().validate_params(params)
+        for key in ("absolute_gap", "relative_gap", "parity_tolerance"):
+            if not number_ok(params.get(key)) or params[key] < 0:
+                problems.append(f"{key} must be finite and nonnegative")
+        policy = params.get("timeout_policy", "raise")
+        if not isinstance(policy, str) or policy not in ("raise", "return"):
+            problems.append("timeout_policy must be raise or return")
+        if policy == "return" and params.get("solver", DEFAULT_SOLVER) != "appsi_highs":
+            problems.append("return timeout policy requires appsi_highs")
+        return problems
+
+    def _checked(self, inputs):
+        """Validate and privately normalize the complete finite program."""
+        import copy
+        import numpy as np
+
+        defects = self.validate_params(self.params)
+        if defects:
+            raise ValueError("; ".join(defects))
+        if (not isinstance(inputs, dict) or set(inputs) != {"groups", "caps"}
+                or not isinstance(inputs["groups"], list)):
+            raise ValueError("inputs must contain groups and caps")
+        groups, caps = copy.deepcopy(inputs["groups"]), copy.deepcopy(inputs["caps"])
+        if not groups or not isinstance(caps, list):
+            raise ValueError("nonempty groups and a caps list required")
+        ids, duals = set(), []
+        required = {"id", "grid", "masses", "radius", "scale", "credit",
+                    "losses", "capacity", "exclusive", "reserve_rows", "linear_rows"}
+        for g in groups:
+            if not isinstance(g, dict) or set(g) != required:
+                raise ValueError("group fields differ from contract")
+            if not isinstance(g["id"], str) or not g["id"] or g["id"] in ids:
+                raise ValueError("group identities must be unique")
+            ids.add(g["id"])
+            dual = WassersteinDual(g["grid"], g["masses"], g["radius"], g["scale"])
+            duals.append(dual)
+            n = len(g["capacity"])
+            if not n or any(type(v) is not int or v < 1 for v in g["capacity"]):
+                raise ValueError("capacities must be positive integers")
+            for name, shape in (("credit", (n,)), ("losses", (len(g["grid"]), n))):
+                a = np.asarray(g[name], dtype=float)
+                if a.shape != shape or not np.isfinite(a).all():
+                    raise ValueError(f"invalid {name} shape or coefficients")
+                g[name] = a.tolist()
+            reserves = np.asarray(g["reserve_rows"], dtype=float)
+            if reserves.ndim != 2 or reserves.shape[1] != n or not np.isfinite(reserves).all():
+                raise ValueError("invalid reserve rows")
+            for pair in g["exclusive"]:
+                if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                        or any(type(j) is not int or not 0 <= j < n for j in pair)
+                        or pair[0] == pair[1]):
+                    raise ValueError("invalid exclusive pair")
+            for row in g["linear_rows"]:
+                if (set(row) != {"coefficients", "upper"}
+                        or not number_ok(row["upper"]) or row["upper"] < 0
+                        or len(row["coefficients"]) != n
+                        or any(not number_ok(c) for c in row["coefficients"])):
+                    raise ValueError("invalid linear row or cash infeasible")
+        for cap in caps:
+            if (not isinstance(cap, dict) or set(cap) != {"groups", "upper"}
+                    or not isinstance(cap["groups"], list) or not cap["groups"]
+                    or len(set(cap["groups"])) != len(cap["groups"])
+                    or set(cap["groups"])-ids or not number_ok(cap["upper"])
+                    or cap["upper"] < 0):
+                raise ValueError("invalid shared reserve cap")
+        if ids != {key for c in caps for key in c["groups"]}:
+            raise ValueError("every group must have a shared reserve cap")
+        return groups, caps, duals
+
+    @staticmethod
+    def _costly_roundtrip(group, a, b):
+        """Prove that cancelling equal opposite quantities improves the program.
+
+        Exact comparisons are required: a tiny residual can become material at
+        large capacities. Subtraction comparisons avoid overflowing pair sums.
+        """
+        return (all(row[a] == -row[b] for row in group["losses"])
+                and group["credit"][a] < -group["credit"][b]
+                and all(float(row[a]) >= -float(row[b]) for row in group["reserve_rows"])
+                and all(float(row["coefficients"][a]) >= -float(row["coefficients"][b])
+                        for row in group["linear_rows"]))
+
+    def build_model(self, inputs, params):
+        """Build a joint finite bounded integer program.
+
+        Parameters
+        ----------
+        inputs, params : dict
+            Prepared program and configured solver policies.
+
+        Returns
+        -------
+        object
+            Pyomo model, with cash feasible.
+
+        Raises
+        ------
+        ValueError
+            A program coefficient, identity or bound is invalid.
+        """
+        from pyomo.environ import (
+            Binary, ConcreteModel, ConstraintList, Expression, NonNegativeIntegers,
+            NonNegativeReals, Objective, Var, maximize,
+        )
+
+        groups, caps, duals = self._checked(inputs)
+        self._groups, self._caps, self._duals = groups, caps, duals
+        m = ConcreteModel()
+        indices = [(i, j) for i, g in enumerate(groups) for j in range(len(g["capacity"]))]
+        m.x = Var(indices, domain=NonNegativeIntegers,
+                  bounds=lambda m, i, j: (0, groups[i]["capacity"][j]))
+        m.reserve = Var(range(len(groups)), domain=NonNegativeReals)
+        self._redundant = {(i, k) for i, g in enumerate(groups)
+                           for k, (a, b) in enumerate(g["exclusive"])
+                           if self._costly_roundtrip(g, a, b)}
+        pairs = [(i, k) for i, g in enumerate(groups) for k in range(len(g["exclusive"]))
+                 if (i, k) not in self._redundant]
+        m.side = Var(pairs, domain=Binary)
+        m.rows = ConstraintList()
+        values = []
+        for i, (g, dual) in enumerate(zip(groups, duals)):
+            def dot(row):
+                return sum(float(c)*m.x[i, j] for j, c in enumerate(row) if c != 0)
+            for k, (a, b) in enumerate(g["exclusive"]):
+                if (i, k) in self._redundant:
+                    continue
+                m.rows.add(m.x[i, a] <= g["capacity"][a]*m.side[i, k])
+                m.rows.add(m.x[i, b] <= g["capacity"][b]*(1-m.side[i, k]))
+            for row in g["reserve_rows"]:
+                m.rows.add(m.reserve[i] >= dot(row))
+            for row in g["linear_rows"]:
+                expr = dot(row["coefficients"])
+                if isinstance(expr, (int, float)):
+                    continue
+                m.rows.add(expr <= row["upper"])
+            losses = [dot(row) for row in g["losses"]]
+            if g["radius"] == 0:
+                cost = sum(float(p)*loss for p, loss in zip(g["masses"], losses))
+            else:
+                cost = dual.attach(m, losses, name=f"transport_{i}", sparse=True).cost
+            values.append(dot(g["credit"])-cost)
+        lookup = {g["id"]: i for i, g in enumerate(groups)}
+        for cap in caps:
+            m.rows.add(sum(m.reserve[lookup[key]] for key in cap["groups"]) <= cap["upper"])
+        m.profit = Expression(expr=sum(values))
+        m.objective = Objective(expr=m.profit, sense=maximize)
+        for variable in m.component_data_objects(Var):
+            variable.set_value(0)
+        return m
+
+    def _solve(self, solver, model):
+        """Offer a feasible cash start to a capable backend."""
+        capability = getattr(solver, "warm_start_capable", None)
+        warm = callable(capability) and capability()
+        if self.params.get("timeout_policy", "raise") == "return":
+            from pyomo.environ import Var
+            options = {"warmstart": True} if warm else {}
+            result = solver.solve(model, load_solutions=False, **options)
+            model._transport_no_incumbent = not bool(len(result.solution))
+            if model._transport_no_incumbent:
+                for variable in model.component_data_objects(Var):
+                    variable.set_value(None)
+            else:
+                model.solutions.load_from(result)
+            return result
+        if warm:
+            return solver.solve(model, warmstart=True)
+        return super()._solve(solver, model)
+
+    @staticmethod
+    def _build_solve_record(solver, model, results, name, seconds):
+        """Do not represent an unloaded warm start as a native incumbent."""
+        from dataclasses import replace
+        record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
+        if getattr(model, "_transport_no_incumbent", False):
+            record = replace(record, objective=None, gap=None, binding=())
+        return record
+
+    def _timeout_reason(self, certificate, value):
+        """Identify only an explicitly permitted uncertified native timeout."""
+        if (self.params.get("timeout_policy", "raise") != "return"
+                or certificate["termination"] != "maxTimeLimit"):
+            return None
+        if certificate["bound"] is None:
+            return "missing_bound"
+        allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(value))
+        return "gap" if max(0., certificate["bound"]-value) > allowance else None
+
+    def _empty_timeout(self, model, certificates):
+        """Validate absent-incumbent evidence against the reconstructed model."""
+        import copy
+        from pyomo.environ import Constraint, Var
+        fields = set(SolveRecord.field_names())-{"binding"}
+        if (self.params.get("timeout_policy", "raise") != "return"
+                or not isinstance(certificates, list) or len(certificates) != 1
+                or not isinstance(certificates[0], dict) or set(certificates[0]) != fields):
+            raise ValueError("incomplete no-incumbent timeout evidence")
+        c = certificates[0]
+        if (c["solver"] != self.params.get("solver", DEFAULT_SOLVER)
+                or c["termination"] != "maxTimeLimit"
+                or c["status"] not in ("ok", "warning", "aborted")
+                or c["objective"] is not None or c["gap"] is not None
+                or not number_ok(c["seconds"]) or c["seconds"] < 0
+                or (c["bound"] is not None
+                    and (not number_ok(c["bound"]) or c["bound"] < -self.params["parity_tolerance"]))):
+            raise ValueError("contradictory no-incumbent timeout evidence")
+        for key, component in (("variables", Var), ("constraints", Constraint)):
+            expected = sum(1 for _ in model.component_data_objects(component, active=True))
+            if type(c[key]) is not int or c[key] != expected:
+                raise ValueError("recorded model dimensions differ")
+        return {"timeout": "no_incumbent", "candidate": None,
+                "certificates": copy.deepcopy(certificates)}
+
+    def _incumbent(self, model):
+        """Independently reprice and check actual integer actions and reserves."""
+        import numpy as np
+        from pyomo.environ import value
+
+        tolerance = max(self.params["parity_tolerance"], 1e-6)
+        quantities, reserves, values = [], [], []
+        cleanup = {"removed_contracts": 0, "profit_gain": 0., "pairs": []}
+        for i, (g, dual) in enumerate(zip(self._groups, self._duals)):
+            raw = [value(model.x[i, j]) for j in range(len(g["capacity"]))]
+            if any(not number_ok(v) or abs(v-round(v)) > 1e-5 for v in raw):
+                raise ValueError("nonintegral incumbent")
+            q = [round(v) for v in raw]
+            if any(v < 0 or v > cap for v, cap in zip(q, g["capacity"])):
+                raise ValueError("incumbent exceeds capacity")
+            changed = False
+            for k, (a, b) in enumerate(g["exclusive"]):
+                if (i, k) not in self._redundant:
+                    continue
+                matched = min(q[a], q[b])
+                if matched:
+                    q[a] -= matched
+                    q[b] -= matched
+                    changed = True
+                    cleanup["removed_contracts"] += 2*matched
+                    cleanup["profit_gain"] -= matched*(g["credit"][a]+g["credit"][b])
+                    cleanup["pairs"].append({"group": g["id"], "pair": [a, b],
+                                             "matched_quantity": matched})
+            if changed:
+                # Keep the model's objective on the same actions as the primal
+                # audit, so a cleanup gain cannot hide an invalid dual value.
+                for j, quantity in enumerate(q):
+                    model.x[i, j].set_value(quantity)
+            if any(q[a] and q[b] for a, b in g["exclusive"]):
+                raise ValueError("incumbent violates exclusive sides")
+            for row in g["linear_rows"]:
+                if np.dot(row["coefficients"], q) > row["upper"]+tolerance:
+                    raise ValueError("incumbent violates linear bound")
+            reserve = max(0., *np.asarray(g["reserve_rows"]) @ q)
+            loss = np.asarray(g["losses"]) @ q
+            worst = dual.distribution.worst_expected_loss(loss, g["radius"], g["scale"])
+            values.append(float(np.dot(g["credit"], q)-worst))
+            reserves.append(float(reserve))
+            quantities.append(q)
+        lookup = {g["id"]: reserves[i] for i, g in enumerate(self._groups)}
+        for cap in self._caps:
+            if sum(lookup[key] for key in cap["groups"]) > cap["upper"]+tolerance:
+                raise ValueError("incumbent violates shared reserve cap")
+        return {"quantities": quantities, "reserves": reserves, "group_values": values,
+                "value": float(sum(values)), "canonicalization": cleanup}
+
+    def _recorded(self, inputs, selection, certificates):
+        """Recheck executable selections or explicit non-executable timeouts."""
+        import json
+        json.dumps([selection, certificates], allow_nan=False)
+        if isinstance(selection, dict) and "timeout" in selection:
+            if (self.params.get("timeout_policy", "raise") != "return"
+                    or set(selection) != {"timeout", "candidate"}
+                    or selection["timeout"] not in ("gap", "missing_bound", "no_incumbent")):
+                raise ValueError("invalid recorded timeout envelope")
+            if selection["timeout"] == "no_incumbent":
+                if selection["candidate"] is not None:
+                    raise ValueError("no-incumbent timeout has candidate actions")
+                return self._empty_timeout(self.build_model(inputs, self.params), certificates)
+            candidate = self._recorded_candidate(
+                inputs, selection["candidate"], certificates, timeout=selection["timeout"])
+            return {"timeout": selection["timeout"],
+                    "candidate": {k: v for k, v in candidate.items() if k != "certificates"},
+                    "certificates": candidate["certificates"]}
+        return self._recorded_candidate(inputs, selection, certificates)
+
+    def _recorded_candidate(self, inputs, selection, certificates, *, timeout=None):
+        """Use the same feasibility and valuation audit for every saved incumbent."""
+        import copy
+        import json
+        from pyomo.environ import Constraint, Var
+
+        json.dumps([selection, certificates], allow_nan=False)
+        required = {"quantities", "reserves", "group_values", "value", "model_value",
+                    "bound", "gap", "canonicalization", "primary_quantities"}
+        if (not isinstance(selection, dict) or set(selection) != required
+                or not isinstance(certificates, list) or len(certificates) != 1):
+            raise ValueError("incomplete recorded selection")
+        certificate = certificates[0]
+        fields = set(SolveRecord.field_names())-{"binding"}
+        if not isinstance(certificate, dict) or set(certificate) != fields:
+            raise ValueError("incomplete recorded certificate")
+        statuses = (("ok", "warning") if certificate["termination"] == "optimal"
+                    else ("ok", "warning", "aborted")
+                    if certificate["termination"] == "maxTimeLimit" else ())
+        missing_bound = timeout == "missing_bound"
+        numeric = ("objective", "seconds") if missing_bound else ("objective", "bound", "gap", "seconds")
+        if (certificate["solver"] != self.params.get("solver", DEFAULT_SOLVER)
+                or certificate["status"] not in statuses
+                or any(not number_ok(certificate[k]) for k in numeric)
+                or certificate["seconds"] < 0
+                or (missing_bound and (certificate["bound"] is not None or certificate["gap"] is not None))
+                or certificate["gap"] != SolveRecord._gap(
+                    certificate["objective"], certificate["bound"])):
+            raise ValueError("contradictory recorded certificate")
+        numeric = ("value", "model_value") if missing_bound else ("value", "model_value", "bound", "gap")
+        if (any(not number_ok(selection[k]) for k in numeric)
+                or (missing_bound and (selection["bound"] is not None or selection["gap"] is not None))):
+            raise ValueError("invalid recorded objective fields")
+        cleanup = selection["canonicalization"]
+        if (not isinstance(cleanup, dict) or set(cleanup) != {"primary", "secondary"}
+                or cleanup["secondary"] is not None):
+            raise ValueError("invalid recorded cleanup")
+        primary = cleanup["primary"]
+        if (not isinstance(primary, dict)
+                or set(primary) != {"removed_contracts", "profit_gain", "pairs"}
+                or type(primary["removed_contracts"]) is not int
+                or primary["removed_contracts"] < 0
+                or not number_ok(primary["profit_gain"]) or primary["profit_gain"] < 0
+                or not isinstance(primary["pairs"], list)):
+            raise ValueError("invalid recorded primary cleanup")
+        model = self.build_model(inputs, self.params)
+        for key, component in (("variables", Var), ("constraints", Constraint)):
+            expected = sum(1 for _ in model.component_data_objects(component, active=True))
+            if type(certificate[key]) is not int or certificate[key] != expected:
+                raise ValueError("recorded model dimensions differ")
+        quantities = copy.deepcopy(selection["primary_quantities"])
+        if (not isinstance(quantities, list) or len(quantities) != len(self._groups)
+                or any(not isinstance(q, list) or len(q) != len(g["capacity"])
+                       for q, g in zip(quantities, self._groups))
+                or any(type(q) is not int or q < 0 for group in quantities for q in group)):
+            raise ValueError("invalid recorded primary quantities")
+        lookup = {g["id"]: i for i, g in enumerate(self._groups)}
+        seen = set()
+        for pair in primary["pairs"]:
+            if (not isinstance(pair, dict) or set(pair) != {"group", "pair", "matched_quantity"}
+                    or pair["group"] not in lookup
+                    or not isinstance(pair["pair"], list) or len(pair["pair"]) != 2
+                    or any(type(j) is not int for j in pair["pair"])
+                    or type(pair["matched_quantity"]) is not int or pair["matched_quantity"] <= 0):
+                raise ValueError("invalid recorded cleanup pair")
+            i, (a, b) = lookup[pair["group"]], pair["pair"]
+            group = self._groups[i]
+            if (pair["pair"] not in group["exclusive"] or (i, a, b) in seen
+                    or not self._costly_roundtrip(group, a, b)):
+                raise ValueError("unproved recorded cleanup pair")
+            seen.add((i, a, b))
+            quantities[i][a] += pair["matched_quantity"]
+            quantities[i][b] += pair["matched_quantity"]
+        for i, group in enumerate(quantities):
+            for j, quantity in enumerate(group):
+                model.x[i, j].set_value(quantity)
+        audited = self._incumbent(model)
+        if (audited["quantities"] != selection["primary_quantities"]
+                or audited["canonicalization"] != primary):
+            raise ValueError("recorded cleanup disagrees with original actions")
+        tol = self.params["parity_tolerance"]
+        if (audited["value"] < -tol
+                or selection["model_value"] > audited["value"]+tol
+                or abs(selection["model_value"]-certificate["objective"]-primary["profit_gain"]) > tol
+                or (not missing_bound and (certificate["bound"] < certificate["objective"]-tol
+                    or certificate["bound"] < audited["value"]-tol))):
+            raise ValueError("invalid recorded primary valuation")
+        if audited["value"] <= 0:
+            audited.update(quantities=[[0]*len(g["capacity"]) for g in self._groups],
+                           reserves=[0.]*len(self._groups), group_values=[0.]*len(self._groups),
+                           value=0.)
+        if (not isinstance(selection["quantities"], list)
+                or any(not isinstance(q, list) or any(type(v) is not int for v in q)
+                       for q in selection["quantities"])
+                or any(not isinstance(selection[k], list)
+                       or any(not number_ok(v) for v in selection[k])
+                       for k in ("reserves", "group_values"))):
+            raise ValueError("invalid recorded final audit types")
+        for key in ("quantities", "reserves", "group_values", "value"):
+            if selection[key] != audited[key]:
+                raise ValueError("recorded independent portfolio audit differs: "+key)
+        gap = None if missing_bound else max(0., certificate["bound"]-audited["value"])
+        allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(audited["value"]))
+        if selection["bound"] != certificate["bound"] or selection["gap"] != gap:
+            raise ValueError("contradictory recorded dollar gap")
+        if timeout is not None:
+            if self._timeout_reason(certificate, audited["value"]) != timeout:
+                raise ValueError("recorded timeout was not uncertified")
+        elif gap > allowance:
+            raise ValueError("uncertified recorded dollar gap")
+        return {**copy.deepcopy(selection), "certificates": copy.deepcopy(certificates)}
+
+    def extract(self, model, results):
+        """Certify and return the primary profit portfolio without another solve.
+
+        Parameters
+        ----------
+        model, results : object
+            Solved Pyomo model and solver result.
+
+        Returns
+        -------
+        dict
+            Selection, independent value, upper bound and one solve certificate.
+
+        Raises
+        ------
+        ValueError
+            Solver evidence, integer feasibility, valuation or final gap fails.
+        """
+        from pyomo.environ import value
+
+        first = self.solve_record
+        if getattr(model, "_transport_no_incumbent", False):
+            certificates = [{k: v for k, v in first.to_obj().items() if k != "binding"}]
+            return {"selection": self._empty_timeout(model, certificates)}
+        tol = self.params["parity_tolerance"]
+        missing_bound = (self.params.get("timeout_policy", "raise") == "return"
+                         and first.termination == "maxTimeLimit" and first.bound is None)
+        statuses = (("ok", "warning") if first.termination == "optimal"
+                    else ("ok", "warning", "aborted")
+                    if first.termination == "maxTimeLimit" else ())
+        raw_value = value(model.profit, exception=False)
+        if (first.status not in statuses or not number_ok(first.objective)
+                or (not missing_bound and not number_ok(first.bound)) or not number_ok(raw_value)
+                or abs(first.objective-raw_value) > tol
+                or (not missing_bound and first.bound < first.objective-tol)):
+
+            raise ValueError("invalid primary solver certificate")
+        chosen = self._incumbent(model)
+        cleanup = chosen["canonicalization"]
+        model_value = value(model.profit)
+        if (chosen["value"] < -tol or model_value > chosen["value"]+tol
+                or abs(model_value-first.objective-cleanup["profit_gain"]) > tol
+                or (not missing_bound and first.bound < chosen["value"]-tol)):
+            raise ValueError("invalid primary dual/primal incumbent value")
+        primary_quantities = [q.copy() for q in chosen["quantities"]]
+        # Cash is constructively feasible. Preserve every strictly positive
+        # profit; only zero or parity-sized negative noise is replaced.
+        if chosen["value"] <= 0.:
+            zero = [[0]*len(g["capacity"]) for g in self._groups]
+            chosen = {"quantities": zero, "reserves": [0.]*len(zero),
+                      "group_values": [0.]*len(zero), "value": 0.}
+        gap = None if missing_bound else max(0., first.bound-chosen["value"])
+        allowance = max(self.params["absolute_gap"],
+                        self.params["relative_gap"]*abs(chosen["value"]))
+        reason = self._timeout_reason(first.to_obj(), chosen["value"])
+        if not reason and gap > allowance:
+            raise ValueError(f"uncertified primary objective: {first.termination}, gap={gap}")
+        chosen.update(bound=first.bound, gap=gap, model_value=model_value,
+                      primary_quantities=primary_quantities,
+                      canonicalization={"primary": cleanup, "secondary": None},
+                      certificates=[first.to_obj()])
+        if reason:
+            chosen = {"timeout": reason,
+                      "candidate": {k: v for k, v in chosen.items() if k != "certificates"},
+                      "certificates": chosen["certificates"]}
+        return {"selection": chosen}

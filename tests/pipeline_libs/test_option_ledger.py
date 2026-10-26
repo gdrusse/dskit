@@ -558,3 +558,152 @@ def test_when_every_order_is_refused_the_node_raises_with_the_counts(ctx):
     with pytest.raises(ValueError, match="sold_leg_no_bid"):
         chain, orders = refusal_world()
         run(ctx, chain, [o for o in orders if o["symbol"] == "A"])
+
+
+# -- post-solve labels and descriptive groups --------------------------------------------------
+
+def test_strategy_labels_preserve_outer_size_and_group_only_closed_pnl(ctx):
+    chain = spread_chain("CLOSED")
+    chain += [row("OPEN", 0, 95, "put", .9, 1.1, 101, expiration=6),
+              row("OPEN", 0, 100, "put", 2., 2.2, 101, expiration=6),
+              row("MISSING", 0, 95, "put", .9, 1.1, 101),
+              row("MISSING", 0, 100, "put", 2., 2.2, 101)]
+    out = run(ctx, chain, [order("CLOSED"), order("OPEN", expiration=6), order("MISSING")])
+    assert [t["status"] for t in out["trades"]] == ["closed", "open_at_end", "unsettled"]
+    for trade in out["trades"]:
+        label = trade["option_strategy"]
+        assert label["name"] == "bull_put_spread" and label["units"] == 2
+        assert [leg["quantity"] for leg in label["legs"]] == [2, -2]
+        assert label["input_contract_count"] == label["net_contract_count"] == 4
+        assert trade["structure"] == "put_spread"
+    (group,) = out["summary"]["strategy_groups"]
+    assert group == {
+        "name": "bull_put_spread", "family": "vertical", "variant": None,
+        "opened": 3, "closed": 1, "open_at_end": 1, "unsettled": 1,
+        "gross_contracts_opened": 12, "unbounded_loss_opened": 0,
+        "closed_pnl_usd": pytest.approx(-422.6), "closed_option_pnl_usd": pytest.approx(-422.6),
+        "closed_fees_usd": pytest.approx(2.6), "option_wins": 0, "option_losses": 1, "option_flats": 0,
+        "mean_closed_option_pnl_usd": pytest.approx(-422.6), "closed_option_win_rate": 0.}
+
+
+def test_strategy_groups_with_no_closed_trade_have_no_mean_or_win_rate(ctx):
+    out = run(ctx, [r for r in spread_chain() if r["date"] < day(4).isoformat()], [order()])
+    (group,) = out["summary"]["strategy_groups"]
+    assert group["closed"] == 0 and group["open_at_end"] == 1
+    assert group["closed_option_pnl_usd"] == group["closed_pnl_usd"] == 0.
+    assert group["mean_closed_option_pnl_usd"] is group["closed_option_win_rate"] is None
+    assert group["option_wins"] == group["option_losses"] == group["option_flats"] == 0
+
+
+def test_strategy_flat_option_book_keeps_gross_fees_and_is_never_cash(ctx):
+    chain = [row("ABC", 0, 100, "call", 2., 3., 101),
+             row("ABC", 4, 100, "call", 10., 10.1, 110)]
+    out = run(ctx, chain, [order(strikes=(100, 100), structure="offset")],
+              structures={"offset": [["call", 1], ["call", -1]]}, contracts=3)
+    (trade,) = out["trades"]
+    label = trade["option_strategy"]
+    assert label["name"] == "flat_option_book" and label["units"] == 0
+    assert label["input_contract_count"] == 6 and label["net_contract_count"] == 0
+    assert trade["pnl_usd"] == pytest.approx(-303.9)
+    group = out["summary"]["strategy_groups"][0]
+    assert group["gross_contracts_opened"] == 6 and group["closed_fees_usd"] == pytest.approx(3.9)
+    assert group["closed_option_pnl_usd"] == pytest.approx(-303.9)
+
+
+def test_strategy_groups_separate_sizes_wings_and_signed_outcomes(ctx):
+    structures = {"a": [["put", 1], ["put", -1], ["call", -1], ["call", 1]],
+                  "b": [["put", 2], ["put", -2], ["call", -2], ["call", 2]]}
+    chain, orders = [], []
+    for symbol, strikes, structure, spot in (
+            ("A", (80, 90, 110, 120), "a", 100),
+            ("B", (80, 90, 110, 120), "b", 130),
+            ("C", (80, 90, 110, 125), "a", 100)):
+        orders.append(order(symbol, strikes, structure))
+        for right, strike, market in zip(("put", "put", "call", "call"), strikes,
+                                        ((.9, 1.1), (2., 2.2), (2., 2.2), (.9, 1.1))):
+            chain.append(row(symbol, 0, strike, right, *market, 100))
+            chain.append(row(symbol, 4, strike, right, .01, .02, spot))
+    out = run(ctx, chain, orders, structures=structures, contracts=1)
+    groups = out["summary"]["strategy_groups"]
+    equal, unequal = groups
+    assert equal["variant"] == "equal_wings" and unequal["variant"] == "unequal_wings"
+    # A earns 180 - 2.6; B earns 360 - 2000 - 5.2. Sizes share the anatomy group.
+    assert equal["opened"] == equal["closed"] == 2 and equal["gross_contracts_opened"] == 12
+    assert equal["closed_option_pnl_usd"] == pytest.approx(177.4 - 1645.2)
+    assert equal["option_wins"] == equal["option_losses"] == 1 and equal["option_flats"] == 0
+    assert equal["closed_option_win_rate"] == .5
+    assert equal["mean_closed_option_pnl_usd"] == pytest.approx((177.4 - 1645.2)/2)
+    assert unequal["closed"] == 1 and unequal["closed_option_pnl_usd"] == pytest.approx(177.4)
+
+
+def test_strategy_groups_keep_option_and_hedge_results_distinct(ctx):
+    chain, _ = hedge_world(up_days=21)
+    out = run(ctx, chain, [HEDGE_ORDER], contracts=1, fee_per_contract=0.,
+              hedge={"rebalance": "daily", "rate": RATE})
+    trade = out["trades"][0]
+    group = out["summary"]["strategy_groups"][0]
+    assert trade["option_strategy"]["name"] == group["name"] == "long_straddle"
+    assert group["closed_option_pnl_usd"] == pytest.approx(trade["option_pnl_usd"])
+    assert group["closed_pnl_usd"] == pytest.approx(trade["option_pnl_usd"] + trade["hedge_pnl_usd"])
+    assert abs(group["closed_option_pnl_usd"] - group["closed_pnl_usd"]) > 300.
+
+
+def test_strategy_groups_count_flat_pnl_and_unbounded_loss(ctx):
+    chain = [row("ABC", 0, 100, "call", 1., 1.1, 100),
+             row("ABC", 4, 100, "call", 1., 1.1, 101)]
+    out = run(ctx, chain, [order(strikes=(100,), structure="naked_call")],
+              contracts=1, fee_per_contract=0.)
+    (group,) = out["summary"]["strategy_groups"]
+    assert group["name"] == "short_call" and group["unbounded_loss_opened"] == 1
+    assert group["option_flats"] == 1 and group["option_wins"] == group["option_losses"] == 0
+    assert group["closed_option_pnl_usd"] == group["mean_closed_option_pnl_usd"] == 0.
+    assert group["closed_option_win_rate"] == 0.
+
+
+
+def test_funded_account_contributions_overlap_and_atomic_admission():
+    """Deposits are not profit; outstanding risk consumes shared capital."""
+    from dskit.pipeline.libs import option_ledger as pack
+
+    assert hasattr(pack, "FundedOptionAccount"), "missing funded shared account"
+    account = pack.FundedOptionAccount(10000., 1000., 14, "2019-01-02")
+    assert account.advance("2019-01-02", {}) == 0.
+    a = {"id": "a", "symbol": "X", "expiry": "2019-02-01", "reserve": 2000., "credit": 200.}
+    limits = [{"members": ["X", "Y"], "upper": 2500.}]
+    assert account.admit("2019-01-02", [a], limits)
+    assert account.funding == 10000. and account.cash == 10200.
+    assert account.remaining(["X", "Y"], 1.) == 8000.
+    before = account.cash
+    assert not account.admit("2019-01-02", [
+        {"id": "b", "symbol": "Y", "expiry": "2019-02-01", "reserve": 3000., "credit": -3000.}], limits)
+    assert account.cash == before and set(account.open) == {"a"}
+    assert account.advance("2019-01-16", {}) == 1000.
+    assert account.advance("2019-02-01", {"a": -1500.}) == 1000.
+    assert account.funding == 10500. and account.cash == 10500.
+    assert account.contributions == 12000. and account.realized == -1500.
+    assert not account.open
+
+
+
+def test_funded_account_invalid_settlement_and_debit_are_atomic():
+    """A missed maturity or unfunded guaranteed-payoff debit is never admitted."""
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+
+    account = FundedOptionAccount(100., 10., 14, "2019-01-02")
+    with pytest.raises(ValueError):
+        account.admit("2019-01-02", [
+            {"id": "box", "symbol": "X", "expiry": "2019-02-01", "reserve": 0., "credit": -150.}],
+            [{"members": ["X"], "upper": 100.}])
+    assert account.cash == 100. and not account.open
+    assert account.admit("2019-01-02", [
+        {"id": "a", "symbol": "X", "expiry": "2019-01-16", "reserve": 50., "credit": 10.}],
+        [{"members": ["X"], "upper": 100.}])
+    with pytest.raises(ValueError):
+        account.advance("2019-01-16", {})
+    assert account.contributions == 100. and account.cash == 110.
+    with pytest.raises(ValueError):
+        account.advance("2019-01-17", {"a": 0.})
+    with pytest.raises(ValueError):
+        account.advance("2019-01-16", {"a": -60.})
+    assert account.advance("2019-01-16", {"a": -50.}) == 10.
+    assert account.cash == 60.

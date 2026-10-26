@@ -77,6 +77,7 @@ from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_f
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
 from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss
+from .nodes import CDFQuoteOptionSelect as _CDFQuoteOptionSelect
 from .nodes import (
     _iso_day,
     CondorQuoteBacktest,
@@ -1244,6 +1245,521 @@ def main(argv=None):
         return 1
     print(text)
     return 0
+
+
+
+
+class _AllQuotedOptionContext(_CDFQuoteOptionSelect):
+    """Reuse the governed CDF projection with all quoted strikes."""
+
+    def _eligible_strike(self, right, strike, spot, z):
+        return True
+
+
+class WeeklyOptionPortfolioStudy:
+    """Replay fixed portfolio methods on a bounded archive and weekly clock.
+
+    Parameters
+    ----------
+    params : dict
+        Explicit symbols, bridge policy, initial funds, recurring deposit and
+        deposit_every_days, weekly_fraction, correlation_lookback,
+        correlation_min_pairs, correlation_threshold, solver, and methods.
+        Each method declares id, rho, portfolio_fraction, name_fraction and
+        component_fraction (null disables correlation grouping).
+    inputs : dict
+        Per-symbol forecasts, contexts, chain and bars, already bounded before
+        materialization. No outcomes are passed to the optimizer.
+
+    Examples
+    --------
+    Run a fixed declared comparison over previously acquired observations::
+
+        study = WeeklyOptionPortfolioStudy(params, bounded_inputs)
+        result = study.run()
+    """
+
+    _PARAMS = ("symbols", "bridge", "initial", "deposit", "deposit_every_days",
+               "weekly_fraction", "correlation_lookback", "correlation_min_pairs",
+               "correlation_threshold", "solver", "methods")
+    _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
+
+    def __init__(self, params, inputs):
+        import copy
+        from datetime import date
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+        if not isinstance(params, dict) or set(params) != set(self._PARAMS):
+            raise ValueError("explicit study configuration required")
+        self.params = copy.deepcopy(params)
+        p = self.params
+        defects = TransportPortfolioSolve.validate_params(p["solver"])
+        if defects:
+            raise ValueError("; ".join(defects))
+        symbols = p["symbols"]
+        if (not isinstance(symbols, list) or not 1 <= len(symbols) <= 17
+                or len(set(symbols)) != len(symbols)
+                or any(not isinstance(s, str) or not s for s in symbols)
+                or not isinstance(inputs, dict) or set(inputs) != set(symbols)):
+            raise ValueError("unique bounded universe and matching inputs required")
+        if (not number_ok(p["weekly_fraction"]) or not 0 < p["weekly_fraction"] <= 1
+                or type(p["correlation_lookback"]) is not int
+                or type(p["correlation_min_pairs"]) is not int
+                or not 2 <= p["correlation_min_pairs"] <= p["correlation_lookback"]
+                or not number_ok(p["correlation_threshold"])
+                or not 0 <= p["correlation_threshold"] <= 1):
+            raise ValueError("invalid risk or correlation policy")
+        ids = set()
+        if not isinstance(p["methods"], list) or not p["methods"]:
+            raise ValueError("methods must be a nonempty declared list")
+        for method in p["methods"]:
+            if (not isinstance(method, dict) or set(method) != self._METHOD_KEYS
+                    or not isinstance(method["id"], str) or not method["id"] or method["id"] in ids
+                    or not number_ok(method["rho"]) or method["rho"] < 0
+                    or any(not number_ok(method[k]) or not 0 < method[k] <= 1
+                           for k in ("portfolio_fraction", "name_fraction"))
+                    or (method["component_fraction"] is not None
+                        and (not number_ok(method["component_fraction"])
+                             or not 0 < method["component_fraction"] <= 1))):
+                raise ValueError("invalid fixed method")
+            ids.add(method["id"])
+        self._nodes, self._forecasts, self._contexts = {}, {}, {}
+        self._quotes, self._factors, self._bars, self._by_day = {}, {}, {}, {}
+        for symbol in symbols:
+            local = {**p["bridge"], "symbol": symbol}
+            defects = _AllQuotedOptionContext.validate_params(local)
+            if defects:
+                raise ValueError("; ".join(defects))
+            node = _AllQuotedOptionContext("prepare", local)
+            data = inputs[symbol]
+            # The old bridge owns upper-bound validation; this stricter study
+            # also refuses observations before its requested development year.
+            for name, rows in data.items():
+                field = "date" if name in ("chain", "bars") else "quote_date"
+                if any(row.get("symbol") != symbol
+                       or row.get(field, "") < local["start"] for row in rows):
+                    raise ValueError("study intake contains another symbol or pre-window row")
+            forecasts, contexts = node._bounded(data)
+            quotes, factors, bars = node._market(data)
+            by_day = {}
+            for key, row in quotes.items():
+                by_day.setdefault(key[0], {})[key] = row
+            self._nodes[symbol], self._forecasts[symbol], self._contexts[symbol] = node, forecasts, contexts
+            self._quotes[symbol], self._factors[symbol], self._bars[symbol] = quotes, factors, bars
+            self._by_day[symbol] = by_day
+        calendar = set.intersection(*(set(v) for v in self._bars.values()))
+        self.calendar = sorted(d for d in calendar if p["bridge"]["start"] <= d < p["bridge"]["end_before"])
+        if not self.calendar:
+            raise ValueError("empty common calendar")
+        self.weeks, seen = [], set()
+        for day in self.calendar:
+            week = date.fromisoformat(day).isocalendar()[:2]
+            if week not in seen:
+                self.weeks.append(day)
+                seen.add(week)
+        # Prepared features are only a function of the current decision prefix.
+        self._prepared_cache, self._component_cache = {}, {}
+
+    def _components(self, day):
+        """Build connected components from strictly earlier adjusted returns."""
+        import numpy as np
+
+        if day in self._component_cache:
+            return self._component_cache[day]
+        p, symbols = self.params, self.params["symbols"]
+        past = [d for d in self.calendar if d < day][-p["correlation_lookback"]-1:]
+        returns = {}
+        for s in symbols:
+            prices = np.array([self._bars[s][d] for d in past], dtype=float)
+            returns[s] = np.diff(np.log(prices))
+        parent = {s: s for s in symbols}
+        def root(s):
+            while parent[s] != s:
+                s = parent[s]
+            return s
+        edges = []
+        for i, a in enumerate(symbols):
+            for b in symbols[i+1:]:
+                x, y = returns[a], returns[b]
+                missing = len(x) < p["correlation_min_pairs"] or np.std(x) == 0 or np.std(y) == 0
+                corr = None if missing else float(np.corrcoef(x, y)[0, 1])
+                if missing or not math.isfinite(corr) or abs(corr) >= p["correlation_threshold"]:
+                    parent[root(a)] = root(b)
+                    edges.append([a, b, corr])
+        groups = {}
+        for s in symbols:
+            groups.setdefault(root(s), []).append(s)
+        result = {"groups": sorted(groups.values()), "pairs": edges, "observations": max(0, len(past)-1)}
+        self._component_cache[day] = result
+        return result
+
+    def _prepare(self, day):
+        """Collect every eligible expiry and strike using only date-D rows."""
+        from datetime import date
+        import numpy as np
+
+        if day in self._prepared_cache:
+            return self._prepared_cache[day]
+        groups, metadata, refusals = [], [], []
+        for symbol in self.params["symbols"]:
+            node = self._nodes[symbol]
+            available = [(e, c) for (d, e), c in self._contexts[symbol].items()
+                         if d == day and (d, e) in self._forecasts[symbol]
+                         and abs((date.fromisoformat(e)-date.fromisoformat(d)).days
+                                 -node.params["target_dte"]) <= node.params["dte_tolerance"]
+                         and c["settlement_date"] == e]
+            if not available:
+                refusals.append({"symbol": symbol, "reason": "no_eligible_forecast_expiry"})
+            for expiry, context in sorted(available):
+                forecast = self._forecasts[symbol][day, expiry]
+                try:
+                    prepared, projection = node._prepare(
+                        forecast, context, day, expiry, self._by_day[symbol].get(day, {}),
+                        {day: self._factors[symbol].get(day)})
+                except ValueError as exc:
+                    if str(exc) not in {"insufficient_eligible_legs", "missing spot, scale or basis"}:
+                        raise
+                    refusals.append({"symbol": symbol, "expiry": expiry, "reason": str(exc)})
+                    continue
+                items, physical = [], {}
+                for role in ("LP", "SP", "LC", "SC"):
+                    for contract in prepared["legs"][role]:
+                        right = "put" if role in ("LP", "SP") else "call"
+                        sign = 1 if role in ("LP", "LC") else -1
+                        strike = prepared["grid"][contract["index"]]
+                        price = contract["price"]+sign*contract["haircut"]
+                        item = {"right": right, "strike": strike, "sign": sign,
+                                "price": price, "capacity": contract["max_quantity"]}
+                        physical.setdefault((right, strike), []).append(len(items))
+                        items.append(item)
+                mult = node.params["solver"]["multiplier"]
+                fee = node.params["solver"]["fee_per_contract_usd"]
+                credit = np.array([-i["sign"]*i["price"]*mult-fee for i in items])
+                def loss_row(spot):
+                    return [-i["sign"]*mult*max((i["strike"]-spot if i["right"] == "put"
+                                                 else spot-i["strike"]), 0.) for i in items]
+                losses = [loss_row(s) for s in prepared["grid"]]
+                # This is the linear epigraph of the shared maximum-loss owner;
+                # the selected book is checked independently against that owner.
+                reserves = [(np.asarray(loss_row(s))-credit).tolist()
+                            for s in [0., *sorted({i["strike"] for i in items})]]
+                reserves.append((-credit).tolist())
+                key = f"{day}:{symbol}:{expiry}"
+                groups.append({"id": key, "grid": prepared["grid"], "masses": prepared["masses"],
+                    "radius": 0., "scale": prepared["spot"], "credit": credit.tolist(),
+                    "losses": losses, "capacity": [i["capacity"] for i in items],
+                    "exclusive": [v for v in physical.values() if len(v) == 2],
+                    "reserve_rows": reserves,
+                    "linear_rows": [{"coefficients": [-i["sign"] if i["right"] == "call" else 0.
+                                                      for i in items], "upper": 0.}]})
+                metadata.append({"id": key, "symbol": symbol, "expiry": expiry, "decision_date": day,
+                    "dte": (date.fromisoformat(expiry)-date.fromisoformat(day)).days,
+                    "factor": self._factors[symbol][day], "spot": prepared["spot"],
+                    "items": items, "projection": projection, "method_fitted": forecast["fitted"]})
+        result = groups, metadata, refusals
+        # Keep only the latest date; past weekly matrices can be recomputed.
+        self._prepared_cache = {day: result}
+        return result
+
+    def _limits(self, account, method, components):
+        """Use one remaining-headroom policy at decision and next-session fill."""
+        symbols = self.params["symbols"]
+        limits = [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])},
+                  {"members": symbols, "upper": max(0., account.funding)*self.params["weekly_fraction"]}]
+        limits.extend({"members": [s], "upper": account.remaining([s], method["name_fraction"])}
+                      for s in symbols)
+        if method["component_fraction"] is not None:
+            limits.extend({"members": members,
+                           "upper": account.remaining(members, method["component_fraction"])}
+                          for members in components["groups"])
+        return limits
+
+    @staticmethod
+    def _caps(limits, metadata):
+        """Translate economic name limits to the current optimizer group identities."""
+        caps = []
+        for limit in limits:
+            keys = [m["id"] for m in metadata if m["symbol"] in limit["members"]]
+            if keys:
+                caps.append({"groups": keys, "upper": max(0., limit["upper"])})
+        return caps
+
+    def _books(self, selection, metadata):
+        """Freeze selected positions and verify exact full-domain reserve parity."""
+        from dskit.pipeline.option_structures import classify_option_strategy
+
+        books = []
+        for i, meta in enumerate(metadata):
+            legs = [{**item, "quantity": q} for q, item in zip(selection["quantities"][i], meta["items"]) if q]
+            if not legs:
+                continue
+            signed = [(leg["right"], leg["sign"]*leg["quantity"]) for leg in legs]
+            strikes = [leg["strike"] for leg in legs]
+            mult = self.params["bridge"]["solver"]["multiplier"]
+            fee = self.params["bridge"]["solver"]["fee_per_contract_usd"]
+            count = sum(leg["quantity"] for leg in legs)
+            credit = sum(-leg["sign"]*leg["price"]*mult*leg["quantity"] for leg in legs)-fee*count
+            loss = structure_max_loss(signed, strikes, credit, mult)
+            reserve = max(0., loss, -credit)
+            if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
+                raise ValueError("selected physical-domain reserve parity failed")
+            books.append({k: v for k, v in meta.items() if k not in ("items", "projection")})
+            books[-1].update(legs=legs, credit=credit, reserve=reserve, max_loss=loss,
+                            contracts=count, expected=selection["group_values"][i],
+                            strategy=classify_option_strategy(signed, strikes),
+                            status="selected")
+        return books
+
+    def _fill(self, book, day):
+        """Preflight one frozen book at the next session without seeing maturity."""
+        import copy
+
+        filled = copy.deepcopy(book)
+        symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
+        node = self._nodes[symbol]
+        if (day >= expiry or not math.isclose(self._factors[symbol].get(day, math.nan),
+                                             factor, rel_tol=1e-9)):
+            return None, "fill_basis_or_session"
+        premium, stress = 0., 0.
+        mult = node.params["solver"]["multiplier"]
+        for leg in filled["legs"]:
+            row = self._quotes[symbol].get((day, expiry, leg["right"], leg["strike"]))
+            market = node._usable_quote(row, factor)
+            if market is None:
+                return None, "missing_fill_quote"
+            side = "ask_size" if leg["sign"] > 0 else "bid_size"
+            if row[side] < leg["quantity"]:
+                return None, "insufficient_fill_size"
+            bid, ask = market
+            price = ask if leg["sign"] > 0 else bid
+            leg["fill_price"] = price
+            premium -= leg["sign"]*price*mult*leg["quantity"]
+            stress += (ask-bid)*mult*leg["quantity"]*node.params["stress_spread_fraction"]
+        fees = book["contracts"]*node.params["solver"]["fee_per_contract_usd"]
+        credit = premium-fees
+        loss = structure_max_loss([(leg["right"], leg["sign"]*leg["quantity"]) for leg in filled["legs"]],
+                                  [leg["strike"] for leg in filled["legs"]], credit, mult)
+        filled.update(fill_date=day, decision_credit=book["credit"], credit=credit,
+                      reserve=max(0., loss, -credit), max_loss=loss, premium=premium,
+                      fees=fees, stress_extra=stress, status="filled")
+        return filled, None
+
+    def _settlements(self, account, day):
+        """Use only today's observed underlying for today's maturing books."""
+        from dskit.pipeline.option_structures import structure_payoff
+
+        result = {}
+        for key, book in account.open.items():
+            if book["expiry"] != day:
+                continue
+            symbol, factor = book["symbol"], book["factor"]
+            if (day not in self._bars[symbol]
+                    or not math.isclose(self._factors[symbol].get(day, math.nan), factor, rel_tol=1e-9)):
+                raise ValueError(f"unsettleable selected book: {key}")
+            legs = [(leg["right"], leg["sign"]*leg["quantity"]) for leg in book["legs"]]
+            strikes = [leg["strike"] for leg in book["legs"]]
+            result[key] = book["credit"]+self.params["bridge"]["solver"]["multiplier"]*structure_payoff(
+                legs, self._bars[symbol][day]/factor, strikes)
+        return result
+
+    def _ledger(self, trades):
+        """Delegate fills, daily mid marks and terminal cashflow to the shared ledger."""
+        from dskit.pipeline.libs.option_ledger import OptionStructureLedger
+
+        if not trades:
+            return {"trades": [], "marks": [], "summary": {}}
+        rows, orders, structures = {}, [], {}
+        for b in trades:
+            symbol, expiry, factor = b["symbol"], b["expiry"], b["factor"]
+            structures[b["id"]] = [[leg["right"], leg["sign"]*leg["quantity"]] for leg in b["legs"]]
+            orders.append({"date": b["fill_date"], "symbol": symbol, "expiration": expiry,
+                           "strikes": [leg["strike"] for leg in b["legs"]], "structure": b["id"]})
+            for day in self.calendar:
+                if not b["fill_date"] <= day <= expiry:
+                    continue
+                observed = self._factors[symbol].get(day)
+                if observed is not None and not math.isclose(observed, factor, rel_tol=1e-9):
+                    raise ValueError(f"basis changed while selected book open: {b['id']}")
+                underlying = self._bars[symbol][day]/factor
+                marker = (symbol, day, expiry, None, None)
+                rows[marker] = {"symbol": symbol, "date": day, "expiration": expiry,
+                                "strike": None, "right": None, "bid": None, "ask": None,
+                                "underlying": underlying}
+                for leg in b["legs"]:
+                    raw = self._quotes[symbol].get((day, expiry, leg["right"], leg["strike"]))
+                    if raw is None:
+                        continue
+                    key = (symbol, day, expiry, leg["right"], leg["strike"])
+                    rows[key] = {"symbol": symbol, "date": day, "expiration": expiry,
+                                 "right": leg["right"], "strike": leg["strike"],
+                                 "bid": raw["bid"]/factor if number_ok(raw["bid"]) else raw["bid"],
+                                 "ask": raw["ask"]/factor if number_ok(raw["ask"]) else raw["ask"],
+                                 "underlying": underlying}
+        fields = ("symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying")
+        order_fields = ("date", "symbol", "expiration", "strikes", "structure")
+        ledger = OptionStructureLedger("ledger", {
+            "chain_fields": {k: k for k in fields}, "order_fields": {k: k for k in order_fields},
+            "structures": structures, "multiplier": self.params["bridge"]["solver"]["multiplier"],
+            "fee_per_contract": self.params["bridge"]["solver"]["fee_per_contract_usd"],
+            "fill": "nbbo", "close_rule": "expiry"}).run(None, {"chain": list(rows.values()), "orders": orders})
+        if len(ledger["trades"]) != len(trades):
+            raise ValueError("shared ledger refused an admitted book")
+        for book, row in zip(trades, ledger["trades"]):
+            if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
+                raise ValueError("shared ledger/chronological account PnL mismatch")
+            if abs(max(0., row["max_loss_usd"], -row["credit_usd"])-book["reserve"]) > 1e-6:
+                raise ValueError("shared ledger/chronological reserve mismatch")
+        return ledger
+
+    def _finish(self, method, account, decisions, rejected, snapshots):
+        """Join shared-ledger daily marks with contribution-aware account snapshots."""
+        ledger = self._ledger(account.closed)
+        order_keys = [t["id"] for t in account.closed]
+        marks = {(order_keys[m["order_index"]], m["date"]): m for m in ledger["marks"]}
+        previous, nav, peak, max_dd = account.initial, 1., 1., 0.
+        curve = []
+        for snap in snapshots:
+            open_pnl, carried = 0., 0
+            for key in snap["open_ids"]:
+                mark = marks[key, snap["date"]]
+                open_pnl += mark["pnl_usd"]
+                carried += bool(mark["carried"])
+            equity = snap["funding"]+open_pnl
+            denominator = previous+snap["deposit"]
+            if denominator <= 0 or equity <= 0:
+                raise ValueError("nonpositive marked equity prevents flow-adjusted return")
+            nav *= equity/denominator
+            peak = max(peak, nav)
+            drawdown = nav/peak-1.
+            max_dd = min(max_dd, drawdown)
+            curve.append({**snap, "equity": equity, "nav": nav, "drawdown": drawdown,
+                          "carried_books": carried})
+            previous = equity
+        trades = account.closed
+        if account.open:
+            raise ValueError("study ended with unsettled books")
+        return {"method": method, "decisions": decisions, "trades": trades, "rejected": rejected,
+                "curve": curve, "deposits": account.deposits, "contributions": account.contributions,
+                "pnl": account.realized, "stress_pnl": account.realized-sum(t["stress_extra"] for t in trades),
+                "final_equity": account.funding, "twr": nav-1., "max_drawdown": max_dd,
+                "peak_open_books": max(len(s["open_ids"]) for s in snapshots),
+                "peak_reserve": max(s["reserve"] for s in snapshots),
+                "wins": sum(t["pnl"] > 0 for t in trades),
+                "losses": sum(t["pnl"] < 0 for t in trades),
+                "unfilled": len(rejected), "contracts": sum(t["contracts"] for t in trades),
+                "unbounded_books": sum(not math.isfinite(t["max_loss"]) for t in trades),
+                "fees": sum(t["fees"] for t in trades), "ledger_summary": ledger["summary"]}
+
+    def _method(self, method, progress, *, recorded=None):
+        """Advance one account without exposing future rows to portfolio selection."""
+        import copy
+        from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+        p = self.params
+        defects = TransportPortfolioSolve.validate_params(p["solver"])
+        if defects:
+            raise ValueError("; ".join(defects))
+        recorded_decisions = None
+        if recorded is not None:
+            import json
+            json.dumps(recorded, allow_nan=False)
+            if (not isinstance(recorded, dict) or recorded.get("method") != method
+                    or not isinstance(recorded.get("decisions"), list)
+                    or [d.get("date") for d in recorded["decisions"]] != self.weeks):
+                raise ValueError("recorded method or decision calendar differs")
+            recorded_decisions = {d["date"]: d for d in recorded["decisions"]}
+        account = FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], self.calendar[0])
+        decisions, rejected, snapshots, pending = [], [], [], None
+        for day in self.calendar:
+            deposited = account.advance(day, self._settlements(account, day))
+            if pending is not None:
+                survivors = []
+                for book in pending["books"]:
+                    filled, reason = self._fill(book, day)
+                    if filled is None:
+                        rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
+                    else:
+                        survivors.append(filled)
+                limits = self._limits(account, method, pending["components"])
+                if survivors and not account.admit(day, survivors, limits):
+                    rejected.extend({**b, "status": "unfilled", "reason": "repriced_shared_cap"} for b in survivors)
+                pending = None
+            if day in self.weeks:
+                groups, metadata, refusals = self._prepare(day)
+                components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
+                limits = self._limits(account, method, components)
+                record = {"date": day, "candidate_books": len(groups),
+                          "candidate_contracts": sum(len(g["capacity"])//2 for g in groups),
+                          "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
+                          "refusals": refusals, "components": components, "funding": account.funding,
+                          "open_reserve": sum(b["reserve"] for b in account.open.values())}
+                if any(lim["upper"] < -1e-5 for lim in limits):
+                    record["status"] = "existing_cap_breach_cash"
+                elif not groups or day == self.calendar[-1]:
+                    record["status"] = "no_eligible_candidates"
+                else:
+                    configured = [{**g, "radius": method["rho"]} for g in groups]
+                    solver = TransportPortfolioSolve("portfolio", p["solver"])
+                    program = {"groups": configured, "caps": self._caps(limits, metadata)}
+                    if recorded_decisions is None:
+                        selection = solver.run(None, program)["selection"]
+                    else:
+                        claimed = recorded_decisions[day]
+                        if "selection" not in claimed or "certificates" not in claimed:
+                            raise ValueError("eligible decision lacks recorded solve evidence")
+                        selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
+                    timed_out = "timeout" in selection
+                    books = [] if timed_out else self._books(selection, metadata)
+                    record.update(status="timeout_skipped" if timed_out else "selected" if books else "cash",
+                                  selection={k: copy.deepcopy(v) for k, v in selection.items()
+                                             if k != "certificates"},
+                                  certificates=[{k: v for k, v in c.items() if k != "binding"}
+                                                for c in selection["certificates"]],
+                                  books=copy.deepcopy(books))
+                    if books:
+                        pending = {"books": books, "components": components}
+                decisions.append(record)
+                if progress is not None:
+                    progress(method["id"], len(decisions), len(self.weeks), record["status"])
+            snapshots.append({"date": day, "deposit": deposited, "contributions": account.contributions,
+                              "realized": account.realized, "funding": account.funding,
+                              "cash": account.cash, "open_ids": sorted(account.open),
+                              "reserve": sum(b["reserve"] for b in account.open.values())})
+        if pending is not None:
+            raise ValueError("unprocessed order at study end")
+        result = self._finish(method, account, decisions, rejected, snapshots)
+        if recorded is not None:
+            for key, value in result.items():
+                if key not in recorded or recorded[key] != value:
+                    raise ValueError("recorded method differs from authoritative replay: "+key)
+        return result
+
+    def run(self, progress=None):
+        """Run every predeclared method sequentially on the same calendar.
+
+        Parameters
+        ----------
+        progress : callable or None
+            Optional callback(method_id, completed_weeks, total_weeks, status).
+
+        Returns
+        -------
+        dict
+            Full decisions, fills, trades, daily funded equity and method results.
+
+        Raises
+        ------
+        ValueError
+            Data, chronology, solver certification or accounting fails.
+        """
+        import copy
+
+        methods = [self._method(m, progress) for m in self.params["methods"]]
+        return {"params": copy.deepcopy(self.params), "methods": methods,
+                "calendar": self.calendar, "decision_dates": self.weeks,
+                "research_only": True, "pricing": "next_session_eod_nbbo",
+                "american_assignment_unmodeled": True}
 
 
 if __name__ == "__main__":

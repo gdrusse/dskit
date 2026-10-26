@@ -24,7 +24,7 @@ from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unkn
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.libs.pyomo import BINDING_TOLERANCE, DEFAULT_SOLVER, PyomoSolve, WassersteinDual
 from dskit.pipeline.option_pricing import VolIndexSmileQuotes, black76_delta
-from dskit.pipeline.option_structures import payoff_total
+from dskit.pipeline.option_structures import classify_option_strategy, payoff_total
 from dskit.pipeline.records import number_ok, price_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
 from dskit.pipeline.stats import (
@@ -67,7 +67,7 @@ __all__ = ["FILL_BAR_KEYS", "ExactDteBarChain", "CondorExpirySettle", "CondorBac
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
-           "RobustCondorBatchSelect", "RobustCondorSelect", "CDFQuoteCondorSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "liquid_leg_haircut", "mean_or_zero",
+           "RobustCondorBatchSelect", "RobustCondorSelect", "RobustOptionSelect", "CDFQuoteCondorSelect", "CDFQuoteOptionSelect", "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "liquid_leg_haircut", "mean_or_zero",
            "t_or_zero"]
 
 
@@ -3487,7 +3487,7 @@ class RobustCondorSelect(PyomoSolve):
 
     def _build_checked(self, inputs, params):
         """Validate one context and build its program (errors are context data defects)."""
-        from pyomo.environ import Binary, ConcreteModel, Constraint, Expression, Objective, Var, maximize
+        from pyomo.environ import Binary, ConcreteModel, Expression, Objective, Var, maximize
 
         context = inputs.get("context")
         if not isinstance(context, dict):
@@ -3511,8 +3511,7 @@ class RobustCondorSelect(PyomoSolve):
             if not isinstance(rows, (list, tuple)):
                 raise ValueError("eligible legs must be finite sequences")
             for row in rows:
-                if not isinstance(row, dict) or set(row) != {"index", "price", "haircut", "contract_id"}:
-                    raise ValueError("eligible contract must carry index/price/haircut/contract_id")
+                self._check_contract_row(row)
                 index = row["index"]
                 if (isinstance(index, bool) or not isinstance(index, int)
                         or not 0 <= index < len(grid) or (role, index) in contracts):
@@ -3531,17 +3530,12 @@ class RobustCondorSelect(PyomoSolve):
         self._certificates, self._skip = [], None
         model = ConcreteModel()
         model.z = Var(domain=Binary)
-        model.y = Var(self._ROLES, range(len(grid)), domain=Binary)
+        self._choice_variables(model, grid)
         for role in self._ROLES:
             for i in range(len(grid)):
                 if (role, i) not in contracts:
                     model.y[role, i].fix(0)
-        model.one = Constraint(self._ROLES, rule=lambda m, role:
-                               sum(m.y[role, i] for i in range(len(grid))) == m.z)
-        pairs = tuple(zip(self._ROLES[:-1], self._ROLES[1:]))
-        model.order = Constraint(range(3), range(len(grid)), rule=lambda m, a, k:
-                                 sum(m.y[pairs[a][0], i] for i in range(k, len(grid)))
-                                 <= sum(m.y[pairs[a][1], i] for i in range(k+1, len(grid))))
+        self._choice_constraints(model, grid)
         losses = [
             sum((model.y["SP", i]-model.y["LP", i]) * max(float(grid[i]-s), 0.)
                 + (model.y["SC", i]-model.y["LC", i]) * max(float(s-grid[i]), 0.)
@@ -3550,9 +3544,39 @@ class RobustCondorSelect(PyomoSolve):
         credit = sum(((1 if role in ("SP", "SC") else -1) * row["price"] - row["haircut"])
                      * model.y[role, i] for (role, i), row in contracts.items())
         model.robust_value = Expression(expr=params["multiplier"] * (credit-block.cost)
-                                       - 4 * params["fee_per_contract_usd"] * model.z)
+                                       - params["fee_per_contract_usd"] * self._fee_units(model))
         model.objective = Objective(expr=model.robust_value, sense=maximize)
         return model
+
+    def _check_contract_row(self, row):
+        """Require the legacy eligible contract's exact cost/identity fields."""
+        if not isinstance(row, dict) or set(row) != {"index", "price", "haircut", "contract_id"}:
+            raise ValueError("eligible contract must carry index/price/haircut/contract_id")
+
+    def _choice_variables(self, model, grid):
+        """Give each legacy condor role and strike a binary selection."""
+        from pyomo.environ import Binary, Var
+
+        model.y = Var(self._ROLES, range(len(grid)), domain=Binary)
+
+    def _choice_constraints(self, model, grid):
+        """Require one ordered contract per condor role when active."""
+        from pyomo.environ import Constraint
+
+        model.one = Constraint(self._ROLES, rule=lambda m, role:
+                               sum(m.y[role, i] for i in range(len(grid))) == m.z)
+        pairs = tuple(zip(self._ROLES[:-1], self._ROLES[1:]))
+        model.order = Constraint(range(3), range(len(grid)), rule=lambda m, a, k:
+                                 sum(m.y[pairs[a][0], i] for i in range(k, len(grid)))
+                                 <= sum(m.y[pairs[a][1], i] for i in range(k+1, len(grid))))
+
+    def _fee_units(self, model):
+        """Return the condor's four contracts when active."""
+        return 4 * model.z
+
+    def _tie_expression(self, model):
+        """Prefer no trade within the certified primary-value tie."""
+        return model.z
 
     def _certified(self, record):
         """Require optimal termination and the absolute gap limit; the relative one unless null."""
@@ -3601,7 +3625,7 @@ class RobustCondorSelect(PyomoSolve):
             return results
         model.objective.deactivate()
         model.tie_floor = Constraint(expr=model.robust_value >= primary.bound-self.params["tie_tolerance_usd"])
-        model.tie_objective = Objective(expr=model.z, sense=minimize)
+        model.tie_objective = Objective(expr=self._tie_expression(model), sense=minimize)
         return super()._solve(solver, model)
 
     def extract(self, model, results):
@@ -3713,24 +3737,29 @@ class RobustCondorSelect(PyomoSolve):
             if len(selected) != round(z):
                 raise _IntegrityError("invalid_leg_count", "invalid leg count")
             for i in selected:
-                row = self._contracts[role, i]
-                short = role in ("SP", "SC")
                 indices.append(i)
-                legs.append(dict(role=role, contract=row["contract_id"],
-                                 right="put" if role in ("LP","SP") else "call",
-                                 strike=float(self._dual.distribution.grid[i]),
-                                 side="sell" if short else "buy",
-                                 price_usd_per_share=row["price"] + (-1 if short else 1)*row["haircut"],
-                                 fee_usd=self.params["fee_per_contract_usd"]))
+                legs.append(self._leg(role, i))
         if indices and not all(a < b for a,b in zip(indices,indices[1:])):
             raise _IntegrityError("unordered_strikes", "strikes are not strictly ordered")
         return legs
 
+    def _leg(self, role, index):
+        """Read one eligible contract at its executable side, with one unit's fee."""
+        row = self._contracts[role, index]
+        short = role in ("SP", "SC")
+        return dict(role=role, contract=row["contract_id"],
+                    right="put" if role in ("LP", "SP") else "call",
+                    strike=float(self._dual.distribution.grid[index]),
+                    side="sell" if short else "buy",
+                    price_usd_per_share=row["price"] + (-1 if short else 1)*row["haircut"],
+                    fee_usd=self.params["fee_per_contract_usd"])
+
     def _primal_value(self, legs):
         """Robust USD value and worst loss of ``legs`` through the independent primal owner."""
-        credit = sum((1 if leg["side"] == "sell" else -1)*leg["price_usd_per_share"] for leg in legs)
+        credit = sum((1 if leg["side"] == "sell" else -1)*leg["price_usd_per_share"]
+                     * leg.get("quantity", 1) for leg in legs)
         grid = self._dual.distribution.grid
-        losses = [sum((1 if leg["side"] == "sell" else -1)
+        losses = [sum((1 if leg["side"] == "sell" else -1) * leg.get("quantity", 1)
                       * (max(leg["strike"]-s,0.) if leg["right"] == "put" else max(s-leg["strike"],0.))
                       for leg in legs) for s in grid]
         bands = self._dual.bands
@@ -3738,6 +3767,192 @@ class RobustCondorSelect(PyomoSolve):
             losses, self._dual.radius, self._dual.scale,
             q_lo=None if bands is None else bands[0], q_hi=None if bands is None else bands[1])
         return self.params["multiplier"]*(credit-worst)-sum(leg["fee_usd"] for leg in legs), worst
+
+
+
+class RobustOptionSelect(RobustCondorSelect):
+    """Choose integer option positions under the finite-grid W1 objective.
+
+    Parameters
+    ----------
+    params : dict
+        RobustCondorSelect parameters plus required positive integer
+        max_total_contracts: a gross count bound, not a loss or capital limit.
+        Each eligible option can be bought, sold or skipped in integer units;
+        optional positive integer max_quantity on each eligible side bounds
+        that side's quantity (defaults to max_total_contracts). No required
+        geometry, leg count or ratio. The secondary objective minimizes total
+        contracts at the primary tie floor. Output quantity is per leg;
+        fee_usd is that leg's total fee. Full-domain loss is reported separately.
+
+    Examples
+    --------
+    Construct the free-leg selector with independent primal certification::
+
+        node = RobustOptionSelect("select", {
+            "multiplier": 100, "fee_per_contract_usd": .65,
+            "tie_tolerance_usd": 1e-6, "max_absolute_gap_usd": 1e-7,
+            "max_relative_gap": 1e-8, "objective_parity_usd": 1e-5,
+            "max_total_contracts": 10})
+    """
+
+    _PARAMS = RobustCondorSelect._PARAMS + ("max_total_contracts",)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Validate the solver policies and explicit finite contract budget.
+
+        Parameters
+        ----------
+        params : dict
+            Proposed node configuration.
+
+        Returns
+        -------
+        list of str
+            Parameter defects, empty when valid.
+        """
+        problems = super().validate_params(params)
+        budget = params.get("max_total_contracts")
+        if type(budget) is not int or budget < 1:
+            problems.append("max_total_contracts must be an explicit positive integer")
+        return problems
+
+    def _check_contract_row(self, row):
+        """Allow a positive integer capacity alongside the shared cost fields."""
+        super()._check_contract_row(
+            {k: v for k, v in row.items() if k != "max_quantity"}
+            if isinstance(row, dict) else row)
+        if "max_quantity" in row:
+            capacity = row["max_quantity"]
+            if type(capacity) is not int or capacity < 1:
+                raise ValueError("max_quantity must be a positive integer")
+
+    def _quantity_limit(self, role, index):
+        """Intersect the eligible side's capacity with the gross budget."""
+        row = self._contracts.get((role, index))
+        budget = self.params["max_total_contracts"]
+        return min(budget, row.get("max_quantity", budget)) if row is not None else 0
+
+    def _choice_variables(self, model, grid):
+        """Allow whole-contract quantities at each eligible role and strike."""
+        from pyomo.environ import NonNegativeIntegers, Var
+
+        model.y = Var(self._ROLES, range(len(grid)), domain=NonNegativeIntegers,
+                      bounds=(0, self.params["max_total_contracts"]))
+
+    def _choice_constraints(self, model, grid):
+        """Bound gross contracts and side depth, with no same-option roundtrip."""
+        from pyomo.environ import Binary, Constraint, Var
+
+        count = self._fee_units(model)
+        model.active_lower = Constraint(expr=count >= model.z)
+        model.active_upper = Constraint(expr=count <= self.params["max_total_contracts"] * model.z)
+        pairs = (("LP", "SP"), ("LC", "SC"))
+        model.buy_side = Var(range(2), range(len(grid)), domain=Binary)
+        model.buy_capacity = Constraint(
+            range(2), range(len(grid)), rule=lambda m, a, i:
+            m.y[pairs[a][0], i] <= self._quantity_limit(pairs[a][0], i)*m.buy_side[a, i])
+        model.sell_capacity = Constraint(
+            range(2), range(len(grid)), rule=lambda m, a, i:
+            m.y[pairs[a][1], i] <= self._quantity_limit(pairs[a][1], i)*(1-m.buy_side[a, i]))
+
+    def _fee_units(self, model):
+        """Charge each chosen contract once, irrespective of geometry."""
+        return sum(model.y.values())
+
+    def _tie_expression(self, model):
+        """Prefer the fewest contracts within the primary robust-value tie."""
+        return self._fee_units(model)
+
+    @staticmethod
+    def _secondary_certified(record):
+        """Certify a nonnegative integer count from its lower bound."""
+        if (record.termination != "optimal" or not number_ok(record.objective)
+                or not number_ok(record.bound)):
+            return False
+        count = round(record.objective)
+        return (count >= 0 and abs(record.objective-count) <= BINDING_TOLERANCE
+                and record.bound <= count+BINDING_TOLERANCE
+                and (count == 0 or record.bound > count-1+BINDING_TOLERANCE))
+
+    def _selected_legs(self, model):
+        """Validate integer physical positions, capacities and gross budget."""
+        from pyomo.environ import value
+
+        z = value(model.z)
+        if (not number_ok(z) or round(z) not in (0, 1)
+                or abs(z-round(z)) > BINDING_TOLERANCE):
+            raise _IntegrityError("nonintegral_solution", "nonintegral trade solution")
+        legs, seen = [], set()
+        for (role, index), variable in model.y.items():
+            chosen = value(variable)
+            if (not number_ok(chosen) or round(chosen) < 0
+                    or abs(chosen-round(chosen)) > BINDING_TOLERANCE):
+                raise _IntegrityError("nonintegral_solution", "nonintegral option quantity")
+            if round(chosen):
+                if (role, index) not in self._contracts:
+                    raise _IntegrityError("ineligible_contract", "selected ineligible contract")
+                quantity = round(chosen)
+                if quantity > self._quantity_limit(role, index):
+                    raise _IntegrityError("quantity_limit_exceeded", "selected above option capacity")
+                leg = self._leg(role, index)
+                leg.update(quantity=quantity, fee_usd=leg["fee_usd"]*quantity)
+                key = leg["right"], leg["strike"]
+                if key in seen:
+                    raise _IntegrityError("same_contract_roundtrip", "both sides of one option")
+                seen.add(key)
+                legs.append(leg)
+        if sum(leg["quantity"] for leg in legs) > self.params["max_total_contracts"]:
+            raise _IntegrityError("contract_budget_exceeded", "selected above gross contract budget")
+        if bool(legs) != bool(round(z)):
+            raise _IntegrityError("invalid_leg_count", "activity disagrees with selected legs")
+        return legs
+
+    def extract(self, model, results):
+        """Return the certified set with its full-domain terminal loss exposure.
+
+        Parameters
+        ----------
+        model, results : object
+            Solved model and backend result from the shared solve lifecycle.
+
+        Returns
+        -------
+        dict
+            Decision and evidence; an unbounded maximum loss is null and
+            explicitly flagged, never replaced with a finite grid maximum.
+            Certified trade/cash decisions include option_strategy anatomy,
+            assigned only after optimization and independent repricing.
+
+        Raises
+        ------
+        ValueError
+            The shared certification detects an invalid incumbent.
+        """
+        out = super().extract(model, results)
+        decision = out["decision"]
+        out["evidence"].update(
+            max_total_contracts=self.params["max_total_contracts"],
+            quantity_unit="contracts", fee_usd_basis="total_per_leg",
+            uncertainty_support="finite_projected_grid",
+            support_endpoints=self._dual.distribution.grid[[0, -1]].tolist(),
+            max_loss_domain="all_nonnegative_terminal_prices")
+        if decision["status"] in ("trade", "no_trade"):
+            legs = decision["legs"]
+            credit = self.params["multiplier"] * sum(
+                (1 if leg["side"] == "sell" else -1)*leg["price_usd_per_share"]*leg["quantity"]
+                for leg in legs) - sum(leg["fee_usd"] for leg in legs)
+            signed = [(leg["right"], leg["quantity"]*(1 if leg["side"] == "buy" else -1))
+                      for leg in legs]
+            loss = (structure_max_loss(signed, [leg["strike"] for leg in legs],
+                                       credit, self.params["multiplier"]) if legs else 0.)
+            decision["option_strategy"] = classify_option_strategy(signed, [leg["strike"] for leg in legs])
+            decision.update(leg_count=len(legs), contract_count=sum(leg["quantity"] for leg in legs),
+                            max_loss_unbounded=math.isinf(loss),
+                            max_loss_usd=None if math.isinf(loss) else loss)
+        return out
+
 
 class RobustCondorBatchSelect(RobustCondorSelect):
     """Prepare governed chain rows for the one-context robust selector.
@@ -4352,7 +4567,7 @@ class ExactDteBarChain(Node):
 
 
 class CDFQuoteCondorSelect(Node):
-    """Bridge bounded grid CDFs and Theta EOD quotes to a nominal condor and ledger.
+    """Bridge bounded grid CDFs and Theta EOD quotes to a condor and ledger.
 
     One symbol, one serial position. Inputs are already date-bounded records from
     the saved method forecast, scored-row context, converted Theta archive and
@@ -4365,8 +4580,9 @@ class CDFQuoteCondorSelect(Node):
     _PARAMS = ("symbol", "start", "end_before", "protected_end_before", "fold",
                "require_fitted", "z_grid", "grid_labels", "target_dte", "dte_tolerance",
                "max_abs_z", "max_relative_spread", "min_quote_size",
-               "stress_spread_fraction", "projection", "solver")
+               "stress_spread_fraction", "rho", "projection", "solver")
     _INPUTS = ("forecasts", "contexts", "chain", "bars")
+    _SELECTOR = RobustCondorSelect
 
     @classmethod
     def validate_params(cls, params):
@@ -4376,7 +4592,7 @@ class CDFQuoteCondorSelect(Node):
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         for name in cls._PARAMS:
-            if name not in params:
+            if name != "rho" and name not in params:
                 problems.append(f"{name} is required")
         if not isinstance(params.get("symbol"), str) or not params.get("symbol"):
             problems.append("symbol must be nonempty")
@@ -4408,12 +4624,19 @@ class CDFQuoteCondorSelect(Node):
             floor = 0 if name == "stress_spread_fraction" else 0.0000001
             if not number_ok(value) or value < floor:
                 problems.append(f"{name} must be finite and >= {floor}")
+        if "rho" in params:
+            try:
+                valid_rho = number_ok(params["rho"]) and params["rho"] >= 0
+            except OverflowError:
+                valid_rho = False
+            if not valid_rho:
+                problems.append("rho must be finite and nonnegative")
         if isinstance(params.get("projection"), dict):
             problems.extend(NominalStrikeMasses.validate_params(params["projection"]))
         else:
             problems.append("projection must be a mapping")
         if isinstance(params.get("solver"), dict):
-            problems.extend(RobustCondorSelect.validate_params(params["solver"]))
+            problems.extend(cls._SELECTOR.validate_params(params["solver"]))
             if params["solver"].get("multiplier") != 100:
                 problems.append("standard Theta equity contracts require multiplier 100")
         else:
@@ -4485,6 +4708,13 @@ class CDFQuoteCondorSelect(Node):
             day, close = row["date"], row.get("close")
             if day in bars or not price_ok(close):
                 raise ValueError("duplicate or invalid daily close")
+            if "basis_factor" in row:
+                factor = row["basis_factor"]
+                if not price_ok(factor):
+                    raise ValueError("invalid daily basis factor")
+                if day in factors and not math.isclose(factors[day], factor, rel_tol=1e-9):
+                    raise ValueError("daily basis factor disagrees with option quotes")
+                factors.setdefault(day, float(factor))
             bars[day] = float(close)
         return quotes, factors, bars
 
@@ -4504,8 +4734,49 @@ class CDFQuoteCondorSelect(Node):
             return None
         return bid, ask
 
-    def _one(self, forecast, context, day, expiry, quotes, factors):
-        """Project the CDF and solve exactly one selected expiry at date D."""
+    def _eligible_strike(self, right, strike, spot, z):
+        """Keep the legacy OTM condor strike region."""
+        return (abs(z) <= self.params["max_abs_z"]
+                and (strike < spot if right == "put" else strike > spot))
+
+    def _check_eligible(self, eligible):
+        """Require enough options to form both condor wings."""
+        if (sum(right == "put" for right, _ in eligible) < 2
+                or sum(right == "call" for right, _ in eligible) < 2):
+            raise ValueError("insufficient_eligible_legs")
+
+    def _decision_identity(self, day, expiry, cdf, rho):
+        """Preserve the nominal condor identity and label positive-radius arms."""
+        p = self.params
+        identity = {"symbol": p["symbol"], "date": day, "expiry": expiry,
+                    "fold": p["fold"], "cdf": cdf.tolist()}
+        if rho:
+            identity["rho"] = rho
+        return value_hash(identity), "grid_cdf_w1" if rho else "grid_cdf_nominal"
+
+    def _decision_dates(self, contexts):
+        """Return each scored date for the legacy serial condor bridge."""
+        return sorted({day for day, _ in contexts})
+
+    def _order(self, decision, fill_day):
+        """Describe the frozen four-leg structure for the existing ledger."""
+        return {"date": fill_day, "symbol": self.params["symbol"],
+                "expiration": decision["expiry"],
+                "strikes": [leg["strike"] for leg in decision["legs"]],
+                "structure": "condor"}
+
+    def _eligible_contract(self, role, index, contract_id, market, row):
+        """Prepare the legacy one-lot contract's raw per-share cost fields."""
+        bid, ask = market
+        return {"index": index, "price": (bid+ask)/2, "haircut": (ask-bid)/2,
+                "contract_id": contract_id}
+
+    def _fill_capacity_ok(self, leg, row):
+        """Keep the legacy fill policy, whose quote screen checks unit depth."""
+        return True
+
+    def _prepare(self, forecast, context, day, expiry, quotes, factors):
+        """Project same-date inputs for a solver without reading future market data."""
         import numpy as np
         from dskit.pipeline.libs.predictive_cdf import MeanPreservingCDFGrid
 
@@ -4528,16 +4799,13 @@ class CDFQuoteCondorSelect(Node):
             if quote_day != day or quote_expiry != expiry:
                 continue
             z = math.log(strike/spot_raw)/float(scale)
-            if (abs(z) > p["max_abs_z"] or (right == "put" and strike >= spot_raw)
-                    or (right == "call" and strike <= spot_raw)):
+            if not self._eligible_strike(right, strike, spot_raw, z):
                 continue
             market = self._usable_quote(row, factor)
             if market is not None:
                 eligible[right, strike] = market
         strikes = sorted({strike for _, strike in eligible})
-        if (len([1 for right, _ in eligible if right == "put"]) < 2
-                or len([1 for right, _ in eligible if right == "call"]) < 2):
-            raise ValueError("insufficient_eligible_legs")
+        self._check_eligible(eligible)
         support = sorted({*strikes, spot_raw*math.exp(float(scale)*p["z_grid"][0]),
                           spot_raw*math.exp(float(scale)*p["z_grid"][-1])})
         knots = [spot_raw*math.exp(float(scale)*z) for z in p["z_grid"]
@@ -4549,22 +4817,28 @@ class CDFQuoteCondorSelect(Node):
             support, probability, spot=spot_raw, breakpoints=knots, **p["projection"])
         index = {strike: i for i, strike in enumerate(support)}
         legs = {role: [] for role in RobustCondorSelect._ROLES}
-        for (right, strike), (bid, ask) in eligible.items():
-            mid, half = (bid+ask)/2, (ask-bid)/2
+        for (right, strike), market in eligible.items():
             roles = ("LP", "SP") if right == "put" else ("SC", "LC")
             for role in roles:
-                legs[role].append({"index": index[strike], "price": mid,
-                                   "haircut": half,
-                                   "contract_id": f"{p['symbol']}:{expiry}:{right}:{strike:g}"})
-        decision_id = value_hash({"symbol": p["symbol"], "date": day, "expiry": expiry,
-                                  "fold": p["fold"], "cdf": cdf.tolist()})
-        solver_context = {"decision_id": decision_id, "arm_id": "grid_cdf_nominal",
+                legs[role].append(self._eligible_contract(
+                    role, index[strike], f"{p['symbol']}:{expiry}:{right}:{strike:g}",
+                    market, quotes[day, expiry, right, strike]))
+        rho = float(p.get("rho", 0.))
+        decision_id, arm_id = self._decision_identity(day, expiry, cdf, rho)
+        solver_context = {"decision_id": decision_id, "arm_id": arm_id,
                           "symbol": p["symbol"], "quote_date": day, "expiry": expiry,
                           "grid": support, "masses": projection.masses.tolist(),
-                          "spot": spot_raw, "rho": 0., "legs": legs}
-        solved = RobustCondorSelect("condor", p["solver"]).run(None, {"context": solver_context})
+                          "spot": spot_raw, "rho": rho, "legs": legs}
+        return solver_context, projection.evidence
+
+    def _one(self, forecast, context, day, expiry, quotes, factors):
+        """Project the CDF and solve exactly one selected expiry at date D."""
+        solver_context, projection = self._prepare(
+            forecast, context, day, expiry, quotes, factors)
+        solved = self._SELECTOR("select", self.params["solver"]).run(
+            None, {"context": solver_context})
         decision = solved["decision"]
-        decision.update(method_fitted=forecast["fitted"], projection=projection.evidence,
+        decision.update(method_fitted=forecast["fitted"], projection=projection,
                         solver_evidence=solved["evidence"])
         return decision
 
@@ -4573,7 +4847,7 @@ class CDFQuoteCondorSelect(Node):
         forecasts, contexts = self._bounded(inputs)
         quotes, factors, bars = self._market(inputs)
         p = self.params
-        dates = sorted({day for day, _ in contexts})
+        dates = self._decision_dates(contexts)
         decisions, orders, ledger_chain, stress_costs, skips = [], [], [], [], []
         refused = Counter()
         next_allowed = p["start"]
@@ -4626,6 +4900,9 @@ class CDFQuoteCondorSelect(Node):
                     if market is None:
                         reason = "missing_fill_quote"
                         break
+                    if not self._fill_capacity_ok(leg, row):
+                        reason = "insufficient_fill_size"
+                        break
                     fills.append((leg, market))
             if reason is not None:
                 decision.update(status="unfilled", unfilled_reason=reason)
@@ -4635,19 +4912,18 @@ class CDFQuoteCondorSelect(Node):
                 continue
             decision_credit = p["solver"]["multiplier"]*sum(
                 (1 if leg["side"] == "sell" else -1)*leg["price_usd_per_share"]
-                for leg, _ in fills)
+                * leg.get("quantity", 1) for leg, _ in fills)
             fill_credit = p["solver"]["multiplier"]*sum(
-                bid if leg["side"] == "sell" else -ask
+                (bid if leg["side"] == "sell" else -ask)*leg.get("quantity", 1)
                 for leg, (bid, ask) in fills)
             decision["fill_date"] = fill_day
             decision["decision_credit_usd"] = decision_credit
             decision["fill_credit_usd"] = fill_credit
             decision["slippage_usd"] = decision_credit-fill_credit
-            orders.append({"date": fill_day, "symbol": p["symbol"],
-                           "expiration": expiry, "strikes": [leg["strike"] for leg, _ in fills],
-                           "structure": "condor"})
+            orders.append(self._order(decision, fill_day))
             stress_costs.append(p["solver"]["multiplier"]*p["stress_spread_fraction"]
-                                *sum(ask-bid for _, (bid, ask) in fills))
+                                *sum((ask-bid)*leg.get("quantity", 1)
+                                     for leg, (bid, ask) in fills))
             for leg, (bid, ask) in fills:
                 ledger_chain.append({"symbol": p["symbol"], "date": fill_day,
                                      "expiration": expiry, "strike": leg["strike"],
@@ -4664,3 +4940,147 @@ class CDFQuoteCondorSelect(Node):
                    "american_assignment_unmodeled": True}
         return {"decisions": decisions, "orders": orders, "ledger_chain": ledger_chain,
                 "stress_extra_cost_usd": stress_costs, "skips": skips, "summary": summary}
+
+
+class CDFQuoteOptionSelect(CDFQuoteCondorSelect):
+    """Select an integer option book on the first scored date each week.
+
+    Parameters
+    ----------
+    params : dict
+        The governed quote, forecast, date, radius and solver parameters of
+        CDFQuoteCondorSelect, with solver.max_total_contracts required.
+        All eligible puts and calls within max_abs_z can be bought, sold or
+        skipped in integer quantities within the gross contract budget and
+        displayed side depth. No strategy geometry is imposed. Quantities
+        freeze at decision; insufficient next-session depth leaves the entire
+        book unfilled. Serial positions and weekly no-retry policy remain.
+
+    Outputs
+    -------
+    structures : dict
+        Dynamic signed leg definitions for OptionStructureLedger, alongside
+        the inherited decisions, orders, raw quote rows and fill evidence. Decisions
+        include post-solve option_strategy anatomy; summary.strategy_groups reports
+        selected/filled/unfilled/cash counts, selected contracts and separate selected
+        and filled sums of projected robust profit. Skips are excluded; labels never
+        affect eligibility, optimization, identities or accounting.
+
+    Examples
+    --------
+    Use the same explicit bridge policy with a positive radius::
+
+        node = CDFQuoteOptionSelect("free", {
+            **bridge_params, "rho": .001})
+    """
+
+    _SELECTOR = RobustOptionSelect
+    outputs = CDFQuoteCondorSelect.outputs + ("structures",)
+
+    def _eligible_strike(self, right, strike, spot, z):
+        """Admit both rights on either side of spot within the declared region."""
+        return abs(z) <= self.params["max_abs_z"]
+
+    def _check_eligible(self, eligible):
+        """Allow even one contract; refuse an empty eligible chain."""
+        if not eligible:
+            raise ValueError("insufficient_eligible_legs")
+
+    def _usable_quote(self, row, factor):
+        """Match the ledger's strict bid-below-ask quote contract."""
+        market = super()._usable_quote(row, factor)
+        return market if market is not None and market[0] < market[1] else None
+
+    def _eligible_contract(self, role, index, contract_id, market, row):
+        """Bound each eligible side by its displayed decision-time depth."""
+        contract = super()._eligible_contract(role, index, contract_id, market, row)
+        contract["max_quantity"] = row["bid_size" if role in ("SP", "SC") else "ask_size"]
+        return contract
+
+    def _fill_capacity_ok(self, leg, row):
+        """Require depth for the full frozen quantity on the traded side."""
+        return row["bid_size" if leg["side"] == "sell" else "ask_size"] >= leg["quantity"]
+
+    def _decision_identity(self, day, expiry, cdf, rho):
+        """Bind the free-leg policy and full configuration to its decision."""
+        identity, _ = super()._decision_identity(day, expiry, cdf, rho)
+        return (value_hash({"base": identity, "selector": "free_integer_weekly",
+                            "params": self.params}),
+                "grid_cdf_option_w1" if rho else "grid_cdf_option_nominal")
+
+    def _decision_dates(self, contexts):
+        """Review only the first available scored date in each ISO week."""
+        selected, weeks = [], set()
+        for day in super()._decision_dates(contexts):
+            week = date.fromisoformat(day).isocalendar()[:2]
+            if week not in weeks:
+                selected.append(day)
+                weeks.add(week)
+        return selected
+
+    @staticmethod
+    def _structure_definition(legs):
+        """Translate each position into the ledger's signed integer quantity."""
+        return [[leg["right"], leg["quantity"]*(1 if leg["side"] == "buy" else -1)]
+                for leg in legs]
+
+    def _order(self, decision, fill_day):
+        """Freeze the actual selected leg set with a content-addressed name."""
+        order = super()._order(decision, fill_day)
+        order["structure"] = value_hash(self._structure_definition(decision["legs"]))
+        return order
+
+    @staticmethod
+    def _strategy_groups(decisions):
+        """Separate selected, filled, unfilled and cash books and their projected values."""
+        buckets = {}
+        for decision in decisions:
+            label = decision.get("option_strategy")
+            if label is not None and decision["status"] in ("trade", "no_trade", "unfilled"):
+                buckets.setdefault((label["name"], label["variant"] or ""), []).append(decision)
+        groups = []
+        for key in sorted(buckets):
+            rows = buckets[key]
+            label = rows[0]["option_strategy"]
+            filled = [row for row in rows if row["status"] == "trade" and "fill_date" in row]
+            groups.append({
+                "name": label["name"], "family": label["family"], "variant": label["variant"],
+                "selected": len(rows), "filled": len(filled),
+                "unfilled": sum(row["status"] == "unfilled" for row in rows),
+                "cash": sum(row["status"] == "no_trade" for row in rows),
+                "selected_contracts": sum(row["option_strategy"]["input_contract_count"] for row in rows),
+                "selected_robust_value_usd": math.fsum(row["robust_value_usd"] for row in rows),
+                "filled_robust_value_usd": math.fsum(row["robust_value_usd"] for row in filled)})
+        return groups
+
+    def run(self, ctx, inputs):
+        """Select weekly and expose the dynamic definitions needed by the ledger.
+
+        Parameters
+        ----------
+        ctx : object
+            Pipeline context, forwarded to the shared bridge.
+        inputs : dict
+            Bounded forecasts, contexts, Theta chain rows and daily bars.
+
+        Returns
+        -------
+        dict
+            Inherited fill evidence plus a structures mapping for filled books.
+
+        Raises
+        ------
+        ValueError
+            The shared input or protected-window contract is violated.
+        """
+        out = super().run(ctx, inputs)
+        out["structures"] = {}
+        for decision in out["decisions"]:
+            if decision["status"] == "trade" and "fill_date" in decision:
+                definition = self._structure_definition(decision["legs"])
+                out["structures"][value_hash(definition)] = definition
+        out["summary"].update(selection="free_integer_options",
+                              max_total_contracts=self.params["solver"]["max_total_contracts"],
+                              decision_schedule="first_scored_date_per_iso_week",
+                              strategy_groups=self._strategy_groups(out["decisions"]))
+        return out

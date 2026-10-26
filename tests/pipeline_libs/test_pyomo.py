@@ -3221,3 +3221,546 @@ def test_wasserstein_dual_refuses_nonfinite_or_foreign_expressions():
         with pytest.raises(ValueError):
             dual.attach(model, [loss,0.])
     assert not hasattr(model, "wasserstein")
+
+
+
+@pytest.mark.parametrize("radius", [0., .05, .3])
+def test_transport_portfolio_joint_integer_oracle(radius):
+    """Joint integer sizing matches an independent transport LP enumeration."""
+    import itertools
+    import numpy as np
+    from scipy.optimize import linprog
+    from dskit.pipeline.libs import pyomo as pack
+
+    assert hasattr(pack, "TransportPortfolioSolve"), "missing shared joint transport selector"
+    groups = [
+        {"id": "a", "grid": [0., 1., 2.], "masses": [.2, .6, .2],
+         "radius": radius, "scale": 1., "credit": [3., -4.],
+         "losses": [[10., 0.], [0., 0.], [0., -8.]],
+         "capacity": [3, 3], "exclusive": [],
+         "reserve_rows": [[7., 4.], [-3., 4.], [-3., -4.]],
+         "linear_rows": []},
+        {"id": "b", "grid": [0., 1., 2.], "masses": [.2, .6, .2],
+         "radius": radius, "scale": 1., "credit": [2.],
+         "losses": [[0.], [0.], [5.]], "capacity": [3],
+         "exclusive": [], "reserve_rows": [[-2.], [3.]], "linear_rows": []}]
+    caps = [{"groups": ["a", "b"], "upper": 12.}, {"groups": ["a"], "upper": 9.}]
+    def worst(loss):
+        cost = np.abs(np.arange(3)[:, None]-np.arange(3)[None, :]).reshape(-1)
+        equality = np.zeros((3, 9))
+        for i in range(3):
+            equality[i, i*3:i*3+3] = 1.
+        result = linprog(-np.tile(loss, 3), A_ub=[cost], b_ub=[radius],
+                         A_eq=equality, b_eq=[.2, .6, .2], bounds=(0, None), method="highs")
+        assert result.success
+        return -result.fun
+    possible = []
+    for x in itertools.product(range(4), repeat=3):
+        reserves, value = [], 0.
+        for g, q in zip(groups, (x[:2], x[2:])):
+            reserves.append(max(0., *np.asarray(g["reserve_rows"]) @ q))
+            value += np.asarray(g["credit"]) @ q-worst(np.asarray(g["losses"]) @ q)
+        if sum(reserves) <= 12.+1e-8 and reserves[0] <= 9.+1e-8:
+            possible.append((float(value), sum(x), x))
+    best = max(v[0] for v in possible)
+    node = pack.TransportPortfolioSolve("joint", {
+        "absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+        "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1}})
+    result = node.run(None, {"groups": groups, "caps": caps})["selection"]
+    assert result["value"] == pytest.approx(best, abs=2e-6)
+    assert tuple(q for group in result["quantities"] for q in group) in [v[2] for v in possible]
+    assert result["value"] <= result["bound"]+1e-5
+
+
+
+def test_transport_portfolio_arbitrary_count_exclusion_and_cash():
+    """No strategy or four-leg limit; cash wins zero and losing objectives."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = {"absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+                    "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1}}
+    group = {"id": "g", "grid": [0., 1.], "masses": [.5, .5], "radius": .1, "scale": 1.,
+             "credit": [1.]*6, "losses": [[0.]*6]*2, "capacity": [2]*6,
+             "exclusive": [], "reserve_rows": [[1.]*6], "linear_rows": []}
+    inputs = {"groups": [group], "caps": [{"groups": ["g"], "upper": 100.}]}
+    result = TransportPortfolioSolve("all", params).run(None, inputs)["selection"]
+    assert result["quantities"] == [[2]*6]
+    group["exclusive"] = [[0, 1]]
+    result = TransportPortfolioSolve("exclusive", params).run(None, inputs)["selection"]
+    assert result["value"] == pytest.approx(10.)
+    assert not (result["quantities"][0][0] and result["quantities"][0][1])
+    for credit in [0., -1.]:
+        group["credit"] = [credit]*6
+        result = TransportPortfolioSolve("cash", params).run(None, inputs)["selection"]
+        assert result["value"] == 0. and sum(result["quantities"][0]) == 0
+
+
+def _roundtrip_portfolio(radius=0.):
+    """A cost-bearing opposite pair plus an independent finite action."""
+    import numpy as np
+    credit = [1., -1.1, 1.5]
+    losses = [[0., 0., 2.], [1., -1., 0.], [2., -2., 0.]]
+    group = {"id": "g", "grid": [0., 1., 2.], "masses": [.2, .3, .5],
+             "radius": radius, "scale": 1., "credit": credit, "losses": losses,
+             "capacity": [2, 2, 2], "exclusive": [[0, 1]],
+             "reserve_rows": (np.asarray(losses)-credit).tolist()+[[-v for v in credit]],
+             "linear_rows": []}
+    return {"groups": [group], "caps": [{"groups": ["g"], "upper": 3.}]}
+
+
+def _roundtrip_selector():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    return TransportPortfolioSolve("opposite", {
+        "absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+        "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1}})
+
+
+@pytest.mark.parametrize("radius", [0., .08])
+def test_transport_portfolio_dominated_pair_matches_exhaustive_oracle(radius):
+    import itertools
+    import numpy as np
+    from scipy.optimize import linprog
+
+    inputs = _roundtrip_portfolio(radius)
+    g = inputs["groups"][0]
+    node = _roundtrip_selector()
+    model = node.build_model(inputs, node.params)
+    assert len(model.side) == 0, "provably costly opposite pair still introduces a binary"
+    equality = np.zeros((3, 9))
+    for i in range(3):
+        equality[i, 3*i:3*i+3] = 1.
+    distance = np.abs(np.arange(3)[:, None]-np.arange(3)[None, :]).ravel()
+    possible = []
+    for q in itertools.product(range(3), repeat=3):
+        if q[0] and q[1]:
+            continue
+        reserve = max(0., *np.asarray(g["reserve_rows"]) @ q)
+        if reserve > 3.:
+            continue
+        loss = np.asarray(g["losses"]) @ q
+        lp = linprog(-np.tile(loss, 3), A_ub=[distance], b_ub=[radius],
+                     A_eq=equality, b_eq=g["masses"], bounds=(0, None), method="highs")
+        assert lp.success
+        possible.append((np.dot(g["credit"], q)+lp.fun, sum(q)))
+    best = max(p[0] for p in possible)
+    result = node.run(None, inputs)["selection"]
+    assert result["value"] == pytest.approx(best, abs=2e-6)
+    assert result["value"] <= result["bound"]+1e-5
+    assert result["canonicalization"]["primary"]["removed_contracts"] >= 0
+    assert len(result["certificates"]) == 1
+
+
+@pytest.mark.parametrize("condition", ["loss", "tiny_loss", "credit", "zero_credit",
+                                        "reserve", "linear"])
+def test_transport_portfolio_dominance_proof_refuses_each_failed_condition(condition):
+    inputs = _roundtrip_portfolio()
+    g = inputs["groups"][0]
+    if condition in ("loss", "tiny_loss"):
+        g["losses"][1][1] -= 1. if condition == "loss" else 1e-13
+    elif condition in ("credit", "zero_credit"):
+        g["credit"][1] = -.9 if condition == "credit" else -1.
+    elif condition == "reserve":
+        g["reserve_rows"].append([-1., -1., 0.])
+    else:
+        g["linear_rows"] = [{"coefficients": [-1., -1., 1.], "upper": 0.}]
+    node = _roundtrip_selector()
+    assert len(node.build_model(inputs, node.params).side) == 1
+
+
+def test_transport_portfolio_unsafe_upper_row_preserves_exclusion():
+    inputs = _roundtrip_portfolio()
+    g = inputs["groups"][0]
+    g.update(credit=[-1., -1., 10.], losses=[[0., 0., 0.]]*3,
+             capacity=[1, 1, 2], reserve_rows=[[0., 0., 0.]],
+             linear_rows=[{"coefficients": [-1., -1., 1.], "upper": 0.}])
+    node = _roundtrip_selector()
+    assert len(node.build_model(inputs, node.params).side) == 1
+    result = node.run(None, inputs)["selection"]
+    assert result["value"] == pytest.approx(9.)
+    assert not (result["quantities"][0][0] and result["quantities"][0][1])
+
+
+def test_transport_portfolio_canonicalizes_overlapping_pairs_and_model_value():
+    import copy
+    from pyomo.environ import value
+
+    inputs = _roundtrip_portfolio()
+    g = inputs["groups"][0]
+    g.update(credit=[1., -1.1, 1.], losses=[[0., 0., 0.], [1., -1., 1.], [2., -2., 2.]],
+             capacity=[3, 3, 3], exclusive=[[0, 1], [1, 2], [1, 0]],
+             reserve_rows=[[1., 1., 1.]], linear_rows=[])
+    inputs["caps"][0]["upper"] = 100.
+    original = copy.deepcopy(inputs)
+    node = _roundtrip_selector()
+    model = node.build_model(inputs, node.params)
+    assert len(model.side) == 0
+    for j, q in enumerate([2, 1, 3]):
+        model.x[0, j].set_value(q)
+    raw_value = value(model.profit)
+    result = node._incumbent(model)
+    assert result["quantities"] == [[1, 0, 3]]
+    assert [value(model.x[0, j]) for j in range(3)] == [1, 0, 3]
+    assert result["value"] == pytest.approx(value(model.profit))
+    assert result["canonicalization"]["removed_contracts"] == 2
+    assert result["canonicalization"]["profit_gain"] == pytest.approx(.1)
+    assert result["value"]-raw_value == pytest.approx(.1)
+    assert result["canonicalization"]["pairs"] == [
+        {"group": "g", "pair": [0, 1], "matched_quantity": 1}]
+    assert inputs == original
+
+
+@pytest.mark.parametrize("loss", [[3., -1., 2., 12.], [9., 2., -4., 0.], [-4.]*4])
+@pytest.mark.parametrize("radius", [0., .001, .3, 4.])
+def test_wasserstein_sparse_matches_legacy_and_independent_transport(loss, radius):
+    import inspect
+    import numpy as np
+    from scipy.optimize import linprog
+    from pyomo.environ import ConcreteModel, Constraint, Objective, SolverFactory, Var, value
+    from dskit.pipeline.libs.pyomo import WassersteinDual
+
+    assert "sparse" in inspect.signature(WassersteinDual.attach).parameters, "missing sparse dual path"
+    grid, masses, scale = [0., .5, 2., 7.], [.4, 0., .6, 0.], 2.
+    n = len(grid)
+    equality = np.zeros((n, n*n))
+    for i in range(n):
+        equality[i, i*n:i*n+n] = 1.
+    distance = np.abs(np.asarray(grid)[:, None]-np.asarray(grid)[None, :]).ravel()/scale
+    oracle = linprog(-np.tile(loss, n), A_ub=[distance], b_ub=[radius],
+                     A_eq=equality, b_eq=masses, bounds=(0, None), method="highs")
+    assert oracle.success
+    for sparse in (False, True):
+        model = ConcreteModel()
+        block = WassersteinDual(grid, masses, radius, scale).attach(model, loss, sparse=sparse)
+        model.objective = Objective(expr=block.cost)
+        solver = SolverFactory("appsi_highs")
+        solver.options["threads"] = 1
+        solver.solve(model)
+        assert value(block.cost) == pytest.approx(-oracle.fun, abs=1e-8)
+        if sparse:
+            assert len(list(block.component_data_objects(Var))) == n+1
+            assert len(list(block.component_data_objects(Constraint))) == 3*n-2
+            assert all(v.lb is None and v.ub is None for v in block.potential.values())
+        else:
+            assert hasattr(block, "alpha") and hasattr(block, "beta")
+            assert not hasattr(block, "potential")
+
+
+def test_wasserstein_sparse_refusals_leave_no_partial_block():
+    import inspect
+    from pyomo.environ import ConcreteModel, Var
+    from dskit.pipeline.libs.pyomo import WassersteinDual
+
+    assert "sparse" in inspect.signature(WassersteinDual.attach).parameters, "missing sparse dual path"
+    dual = WassersteinDual([1., 3.], [1., 0.], .25, 2.)
+    for flag in (1, 0, None, "true"):
+        model = ConcreteModel()
+        with pytest.raises(ValueError, match="sparse"):
+            dual.attach(model, [0., 10.], sparse=flag)
+        assert not hasattr(model, "wasserstein")
+    banded = WassersteinDual([1., 3.], [1., 0.], .25, 2.,
+                             q_lo=[1., 1.], q_hi=[1., 1.])
+    model = ConcreteModel()
+    with pytest.raises(ValueError, match="bands"):
+        banded.attach(model, [0., 10.], sparse=True)
+    assert not hasattr(model, "wasserstein")
+    model, foreign = ConcreteModel(), ConcreteModel()
+    model.x, foreign.x = Var(), Var()
+    for loss in (float("inf")*model.x, float("nan")*model.x, foreign.x, model.x**2):
+        with pytest.raises(ValueError):
+            dual.attach(model, [loss, 0.], sparse=True)
+        assert not hasattr(model, "wasserstein")
+    with pytest.raises(ValueError):
+        dual.attach(model, [0.], sparse=True)
+    assert not hasattr(model, "wasserstein")
+
+
+def test_transport_portfolio_requests_sparse_only_for_positive_radius():
+    from pyomo.environ import ConcreteModel
+    from dskit.pipeline.libs.pyomo import WassersteinDual
+
+    positive = _roundtrip_selector().build_model(_roundtrip_portfolio(.08), _roundtrip_selector().params)
+    assert hasattr(positive.transport_0, "potential"), "portfolio still uses cumulative dual"
+    nominal = _roundtrip_selector().build_model(_roundtrip_portfolio(0.), _roundtrip_selector().params)
+    assert not hasattr(nominal, "transport_0")
+    legacy = WassersteinDual([0., 2.], [.5, .5], .1, 1.).attach(ConcreteModel(), [-1., 2.])
+    assert hasattr(legacy, "alpha") and not hasattr(legacy, "potential")
+
+
+@pytest.mark.parametrize("radius", [0., .08])
+def test_transport_portfolio_cash_start_and_single_solve(monkeypatch, radius):
+    """Cash is a feasible warm start and profit needs only one solver call."""
+    from pyomo.environ import Constraint, Var, value
+    node = _roundtrip_selector()
+    inputs = _roundtrip_portfolio(radius)
+    # Retain an exclusion binary and add a second group with its own reserve.
+    import copy
+    other = copy.deepcopy(inputs["groups"][0])
+    other["id"] = "other"
+    other["credit"][1] = -other["credit"][0]
+    inputs["groups"].append(other)
+    inputs["caps"].append({"groups": ["other"], "upper": 3.})
+    model = node.build_model(inputs, node.params)
+    assert all(v.value == 0 for v in model.component_data_objects(Var))
+    for row in model.component_data_objects(Constraint, active=True):
+        observed = value(row.body)
+        assert not row.has_lb() or observed >= value(row.lower)
+        assert not row.has_ub() or observed <= value(row.upper)
+    original = node._resolve_solver
+    calls, primary = [], {}
+    def resolve():
+        solver = original()
+        actual_solve = solver.solve
+        def solve(model, **kwargs):
+            assert kwargs == {"warmstart": True}
+            current = {v.name: v.value for v in model.component_data_objects(Var)}
+            secondary = hasattr(model, "primary_floor")
+            calls.append(secondary)
+            if secondary:
+                assert current == primary
+                assert sum(value(v) for v in model.x.values()) > 0
+            else:
+                assert all(v == 0 for v in current.values())
+            result = actual_solve(model, **kwargs)
+            if not secondary:
+                primary.update({v.name: v.value for v in model.component_data_objects(Var)})
+            return result
+        monkeypatch.setattr(solver, "solve", solve)
+        return solver
+    monkeypatch.setattr(node, "_resolve_solver", resolve)
+    got = node.run(None, inputs)["selection"]
+    assert calls == [False]
+    assert len(got["certificates"]) == 1
+    assert got["value"] > 0
+
+
+@pytest.mark.parametrize("capable", [None, False, True])
+def test_transport_portfolio_warm_start_backend_capability(capable):
+    """Unsupported backends keep the old call; backend failures still propagate."""
+    node = _roundtrip_selector()
+    calls = []
+    class Backend:
+        def solve(self, model, **kwargs):
+            calls.append((model, kwargs))
+            return "result"
+    solver = Backend()
+    if capable is not None:
+        solver.warm_start_capable = lambda: capable
+    marker = object()
+    assert node._solve(solver, marker) == "result"
+    assert calls == [(marker, {"warmstart": True} if capable else {})]
+    def fail(model, **kwargs):
+        raise RuntimeError("backend failure")
+    solver.solve = fail
+    with pytest.raises(RuntimeError, match="backend failure"):
+        node._solve(solver, marker)
+
+
+def _profit_certificate_case(credit=5., bound_gap=0.):
+    """A loaded one-action incumbent with a separately supplied solver bound."""
+    from dskit.pipeline.libs.pyomo import SolveRecord
+    from pyomo.environ import value
+
+    node = _roundtrip_selector()
+    node.params.update(absolute_gap=1., relative_gap=0., parity_tolerance=.001)
+    group = {"id": "g", "grid": [0., 1.], "masses": [.5, .5],
+             "radius": 0., "scale": 1., "credit": [credit],
+             "losses": [[0.], [0.]], "capacity": [1], "exclusive": [],
+             "reserve_rows": [[0.]], "linear_rows": []}
+    model = node.build_model({"groups": [group], "caps": [{"groups": ["g"], "upper": 1.}]}, node.params)
+    model.x[0, 0].set_value(1)
+    objective = value(model.profit)
+    node.solve_record = SolveRecord("appsi_highs", "ok", "optimal",
+        objective, objective+bound_gap, bound_gap/max(abs(objective), 1e-10),
+        .01, 2, 2, ())
+    return node, model
+
+
+@pytest.mark.parametrize("credit", [0., .005, 5., 1000000.])
+@pytest.mark.parametrize("gap", [0., .99, 1., 1.0000001, 1.0005, 2.])
+def test_transport_portfolio_exact_final_dollar_gap(monkeypatch, credit, gap):
+    """Acceptance is in objective dollars and uses the returned portfolio."""
+    node, model = _profit_certificate_case(credit, gap)
+    monkeypatch.setattr(node, "_resolve_solver",
+        lambda: (_ for _ in ()).throw(AssertionError("second solve forbidden")))
+    if gap > 1.:
+        with pytest.raises(ValueError, match="objective|gap"):
+            node.extract(model, None)
+    else:
+        got = node.extract(model, None)["selection"]
+        assert got["value"] == credit
+        assert got["quantities"] == [[0 if credit == 0 else 1]]
+        assert got["gap"] <= 1.
+        assert got["model_value"] == credit
+        assert len(got["certificates"]) == 1
+
+
+@pytest.mark.parametrize("change", [
+    {"bound": None}, {"bound": float("nan")}, {"bound": float("inf")},
+    {"bound": 4.}, {"objective": None}, {"objective": float("nan")},
+    {"objective": 4.}, {"objective": 6.},
+    {"status": "error", "termination": "infeasible"},
+    {"status": "error", "termination": "optimal"},
+    {"status": "ok", "termination": "unknown"},
+    {"status": "aborted", "termination": "userInterrupt"},
+])
+def test_transport_portfolio_rejects_missing_or_contradictory_certificate(monkeypatch, change):
+    from dataclasses import replace
+    node, model = _profit_certificate_case()
+    node.solve_record = replace(node.solve_record, **change)
+    monkeypatch.setattr(node, "_resolve_solver",
+        lambda: (_ for _ in ()).throw(AssertionError("second solve forbidden")))
+    with pytest.raises(ValueError):
+        node.extract(model, None)
+
+
+def test_transport_portfolio_timeout_uses_same_certificate_gate(monkeypatch):
+    from dataclasses import replace
+    node, model = _profit_certificate_case(bound_gap=.99)
+    node.solve_record = replace(node.solve_record, status="aborted", termination="maxTimeLimit")
+    monkeypatch.setattr(node, "_resolve_solver",
+        lambda: (_ for _ in ()).throw(AssertionError("second solve forbidden")))
+    got = node.extract(model, None)["selection"]
+    assert got["gap"] == pytest.approx(.99)
+    assert got["certificates"][0]["termination"] == "maxTimeLimit"
+    node.solve_record = replace(node.solve_record, bound=6.0005)
+    with pytest.raises(ValueError):
+        node.extract(model, None)
+
+
+def test_transport_portfolio_profit_tie_retains_primary_quantities(monkeypatch):
+    from dskit.pipeline.libs.pyomo import SolveRecord
+    node = _roundtrip_selector()
+    group = {"id": "g", "grid": [0., 1.], "masses": [.5, .5],
+             "radius": 0., "scale": 1., "credit": [1., 2.],
+             "losses": [[0., 0.], [0., 0.]], "capacity": [2, 1],
+             "exclusive": [], "reserve_rows": [[1., 2.]], "linear_rows": []}
+    model = node.build_model({"groups": [group], "caps": [{"groups": ["g"], "upper": 2.}]}, node.params)
+    model.x[0, 0].set_value(2)
+    model.x[0, 1].set_value(0)
+    node.solve_record = SolveRecord("appsi_highs", "ok", "optimal", 2., 2., 0., .01, 3, 2, ())
+    monkeypatch.setattr(node, "_resolve_solver",
+        lambda: (_ for _ in ()).throw(AssertionError("second solve forbidden")))
+    got = node.extract(model, None)["selection"]
+    # [0,1] would have equal profit and fewer contracts; that is no longer an objective.
+    assert got["quantities"] == [[2, 0]] and got["value"] == 2.
+
+
+def test_transport_portfolio_cash_final_gap_and_canonicalization_record(monkeypatch):
+    from dataclasses import replace
+    from dskit.pipeline.libs.pyomo import SolveRecord
+    from pyomo.environ import value
+    node, model = _profit_certificate_case(credit=-.0005, bound_gap=1.0005)
+    monkeypatch.setattr(node, "_resolve_solver",
+        lambda: (_ for _ in ()).throw(AssertionError("second solve forbidden")))
+    got = node.extract(model, None)["selection"]
+    assert got["value"] == 0. and got["gap"] == 1.
+    node.solve_record = replace(node.solve_record, bound=1.0001)
+    with pytest.raises(ValueError):
+        node.extract(model, None)
+    node, model = _profit_certificate_case(credit=-1.)
+    with pytest.raises(ValueError):
+        node.extract(model, None)
+    node = _roundtrip_selector()
+    inputs = _roundtrip_portfolio()
+    model = node.build_model(inputs, node.params)
+    for j, q in enumerate([1, 1, 1]):
+        model.x[0, j].set_value(q)
+    before = value(model.profit)
+    node.solve_record = SolveRecord("appsi_highs", "ok", "optimal", before, 1.1, .1, .01, 4, 4, ())
+    monkeypatch.setattr(node, "_resolve_solver",
+        lambda: (_ for _ in ()).throw(AssertionError("second solve forbidden")))
+    got = node.extract(model, None)["selection"]
+    assert got["quantities"] == [[0, 0, 1]]
+    assert got["canonicalization"]["primary"]["profit_gain"] == pytest.approx(.1)
+    assert got["certificates"][0]["objective"] == before
+    assert got["value"] == pytest.approx(1.1)
+
+
+def test_transport_portfolio_removed_tie_policy_refuses():
+    node = _roundtrip_selector()
+    assert any("tie_tolerance" in p for p in node.validate_params({**node.params, "tie_tolerance": .01}))
+
+
+@pytest.mark.parametrize("gap,bound_missing,reason", [
+    (.99, False, None), (1., False, None), (1.01, False, "gap"),
+    (0., True, "missing_bound"),
+])
+def test_transport_portfolio_timeout_diagnostic_and_recorded_replay(gap, bound_missing, reason):
+    import json
+    from dataclasses import replace
+    node, model = _profit_certificate_case(bound_gap=gap)
+    node.params["timeout_policy"] = "return"
+    from dskit.pipeline.libs.pyomo import SolveRecord
+    c = node.solve_record
+    node.solve_record = replace(c, status="aborted", termination="maxTimeLimit",
+        **({"bound": None, "gap": None} if bound_missing else
+           {"gap": SolveRecord._gap(c.objective, c.bound)}))
+    program = {"groups": node._groups, "caps": node._caps}
+    selection = node.extract(model, None)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"}
+                    for c in selection.pop("certificates")]
+    if reason:
+        assert selection["timeout"] == reason and "quantities" not in selection
+        assert selection["candidate"]["quantities"] == [[1]]
+    else:
+        assert selection["quantities"] == [[1]] and "timeout" not in selection
+    replay = node._recorded(program, *json.loads(json.dumps([selection, certificates])))
+    assert replay == {**selection, "certificates": certificates}
+    if reason:
+        bad = json.loads(json.dumps(selection))
+        bad["timeout"] = "no_incumbent"
+        with pytest.raises(ValueError):
+            node._recorded(program, bad, certificates)
+        node.params.pop("timeout_policy")
+        with pytest.raises(ValueError):
+            node._recorded(program, selection, certificates)
+
+
+def test_transport_portfolio_timeout_no_incumbent_is_not_warmstart_cash():
+    from types import SimpleNamespace
+    from pyomo.opt import SolverResults, SolverStatus, TerminationCondition
+    node, model = _profit_certificate_case()
+    node.params["timeout_policy"] = "return"
+    results = SolverResults()
+    results.solver.status = SolverStatus.aborted
+    results.solver.termination_condition = TerminationCondition.maxTimeLimit
+    results.problem.upper_bound = float("inf")
+    solver = SimpleNamespace(solve=lambda m, **kw: results, warm_start_capable=lambda: True)
+    node._solve(solver, model)
+    node.solve_record = node._build_solve_record(solver, model, results, "appsi_highs", .01)
+    assert node.solve_record.objective is None and node.solve_record.gap is None
+    selection = node.extract(model, results)["selection"]
+    assert selection["timeout"] == "no_incumbent" and selection["candidate"] is None
+    certs = [{k: v for k, v in c.items() if k != "binding"} for c in selection.pop("certificates")]
+    program = {"groups": node._groups, "caps": node._caps}
+    assert node._recorded(program, selection, certs)["timeout"] == "no_incumbent"
+    for change in ({"objective": 0.}, {"gap": 0.}, {"termination": "optimal"},
+                   {"status": "error"}, {"bound": -1.}, {"variables": 99},
+                   {"seconds": -1.}, {"solver": "invented"}):
+        with pytest.raises(ValueError):
+            node._recorded(program, selection, [{**certs[0], **change}])
+
+
+@pytest.mark.parametrize("policy", [None, True, 1, "skip", {}, []])
+def test_transport_portfolio_timeout_policy_refuses_unknown_values(policy):
+    node = _roundtrip_selector()
+    assert node.validate_params({**node.params, "timeout_policy": policy})
+
+
+def test_transport_portfolio_timeout_return_real_backend_and_error_refusal(monkeypatch):
+    node = _roundtrip_selector()
+    node.params["timeout_policy"] = "return"
+    node.params["solver_options"].update(time_limit=0., presolve="off")
+    result = node.run(None, _roundtrip_portfolio())["selection"]
+    # Backend may retain its feasible cash start, but cannot invent certification.
+    assert "timeout" in result or result["gap"] <= node.params["absolute_gap"]
+    node.params["solver_options"]["time_limit"] = 10.
+    solved = node.run(None, _roundtrip_portfolio())["selection"]
+    strict = _roundtrip_selector()
+    strict.params["solver_options"].update(time_limit=10., presolve="off")
+    expected = strict.run(None, _roundtrip_portfolio())["selection"]
+    assert solved["value"] == pytest.approx(expected["value"]) and "timeout" not in solved
+    monkeypatch.setattr(node, "_resolve_solver", lambda: type("Broken", (), {
+        "solve": lambda *a, **k: (_ for _ in ()).throw(RuntimeError("backend failure"))})())
+    with pytest.raises(RuntimeError, match="backend failure"):
+        node.run(None, _roundtrip_portfolio())

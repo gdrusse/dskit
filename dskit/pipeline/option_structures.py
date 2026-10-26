@@ -5,10 +5,11 @@ owned, graduated into the core by ADR-0265 so a generic ledger can price a
 structure without importing a child. A *leg set* is a sequence of
 ``(right, signed quantity)`` pairs, ``right`` being ``"put"`` or ``"call"`` and the
 sign ``+1`` for a bought leg and ``-1`` for a sold one; a structure is a leg set
-with one strike per leg. This module names no structure (no condor, no straddle):
-the caller declares its leg sets. The child keeps its named vocabulary and
-re-exports these functions.
+with one strike per leg. Callers declare their leg sets. Post-solve diagnostic
+names describe complete books without imposing a selection template (ADR-0276).
+The child re-exports the shared payoff and credit functions.
 
+* :func:`classify_option_strategy` - deterministic anatomy, normalized quantities and wing variants.
 * :func:`structure_credit` - shorts at the bid, longs at the ask, plus the vertical widths.
 * :func:`structure_payoff` / :func:`leg_intrinsic` / :func:`payoff_total` - the settlement
   payoff of the leg set, exact for Decimal, bit-identical fast path for float.
@@ -21,6 +22,7 @@ Import cost: stdlib only.
 
 import math
 from decimal import Decimal
+from fractions import Fraction
 from itertools import pairwise
 
 from dskit.pipeline.node import check_int_param
@@ -28,6 +30,7 @@ from dskit.pipeline.records import number_ok
 
 __all__ = [
     "QUOTE_DEFECTS",
+    "classify_option_strategy",
     "is_amount",
     "leg_intrinsic",
     "payoff_total",
@@ -43,6 +46,127 @@ QUOTE_DEFECTS = ("not_finite", "negative", "crossed", "locked",
                  "sold_leg_no_bid", "bought_leg_no_ask")
 
 _SIDES = (None, "sell", "buy")
+
+
+def classify_option_strategy(legs, strikes):
+    """Describe an option book's anatomy without constraining its selection.
+
+    All legs must have the same underlying and expiration. Stock hedges are
+    outside this function's scope. Exact right/strike duplicates are netted
+    for classification; original gross quantities remain visible for costs.
+    Names do not imply an entry credit, a particular Greek, or bounded risk.
+    Unrecognized complete books are custom, never decomposed arbitrarily.
+
+    Parameters
+    ----------
+    legs : sequence of (str, int)
+        Right (put/call) and signed nonzero integer contracts; buys positive.
+    strikes : sequence of int, float or Decimal
+        Finite positive strikes in leg order. Contract identity is exact.
+
+    Returns
+    -------
+    dict
+        Versioned name, family, variant, quantity GCD (units), canonical legs
+        with actual quantities and normalized ratios, net_contract_count and
+        input_contract_count. Empty input is cash; a fully offset book is
+        flat_option_book. Wing comparisons use relative tolerance 1e-9 only.
+
+    Raises
+    ------
+    ValueError
+        Inputs differ in length, a leg is malformed, or a strike is invalid.
+    """
+    try:
+        legs, strikes = tuple(legs), tuple(strikes)
+    except TypeError as exc:
+        raise ValueError("legs and strikes must be sequences") from exc
+    if len(legs) != len(strikes):
+        raise ValueError("strikes must match legs in number")
+    net, gross = {}, 0
+    for leg, strike in zip(legs, strikes):
+        if (not isinstance(leg, (tuple, list)) or len(leg) != 2
+                or leg[0] not in ("put", "call")
+                or not isinstance(leg[1], int) or isinstance(leg[1], bool) or not leg[1]):
+            raise ValueError("each leg must be a put/call and a nonzero signed integer")
+        integer_strike = isinstance(strike, int) and not isinstance(strike, bool)
+        if not (integer_strike or is_amount(strike)) or strike <= 0:
+            raise ValueError("strikes must be finite positive numbers")
+        right, quantity = leg
+        key = right, strike
+        net[key] = net.get(key, 0) + quantity
+        gross += abs(quantity)
+    positions = sorted(((right, strike, qty) for (right, strike), qty in net.items() if qty),
+                       key=lambda item: (item[0] != "put", item[1]))
+    units = math.gcd(*(abs(qty) for _, _, qty in positions))
+    canonical = [{"right": right, "strike": strike, "quantity": qty, "ratio": qty // units}
+                 for right, strike, qty in positions]
+    if not canonical:
+        name, family, variant = ("flat_option_book", "flat", None) if legs else ("cash", "cash", None)
+    else:
+        name, family, variant = _option_strategy_shape(canonical)
+    return {"version": 1, "name": name, "family": family, "variant": variant, "units": units,
+            "legs": canonical, "net_contract_count": sum(abs(qty) for _, _, qty in positions),
+            "input_contract_count": gross}
+
+
+def _strategy_wings(strikes, unequal):
+    """Compare wing widths at standard isclose relative tolerance without rounding identities."""
+    # Rational differences also preserve close Decimal/large-int strikes and avoid float overflow.
+    a, b, c, d = map(Fraction, strikes)
+    left, right = b-a, d-c
+    equal = abs(left-right) <= Fraction(1, 1_000_000_000) * max(left, right)
+    return "equal_wings" if equal else unequal
+
+
+def _same_right_strategy(right, strikes, ratios):
+    """Recognize single-right vertical, ratio, butterfly and condor anatomy."""
+    if len(ratios) == 2 and ratios[0] * ratios[1] < 0:
+        low, high = ratios
+        if abs(low) == abs(high):
+            return f"{'bull' if low > 0 else 'bear'}_{right}_spread", "vertical", None
+        name = f"{right}_ratio_vertical"
+        if right == "call" and abs(high) > abs(low):
+            name = "call_ratio_spread" if low > 0 else "call_ratio_backspread"
+        if right == "put" and abs(low) > abs(high):
+            name = "put_ratio_backspread" if low > 0 else "put_ratio_spread"
+        variant = "more_longs" if low+high > 0 else "more_shorts"
+        return name, "ratio_vertical", variant
+    if ratios in ((1, -2, 1), (-1, 2, -1)):
+        variant = _strategy_wings((strikes[0], strikes[1], strikes[1], strikes[2]), "broken_wing")
+        return f"{'long' if ratios[0] > 0 else 'short'}_{right}_butterfly", "butterfly", variant
+    if ratios in ((1, -1, -1, 1), (-1, 1, 1, -1)):
+        variant = _strategy_wings(strikes, "unequal_wings")
+        return f"{'long' if ratios[0] > 0 else 'short'}_{right}_condor", "condor", variant
+    return "custom", "custom", None
+
+
+def _option_strategy_shape(positions):
+    """Match only complete canonical books, with quantities normalized by their GCD."""
+    rights = [leg["right"] for leg in positions]
+    strikes = [leg["strike"] for leg in positions]
+    ratios = tuple(leg["ratio"] for leg in positions)
+    if len(positions) == 1:
+        return f"{'long' if ratios[0] > 0 else 'short'}_{rights[0]}", "single_option", None
+    if len(set(rights)) == 1:
+        return _same_right_strategy(rights[0], strikes, ratios)
+    if len(positions) == 2 and all(abs(qty) == 1 for qty in ratios):
+        put, call = strikes
+        if ratios[0] == ratios[1] and put <= call:
+            family = "straddle" if put == call else "strangle"
+            return f"{'long' if ratios[0] > 0 else 'short'}_{family}", family, None
+        if ratios[0] != ratios[1] and put == call:
+            side = "long" if ratios[1] > 0 else "short"
+            return f"synthetic_{side}_forward", "synthetic_forward", None
+    if rights == ["put", "put", "call", "call"] and ratios in ((1, -1, -1, 1), (-1, 1, 1, -1)):
+        pl, ph, cl, ch = strikes
+        if pl < ph <= cl < ch:
+            family = "iron_butterfly" if ph == cl else "iron_condor"
+            prefix = "" if ratios[0] > 0 else "reverse_"
+            return prefix+family, family, _strategy_wings(strikes, "unequal_wings")
+        if pl == cl and ph == ch:
+            return "long_box" if ratios[0] < 0 else "short_box", "box", None
+    return "custom", "custom", None
 
 
 def _check_multiplier(multiplier):

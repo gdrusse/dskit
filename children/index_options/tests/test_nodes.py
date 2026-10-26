@@ -2354,3 +2354,585 @@ def test_cdf_quote_condor_refuses_future_settlement_and_serially_skips_overlap()
     inputs["contexts"].append(dict(inputs["contexts"][0], quote_date="2019-01-03"))
     out = CDFQuoteCondorSelect("bridge", params).run(None, inputs)
     assert len(out["decisions"]) == len(out["orders"]) == 1
+
+
+def test_cdf_quote_condor_positive_w1_radius_changes_the_optimization_context():
+    from index_options.nodes import CDFQuoteCondorSelect
+
+    params, inputs = _cdf_quote_fixture()
+    nominal = CDFQuoteCondorSelect("nominal", params).run(None, inputs)["decisions"][0]
+    explicit_zero = CDFQuoteCondorSelect("zero", {**params, "rho": 0.}).run(None, inputs)["decisions"][0]
+    assert explicit_zero["decision_id"] == nominal["decision_id"]
+    assert explicit_zero["arm_id"] == nominal["arm_id"]
+    assert explicit_zero["legs"] == nominal["legs"]
+    assert explicit_zero["robust_value_usd"] == pytest.approx(nominal["robust_value_usd"])
+
+    robust_run = CDFQuoteCondorSelect("w1", {**params, "rho": .001}).run(None, inputs)
+    robust = robust_run["decisions"][0]
+    assert robust["solver_evidence"]["rho"] == pytest.approx(.001)
+    assert robust["arm_id"] == "grid_cdf_w1"
+    assert robust["decision_id"] != nominal["decision_id"]
+    assert robust["status"] == "trade"
+    assert len(robust_run["orders"]) == 1
+    assert robust["robust_value_usd"] <= nominal["robust_value_usd"] + 1e-6
+    certificates = robust["solver_evidence"]["solves"]
+    assert len(certificates) == 2
+    assert all(record["termination"] == "optimal" and record["parity"]["passed"]
+               for record in certificates)
+
+    abstained = CDFQuoteCondorSelect("abstain", {**params, "rho": 1.}).run(None, inputs)
+    decision = abstained["decisions"][0]
+    assert decision["status"] == "no_trade"
+    assert decision["legs"] == []
+    assert decision["robust_value_usd"] == pytest.approx(0.)
+    assert abstained["orders"] == []
+    certificates = decision["solver_evidence"]["solves"]
+    assert len(certificates) == 2
+    assert all(record["termination"] == "optimal" and record["parity"]["passed"]
+               for record in certificates)
+
+
+@pytest.mark.parametrize("rho", [-.001, float("nan"), float("inf"), "0.001",
+                                     True, 10**1000, -(10**1000)])
+def test_cdf_quote_condor_rejects_invalid_w1_radius(rho):
+    from index_options.nodes import CDFQuoteCondorSelect
+
+    params, _ = _cdf_quote_fixture()
+    params["rho"] = rho
+    with pytest.raises(ValueError, match="rho"):
+        CDFQuoteCondorSelect("bridge", params)
+
+
+def test_free_option_select_can_choose_one_profitable_call():
+    from index_options.nodes import RobustOptionSelect
+
+    old, context = _robust_tie_fixture(fee=.65)
+    params = {**old.params, "objective_parity_usd": 1e-5, "max_total_contracts": 1}
+    context.update(masses=[0., 0., 0., 1.], rho=.001)
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    context["legs"]["LC"] = [
+        {"index": 2, "price": 1., "haircut": .1, "contract_id": "call-110"}]
+    out = RobustOptionSelect("free", params).run(None, {"context": context})
+    decision = out["decision"]
+    assert decision["status"] == "trade"
+    assert len(decision["legs"]) == 1
+    assert decision["legs"][0]["contract"] == "call-110"
+    assert decision["robust_value_usd"] == pytest.approx(879.35, abs=1e-5)
+    context["rho"] = 1.
+    out = RobustOptionSelect("cash", params).run(None, {"context": context})
+    assert out["decision"]["status"] == "no_trade"
+    assert out["decision"]["leg_count"] == 0
+    assert out["decision"]["robust_value_usd"] == pytest.approx(0.)
+    assert all(r["termination"] == "optimal" and r["parity"]["passed"]
+               for r in out["evidence"]["solves"])
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 5])
+def test_free_option_select_has_no_required_leg_count(count):
+    from index_options.nodes import RobustOptionSelect
+
+    old, context = _robust_tie_fixture(fee=.65)
+    params = {**old.params, "objective_parity_usd": 1e-5, "max_total_contracts": 1}
+    params["max_total_contracts"] = max(count, 1)
+    context.update(grid=[80., 90., 100., 110., 120., 130.],
+                   masses=[0., 0., 0., 0., 0., 1.], rho=.001)
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    context["legs"]["LC"] = [
+        dict(index=i, price=1., haircut=.1, contract_id=f"call-{i}", max_quantity=1)
+        for i in range(count)]
+    node = RobustOptionSelect("free", params)
+    out = node.run(None, {"context": context})
+    assert out["decision"]["leg_count"] == count
+    assert out["decision"]["status"] == ("trade" if count else "no_trade")
+    assert out["decision"]["max_loss_unbounded"] is False
+    assert out["decision"]["max_loss_usd"] == pytest.approx(count*110.65)
+    assert out["evidence"]["support_endpoints"] == [80., 130.]
+    solves = out["evidence"]["solves"]
+    assert len(solves) == 2
+    assert all(r["termination"] == "optimal" and r["parity"]["passed"] for r in solves)
+    assert solves[1]["objective"] == pytest.approx(count)
+    # The same instance may be reused after a different eligible book.
+    empty = {**context, "legs": {role: [] for role in context["legs"]}}
+    assert node.run(None, {"context": empty})["decision"]["status"] == "no_trade"
+    assert node.run(None, {"context": context})["decision"]["leg_count"] == count
+
+
+@pytest.mark.parametrize("rho", [0., .02, .25])
+def test_free_option_select_matches_all_signed_books(rho):
+    from itertools import product
+    from index_options.nodes import RobustOptionSelect
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+
+    old, context = _robust_tie_fixture(fee=.65)
+    params = {**old.params, "objective_parity_usd": 1e-5, "max_total_contracts": 1}
+    grid, masses = [80., 90., 110., 120.], [.1, .35, .4, .15]
+    context.update(grid=grid, masses=masses, rho=rho)
+    contracts = [("put", 1, 2., .1), ("call", 2, 3., .2), ("put", 2, 16., .3)]
+    params["max_total_contracts"] = len(contracts)
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    for n, (right, index, mid, half) in enumerate(contracts):
+        for role in (("LP", "SP") if right == "put" else ("LC", "SC")):
+            context["legs"][role].append(
+                dict(index=index, price=mid, haircut=half, contract_id=f"option-{n}",
+                     max_quantity=1))
+    distribution = DiscreteCDFGrid.from_masses(grid, masses)
+    scores = []
+    for signs in product((-1, 0, 1), repeat=len(contracts)):
+        credit = sum(-sign*mid-abs(sign)*half
+                     for sign, (_, _, mid, half) in zip(signs, contracts))
+        losses = [-sum(sign*(max(grid[index]-spot, 0.) if right == "put"
+                            else max(spot-grid[index], 0.))
+                       for sign, (right, index, _, _) in zip(signs, contracts))
+                  for spot in grid]
+        expected = 100*(credit-distribution.worst_expected_loss(losses, rho, 100.))
+        count = sum(abs(sign) for sign in signs)
+        scores.append((expected-.65*count, count))
+    best = max(value for value, _ in scores)
+    count = min(n for value, n in scores if value >= best-params["tie_tolerance_usd"])
+    out = RobustOptionSelect("free", params).run(None, {"context": context})
+    decision = out["decision"]
+    assert decision["robust_value_usd"] == pytest.approx(best, abs=1e-5)
+    assert decision["leg_count"] == count
+    assert len({(leg["right"], leg["strike"]) for leg in decision["legs"]}) == count
+
+
+def test_free_option_select_refuses_same_contract_roundtrip_and_reports_tail_loss():
+    from index_options.nodes import RobustOptionSelect
+
+    old, context = _robust_tie_fixture(fee=.65)
+    params = {**old.params, "objective_parity_usd": 1e-5, "max_total_contracts": 1}
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    context["legs"]["LC"] = [dict(index=2, price=.1, haircut=0., contract_id="call")]
+    context["legs"]["SC"] = [dict(index=2, price=20., haircut=0., contract_id="call")]
+    decision = RobustOptionSelect("free", params).run(None, {"context": context})["decision"]
+    assert decision["leg_count"] == 1
+    assert decision["legs"][0]["side"] == "sell"
+    assert decision["max_loss_unbounded"] is True
+    assert decision["max_loss_usd"] is None
+    # A short put's maximum loss includes the S=0 endpoint outside this grid.
+    context["legs"] = {role: [] for role in context["legs"]}
+    context["legs"]["SP"] = [dict(index=1, price=5., haircut=0., contract_id="put")]
+    decision = RobustOptionSelect("free", params).run(None, {"context": context})["decision"]
+    assert decision["max_loss_unbounded"] is False
+    assert decision["max_loss_usd"] == pytest.approx(8500.65)
+
+
+@pytest.mark.parametrize("bound,expected", [(3., True), (2.1, True), (2., False), (4., False)])
+def test_free_option_select_count_certificate_excludes_lower_integer(bound, expected):
+    from types import SimpleNamespace
+    from index_options.nodes import RobustOptionSelect
+
+    record = SimpleNamespace(termination="optimal", objective=3., bound=bound)
+    assert RobustOptionSelect._secondary_certified(record) is expected
+
+
+def _free_quote_fixture(quotes):
+    params, inputs = _cdf_quote_fixture()
+    template, settlement = inputs["chain"][0], inputs["chain"][-1]
+    inputs["chain"] = [
+        {**template, "date": day, "type": right, "strike_raw": strike,
+         "strike": strike*.25, "bid": bid*.25, "ask": ask*.25,
+         "bid_size": 1, "ask_size": 1}
+        for day in ("2019-01-02", "2019-01-03")
+        for right, strike, bid, ask in quotes] + [settlement]
+    params["rho"] = .001
+    params["solver"]["max_total_contracts"] = max(len(quotes), 1)
+    return params, inputs
+
+
+@pytest.mark.parametrize("quotes,expected_sides,pnl", [
+    ([("put", 110., 3., 3.1)], [["put", 1]], 689.35),
+    ([("put", 100., 1., 1.1), ("call", 100., 1., 1.1)],
+     [["put", 1], ["call", 1]], -221.30),
+])
+def test_free_option_bridge_books_itm_and_same_strike_mixed_legs(quotes, expected_sides, pnl):
+    from index_options.nodes import CDFQuoteOptionSelect
+    from dskit.pipeline.libs.option_ledger import OptionStructureLedger
+
+    params, inputs = _free_quote_fixture(quotes)
+    out = CDFQuoteOptionSelect("free", params).run(None, inputs)
+    assert len(out["orders"]) == 1
+    order = out["orders"][0]
+    assert out["structures"][order["structure"]] == expected_sides
+    assert out["decisions"][0]["leg_count"] == len(expected_sides)
+    ledger = OptionStructureLedger("ledger", {
+        "chain_fields": {k: k for k in ("symbol", "date", "expiration", "strike",
+                                        "right", "bid", "ask", "underlying")},
+        "order_fields": {k: k for k in ("date", "symbol", "expiration", "strikes", "structure")},
+        "structures": out["structures"], "multiplier": 100, "fee_per_contract": .65,
+        "fill": "nbbo", "close_rule": "expiry"})
+    booked = ledger.run(None, {"chain": out["ledger_chain"], "orders": out["orders"]})
+    assert booked["trades"][0]["status"] == "closed"
+    assert booked["trades"][0]["pnl_usd"] == pytest.approx(pnl)
+    assert booked["summary"]["orders_opened"] == 1
+    assert booked["trades"][0]["option_strategy"] == out["decisions"][0]["option_strategy"]
+    assert booked["summary"]["strategy_groups"][0]["closed_option_pnl_usd"] == pytest.approx(pnl)
+
+
+def test_free_option_bridge_does_not_retry_an_unfilled_week():
+    from index_options.nodes import CDFQuoteOptionSelect
+
+    params, inputs = _free_quote_fixture([("put", 100., 1., 1.1), ("call", 100., 1., 1.1)])
+    inputs["forecasts"].append({**inputs["forecasts"][0], "quote_date": "2019-01-03"})
+    inputs["contexts"].append({**inputs["contexts"][0], "quote_date": "2019-01-03"})
+    inputs["chain"].extend([{**row, "date": "2019-01-04"} for row in inputs["chain"]
+                            if row["date"] == "2019-01-02"])
+    inputs["bars"].append({"symbol": "SYN", "date": "2019-01-04", "close": 25.})
+    inputs["chain"] = [row for row in inputs["chain"]
+                       if not (row["date"] == "2019-01-03" and row["type"] == "call")]
+    out = CDFQuoteOptionSelect("free", params).run(None, inputs)
+    assert len(out["decisions"]) == 1
+    assert out["decisions"][0]["quote_date"] == "2019-01-02"
+    assert out["decisions"][0]["status"] == "unfilled"
+    assert out["orders"] == []
+    assert out["structures"] == {}
+
+
+def test_free_option_bridge_locked_quote_and_protected_intake():
+    from index_options.nodes import CDFQuoteOptionSelect
+
+    params, inputs = _free_quote_fixture([("put", 100., 1., 1.)])
+    out = CDFQuoteOptionSelect("free", params).run(None, inputs)
+    assert out["orders"] == []
+    assert out["summary"]["refused"]["insufficient_eligible_legs"] == 1
+    inputs["bars"].append({"symbol": "SYN", "date": "2024-01-02", "close": 25.})
+    with pytest.raises(ValueError, match="protected"):
+        CDFQuoteOptionSelect("free", params).run(None, inputs)
+
+
+@pytest.mark.parametrize("first_outcome", ["no_trade", "refused"])
+def test_free_option_bridge_consumes_week_after_cash_or_refusal(first_outcome):
+    from index_options.nodes import CDFQuoteOptionSelect
+
+    params, inputs = _free_quote_fixture([("put", 100., 10., 10.1)])
+    inputs["forecasts"].append({**inputs["forecasts"][0], "quote_date": "2019-01-03"})
+    inputs["contexts"].append({**inputs["contexts"][0], "quote_date": "2019-01-03"})
+    if first_outcome == "no_trade":
+        params["rho"] = 1.
+    else:
+        for row in inputs["chain"]:
+            if row["date"] == "2019-01-02":
+                row["bid"] = row["ask"]
+    out = CDFQuoteOptionSelect("free", params).run(None, inputs)
+    assert out["orders"] == []
+    assert len(out["decisions"]) == (1 if first_outcome == "no_trade" else 0)
+    if out["decisions"]:
+        assert out["decisions"][0]["status"] == "no_trade"
+        assert out["summary"]["strategy_groups"][0]["name"] == "cash"
+        assert out["summary"]["strategy_groups"][0]["cash"] == 1
+    else:
+        assert out["summary"]["strategy_groups"] == []
+        assert len(out["skips"]) == 1
+        assert out["skips"][0]["quote_date"] == "2019-01-02"
+
+
+@pytest.mark.parametrize("budget,masses,expected", [
+    (1, [.6, .4], {("put", "buy"): 1}),
+    (3, [.6, .4], {("put", "buy"): 2, ("call", "buy"): 1}),
+    (3, [.8, .2], {("put", "buy"): 3}),
+])
+def test_free_option_integer_quantity_and_distribution(budget, masses, expected):
+    from index_options.nodes import RobustOptionSelect
+
+    old, context = _robust_tie_fixture(fee=.65)
+    params = {**old.params, "objective_parity_usd": 1e-5,
+              "max_total_contracts": budget}
+    assert RobustOptionSelect.validate_params(params) == []
+    context.update(grid=[80., 120.], masses=masses, rho=.05)
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    context["legs"]["LP"] = [dict(index=1, price=1., haircut=.1, contract_id="put")]
+    context["legs"]["LC"] = [dict(index=0, price=1., haircut=.1, contract_id="call")]
+    out = RobustOptionSelect("free", params).run(None, {"context": context})
+    decision = out["decision"]
+    quantities = {(leg["right"], leg["side"]): leg["quantity"] for leg in decision["legs"]}
+    assert quantities == expected
+    assert decision["contract_count"] == budget
+    assert sum(leg["fee_usd"] for leg in decision["legs"]) == pytest.approx(.65*budget)
+    assert all(c["parity"]["passed"] for c in out["evidence"]["solves"])
+    if budget == 3 and masses == [.6, .4]:
+        assert decision["robust_value_usd"] == pytest.approx(5568.05)
+        assert decision["leg_count"] == 2
+
+
+@pytest.mark.parametrize("budget", [None, 0, -1, True, 2.5, "3", float("inf")])
+def test_free_option_integer_budget_requires_explicit_positive_integer(budget):
+    from index_options.nodes import RobustOptionSelect, CDFQuoteOptionSelect
+
+    old, _ = _robust_tie_fixture()
+    solver = {**old.params}
+    if budget is not None:
+        solver["max_total_contracts"] = budget
+    with pytest.raises(ValueError, match="max_total_contracts"):
+        RobustOptionSelect("free", solver)
+    params, _ = _free_quote_fixture([("put", 100., 1., 1.1)])
+    params["solver"] = solver
+    with pytest.raises(ValueError, match="max_total_contracts"):
+        CDFQuoteOptionSelect("free", params)
+
+
+@pytest.mark.parametrize("capacity", [None, 0, -1, True, 1.5, "3", float("inf")])
+def test_free_option_integer_capacity_refuses_invalid_values(capacity):
+    from index_options.nodes import RobustOptionSelect
+
+    old, context = _robust_tie_fixture()
+    params = {**old.params, "max_total_contracts": 3}
+    context["legs"]["LP"][0]["max_quantity"] = capacity
+    with pytest.raises(ValueError, match="max_quantity"):
+        RobustOptionSelect("free", params).run(None, {"context": context})
+
+
+@pytest.mark.parametrize("rho", [0., .02, .25])
+def test_free_option_integer_oracle_with_asymmetric_capacities(rho):
+    from itertools import product
+    from index_options.nodes import RobustOptionSelect
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+
+    old, context = _robust_tie_fixture(fee=.65)
+    params = {**old.params, "max_total_contracts": 4, "objective_parity_usd": 1e-5}
+    grid, masses = [80., 90., 110., 120.], [.1, .35, .4, .15]
+    context.update(grid=grid, masses=masses, rho=rho)
+    # right, strike-index, mid, spread-half, sell capacity, buy capacity
+    contracts = [("put", 1, 2., .1, 3, 2), ("call", 2, 3., .2, 2, 3),
+                 ("put", 2, 16., .3, 2, 1)]
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    for n, (right, index, mid, half, sell_cap, buy_cap) in enumerate(contracts):
+        for role, capacity in zip(("LP", "SP") if right == "put" else ("LC", "SC"),
+                                  (buy_cap, sell_cap)):
+            context["legs"][role].append(dict(index=index, price=mid, haircut=half,
+                                              contract_id=f"option-{n}", max_quantity=capacity))
+    distribution = DiscreteCDFGrid.from_masses(grid, masses)
+    scores = []
+    for quantities in product(*(range(-c[4], c[5]+1) for c in contracts)):
+        count = sum(abs(q) for q in quantities)
+        if count > 4:
+            continue
+        credit = sum(-q*c[2]-abs(q)*c[3] for q, c in zip(quantities, contracts))
+        losses = [-sum(q*(max(grid[c[1]]-spot, 0.) if c[0] == "put"
+                          else max(spot-grid[c[1]], 0.))
+                       for q, c in zip(quantities, contracts)) for spot in grid]
+        expected = 100*(credit-distribution.worst_expected_loss(losses, rho, 100.))-.65*count
+        scores.append((expected, count))
+    best = max(v for v, _ in scores)
+    count = min(n for v, n in scores if v >= best-params["tie_tolerance_usd"])
+    out = RobustOptionSelect("free", params).run(None, {"context": context})
+    decision = out["decision"]
+    assert decision["robust_value_usd"] == pytest.approx(best, abs=1e-5)
+    assert decision["contract_count"] == count
+    assert out["evidence"]["solves"][1]["objective"] == pytest.approx(count)
+    assert all(c["parity"]["passed"] for c in out["evidence"]["solves"])
+
+
+@pytest.mark.parametrize("quotes,depths,fill_market,qty,credit,fill_credit,stress,pnl", [
+    ([("put", 110., 3., 3.1)], (1, 2), (3.2, 3.4), 2, -620., -680., 10., 1318.70),
+    ([("put", 90., 3., 3.1)], (3, 1), (2.8, 2.9), 3, 900., 840., 7.5, 838.05),
+])
+def test_free_option_integer_bridge_depth_costs_and_ledger(
+        quotes, depths, fill_market, qty, credit, fill_credit, stress, pnl):
+    from index_options.nodes import CDFQuoteOptionSelect
+    from dskit.pipeline.libs.option_ledger import OptionStructureLedger
+
+    params, inputs = _free_quote_fixture(quotes)
+    params["solver"]["max_total_contracts"] = 5
+    for row in inputs["chain"]:
+        row["bid_size"], row["ask_size"] = depths
+        if row["date"] == "2019-01-03":
+            row["bid"], row["ask"] = [v*.25 for v in fill_market]
+    out = CDFQuoteOptionSelect("free", params).run(None, inputs)
+    decision = out["decisions"][0]
+    assert decision["status"] == "trade"
+    assert decision["contract_count"] == qty
+    assert decision["leg_count"] == 1
+    assert decision["legs"][0]["quantity"] == qty
+    assert decision["legs"][0]["fee_usd"] == pytest.approx(qty*.65)
+    assert decision["decision_credit_usd"] == pytest.approx(credit)
+    assert decision["fill_credit_usd"] == pytest.approx(fill_credit)
+    assert decision["slippage_usd"] == pytest.approx(credit-fill_credit)
+    assert out["stress_extra_cost_usd"] == pytest.approx([stress])
+    definition = out["structures"][out["orders"][0]["structure"]]
+    assert definition == [["put", qty if credit < 0 else -qty]]
+    ledger = OptionStructureLedger("ledger", {
+        "chain_fields": {k: k for k in ("symbol", "date", "expiration", "strike",
+                                        "right", "bid", "ask", "underlying")},
+        "order_fields": {k: k for k in ("date", "symbol", "expiration", "strikes", "structure")},
+        "structures": out["structures"], "multiplier": 100, "fee_per_contract": .65,
+        "fill": "nbbo", "close_rule": "expiry"})
+    booked = ledger.run(None, {"chain": out["ledger_chain"], "orders": out["orders"]})
+    trade = booked["trades"][0]
+    assert trade["pnl_usd"] == pytest.approx(pnl)
+    assert trade["open_fees_usd"] == pytest.approx(qty*.65)
+    expected_risk = -credit+qty*.65 if credit < 0 else 90*100*qty-credit+qty*.65
+    assert decision["max_loss_usd"] == pytest.approx(expected_risk)
+    assert trade["max_loss_usd"] == pytest.approx(expected_risk+credit-fill_credit)
+    # Different budgets have distinct decisions, even when depth binds the same book.
+    params["solver"]["max_total_contracts"] = 6
+    changed = CDFQuoteOptionSelect("free", params).run(None, inputs)
+    assert changed["decisions"][0]["decision_id"] != decision["decision_id"]
+
+
+@pytest.mark.parametrize("bad_side", ["buy", "sell"])
+def test_free_option_integer_fill_capacity_freezes_whole_book(bad_side):
+    from index_options.nodes import CDFQuoteOptionSelect
+
+    quotes = ([("put", 100., 1., 1.1), ("call", 100., 1., 1.1)] if bad_side == "buy"
+              else [("put", 90., 3., 3.1), ("call", 110., 3., 3.1)])
+    params, inputs = _free_quote_fixture(quotes)
+    params["solver"]["max_total_contracts"] = 5
+    side_field = "ask_size" if bad_side == "buy" else "bid_size"
+    for row in inputs["chain"]:
+        row[side_field] = 2 if row["type"] == "put" else 3
+        if row["date"] == "2019-01-03" and row["type"] == "call":
+            row[side_field] = 2
+    out = CDFQuoteOptionSelect("free", params).run(None, inputs)
+    decision = out["decisions"][0]
+    assert decision["status"] == "unfilled"
+    assert decision["unfilled_reason"] == "insufficient_fill_size"
+    assert [(leg["right"], leg["side"], leg["quantity"]) for leg in decision["legs"]] == [
+        ("put", bad_side, 2), ("call", bad_side, 3)]
+    assert all(out[key] == [] for key in ("orders", "ledger_chain", "stress_extra_cost_usd"))
+    assert out["structures"] == {}
+
+
+@pytest.mark.parametrize("positions,message", [
+    ([("LC", 2, 1.5)], "nonintegral"),
+    ([("LP", 1, 3)], "capacity"),
+    ([("LP", 1, 2), ("LC", 2, 2)], "gross contract budget"),
+    ([("LP", 1, 1), ("SP", 1, 1)], "both sides"),
+    ([("SC", 0, 1)], "ineligible"),
+])
+def test_free_option_integer_extract_refuses_invalid_incumbents(positions, message):
+    from index_options.nodes import RobustOptionSelect
+
+    old, context = _robust_tie_fixture()
+    params = {**old.params, "max_total_contracts": 3}
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    for role, index, cap in (("LP", 1, 2), ("SP", 1, 2), ("LC", 2, 3)):
+        context["legs"][role] = [dict(index=index, price=1., haircut=.1,
+                                      contract_id="call" if role == "LC" else "put",
+                                      max_quantity=cap)]
+    node = RobustOptionSelect("free", params)
+    model = node.build_model({"context": context}, params)
+    for variable in model.y.values():
+        variable.set_value(0)
+    model.z.set_value(1)
+    for role, index, qty in positions:
+        model.y[role, index].set_value(qty, skip_validation=True)
+    with pytest.raises(ValueError, match=message):
+        node._selected_legs(model)
+
+
+def test_free_option_integer_cash_tie_and_roundtrip_restriction():
+    from index_options.nodes import RobustOptionSelect
+
+    old, context = _robust_tie_fixture(fee=0.)
+    params = {**old.params, "max_total_contracts": 3, "objective_parity_usd": 1e-5}
+    context.update(masses=[0., 0., 0., 1.], rho=0.)
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    context["legs"]["LC"] = [dict(index=2, price=10., haircut=0., contract_id="call")]
+    node = RobustOptionSelect("free", params)
+    out = node.run(None, {"context": context})
+    assert out["decision"]["status"] == "no_trade"
+    assert out["decision"]["contract_count"] == 0
+    # Opposite-side prices deliberately create a tempting synthetic roundtrip.
+    # Both units are separately profitable, but only one direction is permitted.
+    context["rho"] = .05
+    context["legs"]["LC"][0].update(price=.1, max_quantity=1)
+    context["legs"]["SC"] = [dict(index=2, price=20., haircut=0., contract_id="call",
+                                 max_quantity=1)]
+    out = node.run(None, {"context": context})
+    assert out["decision"]["contract_count"] == 1
+    assert len(out["decision"]["legs"]) == 1
+    assert out["decision"]["legs"][0]["side"] == "sell"
+    assert out["decision"]["max_loss_unbounded"] is True
+
+
+def test_free_option_strategy_label_follows_selected_quantity():
+    from index_options.nodes import CDFQuoteOptionSelect
+
+    params, inputs = _free_quote_fixture([("put", 90., 3., 3.1)])
+    params["solver"]["max_total_contracts"] = 10
+    for row in inputs["chain"]:
+        row["bid_size"] = 10
+    out = CDFQuoteOptionSelect("free", params).run(None, inputs)
+    decision = out["decisions"][0]
+    assert "option_strategy" in decision
+    label = decision["option_strategy"]
+    assert (label["name"], label["family"], label["units"]) == ("short_put", "single_option", 10)
+    assert label["legs"] == [{"right": "put", "strike": 90., "quantity": -10, "ratio": -1}]
+    assert label["net_contract_count"] == label["input_contract_count"] == 10
+    assert out["summary"]["strategy_groups"][0]["selected_contracts"] == 10
+
+
+def test_free_option_strategy_groups_distinguish_fills_and_unfilled_selections():
+    from index_options.nodes import CDFQuoteOptionSelect
+
+    params, inputs = _free_quote_fixture([("put", 90., 3., 3.1)])
+    node = CDFQuoteOptionSelect("free", params)
+    filled = node.run(None, inputs)
+    decision = filled["decisions"][0]
+    (group,) = filled["summary"]["strategy_groups"]
+    assert group == {
+        "name": "short_put", "family": "single_option", "variant": None,
+        "selected": 1, "filled": 1, "unfilled": 0, "cash": 0, "selected_contracts": 1,
+        "selected_robust_value_usd": pytest.approx(decision["robust_value_usd"]),
+        "filled_robust_value_usd": pytest.approx(decision["robust_value_usd"])}
+    for row in inputs["chain"]:
+        if row["date"] == "2019-01-03":
+            row["bid_size"] = 0
+    unfilled = node.run(None, inputs)
+    unf = unfilled["decisions"][0]
+    assert unf["status"] == "unfilled" and unf["option_strategy"] == decision["option_strategy"]
+    assert unf["decision_id"] == decision["decision_id"]
+    group = unfilled["summary"]["strategy_groups"][0]
+    assert (group["selected"], group["filled"], group["unfilled"], group["cash"]) == (1, 0, 1, 0)
+    assert group["selected_robust_value_usd"] == pytest.approx(decision["robust_value_usd"])
+    assert group["filled_robust_value_usd"] == 0.
+
+
+def test_free_option_strategy_cash_is_labeled_but_uncertified_skips_are_not_grouped():
+    from index_options.nodes import RobustOptionSelect, CDFQuoteOptionSelect
+
+    old, context = _robust_tie_fixture(fee=0.)
+    params = {**old.params, "max_total_contracts": 3, "objective_parity_usd": 1e-5}
+    context.update(masses=[0., 0., 0., 1.], rho=0.)
+    context["legs"] = {role: [] for role in ("LP", "SP", "SC", "LC")}
+    context["legs"]["LC"] = [dict(index=2, price=10., haircut=0., contract_id="call")]
+    decision = RobustOptionSelect("free", params).run(None, {"context": context})["decision"]
+    assert decision["option_strategy"]["name"] == "cash"
+    assert decision["option_strategy"]["units"] == 0
+    groups = CDFQuoteOptionSelect._strategy_groups([decision, {"status": "skipped"}])
+    assert len(groups) == 1
+    assert (groups[0]["selected"], groups[0]["cash"], groups[0]["selected_contracts"]) == (1, 1, 0)
+    assert groups[0]["filled"] == groups[0]["unfilled"] == 0
+    assert groups[0]["selected_robust_value_usd"] == groups[0]["filled_robust_value_usd"] == 0.
+
+
+@pytest.mark.parametrize("factor", [None, True, False, 0., -1., float("nan"), float("inf"), "0.25"])
+def test_cdf_quote_bar_basis_rejects_present_invalid_value(factor):
+    """A supplied invalid daily basis cannot silently fall back to chain data."""
+    from index_options.nodes import CDFQuoteCondorSelect
+    params, inputs = _cdf_quote_fixture()
+    inputs["bars"][0]["basis_factor"] = factor
+    with pytest.raises(ValueError, match="basis"):
+        CDFQuoteCondorSelect("basis", params)._market(inputs)
+
+
+def test_cdf_quote_bar_basis_reconciles_and_supplies_quote_free_day():
+    """Observed daily basis survives the absence of eligible expiry-day quotes."""
+    import copy
+    from index_options.nodes import CDFQuoteCondorSelect
+    params, inputs = _cdf_quote_fixture()
+    node = CDFQuoteCondorSelect("basis", params)
+    legacy = node._market(inputs)
+    for row in inputs["bars"]:
+        row["basis_factor"] = .25
+    before = copy.deepcopy(inputs)
+    assert node._market(inputs) == legacy
+    assert inputs == before
+    inputs["chain"] = [r for r in inputs["chain"] if r["date"] != "2019-02-01"]
+    quotes, factors, bars = node._market(inputs)
+    assert factors["2019-02-01"] == .25
+    assert bars["2019-02-01"] == 25.
+    assert all(key[0] != "2019-02-01" for key in quotes)
+    inputs["bars"][0]["basis_factor"] = .5
+    with pytest.raises(ValueError, match="basis"):
+        node._market(inputs)

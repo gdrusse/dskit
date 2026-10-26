@@ -290,6 +290,17 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+ADR-0276 adds `option_structures.classify_option_strategy(legs, strikes)` for
+post-solve labels of a same-underlying, same-expiry option book. It nets exact
+right/strike duplicates, retains actual and normalized quantities, and recognizes
+common single options, verticals, ratios, straddles/strangles, butterflies,
+condors, iron/reverse iron structures, synthetic forwards and boxes. Other books
+are `custom`; cash differs from an executed offsetting book. `OptionStructureLedger`
+adds `option_strategy` to trades and `strategy_groups` to its summary: lifecycle
+and gross-contract counts plus closed-only dollar P&L, fees and option win rates.
+Labels describe option anatomy only, including when the ledger carries a stock
+hedge. Selection, structure identities and accounting rules remain independent.
+
 ADR-0275 adds, by import path: `libs/chain_greeks.py:ChainDayDeltaSurface` (per
 symbol-day the expiry nearest a declared target, the vendor IV linearly
 interpolated in absolute vendor delta at declared delta points per right, the
@@ -1043,7 +1054,8 @@ dskit/pipeline/
 │                      reprices a price, None outside the model's range (ADR-0265)
 ├── option_structures.py leg-set algebra graduated from the index_options child (ADR-0265):
 │                      structure_credit (shorts at the bid, longs at the ask), structure_payoff,
-│                      structure_max_loss, leg_intrinsic, quote_defect (coded quote refusals); names no structure
+│                      structure_max_loss, leg_intrinsic, quote_defect (coded quote refusals);
+│                      classify_option_strategy (post-solve anatomy/quantity labels, ADR-0276)
 ├── false_signal.py    per-signal false-signal probability (ADR-0152):
 │                      SignalEvidence + FalseSignalEstimator ->
 │                      pi_hat and a widened pi_widened (NOT a bound);
@@ -1129,3 +1141,7 @@ ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
 ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and
 content-addressed options, labels, curves and panel artifacts. Provider trade
 closes never masquerade as quotes; future/unverified outcomes remain null.
+
+ADR-0276 adds `libs.pyomo.TransportPortfolioSolve`: joint integer actions with marginal W1 objectives, exclusive pairs, linear reserve epigraphs and shared caps; independent primal checks and a single profit solve. `libs.option_ledger.FundedOptionAccount` tracks recurring deposits, settled funding and atomic reserved-book admission. Both consume prepared data; neither reads market sources or places orders. Provably cost-bearing opposite pairs omit redundant exclusion binaries only under exact coefficient dominance checks. Approximate incumbents disclose matched-quantity cleanup and profit improvement; original solver records and independent feasibility/value certificates remain available. The portfolio uses the opt-in sparse, unbanded `WassersteinDual.attach(..., sparse=True)` representation with unrestricted adjacent potentials; default/banded attachment remains unchanged.
+
+TransportPortfolioSolve offers feasible cash as a warm start, then returns one independently certified profit solution. It never runs a contract-count objective. Its exact final absolute/relative gap check is separate from numerical parity tolerance; unsupported warm-start backends retain cold solves.

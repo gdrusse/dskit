@@ -1457,3 +1457,424 @@ def test_account_refuses_a_non_iso_decision_date(tmp_path):
     bad = _sel("a", day="2025-2-4")
     with pytest.raises(ValueError, match="quote_date|date"):
         ledger_studies.SavedReplay(_replay(tmp_path, [bad], [_out("a")]))
+
+
+def _weekly_portfolio_fixture():
+    """Two independent expiries exercise overlapping weekly funded books."""
+    import math
+    from datetime import date, timedelta
+
+    days = []
+    day = date(2019, 1, 2)
+    while day < date(2019, 2, 9):
+        if day.weekday() < 5:
+            days.append(day.isoformat())
+        day += timedelta(days=1)
+    labels = [str(i) for i in range(13)]
+    z = [-3+.5*i for i in range(13)]
+    bridge = {"symbol": "X", "start": days[0], "end_before": "2019-02-09",
+        "protected_end_before": "2020-01-01", "fold": 1, "require_fitted": False,
+        "z_grid": z, "grid_labels": labels, "target_dte": 30, "dte_tolerance": 2,
+        "max_abs_z": 2.5, "max_relative_spread": .5, "min_quote_size": 1,
+        "stress_spread_fraction": .25, "rho": 0.,
+        "projection": {"quadrature_tolerance": 1e-8, "payoff_tolerance": 1e-6,
+                       "cdf_tolerance": None, "w1_tolerance": None, "integration_limit": 100},
+        "solver": {"multiplier": 100, "fee_per_contract_usd": .65,
+                   "tie_tolerance_usd": 1e-6, "max_absolute_gap_usd": 1e-7,
+                   "max_relative_gap": 1e-8, "objective_parity_usd": 1e-5,
+                   "max_total_contracts": 10}}
+    forecasts, contexts, quotes = [], [], []
+    for decision, expiry in [("2019-01-02", "2019-02-01"), ("2019-01-07", "2019-02-08")]:
+        identity = {"symbol": "X", "quote_date": decision, "expiry": expiry,
+                    "fold": 1, "band": "val"}
+        forecasts.append({**identity, "fitted": False,
+            **{"method_cdf_"+label: .5*(1+math.erf(v/2**.5)) for label, v in zip(labels, z)}})
+        contexts.append({**identity, "spot": 100., "reference_scale": .02, "settlement_date": expiry})
+        for day in days:
+            if decision <= day <= expiry:
+                for strike, bid, ask in [(90., .10, .12), (100., 4., 4.2)]:
+                    quotes.append({"symbol": "X", "date": day, "expiration": expiry,
+                        "type": "put", "strike_raw": strike, "strike": strike,
+                        "bid": bid, "ask": ask, "bid_size": 10, "ask_size": 10,
+                        "basis_factor": 1., "underlying_price": 100.})
+    inputs = {"X": {"forecasts": forecasts, "contexts": contexts, "chain": quotes,
+                    "bars": [{"symbol": "X", "date": d, "close": 100.} for d in days]}}
+    params = {"symbols": ["X"], "bridge": bridge, "initial": 10000., "deposit": 1000.,
+              "deposit_every_days": 14, "weekly_fraction": .25, "correlation_lookback": 60,
+              "correlation_min_pairs": 20, "correlation_threshold": .6,
+              "solver": {"absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+                  "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1}},
+              "methods": [{"id": "nominal", "rho": 0., "portfolio_fraction": 1.,
+                           "name_fraction": 1., "component_fraction": None}]}
+    return params, inputs
+
+
+def test_weekly_portfolio_full_pipeline_and_future_isolation():
+    """Weekly selection includes far strikes and keeps futures out of first decisions."""
+    import copy
+
+    assert hasattr(ledger_studies, "WeeklyOptionPortfolioStudy"), "missing weekly portfolio study"
+    params, inputs = _weekly_portfolio_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study.run()["methods"][0]
+    assert result["contributions"] == 12000.
+    assert len(result["trades"]) == 2
+    assert result["final_equity"] == pytest.approx(12000.+result["pnl"])
+    assert result["peak_open_books"] == 2
+    assert result["unbounded_books"] == 0
+    assert any(leg["strike"] == 90. for b in result["trades"] for leg in b["legs"])
+    changed = copy.deepcopy(inputs)
+    for row in changed["X"]["chain"]:
+        if row["date"] > "2019-01-02":
+            row["bid_size"] = row["ask_size"] = 1
+    second = ledger_studies.WeeklyOptionPortfolioStudy(params, changed).run()["methods"][0]
+    assert second["decisions"][0]["selection"] == result["decisions"][0]["selection"]
+    assert second["unfilled"] > 0
+    assert len(second["trades"]) == 1
+    assert second["rejected"][0]["decision_date"] == "2019-01-02"
+
+
+
+@pytest.mark.parametrize("source,field,value", [
+    ("forecasts", "quote_date", "2020-01-02"),
+    ("forecasts", "expiry", "2020-01-02"),
+    ("contexts", "settlement_date", "2020-01-02"),
+    ("chain", "date", "2020-01-02"),
+    ("chain", "expiration", "2020-01-02"),
+    ("bars", "date", "2020-01-02"),
+    ("bars", "date", "2018-12-31"),
+])
+def test_weekly_portfolio_refuses_protected_intake(source, field, value):
+    """The study refuses protected observations before any optimization."""
+    params, inputs = _weekly_portfolio_fixture()
+    inputs["X"][source][0][field] = value
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+
+def test_weekly_portfolio_correlations_lag_returns_and_cash_ties():
+    """Later prices cannot change earlier components; negative EV permits cash."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    params["symbols"] = ["X", "Y"]
+    inputs["Y"] = copy.deepcopy(inputs["X"])
+    for rows in inputs["Y"].values():
+        for row in rows:
+            row["symbol"] = "Y"
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    early = study._components("2019-01-07")
+    assert early["groups"] == [["X", "Y"]]
+    assert early["observations"] == 2
+    for row in inputs["Y"]["bars"]:
+        if row["date"] >= "2019-01-07":
+            row["close"] *= 1.5
+    later = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    assert later._components("2019-01-07") == early
+
+
+def test_weekly_portfolio_fill_repricing_refuses_shared_cap():
+    """Repricing can refuse all survivors without resizing the fixed order."""
+    params, inputs = _weekly_portfolio_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study.run()["methods"][0]
+    first_count = result["decisions"][0]["books"][0]["contracts"]
+    for row in inputs["X"]["chain"]:
+        if row["date"] == "2019-01-03":
+            if row["strike_raw"] == 100.:
+                row["bid"], row["ask"] = .02, .03
+    changed = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    assert changed["decisions"][0]["books"][0]["contracts"] == first_count
+    assert changed["rejected"][0]["reason"] == "repriced_shared_cap"
+    assert all(t["decision_date"] != "2019-01-02" for t in changed["trades"])
+
+
+
+def test_weekly_portfolio_per_book_fill_and_component_caps():
+    """One failed name leaves the other frozen book intact within joint caps."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    params["symbols"] = ["X", "Y"]
+    params["methods"][0].update(name_fraction=.1, component_fraction=.15)
+    inputs["Y"] = copy.deepcopy(inputs["X"])
+    for rows in inputs["Y"].values():
+        for row in rows:
+            row["symbol"] = "Y"
+    inputs["X"]["chain"] = [r for r in inputs["X"]["chain"] if r["date"] != "2019-01-03"]
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    first = result["decisions"][0]
+    assert {b["symbol"] for b in first["books"]} == {"X", "Y"}
+    assert any(b["symbol"] == "Y" and b["decision_date"] == "2019-01-02" for b in result["trades"])
+    assert any(b["symbol"] == "X" and b["decision_date"] == "2019-01-02" for b in result["rejected"])
+    assert all(s["reserve"] <= .15*s["funding"]+.001 for s in result["curve"])
+
+
+@pytest.mark.parametrize("expiry_factor", [1., None, 2.])
+def test_weekly_portfolio_expiry_basis_does_not_require_option_quote(expiry_factor):
+    """Only observed unchanged daily basis permits quote-free expiry settlement."""
+    import copy
+    params, inputs = _weekly_portfolio_fixture()
+    expected = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    for row in inputs["X"]["bars"]:
+        row["basis_factor"] = 1.
+        if row["date"] == "2019-02-08":
+            if expiry_factor is None:
+                del row["basis_factor"]
+            else:
+                row["basis_factor"] = expiry_factor
+    inputs["X"]["chain"] = [r for r in inputs["X"]["chain"] if r["date"] != "2019-02-08"]
+    before = copy.deepcopy(inputs)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    if expiry_factor == 1.:
+        actual = study.run()["methods"][0]
+        assert actual["trades"] == expected["trades"]
+        assert actual["pnl"] == expected["pnl"]
+        assert actual["contracts"] == expected["contracts"]
+        assert actual["final_equity"] == expected["final_equity"]
+        assert actual["ledger_summary"]["totals"]["pnl_usd"] == expected["ledger_summary"]["totals"]["pnl_usd"]
+        assert not any(key[0] == "2019-02-08" for key in study._quotes["X"])
+    else:
+        with pytest.raises(ValueError, match="unsettleable"):
+            study.run()
+    assert inputs == before
+
+
+@pytest.mark.parametrize("entry", ["constructor", "run", "method"])
+def test_weekly_portfolio_validates_solver_policy_before_no_solve(entry, monkeypatch):
+    """No-candidate paths cannot bless an invalid declared solver policy."""
+    params, inputs = _weekly_portfolio_fixture()
+    inputs["X"]["forecasts"] = []
+    if entry == "constructor":
+        params["solver"]["typo_count_policy"] = "bounded"
+        monkeypatch.setattr(ledger_studies._AllQuotedOptionContext, "_bounded",
+            lambda *args: (_ for _ in ()).throw(AssertionError("intake before policy validation")))
+        with pytest.raises(ValueError, match="typo_count_policy"):
+            ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    else:
+        study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+        study.params["solver"]["typo_count_policy"] = "bounded"
+        monkeypatch.setattr(study, "_prepare",
+            lambda *args: (_ for _ in ()).throw(AssertionError("work before policy validation")))
+        with pytest.raises(ValueError, match="typo_count_policy"):
+            study.run() if entry == "run" else study._method(params["methods"][0], None)
+
+
+@pytest.mark.parametrize("mutation", [
+    "genuine", "selected_right", "selected_strike", "selected_sign",
+    "quantities", "selected_price", "selected_reserve", "selected_strategy",
+    "fill_date", "fill_quantity", "fill_price", "fill_credit", "fill_fees",
+    "stress_extra", "settlement_pnl", "close_date", "deposit_date",
+    "deposit_amount", "curve_cash", "curve_funding", "curve_equity",
+    "curve_open_ids", "curve_reserve", "curve_nav", "curve_drawdown",
+    "curve_carried", "ledger_summary", "native_gap", "cleanup_pairs",
+])
+def test_weekly_portfolio_record_replay_reconciles_full_outcome(mutation, monkeypatch):
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    from index_options.ledger_studies import WeeklyOptionPortfolioStudy
+
+    params, inputs = _weekly_portfolio_fixture()
+    study = WeeklyOptionPortfolioStudy(params, inputs)
+    original = study._method(params["methods"][0], None)
+    recorded = copy.deepcopy(original)
+    decision = recorded["decisions"][0]
+    book = decision["books"][0]
+    trade = recorded["trades"][0]
+    curve = recorded["curve"][1]
+    if mutation.startswith("selected_"):
+        field = mutation.removeprefix("selected_")
+        if field in ("right", "strike", "sign", "price"):
+            value = {"right": "call", "strike": 91., "sign": -1, "price": 17.}[field]
+            book["legs"][0][field] = value
+            trade["legs"][0][field] = value
+        elif field == "reserve":
+            book[field] += 1
+            decision["selection"]["reserves"][0] += 1
+        else:
+            book["strategy"]["name"] = "invented"
+            trade["strategy"]["name"] = "invented"
+    elif mutation == "quantities":
+        decision["selection"]["quantities"][0] = [0, 4, 4, 0]
+    elif mutation == "fill_date":
+        trade["fill_date"] = "2019-01-04"
+    elif mutation == "fill_quantity":
+        trade["legs"][0]["quantity"] += 1
+    elif mutation == "fill_price":
+        trade["legs"][0]["fill_price"] += 1
+    elif mutation in ("fill_credit", "fill_fees", "stress_extra", "settlement_pnl"):
+        field = {"fill_credit": "credit", "fill_fees": "fees",
+                 "stress_extra": "stress_extra", "settlement_pnl": "pnl"}[mutation]
+        trade[field] += 100000
+    elif mutation == "close_date":
+        trade["close_date"] = "2019-01-31"
+    elif mutation.startswith("deposit_"):
+        field = mutation.removeprefix("deposit_")
+        recorded["deposits"][0][field] = "2019-01-17" if field == "date" else 2.
+    elif mutation.startswith("curve_"):
+        field = mutation.removeprefix("curve_")
+        field = "carried_books" if field == "carried" else field
+        curve[field] = ["invented"] if field == "open_ids" else curve[field] + 1
+        if field == "nav":
+            recorded["curve"][-1]["nav"] = 2.
+            recorded["twr"] = 1.
+        if field == "drawdown":
+            curve[field] = -.99
+            recorded["max_drawdown"] = -.99
+    elif mutation == "ledger_summary":
+        recorded["ledger_summary"] = {}
+    elif mutation == "native_gap":
+        decision["certificates"][0]["gap"] = 999.
+    elif mutation == "cleanup_pairs":
+        decision["selection"]["canonicalization"]["primary"]["pairs"] = "garbage"
+    before = copy.deepcopy(recorded)
+    monkeypatch.setattr(TransportPortfolioSolve, "run",
+                        lambda *a, **k: pytest.fail("record validation must not solve an MIO"))
+    if mutation == "genuine":
+        assert study._method(params["methods"][0], None, recorded=recorded) == original
+    else:
+        with pytest.raises(ValueError):
+            study._method(params["methods"][0], None, recorded=recorded)
+    assert recorded == before
+
+
+def test_weekly_portfolio_releases_evicted_preparation_arrays(monkeypatch):
+    """Older heavy matrices become collectible without changing regenerated candidates."""
+    import copy
+    import gc
+    import weakref
+    import numpy as np
+    from dskit.pipeline.base import value_hash
+
+    params, inputs = _weekly_portfolio_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    node = study._nodes["X"]
+    prepare = node._prepare
+    calls, arrays = [], []
+
+    def tracked(*args, **kwargs):
+        prepared, projection = prepare(*args, **kwargs)
+        prepared["grid"] = np.asarray(prepared["grid"], dtype=float)
+        calls.append(args[2])
+        arrays.append(weakref.ref(prepared["grid"]))
+        return prepared, projection
+
+    def fingerprint(result):
+        groups, metadata, refusals = result
+        plain = [{**g, "grid": np.asarray(g["grid"]).tolist()} for g in groups]
+        return value_hash((plain, metadata, refusals))
+
+    monkeypatch.setattr(node, "_prepare", tracked)
+    first = study._prepare("2019-01-02")
+    expected = fingerprint(first)
+    assert study._prepare("2019-01-02") is first
+    assert calls == ["2019-01-02"]
+    prior_array = arrays[0]
+    del first
+    second = study._prepare("2019-01-07")
+    second_expected = fingerprint(copy.deepcopy(second))
+    gc.collect()
+    assert prior_array() is None, "past-week preparation matrices remain retained"
+    restored = study._prepare("2019-01-02")
+    assert fingerprint(restored) == expected
+    assert fingerprint(second) == second_expected
+    assert calls == ["2019-01-02", "2019-01-07", "2019-01-02"]
+    empty = study._prepare("2019-01-14")
+    assert empty[0] == [] and empty[1] == []
+    assert empty[2] == [{"symbol": "X", "reason": "no_eligible_forecast_expiry"}]
+    study._prepare("2019-01-02")
+    assert study._prepare("2019-01-14") == empty
+
+
+def test_weekly_portfolio_failed_preparation_preserves_cached_result(monkeypatch):
+    """An unexpected later-date error leaves the last valid preparation reusable."""
+    params, inputs = _weekly_portfolio_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    first = study._prepare("2019-01-02")
+    node = study._nodes["X"]
+    prepare = node._prepare
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("projection failure")
+
+    monkeypatch.setattr(node, "_prepare", fail)
+    with pytest.raises(RuntimeError, match="projection failure"):
+        study._prepare("2019-01-07")
+    assert study._prepare("2019-01-02") is first
+    monkeypatch.setattr(node, "_prepare", prepare)
+    assert study._prepare("2019-01-07")[1][0]["expiry"] == "2019-02-08"
+
+
+def test_weekly_portfolio_full_dte_includes_each_supported_expiry():
+    """One date offers both the 30-day and 37-day expiry to the same optimizer."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    data = inputs["X"]
+    for name in ("forecasts", "contexts"):
+        row = copy.deepcopy(data[name][1])
+        row["quote_date"] = "2019-01-02"
+        data[name].append(row)
+    data["chain"].extend(
+        {**row, "date": "2019-01-02"}
+        for row in list(data["chain"])
+        if row["date"] == "2019-01-07" and row["expiration"] == "2019-02-08"
+    )
+    narrow = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    assert [m["dte"] for m in narrow._prepare("2019-01-02")[1]] == [30]
+    wide_params = copy.deepcopy(params)
+    wide_params["bridge"]["dte_tolerance"] = 30
+    wide = ledger_studies.WeeklyOptionPortfolioStudy(wide_params, inputs)
+    groups, metadata, refusals = wide._prepare("2019-01-02")
+    assert len(groups) == 2 and refusals == []
+    assert [(m["expiry"], m["dte"]) for m in metadata] == [
+        ("2019-02-01", 30), ("2019-02-08", 37)
+    ]
+
+
+@pytest.mark.parametrize("skip_index", [0, 1])
+def test_weekly_portfolio_timeout_skips_orders_and_continues(monkeypatch, skip_index):
+    import copy
+    import json
+    from dataclasses import replace
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve, SolveRecord
+
+    params, inputs = _weekly_portfolio_fixture()
+    params["solver"].update(timeout_policy="return", absolute_gap=50.)
+    params["solver"]["solver_options"]["time_limit"] = 900
+    original = TransportPortfolioSolve.extract
+    calls = []
+    def timed(self, model, results):
+        index = len(calls)
+        calls.append(index)
+        if index == skip_index:
+            record = self.solve_record
+            bound = record.objective + 51.
+            self.solve_record = replace(record, termination="maxTimeLimit", status="aborted",
+                bound=bound, gap=SolveRecord._gap(record.objective, bound))
+        return original(self, model, results)
+    monkeypatch.setattr(TransportPortfolioSolve, "extract", timed)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    progress = []
+    result = study._method(params["methods"][0], lambda *v: progress.append(v))
+    assert len(calls) == 2 and len(progress) == len(study.weeks)
+    assert result["decisions"][skip_index]["status"] == "timeout_skipped"
+    assert result["decisions"][skip_index]["books"] == []
+    assert len(result["trades"]) == 1
+    assert result["trades"][0]["decision_date"] == study.weeks[1-skip_index]
+    assert result["contributions"] == 12000. and result["pnl"] > 0.
+    assert result["curve"][-1]["open_ids"] == []
+    assert result["final_equity"] == pytest.approx(result["contributions"]+result["pnl"])
+    monkeypatch.setattr(TransportPortfolioSolve, "run",
+        lambda *a: (_ for _ in ()).throw(AssertionError("reoptimization forbidden")))
+    saved = json.loads(json.dumps(result))
+    assert study._method(params["methods"][0], None, recorded=saved) == saved
+    for mutate in (
+        lambda r: r["decisions"][skip_index].update(status="cash"),
+        lambda r: r["decisions"][skip_index].update(books=[{}]),
+        lambda r: r["decisions"][skip_index]["selection"].update(timeout="no_incumbent"),
+        lambda r: r["decisions"][skip_index]["certificates"][0].update(termination="optimal"),
+    ):
+        bad = copy.deepcopy(saved); mutate(bad)
+        with pytest.raises(ValueError):
+            study._method(params["methods"][0], None, recorded=bad)

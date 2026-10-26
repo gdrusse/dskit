@@ -50,6 +50,7 @@ from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
 from dskit.pipeline.option_pricing import RIGHTS, black76_delta, black76_implied_vol
 from dskit.pipeline.option_structures import (
+    classify_option_strategy,
     leg_intrinsic,
     quote_defect,
     quote_defects,
@@ -60,7 +61,7 @@ from dskit.pipeline.option_structures import (
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = ["CHAIN_FIELDS", "EXIT_ZERO_BID", "FILLS", "NODE_KINDS", "ORDER_FIELDS", "REBALANCES",
-           "OptionStructureLedger"]
+           "OptionStructureLedger", "FundedOptionAccount"]
 
 NODE_KINDS = ()
 
@@ -471,6 +472,8 @@ class _Trade:
         record = {
             "order_index": o.index, "symbol": o.symbol, "structure": o.structure,
             "strikes": list(o.strikes), "expiration": o.expiration.isoformat(),
+            "option_strategy": classify_option_strategy(
+                [(right, qty*self.n) for right, qty in self.legs], o.strikes),
             "contracts": self.n, "open_date": o.opened.isoformat(), "close_date": None,
             "reason_closed": None, "status": status, "unsettled_reason": why,
             "premium_usd": self.premium, "credit_usd": credit_usd,
@@ -523,7 +526,9 @@ class OptionStructureLedger(Node):
         ``max_loss_usd`` (:func:`~dskit.pipeline.option_structures.structure_max_loss` on the
         credit net of open fees, times contracts; null with ``max_loss_unbounded`` when
         unbounded), ``marked_pnl_usd``, ``mark_days``, ``carried_days`` and ``exit_refused``. The
-        realized fields are null for a trade that is not closed.
+        realized fields are null for a trade that is not closed. Additive ``option_strategy``
+        describes the option sleeve from actual quantities, including ``contracts``; it
+        does not rename ``structure`` or include a stock hedge.
     ``marks``
         One row per trade and calendar date from the open to the close: ``phase`` (``open``,
         ``mark``, ``exit``, ``settle``), ``mark_value_usd`` (cash of closing at the mid; the
@@ -534,6 +539,10 @@ class OptionStructureLedger(Node):
         Counts: orders in and opened, ``refused_at_open`` and ``exit_refused`` and ``unsettled``
         and ``marks_carried`` by reason, ``closed`` by rule, ``open_at_end``, the hedge's
         rebalances and skips, ``totals`` over closed trades, and the chain intake census.
+        ``strategy_groups`` groups by name/variant: lifecycle counts, gross opened contracts,
+        unbounded-loss counts, and closed-only total/option P&L, fees, option wins/losses/flats,
+        mean option P&L and option win rate (null without closed trades). These are
+        descriptive dollar sums and trade counts, not risk-normalized returns.
 
     Parameters
     ----------
@@ -896,6 +905,36 @@ class OptionStructureLedger(Node):
         cut = len(prefix) + 1
         return {k[cut:]: v for k, v in sorted(tally.items()) if k.startswith(prefix + ":")}
 
+    @staticmethod
+    def _strategy_groups(trades):
+        """Group opened books by anatomy; realized aggregates use closed trades only."""
+        buckets = {}
+        for trade in trades:
+            label = trade["option_strategy"]
+            buckets.setdefault((label["name"], label["variant"] or ""), []).append(trade)
+        groups = []
+        for key in sorted(buckets):
+            rows = buckets[key]
+            label = rows[0]["option_strategy"]
+            closed = [row for row in rows if row["status"] == "closed"]
+            option_pnl = math.fsum(row["option_pnl_usd"] for row in closed)
+            wins = sum(row["option_pnl_usd"] > 0 for row in closed)
+            groups.append({
+                "name": label["name"], "family": label["family"], "variant": label["variant"],
+                "opened": len(rows), "closed": len(closed),
+                "open_at_end": sum(row["status"] == "open_at_end" for row in rows),
+                "unsettled": sum(row["status"] == "unsettled" for row in rows),
+                "gross_contracts_opened": sum(row["option_strategy"]["input_contract_count"] for row in rows),
+                "unbounded_loss_opened": sum(row["max_loss_unbounded"] for row in rows),
+                "closed_pnl_usd": math.fsum(row["pnl_usd"] for row in closed),
+                "closed_option_pnl_usd": option_pnl,
+                "closed_fees_usd": math.fsum(row["fees_usd"] for row in closed),
+                "option_wins": wins, "option_losses": sum(row["option_pnl_usd"] < 0 for row in closed),
+                "option_flats": sum(row["option_pnl_usd"] == 0 for row in closed),
+                "mean_closed_option_pnl_usd": option_pnl/len(closed) if closed else None,
+                "closed_option_win_rate": wins/len(closed) if closed else None})
+        return groups
+
     def _summary(self, n_orders, trades, marks, tally, chain):
         """Return the counted report."""
         p = self.params
@@ -915,6 +954,7 @@ class OptionStructureLedger(Node):
             "totals": {"closed_trades": len(closed),
                        "pnl_usd": math.fsum(t["pnl_usd"] for t in closed),
                        "fees_usd": math.fsum(t["fees_usd"] for t in closed)},
+            "strategy_groups": self._strategy_groups(trades),
             "chain": {"rows_in": chain.rows_in, "rows_used": chain.rows_used,
                       "dropped": dict(sorted(chain.dropped.items())),
                       "underlying_conflicts": chain.conflicts, "dates": len(chain.sorted_days)},
@@ -923,3 +963,179 @@ class OptionStructureLedger(Node):
             out["hedge"] = {"rebalances": tally["hedge_rebalances"],
                             "skipped": self._by(tally, "hedge_skipped")}
         return out
+
+class FundedOptionAccount:
+    """Track deposited funds, settled profit and reserved open option books.
+
+    Parameters
+    ----------
+    initial, deposit : float
+        Positive initial funds and nonnegative recurring cash contribution.
+    every_days : int
+        Positive calendar-day contribution interval.
+    start : str
+        ISO first account date. The first recurring deposit is one interval later.
+
+    Examples
+    --------
+    Initialize a research account; no broker or margin model is implied::
+
+        account = FundedOptionAccount(10000., 1000., 14, "2019-01-02")
+    """
+
+    def __init__(self, initial, deposit, every_days, start):
+        from datetime import timedelta
+
+        if (not price_ok(initial) or not number_ok(deposit) or deposit < 0
+                or type(every_days) is not int or every_days < 1):
+            raise ValueError("invalid account funding policy")
+        self._day(start)
+        self.initial, self.deposit, self.every_days = float(initial), float(deposit), every_days
+        self.contributions, self.realized, self.cash = float(initial), 0., float(initial)
+        self.open, self.closed, self.deposits = {}, [], []
+        self.day = start
+        self.next_deposit = date.fromisoformat(start)+timedelta(days=every_days)
+
+    @staticmethod
+    def _day(day):
+        """Validate a canonical ISO date."""
+        if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day:
+            raise ValueError("date must be canonical ISO")
+
+    @property
+    def funding(self):
+        """Return deposited funds plus settled profit, excluding open premiums."""
+        return self.contributions+self.realized
+
+    def advance(self, day, settlements):
+        """Credit due deposits and settle exactly the books expiring today.
+
+        Parameters
+        ----------
+        day : str
+            Monotone session date.
+        settlements : dict
+            Book ID to total realized profit, including its original credit.
+
+        Returns
+        -------
+        float
+            New contributions credited on this session.
+
+        Raises
+        ------
+        ValueError
+            Chronology, maturity set or settlement amounts are invalid.
+        """
+        from datetime import timedelta
+
+        self._day(day)
+        if day < self.day or any(b["expiry"] < day for b in self.open.values()):
+            raise ValueError("account clock regressed or skipped an open maturity")
+        due = {key for key, b in self.open.items() if b["expiry"] == day}
+        if (not isinstance(settlements, dict) or set(settlements) != due
+                or any(not number_ok(pnl) for pnl in settlements.values())
+                or any(pnl < -self.open[key]["reserve"]-1e-5
+                       for key, pnl in settlements.items())):
+            raise ValueError("settlements must cover maturities within reserved losses")
+        contributed = 0.
+        while self.next_deposit <= date.fromisoformat(day):
+            contributed += self.deposit
+            self.next_deposit += timedelta(days=self.every_days)
+        self.contributions += contributed
+        self.cash += contributed
+        if contributed:
+            self.deposits.append({"date": day, "amount": contributed})
+        for key, pnl in settlements.items():
+            book = self.open.pop(key)
+            self.cash += float(pnl)-book["credit"]
+            self.realized += float(pnl)
+            self.closed.append({**book, "pnl": float(pnl), "close_date": day})
+        self.day = day
+        return contributed
+
+    def remaining(self, members, fraction):
+        """Return headroom after all open reserves for the supplied names.
+
+        Parameters
+        ----------
+        members : sequence of str
+            Names included in this limit.
+        fraction : float
+            Nonnegative fraction of current funding.
+
+        Returns
+        -------
+        float
+            Signed remaining capacity; negative denotes an existing breach.
+
+        Raises
+        ------
+        ValueError
+            Fraction is invalid.
+        """
+        if not number_ok(fraction) or fraction < 0:
+            raise ValueError("fraction must be nonnegative")
+        return max(0., self.funding)*fraction-sum(
+            b["reserve"] for b in self.open.values() if b["symbol"] in members)
+
+    def admit(self, day, books, limits):
+        """Admit a repriced batch atomically after shared reserve checks.
+
+        Parameters
+        ----------
+        day : str
+            Current account date.
+        books : list of dict
+            Unique id, symbol, future expiry, nonnegative reserve and entry credit.
+            Extra application metadata is retained privately.
+        limits : list of dict
+            Each has members (names) and upper (remaining capacity for new books).
+
+        Returns
+        -------
+        bool
+            False for a capacity refusal, with no mutation.
+
+        Raises
+        ------
+        ValueError
+            Book identity, funding reserve or limit data is invalid.
+        """
+        import copy
+
+        self._day(day)
+        if day != self.day or not isinstance(books, list) or not isinstance(limits, list):
+            raise ValueError("admission requires the current account date and lists")
+        ids = set(self.open) | {b["id"] for b in self.closed}
+        for b in books:
+            if (not isinstance(b, dict) or not {"id", "symbol", "expiry", "reserve", "credit"} <= set(b)
+                    or not isinstance(b["id"], str) or not b["id"] or b["id"] in ids
+                    or not isinstance(b["symbol"], str) or not b["symbol"]
+                    or not number_ok(b["reserve"]) or b["reserve"] < 0
+                    or not number_ok(b["credit"]) or b["reserve"] < -b["credit"]-1e-6):
+                raise ValueError("invalid book or insufficient debit reserve")
+            self._day(b["expiry"])
+            if b["expiry"] <= day:
+                raise ValueError("book expiry must be after admission")
+            ids.add(b["id"])
+        for limit in limits:
+            if (not isinstance(limit, dict) or set(limit) != {"members", "upper"}
+                    or not isinstance(limit["members"], list) or not limit["members"]
+                    or any(not isinstance(s, str) or not s for s in limit["members"])
+                    or not number_ok(limit["upper"])):
+                raise ValueError("invalid admission limit")
+        covered = {s for limit in limits for s in limit["members"]}
+        if any(b["symbol"] not in covered for b in books):
+            raise ValueError("every book must be covered by limits")
+        # Always enforce total funding even if a caller omits the aggregate cap.
+        reserved = sum(b["reserve"] for b in self.open.values())
+        if (reserved+sum(b["reserve"] for b in books) > max(0., self.funding)+1e-5
+                or any(sum(b["reserve"] for b in books if b["symbol"] in lim["members"])
+                       > lim["upper"]+1e-5 for lim in limits)):
+            return False
+        if self.cash+sum(b["credit"] for b in books) < -1e-5:
+            raise ValueError("funded reserve cash invariant failed")
+        self.open.update({b["id"]: copy.deepcopy(b) for b in books})
+        self.cash += sum(b["credit"] for b in books)
+        return True

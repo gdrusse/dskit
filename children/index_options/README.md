@@ -410,11 +410,44 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
 - Grid-CDF prescription bridge (ADR-0276, research only):
   `CDFQuoteCondorSelect` takes bounded saved CDF rows, scored-row spot/scale,
   Theta quotes and daily bars. It projects the CDF to eligible raw strikes,
-  delegates one nominal condor or no-trade choice to `RobustCondorSelect`, then
+  delegates one condor or no-trade choice (nominal by default, optionally W1-robust)
+  to `RobustCondorSelect`, then
   freezes those legs for the next session's EOD NBBO fill proxy. Its orders and
   raw-basis quote rows go to `OptionStructureLedger`; it reports refusals and
   a 25% extra-spread sensitivity. The 2019 warm-up uses the base-model fallback;
   the January 2020 M51 replay is only a diagnostic, not a profit claim.
+- Free-leg prescription bridge (ADR-0276): `CDFQuoteOptionSelect` reviews the
+  first scored date each ISO week and delegates to `RobustOptionSelect`.
+  Each eligible call/put can be bought, sold or skipped in integer quantities;
+  no fixed leg count, order, OTM restriction or strategy template.
+  Required solver.max_total_contracts bounds gross contracts; displayed ask/bid
+  depth bounds buys/sells. Cash wins a zero-value tie; other ties prefer fewer
+  total contracts. Output legs carry quantity and total fee_usd; `structures`
+  supplies signed quantities to OptionStructureLedger. Frozen quantities must
+  fit next-session depth or the whole book is unfilled, without weekly retry.
+- The free-leg objective uses the same finite-grid W1 set and explicit NBBO
+  costs. Full-domain maximum loss, including unlimited call-tail loss, is
+  reported separately. The contract count bound is not a dollar-loss or capital
+  limit. Positive profit can consume the entire bound; the forecast alone does
+  not determine account size. There is no portfolio risk cap or calibrated radius.
+- Post-solve strategy diagnostics (ADR-0276): `option_strategy` labels the actual
+  same-expiry option book by rights, signed quantities and strike geometry.
+  Common names include iron/reverse iron condors, iron butterflies, verticals,
+  ratio spreads/backspreads, straddles/strangles, butterflies, single-right
+  condors, synthetic forwards and boxes. Other complete books remain `custom`.
+  Quantities normalize by GCD while retaining actual size; e.g. ten short puts
+  are `short_put`, units 10. Labels never constrain the optimizer.
+- Bridge `summary.strategy_groups` groups by name/variant and separates selected,
+  filled, unfilled and cash counts, selected contracts, and selected/filled sums
+  of **decision-time robust expected dollar profit**. Skips are excluded.
+  Ledger groups use the same anatomy keys and report opened/closed/unsettled/open
+  counts, gross contracts, unbounded-loss counts, and **closed-only** option P&L,
+  total P&L, fees and option wins/losses/flats, means and win rates. Missing closed
+  samples yield null means/rates. Hedging remains separate from option labels.
+  These descriptive dollar totals are size-dependent; grouping across tickers,
+  dates or regimes and risk-normalized comparisons require a further analysis.
+  Persistent forecast/outcome gaps can motivate a bias investigation, but these
+  summaries alone do not establish profitability or predictive bias.
 
 > Data rule: every dataset a run reads is an onboarded source and configs name it by catalog
 > source, never by an absolute path (repo `CLAUDE.md`, "Data enters through onboarding").
@@ -671,3 +704,11 @@ drops bars labelled on a non-session day (e.g. Saturday 2024-06-01, 1,227 rows).
 share of `ot_atm_straddle_ratio` is sparsity (no in-band strike with both sides traded). Store roots in
 the manifest are relative placeholders; supply real ones in an overlay. `source-benchmark-daily.json`
 carries `period2` and `as_of` as configuration (change them to extend the pull).
+
+### Weekly funded portfolio research (ADR-0276)
+
+`ledger_studies.WeeklyOptionPortfolioStudy(params, bounded_inputs).run()` compares fixed methods across up to 17 names, all eligible strikes/expiries in the configured DTE band, weekly decisions and next-session NBBO proxies. It shares open-book capital, recurring deposits, ticker and lagged-correlation concentration caps. Full-domain terminal loss and debit reserves prohibit unbounded call exposure; quantities remain free within displayed side depth. Shared ledger marks/settlements audit account PnL. Output includes all decisions, refusals, books, contributions and flow-adjusted daily equity. The owner-authorized 2019 study uses $10,000 plus $1,000 every 14 days, with ten fixed variants; no protected data or promotion. American assignment and broker margin remain unmodeled.
+
+CDF quote bridges accept optional same-day basis_factor on bars, requiring positive values and agreement with option quotes. This supports expiry settlement when no eligible option quote remains; absent or changed expiry-day basis still refuses. The 2019 study derives this metadata from only symbol/date/basis_factor projected on 2019 observations, independently of tradable-expiry eligibility.
+
+The weekly study uses one profit solve per eligible decision. The owner-authorized 2019 policy accepts a certified absolute gap of at most $1, disables relative-gap stopping, and requests a600-second HiGHS limit with one worker/thread. Timeouts without a qualifying incumbent remain unscored. Earlier count-minimizing results stay archived under their original identities.

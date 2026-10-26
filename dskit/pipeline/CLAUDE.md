@@ -132,7 +132,8 @@ dskit/pipeline/
 │                      to [floor, ceiling], a smile that dips below zero refused
 │                      (ADR-0182 tier placement); black76_implied_vol (safeguarded Newton, ADR-0265)
 ├── option_structures.py leg-set algebra (credit, payoff, max loss, quote_defect) graduated from
-│                      the index_options child; names no structure (ADR-0265)
+│                      the index_options child (ADR-0265); classify_option_strategy adds post-solve
+│                      anatomy/quantity labels without selection templates (ADR-0276)
 ├── false_signal.py    pi_hat + a widened pi_widened per signal, from
 │                      out-of-fold evidence and a scramble null (ADR-0152);
 │                      pi_widened is a widened point estimate, not a bound
