@@ -1,8 +1,8 @@
 ## TL;DR
 
-The best completed funded weekly experiment made **$6,800.05 on $35,000 contributed**, but only **$403.80** after extra-spread stress and with a **65.88% maximum marked drawdown**. It is a development lead; the new full-DTE experiment has no completed empirical result yet. Its latest policy allows 15 minutes per solve and skips unresolved weeks.
+The best completed funded weekly experiment remains **M05 at 28–32 DTE: $6,800.05 profit on $35,000 contributed**, but only **$403.80** after extra-spread stress and with a **65.88% maximum marked drawdown**. The full-DTE M05 experiment has now completed and passed independent replay: **−$7,804.40 net**, **−$10,406.65 stressed**, with **34 of 53 weeks skipped at the solver timeout**. See the [high-level status memo](2026-10-26-mio-high-level-status.md) for the leader's tickers, DTEs and results.
 
-Session: October 22–25, 2026; logs extend into October 26 UTC.
+Session: October 22–26, 2026; final v11 audit and publication completed October 26 UTC.
 Owner: index_options, ADR-0278 (historically labeled ADR-0276). Code checkpoint: 82ac1ee1.
 The [interactive research report](/home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-2019-condor-oracle.canvas.tsx) retains raw results, detailed trades, oracle comparisons, source snapshots and failed attempts.
 
@@ -143,6 +143,76 @@ M05 uses rho .03 uniformly. There is no additional learned ticker/DTE accuracy w
 
 Completion can include skipped weeks. Report that count alongside selected/cash/ineligible decisions; completion does not imply 53 certified solves. A timeout with no bound or incumbent is explicitly uncertified, not an invented cash optimum.
 
+## Completed full-DTE result — 2026-10-26
+
+V11 completed under the approved 17-name pre-2019 screen, rho .03, all supported positive DTEs through 60, $10,000 initial funding plus 25 biweekly $1,000 deposits, $50 absolute gap, zero relative gap and 900-second native solve limit. Every one of 53 decision dates and 252 daily account observations is present. No positions remain open and no execution error is recorded.
+
+- **Final equity $27,195.60; net P&L −$7,804.40; stress P&L −$10,406.65.** Profit/contributions = −$7,804.40 / $35,000 = −22.30%; time-weighted return, which adjusts for deposit timing, **−16.29%**. Maximum marked, flow-adjusted drawdown **62.18%**.
+- **17 selected weeks, 34 timeout skips, one cash week, one ineligible week.** These are weekly decisions, not fill counts. The 17 selected weeks produced 127 ticker/expiry books: 13 filled (10.24%) and 114 unfilled (89.76%).
+- Unfilled reasons: 39 missing next-session quotes, 60 insufficient next-session size and 15 repriced shared-cap refusals. Skipped timeout weeks contributed no orders.
+- **13 filled books, eight tickers, 256 gross contracts, $166.40 fees, six winners and seven losers.** No unbounded book. Maximum simultaneous open books: six; peak modeled reserve $22,183.05. Five short boxes, one single long call and seven custom books; no condors.
+- Actual fills spanned **17–53 decision DTE and 16–52 fill DTE**. Eligibility remained positive DTE≤60 with settlement inside 2019.
+- AMZN's two long-call books lost **$14,322.60**. The other 11 books together earned **$6,518.20**, principally ACN's **$6,201.75**. This is an observed contribution breakdown, not evidence to remove AMZN after seeing its outcome.
+- The historical 28–32 DTE M05 remains the strongest completed funded experiment by both net profit and time-weighted return. The new experiment also changes ticker screen, tie-break policy and timeout policy, so its deterioration cannot be attributed to DTE alone.
+
+### Full-DTE ticker results
+
+| Ticker | Filled books | Contracts | Decision DTE | Fill DTE | Net P&L | Stress P&L |
+|---|---:|---:|---|---|---:|---:|
+| ABBV | 1 | 32 | 53 | 52 | −$60.80 | −$298.80 |
+| ACN | 1 | 5 | 52 | 51 | $6,201.75 | $6,164.25 |
+| AMGN | 1 | 4 | 32 | 31 | $9.40 | −$47.35 |
+| AMZN | 2 | 4 | 38, 46 | 37, 45 | −$14,322.60 | −$14,513.85 |
+| BA | 3 | 52 | 17, 24, 32 | 16, 23, 31 | −$194.80 | −$1,055.05 |
+| CAT | 1 | 52 | 45 | 44 | −$85.80 | −$440.05 |
+| GILD | 2 | 100 | 24, 25 | 23, 24 | −$80.00 | −$451.75 |
+| GOOG | 2 | 7 | 32, 39 | 31, 38 | $728.45 | $235.95 |
+
+Nine screened names had no filled book: COF, CME, GLW, GM, GOOGL, HON, HUM, ISRG and JPM.
+
+### Full-DTE exact filled history
+
+All dates are in 2019. DTE is calendar expiry minus decision/fill date. B/S means buy/sell, P/C means put/call; premiums following @ are dollars per share. One option contract covers 100 shares. Net P&L includes $0.65 per contract; stress subtracts 25% of the fill spread per leg. Table order is decision date; the saved ledger closes in expiry order.
+
+| Decision | Fill | Ticker | Expiry | DTE decision / fill | Contracts | Net P&L | Stress P&L | Exact legs at fill |
+|---|---|---|---|---:|---:|---:|---:|---|
+| 2019-01-14 | 2019-01-15 | AMGN | 2019-02-15 | 32 / 31 | 4 | $9.40 | −$47.35 | B1 180P @1.26; S1 210P @12.60; B1 210C @1.77; S1 180C @20.55 |
+| 2019-01-14 | 2019-01-15 | BA | 2019-02-15 | 32 / 31 | 44 | −$232.60 | −$983.60 | B11 265P @0.44; S1 365P @19.70; S10 370P @23.05; B1 365C @6.25; B10 370C @4.65; S11 265C @86.85 |
+| 2019-01-22 | 2019-01-23 | ACN | 2019-03-15 | 52 / 51 | 5 | $6,201.75 | $6,164.25 | B1 145C @7.30; B4 150C @4.40 |
+| 2019-01-22 | 2019-01-23 | BA | 2019-02-08 | 17 / 16 | 4 | $10.40 | −$42.60 | B1 340P @5.00; S1 385P @29.05; B1 385C @1.97; S1 340C @23.05 |
+| 2019-01-22 | 2019-01-23 | BA | 2019-02-15 | 24 / 23 | 4 | $27.40 | −$28.85 | B1 300P @0.96; S1 385P @29.35; B1 385C @2.49; S1 300C @59.40 |
+| 2019-08-26 | 2019-08-27 | ABBV | 2019-10-18 | 53 / 52 | 32 | −$60.80 | −$298.80 | B8 60P @1.01; S8 72.5P @7.75; B8 72.5C @0.44; S8 60C @6.15 |
+| 2019-08-26 | 2019-08-27 | GOOG | 2019-09-27 | 32 / 31 | 5 | $331.75 | $81.75 | B2 1200C @18.60; B1 1210C @15.00; B1 1215C @13.30; B1 1220C @11.60 |
+| 2019-09-03 | 2019-09-04 | AMZN | 2019-10-11 | 38 / 37 | 1 | −$7,770.65 | −$7,818.15 | B1 1770C @77.70 |
+| 2019-09-03 | 2019-09-04 | CAT | 2019-10-18 | 45 / 44 | 52 | −$85.80 | −$440.05 | B13 105P @0.99; S13 125P @8.15; B13 125C @1.95; S13 105C @14.75 |
+| 2019-09-03 | 2019-09-04 | GILD | 2019-09-27 | 24 / 23 | 24 | −$0.60 | −$87.60 | B3 60.5P @0.67; B3 61P @0.82; S3 64.5P @2.45; S3 65.5P @3.15; B3 64.5C @0.74; B3 65.5C @0.47; S3 60.5C @2.99; S3 61C @2.66 |
+| 2019-09-09 | 2019-09-10 | AMZN | 2019-10-25 | 46 / 45 | 3 | −$6,551.95 | −$6,695.70 | B1 1940C @24.30; B1 1950C @21.75; B1 1960C @19.45 |
+| 2019-11-18 | 2019-11-19 | GOOG | 2019-12-27 | 39 / 38 | 2 | $396.70 | $154.20 | B1 1320C @28.80; B1 1322.5C @28.50 |
+| 2019-12-02 | 2019-12-03 | GILD | 2019-12-27 | 25 / 24 | 76 | −$79.40 | −$364.15 | B10 61P @0.30; B9 64P @0.87; S12 67.5P @2.65; S7 68P @3.00; B12 67.5C @0.72; B7 68C @0.59; S10 61C @4.80; S9 64C @2.50 |
+
+### Solver and audit evidence
+
+All 34 timeout skips carry independently checked feasible incumbents with positive modeled profit and native maxTimeLimit records. All were skipped because the absolute gap exceeded $50. No missing-bound or no-incumbent timeout occurred in this actual run. The observed timeout gap was $51.89 minimum, $255.92 median and $2,830.35 maximum. All 18 accepted selected/cash decisions satisfy the $50 gate; the one ineligible week required no solve.
+
+There are 52 native solve records. The largest recorded model has 35,983 variables and 38,195 constraints. Summed recorded solve durations are 35334.27 seconds; the saved method elapsed field is 36,362.30 seconds. These fields are retained as recorded, not asserted to be an exclusive decomposition of total wall time. Timer placement and setup/audit overhead belong in the speed investigation.
+
+The service launched at 03:22:52 UTC; week 53 was logged at 13:11:53 UTC; the independent replay finished before RESULT at 13:36:47 UTC; COMPLETE True followed at 13:36:48 UTC and the service ended at 13:36:49 UTC. The final replay/publication interval was approximately 25 minutes. Systemd reported 10h13m30.771s CPU, 9.5G peak memory and 3.0G peak swap; this run did use swap. No OOM failure was recorded.
+
+The coordinator accepts an outcome only after a separate process rebuilds bounded 2019 input identity and the candidate census, replays saved positions/certificates through all weekly decisions and the account, checks the reconstructed outcome, and rechecks source hashes. Publication completed through that gate. The parent additionally checked:
+
+- complete calendar/decision-date coverage and empty terminal holdings;
+- all six production and six embedded source hashes against the approved activation;
+- sums of trade P&L, fees, contracts, stress costs and deposits;
+- exact decision/fill DTE and expiry settlement for every filled book;
+- cash plus contributions and the independent product of daily deposit-adjusted returns, including drawdown;
+- each timeout's empty order list, native maxTimeLimit reason and gap above $50; every accepted selected/cash gap at or below $50.
+
+No optimization or full test suite was rerun for these evidence checks. The existing approved trust in local native solver bounds remains; recorded replay is not authentication against forged coherent native bounds.
+
+Completed evidence hashes: report SHA256 a38f8e5a8f26fec2814bb4b03d473891ebe35f6f00af3c9e94e6476caea4f1fa; raw value hash a4186a8c359d6cef1b206ce71d16bd05d346a105f4aa76bb6397e3a26773a25c; method value hash 6f0ae27e85deebfd46e59cd89ef7956f666dd91642bf324638c1e33141cfe882. The final report is retained without edits by this memo closeout.
+
+The plain-language overview and historical leader's ticker/DTE ledger are in [MIO high-level status](2026-10-26-mio-high-level-status.md).
+
 ## Implementation verification
 
 Generic owners: TransportPortfolioSolve, WassersteinDual, FundedOptionAccount and OptionStructureLedger. The child owns bounded option intake and weekly decision/fill/account chronology. Full-domain terminal-loss/debit reserves prohibit unlimited short-call exposure in the funded study. There is no forced condor or fixed leg count.
@@ -153,7 +223,7 @@ The owner approved trusting native local solver bounds for this study. Replay re
 
 ## Where to go next
 
-1. Finish the exact v11 experiment. Report timeout rate, full calendar coverage, final equity, flow-adjusted return, drawdown, stress P&L, fill counts and the complete ledger. Preserve failures beside successes.
+1. Use the completed v11 result as the baseline for the requested Fable investigation: 34/53 timeout skips, 13/127 filled books and a loss concentrated in two AMZN call books. Preserve failures beside successes.
 2. Attribute changes carefully: universe, DTE range, contract-count tie policy and timeout behavior differ from old M05. A profit difference cannot isolate DTE.
 3. Audit economic drivers before tuning: CPB/AXP concentration, high-quantity near-zero debit books, apparent boxes, missing quotes, depth, carried marks, and expected versus realized payoff by ticker/DTE/strategy.
 4. Freeze a small same-input comparison on 2019, including nominal versus robust forecasts and conservative costs. Count all tried methods; use earlier-data calibration and shrink sparse ticker/DTE estimates before adding accuracy weights.
@@ -182,6 +252,6 @@ V10 archive: 437532540c6e5cb519e93ef5b1704df405479820879b5b5f9e259d98b37bd81c.
 
 Both fresh independent final reviews passed with zero Critical/Major and no new Minor/Nit findings; the two previously documented minors remain deferred. Code checkpoint 82ac1ee1404a1b545ee803902ebf15d9d578f3e7 passed 123 focused tests and 13 embedded verification families. Upstream d64ff302 integration changed documentation/evidence only; reviewed runtime and test identities are unchanged.
 
-V11 launched at **2026-10-26 03:22:52 UTC** (October 25 locally) in WSL as index-options-2019-full-dte-v11.service. The journal confirms FRESH_PRE2019_FULL_DTE_INITIALIZED with the intake identity above and START M05 W1 .03 verified inputs. Launch PID: 2713844; invocation: bc5e40558c1844f08a8097651e6d1ebd. The service was active/running at the launch check. No completed full-DTE P&L exists yet.
+V11 launched at **2026-10-26 03:22:52 UTC** (October 25 locally) in WSL as index-options-2019-full-dte-v11.service. The journal confirms FRESH_PRE2019_FULL_DTE_INITIALIZED with the intake identity above and START M05 W1 .03 verified inputs. Launch PID: 2713844; invocation: bc5e40558c1844f08a8097651e6d1ebd. The service was active/running at the launch check. The completed result and independent audit are recorded above.
 
-The hourly thread follow-up finish-2019-options-run-memo will check completion, validate the saved result and accounting audit, and append actual full-DTE results or a documented terminal failure here. The active worktree is retained for the service. Runtime sources and the report remain frozen until it ends. A results addendum and its publication are still pending.
+V11 ended successfully at 13:36:49 UTC on October 26. The requested high-level memo and full results addendum were written before wrap. This closeout changes documentation only; runtime, tests and the completed report remain unchanged. The next authorized step after publication and wrap is a separate Claude/Fable research session for method selection, additional MIO proposals and solve-speed investigation. The existing heartbeat remains active until that launch is verified.

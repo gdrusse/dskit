@@ -32376,3 +32376,20 @@ and START M05 W1 .03 verified inputs; active/running. No completed v11 result
 yet. Hourly thread follow-up finish-2019-options-run-memo will validate terminal
 state, append the actual outcome and wrap the results memo. Active checkout
 retained; runtime/report frozen.
+
+#### ADR-0278 v11 completed result and memo closeout (2026-10-26)
+
+Approved full-DTE v11 finished all53 weeks/252 sessions, independent recorded
+replay passed, COMPLETE True, no remaining errors/positions. Net -7804.40,
+stress -10406.65, equity27195.60 on35000 contributed, TWR-16.294810%, max
+drawdown62.180123%;13 fills/256 contracts,17 selected weeks,34 native timeout
+skips,one cash,one ineligible. All34 had feasible positive incumbents but gaps
+above$50. Native-bounds trust remains as approved. Service ended13:36:49UTC;
+9.5G memory and3.0G swap peaks. Sources, tests and completed report unchanged.
+Full ledger and hashes in session memo; separately requested high-level memo
+2026-10-26-mio-high-level-status.md written before wrap. Parent independently
+reconciled coverage, cash, P&L/stress, quantities, fees, dates, NAV/drawdown,
+source identities and52 native gap records; no optimization/full suite rerun.
+After docs publication/wrap, owner requests separate Claude/Fable investigation
+of candidate methods, MIO improvements and solve speed; research/proposals
+only, no new holdout reads, long backtests or implementation authorization.

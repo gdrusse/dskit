@@ -14,3 +14,5 @@ with its approved scaffold proposal in the incubating repository.
 - [ADR-0258 correction and replay v2 result](2026-10-09-condor-executable-clock-result.md): sampler and gap fixes applied, same-day fill accepted; every arm net negative over 2,380 settled condors; account study refused on non-positive reservations.
 
 - [Prescription session results and next steps](2026-10-25-prescription-session-results.md): condors, free integer books, funded 2019 variants, full-DTE attempts and the 15-minute weekly-skip policy.
+
+- [MIO high-level status and best-run trade history](2026-10-26-mio-high-level-status.md): project position, completed funded leader, every traded ticker/DTE and results, contrasted with the audited full-DTE loss.
