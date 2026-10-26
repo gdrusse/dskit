@@ -32393,3 +32393,56 @@ source identities and52 native gap records; no optimization/full suite rerun.
 After docs publication/wrap, owner requests separate Claude/Fable investigation
 of candidate methods, MIO improvements and solve speed; research/proposals
 only, no new holdout reads, long backtests or implementation authorization.
+
+#### ADR-0278 amendment: solve-speed and capital-realism candidate, joint shock rows, 2020 fitted-M51 test (approved by Russell 2026-10-26, "build now")
+
+Fable's investigation found the v11 objective dominated by zero-reserve parity
+books (short boxes/conversions at displayed EOD size, up to $1.1M credit per
+book, 90% unfillable) and that hardness lives inside those groups, not in the
+joint caps. Three changes, all configuration-driven, default-off, replayable:
+
+1. `TransportPortfolioSolve` param `group_screen` ("none" default | "lp"):
+   each group's own LP relaxation (caps and joint rows ignored, a valid upper
+   bound on that group's contribution) is solved first; a group whose bound is
+   within `parity_tolerance` of zero is left out, keep-one fallback, replay
+   re-derives the screen (commit d1d5af96, corrections 93dbb4ea).
+2. Weekly-study method keys `reserve_per_contract` (USD per gross contract)
+   and `short_notional_fraction` (fraction of the sold legs' strike notional)
+   as reserve floors in the solver rows, frozen books, fills and ledger
+   (commits d1d5af96, d0011600). Benchmark on the eight v11 weeks, same $50
+   gap: every week certifies in 0.4–11 s with screen + fraction 0.2 (v11:
+   50–940 s, five timeouts); objectives fall from $2.7k–36k to $0–5.2k.
+3. Correlation control. The objective is separable per name, so nothing
+   values diversification. Generic primitive: optional input `joint_rows`
+   on `TransportPortfolioSolve`, each `{"id", "terms": {group_id:
+   coefficients}, "upper" >= 0}`, one linear row across groups, audited in
+   the incumbent, round-trip cleanup and replay checks. The LP screen
+   ignores joint rows, so with them it restricts candidates to groups with
+   standalone value (a negative-value hedge group is excluded); the
+   certificate covers that restricted program. The 2020 test runs under
+   this restriction; an exact screen with hedges is a later decision. Child policy:
+   method key `shock` `{"moves", "loss_fraction", "beta_lookback"}`; for
+   each common move m the portfolio's terminal loss at every name's
+   spot x (1 + beta x m), net of credit, must stay within loss_fraction of
+   funding; betas are trailing-return slopes on the equal-weight universe
+   basket from strictly earlier sessions, 1.0 while fewer than
+   `correlation_min_pairs` returns exist. Prototype on four v11 weeks: binds
+   at -5%, splits one concentrated book into two names, value -8% to -30%,
+   5–50 s. Would have blocked the two AMZN call books that lost $14k.
+
+Process note: items 1–2 were committed before this entry (lens finding);
+this amendment records them. Owner approval 2026-10-26 ("Yes let's do that.
+Build now") covers item 3 and the test below.
+
+Test (A0003 validation year, never holdout): the weekly study on 2020
+(fold 2, band val, M51 `edge-method-51-qa-mlp64-by-dispersion`, fitted rows
+where M51 fitted and its fallback elsewhere, `require_fitted` false), same
+17 names, funding, DTE band and $50/900 s policy as v11, methods: best MIO
+(screen lp, short_notional_fraction .2) with and without the shock rows.
+Evidence in the Fable session scratchpad until the owner names a configs
+and evidence location; no canvas or v11 artifact edits.
+
+Sweep: tools/sweep/sweep joint_rows shock_rows beta_shock; no near matches
+on 69 refs and 85 worktrees. Owners: dskit/pipeline/libs/pyomo.py,
+children/index_options/index_options/ledger_studies.py, their focused
+tests, both READMEs. Builds and lenses on Sonnet subagents.

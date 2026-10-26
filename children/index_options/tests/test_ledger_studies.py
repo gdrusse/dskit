@@ -1878,3 +1878,315 @@ def test_weekly_portfolio_timeout_skips_orders_and_continues(monkeypatch, skip_i
         bad = copy.deepcopy(saved); mutate(bad)
         with pytest.raises(ValueError):
             study._method(params["methods"][0], None, recorded=bad)
+
+
+def test_weekly_portfolio_reserve_per_contract_default_is_identity():
+    """An undeclared or zero capital charge leaves every recorded field unchanged."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    explicit = copy.deepcopy(params)
+    explicit["methods"][0]["reserve_per_contract"] = 0.
+    same = ledger_studies.WeeklyOptionPortfolioStudy(explicit, inputs).run()["methods"][0]
+    assert same["decisions"][0]["selection"] == base["decisions"][0]["selection"]
+    timeless = lambda d: [{k: v for k, v in c.items() if k != "seconds"} for c in d["certificates"]]
+    assert timeless(same["decisions"][0]) == timeless(base["decisions"][0])
+    assert same["trades"] == base["trades"] and same["pnl"] == base["pnl"]
+
+
+def test_weekly_portfolio_reserve_per_contract_floors_every_reserve():
+    """A positive charge floors solver, book, fill and ledger reserves and binds the caps."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    charged = copy.deepcopy(params)
+    charged["methods"][0]["reserve_per_contract"] = 400.
+    result = ledger_studies.WeeklyOptionPortfolioStudy(charged, inputs).run()["methods"][0]
+    assert result["trades"], "the charged method still trades"
+    for book in result["trades"]:
+        assert book["reserve"] >= 400.*book["contracts"]-1e-9
+        assert book["reserve"] == pytest.approx(max(0., book["max_loss"], -book["credit"], 400.*book["contracts"]))
+    for decision in result["decisions"]:
+        for book in decision.get("books", []):
+            assert book["reserve"] >= 400.*book["contracts"]-1e-9
+    assert result["contracts"] < base["contracts"]
+    floors = [400.*b["contracts"] for b in result["trades"]]
+    assert max(floors)-1e-6 <= result["peak_reserve"] <= sum(floors)+1e-6
+
+
+@pytest.mark.parametrize("key", ["reserve_per_contract", "short_notional_fraction"])
+@pytest.mark.parametrize("charge", [-1., "1", None, float("nan")])
+def test_weekly_portfolio_reserve_per_contract_refuses_invalid(key, charge):
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    bad = copy.deepcopy(params)
+    bad["methods"][0][key] = charge
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy(bad, inputs)
+
+
+def test_weekly_portfolio_short_notional_fraction_floors_sold_legs_only():
+    """The notional floor charges sold strikes, leaves bought legs alone and binds the caps."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    charged = copy.deepcopy(params)
+    charged["methods"][0]["short_notional_fraction"] = .2
+    result = ledger_studies.WeeklyOptionPortfolioStudy(charged, inputs).run()["methods"][0]
+    assert result["trades"], "the charged method still trades"
+    mult = params["bridge"]["solver"]["multiplier"]
+    for book in result["trades"]:
+        short_notional = sum(.2*leg["strike"]*mult*leg["quantity"] for leg in book["legs"] if leg["sign"] < 0)
+        assert book["reserve"] == pytest.approx(max(0., book["max_loss"], -book["credit"], short_notional))
+    assert any(leg["sign"] < 0 for b in result["trades"] for leg in b["legs"])
+    assert result["contracts"] < base["contracts"]
+    explicit = copy.deepcopy(params)
+    explicit["methods"][0]["short_notional_fraction"] = 0.
+    same = ledger_studies.WeeklyOptionPortfolioStudy(explicit, inputs).run()["methods"][0]
+    assert same["trades"] == base["trades"]
+
+
+def test_weekly_portfolio_group_screen_prunes_and_replays_with_charges(monkeypatch):
+    """A screened, charged method records, replays and refuses a mutated reserve or charge."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, inputs = _weekly_portfolio_fixture()
+    params = copy.deepcopy(params)
+    data = inputs["X"]
+    for name in ("forecasts", "contexts"):
+        row = copy.deepcopy(data[name][1])
+        row["quote_date"] = "2019-01-02"
+        data[name].append(row)
+    data["chain"].extend({**row, "date": "2019-01-02"} for row in list(data["chain"])
+                         if row["date"] == "2019-01-07" and row["expiration"] == "2019-02-08")
+    params["solver"]["group_screen"] = "lp"
+    params["bridge"]["dte_tolerance"] = 30  # both expiries compete on 2019-01-02
+    params["methods"][0].update(reserve_per_contract=400., short_notional_fraction=.1)
+    bound = TransportPortfolioSolve._group_lp_bound
+    monkeypatch.setattr(TransportPortfolioSolve, "_group_lp_bound",
+                        staticmethod(lambda g: -1. if g["id"].endswith("2019-02-08") else bound(g)))
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    original = study._method(params["methods"][0], None)
+    first = original["decisions"][0]
+    assert first["candidate_books"] == 2 and first["status"] == "selected"
+    assert first["certificates"][0]["variables"] < 2*len(first["selection"]["quantities"][0])
+    assert all(b["expiry"] != "2019-02-08" for b in first["books"])
+    assert all(t["reserve"] >= 400.*t["contracts"]-1e-9 for t in original["trades"])
+    replayed = study._method(params["methods"][0], None, recorded=copy.deepcopy(original))
+    assert replayed == original
+    bad = copy.deepcopy(original)
+    bad["trades"][0]["reserve"] /= 2
+    with pytest.raises(ValueError, match="recorded"):
+        study._method(params["methods"][0], None, recorded=bad)
+    other = copy.deepcopy(params["methods"][0])
+    other["reserve_per_contract"] = 0.
+    with pytest.raises(ValueError, match="recorded method or decision calendar differs"):
+        study._method(other, None, recorded=copy.deepcopy(original))
+    plain = copy.deepcopy(params)
+    plain["solver"]["group_screen"] = "none"
+    with pytest.raises(ValueError, match="recorded model dimensions differ"):
+        ledger_studies.WeeklyOptionPortfolioStudy(plain, inputs)._method(
+            params["methods"][0], None, recorded=copy.deepcopy(original))
+
+
+_SHOCK = {"moves": [-.1, .1], "loss_fraction": .08, "beta_lookback": 20}
+
+
+def _solved(result):
+    """Return the decisions that carry a solved selection."""
+    return [d for d in result["decisions"] if "selection" in d]
+
+
+def test_weekly_portfolio_shock_default_is_identity():
+    """A method with no shock policy records no shock and replays byte-identically."""
+    params, inputs = _weekly_portfolio_fixture()
+    first = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    again = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    assert not any("shock" in d for d in first["decisions"])
+    timeless = lambda r: [{k: v for k, v in d.items() if k not in ("certificates",)}
+                          for d in r["decisions"]]
+    assert timeless(first) == timeless(again)
+    assert first["trades"] == again["trades"] and first["pnl"] == again["pnl"]
+
+
+def test_weekly_portfolio_shock_rows_bound_terminal_loss():
+    """The shock rows cap the selection's terminal loss at each move; a loose cap changes nothing."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    shocked = copy.deepcopy(params)
+    shocked["methods"][0]["shock"] = copy.deepcopy(_SHOCK)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(shocked, inputs).run()["methods"][0]
+    solved = _solved(result)
+    assert solved and all("shock" in d for d in solved)
+    first = solved[0]["shock"]
+    assert first["observations"] < params["correlation_min_pairs"]
+    assert first["betas"] == {"X": 1.}
+    assert set(first["losses"]) == {"-0.1", "0.1"}
+    for decision in solved:
+        shock = decision["shock"]
+        assert shock["limit"] == pytest.approx(_SHOCK["loss_fraction"]*decision["funding"])
+        for loss in shock["losses"].values():
+            assert loss <= shock["limit"]+1e-6
+    count = lambda r: sum(b["contracts"] for d in r["decisions"] for b in d.get("books", []))
+    assert 0 < count(result) < count(base)
+    assert max(v for d in solved for v in d["shock"]["losses"].values()) > 0
+    loose = copy.deepcopy(params)
+    loose["methods"][0]["shock"] = {**_SHOCK, "loss_fraction": 1.}
+    free = ledger_studies.WeeklyOptionPortfolioStudy(loose, inputs).run()["methods"][0]
+    assert [d["selection"]["quantities"] for d in _solved(free)] == \
+        [d["selection"]["quantities"] for d in _solved(base)]
+
+
+@pytest.mark.parametrize("shock", [
+    {"moves": [-.1], "loss_fraction": .1},
+    {"moves": [-.1], "loss_fraction": .1, "beta_lookback": 20, "extra": 1},
+    {"moves": [], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [0.], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [-1.], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [-.1, -.1], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [float("nan")], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [float("inf")], "loss_fraction": .1, "beta_lookback": 20},
+    {"moves": [-.1], "loss_fraction": -.1, "beta_lookback": 20},
+    {"moves": [-.1], "loss_fraction": 1.5, "beta_lookback": 20},
+    {"moves": [-.1], "loss_fraction": .1, "beta_lookback": 1},
+    {"moves": [-.1], "loss_fraction": .1, "beta_lookback": True},
+    {"moves": [-.1], "loss_fraction": .1, "beta_lookback": 2.5},
+    None,
+])
+def test_weekly_portfolio_shock_refuses_invalid(shock):
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    bad = copy.deepcopy(params)
+    bad["methods"][0]["shock"] = shock
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy(bad, inputs)
+
+
+def test_weekly_portfolio_shock_record_replays_and_refuses_tamper():
+    """A shocked method replays equal and refuses a mutated loss, limit or beta."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0]["shock"] = copy.deepcopy(_SHOCK)
+    method = params["methods"][0]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    original = study._method(method, None)
+    assert study._method(method, None, recorded=copy.deepcopy(original)) == original
+    def tampered(edit):
+        bad = copy.deepcopy(original)
+        edit(next(d["shock"] for d in bad["decisions"] if "shock" in d))
+        return bad
+    edits = [lambda s: s["losses"].update({"-0.1": s["losses"]["-0.1"]+1.}),
+             lambda s: s.update(limit=s["limit"]+1.),
+             lambda s: s["betas"].update(X=2.)]
+    for edit in edits:
+        with pytest.raises(ValueError, match="recorded"):
+            study._method(method, None, recorded=tampered(edit))
+
+
+def _two_symbol_fixture():
+    """Fixture X plus a copy Y; X wobbles, Y trends, so their return paths differ."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    params = copy.deepcopy(params)
+    params["symbols"] = ["X", "Y"]
+    swapped = copy.deepcopy(inputs["X"])
+    for rows in swapped.values():
+        for row in rows:
+            row["symbol"] = "Y"
+    inputs["Y"] = swapped
+    for k, row in enumerate(inputs["X"]["bars"]):
+        row["close"] = 100.+(k % 3)
+    for k, row in enumerate(inputs["Y"]["bars"]):
+        row["close"] = 100.*(1+.01*k)
+    return params, inputs
+
+
+def test_weekly_portfolio_betas_use_only_earlier_sessions():
+    """Betas read the trailing window strictly before the day and average to one."""
+    import copy
+
+    params, inputs = _two_symbol_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    late = "2019-02-04"
+    prior = [d for d in study.calendar if d < late]
+    out = study._betas(late, 20)
+    assert out["observations"] == min(20, len(prior)-1)
+    assert all(math.isfinite(b) for b in out["betas"].values())
+    assert sum(out["betas"].values())/2 == pytest.approx(1., abs=1e-9)
+    assert out["betas"]["X"] != out["betas"]["Y"]
+    early = study._betas("2019-01-07", 20)
+    assert early["observations"] < params["correlation_min_pairs"]
+    assert early["betas"] == {"X": 1., "Y": 1.}
+    moved = copy.deepcopy(inputs)
+    for row in moved["Y"]["bars"]:
+        if row["date"] >= late:
+            row["close"] *= 3.
+    other = ledger_studies.WeeklyOptionPortfolioStudy(params, moved)
+    assert other._betas(late, 20) == out
+    assert other._betas("2019-01-07", 20) == early
+
+
+def test_weekly_portfolio_shock_rows_apply_betas_to_each_leg():
+    """One group, beta 1.5, a sold put spread and a sold call spread, hand-priced at each move."""
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    mult, fee = 100, .65
+    items = [{"sign": -1, "right": "put", "strike": 95., "price": 2.},
+             {"sign": 1, "right": "put", "strike": 90., "price": 1.},
+             {"sign": -1, "right": "call", "strike": 105., "price": 1.5},
+             {"sign": 1, "right": "call", "strike": 110., "price": .5}]
+    credit = [-i["sign"]*i["price"]*mult-fee for i in items]
+    meta = [{"id": "g", "symbol": "A", "spot": 100., "items": items}]
+    shock = {"moves": [-.1, .1, -.3, -.9], "loss_fraction": .1, "beta_lookback": 5}
+    rows = study._shock_rows(shock, {"A": 1.5}, meta, [{"credit": credit}], mult, 1000.)
+    assert [r["id"] for r in rows] == ["shock:-0.1", "shock:0.1", "shock:-0.3", "shock:-0.9"]
+    # Shocked spots 85, 115, 55 and 0: the spreads lose their full width less
+    # the net premium of 2 - 1 + 1.5 - .5 = 2 per share, plus four fees.
+    for row in rows:
+        assert row["upper"] == 100.
+        assert sum(row["terms"]["g"]) == pytest.approx(500.-200.+4*fee)
+    unshocked = study._shock_rows({**shock, "moves": [.01]}, {"A": 1.5}, meta,
+                                  [{"credit": credit}], mult, 1000.)
+    assert sum(unshocked[0]["terms"]["g"]) == pytest.approx(-200.+4*fee)
+    assert sum(study._shock_rows(shock, {"A": 0.}, meta, [{"credit": credit}], mult, 1000.)[0]
+               ["terms"]["g"]) == pytest.approx(-200.+4*fee)
+
+
+def test_weekly_portfolio_shock_losses_use_estimated_betas_end_to_end():
+    """With betas fitted from two names, every recorded loss equals a leg-by-leg recomputation."""
+    import copy
+
+    params, inputs = _two_symbol_fixture()
+    params["correlation_min_pairs"] = 2
+    for k, row in enumerate(inputs["X"]["bars"]):
+        row["close"] = 100.+3.*(k % 2)
+    shock = {"moves": [-.1, .1], "loss_fraction": .08, "beta_lookback": 5}
+    params["methods"] = [{**params["methods"][0], "shock": shock}]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study.run()["methods"][0]
+    mult = params["bridge"]["solver"]["multiplier"]
+    solved = [d for d in result["decisions"] if "shock" in d]
+    assert solved and any(d["shock"]["betas"]["Y"] != 1. for d in solved)
+    for decision in solved:
+        betas, funding = decision["shock"]["betas"], decision["funding"]
+        assert decision["shock"]["limit"] == shock["loss_fraction"]*max(0., funding)
+        for move in shock["moves"]:
+            loss = 0.
+            for book in decision["books"]:
+                spot = max(0., book["spot"]*(1.+betas[book["symbol"]]*move))
+                loss -= book["credit"]
+                for leg in book["legs"]:
+                    payoff = max((leg["strike"]-spot) if leg["right"] == "put" else (spot-leg["strike"]), 0.)
+                    loss += -leg["sign"]*mult*payoff*leg["quantity"]
+            assert decision["shock"]["losses"][str(move)] == pytest.approx(loss, abs=1e-6)
+            assert loss <= decision["shock"]["limit"]+1e-6
+    assert study._method(params["methods"][0], None, recorded=copy.deepcopy(result)) == result

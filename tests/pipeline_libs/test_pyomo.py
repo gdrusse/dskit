@@ -3764,3 +3764,246 @@ def test_transport_portfolio_timeout_return_real_backend_and_error_refusal(monke
         "solve": lambda *a, **k: (_ for _ in ()).throw(RuntimeError("backend failure"))})())
     with pytest.raises(RuntimeError, match="backend failure"):
         node.run(None, _roundtrip_portfolio())
+
+
+def _screen_groups(radius=.1):
+    """A live group, a dead group (negative credits) and a strictly zero group."""
+    live = {"id": "live", "grid": [0., 1., 2.], "masses": [.2, .6, .2],
+            "radius": radius, "scale": 1., "credit": [3., -4.],
+            "losses": [[10., 0.], [0., 0.], [0., -8.]], "capacity": [3, 3],
+            "exclusive": [], "reserve_rows": [[7., 4.], [-3., 4.], [-3., -4.]],
+            "linear_rows": []}
+    dead = {"id": "dead", "grid": [0., 1., 2.], "masses": [.2, .6, .2],
+            "radius": radius, "scale": 1., "credit": [-1., -2.],
+            "losses": [[0., 0.], [0., 0.], [0., 0.]], "capacity": [5, 5],
+            "exclusive": [], "reserve_rows": [[1., 1.]], "linear_rows": []}
+    zero = {"id": "zero", "grid": [0., 1.], "masses": [.5, .5], "radius": radius,
+            "scale": 1., "credit": [0.], "losses": [[0.], [0.]], "capacity": [4],
+            "exclusive": [], "reserve_rows": [[1.]], "linear_rows": []}
+    caps = [{"groups": ["live", "dead", "zero"], "upper": 12.}, {"groups": ["dead"], "upper": 3.}]
+    return [live, dead, zero], caps
+
+
+def _screen_params(screen):
+    return {"absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+            "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1},
+            "group_screen": screen}
+
+
+@pytest.mark.parametrize("radius", [0., .03])
+def test_transport_portfolio_group_screen_matches_unscreened_optimum(radius):
+    """LP screening drops only groups that cannot add value; the optimum is unchanged."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _screen_groups(radius)
+    inputs = {"groups": groups, "caps": caps}
+    plain = TransportPortfolioSolve("plain", _screen_params("none")).run(None, inputs)["selection"]
+    node = TransportPortfolioSolve("screen", _screen_params("lp"))
+    screened = node.run(None, inputs)["selection"]
+    assert TransportPortfolioSolve._group_lp_bound(groups[0]) > 0., "the live group must be live"
+    assert plain["value"] > 0.
+    assert node._active == [0]
+    assert screened["value"] == pytest.approx(plain["value"], abs=1e-6)
+    assert screened["quantities"] == plain["quantities"]
+    assert screened["quantities"][1:] == [[0, 0], [0]]
+    assert screened["reserves"][1:] == [0., 0.]
+    assert screened["certificates"][0]["variables"] < plain["certificates"][0]["variables"]
+    assert screened["certificates"][0]["constraints"] < plain["certificates"][0]["constraints"]
+    assert screened["certificates"][0]["termination"] == "optimal"
+    # The relaxation is a valid upper bound on every integer book of the group.
+    assert TransportPortfolioSolve._group_lp_bound(groups[0]) >= plain["group_values"][0]-1e-6
+    assert TransportPortfolioSolve._group_lp_bound(groups[1]) <= 0.
+    assert TransportPortfolioSolve._group_lp_bound(groups[2]) == pytest.approx(0.)
+
+
+def test_transport_portfolio_group_screen_keeps_one_group_when_none_is_live():
+    """An all-dead program still solves to a certified cash selection."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _screen_groups()
+    inputs = {"groups": groups[1:], "caps": [{"groups": ["dead", "zero"], "upper": 12.}]}
+    node = TransportPortfolioSolve("screen", _screen_params("lp"))
+    result = node.run(None, inputs)["selection"]
+    assert len(node._active) == 1
+    assert result["value"] == 0. and result["quantities"] == [[0, 0], [0]]
+    assert result["certificates"][0]["termination"] == "optimal"
+    # A wide radius kills every group, including the one that is live at .03.
+    groups, caps = _screen_groups(.1)
+    assert all(TransportPortfolioSolve._group_lp_bound(g) <= 0. for g in groups)
+    node = TransportPortfolioSolve("wide", _screen_params("lp"))
+    assert node.run(None, {"groups": groups, "caps": caps})["selection"]["value"] == 0.
+    assert len(node._active) == 1
+
+
+def test_transport_portfolio_group_screen_recorded_replay_refuses_pruned_actions():
+    """A saved record replays through the same screen; actions in a pruned group refuse."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _screen_groups()
+    inputs = {"groups": groups, "caps": caps}
+    node = TransportPortfolioSolve("screen", _screen_params("lp"))
+    result = node.run(None, inputs)["selection"]
+    selection = {k: v for k, v in result.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in result["certificates"]]
+    replay = TransportPortfolioSolve("replay", _screen_params("lp"))
+    assert replay._recorded(inputs, selection, certificates)["value"] == result["value"]
+    forged = copy.deepcopy(selection)
+    forged["primary_quantities"][1][0] = forged["quantities"][1][0] = 1
+    with pytest.raises(ValueError, match="screened-out group"):
+        TransportPortfolioSolve("forged", _screen_params("lp"))._recorded(
+            inputs, forged, certificates)
+    with pytest.raises(ValueError, match="recorded model dimensions differ"):
+        TransportPortfolioSolve("other", _screen_params("none"))._recorded(
+            inputs, selection, certificates)
+
+
+@pytest.mark.parametrize("screen", ["LP", "", None, 1, "ilp"])
+def test_transport_portfolio_group_screen_refuses_unknown_values(screen):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    assert TransportPortfolioSolve.validate_params({**_screen_params("lp"), "group_screen": screen})
+
+
+def _joint_groups(radius=0.):
+    """Two independent one-item groups whose joint sum a cross-group row can cap."""
+    def group(key, credit):
+        return {"id": key, "grid": [0., 1.], "masses": [.5, .5], "radius": radius,
+                "scale": 1., "credit": [credit], "losses": [[0.], [0.]], "capacity": [4],
+                "exclusive": [], "reserve_rows": [[1.]], "linear_rows": []}
+    groups = [group("a", 3.), group("b", 2.)]
+    caps = [{"groups": ["a", "b"], "upper": 100.}]
+    return groups, caps
+
+
+def _joint_params(screen="none"):
+    return {"absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+            "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1},
+            "group_screen": screen}
+
+
+@pytest.mark.parametrize("screen", ["none", "lp"])
+def test_transport_portfolio_joint_row_binds_across_groups(screen):
+    """One linear row over both groups caps the joint integer optimum."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    free = TransportPortfolioSolve("free", _joint_params(screen)).run(
+        None, {"groups": groups, "caps": caps})["selection"]
+    assert free["quantities"] == [[4], [4]]
+    rows = [{"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}]
+    bound = TransportPortfolioSolve("bound", _joint_params(screen)).run(
+        None, {"groups": groups, "caps": caps, "joint_rows": rows})["selection"]
+    # Exhaustive oracle: maximize 3a + 2b with 2a + b <= 5, a, b in 0..4.
+    best = max(((3*a+2*b, a, b) for a in range(5) for b in range(5) if 2*a+b <= 5))
+    assert bound["value"] == pytest.approx(best[0])
+    assert 2*bound["quantities"][0][0]+bound["quantities"][1][0] <= 5
+    assert bound["certificates"][0]["constraints"] == free["certificates"][0]["constraints"]+1
+
+
+def test_transport_portfolio_joint_row_over_screened_group_is_ignored():
+    """A row whose only live term is in a screened-out group costs nothing."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _screen_groups(0.)
+    rows = [{"id": "dead-only", "terms": {"dead": [1., 1.]}, "upper": 0.},
+            {"id": "mixed", "terms": {"live": [0., 1.], "dead": [5., 5.]}, "upper": 1.}]
+    inputs = {"groups": groups, "caps": caps, "joint_rows": rows}
+    plain = TransportPortfolioSolve("plain", _joint_params("none")).run(None, inputs)["selection"]
+    screened = TransportPortfolioSolve("lp", _joint_params("lp")).run(None, inputs)["selection"]
+    assert screened["value"] == pytest.approx(plain["value"], abs=1e-5)
+    assert screened["quantities"] == plain["quantities"]
+    assert screened["quantities"][0][1] <= 1
+    assert screened["certificates"][0]["constraints"] < plain["certificates"][0]["constraints"]
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r.update(id=""),
+    lambda r: r.update(id=3),
+    lambda r: r.update(terms={}),
+    lambda r: r.update(terms={"c": [1.]}),
+    lambda r: r.update(terms={"a": [1., 1.]}),
+    lambda r: r.update(terms={"a": [float("nan")]}),
+    lambda r: r.update(upper=-1.),
+    lambda r: r.update(upper=float("inf")),
+    lambda r: r.update(extra=1),
+    lambda r: r.pop("upper"),
+])
+def test_transport_portfolio_joint_row_refuses_invalid(change):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    row = {"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}
+    change(row)
+    with pytest.raises(ValueError):
+        TransportPortfolioSolve("bad", _joint_params()).run(
+            None, {"groups": groups, "caps": caps, "joint_rows": [row]})
+
+
+def test_transport_portfolio_joint_rows_refuse_duplicate_ids_and_wrong_shape():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    row = {"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}
+    for rows in ([row, dict(row)], {"sum": row}, [["sum"]]):
+        with pytest.raises(ValueError):
+            TransportPortfolioSolve("bad", _joint_params()).run(
+                None, {"groups": groups, "caps": caps, "joint_rows": rows})
+
+
+def test_transport_portfolio_joint_row_recorded_replay_refuses_violation():
+    """Replay re-audits the saved actions against the joint rows it is given."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    rows = [{"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}]
+    inputs = {"groups": groups, "caps": caps, "joint_rows": rows}
+    node = TransportPortfolioSolve("joint", _joint_params())
+    selection = node.run(None, inputs)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"}
+                    for c in selection["certificates"]]
+    claimed = {k: v for k, v in selection.items() if k != "certificates"}
+    replay = node._recorded(inputs, claimed, certificates)
+    assert replay["quantities"] == selection["quantities"]
+    tighter = {**inputs, "joint_rows": [{**rows[0], "upper": 4.}]}
+    with pytest.raises(ValueError, match="joint row"):
+        node._recorded(tighter, claimed, certificates)
+    without = {"groups": groups, "caps": caps}
+    with pytest.raises(ValueError, match="dimensions"):
+        node._recorded(without, claimed, certificates)
+
+
+def test_transport_portfolio_joint_row_keeps_pair_that_loosens_it():
+    """A round-trip pair with a negative joint sum is not a pure cost and stays solvable."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    groups[1].update(credit=[-1., -.5], losses=[[1., -1.], [1., -1.]], capacity=[4, 1],
+                     exclusive=[[0, 1]], reserve_rows=[[1., 1.]])
+    rows = [{"id": "r", "terms": {"a": [1.], "b": [-1., -1.]}, "upper": 0.}]
+    node = TransportPortfolioSolve("pair", _joint_params())
+    selection = node.run(None, {"groups": groups, "caps": caps, "joint_rows": rows})["selection"]
+    # Oracle: credits 3a - b0 - .5 b1 less b's expected loss b0 - b1, with
+    # a <= b0 + b1, b0 b1 exclusive, a <= 4, b0 <= 4, b1 <= 1.
+    best = max(3*a-2*b0+.5*b1 for a in range(5) for b0 in range(5) for b1 in range(2)
+               if a <= b0+b1 and not (b0 and b1))
+    assert selection["value"] == pytest.approx(best)
+    assert selection["canonicalization"]["primary"]["removed_contracts"] == 0
+    assert (1, 0) not in node._redundant
+    plain = TransportPortfolioSolve("plain", _joint_params())
+    plain.run(None, {"groups": groups, "caps": caps})
+    assert (1, 0) in plain._redundant
+
+
+def test_transport_portfolio_group_screen_with_joint_rows_restricts_hedges():
+    """Documented restriction: the screen drops a hedge group without standalone value."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _joint_groups()
+    groups[1].update(credit=[-1.])
+    rows = [{"id": "r", "terms": {"a": [1.], "b": [-10.]}, "upper": 0.}]
+    inputs = {"groups": groups, "caps": caps, "joint_rows": rows}
+    exact = TransportPortfolioSolve("none", _joint_params("none")).run(None, inputs)["selection"]
+    screened = TransportPortfolioSolve("lp", _joint_params("lp")).run(None, inputs)["selection"]
+    assert exact["quantities"] == [[4], [1]] and exact["value"] == pytest.approx(11.)
+    assert screened["value"] == 0. and screened["quantities"] == [[0], [0]]

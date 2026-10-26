@@ -1266,7 +1266,20 @@ class WeeklyOptionPortfolioStudy:
         deposit_every_days, weekly_fraction, correlation_lookback,
         correlation_min_pairs, correlation_threshold, solver, and methods.
         Each method declares id, rho, portfolio_fraction, name_fraction and
-        component_fraction (null disables correlation grouping).
+        component_fraction (null disables correlation grouping), and may add
+        two capital-charge floors the book's reserve can never fall below:
+        reserve_per_contract, a nonnegative USD charge per gross contract,
+        and short_notional_fraction, a nonnegative fraction of the sold
+        legs' strike notional (strike x multiplier x quantity). Both default
+        to 0, which keeps the terminal-loss reserve alone; they stand in for
+        the margin a broker would hold against zero-loss parity books. A
+        method may also declare shock, a correlation control with exactly
+        moves (nonempty distinct finite nonzero fractional moves of the
+        basket, each above -1; a shocked price never falls below zero), loss_fraction (0 to 1, the share of funding each shocked
+        terminal loss may reach) and beta_lookback (int >= 2, trailing
+        sessions for each name's beta on the equal-weight basket). Each move
+        adds one joint solver row bounding the selection's terminal loss net
+        of premium when every name moves beta times that fraction.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1283,6 +1296,9 @@ class WeeklyOptionPortfolioStudy:
                "weekly_fraction", "correlation_lookback", "correlation_min_pairs",
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
+    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock"}
+    _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
+    _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
 
     def __init__(self, params, inputs):
         import copy
@@ -1313,7 +1329,10 @@ class WeeklyOptionPortfolioStudy:
         if not isinstance(p["methods"], list) or not p["methods"]:
             raise ValueError("methods must be a nonempty declared list")
         for method in p["methods"]:
-            if (not isinstance(method, dict) or set(method) != self._METHOD_KEYS
+            if (not isinstance(method, dict)
+                    or set(method)-self._OPTIONAL_METHOD_KEYS != self._METHOD_KEYS
+                    or any(not number_ok(v) or v < 0 for v in self._charge(method).values())
+                    or ("shock" in method and not self._shock_valid(method["shock"]))
                     or not isinstance(method["id"], str) or not method["id"] or method["id"] in ids
                     or not number_ok(method["rho"]) or method["rho"] < 0
                     or any(not number_ok(method[k]) or not 0 < method[k] <= 1
@@ -1358,7 +1377,73 @@ class WeeklyOptionPortfolioStudy:
                 self.weeks.append(day)
                 seen.add(week)
         # Prepared features are only a function of the current decision prefix.
-        self._prepared_cache, self._component_cache = {}, {}
+        self._prepared_cache, self._component_cache, self._beta_cache = {}, {}, {}
+
+    @classmethod
+    def _charge(cls, method):
+        """Return the method's capital-charge floors, zero when undeclared."""
+        return {key: method.get(key, 0.) for key in sorted(cls._CHARGE_KEYS)}
+
+    @classmethod
+    def _shock_valid(cls, shock):
+        """Return whether a shock policy has exactly its three well-formed keys."""
+        if not isinstance(shock, dict) or set(shock) != cls._SHOCK_KEYS:
+            return False
+        moves = shock["moves"]
+        return (isinstance(moves, list) and bool(moves)
+                and all(number_ok(m) and m != 0 and m > -1 for m in moves)
+                and len(set(moves)) == len(moves)
+                and number_ok(shock["loss_fraction"]) and 0 <= shock["loss_fraction"] <= 1
+                and type(shock["beta_lookback"]) is int and shock["beta_lookback"] >= 2)
+
+    @staticmethod
+    def _shock(method):
+        """Return the method's validated shock policy, None when undeclared."""
+        return method.get("shock")
+
+    @staticmethod
+    def _loss_row(items, spot, mult):
+        """Return each item's per-contract terminal loss at an underlying price."""
+        return [-i["sign"]*mult*max((i["strike"]-spot if i["right"] == "put"
+                                     else spot-i["strike"]), 0.) for i in items]
+
+    @classmethod
+    def _shock_rows(cls, shock, betas, metadata, groups, mult, funding):
+        """Return one joint row per move: terminal loss net of premium at the shocked price."""
+        import numpy as np
+
+        upper = shock["loss_fraction"]*max(0., funding)
+        return [{"id": f"shock:{move}",
+                 "terms": {meta["id"]: (np.asarray(cls._loss_row(
+                               meta["items"], max(0., meta["spot"]*(1.+betas[meta["symbol"]]*move)), mult))
+                                        - np.asarray(group["credit"])).tolist()
+                           for group, meta in zip(groups, metadata)},
+                 "upper": upper} for move in shock["moves"]]
+
+    @staticmethod
+    def _shock_losses(rows, metadata, quantities):
+        """Return each row's terminal loss of the selected quantities, keyed by its move."""
+        return {row["id"].split(":", 1)[1]: float(sum(
+                    sum(c*q for c, q in zip(row["terms"][meta["id"]], quantities[i]))
+                    for i, meta in enumerate(metadata))) for row in rows}
+
+    @staticmethod
+    def _charge_coefficients(charge, items, mult):
+        """Return one reserve row per declared floor, in solver item order."""
+        rows = []
+        if charge["reserve_per_contract"]:
+            rows.append([charge["reserve_per_contract"]]*len(items))
+        if charge["short_notional_fraction"]:
+            rows.append([charge["short_notional_fraction"]*i["strike"]*mult if i["sign"] < 0 else 0.
+                         for i in items])
+        return rows
+
+    @classmethod
+    def _floor(cls, reserve, charge, legs, mult):
+        """Apply the one capital-charge floor the solver, books, fills and ledger share."""
+        floors = [sum(row[j]*leg["quantity"] for j, leg in enumerate(legs))
+                  for row in cls._charge_coefficients(charge, legs, mult)]
+        return max(reserve, *floors) if floors else reserve
 
     def _components(self, day):
         """Build connected components from strictly earlier adjusted returns."""
@@ -1367,11 +1452,7 @@ class WeeklyOptionPortfolioStudy:
         if day in self._component_cache:
             return self._component_cache[day]
         p, symbols = self.params, self.params["symbols"]
-        past = [d for d in self.calendar if d < day][-p["correlation_lookback"]-1:]
-        returns = {}
-        for s in symbols:
-            prices = np.array([self._bars[s][d] for d in past], dtype=float)
-            returns[s] = np.diff(np.log(prices))
+        returns, observations = self._returns(day, p["correlation_lookback"])
         parent = {s: s for s in symbols}
         def root(s):
             while parent[s] != s:
@@ -1389,8 +1470,38 @@ class WeeklyOptionPortfolioStudy:
         groups = {}
         for s in symbols:
             groups.setdefault(root(s), []).append(s)
-        result = {"groups": sorted(groups.values()), "pairs": edges, "observations": max(0, len(past)-1)}
+        result = {"groups": sorted(groups.values()), "pairs": edges, "observations": observations}
         self._component_cache[day] = result
+        return result
+
+    def _returns(self, day, lookback):
+        """Return each name's trailing log returns from sessions strictly before the day."""
+        import numpy as np
+
+        past = [d for d in self.calendar if d < day][-lookback-1:]
+        returns = {s: np.diff(np.log(np.array([self._bars[s][d] for d in past], dtype=float)))
+                   for s in self.params["symbols"]}
+        return returns, max(0, len(past)-1)
+
+    def _betas(self, day, lookback):
+        """Estimate each name's beta on the equal-weight basket from strictly earlier sessions."""
+        import numpy as np
+
+        if (day, lookback) in self._beta_cache:
+            return self._beta_cache[day, lookback]
+        symbols = self.params["symbols"]
+        returns, count = self._returns(day, lookback)
+        betas = {s: 1. for s in symbols}
+        if count >= self.params["correlation_min_pairs"]:
+            market = np.mean([returns[s] for s in symbols], axis=0)
+            variance = float(np.var(market))
+            if variance > 0:
+                fitted = {s: float(np.mean((returns[s]-returns[s].mean())*(market-market.mean()))/variance)
+                          for s in symbols}
+                if all(math.isfinite(b) for b in fitted.values()):
+                    betas = fitted
+        result = {"betas": betas, "observations": count}
+        self._beta_cache[day, lookback] = result
         return result
 
     def _prepare(self, day):
@@ -1435,13 +1546,10 @@ class WeeklyOptionPortfolioStudy:
                 mult = node.params["solver"]["multiplier"]
                 fee = node.params["solver"]["fee_per_contract_usd"]
                 credit = np.array([-i["sign"]*i["price"]*mult-fee for i in items])
-                def loss_row(spot):
-                    return [-i["sign"]*mult*max((i["strike"]-spot if i["right"] == "put"
-                                                 else spot-i["strike"]), 0.) for i in items]
-                losses = [loss_row(s) for s in prepared["grid"]]
+                losses = [self._loss_row(items, s, mult) for s in prepared["grid"]]
                 # This is the linear epigraph of the shared maximum-loss owner;
                 # the selected book is checked independently against that owner.
-                reserves = [(np.asarray(loss_row(s))-credit).tolist()
+                reserves = [(np.asarray(self._loss_row(items, s, mult))-credit).tolist()
                             for s in [0., *sorted({i["strike"] for i in items})]]
                 reserves.append((-credit).tolist())
                 key = f"{day}:{symbol}:{expiry}"
@@ -1484,7 +1592,7 @@ class WeeklyOptionPortfolioStudy:
                 caps.append({"groups": keys, "upper": max(0., limit["upper"])})
         return caps
 
-    def _books(self, selection, metadata):
+    def _books(self, selection, metadata, charge=None):
         """Freeze selected positions and verify exact full-domain reserve parity."""
         from dskit.pipeline.option_structures import classify_option_strategy
 
@@ -1500,7 +1608,7 @@ class WeeklyOptionPortfolioStudy:
             count = sum(leg["quantity"] for leg in legs)
             credit = sum(-leg["sign"]*leg["price"]*mult*leg["quantity"] for leg in legs)-fee*count
             loss = structure_max_loss(signed, strikes, credit, mult)
-            reserve = max(0., loss, -credit)
+            reserve = self._floor(max(0., loss, -credit), charge or self._charge({}), legs, mult)
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
                 raise ValueError("selected physical-domain reserve parity failed")
             books.append({k: v for k, v in meta.items() if k not in ("items", "projection")})
@@ -1510,7 +1618,7 @@ class WeeklyOptionPortfolioStudy:
                             status="selected")
         return books
 
-    def _fill(self, book, day):
+    def _fill(self, book, day, charge=None):
         """Preflight one frozen book at the next session without seeing maturity."""
         import copy
 
@@ -1540,7 +1648,9 @@ class WeeklyOptionPortfolioStudy:
         loss = structure_max_loss([(leg["right"], leg["sign"]*leg["quantity"]) for leg in filled["legs"]],
                                   [leg["strike"] for leg in filled["legs"]], credit, mult)
         filled.update(fill_date=day, decision_credit=book["credit"], credit=credit,
-                      reserve=max(0., loss, -credit), max_loss=loss, premium=premium,
+                      reserve=self._floor(max(0., loss, -credit), charge or self._charge({}),
+                                          filled["legs"], mult),
+                      max_loss=loss, premium=premium,
                       fees=fees, stress_extra=stress, status="filled")
         return filled, None
 
@@ -1562,7 +1672,7 @@ class WeeklyOptionPortfolioStudy:
                 legs, self._bars[symbol][day]/factor, strikes)
         return result
 
-    def _ledger(self, trades):
+    def _ledger(self, trades, charge=None):
         """Delegate fills, daily mid marks and terminal cashflow to the shared ledger."""
         from dskit.pipeline.libs.option_ledger import OptionStructureLedger
 
@@ -1607,13 +1717,16 @@ class WeeklyOptionPortfolioStudy:
         for book, row in zip(trades, ledger["trades"]):
             if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
                 raise ValueError("shared ledger/chronological account PnL mismatch")
-            if abs(max(0., row["max_loss_usd"], -row["credit_usd"])-book["reserve"]) > 1e-6:
+            expected = self._floor(max(0., row["max_loss_usd"], -row["credit_usd"]),
+                                   charge or self._charge({}), book["legs"],
+                                   self.params["bridge"]["solver"]["multiplier"])
+            if abs(expected-book["reserve"]) > 1e-6:
                 raise ValueError("shared ledger/chronological reserve mismatch")
         return ledger
 
     def _finish(self, method, account, decisions, rejected, snapshots):
         """Join shared-ledger daily marks with contribution-aware account snapshots."""
-        ledger = self._ledger(account.closed)
+        ledger = self._ledger(account.closed, self._charge(method))
         order_keys = [t["id"] for t in account.closed]
         marks = {(order_keys[m["order_index"]], m["date"]): m for m in ledger["marks"]}
         previous, nav, peak, max_dd = account.initial, 1., 1., 0.
@@ -1670,13 +1783,14 @@ class WeeklyOptionPortfolioStudy:
                 raise ValueError("recorded method or decision calendar differs")
             recorded_decisions = {d["date"]: d for d in recorded["decisions"]}
         account = FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], self.calendar[0])
+        charge = self._charge(method)
         decisions, rejected, snapshots, pending = [], [], [], None
         for day in self.calendar:
             deposited = account.advance(day, self._settlements(account, day))
             if pending is not None:
                 survivors = []
                 for book in pending["books"]:
-                    filled, reason = self._fill(book, day)
+                    filled, reason = self._fill(book, day, charge)
                     if filled is None:
                         rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
                     else:
@@ -1699,9 +1813,19 @@ class WeeklyOptionPortfolioStudy:
                 elif not groups or day == self.calendar[-1]:
                     record["status"] = "no_eligible_candidates"
                 else:
-                    configured = [{**g, "radius": method["rho"]} for g in groups]
+                    mult = p["bridge"]["solver"]["multiplier"]
+                    configured = [{**g, "radius": method["rho"],
+                                   "reserve_rows": g["reserve_rows"]
+                                   + self._charge_coefficients(charge, meta["items"], mult)}
+                                  for g, meta in zip(groups, metadata)]
                     solver = TransportPortfolioSolve("portfolio", p["solver"])
                     program = {"groups": configured, "caps": self._caps(limits, metadata)}
+                    shock = self._shock(method)
+                    if shock is not None:
+                        estimate = self._betas(day, shock["beta_lookback"])
+                        rows = self._shock_rows(shock, estimate["betas"], metadata, configured,
+                                                mult, account.funding)
+                        program["joint_rows"] = rows
                     if recorded_decisions is None:
                         selection = solver.run(None, program)["selection"]
                     else:
@@ -1710,13 +1834,19 @@ class WeeklyOptionPortfolioStudy:
                             raise ValueError("eligible decision lacks recorded solve evidence")
                         selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
                     timed_out = "timeout" in selection
-                    books = [] if timed_out else self._books(selection, metadata)
+                    books = [] if timed_out else self._books(selection, metadata, charge)
                     record.update(status="timeout_skipped" if timed_out else "selected" if books else "cash",
                                   selection={k: copy.deepcopy(v) for k, v in selection.items()
                                              if k != "certificates"},
                                   certificates=[{k: v for k, v in c.items() if k != "binding"}
                                                 for c in selection["certificates"]],
                                   books=copy.deepcopy(books))
+                    if shock is not None:
+                        record["shock"] = {
+                            "betas": dict(estimate["betas"]), "observations": estimate["observations"],
+                            "limit": rows[0]["upper"],
+                            "losses": {row["id"].split(":", 1)[1]: None for row in rows} if timed_out
+                            else self._shock_losses(rows, metadata, selection["quantities"])}
                     if books:
                         pending = {"books": books, "components": components}
                 decisions.append(record)

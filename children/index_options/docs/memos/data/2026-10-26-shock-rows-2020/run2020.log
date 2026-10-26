@@ -1,0 +1,130 @@
+LOAD ABBV {'forecasts': 1702, 'fitted': 1320, 'contexts': 1702, 'chain': 147464, 'bars': 253} 1 s
+LOAD ACN {'forecasts': 1702, 'fitted': 1331, 'contexts': 1702, 'chain': 156788, 'bars': 253} 1 s
+LOAD AMGN {'forecasts': 1709, 'fitted': 1489, 'contexts': 1709, 'chain': 165656, 'bars': 253} 2 s
+LOAD AMZN {'forecasts': 1709, 'fitted': 1080, 'contexts': 1709, 'chain': 841186, 'bars': 253} 4 s
+LOAD BA {'forecasts': 1697, 'fitted': 1207, 'contexts': 1697, 'chain': 246836, 'bars': 253} 5 s
+LOAD CAT {'forecasts': 1705, 'fitted': 1393, 'contexts': 1705, 'chain': 154148, 'bars': 253} 5 s
+LOAD CME {'forecasts': 1697, 'fitted': 1245, 'contexts': 1697, 'chain': 136648, 'bars': 253} 6 s
+LOAD COF {'forecasts': 1702, 'fitted': 1009, 'contexts': 1702, 'chain': 162636, 'bars': 253} 6 s
+LOAD GILD {'forecasts': 1709, 'fitted': 1256, 'contexts': 1709, 'chain': 136038, 'bars': 253} 7 s
+LOAD GLW {'forecasts': 1709, 'fitted': 1241, 'contexts': 1709, 'chain': 110632, 'bars': 253} 7 s
+LOAD GM {'forecasts': 1697, 'fitted': 1206, 'contexts': 1697, 'chain': 121392, 'bars': 253} 7 s
+LOAD GOOG {'forecasts': 1709, 'fitted': 1389, 'contexts': 1709, 'chain': 577856, 'bars': 253} 9 s
+LOAD GOOGL {'forecasts': 1709, 'fitted': 1416, 'contexts': 1709, 'chain': 583600, 'bars': 253} 11 s
+LOAD HON {'forecasts': 1697, 'fitted': 1230, 'contexts': 1697, 'chain': 143258, 'bars': 253} 11 s
+LOAD HUM {'forecasts': 1702, 'fitted': 1535, 'contexts': 1702, 'chain': 250962, 'bars': 253} 12 s
+LOAD ISRG {'forecasts': 1704, 'fitted': 1365, 'contexts': 1704, 'chain': 330216, 'bars': 253} 13 s
+LOAD JPM {'forecasts': 1701, 'fitted': 1247, 'contexts': 1701, 'chain': 163036, 'bars': 253} 14 s
+IDENTITY 1d0146f2404a70f82a2a828203679ab7f1d910ff98b4c8762c2d424df246d35b
+STUDY 53 weeks 253 sessions
+WEEK M05 W1 .03 screen sn.2 1 53 cash 37 s
+WEEK M05 W1 .03 screen sn.2 2 53 selected 49 s
+WEEK M05 W1 .03 screen sn.2 3 53 selected 64 s
+WEEK M05 W1 .03 screen sn.2 4 53 cash 77 s
+WEEK M05 W1 .03 screen sn.2 5 53 cash 93 s
+WEEK M05 W1 .03 screen sn.2 6 53 cash 106 s
+WEEK M05 W1 .03 screen sn.2 7 53 cash 115 s
+WEEK M05 W1 .03 screen sn.2 8 53 cash 125 s
+WEEK M05 W1 .03 screen sn.2 9 53 cash 136 s
+WEEK M05 W1 .03 screen sn.2 10 53 cash 149 s
+WEEK M05 W1 .03 screen sn.2 11 53 selected 174 s
+WEEK M05 W1 .03 screen sn.2 12 53 selected 212 s
+WEEK M05 W1 .03 screen sn.2 13 53 selected 232 s
+WEEK M05 W1 .03 screen sn.2 14 53 selected 254 s
+WEEK M05 W1 .03 screen sn.2 15 53 selected 275 s
+WEEK M05 W1 .03 screen sn.2 16 53 selected 301 s
+WEEK M05 W1 .03 screen sn.2 17 53 selected 335 s
+WEEK M05 W1 .03 screen sn.2 18 53 selected 356 s
+WEEK M05 W1 .03 screen sn.2 19 53 selected 371 s
+WEEK M05 W1 .03 screen sn.2 20 53 cash 384 s
+WEEK M05 W1 .03 screen sn.2 21 53 selected 406 s
+WEEK M05 W1 .03 screen sn.2 22 53 selected 434 s
+WEEK M05 W1 .03 screen sn.2 23 53 selected 465 s
+WEEK M05 W1 .03 screen sn.2 24 53 selected 476 s
+WEEK M05 W1 .03 screen sn.2 25 53 selected 490 s
+WEEK M05 W1 .03 screen sn.2 26 53 selected 507 s
+WEEK M05 W1 .03 screen sn.2 27 53 selected 529 s
+WEEK M05 W1 .03 screen sn.2 28 53 selected 549 s
+WEEK M05 W1 .03 screen sn.2 29 53 selected 562 s
+WEEK M05 W1 .03 screen sn.2 30 53 selected 575 s
+WEEK M05 W1 .03 screen sn.2 31 53 selected 594 s
+WEEK M05 W1 .03 screen sn.2 32 53 selected 603 s
+WEEK M05 W1 .03 screen sn.2 33 53 selected 614 s
+WEEK M05 W1 .03 screen sn.2 34 53 selected 629 s
+WEEK M05 W1 .03 screen sn.2 35 53 selected 643 s
+WEEK M05 W1 .03 screen sn.2 36 53 cash 657 s
+WEEK M05 W1 .03 screen sn.2 37 53 cash 667 s
+WEEK M05 W1 .03 screen sn.2 38 53 cash 683 s
+WEEK M05 W1 .03 screen sn.2 39 53 selected 700 s
+WEEK M05 W1 .03 screen sn.2 40 53 selected 721 s
+WEEK M05 W1 .03 screen sn.2 41 53 selected 742 s
+WEEK M05 W1 .03 screen sn.2 42 53 selected 762 s
+WEEK M05 W1 .03 screen sn.2 43 53 cash 774 s
+WEEK M05 W1 .03 screen sn.2 44 53 selected 785 s
+WEEK M05 W1 .03 screen sn.2 45 53 cash 796 s
+WEEK M05 W1 .03 screen sn.2 46 53 cash 810 s
+WEEK M05 W1 .03 screen sn.2 47 53 cash 820 s
+WEEK M05 W1 .03 screen sn.2 48 53 cash 829 s
+WEEK M05 W1 .03 screen sn.2 49 53 cash 837 s
+WEEK M05 W1 .03 screen sn.2 50 53 cash 846 s
+WEEK M05 W1 .03 screen sn.2 51 53 cash 850 s
+WEEK M05 W1 .03 screen sn.2 52 53 cash 856 s
+WEEK M05 W1 .03 screen sn.2 53 53 cash 857 s
+DONE M05 W1 .03 screen sn.2 {'pnl': -8908.049999999996, 'stress_pnl': -9698.799999999996, 'final_equity': 27091.950000000004, 'twr': -0.2960784253139058, 'max_drawdown': -0.7551549059396799, 'contracts': 77, 'unfilled': 20, 'wins': 8, 'losses': 7, 'fees': 50.050000000000004}
+REPLAY M05 W1 .03 screen sn.2 True
+WEEK M05 W1 .03 screen sn.2 shock10 1 53 cash 1493 s
+WEEK M05 W1 .03 screen sn.2 shock10 2 53 selected 1509 s
+WEEK M05 W1 .03 screen sn.2 shock10 3 53 selected 1526 s
+WEEK M05 W1 .03 screen sn.2 shock10 4 53 cash 1540 s
+WEEK M05 W1 .03 screen sn.2 shock10 5 53 cash 1559 s
+WEEK M05 W1 .03 screen sn.2 shock10 6 53 cash 1571 s
+WEEK M05 W1 .03 screen sn.2 shock10 7 53 cash 1581 s
+WEEK M05 W1 .03 screen sn.2 shock10 8 53 cash 1590 s
+WEEK M05 W1 .03 screen sn.2 shock10 9 53 cash 1603 s
+WEEK M05 W1 .03 screen sn.2 shock10 10 53 cash 1616 s
+WEEK M05 W1 .03 screen sn.2 shock10 11 53 selected 1643 s
+WEEK M05 W1 .03 screen sn.2 shock10 12 53 selected 1732 s
+WEEK M05 W1 .03 screen sn.2 shock10 13 53 selected 1866 s
+WEEK M05 W1 .03 screen sn.2 shock10 14 53 selected 1939 s
+WEEK M05 W1 .03 screen sn.2 shock10 15 53 selected 1997 s
+WEEK M05 W1 .03 screen sn.2 shock10 16 53 selected 2096 s
+WEEK M05 W1 .03 screen sn.2 shock10 17 53 selected 2142 s
+WEEK M05 W1 .03 screen sn.2 shock10 18 53 selected 2176 s
+WEEK M05 W1 .03 screen sn.2 shock10 19 53 selected 2191 s
+WEEK M05 W1 .03 screen sn.2 shock10 20 53 cash 2208 s
+WEEK M05 W1 .03 screen sn.2 shock10 21 53 selected 2229 s
+WEEK M05 W1 .03 screen sn.2 shock10 22 53 selected 2262 s
+WEEK M05 W1 .03 screen sn.2 shock10 23 53 selected 2289 s
+WEEK M05 W1 .03 screen sn.2 shock10 24 53 selected 2301 s
+WEEK M05 W1 .03 screen sn.2 shock10 25 53 selected 2314 s
+WEEK M05 W1 .03 screen sn.2 shock10 26 53 selected 2349 s
+WEEK M05 W1 .03 screen sn.2 shock10 27 53 selected 2385 s
+WEEK M05 W1 .03 screen sn.2 shock10 28 53 selected 2411 s
+WEEK M05 W1 .03 screen sn.2 shock10 29 53 cash 2423 s
+WEEK M05 W1 .03 screen sn.2 shock10 30 53 selected 2450 s
+WEEK M05 W1 .03 screen sn.2 shock10 31 53 selected 2478 s
+WEEK M05 W1 .03 screen sn.2 shock10 32 53 selected 2489 s
+WEEK M05 W1 .03 screen sn.2 shock10 33 53 cash 2503 s
+WEEK M05 W1 .03 screen sn.2 shock10 34 53 selected 2521 s
+WEEK M05 W1 .03 screen sn.2 shock10 35 53 selected 2535 s
+WEEK M05 W1 .03 screen sn.2 shock10 36 53 cash 2551 s
+WEEK M05 W1 .03 screen sn.2 shock10 37 53 cash 2561 s
+WEEK M05 W1 .03 screen sn.2 shock10 38 53 selected 2579 s
+WEEK M05 W1 .03 screen sn.2 shock10 39 53 selected 2595 s
+WEEK M05 W1 .03 screen sn.2 shock10 40 53 selected 2617 s
+WEEK M05 W1 .03 screen sn.2 shock10 41 53 selected 2644 s
+WEEK M05 W1 .03 screen sn.2 shock10 42 53 selected 2662 s
+WEEK M05 W1 .03 screen sn.2 shock10 43 53 selected 2674 s
+WEEK M05 W1 .03 screen sn.2 shock10 44 53 selected 2687 s
+WEEK M05 W1 .03 screen sn.2 shock10 45 53 cash 2697 s
+WEEK M05 W1 .03 screen sn.2 shock10 46 53 cash 2713 s
+WEEK M05 W1 .03 screen sn.2 shock10 47 53 cash 2722 s
+WEEK M05 W1 .03 screen sn.2 shock10 48 53 cash 2731 s
+WEEK M05 W1 .03 screen sn.2 shock10 49 53 cash 2740 s
+WEEK M05 W1 .03 screen sn.2 shock10 50 53 selected 2749 s
+WEEK M05 W1 .03 screen sn.2 shock10 51 53 cash 2753 s
+WEEK M05 W1 .03 screen sn.2 shock10 52 53 cash 2759 s
+WEEK M05 W1 .03 screen sn.2 shock10 53 53 cash 2760 s
+DONE M05 W1 .03 screen sn.2 shock10 {'pnl': 4197.200000000001, 'stress_pnl': 3212.700000000001, 'final_equity': 40197.2, 'twr': 0.12143045512666517, 'max_drawdown': -0.376177343067008, 'contracts': 92, 'unfilled': 20, 'wins': 11, 'losses': 7, 'fees': 59.800000000000004}
+REPLAY M05 W1 .03 screen sn.2 shock10 True
+ALL DONE 3427 s

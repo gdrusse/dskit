@@ -1,0 +1,136 @@
+{
+ "bridge": {
+  "dte_tolerance": 30,
+  "end_before": "2021-01-01",
+  "fold": 2,
+  "grid_labels": [
+   "zm3",
+   "zm2.5",
+   "zm2",
+   "zm1.5",
+   "zm1",
+   "zm0.5",
+   "zp0",
+   "zp0.5",
+   "zp1",
+   "zp1.5",
+   "zp2",
+   "zp2.5",
+   "zp3"
+  ],
+  "max_abs_z": 2.5,
+  "max_relative_spread": 0.5,
+  "min_quote_size": 1,
+  "projection": {
+   "cdf_tolerance": null,
+   "integration_limit": 100,
+   "payoff_tolerance": 1e-06,
+   "quadrature_tolerance": 1e-08,
+   "w1_tolerance": null
+  },
+  "protected_end_before": "2021-01-01",
+  "require_fitted": false,
+  "rho": 0.001,
+  "solver": {
+   "fee_per_contract_usd": 0.65,
+   "max_absolute_gap_usd": 1e-07,
+   "max_relative_gap": 1e-08,
+   "max_total_contracts": 10,
+   "multiplier": 100,
+   "objective_parity_usd": 1e-05,
+   "solver": "appsi_highs",
+   "solver_options": {
+    "mip_abs_gap": 1e-07,
+    "mip_rel_gap": 0,
+    "threads": 1
+   },
+   "tie_tolerance_usd": 1e-06
+  },
+  "start": "2020-01-02",
+  "stress_spread_fraction": 0.25,
+  "symbol": "AAPL",
+  "target_dte": 30,
+  "z_grid": [
+   -3,
+   -2.5,
+   -2,
+   -1.5,
+   -1,
+   -0.5,
+   0,
+   0.5,
+   1,
+   1.5,
+   2,
+   2.5,
+   3
+  ]
+ },
+ "correlation_lookback": 60,
+ "correlation_min_pairs": 20,
+ "correlation_threshold": 0.6,
+ "deposit": 1000.0,
+ "deposit_every_days": 14,
+ "initial": 10000.0,
+ "methods": [
+  {
+   "component_fraction": null,
+   "id": "M05 W1 .03 screen sn.2",
+   "name_fraction": 1.0,
+   "portfolio_fraction": 1.0,
+   "rho": 0.03,
+   "short_notional_fraction": 0.2
+  },
+  {
+   "component_fraction": null,
+   "id": "M05 W1 .03 screen sn.2 shock10",
+   "name_fraction": 1.0,
+   "portfolio_fraction": 1.0,
+   "rho": 0.03,
+   "shock": {
+    "beta_lookback": 60,
+    "loss_fraction": 0.1,
+    "moves": [
+     -0.1,
+     -0.05,
+     0.05,
+     0.1
+    ]
+   },
+   "short_notional_fraction": 0.2
+  }
+ ],
+ "solver": {
+  "absolute_gap": 50.0,
+  "group_screen": "lp",
+  "parity_tolerance": 0.001,
+  "relative_gap": 0.0,
+  "solver_options": {
+   "mip_abs_gap": 50.0,
+   "mip_rel_gap": 0.0,
+   "threads": 1,
+   "time_limit": 900
+  },
+  "timeout_policy": "return"
+ },
+ "symbols": [
+  "ABBV",
+  "ACN",
+  "AMGN",
+  "AMZN",
+  "BA",
+  "CAT",
+  "CME",
+  "COF",
+  "GILD",
+  "GLW",
+  "GM",
+  "GOOG",
+  "GOOGL",
+  "HON",
+  "HUM",
+  "ISRG",
+  "JPM"
+ ],
+ "weekly_fraction": 0.25
+}
