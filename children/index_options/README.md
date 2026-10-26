@@ -188,6 +188,14 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   Run `python -m dskit.pipeline walkforward configs/run-synthetic-distribution.json --asof 1978-06-01`
   (journal initialized). Swap the `model` node to test another rung; never
   decision-eligible.
+- Scenario and stress diagnostic: `configs/run-option-scenario-stress.json`
+  declares a synthetic same-expiry index condor and named shocks. Run
+  `python -m dskit.pipeline run configs/run-option-scenario-stress.json --asof 2026-10-26`.
+  `forward_return` is a fraction; `iv_shift` and `rate_shift` are absolute
+  decimal-point changes; `days_elapsed` is calendar days. Omitted shocks are
+  zero. Dskit's `OptionScenarioReprice` fully revalues each leg with Black-76
+  (intrinsic at expiry) and reports each scenario and the worst declared loss.
+  These are model-mark changes, not fill P&L or a probability-based risk bound.
 - Distribution zoo (ADR-0181): `run-synthetic-har.json` (log-HAR scale) and
   `run-synthetic-lightgbm.json` (needs the `lightgbm` extra) differ from the
   harness only in `model`; `python -m dskit.pipeline staged
@@ -601,6 +609,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # rows/cells/curves/summary; no fit, no dskit change)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
+                           # run-option-scenario-stress.json (synthetic what-if repricing),
                            # run-synthetic-distribution.json (ADR-0168 harness),
                            # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),
                            # source-cboe-index/-chain.json, run-real-distribution/-har/-lightgbm.json

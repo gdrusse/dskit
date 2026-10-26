@@ -290,6 +290,13 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+`option_pricing.OptionScenarioReprice` (by import path) fully reprices a
+JSON-declared European option book under named forward, IV, time and rate
+shocks. Each leg supplies its own strike, IV, days to expiry, signed quantity
+and multiplier. It returns per-leg and total model-mark P&L plus the worst
+loss among the declared scenarios; expiry uses intrinsic payoff. The result is
+a hypothetical diagnostic, with no probability, fill, fee or margin claim.
+
 ADR-0276 adds `option_structures.classify_option_strategy(legs, strikes)` for
 post-solve labels of a same-underlying, same-expiry option book. It nets exact
 right/strike duplicates, retains actual and normalized quantities, and recognizes

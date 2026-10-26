@@ -24,6 +24,18 @@ def test_configs_resolve_without_child_registration(child_root, monkeypatch):
                for item in planned.resolved.values())
 
 
+def test_synthetic_scenario_stress_document_plans_and_reprices(child_root):
+    document = load_document(str(child_root / "configs/run-option-scenario-stress.json"))
+    planned = plan(document)
+    assert planned.order == ("scenario_stress",)
+    node = planned.resolved["scenario_stress"].cls(
+        "scenario_stress", document.pipeline["scenario_stress"].params)
+    out = node.run(None, {})
+    assert out["metrics"]["n_scenarios"] == 5
+    assert out["report"].value["scenarios"][0]["pnl_usd"] == pytest.approx(0)
+    assert out["report"].value["decision_eligible"] is False
+
+
 @pytest.mark.parametrize("stream, count", [("contracts", 4), ("quotes", 4), ("settlements", 3)])
 def test_shipped_suite_passes_each_nonempty_snapshot(child_root, rows, store_factory, stream, count):
     store = store_factory(rows)
@@ -38,6 +50,7 @@ def test_shipped_suite_passes_each_nonempty_snapshot(child_root, rows, store_fac
 def test_exact_manifest_and_agent_parity(child_root):
     expected = {
         "configs/run-theta-market-proxy.json",
+        "configs/run-option-scenario-stress.json",
         "configs/run-theta-mixture-grid.json",
         "configs/run-theta-market-reference-scores.json",
         "configs/run-theta-paired-forecasts.json",
@@ -150,6 +163,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/decisioning/actions.csv", "docs/decisioning/path.csv", "docs/decisioning/README.md",
         "docs/explanations/README.md", "docs/plans/README.md", "docs/memos/README.md",
         "docs/research/README.md", "docs/research/.gitkeep",
+        "docs/research/scenario-stress/2026-10-26-option-book-repricing.md",
         "docs/research/distribution-modeling/2026-09-23-approach.md",
         "docs/research/distribution-modeling/2026-09-23-evaluation.md",
         "docs/research/distribution-modeling/2026-09-23-model-ladder.md",

@@ -48,9 +48,11 @@ Import cost: stdlib only.
 import math
 from statistics import NormalDist
 
+from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
-__all__ = ["RIGHTS", "VolIndexSmileQuotes", "black76", "black76_delta", "black76_implied_vol", "black76_vega"]
+__all__ = ["RIGHTS", "OptionScenarioReprice", "VolIndexSmileQuotes", "black76",
+           "black76_delta", "black76_implied_vol", "black76_vega"]
 
 #: The two option rights.
 RIGHTS = ("put", "call")
@@ -427,3 +429,273 @@ class VolIndexSmileQuotes:
                       years, self.rate)
         half = max(self.half_spread_min, self.half_spread_frac * mid)
         return max(0.0, mid - half), mid, mid + half
+
+
+class OptionScenarioReprice(Node):
+    """Fully reprice a declared European option book under JSON market shocks.
+
+    One forward and rate apply to every leg. Each leg declares its own strike,
+    IV, days to expiry, signed contract quantity and multiplier. A scenario
+    applies a relative forward move and parallel absolute IV/rate shifts;
+    ``days_elapsed`` reduces each leg's remaining life. An expired leg uses
+    intrinsic value. P&L is the change from the *model* baseline, excluding
+    entry fills, fees, liquidity and margin. This is a hypothetical diagnostic,
+    never an executable or decision-eligible trade result.
+
+    A scenario's omitted shock is zero. ``iv_shift`` is in volatility units
+    (0.10 means ten percentage points), and ``rate_shift`` is in continuous
+    rate units. The report keeps every leg's contribution and the worst
+    declared scenario; that worst loss has no probability or coverage claim.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        ``forward`` and ``rate`` of one European-option underlying;
+        ``year_basis_days`` converts declared calendar days to Black-76 years;
+        ``legs`` is a non-empty list of named signed option contracts;
+        ``scenarios`` is a non-empty list of named market shocks.
+
+    Examples
+    --------
+    Value a single long call under a 5% forward rise::
+
+        node = OptionScenarioReprice("stress", {
+            "forward": 100, "rate": 0, "year_basis_days": 365,
+            "legs": [{"name": "call", "right": "call", "strike": 100, "iv": 0.2,
+                      "days_to_expiry": 30, "quantity": 1, "multiplier": 100}],
+            "scenarios": [{"name": "up", "forward_return": 0.05}]})
+        report = node.run(None, {})["report"]
+    """
+
+    role = "transform"
+    outputs = ("metrics", "report")
+    _PARAMS = ("forward", "rate", "year_basis_days", "legs", "scenarios")
+    _LEG_KEYS = ("name", "right", "strike", "iv", "days_to_expiry",
+                 "quantity", "multiplier", "notes")
+    _SCENARIO_KEYS = ("name", "forward_return", "iv_shift", "days_elapsed",
+                      "rate_shift", "notes")
+    _SHOCK_DEFAULTS = {"forward_return": 0.0, "iv_shift": 0.0,
+                       "days_elapsed": 0, "rate_shift": 0.0}
+
+    @classmethod
+    def _leg_problems(cls, legs):
+        """Validate the named book, accumulating every structural defect."""
+        if not isinstance(legs, list) or not legs:
+            return ["legs must be a non-empty list"]
+        problems, names = [], set()
+        for index, leg in enumerate(legs):
+            where = f"legs[{index}]"
+            if not isinstance(leg, dict):
+                problems.append(f"{where} must be an object")
+                continue
+            unknown = sorted(str(key) for key in set(leg) - set(cls._LEG_KEYS))
+            if unknown:
+                problems.append(f"{where} has unknown keys {unknown}")
+            name = leg.get("name")
+            if not isinstance(name, str) or not name:
+                problems.append(f"{where}.name must be a non-empty string")
+            elif name in names:
+                problems.append(f"{where}.name is duplicate: {name!r}")
+            else:
+                names.add(name)
+            if "notes" in leg and not isinstance(leg["notes"], str):
+                problems.append(f"{where}.notes must be a string")
+            if leg.get("right") not in RIGHTS:
+                problems.append(f"{where}.right must be one of {RIGHTS}")
+            for field in ("strike", "iv", "multiplier"):
+                if not price_ok(leg.get(field)):
+                    problems.append(f"{where}.{field} must be positive and finite")
+            days = leg.get("days_to_expiry")
+            if type(days) is not int or days <= 0:
+                problems.append(f"{where}.days_to_expiry must be a positive integer")
+            quantity = leg.get("quantity")
+            if type(quantity) is not int or quantity == 0:
+                problems.append(f"{where}.quantity must be a nonzero integer")
+        return problems
+
+    @classmethod
+    def _scenario_problems(cls, scenarios):
+        """Validate scenario names and each supported shock."""
+        if not isinstance(scenarios, list) or not scenarios:
+            return ["scenarios must be a non-empty list"]
+        problems, names = [], set()
+        for index, scenario in enumerate(scenarios):
+            where = f"scenarios[{index}]"
+            if not isinstance(scenario, dict):
+                problems.append(f"{where} must be an object")
+                continue
+            unknown = sorted(str(key) for key in set(scenario) - set(cls._SCENARIO_KEYS))
+            if unknown:
+                problems.append(f"{where} has unknown keys {unknown}")
+            name = scenario.get("name")
+            if not isinstance(name, str) or not name:
+                problems.append(f"{where}.name must be a non-empty string")
+            elif name in names:
+                problems.append(f"{where}.name is duplicate: {name!r}")
+            else:
+                names.add(name)
+            if "notes" in scenario and not isinstance(scenario["notes"], str):
+                problems.append(f"{where}.notes must be a string")
+            move = scenario.get("forward_return", cls._SHOCK_DEFAULTS["forward_return"])
+            if not number_ok(move) or move <= -1.0:
+                problems.append(f"{where}.forward_return must be finite and > -1")
+            for field in ("iv_shift", "rate_shift"):
+                if not number_ok(scenario.get(field, cls._SHOCK_DEFAULTS[field])):
+                    problems.append(f"{where}.{field} must be finite")
+            days = scenario.get("days_elapsed", cls._SHOCK_DEFAULTS["days_elapsed"])
+            if type(days) is not int or days < 0:
+                problems.append(f"{where}.days_elapsed must be an integer >= 0")
+        return problems
+
+    @classmethod
+    def validate_params(cls, params):
+        """Refuse malformed books and shocks before a run can start.
+
+        Parameters
+        ----------
+        params : dict
+            Candidate JSON parameters.
+
+        Returns
+        -------
+        list of str
+            Every known problem; empty when the declaration can be priced.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if not price_ok(params.get("forward")):
+            problems.append("forward must be positive and finite")
+        if not number_ok(params.get("rate")):
+            problems.append("rate must be finite")
+        basis = params.get("year_basis_days")
+        if type(basis) is not int or basis <= 0:
+            problems.append("year_basis_days must be a positive integer")
+        problems.extend(cls._leg_problems(params.get("legs")))
+        problems.extend(cls._scenario_problems(params.get("scenarios")))
+        if problems:
+            return problems
+        baseline_marks = [None] * len(params["legs"])
+        for index, scenario in enumerate((None, *params["scenarios"])):
+            before, values, deltas = len(problems), [], []
+            for leg_index, leg in enumerate(params["legs"]):
+                try:
+                    mark = cls._mark(params, leg, scenario)
+                    if not number_ok(mark):
+                        raise ValueError("non-finite model price")
+                    value = mark * leg["quantity"] * leg["multiplier"]
+                    if not number_ok(value):
+                        raise ValueError("non-finite signed contract value")
+                    values.append(value)
+                    if index == 0:
+                        baseline_marks[leg_index] = mark
+                    elif baseline_marks[leg_index] is not None:
+                        delta = (mark - baseline_marks[leg_index]) * leg["quantity"] * leg["multiplier"]
+                        if not number_ok(delta):
+                            raise ValueError("non-finite leg P&L")
+                        deltas.append(delta)
+                except (OverflowError, ValueError, ZeroDivisionError) as exc:
+                    label = "baseline" if index == 0 else f"scenarios[{index - 1}]"
+                    problems.append(f"{label} cannot price leg {leg['name']!r}: {exc}")
+            if len(problems) == before:
+                for field, amounts in (("value", values), ("P&L", deltas)):
+                    if field == "P&L" and index == 0:
+                        continue
+                    try:
+                        total = math.fsum(amounts)
+                        if not number_ok(total):
+                            raise ValueError("non-finite sum")
+                    except (OverflowError, ValueError) as exc:
+                        label = "baseline" if index == 0 else f"scenarios[{index - 1}]"
+                        problems.append(f"{label} portfolio {field} cannot be summed: {exc}")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require the scenario book to come solely from declared JSON.
+
+        Parameters
+        ----------
+        inputs : dict
+            Candidate pipeline input wires.
+
+        Returns
+        -------
+        list of str
+            Empty for no wires, otherwise a refusal.
+        """
+        return [] if not inputs else ["inputs must be empty; the book is declared in params"]
+
+    @classmethod
+    def _mark(cls, params, leg, scenario):
+        """Price one leg at the baseline or one fully shocked market state."""
+        shock = scenario or {}
+        forward = params["forward"] * (1.0 + shock.get(
+            "forward_return", cls._SHOCK_DEFAULTS["forward_return"]))
+        rate = params["rate"] + shock.get("rate_shift", cls._SHOCK_DEFAULTS["rate_shift"])
+        vol = leg["iv"] + shock.get("iv_shift", cls._SHOCK_DEFAULTS["iv_shift"])
+        if not price_ok(forward):
+            raise ValueError("shocked forward must remain positive and finite")
+        if not number_ok(rate):
+            raise ValueError("shocked rate must remain finite")
+        if not price_ok(vol):
+            raise ValueError("iv_shift leaves a nonpositive or non-finite IV")
+        remaining = leg["days_to_expiry"] - shock.get(
+            "days_elapsed", cls._SHOCK_DEFAULTS["days_elapsed"])
+        if remaining <= 0:
+            intrinsic = (forward - leg["strike"] if leg["right"] == "call"
+                         else leg["strike"] - forward)
+            return max(0.0, intrinsic)
+        return black76(leg["right"], forward, leg["strike"], vol,
+                       remaining / params["year_basis_days"], rate)
+
+    def run(self, ctx, inputs):
+        """Return per-scenario, per-leg hypothetical USD P&L and worst loss.
+
+        Parameters
+        ----------
+        ctx : NodeContext or None
+            Unused; the analysis is fully declared in the JSON document.
+        inputs : dict
+            Must be empty.
+
+        Returns
+        -------
+        dict
+            Numeric ``metrics`` and a persistent JSON ``report``.
+
+        Raises
+        ------
+        ValueError
+            If an input wire would be ignored.
+        """
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError("; ".join(problems))
+        params = self.params
+        baseline_marks = [self._mark(params, leg, None) for leg in params["legs"]]
+        base_value = math.fsum(
+            leg["quantity"] * leg["multiplier"] * mark
+            for leg, mark in zip(params["legs"], baseline_marks))
+        rows = []
+        for scenario in params["scenarios"]:
+            leg_rows = []
+            for leg, base_mark in zip(params["legs"], baseline_marks):
+                mark = self._mark(params, leg, scenario)
+                pnl = leg["quantity"] * leg["multiplier"] * (mark - base_mark)
+                leg_rows.append({"name": leg["name"], "base_mark": base_mark,
+                                 "scenario_mark": mark, "pnl_usd": pnl})
+            pnl = math.fsum(row["pnl_usd"] for row in leg_rows)
+            rows.append({"name": scenario["name"], "shocks": {
+                key: scenario.get(key, default) for key, default in self._SHOCK_DEFAULTS.items()},
+                "value_usd": base_value + pnl, "pnl_usd": pnl, "legs": leg_rows})
+        worst = min(rows, key=lambda row: row["pnl_usd"])
+        metrics = {"n_scenarios": len(rows), "base_value_usd": base_value,
+                   "worst_pnl_usd": worst["pnl_usd"],
+                   "worst_loss_usd": max(0.0, -worst["pnl_usd"])}
+        report = {"kind": "option_scenario_reprice", "decision_eligible": False,
+                  "pricing": "black76_forward", "units": "USD",
+                  "basis": "model mid; excludes fills, fees, liquidity and margin",
+                  "base_value_usd": base_value, "worst_scenario": worst["name"],
+                  "scenarios": rows, "metrics": metrics}
+        return {"metrics": metrics, "report": JsonArtifact(report)}

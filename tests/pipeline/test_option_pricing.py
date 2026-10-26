@@ -6,12 +6,111 @@ imports it. The expected values are written out independently of the
 class under test.
 """
 
+import copy
 import math
 
 import pytest
 
 from dskit.pipeline import option_pricing
+from dskit.pipeline.node import ConfigError
 from dskit.pipeline.option_pricing import RIGHTS, VolIndexSmileQuotes, black76
+
+
+def test_option_scenario_reprice_is_available_by_import_path():
+    assert hasattr(option_pricing, "OptionScenarioReprice")
+
+
+SCENARIO_BOOK = {
+    "forward": 100.0, "rate": 0.0, "year_basis_days": 365,
+    "legs": [
+        {"name": "long_put", "right": "put", "strike": 90.0, "iv": 0.2,
+         "days_to_expiry": 30, "quantity": 1, "multiplier": 100},
+        {"name": "short_put", "right": "put", "strike": 95.0, "iv": 0.2,
+         "days_to_expiry": 30, "quantity": -1, "multiplier": 100},
+        {"name": "short_call", "right": "call", "strike": 105.0, "iv": 0.2,
+         "days_to_expiry": 30, "quantity": -1, "multiplier": 100},
+        {"name": "long_call", "right": "call", "strike": 110.0, "iv": 0.2,
+         "days_to_expiry": 30, "quantity": 1, "multiplier": 100},
+    ],
+    "scenarios": [
+        {"name": "unchanged"},
+        {"name": "selloff", "forward_return": -0.1, "iv_shift": 0.1,
+         "days_elapsed": 1, "rate_shift": 0.01},
+        {"name": "expiry_crash", "forward_return": -0.2, "days_elapsed": 30},
+    ],
+}
+
+
+def test_option_scenario_reprice_fully_revalues_each_leg_and_reports_worst_loss():
+    out = option_pricing.OptionScenarioReprice("stress", SCENARIO_BOOK).run(None, {})
+    report = out["report"].value
+    scenarios = {row["name"]: row for row in report["scenarios"]}
+    assert report["decision_eligible"] is False
+    assert report["pricing"] == "black76_forward"
+    assert scenarios["unchanged"]["pnl_usd"] == pytest.approx(0.0)
+
+    base = sum(leg["quantity"] * leg["multiplier"] * black76(
+        leg["right"], 100.0, leg["strike"], leg["iv"], 30 / 365)
+        for leg in SCENARIO_BOOK["legs"])
+    shocked = sum(leg["quantity"] * leg["multiplier"] * black76(
+        leg["right"], 90.0, leg["strike"], leg["iv"] + 0.1, 29 / 365,
+        rate=0.01) for leg in SCENARIO_BOOK["legs"])
+    assert report["base_value_usd"] == pytest.approx(base)
+    assert scenarios["selloff"]["value_usd"] == pytest.approx(shocked)
+    assert scenarios["selloff"]["pnl_usd"] == pytest.approx(shocked - base)
+    assert sum(leg["pnl_usd"] for leg in scenarios["selloff"]["legs"]) == \
+        pytest.approx(shocked - base)
+
+    # At expiry this condor's put wing loses $500 in intrinsic value.
+    assert scenarios["expiry_crash"]["value_usd"] == pytest.approx(-500.0)
+    assert scenarios["expiry_crash"]["pnl_usd"] == pytest.approx(-500.0 - base)
+    pnls = [row["pnl_usd"] for row in report["scenarios"]]
+    assert out["metrics"]["worst_pnl_usd"] == pytest.approx(min(pnls))
+    assert out["metrics"]["worst_loss_usd"] == pytest.approx(max(0.0, -min(pnls)))
+    assert report["worst_scenario"] == min(report["scenarios"], key=lambda x: x["pnl_usd"])["name"]
+
+
+def test_option_scenario_reprice_refuses_unused_inputs():
+    node = option_pricing.OptionScenarioReprice("stress", SCENARIO_BOOK)
+    assert node.validate_inputs({"ledger": []})
+    with pytest.raises(ValueError, match="inputs"):
+        node.run(None, {"ledger": []})
+
+
+def test_option_scenario_reprice_refuses_an_overflowing_portfolio_total():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["forward"] = 1e307
+    params["legs"] = [
+        {"name": f"call_{i}", "right": "call", "strike": 1e307, "iv": 1.0,
+         "days_to_expiry": 30, "quantity": 1, "multiplier": 80}
+        for i in range(3)]
+    with pytest.raises(ConfigError, match="portfolio"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+@pytest.mark.parametrize("change,match", [
+    (lambda p: p.update(forward=0), "forward"),
+    (lambda p: p.update(year_basis_days=0), "year_basis_days"),
+    (lambda p: p.update(typo=1), "unknown"),
+    (lambda p: p.update(legs=[]), "legs"),
+    (lambda p: p["legs"][0].update(quantity=True), "quantity"),
+    (lambda p: p["legs"][0].update(iv=0), "iv"),
+    (lambda p: p["legs"][0].update(strke=90), "unknown"),
+    (lambda p: p["legs"][1].update(name="long_put"), "duplicate"),
+    (lambda p: p.update(scenarios=[]), "scenarios"),
+    (lambda p: p["scenarios"][1].update(forward_return=-1), "forward_return"),
+    (lambda p: p["scenarios"][1].update(iv_shift=-0.2), "iv_shift"),
+    (lambda p: p["scenarios"][1].update(days_elapsed=-1), "days_elapsed"),
+    (lambda p: p["scenarios"][1].update(rate_shift=float("inf")), "rate_shift"),
+    (lambda p: p["scenarios"][1].update(forward_retrun=0.1), "unknown"),
+    (lambda p: p["scenarios"][2].update(name="selloff"), "duplicate"),
+    (lambda p: p["scenarios"][0].update(notes=42), "notes"),
+])
+def test_option_scenario_reprice_refuses_invalid_json_knobs(change, match):
+    params = copy.deepcopy(SCENARIO_BOOK)
+    change(params)
+    with pytest.raises(ConfigError, match=match):
+        option_pricing.OptionScenarioReprice("stress", params)
 
 YEARS = 21 / 252
 
