@@ -32861,3 +32861,92 @@ existing-file actions. Skill unchanged. New canonical SHA256:
 New canvas SHA256:
 9cf52c78a283f3a104f93bee27657109d7756adf7cc44585ff6e69d41e406950
 Both final independent lenses restart on this bounded corrected candidate.
+
+TDD final feasible follow-ups on immutable candidate
+3558f4b8b847512b6028c0af7778e4b5e6cba7a3 (base 95096f4c).
+These are existing independent reviewer follow-ups, NOT fresh-context reviews.
+New reviewer allocation and activation of an older independent reviewer both
+returned "agent thread limit reached". This limitation does not waive the
+workflow's fresh-context requirement. The artifact is built and checked locally;
+formal candidate closure remains open. No merge, push, runtime implementation,
+market execution or protected-window opening is claimed.
+
+Correctness/authority retained report — GPT-6, /root/tdd_correctness_final:
+PASS. Unresolved Critical 0 / Major 0 / Minor 0 / Nit 0.
+C4, C5 and C6 are resolved. The document distinguishes full fit populations,
+scoring subsamples, artifact rows, PIT/QA learning and reporting masks;
+reconstructs empirical baselines from full T; and applies all four currently
+built A0007 references. Earlier C1/C2/C3/I1 corrections remain intact.
+
+Independent verification passed:
+- Reproduced all ten fit identities from recovered configs and bounded
+  identity/date columns, independently deriving ticker admission and monitor
+  boundaries.
+- Matched every scored fit/validation band's ordered physical identities
+  against the prescribed stride/full-validation populations.
+- Verified canonical/canvas/skill hashes and canonical/canvas equality;
+  48 windows, 15 configs and 15 run references.
+- Verified 80 run/artifact hash entries, three pipeline attestations and ten
+  fit manifests, settings and checkpoints.
+- Rechecked current authority, mathematical stages, fixed settings versus
+  checkpoint/HPO selection, settlement boundaries, protected periods,
+  undecided choices and provenance distinctions.
+No edits, market runs, protected outcomes or full suite. Visual rendering and
+TypeScript were not repeated by this lens. Historical process environments
+remain declared bindings rather than independently attested execution
+environments, as disclosed. This existing reviewer's follow-up does not satisfy
+the fresh-context requirement by itself and is not recorded as doing so.
+
+Integration retained report — GPT-6, /root/tdd_integration:
+PASS. Unresolved Critical 0 / Major 0 / Minor 0 / Nit 0.
+Existing independent reviewer follow-up, not a fresh-context review; allocation
+limitation remains disclosed.
+
+Verified:
+- Clean worktree at stated candidate.
+- Canonical JSON/embedded snapshot equality and exact three hashes below.
+- 48 windows, 15 configs, 15 execution records; references and checked hashes
+  pass; no orphan config.
+- All 15 reachable group/fold states preserve timeline/chart IDs, endpoint
+  counts and selection fallback; 808 displayed file actions resolve to existing
+  WSL files.
+- Additional selection checks cover all 48 windows: exact operation, every
+  assigned run record and every config hash appear in selected details.
+  Chart/SVG click selection works; changing groups resets the fold filter.
+- All five folds, settlement tails, null dates and scoring/gate rows accessible.
+- I1 corrected: explicitly undecided hypersearch separate from epoch monitoring.
+- C2/C3 corrected: score config/run evidence exposed, regime slice_score and
+  separate aggregate gate row.
+- Skill maintenance instructions consistent with current artifact structure.
+
+Checks, after source inspection, in WSL2:
+  /home/russell/dskit/.venv/bin/python -B /tmp/check-index-options-tdd.py
+  /home/russell/.vscode-server/bin/e646868227c3e3a9e3f24277c8c7220be42c0be7/node /tmp/typecheck-tdd.cjs
+  /home/russell/.vscode-server/bin/e646868227c3e3a9e3f24277c8c7220be42c0be7/node /tmp/check-tdd-rendered-tree.cjs
+JSON checks passed; TypeScript 0 diagnostics; rendered-tree checks passed.
+Focused pytest:
+  children/index_options/tests/test_configs.py::test_exact_manifest_and_agent_parity
+  tests/docs/test_budgets.py
+Result: 5 passed. Additional all-window selection checks ran as an ephemeral
+stdin extension of the inspected harness; no reviewed artifact edited.
+
+Integration limits: SDK stand-ins verify component structure/handlers, not host
+pixels, typography or actual file-opening dispatch. No screenshot-level
+verification. Did not independently reproduce all mathematical populations or
+rehash large parquet artifacts. No market execution, protected outcome decoding
+or full suite.
+
+Unchanged reviewed evidence:
+- Canonical JSON SHA256:
+  4db996fee2058789c8d76245d42367a39358793fc7d00e1d76e87da4bd9b78ea
+- Canvas SHA256:
+  9cf52c78a283f3a104f93bee27657109d7756adf7cc44585ff6e69d41e406950
+- Personal skill SHA256:
+  9eba67bc75459e27858a26355d0ae1fcbc3eea074fa5141b0c65e4958ae2c20d
+All former findings C1-C6/I1 resolved; no remaining Minor/Nit backlog.
+Final evidence-only amendment verified these hashes and the unchanged candidate
+content, contract/matrix and dependency references. Only this review record is
+appended. Canvas opening was requested and returned queued, not confirmed visible.
+Next bounded process action: fresh correctness/authority and integration contexts
+on unchanged candidate content when reviewer allocation is available. Until then
+do not call the required review gate closed or the branch ready to land.
