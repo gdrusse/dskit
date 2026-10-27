@@ -132,6 +132,8 @@ dskit/pipeline/
 │                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
 │                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr) -> HoldVsRedeploy's `redeploy_return` port
+├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
+│                      projected (pro rata) vs realized growth, surprise by decision; the hold side's own score
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:

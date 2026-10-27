@@ -91,6 +91,11 @@ class MarketHoldReturn(Node):
             check_int_param(problems, "reversion_years", params["reversion_years"], ge=1)
         return problems
 
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Answer ``pure``: the node reads nothing but its inputs and params."""
+        return "pure"
+
     def fingerprint(self):
         """Return the params: a literal source's identity is exactly what it declares."""
         return dict(self.params)
@@ -171,6 +176,11 @@ class BetaHoldReturns(Node):
         if "default_beta" in params and not number_ok(params["default_beta"]):
             problems.append(f"default_beta must be a number, got {params['default_beta']!r}")
         return problems
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Answer ``pure``: the node reads nothing but its inputs and params."""
+        return "pure"
 
     def run(self, ctx, inputs):
         """Return ``{symbol: rate}`` for every symbol seen on the rows, and a summary."""

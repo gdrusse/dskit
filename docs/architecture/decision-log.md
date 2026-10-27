@@ -32538,3 +32538,21 @@ return literal at all: hold from `$betas.rates`, redeploy from
 `returns`). Files: `dskit/pipeline/active_hurdle.py`,
 `tests/pipeline/test_active_hurdle.py`. Sweep: active_hurdle deflated_rate
 terminal_tax; no near matches.
+
+#### ADR-0279 amendment: decision outcomes, the feedback loop (owner 2026-10-27, "build all the machinery")
+
+Built, tier-1 by import path: `dskit/pipeline/decision_outcomes.py` —
+`DecisionOutcomes` joins an earlier run's decision rows (now carrying
+`horizon_years`) to a later positions snapshot on one declared date and
+reports per-share projected (pro rata) vs realized growth and the surprise,
+by decision. Only the hold forecast is scored; the active side is scored by
+the child that runs it. All six ADR-0279 kinds answer `serving_effect`
+"pure". Child: `configs/run-decision-outcomes.json` — decisions published
+back through onboarding (`localtables`, layout `file`, one stream per run
+file) + the positions snapshots filtered to the observation date → outcomes
+→ `outcomes/<run>.jsonl`; e2e test runs decision then scoring a year apart.
+A serve document (`dskit.production`) is deferred: the cadence is weekly and
+advisory, so a scheduled `pipeline run` is the fit until an order path
+exists. Files: `dskit/pipeline/decision_outcomes.py`,
+`tests/pipeline/test_decision_outcomes.py`, the child config.
+Sweep: decision_outcomes projected_growth realized_growth; no near matches.

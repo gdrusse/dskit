@@ -19,12 +19,13 @@ from dskit.pipeline.document import load_document
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_DOC = os.path.join(CHILD_ROOT, "configs", "run-hold-vs-redeploy.json")
+OUTCOMES_DOC = os.path.join(CHILD_ROOT, "configs", "run-decision-outcomes.json")
 
 ROWS = [
-    {"account": "a" * 16, "symbol": "VTI", "asset_type": "EQUITY", "as_of": "2026-10-27",
+    {"account": "a" * 16, "symbol": "VTI", "asset_type": "EQUITY", "as_of": "2025-10-27",
      "long_quantity": 10.0, "short_quantity": 0.0, "average_price": 200.0,
      "cost_basis": 2000.0, "market_value": 2500.0},
-    {"account": "a" * 16, "symbol": "AAPL", "asset_type": "EQUITY", "as_of": "2026-10-27",
+    {"account": "a" * 16, "symbol": "AAPL", "asset_type": "EQUITY", "as_of": "2025-10-27",
      "long_quantity": 3.0, "short_quantity": 0.0, "average_price": 150.0,
      "cost_basis": 450.0, "market_value": 600.0},
 ]
@@ -37,8 +38,9 @@ EMAX_5 = 0.39777384449675074
 
 
 def _cli(cwd, *args):
-    subprocess.run([sys.executable, "-m", "dskit.onboarding", *args], cwd=cwd, check=True,
-                   capture_output=True, text=True)
+    done = subprocess.run([sys.executable, "-m", "dskit.onboarding", *args], cwd=cwd,
+                          capture_output=True, text=True)
+    assert done.returncode == 0, (args, done.stdout, done.stderr)
 
 
 @pytest.fixture
@@ -122,3 +124,56 @@ def test_hold_vs_redeploy_end_to_end(positions_root, monkeypatch):
         lines = fh.read().splitlines()
     assert len(lines) == 2
     assert all(json.loads(line)["run_id"] == os.path.basename(result.run_dir) for line in lines)
+
+
+def test_decision_outcomes_document_is_valid():
+    document = load_document(OUTCOMES_DOC)
+    assert list(document.pipeline) == ["decisions", "positions", "later", "outcomes", "scored"]
+    assert document.hash
+
+
+def test_outcomes_score_the_decision_run_a_year_later(positions_root, monkeypatch):
+    monkeypatch.chdir(positions_root)
+    document = load_document(RUN_DOC)
+    document = replace(document, outputs=OutputsConfig(run_root=str(positions_root / "runs")))
+    decided = run_document(document, asof="2026-10-27", journal=False)
+    assert decided.state == "ran", (decided.state, decided.error)
+    run_name = os.path.basename(decided.run_dir)
+    # a year later (today, so the snapshot is not a forecast): VTI doubled its share
+    # count and its price rose 10%, AAPL fell 10%
+    with open(positions_root / "data" / "positions-later.jsonl", "w") as fh:
+        fh.write(json.dumps({**ROWS[0], "as_of": "2026-10-27", "long_quantity": 20.0,
+                             "market_value": 5500.0, "cost_basis": 4500.0}) + "\n")
+        fh.write(json.dumps({**ROWS[1], "as_of": "2026-10-27", "market_value": 540.0}) + "\n")
+    _cli(positions_root, "acquire", "--root", "./ob", "--source", "schwab",
+         "--stream", "positions-later", "--mode", "backfill")
+    _cli(positions_root, "register-source", "decisions", "--root", "./ob",
+         "--catalog-source", "decisions-src", "--connector", "localtables",
+         "--config", json.dumps({"path": str(positions_root / "decisions"), "layout": "file",
+                                 "effective_field": "as_of"}),
+         "--activate")
+    _cli(positions_root, "acquire", "--root", "./ob", "--source", "decisions",
+         "--stream", run_name, "--mode", "backfill")
+    (positions_root / "outcomes").mkdir()
+    with open(OUTCOMES_DOC) as fh:
+        raw = json.load(fh)
+    raw["pipeline"]["decisions"]["params"]["stream"] = run_name
+    raw["pipeline"]["positions"]["params"]["stream"] = "positions-later"
+    raw["pipeline"]["later"]["params"]["where"][0]["value"] = "2026-10-27"
+    scored_doc = positions_root / "run-decision-outcomes.json"
+    with open(scored_doc, "w") as fh:
+        json.dump(raw, fh)
+    document = load_document(str(scored_doc))
+    document = replace(document, outputs=OutputsConfig(run_root=str(positions_root / "runs")))
+    result = run_document(document, asof="2026-10-27", journal=False)
+    assert result.state == "ran", (result.state, result.error)
+    rows = {row["symbol"]: row for row in result.outputs["outcomes"]["records"]}
+    assert set(rows) == {"VTI", "AAPL"}
+    assert rows["VTI"]["realized_growth"] == pytest.approx(1.1)
+    assert rows["AAPL"]["realized_growth"] == pytest.approx(0.9)
+    decided_vti = {r["symbol"]: r for r in decided.outputs["decide"]["records"]}["VTI"]
+    elapsed = 365 / 365.25
+    assert rows["VTI"]["projected_growth"] == pytest.approx(
+        (decided_vti["hold_value"] / 2500.0) ** (elapsed / 5))
+    assert result.outputs["outcomes"]["summary"]["unmatched"] == []
+    assert os.path.isfile(result.outputs["scored"]["path"])

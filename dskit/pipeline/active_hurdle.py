@@ -89,6 +89,11 @@ class ActiveHurdle(Node):
             problems.append(f"min_dsr must be a number in [0, 1], got {params['min_dsr']!r}")
         return problems
 
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Answer ``pure``: the node reads nothing but its inputs and params."""
+        return "pure"
+
     def _series(self, records):
         """Return the per-period returns the rows carry; refuse by index and field."""
         if not isinstance(records, list):

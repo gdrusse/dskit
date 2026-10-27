@@ -841,6 +841,12 @@ they register only into private registries, never the default one.
   claim, `(mean - E[max null Sharpe over trials] x sd) x periods_per_year`
   (`stats.deflated_sharpe_ratio`); below `min_dsr` the hurdle is withheld
   (`rate` is `None`, `admissible` false).
+- `decision_outcomes.py` (`DecisionOutcomes`) (ADR-0279, by import path): the
+  feedback loop — each decision row's pro-rated projected growth,
+  `(hold_value / value) ** (elapsed / horizon_years)`, against the realized
+  per-share growth from a later snapshot on one date; `surprise` per row and
+  by decision; decided symbols missing later are listed unmatched, not scored.
+  Every ADR-0279 kind answers `serving_effect` "pure".
 - `hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`) (ADR-0279, research
   A0001, by import path): the market's expected nominal return as named blocks
   (dividend yield + real growth + inflation + `(fair_cape / cape) **
@@ -1091,6 +1097,8 @@ dskit/pipeline/
 │                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
 │                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr) -> HoldVsRedeploy's `redeploy_return` port
+├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
+│                      projected (pro rata) vs realized growth, surprise by decision; the hold side's own score
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its

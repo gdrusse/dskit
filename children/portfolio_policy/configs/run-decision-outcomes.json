@@ -1,0 +1,59 @@
+{
+  "name": "portfolio_policy-decision-outcomes",
+  "notes": "ADR-0279 Stage 4, the feedback loop: an earlier run's decisions (published back through onboarding, one stream per run file) against a later positions snapshot -> per-symbol projected vs realized per-share growth. Only the hold forecast is scored here; the active side is scored in the child that runs it. The decision run name and the observation date are values of THIS document: scoring a different run or date is a different experiment.",
+  "pipeline": {
+    "decisions": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./ob",
+        "source": "decisions",
+        "stream": "REPLACE-with-the-decision-run-name",
+        "key_fields": ["account", "symbol", "as_of"]
+      },
+      "notes": "Role 'data': the decisions/<run>.jsonl file the decision run wrote, acquired through the localtables connector (layout file: the stream is the file stem = the run name). Set stream to the run being scored."
+    },
+    "positions": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./ob",
+        "source": "schwab",
+        "stream": "positions",
+        "key_fields": ["account", "symbol", "as_of"]
+      },
+      "notes": "Role 'data': every positions snapshot acquired so far; the filter below picks the one observation date."
+    },
+    "later": {
+      "uses": "filter",
+      "inputs": { "records": "$positions.records" },
+      "params": {
+        "where": [ { "field": "as_of", "op": "==", "value": "2027-10-27" } ]
+      },
+      "notes": "The observation date, declared: one snapshot, so the elapsed time is one number. Set it to a day a positions pull exists for."
+    },
+    "outcomes": {
+      "uses": "dskit.pipeline.decision_outcomes:DecisionOutcomes",
+      "inputs": { "decisions": "$decisions.records", "positions": "$later.records" },
+      "params": {
+        "symbol_field": "symbol",
+        "as_of_field": "as_of",
+        "value_field": "market_value",
+        "quantity_field": "long_quantity"
+      },
+      "notes": "Per-share growth (market_value / long_quantity) so a buy or a sell between the two dates is not read as a return; surprise = realized - projected (pro rata for the elapsed fraction of horizon_years)."
+    },
+    "scored": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "inputs": { "records": "$outcomes.records" },
+      "params": {
+        "path": "outcomes/{run}.jsonl",
+        "source": "hold-forecast outcomes per symbol: projected vs realized growth",
+        "overwrite": false
+      },
+      "notes": "Role 'report': one file per scoring run under ./outcomes."
+    }
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd. Placement is not identity."
+  }
+}

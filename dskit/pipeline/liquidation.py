@@ -50,7 +50,7 @@ HOLDINGS = ("long", "short")
 
 _LIQ_FIELDS = ("liq_proceeds", "liq_gain", "liq_holding", "liq_rate", "liq_tax", "liq_net")
 _DECISION_FIELDS = (
-    "hold_value", "hold_terminal_tax", "hold_net", "redeploy_value",
+    "horizon_years", "hold_value", "hold_terminal_tax", "hold_net", "redeploy_value",
     "redeploy_terminal_tax", "redeploy_net", "advantage", "decision",
 )
 #: HoldVsRedeploy params that may be absent: the two a wire can replace and the terminal-tax pair.
@@ -173,6 +173,11 @@ class LiquidationTax(Node):
                 f"acquired_field must be a non-empty field name, got {params['acquired_field']!r}"
             )
         return problems
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Answer ``pure``: the node reads nothing but its inputs and params."""
+        return "pure"
 
     def _holding(self, index, row, as_of):
         """Return the holding class of one row, from its acquisition date or the default."""
@@ -306,6 +311,11 @@ class HoldVsRedeploy(Node):
                         lower=0.0, upper=1.0)
         return problems
 
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Answer ``pure``: the node reads nothing but its inputs and params."""
+        return "pure"
+
     def _hold_rate(self, index, row, hold):
         """Return the annual hold return of one row: the scalar, or the symbol's entry."""
         if not isinstance(hold, dict):
@@ -390,7 +400,8 @@ class HoldVsRedeploy(Node):
                 decision = "exit" if advantage > 0.0 else "hold"
                 redeploy_total += redeploy_value
                 redeploy_net_total += redeploy_net
-            out.append({**row, "hold_value": hold_value, "hold_terminal_tax": hold_tax,
+            out.append({**row, "horizon_years": years, "hold_value": hold_value,
+                        "hold_terminal_tax": hold_tax,
                         "hold_net": hold_net, "redeploy_value": redeploy_value,
                         "redeploy_terminal_tax": redeploy_tax, "redeploy_net": redeploy_net,
                         "advantage": advantage, "decision": decision})
