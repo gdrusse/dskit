@@ -128,8 +128,14 @@ class StudyContract(ABC):
                     or packet["predecessor"] != previous
                     or not _day(packet["start"]) < _day(packet["end_before"])):
                 raise ValueError("invalid packet order or identity")
-            if ids and packet["start"] < schedule[len(ids)-1]["end_before"]:
-                raise ValueError("overlapping packet entries")
+            for prior_packet in schedule[:len(ids)]:
+                if (packet["start"] < prior_packet["end_before"]
+                        and prior_packet["start"] < packet["end_before"]):
+                    raise ValueError("overlapping packet entries")
+                if (packet["purpose"] != "development"
+                        and prior_packet["purpose"] != "development"
+                        and packet["start"] < prior_packet["start"]):
+                    raise ValueError("non-development packets must be chronological")
             ids.append(packet["id"])
             previous = packet["id"]
         if study["selected_packet"] not in ids:
@@ -263,7 +269,8 @@ class ExposureRegistry:
         with self._transaction(create=True) as (connection, _):
             state = {"identity": self.config, "revision": -1, "packets": packets,
                      "prior": prior_exposure, "end_before": end_before, "frontier": 0,
-                     "active": None, "freezes": {}, "claims": {}, "dispositions": {}}
+                     "active": None, "freezes": {}, "claims": {}, "dispositions": {},
+                     "development_imports": [], "development_import_reasons": {}}
             self._save(connection, state, "initialize")
         return self.snapshot()
 
@@ -288,8 +295,8 @@ class ExposureRegistry:
                        for i in state["prior"]):
                 raise ValueError("development requires imported exposure covering all outcomes")
             return "development"
-        index = state["frontier"]
-        if index >= len(state["packets"]) or state["packets"][index]["id"] != packet["id"]:
+        next_packet = ExposureRegistry._next_frontier_packet(state)
+        if next_packet is None or next_packet["id"] != packet["id"]:
             raise ValueError("packet is not the next shared frontier")
         ends = [i["end_before"] for i in state["prior"]]
         ends.extend(max(b["end_before"] for b in c["permit"]["read_bounds"].values())
@@ -297,6 +304,76 @@ class ExposureRegistry:
         if ends and packet["start"] < max(ends):
             raise ValueError("previous reads overlap fresh entry")
         return "fresh"
+
+    @staticmethod
+    def _next_frontier(state):
+        """Return the next frontier index and packet, skipping imported history."""
+        imported = set(state.get("development_imports", ()))
+        for index in range(state["frontier"], len(state["packets"])):
+            packet = state["packets"][index]
+            if packet["id"] not in imported:
+                return index, packet
+        return None, None
+
+    @staticmethod
+    def _next_frontier_packet(state):
+        """Return the next frontier packet, skipping separately imported history."""
+        return ExposureRegistry._next_frontier(state)[1]
+
+    def import_development(self, plan, prior_exposure, expected_revision, reason):
+        """Append one exposed historical development packet and its evidence atomically."""
+        if not isinstance(plan, dict) or type(expected_revision) is not int:
+            raise ValueError("complete plan and integer expected revision required")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("development import reason required")
+        if not isinstance(prior_exposure, list) or not prior_exposure:
+            raise ValueError("explicit prior exposure evidence required")
+        if (not isinstance(plan.get("study"), dict)
+                or plan["study"].get("registry") != self.config):
+            raise ValueError("development plan registry identity mismatch")
+        verified = StudyContract.verify_plan(plan.get("study", {}), plan)
+        if verified != plan:
+            raise ValueError("complete bound development plan required")
+        with self._transaction() as (connection, state):
+            if expected_revision != state["revision"]:
+                raise ValueError("stale registry revision")
+            if state["active"] is not None:
+                raise ValueError("development import requires inactive registry")
+            old_packets = state["packets"]
+            packets = plan["study"]["packets"]
+            packet = plan["packet"]
+            if (len(packets) != len(old_packets)+1
+                    or packets[:len(old_packets)] != old_packets
+                    or packets[-1] != packet or packet["purpose"] != "development"
+                    or packet["id"] in {p["id"] for p in old_packets}
+                    or packet["predecessor"] != old_packets[-1]["id"]):
+                raise ValueError("exactly one new development packet must append to the existing schedule")
+            cutoff = state["end_before"]
+            bounds = list(plan["read_bounds"].values())
+            if not bounds:
+                raise ValueError("development plan has no read bounds")
+            for interval in prior_exposure:
+                if (not isinstance(interval, dict)
+                        or set(interval) != {"start", "end_before", "evidence"}
+                        or not isinstance(interval["evidence"], str)
+                        or not interval["evidence"].strip()
+                        or not _day(interval["start"]) < _day(interval["end_before"]) <= cutoff):
+                    raise ValueError("invalid prior development exposure evidence")
+            for bound in bounds:
+                _day(bound["start"])
+                end = _day(bound["end_before"])
+                if end > cutoff:
+                    raise ValueError("development reads reach protected boundary")
+                if not any(item["start"] <= bound["start"] and end <= item["end_before"]
+                           for item in prior_exposure):
+                    raise ValueError("prior exposure does not cover every development read bound")
+            state["packets"] = copy.deepcopy(packets)
+            state["prior"].extend(copy.deepcopy(prior_exposure))
+            state.setdefault("development_imports", []).append(packet["id"])
+            state.setdefault("development_import_reasons", {})[packet["id"]] = reason
+            self._save(connection, state, "import_development")
+            return {"revision": state["revision"], "packet": copy.deepcopy(packet),
+                    "frontier": state["frontier"], "reason": reason}
 
     def preview(self, plan):
         """Report release readiness without any state or payload mutation."""
@@ -445,6 +522,9 @@ class ExposureRegistry:
             if (state["active"] is not None or len(packets) <= len(state["packets"])
                     or packets[:len(state["packets"])] != state["packets"]):
                 raise ValueError("only an inactive append-only schedule extension is allowed")
+            if any(packet["purpose"] == "development"
+                   for packet in packets[len(state["packets"]):]):
+                raise ValueError("development packets require the explicit prior-exposure import")
             state["packets"] = copy.deepcopy(packets)
             self._save(connection, state, "extend_schedule")
             return {"revision": state["revision"], "packets": packets, "reason": reason}
@@ -454,8 +534,8 @@ class ExposureRegistry:
         if action not in {"review", "abandon", "retire"} or not isinstance(reason, str) or not reason.strip():
             raise ValueError("explicit disposition and reason required")
         with self._transaction() as (connection, state):
-            index = state["frontier"]
-            current = state["packets"][index]["id"] if index < len(state["packets"]) else None
+            frontier_index, frontier_packet = self._next_frontier(state)
+            current = frontier_packet["id"] if frontier_packet else None
             active = state["claims"].get(state["active"])
             if action == "retire":
                 if active or packet_id != current:
@@ -488,7 +568,7 @@ class ExposureRegistry:
                              "revision": state["revision"], "claim": active["permit"]["id"] if active else None})
             state["dispositions"][packet_id] = receipt
             if packet_id == current:
-                state["frontier"] += 1
+                state["frontier"] = frontier_index+1
             self._save(connection, state, action)
             return receipt
 
@@ -561,7 +641,8 @@ class StudyProtocolControl(StudyNode):
         required = {
             "initialize": {"prior_exposure", "end_before"}, "freeze": set(),
             "review": {"reason", "result_receipt"}, "abandon": {"reason"}, "retire": {"reason"},
-            "retry": {"permit", "expected_revision"}, "extend": {"reason"}}.get(action)
+            "retry": {"permit", "expected_revision"}, "extend": {"reason"},
+            "import_development": {"prior_exposure", "expected_revision", "reason"}}.get(action)
         if required is None:
             errors.append("explicit supported control action required")
         elif set(params)-{"study", "action"} != required:
@@ -578,6 +659,11 @@ class StudyProtocolControl(StudyNode):
             result = {"permit": registry.retry(self.plan(), p["permit"], p["expected_revision"])}
         elif action == "extend":
             result = registry.extend(self.plan(), p["reason"])
+        elif action == "import_development":
+            if type(p["expected_revision"]) is not int:
+                raise ValueError("integer expected registry revision required")
+            result = registry.import_development(self.plan(), p["prior_exposure"],
+                                                 p["expected_revision"], p["reason"])
         elif action == "freeze":
             plan = self.plan()
             if not plan["runnable"]:

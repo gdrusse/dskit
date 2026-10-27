@@ -53,6 +53,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         # Owner-approved executable MIO packet and model-zoo selection.
         "index_options/mio_contract.py", "tests/test_mio_packets.py",
         "configs/mio-selection.json", "configs/mio-debug.json", "configs/source-mio-inputs.json",
+        "configs/source-mio-warmup-inputs.json", "configs/mio-warmup-import.json",
+        "configs/mio-warmup.json", "configs/mio-warmup-compare.json", "configs/mio-warmup-pins.json",
         # The future schedule reference remains unadopted.
         "docs/plans/mio-json/study.json",
         "docs/plans/mio-json/plan.template.json",
@@ -638,7 +640,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
     # Exact approved inventory, including the prescription memos and 2020 evidence.
     # Four owner-requested, explicitly non-executable MIO JSON design files.
-    assert len(actual) == 784
+    # Five owner-authorized executable MIO 2019 warm-up packet files.
+    assert len(actual) == 789
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

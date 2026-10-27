@@ -177,6 +177,9 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # -index-wide.json (wide recorder + vol indices)
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
+                           # source-mio-warmup-inputs.json + mio-warmup-{import,compare,pins}.json and
+                           # mio-warmup.json (2019 weekly MIO admission from pinned metadata inventory;
+                           # development-only, outcome-blind, existing quote filters)
                            # run-equity-condor-robust-backtest-v2.json (ADR-0258: the robust
                            # condor replay with fill_session next, a fills stream, exercise flags)
                            # run-forecast-dispersion-ic.json (ADR-0259: T2 of the edge-and-harvest

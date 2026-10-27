@@ -7,15 +7,17 @@ from pathlib import Path
 import pytest
 
 from dskit.pipeline.base import value_hash
-from dskit.pipeline.study_protocol import ExposureRegistry, StudyContract
+from dskit.pipeline.study_protocol import ExposureRegistry, StudyContract, StudyProtocolControl
 from dskit.pipeline.workflow import path_hash
 
 
 class FixtureContract(StudyContract):
     def resolve(self, study):
         packet = next(p for p in study["packets"] if p["id"] == study["selected_packet"])
-        return {"missing": [], "read_bounds": {"values": {
-            "start": packet["start"], "end_before": packet["end_before"]}},
+        bounds = {"values": {"start": packet["start"], "end_before": packet["end_before"]}}
+        if packet["id"] == "dev_2019":
+            bounds["history"] = {"start": "2018-12-01", "end_before": packet["start"]}
+        return {"missing": [], "read_bounds": bounds,
             "cohort": ["a", "b"], "source_pins": {"immutable": "fixture"}}
 
     def validate_result(self, study, results, audit, provenance):
@@ -149,6 +151,162 @@ def test_implementation_pins_require_imported_complete_source(study, tmp_path):
     substituted["code"] = {str(unrelated): path_hash(str(unrelated))}
     with pytest.raises(ValueError, match="implementation pins"):
         StudyContract.build(substituted)
+
+
+def test_import_development_preserves_frontier_and_appends_prior_exposure(study):
+    registry = _initialize(study)
+    original = registry.snapshot()
+    imported_packet = {"id": "dev_2019", "start": "2019-01-01", "end_before": "2019-02-01",
+                       "purpose": "development", "predecessor": "r2"}
+    imported_study = {**study, "packets": study["packets"]+[imported_packet],
+                      "selected_packet": "dev_2019"}
+    plan = StudyContract.build(imported_study)
+    evidence = [{"start": "2018-12-01", "end_before": "2019-03-01",
+                 "evidence": "pinned historical development inventory"}]
+    result = registry.import_development(plan, evidence, original["revision"], "admit prior 2019 exposure")
+    after = registry.snapshot()
+    assert result["frontier"] == original["frontier"] == after["frontier"]
+    assert after["packets"] == study["packets"]+[imported_packet]
+    assert after["prior"] == original["prior"]+evidence
+    assert after["development_imports"] == ["dev_2019"]
+    assert after["development_import_reasons"] == {"dev_2019": "admit prior 2019 exposure"}
+    assert registry.preview(plan)["classification"] == "development"
+    with pytest.raises(ValueError, match="stale"):
+        registry.import_development(plan, evidence, original["revision"], "retry")
+    registry.dispose("dev", "retire", "advance existing schedule")
+    assert registry.preview(StudyContract.build({**imported_study, "selected_packet": "r1"}))["classification"] == "fresh"
+    assert registry.preview(plan)["classification"] == "development"
+
+
+@pytest.mark.parametrize("bad_evidence", [
+    [],
+    [{"start": "2018-12-01", "end_before": "2019-01-10", "evidence": "too short"}],
+    [{"start": "2019-01-01", "end_before": "2019-03-01", "evidence": "misses history"}],
+    [{"start": "2018-12-01", "end_before": "2024-01-02", "evidence": "protected"}],
+])
+def test_development_import_refuses_incomplete_prior_evidence_atomically(study, bad_evidence):
+    registry = _initialize(study)
+    imported_packet = {"id": "dev_2019", "start": "2019-01-01", "end_before": "2019-02-01",
+                       "purpose": "development", "predecessor": "r2"}
+    imported_study = {**study, "packets": study["packets"]+[imported_packet],
+                      "selected_packet": "dev_2019"}
+    plan = StudyContract.build(imported_study)
+    before = registry.snapshot()
+    with pytest.raises(ValueError):
+        registry.import_development(plan, bad_evidence, before["revision"], "must reject")
+    assert registry.snapshot() == before
+
+
+def test_development_import_rejects_active_stale_and_forged_schedule(study):
+    registry = _initialize(study)
+    plan, _ = _claim(study, registry)
+    imported_packet = {"id": "dev_2019", "start": "2019-01-01", "end_before": "2019-02-01",
+                       "purpose": "development", "predecessor": "r2"}
+    imported_study = {**study, "packets": study["packets"]+[imported_packet],
+                      "selected_packet": "dev_2019"}
+    import_plan = StudyContract.build(imported_study)
+    good = [{"start": "2018-12-01", "end_before": "2019-03-01", "evidence": "pinned"}]
+    before = registry.snapshot()
+    with pytest.raises(ValueError, match="inactive"):
+        registry.import_development(import_plan, good, before["revision"], "active refusal")
+    registry.dispose("dev", "abandon", "release test claim")
+    state = registry.snapshot()
+    forged = copy.deepcopy(import_plan)
+    forged["study"]["packets"][0]["start"] = "2020-02-01"
+    with pytest.raises(ValueError, match="digest|changed|unbound"):
+        registry.import_development(forged, good, state["revision"], "forged plan")
+    changed_prefix = copy.deepcopy(imported_study)
+    changed_prefix["packets"][0]["end_before"] = "2020-12-31"
+    changed_prefix_plan = StudyContract.build(changed_prefix)
+    with pytest.raises(ValueError, match="append to the existing schedule"):
+        registry.import_development(changed_prefix_plan, good, state["revision"], "changed prefix")
+    overlapping = {**imported_study, "packets": study["packets"]+[
+        {**imported_packet, "id": "overlap", "start": "2020-06-01", "end_before": "2020-07-01"}],
+        "selected_packet": "overlap"}
+    with pytest.raises(ValueError, match="overlapping"):
+        StudyContract.build(overlapping)
+
+
+def test_development_import_rejects_cross_registry_plan(study):
+    local = copy.deepcopy(study)
+    wrong_config = {**local["registry"], "path": local["registry"]["path"]+".other",
+                    "id": "9936212a-8c1f-4d51-bc5c-95966b9d68a2"}
+    wrong = ExposureRegistry(wrong_config)
+    wrong.initialize(local["packets"], [{"start": "2020-01-01", "end_before": "2021-01-01",
+                                          "evidence": "other registry prior"}], "2024-01-01")
+    imported_packet = {"id": "dev_2019", "start": "2019-01-01", "end_before": "2019-02-01",
+                       "purpose": "development", "predecessor": "r2"}
+    imported_study = {**local, "packets": local["packets"]+[imported_packet],
+                       "selected_packet": "dev_2019"}
+    plan = StudyContract.build(imported_study)
+    before = wrong.snapshot()
+    with pytest.raises(ValueError, match="identity mismatch"):
+        wrong.import_development(plan, [{"start": "2018-12-01", "end_before": "2019-03-01",
+                                         "evidence": "pinned"}], before["revision"], "wrong registry")
+    assert wrong.snapshot() == before
+
+
+def test_frontier_skips_imported_history_and_advances_past_it(study):
+    registry = _initialize(study)
+    imported_packet = {"id": "dev_2019", "start": "2019-01-01", "end_before": "2019-02-01",
+                       "purpose": "development", "predecessor": "r2"}
+    later_packets = [
+        {"id": "r3", "start": "2023-01-01", "end_before": "2023-02-01",
+         "purpose": "adaptation", "predecessor": "dev_2019"},
+        {"id": "r4", "start": "2023-02-01", "end_before": "2023-03-01",
+         "purpose": "confirmation", "predecessor": "r3"}]
+    schedule = study["packets"]+[imported_packet]+later_packets
+    import_study = {**study, "packets": study["packets"]+[imported_packet],
+                    "selected_packet": "dev_2019"}
+    state = registry.snapshot()
+    registry.import_development(StudyContract.build(import_study), [
+        {"start": "2018-12-01", "end_before": "2019-03-01", "evidence": "pinned"}],
+        state["revision"], "append historical development")
+    extension = {**study, "packets": schedule, "selected_packet": "r3"}
+    registry.extend(StudyContract.build(extension), "append later fresh packets")
+    registry.dispose("dev", "retire", "advance original development")
+    registry.dispose("r1", "retire", "advance first fresh packet")
+    registry.dispose("r2", "retire", "advance second fresh packet")
+    plan3 = StudyContract.build({**extension, "selected_packet": "r3"})
+    assert registry.preview(plan3)["classification"] == "fresh"
+    registry.dispose("r3", "retire", "advance past imported historical packet")
+    assert registry.snapshot()["frontier"] == 5
+    plan4 = StudyContract.build({**extension, "selected_packet": "r4"})
+    assert registry.preview(plan4)["classification"] == "fresh"
+
+
+def test_development_import_control_action_is_strict_and_persistent(study):
+    registry = _initialize(study)
+    imported_packet = {"id": "dev_2019", "start": "2019-01-01", "end_before": "2019-02-01",
+                       "purpose": "development", "predecessor": "r2"}
+    imported_study = {**study, "packets": study["packets"]+[imported_packet],
+                      "selected_packet": "dev_2019"}
+    state = registry.snapshot()
+    params = {"study": imported_study, "action": "import_development",
+              "prior_exposure": [{"start": "2018-12-01", "end_before": "2019-03-01",
+                                   "evidence": "pinned prior outcome inventory"}],
+              "expected_revision": state["revision"], "reason": "record prior development"}
+    assert StudyProtocolControl.validate_params(params) == []
+    result = StudyProtocolControl("control", params).run(None, {})["control"]
+    assert result["packet"] == imported_packet
+    assert registry.snapshot()["development_imports"] == ["dev_2019"]
+    assert any("control parameters" in error for error in
+               StudyProtocolControl.validate_params({**params, "end_before": "2020-01-01"}))
+
+
+def test_fresh_release_uses_latest_boundary_across_all_prior_exposures(study):
+    local = copy.deepcopy(study)
+    local["registry"]["path"] += ".latest-boundary"
+    registry = ExposureRegistry(local["registry"])
+    registry.initialize(local["packets"], [
+        {"start": "2019-01-01", "end_before": "2020-01-01", "evidence": "older exposure"},
+        {"start": "2020-01-01", "end_before": "2022-01-01", "evidence": "later exposure"}],
+        "2024-01-01")
+    registry.dispose("dev", "retire", "advance development packet")
+    fresh = StudyContract.build({**local, "selected_packet": "r1"})
+    readiness = registry.preview(fresh)
+    assert readiness["ready"] is False
+    assert "previous reads overlap" in readiness["reason"]
     omitted = copy.deepcopy(study)
     omitted["code"].pop(next(path for path in omitted["code"] if path.endswith("study_protocol.py")))
     with pytest.raises(ValueError, match="implementation pins"):
@@ -210,3 +368,11 @@ def test_schedule_extension_cannot_rewrite_history(study):
     extended["packets"][0]["start"] = "2019-01-01"
     with pytest.raises(ValueError, match="append-only"):
         registry.extend(StudyContract.build(extended), "try to rewrite past")
+    historical = copy.deepcopy(study)
+    historical["packets"].append({"id": "r3", "start": "2023-01-01", "end_before": "2023-02-01",
+                                   "purpose": "adaptation", "predecessor": "r2"})
+    historical["packets"].append({"id": "dev_old", "start": "2018-01-01", "end_before": "2018-02-01",
+                                   "purpose": "development", "predecessor": "r3"})
+    historical["selected_packet"] = "dev_old"
+    with pytest.raises(ValueError, match="prior-exposure import"):
+        registry.extend(StudyContract.build(historical), "bypass historical import")

@@ -47,6 +47,9 @@ def study(tmp_path, request):
     sessions = params.pop("clocks")
     pairs = params.pop("selected_pairs")
     params["bridge"]["end_before"] = sessions["entry_end_before"]
+    (archive/"inventory.json").write_text(json.dumps({
+        "policy": "all_supported_no_predictive_gate",
+        "candidates": [{"pair": pair, "missing_roles": []} for pair in pairs]}))
     if getattr(request, "param", None) == "expiry_basis":
         data["X"]["forecasts"] = data["X"]["forecasts"][:1]
         data["X"]["contexts"] = data["X"]["contexts"][:1]
@@ -166,6 +169,54 @@ def test_mio_contract_requires_full_imported_code_pins(study):
     unrelated["code"] = {__file__: path_hash(__file__)}
     with pytest.raises(ValueError, match="implementation pins"):
         StudyContract.build(unrelated)
+
+
+def _research_universe(study, tmp_path, name="admission", overrides=None):
+    inventory_pin = study["domain"]["sources"]["forecasts"]["pin"]
+    pairs = copy.deepcopy(study["domain"]["pairs"])
+    candidates = [{"pair": pair, "included": True, "reason": "supported"} for pair in pairs]
+    bridge = study["domain"]["params"]["bridge"]
+    receipt = {"policy": "all_supported_no_predictive_gate", "candidates": candidates,
+               "pairs": pairs, "liquidity": {key: bridge[key] for key in
+                                               ("min_quote_size", "max_relative_spread", "max_abs_z")},
+               "pair_sha256": value_hash(pairs),
+               "inventory": {"source": inventory_pin, "file": "inventory.json"}}
+    receipt.update(overrides or {})
+    source_root = Path(tmp_path)/name
+    source_root.mkdir()
+    (source_root/"admission.json").write_text(json.dumps(receipt))
+    root = OnboardingRoot(inventory_pin["root"])
+    registry = root.registry()
+    version = registry.register("source_config", {
+        "name": name, "catalog_source": "synthetic", "connector": "localblobs",
+        "config": {"path": str(source_root), "as_of": "2026-01-01T00:00:00+00:00"}}, origin="test")
+    registry.transition(version, "active", origin="test")
+    run_acquisition(root, registry, name, "files", "backfill")
+    payload = payload_files(root, name, "files")
+    pin = {"root": root.root, "source": name, "stream": "files",
+           "snapshot": payload["snapshot"], "manifest_sha256": payload["manifest_sha256"],
+           "files": payload["sha256"]}
+    return {"mode": "research_universe", "evidence": {
+        "pair_sha256": value_hash(pairs), "source": pin, "file": "admission.json"}}
+
+
+def test_research_universe_requires_complete_pinned_outcome_blind_inventory(study, tmp_path):
+    study["domain"]["admission"] = _research_universe(study, tmp_path)
+    assert StudyContract.build(study)["runnable"]
+    omitted = copy.deepcopy(study)
+    omitted["domain"]["admission"] = _research_universe(
+        omitted, tmp_path, "admission-omitted", {"candidates": []})
+    with pytest.raises(ValueError, match="omits, injects"):
+        StudyContract.build(omitted)
+    forged = copy.deepcopy(study)
+    forged["domain"]["admission"] = _research_universe(
+        forged, tmp_path, "admission-forged", {"performance_gate": "best_return"})
+    with pytest.raises(ValueError, match="outcome-blind"):
+        StudyContract.build(forged)
+    fresh = copy.deepcopy(study)
+    fresh["packets"][0]["purpose"] = "adaptation"
+    with pytest.raises(ValueError, match="development-only"):
+        StudyContract.build(fresh)
 
 
 def test_json_artifact_persistence_failure_keeps_claim_recoverable(study, tmp_path, monkeypatch):

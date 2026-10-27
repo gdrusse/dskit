@@ -743,6 +743,14 @@ Current data-use TDD: [open the chart and timeline](docs/decisioning/technical-d
 windows and exact runs. [Selection JSON](configs/mio-selection.json) pins the
 best complete saved model-zoo output. [Development JSON](configs/mio-debug.json)
 contains one already-exposed 2020 packet; its two pairs are debug fixtures.
+The [2019 warm-up plan](configs/mio-warmup.json),
+[registry import](configs/mio-warmup-import.json),
+[input source](configs/source-mio-warmup-inputs.json),
+[pinned admission](configs/mio-warmup-pins.json) and
+[comparison](configs/mio-warmup-compare.json) bind the archived 1–60 DTE
+support inventory. The complete supported cohort uses the existing per-decision
+quote filters; missing forecast/context roles are recorded as exclusions. This
+development packet has no predictive-performance gate.
 
 The executable study is `pipeline.plan.params.study`: explicit sparse pairs,
 source snapshot/file pins, predictive receipt, code/dependency pins and three
@@ -750,11 +758,16 @@ clocks. Copy that object into the [plan/run/compare templates](docs/plans/mio-js
 The shared registry must already exist with the pinned UUID/domain. Initialize
 once through `StudyProtocolControl` (`action: initialize`, explicit
 `prior_exposure` and protected `end_before`). Controls also provide freeze,
-same-identity retry, review, abandonment, retirement and append-only extension.
-Missing/reset registries refuse; a new output directory never restores freshness.
+same-identity retry, review, abandonment, retirement, append-only extension,
+and `import_development` for one explicitly evidenced, already-exposed historical
+development packet. That import preserves the existing schedule prefix and fresh
+frontier. The outcome-blind `research_universe` admission receipt pins the full
+archive-support inventory and existing quote filters; it cannot select by model
+score or performance and is refused for fresh packets. Missing/reset registries
+refuse; a new output directory never restores freshness.
 
 Use `python -m dskit.pipeline run <rendered.json> --asof <date>` in WSL.
 A completed cohort remains pending review. Fresh windows require separate
-2019 admission evidence and an explicit next-cohort freeze. The current task
-stops before that freeze. Daily basis factors are bounded date metadata;
+admission evidence and an explicit next-cohort freeze. Daily basis factors are
+bounded date metadata;
 option quotes are filtered to selected signal-date expiry bands.

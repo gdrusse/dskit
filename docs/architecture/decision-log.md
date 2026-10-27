@@ -32760,6 +32760,50 @@ max_count check_count_param count_cap huge_int; near matches only private
 which the new helper wraps.
 
 
+#### ADR-0278 amendment: outcome-blind 2019 warm-up admission and prior development import (2026-10-27)
+
+Owner-authorized bounded implementation on base f20df030. The 2019 weekly MIO
+warm-up admits the source-supported liquid ticker-DTE cohort from an explicitly
+pinned archived-source inventory; no claim of global archive completeness is
+made. The 118-name inventory includes 116 supported pairs; COHR and ECHO lack
+first-session forecast/context identities and are excluded with that reason.
+Existing per-decision quote filters remain in force; no predictive-winner or
+performance gate applies. Its purpose is development diagnostics and timing/learning curves
+under locked Path A0003/A0008. It does not rank candidate pairs or select a
+predictive recipe. Existing best saved M53 remains in use; 2024+ stays protected
+and closed. No daily cadence, rebalancing, solver or economic claim changes.
+
+The generic ExposureRegistry gains an atomic import_development transition for
+one complete development packet whose outcomes were already exposed. It requires
+an inactive matching registry/revision, unchanged exact packet prefix, unique
+new packet identity and predecessor, complete plan, explicit canonical prior-
+exposure evidence covering every new read bound and wholly before the protected
+cutoff. It appends to the existing hash chain without editing history, resetting
+or creating a registry, duplicating a retry, changing old claims/dispositions,
+or moving the fresh frontier. Projected non-development packets retain strict
+chronological non-overlap; all packet intervals remain pairwise disjoint. Fresh
+entry boundaries continue to account for the maximum end boundary of every
+prior exposure and every prior claim. Settlement-tail checks use the next
+chronological non-development entry, regardless of storage order.
+
+The MIO admission receipt binds the complete candidate inventory for the pinned
+source profile and resulting pair set to onboarding evidence. Its deterministic
+inclusion policy uses only archive/forecast identity support and the study's
+existing quote filters, never outcomes, model scores, or predictive performance.
+Arbitrary sparse pairs remain valid for other development uses. Existing
+admission modes remain compatible; research-universe admission is forbidden for
+fresh packets, and ordinary schedule extension rejects development suffixes so
+the import transition cannot be bypassed. No market data was read or replayed to build this implementation.
+
+Phase 0 found two design gaps: the chronological shared schedule could not admit
+an earlier development interval, and exact pair equality did not prove complete
+inventory accounting. The implementation adds the atomic development import,
+frontier-aware schedule traversal and pinned outcome-blind inventory receipt.
+Focused verification: WSL2 `python -m pytest tests/pipeline/test_study_protocol.py
+children/index_options/tests/test_mio_packets.py -q` — 27 passed;
+`children/index_options/tests/test_configs.py::test_exact_manifest_and_agent_parity`
+— 1 passed. Metadata-only StudyContract preflight is runnable with no missing inputs; 116 pairs and 262 code pins. No study replay or registry mutation was run.
+
 #### ADR-0278 amendment: staged MIO JSON design (2026-10-27)
 
 Owner requested arbitrary ticker-DTE implementations, then narrowed this turn:
@@ -33684,7 +33728,7 @@ Current final-execution pins (prior attempts preserved in exposure registry):
     }
   }
 }
-Focused source/protocol/child regression:126 passed,128 deselected.
+Focused source/protocol/child regression:127 passed,128 deselected.
 TDD227 windows/18configs/14runs, same canonical data in HTML/canvas.
 
 Current final-execution pins (prior attempts preserved in exposure registry):

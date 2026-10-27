@@ -204,8 +204,10 @@ class MIOStudyContract(StudyContract):
             raise ValueError("strictly prior history start required")
         if tail > p["bridge"]["protected_end_before"]:
             raise ValueError("derived settlement tail reaches protected data")
-        index = study["packets"].index(packet)
-        if index+1 < len(study["packets"]) and tail > study["packets"][index+1]["start"]:
+        upcoming = [candidate for candidate in study["packets"]
+                    if candidate["purpose"] != "development"
+                    and candidate["start"] >= packet["end_before"]]
+        if upcoming and tail > min(candidate["start"] for candidate in upcoming):
             raise ValueError("settlement tail overlaps next packet")
         if (p["bridge"]["start"] != packet["start"] or p["bridge"]["end_before"] != packet["end_before"]):
             raise ValueError("bridge entry clock differs")
@@ -232,6 +234,59 @@ class MIOStudyContract(StudyContract):
                     or not "2019-01-01" <= admission_receipt["quote_start"] < admission_receipt["quote_end_before"] <= "2020-01-01"
                     or not admission_receipt["quote_end_before"] <= admission_receipt["settlement_end_before"] <= "2020-01-01"):
                 raise ValueError("admission receipt must bind exact pairs to 2019-only evidence")
+        elif admission["mode"] == "research_universe":
+            if (packet["purpose"] != "development"
+                    or not "2019-01-01" <= packet["start"] < packet["end_before"] <= "2020-01-01"):
+                raise ValueError("research-universe admission is development-only")
+            evidence = admission["evidence"]
+            wrapper_keys = {"pair_sha256", "source", "file"}
+            if (not isinstance(evidence, dict) or set(evidence) != wrapper_keys
+                    or evidence["pair_sha256"] != value_hash(d["pairs"])):
+                raise ValueError("invalid research-universe evidence reference")
+            source = PinnedPayloadSource(evidence["source"])
+            receipt = json.loads(open(source.file(evidence["file"], verify=True)).read())
+            receipt_keys = {"policy", "candidates", "pairs", "liquidity", "pair_sha256", "inventory"}
+            if (set(receipt) != receipt_keys
+                    or receipt["policy"] != "all_supported_no_predictive_gate"
+                    or receipt["pair_sha256"] != evidence["pair_sha256"]
+                    or not isinstance(receipt["inventory"], dict)
+                    or set(receipt["inventory"]) != {"source", "file"}):
+                raise ValueError("invalid outcome-blind research-universe receipt")
+            inventory_source = PinnedPayloadSource(receipt["inventory"]["source"])
+            inventory = json.loads(open(inventory_source.file(receipt["inventory"]["file"], verify=True)).read())
+            if (set(inventory) != {"policy", "candidates"}
+                    or inventory["policy"] != "all_supported_no_predictive_gate"
+                    or not isinstance(inventory["candidates"], list) or not inventory["candidates"]):
+                raise ValueError("invalid pinned support inventory")
+            roles = {"forecasts", "contexts", "chain", "bars", "sessions"}
+            candidates, included = [], []
+            seen = set()
+            for item in inventory["candidates"]:
+                if (not isinstance(item, dict) or set(item) != {"pair", "missing_roles"}
+                        or not isinstance(item["pair"], dict)
+                        or set(item["pair"]) != {"id", "symbol", "dte_min", "dte_max"}
+                        or not isinstance(item["pair"]["id"], str) or not item["pair"]["id"]
+                        or item["pair"]["id"] in seen
+                        or not isinstance(item["missing_roles"], list)
+                        or any(not isinstance(role, str) for role in item["missing_roles"])
+                        or item["missing_roles"] != sorted(set(item["missing_roles"]))
+                        or not set(item["missing_roles"]) <= roles):
+                    raise ValueError("invalid or duplicated support inventory candidate")
+                seen.add(item["pair"]["id"])
+                missing = item["missing_roles"]
+                take = not missing
+                reason = "supported" if take else "missing_"+missing[0]
+                candidates.append({"pair": item["pair"], "included": take, "reason": reason})
+                if take:
+                    included.append(item["pair"])
+            inventory_pairs = [item["pair"] for item in inventory["candidates"]]
+            WeeklyOptionPortfolioStudy.validate_pairs(
+                inventory_pairs, [pair["symbol"] for pair in inventory_pairs])
+            liquidity = {key: p["bridge"][key] for key in
+                         ("min_quote_size", "max_relative_spread", "max_abs_z")}
+            if (receipt["candidates"] != candidates or receipt["pairs"] != included
+                    or receipt["liquidity"] != liquidity or d["pairs"] != included):
+                raise ValueError("receipt omits, injects or changes a supported candidate")
         else:
             raise ValueError("unknown admission mode")
         expected = {"forecasts", "contexts", "chain", "bars", "sessions"}
