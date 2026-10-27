@@ -19,10 +19,10 @@ the horizon in years:
     break_even_return = the redeploy_return at which redeploy_net == T
     opportunity_cost  = (redeploy_net / T) ** (1 / H) - 1          after tax, a year
 
-``opportunity_cost`` above zero means the alternative wins (``decision`` is ``exit``);
-it is ``None`` when the hurdle was inadmissible (the rows carry no redeploy value). The
-break-even return inverts the redeploy path under the declared tax terms, which this
-node restates with :class:`HoldVsRedeploy`'s names and validator: one
+``opportunity_cost`` above zero means the alternative wins (``decision`` is ``exit``),
+below zero that holding wins; it is ``None`` when the hurdle was inadmissible (the rows carry
+no redeploy value). The break-even return inverts the redeploy path under the declared tax
+terms, which this node restates with :class:`HoldVsRedeploy`'s names and validator: one
 :class:`BreakEvenRule` per ``redeploy_tax_timing`` (:data:`BREAK_EVEN_RULES`). With
 ``g = (T / N) ** (1 / H) - 1``, cost ``c``, premium ``p`` and tax rate ``t``:
 
@@ -42,17 +42,22 @@ value-weighted expected return, volatility and beta; concentration by SYMBOL (on
 held in two accounts is one exposure): ``hhi = sum(w ** 2)``, its inverse
 ``effective_holdings``, ``top_symbol`` / ``top_weight``; embedded gain and tax cost on the
 totals; break-even and opportunity cost from ``sum(N)``, ``sum(T)``, ``sum(redeploy_net)``
-(exact, since every row of one run shares one redeploy rate); exit and hold counts.
+(exact, since every row of one run shares one redeploy rate), so the portfolio's
+``opportunity_cost`` compares selling everything with holding everything, not the best mix of
+the two; exit and hold counts.
 
 Two approximations are disclosed rather than modelled. The weighted volatility is an
 UPPER BOUND on the portfolio's (equal only when every pair is perfectly correlated); a
-covariance needs a joint return panel. The total tax cost is the sum of each row's tax,
-so when the liquidation did not offset losses, one position's loss does not reduce
-another's gain, which overstates the cost of selling everything.
+covariance needs a joint return panel. The portfolio's embedded gain NETS losses (a loss in
+one holding reduces it) but its tax cost is the sum of each row's ``v - N``, which nets them
+only when the liquidation did (``loss_offset`` makes a loss a negative tax: its ``N``
+exceeds ``v`` and its tax cost is negative); when it did not, one position's loss does not
+reduce another's gain, which overstates the cost of selling everything.
 
 Rows refuse by index and field through :mod:`~dskit.pipeline.liquidation`'s readers.
 A wired volatility must lie in :data:`VOLATILITY_BOUNDS` (an annual standard deviation
-as a fraction: 20 for 20% refuses), and a symbol missing from a wired table refuses.
+as a fraction: 20 for 20% refuses), a beta is any finite number (a negative beta is legal),
+and a symbol missing from a wired table refuses.
 
 Import cost: stdlib + the pipeline core.
 """
@@ -60,8 +65,10 @@ Import cost: stdlib + the pipeline core.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import NamedTuple
 
 from dskit.pipeline.binary_curve import fields_key, name_ok
+from dskit.pipeline.decision_outcomes import annualized_growth, check_key_fields_param
 from dskit.pipeline.liquidation import (
     MAX_HORIZON_YEARS, check_name_params, check_redeploy_params, require_amount,
     require_number, require_rate, require_rows,
@@ -77,8 +84,9 @@ __all__ = [
 #: The fields of a :class:`~dskit.pipeline.liquidation.HoldVsRedeploy` row this node reads.
 _HORIZON, _HOLD_VALUE, _HOLD_NET = "horizon_years", "hold_value", "hold_net"
 _REDEPLOY_NET, _DECISION = "redeploy_net", "decision"
-#: The decisions a row may carry, the second the one that sells.
-_DECISIONS = ("hold", "exit")
+#: The decisions a row may carry: keep the position, or sell it.
+_HOLD, _EXIT = "hold", "exit"
+_DECISIONS = (_HOLD, _EXIT)
 
 #: The numbers each output row carries after its key fields, in order.
 SUMMARY_FIELDS = (
@@ -90,10 +98,25 @@ VOLATILITY_BOUNDS = (0.0, 10.0)
 
 _HOLD_NET_WHY = "a hold path worth nothing has no growth to break even against"
 
+#: The two optional per-symbol input tables.
+_VOLATILITIES, _BETAS = "volatilities", "betas"
 
-def _annualized(ratio, years):
-    """Return the annual rate that compounds to ``ratio`` over ``years``."""
-    return ratio ** (1.0 / years) - 1.0
+
+class _TableRule(NamedTuple):
+    """One wired table's check: inclusive ``bounds`` (None: any finite number) and ``why``."""
+
+    bounds: tuple | None
+    why: str
+
+
+#: One rule per optional table; a beta, unlike a volatility, has no bound (an inverse fund is negative).
+_TABLE_RULES = {
+    _VOLATILITIES: _TableRule(
+        VOLATILITY_BOUNDS, "an annual standard deviation is a fraction (0.2 is 20%), not percent"),
+    _BETAS: _TableRule(None, ""),
+}
+#: The params that may be absent: the redeploy tax pair, declared together or not at all.
+_OPTIONAL_PARAMS = ("redeploy_tax_rate", "redeploy_tax_timing")
 
 
 class BreakEvenRule(ABC):
@@ -128,7 +151,7 @@ class UntaxedBreakEven(BreakEvenRule):
 
     def rate(self, ratio, years):
         """Return the untaxed break-even (see the module docstring)."""
-        return _annualized(ratio, years) + self.cost + self.premium
+        return annualized_growth(ratio, years) + self.cost + self.premium
 
 
 class AnnualBreakEven(BreakEvenRule):
@@ -136,7 +159,7 @@ class AnnualBreakEven(BreakEvenRule):
 
     def rate(self, ratio, years):
         """Return the ``annual`` break-even, or None when the whole of a needed gain is taxed."""
-        needed = _annualized(ratio, years) + self.premium
+        needed = annualized_growth(ratio, years) + self.premium
         if needed <= 0.0:
             return self.cost + needed
         if self.tax_rate >= 1.0:
@@ -154,7 +177,7 @@ class TerminalBreakEven(BreakEvenRule):
             if self.tax_rate >= 1.0:
                 return None
             growth = (ratio - self.tax_rate) / (1.0 - self.tax_rate)
-        return _annualized(growth, years) + self.cost + self.premium
+        return annualized_growth(growth, years) + self.cost + self.premium
 
 
 #: One rule per ``redeploy_tax_timing``; ``None`` is a redeploy path with no tax declared.
@@ -189,7 +212,11 @@ class PositionSummary(Node):
         ``{symbol: annual standard deviation}``, fractions in :data:`VOLATILITY_BOUNDS`.
     ``betas`` (optional)
         ``{symbol: beta}``, as :class:`~dskit.pipeline.hold_return.BetaHoldReturns`
-        wires them.
+        wires them. Any finite number: unlike a volatility a beta has no bounds, and a
+        negative one (an inverse fund) is legal.
+
+    A table that is wired must be a mapping holding every row's symbol (``None`` and ``{}``
+    refuse); only an absent input means unwired, and its column is ``None``.
 
     Outputs
     -------
@@ -218,9 +245,7 @@ class PositionSummary(Node):
         "key_fields", "symbol_field", "value_field", "net_field", "basis_field",
         "redeploy_cost", "risk_premium", "redeploy_tax_rate", "redeploy_tax_timing",
     )
-    _REQUIRED = _PARAMS[:-2]
-    #: The optional per-symbol tables, and how each wired value is checked.
-    _TABLES = ("volatilities", "betas")
+    _REQUIRED = tuple(name for name in _PARAMS if name not in _OPTIONAL_PARAMS)
 
     @classmethod
     def validate_params(cls, params):
@@ -230,22 +255,14 @@ class PositionSummary(Node):
         missing = sorted(set(cls._REQUIRED) - set(params))
         if missing:
             problems.append(f"missing required params {missing}")
-        keys = params.get("key_fields")
-        if "key_fields" in params:
-            if (not isinstance(keys, list) or not keys or not all(name_ok(k) for k in keys)
-                    or len(set(keys)) != len(keys)):
-                problems.append(
-                    f"key_fields must be a non-empty list of distinct field names, got {keys!r}"
-                )
-            else:
-                taken = sorted(set(keys) & set(SUMMARY_FIELDS))
-                if taken:
-                    problems.append(f"key_fields may not name an output field: {taken}")
-                symbol = params.get("symbol_field")
-                if name_ok(symbol) and symbol not in keys:
-                    problems.append(
-                        f"symbol_field {symbol!r} must be one of key_fields {keys!r}"
-                    )
+        if check_key_fields_param(problems, params):
+            keys = params["key_fields"]
+            taken = sorted(set(keys) & set(SUMMARY_FIELDS))
+            if taken:
+                problems.append(f"key_fields may not name an output field: {taken}")
+            symbol = params.get("symbol_field")
+            if name_ok(symbol) and symbol not in keys:
+                problems.append(f"symbol_field {symbol!r} must be one of key_fields {keys!r}")
         check_name_params(problems, params,
                           ("symbol_field", "value_field", "net_field", "basis_field"))
         check_redeploy_params(problems, params)
@@ -257,22 +274,26 @@ class PositionSummary(Node):
         return "pure"
 
     def _table(self, inputs, name):
-        """Return the wired ``{symbol: number}`` table, or None; refuse a malformed one by entry."""
-        table = inputs.get(name)
-        if table is None:
+        """Return the wired ``{symbol: number}`` table, or None when the input is absent.
+
+        A wired input that is not a mapping (``None`` included) refuses, as does an entry that
+        is not a number or misses the table's bounds.
+        """
+        if name not in inputs:
             return None
+        table = inputs[name]
         if not isinstance(table, dict):
             raise ValueError(
                 f"{self.key}: {name} must be a {{symbol: number}} mapping, got {table!r}"
             )
-        low, high = VOLATILITY_BOUNDS
+        rule = _TABLE_RULES[name]
         for symbol, value in table.items():
             if not number_ok(value):
                 raise ValueError(f"{self.key}: {name}[{symbol!r}] must be a number, got {value!r}")
-            if name == "volatilities" and not low <= value <= high:
+            if rule.bounds is not None and not rule.bounds[0] <= value <= rule.bounds[1]:
                 raise ValueError(
-                    f"{self.key}: {name}[{symbol!r}] {value!r} is outside [{low}, {high}]; an "
-                    "annual standard deviation is a fraction (0.2 is 20%), not percent"
+                    f"{self.key}: {name}[{symbol!r}] {value!r} is outside "
+                    f"[{rule.bounds[0]}, {rule.bounds[1]}]; {rule.why}"
                 )
         return table
 
@@ -371,7 +392,7 @@ class PositionSummary(Node):
 
     def run(self, ctx, inputs):
         """Return one summary row per position and the portfolio's numbers."""
-        tables = {name: self._table(inputs, name) for name in self._TABLES}
+        tables = {name: self._table(inputs, name) for name in _TABLE_RULES}
         reads = self._rows(inputs.get("records"))
         rule = self._rule()
         years = reads[0]["years"]
@@ -379,19 +400,19 @@ class PositionSummary(Node):
         out, by_symbol = [], {}
         for index, read in enumerate(reads):
             value, symbol = read["value"], read["symbol"]
-            risk = {name: self._lookup(tables[name], name, index, symbol) for name in self._TABLES}
+            risk = {name: self._lookup(tables[name], name, index, symbol) for name in _TABLE_RULES}
             redeploy = read["redeploy_net"]
             out.append({
                 **dict(zip(self.params["key_fields"], read["key"])),
                 "value": value, "weight": value / total, _HORIZON: years,
-                "expected_return": _annualized(read["hold_value"] / value, years),
-                "volatility": risk["volatilities"], "beta": risk["betas"],
+                "expected_return": annualized_growth(read["hold_value"] / value, years),
+                "volatility": risk[_VOLATILITIES], "beta": risk[_BETAS],
                 "embedded_gain": (value - read["basis"]) / value,
                 "tax_cost": (value - read["net"]) / value,
                 "break_even_return": self._break_even(
                     rule, f"row {index}", read["hold_net"] / read["net"], years),
                 "opportunity_cost": (None if redeploy is None
-                                     else _annualized(redeploy / read["hold_net"], years)),
+                                     else annualized_growth(redeploy / read["hold_net"], years)),
                 _DECISION: read["decision"],
             })
             by_symbol[symbol] = by_symbol.get(symbol, 0.0) + value
@@ -415,8 +436,13 @@ class PositionSummary(Node):
         hold_net = sum(read["hold_net"] for read in reads)
         redeploy = None
         if reads[0]["redeploy_net"] is not None:
-            redeploy = _annualized(sum(read["redeploy_net"] for read in reads) / hold_net, years)
-        exits = sum(1 for read in reads if read["decision"] == _DECISIONS[1])
+            redeploy = annualized_growth(sum(read["redeploy_net"] for read in reads) / hold_net, years)
+        exits = sum(1 for read in reads if read["decision"] == _EXIT)
+        # No refusal can fire here that a row's did not: sum(T) / sum(N) lies between the rows'
+        # ratios and every rule's break-even is non-decreasing in the ratio, so a portfolio of
+        # rows that each passed passes too (in exact arithmetic). The call states that invariant
+        # (a rule that broke it would refuse); it adds no condition of its own.
+        break_even = self._break_even(rule, "portfolio", hold_net / net, years)
         return {
             "positions": len(out), "total_value": total, _HORIZON: years,
             "expected_return": weighted("expected_return"),
@@ -425,7 +451,7 @@ class PositionSummary(Node):
             "top_symbol": top_symbol, "top_weight": top_weight,
             "embedded_gain": sum(read["value"] - read["basis"] for read in reads) / total,
             "tax_cost": (total - net) / total,
-            "break_even_return": self._break_even(rule, "portfolio", hold_net / net, years),
+            "break_even_return": break_even,
             "opportunity_cost": redeploy,
             "exit_positions": exits, "hold_positions": len(out) - exits,
         }

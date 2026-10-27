@@ -874,7 +874,9 @@ they register only into private registries, never the default one.
   snapshot refuses on several dates or a repeated key over every row, but a
   row's value and quantity are read only when a decision matches its key, so
   an undecided short or zero-quantity row never stops the run. Per-share growth
-  reads a split or spin-off as a return (not detected). Every ADR-0279 kind
+  reads a split or spin-off as a return (not detected). It owns the public
+  `annualized_growth` (a ratio's annual rate) and `check_key_fields_param`
+  (the `key_fields` rule) that `PositionSummary` imports. Every ADR-0279 kind
   answers `serving_effect` "pure".
 - `hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`) (ADR-0279, research
   A0001, by import path): the market's expected nominal return as named blocks
@@ -893,12 +895,18 @@ they register only into private registries, never the default one.
   `redeploy_return` at which `redeploy_net == hold_net` (closed form per
   `redeploy_tax_timing`, one `BreakEvenRule` each in `BREAK_EVEN_RULES`), and the
   after-tax opportunity cost `(redeploy_net / hold_net) ** (1/H) - 1` (> 0: exit
-  wins). Output `metrics`: total value, weighted return / volatility (an upper
-  bound) / beta, HHI by symbol with `effective_holdings` and the top weight,
-  totals' tax cost and embedded gain, break-even and opportunity cost, exit / hold
-  counts. Redeploy terms restate `HoldVsRedeploy`'s through the shared
+  wins, < 0: holding wins). Output `metrics`: total value, weighted return /
+  volatility (an upper bound) / beta, HHI by symbol with `effective_holdings` and
+  the top weight, totals' tax cost and embedded gain, break-even and opportunity
+  cost (all-exit against all-hold), exit / hold counts. The portfolio embedded gain
+  nets losses; its tax cost does not unless the liquidation offset them
+  (`loss_offset`). A wired table must be a mapping (`None` refuses, only an absent
+  input is unwired); a beta is any finite number, a negative one legal. Redeploy
+  terms restate `HoldVsRedeploy`'s through the shared
   `liquidation.check_redeploy_params`; rows read through liquidation's public
-  `require_rows` / `require_number` / `require_amount`.
+  `require_rows` / `require_number` / `require_amount`; the annual rate and the
+  `key_fields` rule are `decision_outcomes`' `annualized_growth` /
+  `check_key_fields_param`.
 - `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
   `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
   out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one
@@ -1150,8 +1158,10 @@ dskit/pipeline/
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
 │                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score;
 │                      only decision-matched later rows are value-checked (structural refusals cover all)
+│                      owns `annualized_growth` (ratio -> annual rate) + `check_key_fields_param` (the key_fields rule); position_summary imports both
 ├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
+│                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its

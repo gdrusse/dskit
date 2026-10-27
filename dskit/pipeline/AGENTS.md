@@ -139,8 +139,10 @@ dskit/pipeline/
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
 │                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score;
 │                      only decision-matched later rows are value-checked (structural refusals cover all)
+│                      owns `annualized_growth` (ratio -> annual rate) + `check_key_fields_param` (the key_fields rule); position_summary imports both
 ├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
+│                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:

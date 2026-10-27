@@ -44,6 +44,10 @@ a purchase and is read as a return (a 2-for-1 split looks like a 50% loss); none
 is detected or adjusted here. The income removed from the projection is one
 yield for every holding, and no tax is applied to either side.
 
+:func:`annualized_growth` and :func:`check_key_fields_param` are public because
+:mod:`~dskit.pipeline.position_summary` reads the same forecasts under the same rules;
+this module is their one owner.
+
 Import cost: stdlib + the pipeline core.
 """
 
@@ -56,9 +60,36 @@ from dskit.pipeline.document import date_problem
 from dskit.pipeline.liquidation import require_number
 from dskit.pipeline.node import Node, check_number_param, reject_unknown_params
 
-__all__ = ["DecisionOutcomes"]
+__all__ = ["DecisionOutcomes", "annualized_growth", "check_key_fields_param"]
 
 _DAYS_PER_YEAR = 365.25
+
+
+def annualized_growth(ratio, years):
+    """Return the annual rate that compounds to ``ratio`` over ``years``.
+
+    The one owner of ``ratio ** (1 / years) - 1`` for every ADR-0279 kind that annualizes a
+    forecast; ``ratio`` is not negative (a caller reads it from a non-negative amount).
+    ``annualized_growth(1.21, 2)`` is ``0.1``.
+    """
+    return ratio ** (1.0 / years) - 1.0
+
+
+def check_key_fields_param(problems, params):
+    """Append a problem unless ``params["key_fields"]``, when present, is a usable key.
+
+    The one owner of the key rule, shared by every kind that identifies a position by
+    declared fields: a non-empty list of distinct field names. Returns True when the param is
+    present and valid, so a caller can add its own rules on top; presence is the caller's rule.
+    """
+    if "key_fields" not in params:
+        return False
+    keys = params["key_fields"]
+    if (not isinstance(keys, list) or not keys or not all(name_ok(k) for k in keys)
+            or len(set(keys)) != len(keys)):
+        problems.append(f"key_fields must be a non-empty list of distinct field names, got {keys!r}")
+        return False
+    return True
 
 
 class DecisionOutcomes(Node):
@@ -111,14 +142,7 @@ class DecisionOutcomes(Node):
         missing = sorted(set(cls._REQUIRED) - set(params))
         if missing:
             problems.append(f"missing required params {missing}")
-        keys = params.get("key_fields")
-        if "key_fields" in params and (
-            not isinstance(keys, list) or not keys or not all(name_ok(k) for k in keys)
-            or len(set(keys)) != len(keys)
-        ):
-            problems.append(
-                f"key_fields must be a non-empty list of distinct field names, got {keys!r}"
-            )
+        check_key_fields_param(problems, params)
         for name in ("as_of_field", "value_field", "quantity_field"):
             if name in params and not name_ok(params[name]):
                 problems.append(f"{name} must be a non-empty field name, got {params[name]!r}")
@@ -229,7 +253,7 @@ class DecisionOutcomes(Node):
                 require_number(self.key, "decision", index, row, "hold_value"), "hold_value")
             elapsed = (later_day - decided).days / _DAYS_PER_YEAR
             income = float(self.params["income_rate"])
-            total_growth = (hold_value / value) ** (1.0 / horizon)
+            total_growth = 1.0 + annualized_growth(hold_value / value, horizon)
             price_growth = total_growth - income
             if price_growth <= 0.0:
                 raise ValueError(

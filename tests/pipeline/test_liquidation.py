@@ -352,6 +352,29 @@ def test_require_number_is_the_one_row_number_reader():
     assert active_hurdle.require_number is require_number
 
 
+def test_require_amount_ends_its_refusal_with_the_reason_the_caller_gives():
+    require_amount = liquidation.require_amount
+    assert require_amount("k", 2, {"f": 3}, "f", allow_zero=False) == 3.0
+    assert require_amount("k", 2, {"f": 0}, "f", allow_zero=True) == 0.0
+    # the default reason: this family of kinds reads long holdings only
+    with pytest.raises(ValueError) as caught:
+        require_amount("k", 2, {"f": -4.0}, "f", allow_zero=False)
+    assert str(caught.value) == (
+        "k: row 2 field 'f' must be positive, got -4.0; short positions and negative balances "
+        "are out of scope for a hold-vs-exit decision")
+    with pytest.raises(ValueError) as caught:
+        require_amount("k", 2, {"f": 0.0}, "f", allow_zero=False)
+    assert str(caught.value).startswith("k: row 2 field 'f' must be positive, got 0.0; short")
+    # a caller's own reason replaces it, and a zero that is allowed still refuses a negative
+    with pytest.raises(ValueError) as caught:
+        require_amount("k", 2, {"f": -1.0}, "f", allow_zero=True, why="because of this")
+    assert str(caught.value) == "k: row 2 field 'f' must be non-negative, got -1.0; because of this"
+    # the number reader's refusal comes first and carries no reason
+    with pytest.raises(ValueError) as caught:
+        require_amount("k", 2, {"f": None}, "f", allow_zero=True, why="because of this")
+    assert str(caught.value) == "k: row 2 field 'f' is not a number, got None"
+
+
 def test_wired_rates_outside_the_bounds_refuse_naming_the_input(ctx):
     rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 90.0}]
     node = HoldVsRedeploy("d", DECIDE)

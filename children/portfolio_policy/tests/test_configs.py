@@ -8,6 +8,7 @@ moment someone finally runs it.
 import json
 import os
 
+import pytest
 from dskit.assets import load_model
 from dskit.onboarding import check_config, load_suite
 from dskit.pipeline.document import load_document
@@ -89,6 +90,14 @@ def test_summary_restates_the_decision_terms_exactly():
               "value_field", "net_field", "basis_field", "symbol_field")
     assert {name: summary[name] for name in shared} == {name: decide[name] for name in shared}
     assert summary["symbol_field"] in summary["key_fields"]
+
+
+@pytest.mark.parametrize("writer", ["decisions", "summaries"])
+def test_the_run_writers_never_overwrite(writer):
+    """Each run writes its own file (ADR-0247); a writer allowed to overwrite could replace the
+    rows a later run reads or a past run's evidence, silently, so the document pins it off."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    assert document.pipeline[writer].params["overwrite"] is False
 
 
 def test_outcomes_income_is_the_market_dividend_yield():

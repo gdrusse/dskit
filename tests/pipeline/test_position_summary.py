@@ -11,9 +11,9 @@ import math
 
 import pytest
 
-from dskit.pipeline import liquidation, position_summary
+from dskit.pipeline import decision_outcomes, liquidation, position_summary
 from dskit.pipeline.hold_return import BetaHoldReturns
-from dskit.pipeline.liquidation import HoldVsRedeploy
+from dskit.pipeline.liquidation import MAX_HORIZON_YEARS, HoldVsRedeploy, LiquidationTax
 from dskit.pipeline.node import ConfigError, NodeContext
 from dskit.pipeline.position_summary import (
     BREAK_EVEN_RULES,
@@ -44,9 +44,10 @@ PARAMS = {
 }
 
 
-def _row(account, symbol, value, basis, net, hold_value, hold_net, redeploy_net, decision):
+def _row(account, symbol, value, basis, net, hold_value, hold_net, redeploy_net, decision,
+         years=2):
     return {"account": account, "symbol": symbol, "market_value": value, "cost_basis": basis,
-            "liq_net": net, "horizon_years": 2, "hold_value": hold_value, "hold_net": hold_net,
+            "liq_net": net, "horizon_years": years, "hold_value": hold_value, "hold_net": hold_net,
             "redeploy_net": redeploy_net, "decision": decision, "other": "dropped"}
 
 
@@ -143,6 +144,18 @@ DECIDE = {"horizon_years": 3, "hold_return": 0.07, "redeploy_cost": 0.01, "risk_
           "terminal_tax_rate": 0.238, "basis_field": "cost_basis"}
 
 
+def _assert_ties(ctx, decide, rows, rate):
+    """Redeploying at ``rate`` ties the hold path under ``decide``'s own arithmetic: equal nets,
+    and a millionth of a point either side flips the decision (the exact tie is float noise)."""
+    tie = HoldVsRedeploy("d", {**decide, "redeploy_return": rate}).run(
+        ctx, {"records": rows})["records"][0]
+    assert tie["redeploy_net"] == pytest.approx(tie["hold_net"], rel=1e-12)
+    for step, decision in ((-1e-6, "hold"), (1e-6, "exit")):
+        near = HoldVsRedeploy("d", {**decide, "redeploy_return": rate + step}).run(
+            ctx, {"records": rows})
+        assert near["records"][0]["decision"] == decision, step
+
+
 @pytest.mark.parametrize("timing", [None, "annual", "terminal"])
 @pytest.mark.parametrize("hold_return", [0.07, -0.08])
 def test_the_break_even_ties_hold_vs_redeploy(ctx, timing, hold_return):
@@ -156,14 +169,46 @@ def test_the_break_even_ties_hold_vs_redeploy(ctx, timing, hold_return):
     summary = PositionSummary("s", {**params, **taxes}).run(ctx, {"records": decided})
     rate = summary["records"][0]["break_even_return"]
     assert summary["metrics"]["break_even_return"] == pytest.approx(rate)
-    tied = HoldVsRedeploy("d", {**decide, "redeploy_return": rate}).run(ctx, {"records": rows})
-    tie = tied["records"][0]
-    assert tie["redeploy_net"] == pytest.approx(tie["hold_net"], rel=1e-12)
-    # the exact tie is float noise either way; a millionth on each side is not
-    for step, decision in ((-1e-6, "hold"), (1e-6, "exit")):
-        near = HoldVsRedeploy("d", {**decide, "redeploy_return": rate + step}).run(
-            ctx, {"records": rows})
-        assert near["records"][0]["decision"] == decision, step
+    _assert_ties(ctx, decide, rows, rate)
+
+
+# cost .01, premium .03, tax .4, a flat position (value = basis = net = 1000) whose hold path
+# compounds at `hold` for `years`. Each expected break-even is worked by hand, then tied back.
+KINK = {"redeploy_cost": 0.01, "risk_premium": 0.03}
+KINKS = [
+    # annual, the loss side of the kink: g = -.01 is a loss, but g + premium = +.02 is a positive
+    # net rate the redeploy path is taxed on: R = .01 + .02 / (1 - .4). (Branching on g, not on
+    # g + premium, gives the untaxed .04.)
+    ("annual", 3, -0.01, 0.01 + 0.02 / 0.6),
+    # annual, g + premium = 0: both branches agree, R = cost
+    ("annual", 3, -0.03, 0.01),
+    # annual, g + premium = -.01 < 0: no tax and no refund, R = .01 - .01
+    ("annual", 3, -0.04, 0.0),
+    # annual, a gain: R = .01 + .035 / .6
+    ("annual", 3, 0.005, 0.01 + 0.035 / 0.6),
+    # terminal, just under the kink at T/N = 1: 1.01 ** 2 reversed, G = T/N = .99 ** 2 (nothing to
+    # tax) and R = .99 - 1 + .01 + .03. (Branching on g + premium > 0 taxes a gain it does not have.)
+    ("terminal", 2, -0.01, 0.03),
+    # terminal, just over it: G = (1.01 ** 2 - .4) / .6, R = sqrt(G) - 1 + .01 + .03
+    ("terminal", 2, 0.01, math.sqrt((1.0201 - 0.4) / 0.6) - 1.0 + 0.04),
+]
+
+
+@pytest.mark.parametrize("timing, years, hold, expected", KINKS)
+def test_the_break_even_at_the_kinks_by_hand_and_tied_back(ctx, timing, years, hold, expected):
+    taxes = {"redeploy_tax_rate": 0.4, "redeploy_tax_timing": timing}
+    decide = {"horizon_years": years, "hold_return": hold, "redeploy_return": 0.05, **KINK,
+              **taxes, "value_field": "market_value", "net_field": "liq_net",
+              "symbol_field": "symbol"}
+    rows = [{"account": "A", "symbol": "X", "market_value": 1000.0, "cost_basis": 1000.0,
+             "liq_net": 1000.0}]
+    decided = HoldVsRedeploy("d", decide).run(ctx, {"records": rows})["records"]
+    params = {k: v for k, v in PARAMS.items() if not k.startswith("redeploy_tax")}
+    out = PositionSummary("s", {**params, **KINK, **taxes}).run(ctx, {"records": decided})
+    rate = out["records"][0]["break_even_return"]
+    assert rate == pytest.approx(expected, abs=1e-12)
+    assert out["metrics"]["break_even_return"] == pytest.approx(expected, abs=1e-12)
+    _assert_ties(ctx, decide, rows, rate)
 
 
 def test_a_break_even_that_does_not_exist_refuses_by_row(ctx):
@@ -264,6 +309,157 @@ def test_bad_declarations_refuse_at_construction():
         PositionSummary("s", {k: v for k, v in PARAMS.items() if k != "redeploy_tax_timing"})
     with pytest.raises(ConfigError, match="risk_premium"):
         PositionSummary("s", {**PARAMS, "risk_premium": -0.01})
+
+
+LOSS_TAX = {"short_term_rate": 0.4, "long_term_rate": 0.2, "long_term_days": 365,
+            "default_holding": "long", "value_field": "market_value", "basis_field": "cost_basis"}
+LOSS_DECIDE = {"horizon_years": 2, "hold_return": 0.1, "redeploy_return": 0.2,
+               "redeploy_cost": 0.01, "risk_premium": 0.02, "value_field": "market_value",
+               "net_field": "liq_net", "symbol_field": "symbol"}
+
+
+@pytest.mark.parametrize("loss_offset, loss_net, loss_tax_cost, total_tax_cost", [
+    # losses pay nothing: LOSS nets its 800; tax 0 + 120 + 100 = 220 of 2500
+    (False, 800.0, 0.0, 220.0 / 2500.0),
+    # losses are a negative tax: -200 x .2 = -40, LOSS nets 840; tax -40 + 120 + 100 = 180 of 2500
+    (True, 840.0, -40.0 / 800.0, 180.0 / 2500.0),
+])
+def test_a_loss_and_a_zero_basis_by_hand_through_the_liquidation(
+        ctx, loss_offset, loss_net, loss_tax_cost, total_tax_cost):
+    book = [("LOSS", 800.0, 1000.0), ("GAIN", 1200.0, 600.0), ("ZERO", 500.0, 0.0)]
+    rows = [{"account": "A", "symbol": s, "market_value": v, "cost_basis": b} for s, v, b in book]
+    taxed = LiquidationTax("t", {**LOSS_TAX, "loss_offset": loss_offset}).run(
+        ctx, {"records": rows})["records"]
+    assert [r["liq_net"] for r in taxed] == [loss_net, 1080.0, 400.0]
+    decided = HoldVsRedeploy("d", LOSS_DECIDE).run(ctx, {"records": taxed})["records"]
+    untaxed = {k: v for k, v in PARAMS.items() if not k.startswith("redeploy_tax")}
+    node = PositionSummary("s", {**untaxed, "redeploy_cost": 0.01, "risk_premium": 0.02})
+    out = node.run(ctx, {"records": decided})
+    loss, gain, zero = out["records"]
+    # (value - basis) / value: a loss is negative, never floored; basis 0 is all gain
+    assert [r["embedded_gain"] for r in (loss, gain, zero)] == pytest.approx([-0.25, 0.5, 1.0])
+    # (value - net) / value: 0 when the loss pays nothing, negative when it is a negative tax
+    assert [r["tax_cost"] for r in (loss, gain, zero)] == pytest.approx(
+        [loss_tax_cost, 0.1, 0.2])
+    assert [r["weight"] for r in (loss, gain, zero)] == pytest.approx([0.32, 0.48, 0.2])
+    m = out["metrics"]
+    assert m["total_value"] == 2500.0
+    # the portfolio's embedded gain NETS the loss: (-200 + 600 + 500) / 2500, not 1100 / 2500
+    assert m["embedded_gain"] == pytest.approx(900.0 / 2500.0)
+    # its tax cost is the rows' taxes added up: the loss offsets a gain only when it was taxed
+    # negative upstream
+    assert m["tax_cost"] == pytest.approx(total_tax_cost)
+    # untaxed break-even R = (T / N) ** (1 / 2) - 1 + .01 + .02 = sqrt(T / N) - .97, T = 1.21 x value
+    assert [r["break_even_return"] for r in (loss, gain, zero)] == pytest.approx([
+        math.sqrt(968.0 / loss_net) - 0.97, math.sqrt(1452.0 / 1080.0) - 0.97,
+        math.sqrt(605.0 / 400.0) - 0.97])
+    total_net = loss_net + 1080.0 + 400.0
+    assert m["break_even_return"] == pytest.approx(math.sqrt(3025.0 / total_net) - 0.97)
+    rates = [r["break_even_return"] for r in out["records"]]
+    assert min(rates) <= m["break_even_return"] <= max(rates)
+
+
+@pytest.mark.parametrize("timing, tax", [(None, None), ("annual", 0.25), ("terminal", 0.25)])
+def test_the_portfolio_break_even_lies_between_its_rows(ctx, timing, tax):
+    # why the portfolio-level refusal cannot fire when every row passed: the break-even is
+    # non-decreasing in T / N under every rule, and sum(T) / sum(N) lies between the rows' ratios
+    rows = [ROWS[0], ROWS[2], _row("A2", "LOSS", 1000.0, 1000.0, 1000.0, 810.0, 810.0, 900.0, "hold")]
+    taxes = {} if timing is None else {"redeploy_tax_rate": tax, "redeploy_tax_timing": timing}
+    untaxed = {k: v for k, v in PARAMS.items() if not k.startswith("redeploy_tax")}
+    out = PositionSummary("s", {**untaxed, **taxes}).run(ctx, {"records": rows})
+    rates = [r["break_even_return"] for r in out["records"]]
+    assert len(set(rates)) == 3
+    assert min(rates) < out["metrics"]["break_even_return"] < max(rates)
+
+
+def test_a_rule_that_broke_monotonicity_would_still_refuse_at_the_portfolio(ctx, monkeypatch):
+    # the portfolio check is the invariant above made executable: this rule passes each row's
+    # ratio (1.21, 1.0) but not their mix (2210 / 2000 = 1.105)
+    class Jumpy(UntaxedBreakEven):
+        def rate(self, ratio, years):
+            return 0.1 if ratio in (1.21, 1.0) else 9.0
+
+    monkeypatch.setitem(BREAK_EVEN_RULES, None, Jumpy)
+    rows = [_row("A", "X", 1000.0, 1000.0, 1000.0, 1210.0, 1210.0, None, "hold"),
+            _row("A", "Y", 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, None, "hold")]
+    untaxed = {k: v for k, v in PARAMS.items() if not k.startswith("redeploy_tax")}
+    with pytest.raises(ValueError, match=r"summary: portfolio break-even return 9.0 is outside"):
+        PositionSummary("summary", untaxed).run(ctx, {"records": rows})
+
+
+@pytest.mark.parametrize("name, field", [("volatilities", "volatility"), ("betas", "beta")])
+def test_a_wired_none_table_refuses_and_only_an_absent_one_is_unwired(ctx, name, field):
+    with pytest.raises(ValueError, match=rf"{name} must be a.*mapping, got None"):
+        _run(ctx, inputs={name: None})
+    # wired but empty is wired: every symbol is then missing from it
+    with pytest.raises(ValueError, match=f"row 0 has no {name} entry for symbol 'VTI'"):
+        _run(ctx, inputs={name: {}})
+    out = _run(ctx)
+    assert all(r[field] is None for r in out["records"])
+
+
+@pytest.mark.parametrize("bad", [2.5, 0.5, -1, 0, MAX_HORIZON_YEARS + 1, 10 ** 3])
+def test_a_horizon_that_is_not_a_whole_number_of_years_in_range_refuses(ctx, bad):
+    row = {**ROWS[0], "horizon_years": bad}
+    with pytest.raises(ValueError) as caught:
+        _run(ctx, rows=[row])
+    assert str(caught.value) == (
+        f"summary: row 0 field 'horizon_years' must be an int in [1, {MAX_HORIZON_YEARS}], "
+        f"got {bad!r}")
+
+
+@pytest.mark.parametrize("bad", ["2", True, None, float("nan")])
+def test_a_horizon_that_is_not_a_number_refuses_through_the_number_reader(ctx, bad):
+    with pytest.raises(ValueError, match="row 0 field 'horizon_years' is not a number"):
+        _run(ctx, rows=[{**ROWS[0], "horizon_years": bad}])
+
+
+@pytest.mark.parametrize("years", [1, 2.0, MAX_HORIZON_YEARS])
+def test_the_horizon_bounds_are_inclusive_and_a_whole_float_is_an_int(ctx, years):
+    row = _row("A", "X", 1000.0, 1000.0, 1000.0, 1210.0, 1210.0, None, "hold", years=years)
+    out = _run(ctx, rows=[row])
+    assert out["metrics"]["horizon_years"] == int(years)
+    assert isinstance(out["metrics"]["horizon_years"], int)
+    assert isinstance(out["records"][0]["horizon_years"], int)
+
+
+def test_a_zero_hold_net_refuses_with_its_own_reason_and_the_others_with_the_shared_one(ctx):
+    with pytest.raises(ValueError) as caught:
+        _run(ctx, rows=[{**ROWS[0], "hold_net": 0.0}])
+    assert str(caught.value) == (
+        "summary: row 0 field 'hold_net' must be positive, got 0.0; a hold path worth nothing "
+        "has no growth to break even against")
+    with pytest.raises(ValueError) as caught:
+        _run(ctx, rows=[{**ROWS[0], "liq_net": 0.0}])
+    assert str(caught.value) == (
+        "summary: row 0 field 'liq_net' must be positive, got 0.0; short positions and negative "
+        "balances are out of scope for a hold-vs-exit decision")
+
+
+def test_betas_are_not_bounded_like_volatilities(ctx):
+    # a negative beta is legal (an inverse fund) and so is a levered one; a volatility of 25 is
+    # not (2500%): the same number is a beta here and a refusal there
+    out = _run(ctx, inputs={"betas": {"VTI": -0.5, "AAPL": 25.0}})
+    assert [r["beta"] for r in out["records"]] == [-0.5, -0.5, 25.0]
+    assert out["metrics"]["beta"] == pytest.approx(0.75 * -0.5 + 0.25 * 25.0)      # 5.875
+    with pytest.raises(ValueError, match=r"volatilities\['AAPL'\] 25.0 .*outside"):
+        _run(ctx, inputs={"volatilities": {"VTI": 0.16, "AAPL": 25.0}})
+    for bad in (float("inf"), float("nan"), True, "1"):
+        with pytest.raises(ValueError, match=r"betas\['VTI'\] must be a number"):
+            _run(ctx, inputs={"betas": {"VTI": bad, "AAPL": 1.0}})
+
+
+def test_the_shared_helpers_have_one_owner():
+    # the annual rate and the key_fields rule are decision_outcomes'; PositionSummary imports them
+    assert position_summary.annualized_growth is decision_outcomes.annualized_growth
+    assert position_summary.check_key_fields_param is decision_outcomes.check_key_fields_param
+    assert not hasattr(position_summary, "_annualized")
+    bad = {"key_fields": ["a", "a"]}
+    shared = []
+    decision_outcomes.check_key_fields_param(shared, bad)
+    assert len(shared) == 1
+    for cls in (decision_outcomes.DecisionOutcomes, PositionSummary):
+        assert shared[0] in cls.validate_params(bad), cls.__name__
 
 
 def test_the_redeploy_terms_are_validated_by_one_owner():

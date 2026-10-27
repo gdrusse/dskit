@@ -24,10 +24,11 @@ Tier 1, `dskit/pipeline`, stdlib + core, all by import path, all
 
 | Module | Kinds | Tests |
 |---|---|---|
-| `liquidation.py` | `LiquidationTax`, `HoldVsRedeploy`, `require_number`, `MAX_COUNT` / `check_count_param` | `tests/pipeline/test_liquidation.py` (37 tests, 108 cases) |
+| `liquidation.py` | `LiquidationTax`, `HoldVsRedeploy`, `require_number`, `MAX_COUNT` / `check_count_param` | `tests/pipeline/test_liquidation.py` (38 tests, 109 cases) |
 | `hold_return.py` | `MarketHoldReturn`, `BetaHoldReturns` | `test_hold_return.py` (21 tests, 92 cases) |
 | `active_hurdle.py` | `ActiveHurdle` | `test_active_hurdle.py` (20 tests, 51 cases) |
-| `decision_outcomes.py` | `DecisionOutcomes` | `test_decision_outcomes.py` (17 tests, 48 cases) |
+| `decision_outcomes.py` | `DecisionOutcomes`, `annualized_growth`, `check_key_fields_param` | `test_decision_outcomes.py` (19 tests, 50 cases) |
+| `position_summary.py` | `PositionSummary` (research A0002) | `test_position_summary.py` (25 tests, 49 cases) |
 | `node.py` | `check_number_param` | `test_node.py` (12 parametrized) |
 
 Tier 2, `dskit/onboarding/libs/schwab.py`: `SchwabPositionsConnector`
@@ -124,6 +125,16 @@ per-share growth; the active side is scored where it runs.
   in the four modules and the positions pack is now killed by a test, checked by
   neutering each in turn). Details: the "Sonnet round 3 corrections" amendment in
   the decision log.
+- **Position summary** (`dskit/pipeline/position_summary.py`, research A0002; Opus
+  build `84eba56`, merge `b82e886`, then its own Sonnet loop). Round 1: 2 Major
+  fixed in this commit (a loss and a zero-basis row, and both kinks of the
+  break-even, were untested: now hand-worked through `LiquidationTax` and tied back
+  through `HoldVsRedeploy`), 5 Minor and the Nits; each mutant (row or portfolio
+  gain floored or un-netted, branching on `g` for `g + premium`, a wired `None`
+  table read as unwired, horizon and `why` guards) survived the old tests and is
+  killed now. `annualized_growth` and `check_key_fields_param` have one owner
+  (`decision_outcomes`). Tests: `test_position_summary` 25 tests / 49 cases (was 14 / 19),
+  `test_decision_outcomes` 19 / 50 (was 17 / 48), `test_liquidation` 38 / 109 (was 37 / 108).
 - Lens 2 also executed the README sequence literally from a scratch child
   (exit 0, rows written, execute row journaled) and `pipeline validate` on
   both documents (OK).
@@ -135,8 +146,11 @@ per-share growth; the active side is scored where it runs.
   tests/onboarding/test_schwab_positions.py tests/onboarding/test_schwab.py
   tests/pipeline/test_node.py tests/docs -q` → 403 passed after round 3 (147 after round 2,
   126 before it; most of the growth is parametrized bad-declaration cases).
+- `python -m pytest tests/pipeline/test_position_summary.py tests/pipeline/test_decision_outcomes.py
+  tests/pipeline/test_liquidation.py tests/pipeline/test_hold_return.py tests/docs -q` → 304 passed
+  after position-summary round 1 (271 before).
 - `python -m pytest tests/onboarding -q -k schwab` → 44 passed, 4 skipped.
-- `cd children/portfolio_policy && python -m pytest tests -q` → 63 passed, 9 skipped
+- `cd children/portfolio_policy && python -m pytest tests -q` → 67 passed, 9 skipped (65 at merge `b82e886`, before position-summary round 1)
   (skips: skeleton conformance for kinds the child does not declare); both documents
   `validate` clean.
 - Full `tests/pipeline tests/onboarding tests/docs tests/children` run on

@@ -13,7 +13,12 @@ import re
 import pytest
 
 from dskit.pipeline.active_hurdle import ActiveHurdle
-from dskit.pipeline.decision_outcomes import DecisionOutcomes
+from dskit.pipeline import decision_outcomes
+from dskit.pipeline.decision_outcomes import (
+    DecisionOutcomes,
+    annualized_growth,
+    check_key_fields_param,
+)
 from dskit.pipeline.hold_return import BetaHoldReturns, MarketHoldReturn
 from dskit.pipeline.liquidation import HoldVsRedeploy, LiquidationTax
 from dskit.pipeline.node import ConfigError, NodeContext
@@ -368,3 +373,31 @@ def test_inputs_must_be_lists_of_mappings_and_a_decision_must_be_dated(ctx):
     for bad in ("soon", None, 20261027):
         with pytest.raises(ValueError, match="decision 0 field 'as_of' is not an ISO date"):
             node.run(ctx, {"decisions": [{**DECISIONS[0], "as_of": bad}], "positions": LATER})
+
+
+def test_annualized_growth_is_the_annual_rate_that_compounds_to_a_ratio():
+    # the one owner of the rate; PositionSummary and the income-adjusted projection both read it
+    assert "annualized_growth" in decision_outcomes.__all__
+    assert annualized_growth(1.21, 2) == pytest.approx(0.1)       # 1.1 ** 2 = 1.21
+    assert annualized_growth(0.81, 2) == pytest.approx(-0.1)      # 0.9 ** 2 = 0.81
+    assert annualized_growth(1.25, 1) == 0.25                     # one year is the ratio less one
+    assert annualized_growth(1.0, 7) == 0.0
+    assert annualized_growth(0.0, 4) == -1.0                      # worth nothing: lost it all
+
+
+def test_check_key_fields_param_is_the_one_key_fields_rule():
+    assert "check_key_fields_param" in decision_outcomes.__all__
+    for good in (["a"], ["a", "b"]):
+        problems = []
+        assert check_key_fields_param(problems, {"key_fields": good}) is True
+        assert problems == []
+    problems = []
+    assert check_key_fields_param(problems, {}) is False and problems == [], "absent: the caller's"
+    for bad in ("symbol", [], [""], ["a", "a"], [5], None):
+        problems = []
+        assert check_key_fields_param(problems, {"key_fields": bad}) is False
+        assert problems == [
+            f"key_fields must be a non-empty list of distinct field names, got {bad!r}"]
+    # the node's own validation reports exactly this problem
+    assert DecisionOutcomes.validate_params({**PARAMS, "key_fields": []}) == [
+        "key_fields must be a non-empty list of distinct field names, got []"]

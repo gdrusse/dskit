@@ -80,21 +80,25 @@ tables them run over run). Rates are a year; shares are of today's value.
 
 | Number | Plain meaning | What you do with it |
 |---|---|---|
-| `weight` | share of the portfolio | above ~10% is a concentrated position |
+| `weight` | this row's share of the portfolio (one account's slice of a symbol) | the ~10% concentration rule is for the portfolio's `top_weight` (below), not for this |
 | `expected_return` | what holding should earn a year, before tax (market blocks x beta) | compare holdings |
 | `volatility` | how much it swings a year (one standard deviation) | null until daily prices are onboarded |
 | `beta` | how hard it moves with the market | above 1 swings more than the market |
 | `embedded_gain` | how much of the value is untaxed gain | the higher it is, the more selling costs |
 | `tax_cost` | what selling today loses to tax | the price of exiting, paid once |
 | `break_even_return` | the active return at which exiting exactly ties holding, after every tax and cost | exit only if you trust the strategy to beat it |
-| `opportunity_cost` | what holding costs a year, after tax, against the alternative | above zero: you lose that much a year by holding (`decision` is `exit`) |
+| `opportunity_cost` | what holding costs a year, after tax, against the alternative | above zero: you lose that much a year by holding (`decision` is `exit`); below zero holding wins |
 
 The portfolio adds `total_value`, the weighted `expected_return` and `beta`,
 `weighted_volatility` (an upper bound: it assumes every pair moves together),
 concentration (`hhi`, `effective_holdings` = 1 / HHI, `top_symbol` /
-`top_weight`, accounts merged), `tax_cost` of selling everything (losses not
-netted across holdings, so it errs high), `break_even_return`,
-`opportunity_cost` and the `exit_positions` / `hold_positions` counts. The
+`top_weight`, accounts merged: above ~10% in `top_weight`, a symbol's share
+across accounts, is a concentrated position, not a row's `weight`),
+`embedded_gain` (losses net against gains) and `tax_cost` of selling everything
+(a sum of each row's tax: losses do not net across holdings while the decision
+document's `tax.loss_offset` is false, so it errs high), `break_even_return`,
+`opportunity_cost` (selling everything against holding everything; negative
+means holding wins) and the `exit_positions` / `hold_positions` counts. The
 summary restates `decide`'s tax and cost terms, pinned equal by a test; betas
 are wired from the beta table. When the hurdle is withheld,
 `opportunity_cost` is null and `break_even_return` is still the bar a strategy

@@ -1,6 +1,6 @@
 # RE-ENTRY — portfolio_policy
 
-Updated: 2026-10-27 by Claude Sonnet 5.5 (merge). Rewritten whole at every `/wrap`;
+Updated: 2026-10-27 by Claude Sonnet 5.5 (position-summary round 1). Rewritten whole at every `/wrap`;
 the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
@@ -26,8 +26,9 @@ In flight: branch `portfolio-summary` (Opus, research A0002 +
 return, beta, volatility (port only), embedded gain, tax cost, break-even
 return and opportunity cost per holding, one portfolio roll-up in `metrics`;
 the document's `summary` node writes `summary/<run>.jsonl`). `main`'s four
-Sonnet rounds are merged into it and its tests pass; it has not had its own
-Sonnet loop, so it stays off `main` until that closes.
+Sonnet rounds are merged into it. Its own Sonnet loop: round 1 fixed 2 Major
+(loss and zero-basis rows, the break-even kinks; 304 dskit + 67 child tests
+green); round 2 review is next, and it stays off `main` until the loop is clean.
 
 ## Next
 

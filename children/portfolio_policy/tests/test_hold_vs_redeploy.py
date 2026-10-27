@@ -325,9 +325,10 @@ def test_position_summary_end_to_end(root, monkeypatch):
     written = result.outputs["summaries"]["path"]
     assert os.path.dirname(os.path.abspath(written)) == str(root / "summary")
     with open(written) as fh:
-        lines = fh.read().splitlines()
-    assert len(lines) == 2
-    assert all(json.loads(line)["run_id"] == os.path.basename(result.run_dir) for line in lines)
+        lines = [json.loads(line) for line in fh.read().splitlines()]
+    # the file holds exactly the summary node's rows, field for field, plus the run that wrote them
+    run_id = os.path.basename(result.run_dir)
+    assert lines == [{**row, "run_id": run_id} for row in result.outputs["summary"]["records"]]
     with open(os.path.join(result.run_dir, "carry.json")) as fh:
         assert json.load(fh)["summary"]["metrics"]["hhi"] == pytest.approx(m["hhi"])
 

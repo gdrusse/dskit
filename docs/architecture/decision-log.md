@@ -33440,3 +33440,57 @@ require_rows UntaxedBreakEven BREAK_EVEN_RULES volatilities check_name_params
 VOLATILITY_BOUNDS; no near matches
 except `require_number` on the unmerged `portfolio-policy-sonnet-loop` branch
 (same signature adopted) and the unrelated `TestJointCostBreakEven`.
+
+#### ADR-0279 amendment: position summary, Sonnet round 1 corrections (2026-10-27)
+
+A Sonnet reviewer found 2 Major and 5 Minor (plus Nits) on `PositionSummary`
+(Opus build `84eba56`, merged `b82e886`); all fixed. Every mutant named below
+survived the old tests and is killed by the new ones, each run in a scratch copy.
+
+- Major 1 — loss and zero-basis rows. A hand-worked test runs `LiquidationTax`
+  (`loss_offset` false, then true) -> `HoldVsRedeploy` -> `PositionSummary` on a
+  loss (800 vs basis 1000), a gain and a zero-basis (500 vs 0) row: embedded gain
+  -25% / 50% / 100%, tax cost 0 or -5% on the loss, portfolio embedded gain
+  900 / 2500 (netted), portfolio tax cost 220 / 2500 (false) or 180 / 2500 (true).
+  The node already took `net > value` (a negative tax cost) from the upstream
+  `net_field`; it has no `loss_offset` param. Killed: flooring row embedded gain
+  or tax cost at 0, un-netting the portfolio gain or tax cost, a zero basis read
+  as no gain.
+- Major 2 — the kinks. Six hand-worked tie-back cases (cost .01, premium .03,
+  tax .4): annual with g = -.01 (g < 0 < g + premium, R = .01 + .02 / .6 =
+  .04333), g + premium = 0 and < 0, a gain; terminal just under (T/N = .99 ** 2,
+  R = .03) and over 1. Each break-even is fed back through `HoldVsRedeploy`:
+  nets tie, and a millionth either side flips the decision. Killed: branching on
+  `g` instead of `g + premium` (annual), branching on `g + premium` instead of
+  `T/N` (terminal).
+- Minor 1 — `inputs.get(name)` made a wired `None` table read as unwired. Now
+  `name not in inputs` is unwired and `None` / `{}` refuse; both tested.
+- Minor 2 — the portfolio embedded gain nets losses while the tax cost nets only
+  when the liquidation did (`loss_offset`): one sentence each in the module
+  docstring, the document's `summary` notes (identity hash unchanged) and the
+  child README. Minor 3 — README: the ~10% rule is for `top_weight`, not a row's
+  `weight`; a negative `opportunity_cost` means holding wins; the portfolio figure
+  is all-exit against all-hold. Minor 4 — the child e2e asserts the file's rows
+  equal `summary.records` plus `run_id`, field for field; `test_configs.py` pins
+  `overwrite: false` on both writers. Minor 5 — tests for `_horizon` (non-integer,
+  zero, negative, `MAX_HORIZON_YEARS` + 1, inclusive bounds, a whole float is an
+  int) and the `require_amount(why=)` suffix (here and in `test_liquidation`);
+  betas are unbounded (a negative beta is legal), documented and tested against a
+  volatility of 25.
+- Nits — `_PARAMS[:-2]` and `_DECISIONS[1]` became `_OPTIONAL_PARAMS` and `_EXIT`;
+  the `name == "volatilities"` branch is a per-table `_TABLE_RULES` map. One owner
+  each: `decision_outcomes.annualized_growth(ratio, years)` and
+  `check_key_fields_param(problems, params)` (public, in `__all__`); `PositionSummary`
+  imports both and its private `_annualized` and key_fields copy are gone, pinned by
+  an identity test. The portfolio-level break-even refusal cannot fire when every
+  row passed (`sum(T) / sum(N)` lies between the rows' ratios and every rule is
+  non-decreasing in the ratio): documented at the call, a bracketing test across
+  the three timings, and a test with a non-monotone rule showing the check is live.
+  README: "losses not netted" holds only while `loss_offset` is false.
+
+Files: `position_summary.py`, `decision_outcomes.py`, their tests and
+`test_liquidation.py`, the child's `test_hold_vs_redeploy.py`, `test_configs.py`,
+document notes and README, `dskit/pipeline/README.md` and `CLAUDE.md` (+ mirror).
+Sweep: tools/sweep/sweep annualized_growth check_key_fields_param annualize
+annualised cagr compound_rate check_key_fields; no near matches except the
+removed private `_annualized` of `position_summary`.
