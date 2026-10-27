@@ -24,9 +24,9 @@ Tier 1, `dskit/pipeline`, stdlib + core, all by import path, all
 
 | Module | Kinds | Tests |
 |---|---|---|
-| `liquidation.py` | `LiquidationTax`, `HoldVsRedeploy` | `tests/pipeline/test_liquidation.py` (13) |
+| `liquidation.py` | `LiquidationTax`, `HoldVsRedeploy` | `tests/pipeline/test_liquidation.py` (14) |
 | `hold_return.py` | `MarketHoldReturn`, `BetaHoldReturns` | `test_hold_return.py` (7) |
-| `active_hurdle.py` | `ActiveHurdle` | `test_active_hurdle.py` (8) |
+| `active_hurdle.py` | `ActiveHurdle` | `test_active_hurdle.py` (7) |
 | `decision_outcomes.py` | `DecisionOutcomes` | `test_decision_outcomes.py` (5) |
 | `node.py` | `check_number_param` | `test_node.py` (11 parametrized) |
 
@@ -137,5 +137,8 @@ growth; the active side is scored where it runs.
   and the hash moves on purpose.
 - First real run: README "Hold vs redeploy" block, then "Scoring a past
   decision run" a week or more later.
-- Status: merged to `main` on owner authorization once this memo and the
-  lane note are committed; branch deleted when contained.
+- Status: merged to `main` (`c0e8989`) on owner authorization. A final-round
+  convergence lens on the post-lens-2 delta (tests, one document value,
+  docs; no module code) returned CLEAR; its one Minor — the scoring
+  sequence this memo referenced was missing from the README — is fixed in
+  the follow-up commit.

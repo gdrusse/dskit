@@ -38,9 +38,31 @@ backtest's mean by what `trials` variants of nothing would have found and
 withholds it below `min_dsr`, in which case every holding holds. The hold
 path is taxed once at the horizon (`terminal_tax_rate`); the active path pays
 its short-term rate every year (`redeploy_tax_rate`, `annual`). Equities
-only: option rows are filtered out, their basis carries no multiplier. Rows land in `decisions/<run>.jsonl`,
-one per account x symbol, advisory only. Aggregate positions carry no lots, so
-every holding takes `default_holding` until a lot-level export is onboarded.
+only: option rows are filtered out, their basis carries no multiplier. Rows
+land in `decisions/<run>.jsonl`, one per account x symbol, advisory only.
+Aggregate positions carry no lots, so every holding takes `default_holding`
+until a lot-level export is onboarded.
+
+### Scoring a past decision run
+
+A week or more later, score the hold forecast of an earlier run against a
+fresh snapshot (`configs/run-decision-outcomes.json`):
+
+```bash
+python -m dskit.onboarding register-source decisions --root ./ob \
+    --catalog-source decisions-src --connector localtables \
+    --config '{"path": "./decisions", "layout": "file", "effective_field": "as_of"}' --activate
+python -m dskit.onboarding acquire --root ./ob --source decisions --stream <run-name> --mode backfill
+python -m dskit.onboarding acquire --root ./ob --source schwab --stream positions --mode backfill
+mkdir -p outcomes
+# set decisions.stream to <run-name> and later.where[as_of] to the new pull's UTC day, then:
+python -m dskit.pipeline run configs/run-decision-outcomes.json --asof <that day>
+```
+
+`<run-name>` is the decision run's directory name (the stem of its
+`decisions/<run>.jsonl`). `outcomes/<run>.jsonl` holds, per account and
+symbol, the growth the decision assumed (pro rata for the time elapsed), the
+realized per-share growth, and the surprise. It scores the hold forecast only.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
