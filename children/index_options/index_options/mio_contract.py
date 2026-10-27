@@ -41,10 +41,8 @@ class MIOModelZooSelection(Node):
         return errors
 
     def run(self, ctx, inputs):
-        from dskit.pipeline.workflow import path_hash
         p = self.params
-        if not p["implementation"] or any(path_hash(k) != v for k, v in p["implementation"].items()):
-            raise ValueError("selection implementation pin drift")
+        StudyContract.validate_implementation(p["implementation"], (StudyContract, self.__class__))
         source = PinnedPayloadSource(p["source"])
         audit = json.loads(open(source.file(p["audit"], verify=True)).read())
         expected = {c["id"] for c in audit["inventory"]

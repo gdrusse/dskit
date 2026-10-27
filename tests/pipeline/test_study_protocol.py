@@ -22,6 +22,23 @@ class FixtureContract(StudyContract):
         return True
 
 
+def _implementation_pins(*objects):
+    import importlib
+    pins = {}
+    for obj in objects:
+        module = importlib.import_module(obj.__module__) if isinstance(obj, type) else obj
+        source = Path(module.__file__).resolve()
+        root = source.parent
+        if not (root / "__init__.py").is_file():
+            pins[str(source)] = path_hash(str(source))
+            continue
+        while (root.parent / "__init__.py").is_file():
+            root = root.parent
+        for path in root.rglob("*.py"):
+            pins[str(path.resolve())] = path_hash(str(path.resolve()))
+    return pins
+
+
 @pytest.fixture
 def study(tmp_path):
     packets = [
@@ -35,7 +52,7 @@ def study(tmp_path):
             "registry": {"path": str(tmp_path/"registry.sqlite"),
                          "id": "8936212a-8c1f-4d51-bc5c-95966b9d68a2", "domain": "fixture"},
             "packets": packets, "selected_packet": "dev", "domain": {},
-            "code": {__file__: path_hash(__file__)}, "dependencies": {"pytest": pytest.__version__}}
+            "code": _implementation_pins(StudyContract, FixtureContract), "dependencies": {"pytest": pytest.__version__}}
 
 
 def _initialize(study):
@@ -100,7 +117,7 @@ def test_frontier_review_failure_retire_and_alias_history(study):
         registry.freeze(StudyContract.build(later))
     plan, permit = _claim(study, registry)
     registry.finish(plan, permit, {"complete": False})
-    with pytest.raises(ValueError, match="complete"):
+    with pytest.raises(ValueError, match="attested close result receipt"):
         registry.dispose("dev", "review", "no")
     registry.dispose("dev", "abandon", "injected fixture failure")
     first = {**study, "selected_packet": "r1"}
@@ -113,12 +130,34 @@ def test_frontier_review_failure_retire_and_alias_history(study):
     registry.finish(next_plan, next_permit, {"complete": True})
     with pytest.raises(ValueError, match="active"):
         registry.freeze(plan)
-    registry.dispose("r2", "review", "fixture reviewed")
+    with pytest.raises(ValueError, match="attested close result receipt"):
+        registry.dispose("r2", "review", "fixture reviewed")
+    registry.dispose("r2", "abandon", "unit fixture has no persisted close receipt")
     alias = copy.deepcopy(study)
     alias["domain"]["alias"] = "different_source_name"
     alias_plan = StudyContract.build(alias)
     assert registry.preview(alias_plan)["classification"] == "development"
     assert registry.snapshot()["frontier"] == 3
+
+
+def test_implementation_pins_require_imported_complete_source(study, tmp_path):
+    valid = StudyContract.build(study)
+    assert valid["runnable"]
+    unrelated = tmp_path / "unrelated.py"
+    unrelated.write_text("VALUE = 1\n")
+    substituted = copy.deepcopy(study)
+    substituted["code"] = {str(unrelated): path_hash(str(unrelated))}
+    with pytest.raises(ValueError, match="implementation pins"):
+        StudyContract.build(substituted)
+    omitted = copy.deepcopy(study)
+    omitted["code"].pop(next(path for path in omitted["code"] if path.endswith("study_protocol.py")))
+    with pytest.raises(ValueError, match="implementation pins"):
+        StudyContract.build(omitted)
+    other_checkout = copy.deepcopy(study)
+    other_checkout["code"] = {path.replace("/home/russell/wt/", "/tmp/other-checkout/"): digest
+                              for path, digest in study["code"].items()}
+    with pytest.raises(ValueError, match="implementation pins"):
+        StudyContract.build(other_checkout)
 
 
 def test_plan_code_dependency_and_result_identity(study):

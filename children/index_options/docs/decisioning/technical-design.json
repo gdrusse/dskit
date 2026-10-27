@@ -198,7 +198,7 @@
     {
       "id": "solve",
       "formula": "A_t(P)={q : ∃(s,[d⁻,d⁺])∈P, symbol(q)=s ∧ d⁻≤d(q)≤d⁺ ∧ eligible_JSON(q,t)}; x̂_t^ν = Solve_{η_ν}(F̂_t,A_t(P),B_t)",
-      "meaning": "Eligibility, constraints and objective come from the resolved run params. Returned incumbent is not labeled x* without an optimality certificate. Future sparse-pair adapter and exact formulation set are not implemented by the design templates."
+      "meaning": "The executable sparse-pair MIO adapter and exact formulation are implemented in the approved packet wrapper; JSON templates provide reusable executable shapes, while study.json remains a future schedule design reference. A solver incumbent is not labeled x* without an optimality certificate."
     },
     {
       "id": "replay",
@@ -519,7 +519,7 @@
         "R-wide_mlp64-f1",
         "R-wide_mlp64-f2"
       ],
-      "notes": "Outer development envelope; fold rows supply the actual optimization and monitor boundaries. Pinned fits are the existing M51/MLP dependency. The best complete model-zoo output remains unselected in this TDD.",
+      "notes": "Outer development envelope; fold rows supply the actual optimization and monitor boundaries. Pinned fits are the existing M51/MLP dependency. The best complete model-zoo output is selected as M53 from its saved 2020–2023 pooled score; M51 remains the historical component and MIO dependency.",
       "authority": [
         "A0003",
         "A0008"
@@ -538,12 +538,14 @@
       "configs": [
         "path",
         "folds",
-        "m51"
+        "m51",
+        "mio-selection"
       ],
       "runs": [
-        "R-m51"
+        "R-m51",
+        "R-zoo-select"
       ],
-      "notes": "Used for predictive selection, including M51. A later MIO comparison here is not untouched end-to-end testing. ZOO records the pending best-output selection.",
+      "notes": "Predictive selection uses M53's saved pooled 2020–2023 model-zoo score. M51 remains the recorded legacy validation and MIO dependency; a later MIO comparison here is not untouched end-to-end testing.",
       "authority": [
         "A0002",
         "A0003",
@@ -649,10 +651,11 @@
         "folds",
         "mlp",
         "m51",
-        "resolved-wide_mlp64"
+        "resolved-wide_mlp64",
+        "mio-selection"
       ],
       "runs": [],
-      "notes": "Reader guard begins Jan 1; the Path holdout's first session is Jan 2.",
+      "notes": "The M53 selected forecast's reader and source pins remain within the pre-holdout boundary. Reader guard begins Jan 1; the Path holdout's first session is Jan 2.",
       "authority": [
         "A0003",
         "fold_table.holdout_start"
@@ -6564,13 +6567,13 @@
     {
       "id": "mio-selection",
       "path": "children/index_options/configs/mio-selection.json",
-      "sha256": "670032206d2bdba7458d5d111ace4a6bb0068b8f5ffbad2f7ca1241ac5db5934",
+      "sha256": "74bb1f3eeaf3ea5122bb3576e247bd6d67837f40192dc85f4dd9159342aa543f",
       "role": "Executed best-output selection pipeline; completed producer and current-byte provenance are distinguished."
     },
     {
       "id": "mio-debug",
       "path": "children/index_options/configs/mio-debug.json",
-      "sha256": "88be0ac8b4ae7af626e5475a58c53253719792c8680885d2b9973387f80f36b6",
+      "sha256": "c8f3f7d0c5fbeb72100cd0c8725bbd009c324b48b16d1db74af4bbabf9ef9b01",
       "role": "Executed development-only packet; sparse fixtures, all source/code/dependency pins and shared registry identity."
     },
     {
@@ -6582,7 +6585,7 @@
     {
       "id": "mio-comparison",
       "path": "/home/russell/data/index_options/mio-pipelines-20261027/compare.json",
-      "sha256": "7f37d87c657ff8f19bf7ca1614f6e9bc9fc0d5f5d9013a2983beb54a6a2e332a",
+      "sha256": "9e731f5ec84c072489de9529ec3634e12f56081e28be2a707e2dc12a831938a1",
       "role": "Exact executed descriptive comparison document over the completed result artifact."
     }
   ],
@@ -10079,16 +10082,16 @@
     {
       "id": "R-zoo-select",
       "kind": "pipeline",
-      "path": "/home/russell/data/index_options/mio-pipelines-20261027/selection/mio-model-zoo-selection-2026-10-27-83a7c9d7",
-      "identity": "83a7c9d78090af702a8eaccb209cf6aafae8de76ef1c83f880b93acd540867e0",
-      "document_hash": "331bfaaaa680f5c01f4f6152b6b253258395243f8028ceaa74e851120fa756e3",
+      "path": "/home/russell/data/index_options/mio-pipelines-20261027/selection/mio-model-zoo-selection-2026-10-27-2d8fc34f",
+      "identity": "2d8fc34fc40e34f62e78e7fc3b64cca31eb1c9dd359786970844d575f2c1e059",
+      "document_hash": "df68c38bb2febb552a1e5abbd33df0ac65cad1562d6d12e737b5e2a59e700133",
       "asof": "2026-10-27",
       "node": "selection",
       "files": {
-        "config.json": "7962d4a92b8f67d8950263e28fbc763bc79509c9b1504fdb3f331b1f356fde3e",
-        "resolved.json": "5ef80a075716648ecca974e36e024c72d634057cbfe4d848df52d105be5e1f6f",
-        "result.json": "2e3c25d31b10e8c2ffaf6b399066320e3d89ea417f7746a3582635f5e22c1724",
-        "artifacts/json/44ac2de1b75de4007fb8d3311fa3e9e63a1dae84bf6d25e0cc758ed199b83f95.json": "44ac2de1b75de4007fb8d3311fa3e9e63a1dae84bf6d25e0cc758ed199b83f95"
+        "config.json": "364ada3714032821c59740c1ddc4500a91311123a70e22eb294b462a16e739f4",
+        "resolved.json": "f7af65001436171a0188841ec705b0dace7100acae91827d45ea5cea079c1bef",
+        "result.json": "a4e145587d235c6cc5f0a77b07cfbd97799a3bfd18d587a4b9096524ed2c449f",
+        "artifacts/json/75d25b2da5fcb9abab3b64b6e54841f27b6f037a89300f6e5f2c4cab74a2098f.json": "75d25b2da5fcb9abab3b64b6e54841f27b6f037a89300f6e5f2c4cab74a2098f"
       },
       "verification": "Completed pipeline and content-addressed selection receipt verify;67 complete method files cover the same eligible identities, plus13 standalone score rows.",
       "limitation": "Point-score selection; no promotion, significance or strategy-profitability claim."
@@ -10096,16 +10099,16 @@
     {
       "id": "R-mio-debug",
       "kind": "pipeline",
-      "path": "/home/russell/data/index_options/mio-pipelines-20261027/development/mio-development-2020-0224-2020-04-24-36a6e39e",
-      "identity": "36a6e39e8bf81f59742248fd4c214f9008e33e0e5a8f2e71dd8afb759983258f",
-      "document_hash": "c49246f310766bcbb9f8fb19755278c408846062953e34213c616e78503cdba4",
+      "path": "/home/russell/data/index_options/mio-pipelines-20261027/development/mio-development-2020-0224-2020-04-24-535c4d43",
+      "identity": "535c4d4362859eec39d568d65e2bef428bf056b7fb4c3fb8f7b77e6645cfa50a",
+      "document_hash": "2feff9ed5bd47368005fdff70e850c968588c5f1ecf2762bfb155c477d04c73a",
       "asof": "2020-04-24",
       "node": "close_packet",
       "files": {
-        "config.json": "90bd84a557173516cbf16848bc0e725c12a953efebfa94a719206287bdf034fc",
-        "resolved.json": "c18f682cf0c622c35290c859c36cc8da392824ff48378f38b41a50d0370ac638",
-        "result.json": "b97cbf02bd6248287b76157e75adb90e11b8d7c3c019c80ce575692fab86e302",
-        "artifacts/json/68fcfa50407cb414401fbbf1fd20cf4a8967015097d9a22672190723cb817f3f.json": "68fcfa50407cb414401fbbf1fd20cf4a8967015097d9a22672190723cb817f3f"
+        "config.json": "c3e304637e0f082e16471ba746a8120be31077473d0224b7b7cd69360c3d761a",
+        "resolved.json": "6c13163d398b3cc0e05b762f1b44bafd097c4c0e3a68fe85b35a50faadc81960",
+        "result.json": "872aa1d139c43e81aae0643e89c0a2b76d0c3b4ac8f3239b0205f360e43eaba6",
+        "artifacts/json/8383406a047b72480db53969fe6ffba5f7e78946b9a82c413bf03010cd5c8bc5.json": "8383406a047b72480db53969fe6ffba5f7e78946b9a82c413bf03010cd5c8bc5"
       },
       "verification": "Completed packet artifact, shared exposure receipt, all four fixed methods and exact independent accounting/recorded-decision replay verify.",
       "limitation": "Development-only reuse of exposed2020. American assignment/broker margin remain unmodeled; pairs are debug fixtures."
@@ -10113,16 +10116,16 @@
     {
       "id": "R-mio-compare",
       "kind": "pipeline",
-      "path": "/home/russell/data/index_options/mio-pipelines-20261027/comparison/mio-development-2020-0224-compare-2020-04-24-56ac65b9",
-      "identity": "56ac65b98b911528848a75e74aa46d868df61eef4aeacce1cf1b1db04a5b9d43",
-      "document_hash": "c1d2539af940cfd325bedfba49d387a3f58ba124c72d665a43a3f124bcb15a63",
+      "path": "/home/russell/data/index_options/mio-pipelines-20261027/comparison/mio-development-2020-0224-compare-2020-04-24-ea48c192",
+      "identity": "ea48c19280f8c037c75bdbbc08ad470baa07136fc49abb92a968e9411b37154e",
+      "document_hash": "fde33d7600a7528af43ca99fe9d0c1f938a2a07aff65d443e3c1138437e22689",
       "asof": "2020-04-24",
       "node": "comparison",
       "files": {
-        "config.json": "e3fbad0a56850d099b8754bc377c8fa4d1cbcd5e9516c3afcba50538af8986ea",
-        "resolved.json": "c89e5eb491c4b74dc6aea1927bd2357f64e65ef7b78264898ae1ee35325509ff",
-        "result.json": "13be6bb89f9df05b0ef17f880b992289633712f750c8aee84e005c7edfea55b4",
-        "artifacts/json/7e67c7d321e8b8c814258a7d10d91f4e70198ca4ce09a3b22019d6ed6328baf1.json": "7e67c7d321e8b8c814258a7d10d91f4e70198ca4ce09a3b22019d6ed6328baf1"
+        "config.json": "3f5b63b2ba420ade097c850056e8d71c69f88588a2bae3e20aca377124e74818",
+        "resolved.json": "ea6d6b6048a9b36b6d3e886f3816acceebd5be3f0ab56e82aeac2b35fd646626",
+        "result.json": "bb521f17df7da16bef6df5348988300c73bf46c385b1c131127cfb41ed43c409",
+        "artifacts/json/0c12f0af40b731a0ff0a206498fd4f2455f268de3feeca054d46d8839b13c0e5.json": "0c12f0af40b731a0ff0a206498fd4f2455f268de3feeca054d46d8839b13c0e5"
       },
       "verification": "Completed comparison verifies source/result/run/registry identity and all declared methods; winner=null.",
       "limitation": "No joint-cost pair P&L attribution; reset account curves are not pooled."

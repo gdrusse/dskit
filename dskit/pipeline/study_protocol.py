@@ -67,6 +67,29 @@ class StudyContract(ABC):
         """Refuse a result that cannot close the entire declared cohort."""
 
     @classmethod
+    def validate_implementation(cls, pins, modules):
+        """Bind complete package source pins to the actually imported modules."""
+        roots, expected = set(), set()
+        for module in modules:
+            if isinstance(module, type):
+                module = importlib.import_module(module.__module__)
+            source = Path(module.__file__).resolve()
+            root = source.parent
+            if not (root / "__init__.py").is_file():
+                expected.add(str(source))
+                continue
+            while (root.parent / "__init__.py").is_file():
+                root = root.parent
+            roots.add(root)
+        for root in roots:
+            expected.update(str(path.resolve()) for path in root.rglob("*.py"))
+        if set(pins) != expected:
+            raise ValueError("implementation pins must cover the imported package source")
+        for path, digest in pins.items():
+            if Path(path).resolve().as_posix() != Path(path).as_posix() or path_hash(path) != digest:
+                raise ValueError("code pin drift: " + path)
+
+    @classmethod
     def build(cls, study):
         """Resolve and hash a fully declared study without reading payload values.
 
@@ -114,9 +137,8 @@ class StudyContract(ABC):
         missing = []
         if not study["code"]:
             missing.append("code")
-        for path, digest in study["code"].items():
-            if path_hash(path) != digest:
-                raise ValueError("code pin drift: "+path)
+        if study["code"]:
+            cls.validate_implementation(study["code"], (cls, hook))
         if not study["dependencies"]:
             missing.append("dependencies")
         for package, version in study["dependencies"].items():
@@ -364,6 +386,34 @@ class ExposureRegistry:
             self._save(connection, state, "finish")
         return claim["result"]
 
+    def publish(self, plan, permit, receipt):
+        """Bind only a persisted, attested close artifact to its exact active claim."""
+        artifact, manifest = self._attested_result(receipt)
+        if artifact["permit"] != permit or artifact["plan"] != plan:
+            raise ValueError("attested result does not match plan and permit")
+        self.verify(plan, permit, active=False)
+        if (artifact["provenance"] is None
+                or value_hash({k: artifact[k] for k in ("results", "audit", "provenance")})
+                != self.snapshot()["claims"][permit["id"]]["execution"]
+                or value_hash(artifact["provenance"])
+                != self.snapshot()["claims"][permit["id"]]["inputs"]):
+            raise ValueError("attested result differs from registered execution")
+        with self._transaction() as (connection, state):
+            claim = state["claims"][permit["id"]]
+            if state["active"] != permit["id"] or claim["status"] not in {"claimed_exposed", "completed_pending_review"}:
+                raise ValueError("publication requires the active claim")
+            publication = {"receipt": receipt, "artifact_sha256": manifest["sha256"]}
+            if claim.get("publication") not in (None, publication):
+                raise ValueError("published close receipt cannot change")
+            if claim.get("result") not in (None, value_hash(artifact)):
+                raise ValueError("published close result digest differs")
+            claim["result"] = value_hash(artifact)
+            claim["publication"] = publication
+            claim["status"] = ("completed_pending_review" if artifact["complete"]
+                               else "failed_exposed_pending_review")
+            self._save(connection, state, "publish_attested_close")
+            return copy.deepcopy(claim)
+
     def retry(self, plan, permit, expected_revision):
         """Retry an interrupted or failed active claim with the identical frozen plan."""
         _unseal(permit)
@@ -371,7 +421,8 @@ class ExposureRegistry:
             old = state["claims"].get(permit["id"])
             if (expected_revision != state["revision"] or old is None or old["permit"] != permit
                     or state["active"] != permit["id"] or permit["plan_sha256"] != plan["sha256"]
-                    or old["status"] not in {"claimed_exposed", "failed_exposed_pending_review"}):
+                    or old["status"] not in {"claimed_exposed", "failed_exposed_pending_review", "completed_pending_review"}
+                    or (old["status"] == "completed_pending_review" and old.get("publication") is not None)):
                 raise ValueError("retry requires the same active frozen identity and current revision")
             body = _unseal(permit)
             body.update(id=str(uuid.uuid4()), classification="replay",
@@ -398,7 +449,7 @@ class ExposureRegistry:
             self._save(connection, state, "extend_schedule")
             return {"revision": state["revision"], "packets": packets, "reason": reason}
 
-    def dispose(self, packet_id, action, reason):
+    def dispose(self, packet_id, action, reason, result_receipt=None):
         """Review success, abandon exposure or irrevocably retire the current frontier."""
         if action not in {"review", "abandon", "retire"} or not isinstance(reason, str) or not reason.strip():
             raise ValueError("explicit disposition and reason required")
@@ -412,10 +463,25 @@ class ExposureRegistry:
             else:
                 if not active or active["permit"]["packet_id"] != packet_id:
                     raise ValueError("no matching active claim")
-                if action == "review" and active["status"] != "completed_pending_review":
-                    raise ValueError("success review requires complete result")
-                if action == "abandon" and active["status"] == "completed_pending_review":
-                    raise ValueError("completed result requires review")
+                if action == "review":
+                    if result_receipt is None:
+                        raise ValueError("attested close result receipt required")
+                    artifact, manifest = self._attested_result(result_receipt)
+                    if (artifact["permit"] != active["permit"] or artifact["complete"] is not True
+                            or artifact["plan"]["sha256"] != active["permit"]["plan_sha256"]
+                            or active["inputs"] != value_hash(artifact["provenance"])
+                            or active["execution"] != value_hash({k: artifact[k] for k in ("results", "audit", "provenance")})
+                            or (active["result"] is not None and active["result"] != value_hash(artifact))):
+                        raise ValueError("attested result does not match registered complete claim")
+                    publication = {"receipt": result_receipt, "artifact_sha256": manifest["sha256"]}
+                    if active.get("publication") not in (None, publication):
+                        raise ValueError("review receipt differs from registered publication")
+                    active["result"] = value_hash(artifact)
+                    active["publication"] = publication
+                    active["status"] = "completed_pending_review"
+                if (action == "abandon" and active["status"] == "completed_pending_review"
+                        and active.get("publication") is not None):
+                    raise ValueError("published completed result requires review")
                 active["status"] = "reviewed_closed" if action == "review" else "abandoned_exposed"
                 state["active"] = None
             receipt = _seal({"packet_id": packet_id, "action": action, "reason": reason,
@@ -425,6 +491,26 @@ class ExposureRegistry:
                 state["frontier"] += 1
             self._save(connection, state, action)
             return receipt
+
+    @staticmethod
+    def _attested_result(receipt):
+        """Load one completed close artifact through its immutable run attestation."""
+        if (not isinstance(receipt, dict) or set(receipt) != {"run_dir", "document_hash", "node", "port"}
+                or not receipt["node"] or not receipt["port"]):
+            raise ValueError("invalid result receipt")
+        config = json.loads((Path(receipt["run_dir"]) / "config.json").read_text())
+        node = config.get("pipeline", {}).get(receipt["node"])
+        if (receipt["port"] != "receipt" or not isinstance(node, dict)
+                or node.get("uses") != "dskit.pipeline.study_protocol:StudyPacketClose"):
+            raise ValueError("receipt must attest StudyPacketClose.receipt")
+        run = RunAttestation(receipt["run_dir"])
+        manifest = run.attested_output(receipt["node"], receipt["port"], receipt["document_hash"])
+        if manifest is None:
+            raise ValueError("close result lacks completed run attestation")
+        artifact = resolve_json_artifact(receipt["run_dir"], manifest)
+        if not isinstance(artifact, dict) or not {"plan", "permit", "results", "audit", "provenance", "complete"} <= set(artifact):
+            raise ValueError("invalid attested close artifact")
+        return artifact, manifest
 
 
 class StudyNode(Node):
@@ -465,7 +551,7 @@ class StudyProtocolPlan(StudyNode):
 class StudyProtocolControl(StudyNode):
     """Explicit JSON initialization, freeze and disposition; never reads payloads."""
 
-    _PARAMS = ("study", "action", "prior_exposure", "end_before", "reason", "permit", "expected_revision")
+    _PARAMS = ("study", "action", "prior_exposure", "end_before", "reason", "permit", "expected_revision", "result_receipt")
     outputs = ("control",)
 
     @classmethod
@@ -474,7 +560,7 @@ class StudyProtocolControl(StudyNode):
         action = params.get("action")
         required = {
             "initialize": {"prior_exposure", "end_before"}, "freeze": set(),
-            "review": {"reason"}, "abandon": {"reason"}, "retire": {"reason"},
+            "review": {"reason", "result_receipt"}, "abandon": {"reason"}, "retire": {"reason"},
             "retry": {"permit", "expected_revision"}, "extend": {"reason"}}.get(action)
         if required is None:
             errors.append("explicit supported control action required")
@@ -498,7 +584,8 @@ class StudyProtocolControl(StudyNode):
                 raise ValueError("cannot freeze unbound study")
             result = {"frozen_plan": plan, "claim_request": registry.freeze(plan)}
         else:
-            result = registry.dispose(p["study"]["selected_packet"], action, p["reason"])
+            result = registry.dispose(p["study"]["selected_packet"], action, p["reason"],
+                                       p.get("result_receipt"))
         return {"control": result}
 
 
@@ -533,7 +620,6 @@ class StudyPacketClose(StudyNode):
         hook = import_ref(self.params["study"]["contract"])()
         complete = hook.validate_result(self.params["study"], **result)
         artifact = {"plan": plan, "permit": permit, **result, "complete": complete}
-        registry.finish(plan, permit, artifact)
         return {"receipt": JsonArtifact(artifact)}
 
 
@@ -552,15 +638,12 @@ class StudyPacketResults(StudyNode):
         for receipt in receipts:
             if set(receipt) != {"run_dir", "document_hash", "node", "port"}:
                 raise ValueError("invalid result receipt")
-            run = RunAttestation(receipt["run_dir"])
-            manifest = run.attested_output(receipt["node"], receipt["port"], receipt["document_hash"])
-            if manifest is None:
-                raise ValueError("result lacks completed run attestation")
-            result = resolve_json_artifact(receipt["run_dir"], manifest)
+            result, manifest = registry._attested_result(receipt)
             if result["plan"] != plan:
                 raise ValueError("result plan differs")
-            claim = registry.verify(plan, result["permit"], active=False)
-            if claim["result"] != value_hash(result):
+            claim = registry.publish(plan, result["permit"], receipt)
+            if (claim["result"] != value_hash(result)
+                    or claim.get("publication", {}).get("artifact_sha256") != manifest["sha256"]):
                 raise ValueError("result is not the registered publication")
             results.append(result)
         if len({r["permit"]["id"] for r in results}) != len(results):

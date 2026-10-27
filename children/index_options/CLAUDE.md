@@ -220,7 +220,7 @@ docs/RE-ENTRY.md            # the lane note: Now / Next / Blocked; rewritten who
 docs/explanations/README.md # glossary and worked synthetic payoff
                             # robust-condor-selection.md (+ .svg): robust selection by hand
 docs/plans/README.md        # gated research stages
-docs/plans/mio-json/       # study.json + plan/run/compare.template.json (proposed; not executable)
+docs/plans/mio-json/       # study.json (future schedule design); executable plan/run/compare templates
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,

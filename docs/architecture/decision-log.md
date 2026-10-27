@@ -33554,3 +33554,127 @@ Current final-execution pins (prior attempts preserved in exposure registry):
 }
 Focused source/protocol/child regression:126 passed,128 deselected.
 TDD227 windows/18configs/14runs, same canonical data in HTML/canvas.
+
+Current final-execution pins (prior attempts preserved in exposure registry):
+{
+  "selection": {
+    "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/selection/mio-model-zoo-selection-2026-10-27-2476cea6",
+    "document_hash": "4e3f6e8161ce330e205e07d8ff40ff898011f80f19168eac43147cebf800a7a3",
+    "node": "selection",
+    "port": "selection",
+    "sha256": "803657a4b98a5b7c083248b6862d1ebaca225e75e5aea009dd82726945f3abd2"
+  },
+  "debug": {
+    "receipt": {
+      "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/development/mio-development-2020-0224-2020-04-24-e5e885f3",
+      "document_hash": "53b88fb35d1d78233d9ac782b81834c05f19d673cc8d6d85c359cea41eda2614",
+      "node": "close_packet",
+      "port": "receipt"
+    },
+    "run_hash": "e5e885f30c66ae73f71e28a0207df9645469ccc8f0bbc5a650e36b3324d8e64d",
+    "artifact_sha256": "e808e6b1f3707525b2f1aed57622bfb88daef9eb8d1a5086e2de787a3feb9f8f",
+    "comparison": {
+      "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/comparison/mio-development-2020-0224-compare-2020-04-24-44761bf0",
+      "document_hash": "4aa24d920e73b03f9fe998b1bb57b0574a4fe4cc707a834ec6d8d6495ed48cb6",
+      "node": "comparison",
+      "port": "report",
+      "sha256": "ab1f9ddd50fd53b353f249be58692a174a0bda2ff8420d02c9cebc6ba2620e27"
+    }
+  }
+}
+Focused source/protocol/child regression:130 passed,128 deselected.
+TDD227 windows/18configs/14runs, same canonical data in HTML/canvas.
+
+
+Executable MIO implementation corrections (post-final-review findings; scope
+remains Steps 1–3, before Step 4):
+
+- The two fresh Luna reviews of candidate fa54da29052f425a9886d1cbe0125b4ede504204
+  over base 2593aea56718407ffcecc2fd16e371e47b10d7ba are retained by task IDs:
+  correctness/authority `/root/mio_luna_correctness_r1` and
+  integration/test-quality `/root/mio_luna_integration_r1`. Each returned
+  C0/M2/m0/N0. LC1: close advanced the registry before JSON artifact persistence
+  and run attestation; failed publication could strand a nonrecoverable active
+  claim, while status-only review could release an unattested result. LC2:
+  caller-selected path hashes let omission, unrelated paths and another
+  checkout pass implementation identity. Both were Major due to release-frontier
+  integrity and code/result identity. No other material findings were reported.
+  The earlier interrupted review remains labeled partial/not completed.
+- LC1 correction reuses RunAttestation and JsonArtifact: close no longer finishes
+  the registry before output persistence. Results binds only a completed attested
+  close artifact to the exact claim; explicit review rechecks the receipt,
+  artifact digest, plan, permit, provenance and execution before releasing.
+  Unpublished failures remain retryable with the same frozen identity or
+  explicitly abandonable, preserving claims/history. Comparison still precedes
+  explicit review.
+- LC2 correction is one StudyContract-owned validator used by study construction,
+  public study facades and MIOModelZooSelection. Pins must name the complete
+  `.py` source set under the package roots of the actually imported modules,
+  at those exact resolved locations, with current content hashes. Production
+  selection/debug configs pin all261 implementation files.
+- RED used unchanged pre-fix source files from HEAD with the same WSL venv;
+  `/tmp/mio-pre-fix-red.log` recorded5 failures, including persistence failure
+  leaving `completed_pending_review`, review without attestation, and incomplete
+  or substituted pin sets accepted. Selection-specific RED is retained in
+  `/tmp/mio-selection-pre-fix-red.log`. GREEN focused command used
+  `/home/russell/dskit/.venv/bin/python -B -m pytest` with WSL
+  `PYTHONPATH=$PWD:$PWD/children/index_options` and single-threaded BLAS:
+  130 passed/128 deselected across protocol, onboarding artifacts/purity, MIO
+  packet and weekly/funded tests. Pipeline output-persistence failure injection
+  leaves `claimed_exposed`; exact-identity retry and explicit abandon pass.
+  Valid complete code coverage, omission, changed digest, unrelated path,
+  checkout substitution, selection facade and attested review mismatch pass.
+- Refreshed only the same previously exposed development window, 2020-02-24 to
+  2020-03-09, after pin changes. Selection receipt:
+  run `mio-model-zoo-selection-2026-10-27-2476cea6`, document
+  4e3f6e8161ce330e205e07d8ff40ff898011f80f19168eac43147cebf800a7a3,
+  artifact 803657a4b98a5b7c083248b6862d1ebaca225e75e5aea009dd82726945f3abd2.
+  Development run e5e885f30c66ae73f71e28a0207df9645469ccc8f0bbc5a650e36b3324d8e64d,
+  artifact e808e6b1f3707525b2f1aed57622bfb88daef9eb8d1a5086e2de787a3feb9f8f;
+  comparison run document 4aa24d920e73b03f9fe998b1bb57b0574a4fe4cc707a834ec6d8d6495ed48cb6,
+  artifact ab1f9ddd50fd53b353f249be58692a174a0bda2ff8420d02c9cebc6ba2620e27.
+  All four fixed methods completed and exactly replayed. Both this run and the
+  prior completed run were explicitly reviewed with their actual attested close
+  receipts for engineering only; no new packet, promotion, holdout or 2026 read.
+- Main integration dependency was origin/main 6834b308b46ef1cf1dd35ca643a7003e533250e0,
+  merged in this isolated worktree using installed ADR-0109 drivers; it brought
+  portfolio_policy changes and the numeric validation update. Its focused
+  integration result was13 passed/213 deselected. The known pipeline purity
+  failure in parquet.py:531 remains unchanged from base and reproduced there
+  using the same environment (/tmp/mio-base-purity.log); no gate was weakened.
+- Documentation now identifies M53 as selected, preserves M51 as the historical
+  MIO dependency, describes executable sparse-pair handling and templates
+  accurately, and records the refreshed run pins. Canonical TDD, HTML and canvas
+  share227 windows,18 config pins and14 run records. TDD validation passed,
+  rendered tree check found15 reachable group/fold combinations and3318 valid
+  displayed file actions, canvas TypeScript diagnostics0, documentation budget4
+  passed, child exact-manifest test passed, and `git diff --check` passed.
+
+Final pin refresh after close-node attestation guard (same exposed development only):
+{
+  "selection": {
+    "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/selection/mio-model-zoo-selection-2026-10-27-2d8fc34f",
+    "document_hash": "df68c38bb2febb552a1e5abbd33df0ac65cad1562d6d12e737b5e2a59e700133",
+    "node": "selection",
+    "port": "selection",
+    "sha256": "75d25b2da5fcb9abab3b64b6e54841f27b6f037a89300f6e5f2c4cab74a2098f"
+  },
+  "debug": {
+    "receipt": {
+      "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/development/mio-development-2020-0224-2020-04-24-535c4d43",
+      "document_hash": "2feff9ed5bd47368005fdff70e850c968588c5f1ecf2762bfb155c477d04c73a",
+      "node": "close_packet",
+      "port": "receipt"
+    },
+    "run_hash": "535c4d4362859eec39d568d65e2bef428bf056b7fb4c3fb8f7b77e6645cfa50a",
+    "artifact_sha256": "8383406a047b72480db53969fe6ffba5f7e78946b9a82c413bf03010cd5c8bc5",
+    "comparison": {
+      "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/comparison/mio-development-2020-0224-compare-2020-04-24-ea48c192",
+      "document_hash": "fde33d7600a7528af43ca99fe9d0c1f938a2a07aff65d443e3c1138437e22689",
+      "node": "comparison",
+      "port": "report",
+      "sha256": "0c12f0af40b731a0ff0a206498fd4f2455f268de3feeca054d46d8839b13c0e5"
+    }
+  }
+}
+130 passed/128 deselected focused tests; close-node provenance RED/GREEN recorded in /tmp/mio-close-owner-red.log and /tmp/mio-close-owner-green.log. No fourth-step execution.
