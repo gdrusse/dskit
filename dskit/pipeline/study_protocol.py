@@ -1,0 +1,568 @@
+"""Durable, domain-independent research packet release and evidence binding.
+
+The registry coordinates cooperative local researchers. It cannot prevent
+manual file reads or hostile local code. Initialization explicitly records
+prior exposure; missing or differently initialized registries refuse.
+"""
+
+import copy
+import importlib.metadata
+import json
+import sqlite3
+import uuid
+from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from datetime import date
+from pathlib import Path
+
+from .base import import_ref, value_hash
+from .driver import RunAttestation, resolve_json_artifact
+from .node import JsonArtifact, Node, reject_unknown_params
+from .workflow import path_hash
+
+__all__ = ["StudyNode", "StudyContract", "ExposureRegistry", "StudyProtocolPlan",
+           "StudyProtocolControl", "StudyPacketOpen", "StudyPacketClose",
+           "StudyPacketResults"]
+
+
+def _day(value):
+    """Refuse ambiguous dates before lexical comparisons."""
+    if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value:
+        raise ValueError("canonical ISO date required")
+    return value
+
+
+def _seal(value):
+    """Bind one JSON receipt with the framework's canonical hash."""
+    return {**value, "sha256": value_hash(value)}
+
+
+def _unseal(receipt):
+    """Validate a receipt independently of its producer."""
+    body = {k: v for k, v in receipt.items() if k != "sha256"}
+    if receipt.get("sha256") != value_hash(body):
+        raise ValueError("receipt digest mismatch")
+    return body
+
+
+class StudyContract(ABC):
+    """Domain hook for metadata resolution and completed-result validation.
+
+    Parameters
+    ----------
+    None
+
+    Examples
+    --------
+    A child subclass implements resolve and validate_result and declares its
+    import path in study.contract. Core never interprets observation units.
+    """
+
+    @abstractmethod
+    def resolve(self, study):
+        """Return missing, read_bounds, cohort and source_pins from metadata."""
+
+    @abstractmethod
+    def validate_result(self, study, results, audit, provenance):
+        """Refuse a result that cannot close the entire declared cohort."""
+
+    @classmethod
+    def build(cls, study):
+        """Resolve and hash a fully declared study without reading payload values.
+
+        Parameters
+        ----------
+        study : dict
+            Explicit contract, registry, schedule, selected packet, domain
+            configuration and code/dependency content pins.
+
+        Returns
+        -------
+        dict
+            Stable plan identity and missing-input list.
+
+        Raises
+        ------
+        ValueError
+            Any supplied identity, date, code or dependency pin is invalid.
+        """
+        required = {"contract", "registry", "packets", "selected_packet",
+                    "domain", "code", "dependencies"}
+        if set(study)-{"notes"} != required:
+            raise ValueError("study requires exactly the executable schema keys")
+        hook = import_ref(study["contract"])
+        if not isinstance(hook, type) or not issubclass(hook, cls):
+            raise ValueError("study.contract must subclass StudyContract")
+        schedule = study["packets"]
+        if not isinstance(schedule, list) or not schedule:
+            raise ValueError("nonempty packet schedule required")
+        ids, previous = [], None
+        for packet in schedule:
+            if set(packet) != {"id", "start", "end_before", "purpose", "predecessor"}:
+                raise ValueError("invalid packet schema")
+            if (not isinstance(packet["id"], str) or not packet["id"] or packet["id"] in ids
+                    or packet["purpose"] not in {"development", "adaptation", "confirmation"}
+                    or packet["predecessor"] != previous
+                    or not _day(packet["start"]) < _day(packet["end_before"])):
+                raise ValueError("invalid packet order or identity")
+            if ids and packet["start"] < schedule[len(ids)-1]["end_before"]:
+                raise ValueError("overlapping packet entries")
+            ids.append(packet["id"])
+            previous = packet["id"]
+        if study["selected_packet"] not in ids:
+            raise ValueError("selected packet absent")
+        missing = []
+        if not study["code"]:
+            missing.append("code")
+        for path, digest in study["code"].items():
+            if path_hash(path) != digest:
+                raise ValueError("code pin drift: "+path)
+        if not study["dependencies"]:
+            missing.append("dependencies")
+        for package, version in study["dependencies"].items():
+            if importlib.metadata.version(package) != version:
+                raise ValueError("dependency pin drift: "+package)
+        resolved = hook().resolve(study)
+        if set(resolved) != {"missing", "read_bounds", "cohort", "source_pins"}:
+            raise ValueError("invalid domain plan")
+        missing.extend(resolved["missing"])
+        packet = schedule[ids.index(study["selected_packet"])]
+        for bounds in resolved["read_bounds"].values():
+            if (set(bounds) != {"start", "end_before"}
+                    or not _day(bounds["start"]) < _day(bounds["end_before"])):
+                raise ValueError("invalid source read bounds")
+        cohort = resolved["cohort"]
+        if not cohort or len(set(cohort)) != len(cohort):
+            missing.append("unique nonempty cohort")
+        return _seal({"study": copy.deepcopy(study), "packet": packet,
+                      "cohort_sha256": value_hash(cohort),
+                      **resolved, "missing": missing, "runnable": not missing})
+
+    @staticmethod
+    def verify_plan(study, plan):
+        """Rebuild a supplied plan and refuse identity drift or unresolved inputs."""
+        _unseal(plan)
+        current = StudyContract.build(study)
+        if current != plan or not current["runnable"]:
+            raise ValueError("unbound or changed frozen plan")
+        return current
+
+
+class ExposureRegistry:
+    """Transactional shared evidence-domain registry with monotone exposure.
+
+    Parameters
+    ----------
+    config : dict
+        path, id and domain. The UUID is chosen once during explicit init.
+
+    Examples
+    --------
+    registry = ExposureRegistry(study["registry"])
+    receipt = registry.freeze(StudyContract.build(study))
+    """
+
+    def __init__(self, config):
+        if (set(config) != {"path", "id", "domain"}
+                or any(not isinstance(v, str) or not v for v in config.values())
+                or not Path(config["path"]).is_absolute()):
+            raise ValueError("explicit absolute shared registry and identity required")
+        uuid.UUID(config["id"])
+        self.config = copy.deepcopy(config)
+        self.path = Path(config["path"])
+
+    @contextmanager
+    def _transaction(self, *, create=False):
+        """Serialize transitions and validate the entire event hash chain."""
+        if not create and not self.path.is_file():
+            raise ValueError("missing registry; explicit historical import required")
+        connection = sqlite3.connect(str(self.path), timeout=30)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if create:
+                connection.execute("CREATE TABLE state (body TEXT NOT NULL)")
+                connection.execute("CREATE TABLE events (revision INTEGER PRIMARY KEY, body TEXT NOT NULL, digest TEXT NOT NULL)")
+                state = None
+            else:
+                row = connection.execute("SELECT body FROM state").fetchone()
+                if row is None:
+                    raise ValueError("empty/reset registry")
+                state = json.loads(row[0])
+                if state["identity"] != self.config:
+                    raise ValueError("registry identity/domain mismatch")
+                previous, count = None, 0
+                for revision, raw, digest in connection.execute("SELECT * FROM events ORDER BY revision"):
+                    event = json.loads(raw)
+                    if revision != count or event["previous"] != previous or value_hash(event) != digest:
+                        raise ValueError("malformed registry history")
+                    previous, count = digest, count+1
+                if count != state["revision"]+1 or previous != state["event"]:
+                    raise ValueError("registry revision/history mismatch")
+                if event["state_sha256"] != value_hash({k: v for k, v in state.items() if k != "event"}):
+                    raise ValueError("registry state drift")
+            yield connection, state
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _save(connection, state, action):
+        """Append state evidence and atomically publish its new revision."""
+        previous = state.pop("event", None)
+        state["revision"] += 1
+        event = {"action": action, "revision": state["revision"], "previous": previous,
+                 "state_sha256": value_hash(state)}
+        digest = value_hash(event)
+        connection.execute("INSERT INTO events VALUES (?, ?, ?)",
+                           (state["revision"], json.dumps(event, sort_keys=True), digest))
+        state["event"] = digest
+        connection.execute("DELETE FROM state")
+        connection.execute("INSERT INTO state VALUES (?)", (json.dumps(state, sort_keys=True),))
+
+    def initialize(self, packets, prior_exposure, end_before):
+        """Initialize once with an explicit schedule, prior reads and protected cutoff."""
+        _day(end_before)
+        if self.path.exists():
+            raise ValueError("registry already exists; never initialize over history")
+        if not isinstance(prior_exposure, list):
+            raise ValueError("explicit prior exposure list required")
+        for interval in prior_exposure:
+            if (set(interval) != {"start", "end_before", "evidence"}
+                    or not interval["evidence"]
+                    or not _day(interval["start"]) < _day(interval["end_before"]) <= end_before):
+                raise ValueError("invalid prior exposure import")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Exclusive creation prevents two initializers from resetting each other.
+        with self.path.open("xb"):
+            pass
+        with self._transaction(create=True) as (connection, _):
+            state = {"identity": self.config, "revision": -1, "packets": packets,
+                     "prior": prior_exposure, "end_before": end_before, "frontier": 0,
+                     "active": None, "freezes": {}, "claims": {}, "dispositions": {}}
+            self._save(connection, state, "initialize")
+        return self.snapshot()
+
+    def snapshot(self):
+        """Read and verify state without advancing the revision."""
+        with self._transaction() as (_, state):
+            return copy.deepcopy(state)
+
+    @staticmethod
+    def _release(state, plan):
+        """Apply one release rule for preview, freeze and atomic open."""
+        if not plan["runnable"] or plan["study"]["packets"] != state["packets"]:
+            raise ValueError("unbound plan or changed schedule")
+        packet = plan["packet"]
+        read_end = max(b["end_before"] for b in plan["read_bounds"].values())
+        if read_end > state["end_before"]:
+            raise ValueError("protected read boundary")
+        if state["active"] is not None:
+            raise ValueError("another packet claim is active")
+        if packet["purpose"] == "development":
+            if not any(i["start"] <= packet["start"] and read_end <= i["end_before"]
+                       for i in state["prior"]):
+                raise ValueError("development requires imported exposure covering all outcomes")
+            return "development"
+        index = state["frontier"]
+        if index >= len(state["packets"]) or state["packets"][index]["id"] != packet["id"]:
+            raise ValueError("packet is not the next shared frontier")
+        ends = [i["end_before"] for i in state["prior"]]
+        ends.extend(max(b["end_before"] for b in c["permit"]["read_bounds"].values())
+                    for c in state["claims"].values())
+        if ends and packet["start"] < max(ends):
+            raise ValueError("previous reads overlap fresh entry")
+        return "fresh"
+
+    def preview(self, plan):
+        """Report release readiness without any state or payload mutation."""
+        state = self.snapshot()
+        try:
+            classification = self._release(state, plan)
+            return {"ready": True, "classification": classification, "revision": state["revision"]}
+        except ValueError as exc:
+            return {"ready": False, "reason": str(exc), "revision": state["revision"]}
+
+    def freeze(self, plan):
+        """Freeze exactly one complete cohort after predecessor disposition."""
+        with self._transaction() as (connection, state):
+            classification = self._release(state, plan)
+            predecessor = state["dispositions"].get(plan["packet"]["predecessor"])
+            receipt = _seal({"plan_sha256": plan["sha256"], "cohort_sha256": plan["cohort_sha256"],
+                             "predecessor": predecessor, "classification": classification,
+                             "registry_revision": state["revision"], "registry": self.config})
+            state["freezes"][receipt["sha256"]] = receipt
+            self._save(connection, state, "freeze")
+            return {"freeze": receipt, "expected_revision": state["revision"]}
+
+    def claim(self, plan, request):
+        """Compare-and-swap one frozen claim before a first payload read."""
+        with self._transaction() as (connection, state):
+            if set(request) != {"freeze", "expected_revision"} or request["expected_revision"] != state["revision"]:
+                raise ValueError("stale registry revision")
+            frozen = request["freeze"]
+            _unseal(frozen)
+            if state["freezes"].get(frozen["sha256"]) != frozen or frozen["plan_sha256"] != plan["sha256"]:
+                raise ValueError("unknown or mismatched freeze receipt")
+            classification = self._release(state, plan)
+            if frozen["predecessor"] != state["dispositions"].get(plan["packet"]["predecessor"]):
+                raise ValueError("predecessor disposition changed")
+            prior_claims = [c for c in state["claims"].values() if c["permit"]["plan_sha256"] == plan["sha256"]]
+            if prior_claims:
+                classification = "replay"
+            permit = _seal({"id": str(uuid.uuid4()), "registry": self.config,
+                           "plan_sha256": plan["sha256"], "packet_id": plan["packet"]["id"],
+                           "cohort_sha256": plan["cohort_sha256"], "freeze": frozen,
+                           "source_pins_sha256": value_hash(plan["source_pins"]),
+                           "read_bounds": plan["read_bounds"], "classification": classification,
+                           "previous_frontier": state["frontier"],
+                           "registry_revision_before": state["revision"],
+                           "registry_revision_after": state["revision"]+1})
+            state["claims"][permit["id"]] = {"permit": permit, "status": "claimed_exposed",
+                                             "inputs": None, "execution": None, "result": None}
+            state["active"] = permit["id"]
+            self._save(connection, state, "claim")
+            return permit
+
+    def verify(self, plan, permit, *, active=True):
+        """Verify exact permit, frozen plan and registry identity at any entrypoint."""
+        _unseal(permit)
+        state = self.snapshot()
+        claim = state["claims"].get(permit["id"])
+        if (permit["registry"] != self.config or permit["plan_sha256"] != plan["sha256"]
+                or claim is None or claim["permit"] != permit
+                or (active and (state["active"] != permit["id"] or claim["status"] != "claimed_exposed"))):
+            raise ValueError("invalid, substituted or inactive packet permit")
+        return claim
+
+    def bind(self, plan, permit, kind, value):
+        """Bind independently verified intake or execution exactly once to a claim."""
+        self.verify(plan, permit)
+        if kind not in {"inputs", "execution"}:
+            raise ValueError("unsupported claim binding")
+        with self._transaction() as (connection, state):
+            claim = state["claims"][permit["id"]]
+            if state["active"] != permit["id"] or claim["status"] != "claimed_exposed":
+                raise ValueError("inactive claim")
+            digest = value_hash(value)
+            if claim[kind] is not None and claim[kind] != digest:
+                raise ValueError("claim content changed")
+            claim[kind] = digest
+            self._save(connection, state, "bind_"+kind)
+
+    def finish(self, plan, permit, result):
+        """Close publication as complete or failed; both remain exposed until review."""
+        self.verify(plan, permit)
+        with self._transaction() as (connection, state):
+            claim = state["claims"][permit["id"]]
+            if state["active"] != permit["id"] or claim["status"] != "claimed_exposed":
+                raise ValueError("inactive claim")
+            claim["result"] = value_hash(result)
+            claim["status"] = "completed_pending_review" if result["complete"] else "failed_exposed_pending_review"
+            self._save(connection, state, "finish")
+        return claim["result"]
+
+    def retry(self, plan, permit, expected_revision):
+        """Retry an interrupted or failed active claim with the identical frozen plan."""
+        _unseal(permit)
+        with self._transaction() as (connection, state):
+            old = state["claims"].get(permit["id"])
+            if (expected_revision != state["revision"] or old is None or old["permit"] != permit
+                    or state["active"] != permit["id"] or permit["plan_sha256"] != plan["sha256"]
+                    or old["status"] not in {"claimed_exposed", "failed_exposed_pending_review"}):
+                raise ValueError("retry requires the same active frozen identity and current revision")
+            body = _unseal(permit)
+            body.update(id=str(uuid.uuid4()), classification="replay",
+                        registry_revision_before=state["revision"],
+                        registry_revision_after=state["revision"]+1)
+            new = _seal(body)
+            old["status"] = "retry_superseded_exposed"
+            state["claims"][new["id"]] = {"permit": new, "status": "claimed_exposed",
+                                          "inputs": None, "execution": None, "result": None}
+            state["active"] = new["id"]
+            self._save(connection, state, "same_identity_retry")
+            return new
+
+    def extend(self, plan, reason):
+        """Append future schedule entries without changing any existing packet."""
+        if not reason or not plan["runnable"]:
+            raise ValueError("complete plan and extension reason required")
+        with self._transaction() as (connection, state):
+            packets = plan["study"]["packets"]
+            if (state["active"] is not None or len(packets) <= len(state["packets"])
+                    or packets[:len(state["packets"])] != state["packets"]):
+                raise ValueError("only an inactive append-only schedule extension is allowed")
+            state["packets"] = copy.deepcopy(packets)
+            self._save(connection, state, "extend_schedule")
+            return {"revision": state["revision"], "packets": packets, "reason": reason}
+
+    def dispose(self, packet_id, action, reason):
+        """Review success, abandon exposure or irrevocably retire the current frontier."""
+        if action not in {"review", "abandon", "retire"} or not isinstance(reason, str) or not reason.strip():
+            raise ValueError("explicit disposition and reason required")
+        with self._transaction() as (connection, state):
+            index = state["frontier"]
+            current = state["packets"][index]["id"] if index < len(state["packets"]) else None
+            active = state["claims"].get(state["active"])
+            if action == "retire":
+                if active or packet_id != current:
+                    raise ValueError("only the unread current frontier may be retired")
+            else:
+                if not active or active["permit"]["packet_id"] != packet_id:
+                    raise ValueError("no matching active claim")
+                if action == "review" and active["status"] != "completed_pending_review":
+                    raise ValueError("success review requires complete result")
+                if action == "abandon" and active["status"] == "completed_pending_review":
+                    raise ValueError("completed result requires review")
+                active["status"] = "reviewed_closed" if action == "review" else "abandoned_exposed"
+                state["active"] = None
+            receipt = _seal({"packet_id": packet_id, "action": action, "reason": reason,
+                             "revision": state["revision"], "claim": active["permit"]["id"] if active else None})
+            state["dispositions"][packet_id] = receipt
+            if packet_id == current:
+                state["frontier"] += 1
+            self._save(connection, state, action)
+            return receipt
+
+
+class StudyNode(Node):
+    """Shared strict parameter handling; subclasses own their declared ports."""
+
+    role = "transform"
+    _PARAMS = ("study",)
+
+    @classmethod
+    def validate_params(cls, params):
+        errors = []
+        reject_unknown_params(errors, params, cls._PARAMS)
+        if not isinstance(params.get("study"), dict):
+            errors.append("study object required")
+        return errors
+
+    def plan(self):
+        return StudyContract.build(self.params["study"])
+
+    def registry(self):
+        return ExposureRegistry(self.params["study"]["registry"])
+
+
+class StudyProtocolPlan(StudyNode):
+    """Metadata preview: node.run(ctx, {}) returns plan and release readiness."""
+
+    outputs = ("plan", "readiness")
+
+    def run(self, ctx, inputs):
+        plan = self.plan()
+        try:
+            readiness = self.registry().preview(plan)
+        except (ValueError, sqlite3.Error) as exc:
+            readiness = {"ready": False, "reason": str(exc)}
+        return {"plan": plan, "readiness": readiness}
+
+
+class StudyProtocolControl(StudyNode):
+    """Explicit JSON initialization, freeze and disposition; never reads payloads."""
+
+    _PARAMS = ("study", "action", "prior_exposure", "end_before", "reason", "permit", "expected_revision")
+    outputs = ("control",)
+
+    @classmethod
+    def validate_params(cls, params):
+        errors = super().validate_params(params)
+        action = params.get("action")
+        required = {
+            "initialize": {"prior_exposure", "end_before"}, "freeze": set(),
+            "review": {"reason"}, "abandon": {"reason"}, "retire": {"reason"},
+            "retry": {"permit", "expected_revision"}, "extend": {"reason"}}.get(action)
+        if required is None:
+            errors.append("explicit supported control action required")
+        elif set(params)-{"study", "action"} != required:
+            errors.append("control parameters must exactly match the selected action")
+        return errors
+
+    def run(self, ctx, inputs):
+        p, registry = self.params, self.registry()
+        action = p["action"]
+        if action == "initialize":
+            self.plan()
+            result = registry.initialize(p["study"]["packets"], p["prior_exposure"], p["end_before"])
+        elif action == "retry":
+            result = {"permit": registry.retry(self.plan(), p["permit"], p["expected_revision"])}
+        elif action == "extend":
+            result = registry.extend(self.plan(), p["reason"])
+        elif action == "freeze":
+            plan = self.plan()
+            if not plan["runnable"]:
+                raise ValueError("cannot freeze unbound study")
+            result = {"frozen_plan": plan, "claim_request": registry.freeze(plan)}
+        else:
+            result = registry.dispose(p["study"]["selected_packet"], action, p["reason"])
+        return {"control": result}
+
+
+class StudyPacketOpen(StudyNode):
+    """Revalidate a frozen request, then atomically claim its permitted reads."""
+
+    _PARAMS = ("study", "frozen_plan", "claim_request")
+    outputs = ("permit",)
+
+    def run(self, ctx, inputs):
+        request = inputs.get("control", self.params)
+        if set(request) == {"permit"}:
+            plan = self.plan()
+            self.registry().verify(plan, request["permit"])
+            return {"permit": request["permit"]}
+        plan = StudyContract.verify_plan(self.params["study"], request["frozen_plan"])
+        return {"permit": self.registry().claim(plan, request["claim_request"])}
+
+
+class StudyPacketClose(StudyNode):
+    """Publish all declared methods, including failures, after registry binding."""
+
+    outputs = ("receipt",)
+
+    def run(self, ctx, inputs):
+        plan, registry = self.plan(), self.registry()
+        permit = inputs["permit"]
+        claim = registry.verify(plan, permit)
+        result = {k: inputs[k] for k in ("results", "audit", "provenance")}
+        if claim["execution"] != value_hash(result) or claim["inputs"] != value_hash(inputs["provenance"]):
+            raise ValueError("unverified execution or intake")
+        hook = import_ref(self.params["study"]["contract"])()
+        complete = hook.validate_result(self.params["study"], **result)
+        artifact = {"plan": plan, "permit": permit, **result, "complete": complete}
+        registry.finish(plan, permit, artifact)
+        return {"receipt": JsonArtifact(artifact)}
+
+
+class StudyPacketResults(StudyNode):
+    """Read only completed pipeline artifacts and reconcile registry publication."""
+
+    _PARAMS = ("study", "result_receipts")
+    outputs = ("results", "identities")
+
+    def run(self, ctx, inputs):
+        plan, registry = self.plan(), self.registry()
+        results = []
+        receipts = self.params["result_receipts"]
+        if not isinstance(receipts, list) or not receipts:
+            raise ValueError("nonempty result receipts required")
+        for receipt in receipts:
+            if set(receipt) != {"run_dir", "document_hash", "node", "port"}:
+                raise ValueError("invalid result receipt")
+            run = RunAttestation(receipt["run_dir"])
+            manifest = run.attested_output(receipt["node"], receipt["port"], receipt["document_hash"])
+            if manifest is None:
+                raise ValueError("result lacks completed run attestation")
+            result = resolve_json_artifact(receipt["run_dir"], manifest)
+            if result["plan"] != plan:
+                raise ValueError("result plan differs")
+            claim = registry.verify(plan, result["permit"], active=False)
+            if claim["result"] != value_hash(result):
+                raise ValueError("result is not the registered publication")
+            results.append(result)
+        if len({r["permit"]["id"] for r in results}) != len(results):
+            raise ValueError("duplicate result receipt")
+        return {"results": results, "identities": [r["permit"] for r in results]}

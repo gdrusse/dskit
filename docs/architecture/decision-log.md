@@ -33205,3 +33205,195 @@ Pre-merge checks: all reviewed code/tests/contracts remain identical to3d5f6411;
 only four evidence/handoff/archive files differ. JSON/HTML/canvas/skill SHA256
 values match the retained review. git diff --check passes; focused manifest
 and document-budget tests:5 passed in0.87s. No full-suite rerun.
+
+2026-10-27 executable MIO pipeline packet — owner-approved steps 1–3:
+Owner: "Great. Do that. Stop before 4" after the numbered plan: confirm/pin
+best model-zoo output; implement and synthetic-test the JSON pipelines; debug
+on already-exposed 2020 weeks; then freeze a first fresh packet (excluded).
+Base2593aea56718407ffcecc2fd16e371e47b10d7ba; isolated existing checkout,
+branch codex/index-options-mio-executable-20261027. The 2019 admission rule
+remains deferred. No future packet freeze/open, predictive refit, holdout or
+2026 read is authorized. Existing source registration and bounded debug of
+already-exposed observations are within this packet.
+
+Inventory: approved eight node paths in docs/plans/mio-json; Workflow.expand,
+PipelineDocument, Node/JsonArtifact, RunAttestation/content identity;
+DateBoundedParquet.batches with pushed predicates; OnboardingRoot/read_manifest/
+snapshot_hash/payload_files/verified_payload_dir; WeeklyOptionPortfolioStudy,
+TransportPortfolioSolve and FundedOptionAccount. BenchmarkCompare compares
+walk-summary prediction bundles, not the saved GridCDFMethod tables or exposure.
+The existing runner caps symbols at17, conflates history/entry/tail calendars,
+and deposits through settlement; it needs additive clocks and sparse eligibility.
+Sweep study_protocol/exposure/packet/freeze: no existing study protocol owner.
+No new package is proposed; generic mechanism belongs inside existing pipeline.
+
+File manifest (owner-authorized implementation and evidence):
+- New dskit/pipeline/study_protocol.py and tests/pipeline/test_study_protocol.py:
+  generic contract hooks, metadata plan, shared durable exposure/release ledger,
+  open/close/result verification nodes; reuse canonical hashing and artifacts.
+- Existing dskit/pipeline/libs/parquet.py, option_ledger.py and their focused
+  tests: pinned-source resolution if needed and explicit deposit cutoff.
+- New children/index_options/index_options/mio_contract.py:
+  option policy hook, complete zoo output selection/evidence binding.
+- Existing child observations.py and ledger_studies.py: bounded intake and
+  three thin wrappers plus sparse pairs/independent clocks/replay in study.
+- New children/index_options/tests/test_mio_packets.py: synthetic pipelines,
+  authority, clocks, integrity and failure-path tests.
+- Existing design study/templates; new configs/mio-{selection,debug}.json and
+  configs/source-mio-inputs.json as concrete JSON interfaces/registration.
+- Existing README/layout mirrors/exact manifest; TDD JSON/HTML and external
+  canvas; existing ADR/lane/index/archive. Bounded execution evidence resides
+  under the onboarding/data run roots, with compact pins in the TDD/config.
+- No unrelated runtime or existing result rewrite.
+
+Frozen implementation contract for Phase0:
+1. Generic protocol uses an abstract domain contract declared by import path.
+   Core handles JSON identities, packet order, bounds and durable transitions;
+   option clocks, pair definitions, source columns, forecast selection and
+   optimizer arguments live in the child. No domain-specific defaults in core.
+2. SQLite transactions serialize exposure claims in one explicit shared project
+   registry. Initialization is explicit and imports historical exposure;
+   registry UUID/evidence-domain identity is pinned by configuration. Missing,
+   reset, changed-domain or malformed history refuses. Cooperative researchers
+   and pinned local artifacts are the trust model, not hostile local code.
+3. Plan reads metadata only and emits missing inputs/runnable=false when unbound.
+   Frozen plan identity covers all resolved behavior, source pins, code and
+   dependencies. Open revalidates the same plan and CAS registry revision,
+   predecessor review, next frontier, inherited read frontier, frozen cohort,
+   and one-active-packet rule atomically before any value read.
+4. Source aliases/revisions share the evidence domain. Failed/interrupted claims
+   remain exposed. Retry requires the same frozen identity; explicit reviewed
+   abandonment or successful review advances release. Retirement is irreversible.
+   No fresh freeze receipt is created for real data in this task.
+5. Every reader/study/close independently verifies its permit and full identity.
+   Actual source bytes are checked against onboarded content pins after claim.
+   Temporal predicates and sparse pair constraints apply before materialization.
+   Row provenance rebinds the exact bounded inputs at study/replay.
+6. Predictive binding verifies the selected contract and receipt, complete
+   saved producer run, recipe/output and component/fold training-protocol pins.
+   M53 is the provisional leader from saved tables; selection must verify the
+   completed comparable zoo inventory on A0002 pooled2020–23 before binding.
+   Warm-up2019 and strategy P&L are excluded from selection. Promotion/A0007
+   qualification remains distinct; no holdout eligibility is invented.
+7. Sparse symbol/DTE rows do not form a cross-product; no17-symbol code limit.
+   Separate history, entry and settlement clocks; history supplies only prior
+   bars, first actual session per ISO week decides, fill must be strictly within
+   entry window, tail permits only marks/settlements. Required calendar/bar gaps
+   and unsettled books refuse. Initial funding starts at entry, deposits stop
+   there, and each fixed method has its own identical account.
+8. Preserve all declared methods, zero-trade methods, failures, timeout skips,
+   candidate/pair coverage and fitted/fallback counts. Completion requires every
+   declared result and exact independent ledger/recorded-decision replay.
+   Comparison verifies artifact/run/registry bindings and never picks a winner
+   while the MIO primary metric is unset; reset curves never get spliced.
+9. Synthetic fixtures can exercise all protocol transitions. Real debug uses a
+   small deterministic subset of the legacy2020 exposed universe and bounded
+   dates. These are explicitly debug fixtures, not 2019-admitted production
+   pairs; a fresh packet must still require the external admission evidence.
+   Debug execution is development only and cannot create fresh evidence.
+10. Focused RED/GREEN tests, purity/manifest/docs checks and two independent
+    final lenses; no full suite. Phase0 review precedes runtime code. Existing
+    user authorization satisfies ADR-before-code for this bounded manifest.
+
+Acceptance matrix: valid arbitrary sparse inputs and a complete positive fill;
+empty/overlapping/unknown inputs; wrong winner/source/code/dependency pins;
+missing/reset registry, CAS races, duplicate claims, retries and partial failure;
+out-of-order/retired/alias/revision freshness; plan without payload reads; direct
+node bypass and mutated input provenance; holiday week, last-entry fill refusal,
+prehistory isolation, required-bar gap, settlement tail and no tail deposits;
+exact replay, timeout/cash/failed method and complete-cohort comparison; actual
+2020 debug with saved run/receipt pins; no step4 action.
+
+Phase0 independent skeptic: /root/mio_executable_phase0, base2593aea5 plus
+ADR SHA256 f38995dcf6c605bdfd55b134226df149f4b2ca172e2e435ee40a6d2cb45321ab.
+PASS (design only), Critical0/Major0/Minor0/Nit0. Examined all eight proposed
+entrypoints, registry/reset/retry/release, aliases, independent direct-node
+checks, intake/source identity, clocks and whole-cohort failure semantics.
+Inspected existing WeeklyOptionPortfolioStudy/FundedOptionAccount/Parquet and
+RunAttestation seams. Acceptance traps: metadata-only driver fingerprints;
+explicit session source, no intersection; signal-date DTE only; all-method
+failure retention and accounting replay; distinguish M53's completed producer
+from current-byte attestation (legacy output digest absent). No runtime or
+independent winner validation claimed. Two fresh final reviews remain required.
+
+Focused RED/GREEN: arbitrary18-symbol fixture failed the literal17 cap; deposit
+cutoff failed unsupported argument. Both pass after additive changes. Clock
+tests then failed unsupported clocks/pairs; now5 focused tests pass, including
+positive fill, settlement tail, history-only returns, sparse pair attribution,
+missing required session refusal, last-entry fill refusal and exact replay.
+Implementation detail: StudyProtocolControl is the explicit JSON control
+interface for initialization/freeze/review/retire; StudyProtocolPlan stays
+metadata-only. Same approved core file/contract, no new package or authority.
+
+2020 bounded debug found a real intake defect, retained as failed cohort:
+nominal could not settle ACN's2020-04-09 holiday expiry because filtering the
+chain to selected expiries removed that day's adjustment factor. Daily basis
+metadata must be projected independently of expiry eligibility, using only
+symbol/date/basis_factor under the same entry-to-tail date bounds. Quotes
+remain sparse-expiry filtered. Add this regression before correcting intake.
+No fresh evidence was opened; all four method dispositions were published.
+
+Purity gate identified that snapshot/manifest resolution belongs to the
+existing onboarding.artifacts owner, not direct pipeline imports of onboarding
+internals. Move the new resolver there as PinnedPayloadSource, reusing
+onboarding.base.file_digest. Existing-file scope amendment; no new package.
+Source pin/read tests and both package purity gates are required.
+
+Implementation evidence: synthetic JSON claim/intake/study/close/compare runs,
+exact independent accounting replay, missing/reset registry and CAS race,
+same-identity retry preserving earlier publications, append-only schedule,
+code/dependency/source/input drift, failed-method retention and zero-trade
+coverage. Focused combined regression:96 passed/129 deselected. Added expiry-day
+basis regression failed before the fix; corrected synthetic suite passes5.
+PinnedPayloadSource now lives in onboarding.artifacts. Its package purity
+passes. Pipeline purity has one PRE-EXISTING violation: existing
+ParquetStreamRows imports onboarding.snapshot at parquet.py:531. Identical
+failure reproduced on untouched2593aea5 in /tmp/mio-base-0yyvrn0k using the same
+WSL venv; new resolver imports were corrected, no gate was weakened.
+Intake is role transform because a data-role source cannot depend on a permit;
+all source pins are explicit behavior params and fingerprint is metadata-only.
+
+M53 selection verifies67 complete comparable method outputs against449498
+identities (SHA256 def72bc0c681b90358b2708aed941086065d63684082934783b8aae1a90e9336),
+plus13 complete standalone model score rows. Two incomplete methods and two
+incomplete standalone models are excluded. Pooled2020–23 twCRPS minimum:
+M53=0.5255806193999443; no2019 ranking, P&L ranking or promotion claim.
+Exact recipe/current-byte forecast/training/source receipt is in mio-selection.
+
+Corrected real debug: entries2020-02-24..2020-03-09 exclusive;61 prior XNYS
+sessions from2019-11-22; tail to2020-04-24 exclusive. ABBV28–32 andACN35–39 are
+deterministic debug fixtures, not admitted2019 pairs. All four fixed methods
+completed and exactly replayed, including three cash-only methods. The first
+incomplete cohort and explicit abandonment receipt remain in the shared ledger.
+No fresh packet exists in the real schedule; no holdout/2026 outcome decoding.
+Opaque onboarding copies/hash checks are not market-value materialization.
+
+Current final-execution pins (prior attempts preserved in exposure registry):
+{
+  "selection": {
+    "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/selection/mio-model-zoo-selection-2026-10-27-83a7c9d7",
+    "document_hash": "331bfaaaa680f5c01f4f6152b6b253258395243f8028ceaa74e851120fa756e3",
+    "node": "selection",
+    "port": "selection",
+    "sha256": "44ac2de1b75de4007fb8d3311fa3e9e63a1dae84bf6d25e0cc758ed199b83f95"
+  },
+  "debug": {
+    "receipt": {
+      "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/development/mio-development-2020-0224-2020-04-24-36a6e39e",
+      "document_hash": "c49246f310766bcbb9f8fb19755278c408846062953e34213c616e78503cdba4",
+      "node": "close_packet",
+      "port": "receipt"
+    },
+    "run_hash": "36a6e39e8bf81f59742248fd4c214f9008e33e0e5a8f2e71dd8afb759983258f",
+    "artifact_sha256": "68fcfa50407cb414401fbbf1fd20cf4a8967015097d9a22672190723cb817f3f",
+    "comparison": {
+      "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/comparison/mio-development-2020-0224-compare-2020-04-24-56ac65b9",
+      "document_hash": "c1d2539af940cfd325bedfba49d387a3f58ba124c72d665a43a3f124bcb15a63",
+      "node": "comparison",
+      "port": "report",
+      "sha256": "7e67c7d321e8b8c814258a7d10d91f4e70198ca4ce09a3b22019d6ed6328baf1"
+    }
+  }
+}
+Focused source/protocol/child regression:126 passed,128 deselected.
+TDD227 windows/18configs/14runs, same canonical data in HTML/canvas.

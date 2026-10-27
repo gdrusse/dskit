@@ -61,6 +61,7 @@ dskit/pipeline/
 ├── predictions.py     every scored validation row -> one parquet per run (ADR-0064)
 ├── ordering.py        calibration slope + per-timestamp cross-sectional IC,
 │                      with the <5-name usability refusal (ADR-0068, `ordering` verb)
+├── study_protocol.py  StudyContract/ExposureRegistry: metadata plan, explicit packet controls, atomic exposure and attested results
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
 ├── outcome_interval.py block-conformal predictive intervals + joint scenario sets

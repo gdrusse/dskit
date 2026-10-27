@@ -90,7 +90,10 @@ from .nodes import (
     t_or_zero,
 )
 
-__all__ = ["ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
+from dskit.pipeline.node import JsonArtifact
+from dskit.pipeline.study_protocol import StudyNode
+
+__all__ = ["MIOPacketPlan", "MIOPacketStudy", "MIOPacketCompare", "ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
            "EVIDENCE_ARTIFACT", "NOMINAL_ARM", "SELECT_STAGE", "SETTLE_STAGE", "UNCAPPED",
            "REJECTION_REASONS", "STUDIES", "AccountRow", "AccountStudy", "AdmissionCaps",
            "AllocationStudy", "EnteredCell", "HedgeStudy", "LedgerStudy", "AccountOrder", "SavedReplay",
@@ -1305,18 +1308,117 @@ class WeeklyOptionPortfolioStudy:
         from datetime import date
         from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
-        if not isinstance(params, dict) or set(params) != set(self._PARAMS):
-            raise ValueError("explicit study configuration required")
+        self.validate_configuration(params)
         self.params = copy.deepcopy(params)
-        p = self.params
+        p, symbols = self.params, self.params["symbols"]
+        if not isinstance(inputs, dict) or set(inputs) != set(symbols):
+            raise ValueError("matching symbol inputs required")
+        self.clocks = p.get("clocks")
+        self.pairs = p.get("selected_pairs")
+        if self.clocks is not None:
+            self.validate_pairs(self.pairs, symbols)
+            c = self.clocks
+            if set(c) != {"sessions", "history_start", "entry_start", "entry_end_before", "tail_end_before"}:
+                raise ValueError("explicit history, entry and tail clocks required")
+            for key in ("history_start", "entry_start", "entry_end_before", "tail_end_before"):
+                if date.fromisoformat(c[key]).isoformat() != c[key]:
+                    raise ValueError("noncanonical clock date")
+            if not (c["history_start"] < c["entry_start"] < c["entry_end_before"]
+                    <= c["tail_end_before"] <= p["bridge"]["protected_end_before"]):
+                raise ValueError("invalid clock ordering")
+            sessions = c["sessions"]
+            if (not isinstance(sessions, list) or not sessions or sorted(set(sessions)) != sessions
+                    or any(date.fromisoformat(d).isoformat() != d
+                           or not c["history_start"] <= d < c["tail_end_before"] for d in sessions)):
+                raise ValueError("invalid required sessions")
+            lookback = max(p["correlation_lookback"],
+                           *(m.get("shock", {}).get("beta_lookback", 0) for m in p["methods"]))
+            if sum(d < c["entry_start"] for d in sessions) < lookback+1:
+                raise ValueError("insufficient strictly prior session history")
+        self._nodes, self._forecasts, self._contexts = {}, {}, {}
+        self._quotes, self._factors, self._bars, self._by_day = {}, {}, {}, {}
+        for symbol in symbols:
+            local = {**p["bridge"], "symbol": symbol}
+            if self.clocks is not None:
+                local.update(start=self.clocks["entry_start"], end_before=self.clocks["entry_end_before"])
+            defects = _AllQuotedOptionContext.validate_params(local)
+            if defects:
+                raise ValueError("; ".join(defects))
+            node = _AllQuotedOptionContext("prepare", local)
+            data = inputs[symbol]
+            # The old bridge owns upper-bound validation; this stricter study
+            # also refuses observations before its requested development year.
+            for name, rows in data.items():
+                field = "date" if name in ("chain", "bars") else "quote_date"
+                lower = self.clocks["history_start"] if self.clocks and name == "bars" else local["start"]
+                upper = (self.clocks["entry_end_before"] if name in ("forecasts", "contexts")
+                         else self.clocks["tail_end_before"]) if self.clocks else local["protected_end_before"]
+                if any(row.get("symbol") != symbol
+                       or not lower <= row.get(field, "") < upper for row in rows):
+                    raise ValueError("study intake contains another symbol or pre-window row")
+            forecasts, contexts = node._bounded(data)
+            quotes, factors, bars = node._market(data)
+            by_day = {}
+            for key, row in quotes.items():
+                by_day.setdefault(key[0], {})[key] = row
+            self._nodes[symbol], self._forecasts[symbol], self._contexts[symbol] = node, forecasts, contexts
+            self._quotes[symbol], self._factors[symbol], self._bars[symbol] = quotes, factors, bars
+            self._by_day[symbol] = by_day
+        if self.clocks:
+            self.history_calendar = list(self.clocks["sessions"])
+            for symbol, bars in self._bars.items():
+                if set(bars) != set(self.history_calendar):
+                    raise ValueError("missing or extra required session bars: "+symbol)
+            self.calendar = [d for d in self.history_calendar if d >= self.clocks["entry_start"]]
+            entries = [d for d in self.calendar if d < self.clocks["entry_end_before"]]
+        else:
+            calendar = set.intersection(*(set(v) for v in self._bars.values()))
+            self.calendar = sorted(d for d in calendar if p["bridge"]["start"] <= d < p["bridge"]["end_before"])
+            self.history_calendar = self.calendar
+            entries = self.calendar
+        if not self.calendar or not entries:
+            raise ValueError("empty common calendar")
+        self.weeks, seen = [], set()
+        for day in entries:
+            week = date.fromisoformat(day).isocalendar()[:2]
+            if week not in seen:
+                self.weeks.append(day)
+                seen.add(week)
+        # Prepared features are only a function of the current decision prefix.
+        self._prepared_cache, self._component_cache, self._beta_cache = {}, {}, {}
+
+    @classmethod
+    def validate_configuration(cls, params):
+        """Refuse unsupported universe, funding, bridge and method parameters.
+
+        Parameters
+        ----------
+        params : dict
+            Explicit weekly study configuration, without any market values.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            A knob is missing, unknown or outside its supported domain.
+        """
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+        from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+
+        if (not isinstance(params, dict) or set(params)-{"clocks", "selected_pairs"} != set(cls._PARAMS)
+                or ("clocks" in params) != ("selected_pairs" in params)):
+            raise ValueError("explicit study configuration required")
+        p = params
         defects = TransportPortfolioSolve.validate_params(p["solver"])
         if defects:
             raise ValueError("; ".join(defects))
         symbols = p["symbols"]
-        if (not isinstance(symbols, list) or not 1 <= len(symbols) <= 17
+        if (not isinstance(symbols, list) or not symbols
                 or len(set(symbols)) != len(symbols)
-                or any(not isinstance(s, str) or not s for s in symbols)
-                or not isinstance(inputs, dict) or set(inputs) != set(symbols)):
+                or any(not isinstance(s, str) or not s for s in symbols)):
             raise ValueError("unique bounded universe and matching inputs required")
         if (not number_ok(p["weekly_fraction"]) or not 0 < p["weekly_fraction"] <= 1
                 or type(p["correlation_lookback"]) is not int
@@ -1330,9 +1432,9 @@ class WeeklyOptionPortfolioStudy:
             raise ValueError("methods must be a nonempty declared list")
         for method in p["methods"]:
             if (not isinstance(method, dict)
-                    or set(method)-self._OPTIONAL_METHOD_KEYS != self._METHOD_KEYS
-                    or any(not number_ok(v) or v < 0 for v in self._charge(method).values())
-                    or ("shock" in method and not self._shock_valid(method["shock"]))
+                    or set(method)-cls._OPTIONAL_METHOD_KEYS != cls._METHOD_KEYS
+                    or any(not number_ok(v) or v < 0 for v in cls._charge(method).values())
+                    or ("shock" in method and not cls._shock_valid(method["shock"]))
                     or not isinstance(method["id"], str) or not method["id"] or method["id"] in ids
                     or not number_ok(method["rho"]) or method["rho"] < 0
                     or any(not number_ok(method[k]) or not 0 < method[k] <= 1
@@ -1342,42 +1444,60 @@ class WeeklyOptionPortfolioStudy:
                              or not 0 < method["component_fraction"] <= 1))):
                 raise ValueError("invalid fixed method")
             ids.add(method["id"])
-        self._nodes, self._forecasts, self._contexts = {}, {}, {}
-        self._quotes, self._factors, self._bars, self._by_day = {}, {}, {}, {}
         for symbol in symbols:
-            local = {**p["bridge"], "symbol": symbol}
-            defects = _AllQuotedOptionContext.validate_params(local)
-            if defects:
-                raise ValueError("; ".join(defects))
-            node = _AllQuotedOptionContext("prepare", local)
-            data = inputs[symbol]
-            # The old bridge owns upper-bound validation; this stricter study
-            # also refuses observations before its requested development year.
-            for name, rows in data.items():
-                field = "date" if name in ("chain", "bars") else "quote_date"
-                if any(row.get("symbol") != symbol
-                       or row.get(field, "") < local["start"] for row in rows):
-                    raise ValueError("study intake contains another symbol or pre-window row")
-            forecasts, contexts = node._bounded(data)
-            quotes, factors, bars = node._market(data)
-            by_day = {}
-            for key, row in quotes.items():
-                by_day.setdefault(key[0], {})[key] = row
-            self._nodes[symbol], self._forecasts[symbol], self._contexts[symbol] = node, forecasts, contexts
-            self._quotes[symbol], self._factors[symbol], self._bars[symbol] = quotes, factors, bars
-            self._by_day[symbol] = by_day
-        calendar = set.intersection(*(set(v) for v in self._bars.values()))
-        self.calendar = sorted(d for d in calendar if p["bridge"]["start"] <= d < p["bridge"]["end_before"])
-        if not self.calendar:
-            raise ValueError("empty common calendar")
-        self.weeks, seen = [], set()
-        for day in self.calendar:
-            week = date.fromisoformat(day).isocalendar()[:2]
-            if week not in seen:
-                self.weeks.append(day)
-                seen.add(week)
-        # Prepared features are only a function of the current decision prefix.
-        self._prepared_cache, self._component_cache, self._beta_cache = {}, {}, {}
+            problems = _AllQuotedOptionContext.validate_params({**p["bridge"], "symbol": symbol})
+            if problems:
+                raise ValueError("; ".join(problems))
+        FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], p["bridge"]["start"])
+
+    @staticmethod
+    def validate_pairs(pairs, symbols):
+        """Validate a nonempty sparse set of disjoint integer DTE bands.
+
+        Parameters
+        ----------
+        pairs : list of dict
+            Each row has id, symbol, dte_min and dte_max.
+        symbols : list of str
+            Exact union of pair symbols.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            Bands overlap, identifiers repeat or a symbol has no band.
+        """
+        if not isinstance(pairs, list) or not pairs:
+            raise ValueError("nonempty selected_pairs required")
+        ids, by_symbol = set(), {}
+        for pair in pairs:
+            if (not isinstance(pair, dict) or set(pair) != {"id", "symbol", "dte_min", "dte_max"}
+                    or not isinstance(pair["id"], str) or not pair["id"] or pair["id"] in ids
+                    or not isinstance(pair["symbol"], str) or not pair["symbol"]
+                    or type(pair["dte_min"]) is not int or type(pair["dte_max"]) is not int
+                    or not 0 < pair["dte_min"] <= pair["dte_max"]):
+                raise ValueError("invalid selected pair")
+            ids.add(pair["id"])
+            for other in by_symbol.setdefault(pair["symbol"], []):
+                if max(pair["dte_min"], other["dte_min"]) <= min(pair["dte_max"], other["dte_max"]):
+                    raise ValueError("overlapping selected pair bands")
+            by_symbol[pair["symbol"]].append(pair)
+        if set(by_symbol) != set(symbols):
+            raise ValueError("pair symbols differ from study symbols")
+
+    def _pair(self, symbol, day, expiry):
+        """Resolve eligibility at the signal date; never reapply at fill."""
+        from datetime import date
+
+        dte = (date.fromisoformat(expiry)-date.fromisoformat(day)).days
+        if self.pairs is None:
+            p = self.params["bridge"]
+            return "legacy" if abs(dte-p["target_dte"]) <= p["dte_tolerance"] else None
+        return next((p["id"] for p in self.pairs if p["symbol"] == symbol
+                     and p["dte_min"] <= dte <= p["dte_max"]), None)
 
     @classmethod
     def _charge(cls, method):
@@ -1478,7 +1598,7 @@ class WeeklyOptionPortfolioStudy:
         """Return each name's trailing log returns from sessions strictly before the day."""
         import numpy as np
 
-        past = [d for d in self.calendar if d < day][-lookback-1:]
+        past = [d for d in self.history_calendar if d < day][-lookback-1:]
         returns = {s: np.diff(np.log(np.array([self._bars[s][d] for d in past], dtype=float)))
                    for s in self.params["symbols"]}
         return returns, max(0, len(past)-1)
@@ -1516,9 +1636,9 @@ class WeeklyOptionPortfolioStudy:
             node = self._nodes[symbol]
             available = [(e, c) for (d, e), c in self._contexts[symbol].items()
                          if d == day and (d, e) in self._forecasts[symbol]
-                         and abs((date.fromisoformat(e)-date.fromisoformat(d)).days
-                                 -node.params["target_dte"]) <= node.params["dte_tolerance"]
-                         and c["settlement_date"] == e]
+                         and self._pair(symbol, d, e) is not None
+                         and c["settlement_date"] == e
+                         and (not self.clocks or e < self.clocks["tail_end_before"])]
             if not available:
                 refusals.append({"symbol": symbol, "reason": "no_eligible_forecast_expiry"})
             for expiry, context in sorted(available):
@@ -1564,6 +1684,8 @@ class WeeklyOptionPortfolioStudy:
                     "dte": (date.fromisoformat(expiry)-date.fromisoformat(day)).days,
                     "factor": self._factors[symbol][day], "spot": prepared["spot"],
                     "items": items, "projection": projection, "method_fitted": forecast["fitted"]})
+                if self.pairs is not None:
+                    metadata[-1]["pair_id"] = self._pair(symbol, day, expiry)
         result = groups, metadata, refusals
         # Keep only the latest date; past weekly matrices can be recomputed.
         self._prepared_cache = {day: result}
@@ -1782,7 +1904,9 @@ class WeeklyOptionPortfolioStudy:
                     or [d.get("date") for d in recorded["decisions"]] != self.weeks):
                 raise ValueError("recorded method or decision calendar differs")
             recorded_decisions = {d["date"]: d for d in recorded["decisions"]}
-        account = FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], self.calendar[0])
+        account = FundedOptionAccount(
+            p["initial"], p["deposit"], p["deposit_every_days"], self.calendar[0],
+            deposit_end_before=self.clocks["entry_end_before"] if self.clocks else None)
         charge = self._charge(method)
         decisions, rejected, snapshots, pending = [], [], [], None
         for day in self.calendar:
@@ -1808,8 +1932,15 @@ class WeeklyOptionPortfolioStudy:
                           "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
                           "refusals": refusals, "components": components, "funding": account.funding,
                           "open_reserve": sum(b["reserve"] for b in account.open.values())}
+                if self.pairs is not None:
+                    record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
+                    record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
+                    record["fallback"] = len(metadata)-record["fitted"]
                 if any(lim["upper"] < -1e-5 for lim in limits):
                     record["status"] = "existing_cap_breach_cash"
+                elif (self.clocks and (day == self.calendar[-1]
+                      or self.calendar[self.calendar.index(day)+1] >= self.clocks["entry_end_before"])):
+                    record["status"] = "no_entry_fill_session"
                 elif not groups or day == self.calendar[-1]:
                     record["status"] = "no_eligible_candidates"
                 else:
@@ -1894,3 +2025,112 @@ class WeeklyOptionPortfolioStudy:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+class MIOPacketPlan(StudyNode):
+    """Validate the child contract against an independently rebuilt generic plan."""
+
+    outputs = ("plan",)
+
+    def run(self, ctx, inputs):
+        plan = self.plan()
+        if inputs["plan"] != plan:
+            raise ValueError("substituted plan")
+        return {"plan": JsonArtifact(plan)}
+
+
+class MIOPacketStudy(StudyNode):
+    """Run every fixed method and independently replay its accounting evidence."""
+
+    outputs = ("results", "audit")
+
+    def run(self, ctx, inputs):
+        from dskit.pipeline.base import value_hash
+
+        plan, registry = self.plan(), self.registry()
+        permit, bounded, provenance = inputs["permit"], inputs["bounded_inputs"], inputs["provenance"]
+        claim = registry.verify(plan, permit)
+        if (claim["inputs"] != value_hash(provenance)
+                or provenance["inputs_sha256"] != value_hash(bounded)
+                or provenance["plan_sha256"] != plan["sha256"]
+                or provenance["source_pins_sha256"] != value_hash(plan["source_pins"])
+                or provenance["read_bounds"] != plan["read_bounds"]):
+            raise ValueError("unverified bounded intake")
+        d = self.params["study"]["domain"]
+        params = {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}
+        study = WeeklyOptionPortfolioStudy(params, bounded["inputs"])
+        results = []
+        for method in params["methods"]:
+            try:
+                result = study._method(method, None)
+                replay = WeeklyOptionPortfolioStudy(params, bounded["inputs"])._method(method, None, recorded=result)
+                if replay != result:
+                    raise ValueError("recorded decision replay mismatch")
+                results.append({"id": method["id"], "status": "completed",
+                                "result": result, "replay_parity": True})
+            except Exception as exc:
+                results.append({"id": method["id"], "status": "failed",
+                                "error": type(exc).__name__+": "+str(exc), "replay_parity": False})
+        audit = {"method_ids": [m["id"] for m in params["methods"]],
+                 "inputs_sha256": provenance["inputs_sha256"],
+                 "calendar": study.calendar, "decision_dates": study.weeks,
+                 "research_only": True, "american_assignment_unmodeled": True}
+        registry.bind(plan, permit, "execution",
+                      {"results": results, "audit": audit, "provenance": provenance})
+        return {"results": results, "audit": audit}
+
+
+class MIOPacketCompare(StudyNode):
+    """Publish descriptive complete-cohort metrics; never select an unset winner."""
+
+    outputs = ("report",)
+
+    def run(self, ctx, inputs):
+        from dskit.pipeline.base import value_hash
+        from .mio_contract import MIOStudyContract
+
+        plan, registry = self.plan(), self.registry()
+        entries = inputs["results"]
+        if (not entries or inputs["identities"] != [r["permit"] for r in entries]
+                or len({r["permit"]["id"] for r in entries}) != len(entries)):
+            raise ValueError("missing or duplicate comparison identities")
+        reports = []
+        metrics = ("pnl", "stress_pnl", "twr", "max_drawdown", "contributions",
+                   "final_equity", "fees", "contracts", "unfilled")
+        for entry in entries:
+            claim = registry.verify(plan, entry["permit"], active=False)
+            if entry["plan"] != plan or claim["result"] != value_hash(entry):
+                raise ValueError("unbound comparison result")
+            complete = MIOStudyContract().validate_result(
+                self.params["study"], entry["results"], entry["audit"], entry["provenance"])
+            rows = []
+            for method in entry["results"]:
+                row = {k: method[k] for k in ("id", "status", "replay_parity")}
+                if method["status"] == "failed":
+                    row["error"] = method["error"]
+                else:
+                    result = method["result"]
+                    row.update({k: result[k] for k in metrics})
+                    row["filled_books"] = len(result["trades"])
+                    row["timeouts"] = sum(d["status"] == "timeout_skipped" for d in result["decisions"])
+                    row["decisions"] = [{k: v for k, v in decision.items() if k in {
+                        "date", "status", "candidate_books", "candidate_contracts", "eligible_by_pair",
+                        "eligible_by_symbol", "fitted", "fallback", "refusals"}} for decision in result["decisions"]]
+                    row["net_pnl"] = result["pnl"]
+                    row["skips"] = dict(Counter(d["status"] for d in result["decisions"]
+                                               if d["status"] not in {"selected", "cash"}))
+                    row["pair_coverage"] = {
+                        p["id"]: {"candidate_books": sum(d.get("eligible_by_pair", {}).get(p["id"], 0)
+                                                         for d in result["decisions"]),
+                                  "filled_books": sum(t["pair_id"] == p["id"] for t in result["trades"])}
+                        for p in self.params["study"]["domain"]["pairs"]}
+                rows.append(row)
+            deltas = [{"id": row["id"], "reference": rows[0]["id"],
+                       **{k: row[k]-rows[0][k] for k in metrics}} for row in rows[1:]] if complete else []
+            reports.append({"permit": entry["permit"], "complete": complete,
+                            "methods": rows, "deltas_vs_first": deltas})
+        return {"report": JsonArtifact({"plan_sha256": plan["sha256"], "packets": reports,
+                "winner": None, "primary_metric": None, "account_pooling": "independent_resets",
+                "pair_pnl": "unallocated; no joint-cost attribution or duplicated portfolio returns",
+                "classification": "development" if any(r["permit"]["classification"] != "fresh" for r in entries)
+                                  else "fresh_packet_descriptive"})}

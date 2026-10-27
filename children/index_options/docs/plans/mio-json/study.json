@@ -1,7 +1,7 @@
 {
   "schema": "mio-study-design/v1",
-  "status": "design_only_not_executable",
-  "notes": "Requested JSON interface design. Empty pairs and null pins are unresolved inputs, never defaults to all names or all history. The three *.template.json files sketch future DSKit nodes; their proposed uses do not exist yet. No market data has been read for this design.",
+  "status": "design_reference; executable_schema_in_configs/mio-debug.json",
+  "notes": "Reference for the proposed future schedule and deferred 2019 admission. Runtime wrappers now exist. The executable study schema is pipeline.plan.params.study in configs/mio-debug.json. That concrete config contains only an already-exposed development packet. Future dates in this reference are not adopted or frozen.",
   "request": {
     "study_id": "mio_2019_selected_v1",
     "revision": 1,
@@ -595,22 +595,11 @@
     "run": "run.template.json",
     "compare": "compare.template.json"
   },
-  "implementation_gaps": [
-    {
-      "owner": "dskit.pipeline.study_protocol (proposed)",
-      "work": "Metadata-only planning, content pinning, shared atomic exposure claims, packet-result attestation and complete-cohort comparison. Reuse Workflow.expand, PipelineDocument, RunAttestation and JsonArtifact."
-    },
-    {
-      "owner": "index_options.ledger_studies (existing)",
-      "work": "Add pipeline wrappers, sparse pair filtering before projection and solver construction, configurable universe size, independent history/entry/settlement clocks, deposit cutoff, and frozen-input replay using WeeklyOptionPortfolioStudy."
-    },
-    {
-      "owner": "index_options.observations plus onboarding (existing)",
-      "work": "Register the derived forecast/context/chain/bar/session sources; resolve and verify snapshot pins; push bounds and projections down before materialization. No new absolute data-file paths."
-    },
-    {
-      "owner": "tests (future implementation)",
-      "work": "Synthetic coverage for arbitrary sparse pairs, unknown params, missing pins, holiday weeks, long DTE refusal, signal/fill edges, prehistory isolation, final settlements, deposit tail, partial failure, duplicate claim, retry identity, protected reads, parity and complete-cohort reports."
-    }
-  ]
+  "implementation": {
+    "generic": "dskit.pipeline.study_protocol: metadata plan, explicit controls, shared SQLite exposure, verified publication",
+    "domain": "index_options.mio_contract plus observations/ledger_studies: predictive binding, sparse pairs, bounded intake, separate clocks, full-cohort replay",
+    "inputs": "dskit.onboarding.artifacts.PinnedPayloadSource; current source bytes onboarded separately from legacy producer evidence",
+    "deferred": "External 2019 pair admission, MIO primary metric and first fresh packet. Do not run a fresh packet from this reference.",
+    "runtime": "../../../configs/mio-debug.json"
+  }
 }

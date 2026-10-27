@@ -1,0 +1,1711 @@
+{
+  "name": "mio-model-zoo-selection",
+  "pipeline": {
+    "selection": {
+      "uses": "index_options.mio_contract:MIOModelZooSelection",
+      "params": {
+        "source": {
+          "root": "/home/russell/data/index_options/ob",
+          "source": "mio-debug-20261027",
+          "stream": "files",
+          "snapshot": "20261027T214746Z-backfill-d8b827cf",
+          "manifest_sha256": "d8b827cf1654034fcf6bf14b13d5b7cdce3350e2c10f614b65022964793860c4",
+          "files": {
+            "documents/study/run-strike-screen-fits-wf-wide-mlp64.json": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3",
+            "exact-expiry-tables/archive/abbv/options_2020.parquet": "829cce12e1a5e51acbb1ae78c5a16c56e202cbf657870f7d791f0a24e497105d",
+            "exact-expiry-tables/archive/acn/options_2020.parquet": "06aeee7c2327fb19e5b63058e0e0a8036dad57c237dce5ebcaa342b971da3f67",
+            "exact-expiry-tables/prices/index_daily/ABBV.parquet": "93650013f3834ac7df835ea138e54219238f7d874589258f7c6d24e8117e973c",
+            "exact-expiry-tables/prices/index_daily/ACN.parquet": "0d97029e3856e0abaf12f83598600bd848b269c512718ab37fbe9bd100e70136",
+            "mio-metadata-20261027/calendar.json": "82ef2eec22888ac8cbc2b92b72277977f24f558ddb2b7b7b9eb592e13e456dde",
+            "mio-metadata-20261027/folds.jsonl": "e8ad1594afe8982a1225203135d2d9917db5c99e3faca6c90bd2c4a84ef6330a",
+            "mio-metadata-20261027/sessions.parquet": "94e909b894479b6fa8e3010ba6bb2cb4b3fb1a66595892f5b0606e2f960e189e",
+            "mio-metadata-20261027/standalone.csv": "f12b89c5ef096f90aedb70b289f3ebd1f512e4ac4712dd8a89dbfe08d5cafbfb",
+            "mio-metadata-20261027/zoo-audit.json": "054544968ff506c46fa96974bece35fecbec3e8e06e29a9273ca68ccb8ebe62e",
+            "scores/edge-method-01-market-pit-by-dte/tables/windows.csv": "f18f43677e5268ff486b2c1749ffb74ec5f0ae2f1f2ba1983cc42660dc9987d8",
+            "scores/edge-method-02-pool-global/tables/windows.csv": "c70b3fef7d14140be8da0abe0bfca9180c70f103cdc9bdb41f21feee81d45c8c",
+            "scores/edge-method-03-pool-by-dte/tables/windows.csv": "fbbe71ac0a2c7cb3a7564e38532b20707938fdd0a71c79238d92a1fa61e9c968",
+            "scores/edge-method-04-pool-by-threshold/tables/windows.csv": "0e4dd7fc021fe69d859ddb06373056085fa98d73aa4e162b81639812a1da4b3a",
+            "scores/edge-method-05-pool-by-regime/tables/windows.csv": "1935d2951332822ee342ae9424b1a39857b06bdfe93264e43d565b8b8f9f714f",
+            "scores/edge-method-06-pool-by-ticker/tables/windows.csv": "3d4d8fee3dcf3931d9e18e448d61a9cabe1bebf65755111d6e0e017e123ac253",
+            "scores/edge-method-07-model-pit/tables/windows.csv": "8d596a2aecb58ac8fa62cbdec2e50029913c2a69ab1c54f4c147e006ff8a9873",
+            "scores/edge-method-08-stack-four-by-dte/tables/windows.csv": "4eb0c642e398b98b831b453a4b95df3a9513d7c609d3a85f08c37b4bef0e2ecd",
+            "scores/edge-method-09-best-by-ticker-dte/tables/windows.csv": "feb2002612f8ba7951a8067fbbd65007fe6bce196ede8c619155e108dad428fe",
+            "scores/edge-method-10-gbm-market/tables/windows.csv": "32f2ca1a0a6ff693d7ab8b088490041b6c13cc35ebbd1a07f7795e8b188945af",
+            "scores/edge-method-11-stack-rolling/tables/windows.csv": "310ee8fdbe516efb1ed59e72fab831ece7d494a6c1dcadcae09404453d452cd7",
+            "scores/edge-method-12-stack-rolling-by-dte/tables/windows.csv": "ac568593e6e42fe9ee27b747fc25f0778de75641d7ed01f6f0a050bb52a40796",
+            "scores/edge-method-13-stack-recency-by-dte/tables/windows.csv": "896d7a4059b6d10cdb3ae28a7610f5aa4db86eefcef7b78c01f958c102e224fa",
+            "scores/edge-method-14-beta-pool/tables/windows.csv": "87a1b479d4906fa3713d2977334f3ef345f56395fba53a5f32dd1db800d147fd",
+            "scores/edge-method-15-beta-pool-rolling/tables/windows.csv": "bd4ef6f52a41d0ff2c3b522a9ec04b515708ceaa98243b31ced06a859c7487ae",
+            "scores/edge-method-16-quantile-average-by-dte/tables/windows.csv": "5464e19cd1e8b3a3140e96ec8fa13902fa313da6c2dad9cf16786d191e419e1b",
+            "scores/edge-method-17-stack-by-dte-threshold/tables/windows.csv": "26c768c75cc4f319918af5634069d1f2c25114e0998d03e5088b4905a9f78bcf",
+            "scores/edge-method-18-stack-six-by-dte/tables/windows.csv": "38f2357a2964ffd1c8b7da27dc30ecb37b9ec851416aa6579174af5fd8a5730e",
+            "scores/edge-method-19-stack-six-rolling/tables/windows.csv": "6257047e1f81c73e289b22e57b7781e6682054dfd85af20d9197ab00791d2f59",
+            "scores/edge-method-20-stack-four-seed29/tables/windows.csv": "d1197765d29f4f70d5dc05998b48a0dc460693004def8a677ba4df9ed66dcb53",
+            "scores/edge-method-21-gru/tables/windows.csv": "9e3d98fbf629e865ca2ff1485dae898d19672f9d2ecf863a3f40bb84268ed90d",
+            "scores/edge-method-22-mlp/tables/windows.csv": "0250d158f57236d2d9175a762aa910345eaec009e57efbd7069588b2f0b1e6da",
+            "scores/edge-method-23-mix5/tables/windows.csv": "24bd2fde2da71bedcfabd05cb129dfe61394b2da50afa9f8b7c54d2b88d73bc7",
+            "scores/edge-method-24-l3-loss/tables/windows.csv": "7d5a32c93d84805b5f02e96b81d91d5628ebb1c86b32e25a8578a23b1a9cdf8d",
+            "scores/edge-method-25-seed-bag/tables/windows.csv": "f6dcb88a58d494100448442a99469f6149035facfcc46c1fe57b8ef42eeaf6b9",
+            "scores/edge-method-26-qa-rolling-by-dte/tables/windows.csv": "74af3dd25d2113a9cb96c38a2925e53b516c35b9943fe4427a8d4c602ba73059",
+            "scores/edge-method-27-qa-level-bands-by-dte/tables/windows.csv": "d18035cbe2aada71aa5cd47a12687aa9c776f97080fa06d0b775acd97946f266",
+            "scores/edge-method-28-qa-by-ticker/tables/windows.csv": "463d9ba2fc03ffdab35b1605c2da200c40cc3325480e3de08db9024b36606045",
+            "scores/edge-method-29-qa-by-dispersion/tables/windows.csv": "591026f54d70f3dd442f0e0934338bc40835669a5224af2757a62e7b4e89a965",
+            "scores/edge-method-30-qa-rolling-pit/tables/windows.csv": "62d353829f74b9ced41a2ca62564e0f6951f2b6de4bf81682d1dd96681946ef2",
+            "scores/edge-method-31-qa-rolling-market/tables/windows.csv": "6ee0ad7cedfd92597212299aacf68aed8b87baab0a76d3354f491dc56dea188d",
+            "scores/edge-method-31a-market-roll/tables/windows.csv": "8e3cb2e67fd51fa435427f2a14cc51b2cdb4019200d03fde091cf13baf28514d",
+            "scores/edge-method-32-qa-six-by-dte/tables/windows.csv": "238525f6048f508b47deb7f0c57484bb3851ef266a9f0d24c6ae0e2a963a1919",
+            "scores/edge-method-33-qa-model-bag/tables/windows.csv": "df8958072f09016342c34cb4735b40b5416c9bcda9ab1c7d8d103c5b2f6ad6a2",
+            "scores/edge-method-33a-model-bag/tables/windows.csv": "09d8ae3d930a20291963cf77526f29fdd0cd0f8456241d64cd71c472a943779d",
+            "scores/edge-method-34-qa-feature-weights/tables/windows.csv": "6587029dc7a7c1220558eaa4c6c7ab796340f0b5a95449ce31f3ab5ca514ca34",
+            "scores/edge-method-35-location-scale-market/tables/windows.csv": "3f7595ca44c985bdc07718aba915c379c52b19413dbbae59f1337744b9879b9b",
+            "scores/edge-method-36-wide-inputs/tables/windows.csv": "1ada40bb618965835572f98696d18d4b3c8c6643efe72f489fb58039fc900252",
+            "scores/edge-method-37-gbm-greeks/tables/windows.csv": "229f22d6fef7a9e0d32e1898c50baed4687699d10e0965d07303dabf75395683",
+            "scores/edge-method-38-location-scale-greeks/tables/windows.csv": "ca9c7693746b6a1ff983feca1d40795cf001618b735b9a2c2801ece37988943b",
+            "scores/edge-method-39-qa-greeks-weights/tables/windows.csv": "930522069518e6e9f8d4b2b9ce17934abcf5e7f71b0894f7a05852bb0e9ff683",
+            "scores/edge-method-40-qa-greeks-few-a/tables/windows.csv": "dd81c39ff682ae006760228a0b5c4872b1c7a35bf623f9045d211d309853e3ef",
+            "scores/edge-method-41-qa-greeks-few-b/tables/windows.csv": "3c2847b42c297f0e14609e023221fb6c040c26a144204703c9fc8bb017e76d9b",
+            "scores/edge-method-42-qa-greeks-weights-300k/tables/windows.csv": "762aa21ed49d95dc3561a7a97decfbac8f3fffc6b44bd69ed11f14cee035df1b",
+            "scores/edge-method-43-gbm-greeks-on-stack/tables/windows.csv": "e79b09dc3f7a8700883a4c2365d73c59211dc7b679afd977bbd5a574e3500c6a",
+            "scores/edge-method-44-gbm-greeks-on-model/tables/windows.csv": "44c47d8456f1e0549ec9a0a1b083d30a6011e8354490a4b58614f217f43b975f",
+            "scores/edge-method-45-ls-greeks-on-model/tables/windows.csv": "293805d64ec955990bb3615404950f45cf2d9982278009047df3b4b95b96a4d0",
+            "scores/edge-method-46-lp-greeks-weights/tables/windows.csv": "f02c4b7d251d7418522e4815c54ed421119dfc1884027803da47122723240418",
+            "scores/edge-method-47-wide-mlp/tables/windows.csv": "26581422e028a6219eb734a69150efc9432c55427ae0f86d1496c2a747e54d30",
+            "scores/edge-method-48-wide-mlp64/tables/windows.csv": "90a7aec2d25f29aca8611425137ceb84542c83b0184e57484d7b7c12df0112dd",
+            "scores/edge-method-49-wide-tcn32/tables/windows.csv": "371839ccb8c0ab85dbca07210079e620a24dff22a9ed2872e6ce5bdce2e5d8fd",
+            "scores/edge-method-50-qa-wide-bag/tables/windows.csv": "3f39040b369f420243a4db831506393c50d321cfc52c1a92c669352947d50d0e",
+            "scores/edge-method-50a-wide-bag/tables/windows.csv": "16b95b9808c2b6ede4c8243e46228fa535f7cef11358fc6253a96f8dfa74d79d",
+            "scores/edge-method-51-qa-mlp64-by-dispersion/tables/windows.csv": "66207cba651fa02edbe4553cb2b152d967248bfcd14bad6efdff70f8efccf274",
+            "scores/edge-method-52-qa-mlp64-rolling/tables/windows.csv": "e5efe80f2ca3f95250e468ff44aaccfc01c6056e0c619640651bad4031346262",
+            "scores/edge-method-53-qa-mlp64-rolling-by-dispersion/fit.json": "f9ddf3ff2f45a27f0fd9c37065828ec4a8e471e65b0d2317108cfb433167e04d",
+            "scores/edge-method-53-qa-mlp64-rolling-by-dispersion/forecasts.parquet": "ff4cfcfcddf550d8efb74e7dbfead0ab5fb343b028fed254077212ee06723120",
+            "scores/edge-method-53-qa-mlp64-rolling-by-dispersion/tables/windows.csv": "ed0bede1a29907b50e3617902195aa857c7e868ece5ae1f8f20987926d520235",
+            "scores/edge-method-54-qa-mlp64-half-life/tables/windows.csv": "834008768d36ffd9c5ce975535b45906d9b0a5ae29da5595e1b63ef7deb9f8a1",
+            "scores/edge-method-55-qa-mlp64-zone-bands/tables/windows.csv": "8dc5e4164c7d880139d36c5b4624ccab97eab160d795f053c986c32b83a79488",
+            "scores/edge-method-56-qa-two-mlps/tables/windows.csv": "efd06acc34662504fa4b2a58432b9f44e40c30ac25d9bc87b4429d7e19225a35",
+            "scores/edge-method-57-qa-mlp64-seed-bag/tables/windows.csv": "20c99d576fed8aafe600339d252421bcfdbefa81835a20d9dc445f35b3a36eb7",
+            "scores/edge-method-57a-mlp64-seed-bag/tables/windows.csv": "86365f17f3ef93fb636276b23cd8a4f3c37602b311bdc3a58ca667bb69d97c48",
+            "scores/edge-method-58-qa-mlp64-by-market-width/tables/windows.csv": "1b3cf4e5ab775411ff62703df0cf15854b3a3bc03fd3d4624130b9ffde0213d8",
+            "scores/edge-method-59-qa-mlp64-by-strike-density/tables/windows.csv": "47d5df792715e156f2420d2187e1b4baffed003ba22538fedec964b903758d9c",
+            "scores/edge-method-60-qa-mlp64-by-vol-level/tables/windows.csv": "4163a6d41e0fc7bfafb2ef74f307b8b02ca41cab1d2383e342e761250681c44f",
+            "scores/edge-method-61-lp-mlp64-per-threshold/tables/windows.csv": "24a829f41e40fc1317170c481e75f6ec5e2724a2ce45829275158231d124be5f",
+            "scores/edge-method-62-qa-mlp64-feature-weights/tables/windows.csv": "f7ef0733cb82709f0e184d8708fa270dcb7f35a6e83b71005cfc549e1e4e4f78",
+            "scores/edge-method-63-qa-mlp64-rn-shape-weights/tables/windows.csv": "9808811acb7f5f68f269b90924a57e580f72239d29baf3b912c9da8c302792f0",
+            "scores/edge-method-64-mlp64-66-inputs/tables/windows.csv": "d4a4fc93d4c1e64e3fe496d0232338de799ada7a688cf09f4d9b58d6e5cb283c",
+            "scores/edge-method-65-wider-mlp64/tables/windows.csv": "cbb053bb3f100fb48a3a4902f01b557be2c24c4a29b4793cdc14af82cd29d8b7",
+            "scores/strike-region-scores-wf-wide-mlp64/rows.parquet": "f0db364e4d149fe7dc22a34e2de90ef117599d32a2ab6705fe8da8e03f7b2c85"
+          }
+        },
+        "audit": "mio-metadata-20261027/zoo-audit.json",
+        "recipe": {
+          "source": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/strike-region-scores-wf-wide-mlp64/rows.parquet",
+          "source_sha256": "f0db364e4d149fe7dc22a34e2de90ef117599d32a2ab6705fe8da8e03f7b2c85",
+          "output": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/edge-method-53-qa-mlp64-rolling-by-dispersion",
+          "end_before": "2024-01-01",
+          "columns": {
+            "identity": [
+              "symbol",
+              "quote_date",
+              "expiry",
+              "fold",
+              "band"
+            ],
+            "date": "quote_date",
+            "settlement": "settlement_date",
+            "fold": "fold",
+            "band": "band",
+            "outcome": "y",
+            "dte": "actual_calendar_dte",
+            "group": "symbol",
+            "eligible": "market_eligible"
+          },
+          "z_grid": [
+            -3,
+            -2.5,
+            -2,
+            -1.5,
+            -1,
+            -0.5,
+            0,
+            0.5,
+            1,
+            1.5,
+            2,
+            2.5,
+            3
+          ],
+          "grid_labels": [
+            "zm3",
+            "zm2.5",
+            "zm2",
+            "zm1.5",
+            "zm1",
+            "zm0.5",
+            "zp0",
+            "zp0.5",
+            "zp1",
+            "zp1.5",
+            "zp2",
+            "zp2.5",
+            "zp3"
+          ],
+          "score_weights": [
+            0.25,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.25,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.25
+          ],
+          "pit_tail": 4.0,
+          "components": [
+            {
+              "name": "model",
+              "source": "model",
+              "pit_column": "model_pit"
+            },
+            {
+              "name": "market",
+              "source": "market",
+              "pit_column": "market_pit"
+            },
+            {
+              "name": "market_cal",
+              "source": "market",
+              "pit_map": {
+                "knots": 21,
+                "learn": "fit_band"
+              },
+              "pit_column": "market_pit"
+            },
+            {
+              "name": "pooled",
+              "source": "pooled",
+              "pit_column": "pooled_pit"
+            },
+            {
+              "name": "baseline",
+              "source": "baseline",
+              "pit_column": "baseline_pit"
+            }
+          ],
+          "fallback": "model",
+          "method": {
+            "kind": "quantile_average",
+            "learn": "rolling",
+            "components": [
+              "model",
+              "market_cal",
+              "pooled",
+              "baseline"
+            ],
+            "by": "disp",
+            "min_rows": 5000,
+            "levels": 199,
+            "max_learning_rows": 100000,
+            "refit_days": 21
+          },
+          "buckets": {
+            "dte_bucket": {
+              "column": "actual_calendar_dte",
+              "edges": [
+                [
+                  1,
+                  7
+                ],
+                [
+                  8,
+                  14
+                ],
+                [
+                  15,
+                  21
+                ],
+                [
+                  22,
+                  28
+                ],
+                [
+                  29,
+                  35
+                ],
+                [
+                  36,
+                  42
+                ],
+                [
+                  43,
+                  49
+                ],
+                [
+                  50,
+                  60
+                ]
+              ]
+            },
+            "disp": {
+              "column": "market_sd_z",
+              "edges": [
+                [
+                  0.0,
+                  1.0
+                ],
+                [
+                  1.000001,
+                  1.3
+                ],
+                [
+                  1.300001,
+                  100.0
+                ]
+              ]
+            }
+          },
+          "periods": {
+            "S0_pre_crash": [
+              "2020-01-02",
+              "2020-02-14"
+            ],
+            "S1_covid_crash": [
+              "2020-02-15",
+              "2020-06-30"
+            ],
+            "S2_recovery": [
+              "2020-07-01",
+              "2021-12-31"
+            ],
+            "S3_rate_shock": [
+              "2022-01-03",
+              "2022-12-30"
+            ],
+            "S4_2023": [
+              "2023-01-03",
+              "2023-12-29"
+            ]
+          },
+          "ranked_folds": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "comparators": [
+            "market",
+            "market_cal",
+            "baseline",
+            "pooled",
+            "model"
+          ],
+          "tables": [
+            {
+              "name": "ticker_dte_region",
+              "by": [
+                "symbol",
+                "dte_bucket"
+              ],
+              "regions": true
+            },
+            {
+              "name": "ticker_dte_zone",
+              "by": [
+                "symbol",
+                "dte_bucket"
+              ],
+              "regions": false,
+              "region_groups": {
+                "left_wing": [
+                  0,
+                  1,
+                  2,
+                  3
+                ],
+                "left_shoulder": [
+                  4,
+                  5
+                ],
+                "body": [
+                  6,
+                  7
+                ],
+                "right_shoulder": [
+                  8,
+                  9
+                ],
+                "right_wing": [
+                  10,
+                  11,
+                  12,
+                  13
+                ]
+              }
+            },
+            {
+              "name": "ticker_dte",
+              "by": [
+                "symbol",
+                "dte_bucket"
+              ],
+              "regions": false
+            },
+            {
+              "name": "dte_region",
+              "by": [
+                "dte_bucket"
+              ],
+              "regions": true,
+              "region_groups": {
+                "left_wing": [
+                  0,
+                  1,
+                  2,
+                  3
+                ],
+                "left_shoulder": [
+                  4,
+                  5
+                ],
+                "body": [
+                  6,
+                  7
+                ],
+                "right_shoulder": [
+                  8,
+                  9
+                ],
+                "right_wing": [
+                  10,
+                  11,
+                  12,
+                  13
+                ]
+              }
+            },
+            {
+              "name": "ticker",
+              "by": [
+                "symbol"
+              ],
+              "regions": false,
+              "region_groups": {
+                "left_wing": [
+                  0,
+                  1,
+                  2,
+                  3
+                ],
+                "left_shoulder": [
+                  4,
+                  5
+                ],
+                "body": [
+                  6,
+                  7
+                ],
+                "right_shoulder": [
+                  8,
+                  9
+                ],
+                "right_wing": [
+                  10,
+                  11,
+                  12,
+                  13
+                ]
+              }
+            },
+            {
+              "name": "ticker_year",
+              "by": [
+                "symbol",
+                "year"
+              ],
+              "regions": false,
+              "region_groups": {
+                "left_wing": [
+                  0,
+                  1,
+                  2,
+                  3
+                ],
+                "left_shoulder": [
+                  4,
+                  5
+                ],
+                "body": [
+                  6,
+                  7
+                ],
+                "right_shoulder": [
+                  8,
+                  9
+                ],
+                "right_wing": [
+                  10,
+                  11,
+                  12,
+                  13
+                ]
+              }
+            },
+            {
+              "name": "year_dte_zone",
+              "by": [
+                "year",
+                "dte_bucket"
+              ],
+              "regions": false,
+              "region_groups": {
+                "left_wing": [
+                  0,
+                  1,
+                  2,
+                  3
+                ],
+                "left_shoulder": [
+                  4,
+                  5
+                ],
+                "body": [
+                  6,
+                  7
+                ],
+                "right_shoulder": [
+                  8,
+                  9
+                ],
+                "right_wing": [
+                  10,
+                  11,
+                  12,
+                  13
+                ]
+              }
+            },
+            {
+              "name": "period_dte_zone",
+              "by": [
+                "period",
+                "dte_bucket"
+              ],
+              "regions": false,
+              "region_groups": {
+                "left_wing": [
+                  0,
+                  1,
+                  2,
+                  3
+                ],
+                "left_shoulder": [
+                  4,
+                  5
+                ],
+                "body": [
+                  6,
+                  7
+                ],
+                "right_shoulder": [
+                  8,
+                  9
+                ],
+                "right_wing": [
+                  10,
+                  11,
+                  12,
+                  13
+                ]
+              }
+            }
+          ]
+        },
+        "training_protocol": {
+          "components": {
+            "model": {
+              "family": "wide_mlp64",
+              "resolved_config": {
+                "arms": {
+                  "context_chain": {
+                    "observed_columns": [],
+                    "min_fit": 40,
+                    "min_cal": 1,
+                    "min_disjoint": 0,
+                    "features": [
+                      "ret_lag_21",
+                      "ret_lag_20",
+                      "ret_lag_19",
+                      "ret_lag_18",
+                      "ret_lag_17",
+                      "ret_lag_16",
+                      "ret_lag_15",
+                      "ret_lag_14",
+                      "ret_lag_13",
+                      "ret_lag_12",
+                      "ret_lag_11",
+                      "ret_lag_10",
+                      "ret_lag_9",
+                      "ret_lag_8",
+                      "ret_lag_7",
+                      "ret_lag_6",
+                      "ret_lag_5",
+                      "ret_lag_4",
+                      "ret_lag_3",
+                      "ret_lag_2",
+                      "ret_lag_1",
+                      "ret_lag_0",
+                      "log_sessions_to_expiry",
+                      "calendar_days_per_session",
+                      "momentum_5",
+                      "momentum_22",
+                      "rv_1",
+                      "rv_5",
+                      "rv_22",
+                      "rv_66",
+                      "down_rv_5",
+                      "down_rv_22",
+                      "up_rv_5",
+                      "up_rv_22",
+                      "vl_log_volume_ratio_66",
+                      "vl_log_volume_ratio",
+                      "vl_log_dollar_volume",
+                      "vl_amihud",
+                      "rn_q_0100",
+                      "rn_q_0250",
+                      "rn_q_0500",
+                      "rn_q_1000",
+                      "rn_q_1500",
+                      "rn_q_2000",
+                      "rn_q_2500",
+                      "rn_q_3000",
+                      "rn_q_4000",
+                      "rn_q_5000",
+                      "rn_q_6000",
+                      "rn_q_7000",
+                      "rn_q_7500",
+                      "rn_q_8000",
+                      "rn_q_8500",
+                      "rn_q_9000",
+                      "rn_q_9500",
+                      "rn_q_9750",
+                      "rn_q_9900",
+                      "rn_interior_mass",
+                      "chain_log_atm_iv",
+                      "chain_log_skew25",
+                      "chain_log_curvature25",
+                      "chain_log_rel_spread",
+                      "chain_log_put_call_oi",
+                      "chain_log_contracts",
+                      "chain_log_atm_iv_change_5",
+                      "chain_log_skew25_change_5",
+                      "own_iv",
+                      "chain_log_open_interest",
+                      "chain_log_lag_oi_change",
+                      "chain_log_quote_depth",
+                      "chain_log_volume",
+                      "chain_put_call_volume_imbalance",
+                      "chain_log_delta_oi",
+                      "chain_log_gamma_oi",
+                      "chain_log_vega_oi",
+                      "chain_volume_weighted_rel_spread",
+                      "chain_liquidity_asymmetry",
+                      "implied_minus_realized_variance",
+                      "term_slope_prev",
+                      "term_slope_next",
+                      "chain_log_atm_iv_change_1",
+                      "chain_has_25d_pair",
+                      "chain_has_put_call_oi",
+                      "chain_node_04_iv",
+                      "chain_node_04_log_oi",
+                      "chain_node_04_log_depth",
+                      "chain_node_04_log_rel_spread",
+                      "chain_node_03_iv",
+                      "chain_node_05_iv",
+                      "chain_node_04_mask"
+                    ],
+                    "sequence_indices": [
+                      [
+                        0
+                      ],
+                      [
+                        1
+                      ],
+                      [
+                        2
+                      ],
+                      [
+                        3
+                      ],
+                      [
+                        4
+                      ],
+                      [
+                        5
+                      ],
+                      [
+                        6
+                      ],
+                      [
+                        7
+                      ],
+                      [
+                        8
+                      ],
+                      [
+                        9
+                      ],
+                      [
+                        10
+                      ],
+                      [
+                        11
+                      ],
+                      [
+                        12
+                      ],
+                      [
+                        13
+                      ],
+                      [
+                        14
+                      ],
+                      [
+                        15
+                      ],
+                      [
+                        16
+                      ],
+                      [
+                        17
+                      ],
+                      [
+                        18
+                      ],
+                      [
+                        19
+                      ],
+                      [
+                        20
+                      ],
+                      [
+                        21
+                      ]
+                    ],
+                    "context_indices": [
+                      22,
+                      23,
+                      24,
+                      25,
+                      26,
+                      27,
+                      28,
+                      29,
+                      30,
+                      31,
+                      32,
+                      33,
+                      34,
+                      35,
+                      36,
+                      37,
+                      38,
+                      39,
+                      40,
+                      41,
+                      42,
+                      43,
+                      44,
+                      45,
+                      46,
+                      47,
+                      48,
+                      49,
+                      50,
+                      51,
+                      52,
+                      53,
+                      54,
+                      55,
+                      56,
+                      57,
+                      58,
+                      59,
+                      60,
+                      61,
+                      62,
+                      63,
+                      64,
+                      65,
+                      66,
+                      67,
+                      68,
+                      69,
+                      70,
+                      71,
+                      72,
+                      73,
+                      74,
+                      75,
+                      76,
+                      77,
+                      78,
+                      79,
+                      80,
+                      81,
+                      82,
+                      83,
+                      84,
+                      85,
+                      86,
+                      87,
+                      88,
+                      89
+                    ]
+                  }
+                },
+                "candidates": [
+                  {
+                    "name": "wide_mlp64",
+                    "adapters": {
+                      "pooled": [
+                        {
+                          "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+                          "params": {
+                            "arch": "mlp",
+                            "arch_params": {
+                              "hidden_size": 64
+                            },
+                            "width": 16
+                          }
+                        }
+                      ],
+                      "unpooled": [
+                        {
+                          "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+                          "params": {
+                            "arch": "mlp",
+                            "arch_params": {
+                              "hidden_size": 64
+                            },
+                            "width": 16
+                          }
+                        }
+                      ]
+                    },
+                    "skip_reason": null
+                  }
+                ],
+                "capacity": {
+                  "pooled": {
+                    "absolute": 100000,
+                    "per_row": 0.25,
+                    "head_widths": [
+                      8
+                    ],
+                    "head_per_row": 4,
+                    "batch_size": 512,
+                    "device": "cuda",
+                    "ticker_heads": false
+                  },
+                  "unpooled": {
+                    "absolute": 8192,
+                    "batch_size": 64,
+                    "device": "cpu",
+                    "head_widths": [
+                      2
+                    ],
+                    "per_row": 4
+                  }
+                },
+                "date_upper_exclusive": "2024-01-01",
+                "dependencies": {
+                  "lightgbm": "4.7.0",
+                  "numpy": "2.5.2",
+                  "pandas": "2.3.3",
+                  "pyarrow": "25.0.1",
+                  "scikit-learn": "1.9.0",
+                  "torch": "2.11.0+cu128",
+                  "transformers": "5.16.1"
+                },
+                "end_upper_exclusive": "2024-01-01",
+                "output": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-wide-mlp64",
+                "panel": "/home/russell/data/index_options/theta-strike-screen-20261018/panel/panel-cache/frame.parquet",
+                "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+                "source_hashes": {
+                  "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+                  "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+                  "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+                  "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "5335c6279f3da971387ded0a8b72c33df54ad6fd03c7f51e6fc59d1a023dccec",
+                  "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+                  "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+                  "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+                  "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+                },
+                "study": {
+                  "bootstrap": {
+                    "blocks": [
+                      30,
+                      60
+                    ],
+                    "replicates": 1000,
+                    "seed": 829
+                  },
+                  "calibration_knots": 21,
+                  "comparison_references": [
+                    "horizon_empirical"
+                  ],
+                  "date": "quote_date",
+                  "end": "settlement_date",
+                  "features": [
+                    "calendar_dte",
+                    "sessions_to_expiry",
+                    "log_calendar_dte",
+                    "log_sessions_to_expiry",
+                    "calendar_days_per_session",
+                    "reference_scale",
+                    "ret_lag_0",
+                    "ret_lag_1",
+                    "ret_lag_2",
+                    "ret_lag_3",
+                    "ret_lag_4",
+                    "ret_lag_5",
+                    "ret_lag_6",
+                    "ret_lag_7",
+                    "ret_lag_8",
+                    "ret_lag_9",
+                    "ret_lag_10",
+                    "ret_lag_11",
+                    "ret_lag_12",
+                    "ret_lag_13",
+                    "ret_lag_14",
+                    "ret_lag_15",
+                    "ret_lag_16",
+                    "ret_lag_17",
+                    "ret_lag_18",
+                    "ret_lag_19",
+                    "ret_lag_20",
+                    "ret_lag_21",
+                    "momentum_5",
+                    "momentum_22",
+                    "rv_1",
+                    "rv_5",
+                    "rv_22",
+                    "rv_66",
+                    "down_rv_5",
+                    "down_rv_22",
+                    "up_rv_5",
+                    "up_rv_22",
+                    "vl_log_volume_ratio_66",
+                    "vl_log_volume_ratio",
+                    "vl_log_dollar_volume",
+                    "vl_amihud",
+                    "own_iv",
+                    "chain_log_atm_iv",
+                    "chain_log_skew25",
+                    "chain_log_curvature25",
+                    "chain_log_rel_spread",
+                    "chain_log_put_call_oi",
+                    "chain_log_contracts",
+                    "chain_log_open_interest",
+                    "chain_log_quote_depth",
+                    "chain_has_25d_pair",
+                    "chain_has_put_call_oi",
+                    "chain_node_00_log_moneyness",
+                    "chain_node_00_iv",
+                    "chain_node_00_log_rel_spread",
+                    "chain_node_00_log_oi",
+                    "chain_node_00_log_depth",
+                    "chain_node_00_mask",
+                    "chain_node_01_log_moneyness",
+                    "chain_node_01_iv",
+                    "chain_node_01_log_rel_spread",
+                    "chain_node_01_log_oi",
+                    "chain_node_01_log_depth",
+                    "chain_node_01_mask",
+                    "chain_node_02_log_moneyness",
+                    "chain_node_02_iv",
+                    "chain_node_02_log_rel_spread",
+                    "chain_node_02_log_oi",
+                    "chain_node_02_log_depth",
+                    "chain_node_02_mask",
+                    "chain_node_03_log_moneyness",
+                    "chain_node_03_iv",
+                    "chain_node_03_log_rel_spread",
+                    "chain_node_03_log_oi",
+                    "chain_node_03_log_depth",
+                    "chain_node_03_mask",
+                    "chain_node_04_log_moneyness",
+                    "chain_node_04_iv",
+                    "chain_node_04_log_rel_spread",
+                    "chain_node_04_log_oi",
+                    "chain_node_04_log_depth",
+                    "chain_node_04_mask",
+                    "chain_node_05_log_moneyness",
+                    "chain_node_05_iv",
+                    "chain_node_05_log_rel_spread",
+                    "chain_node_05_log_oi",
+                    "chain_node_05_log_depth",
+                    "chain_node_05_mask",
+                    "chain_node_06_log_moneyness",
+                    "chain_node_06_iv",
+                    "chain_node_06_log_rel_spread",
+                    "chain_node_06_log_oi",
+                    "chain_node_06_log_depth",
+                    "chain_node_06_mask",
+                    "chain_node_07_log_moneyness",
+                    "chain_node_07_iv",
+                    "chain_node_07_log_rel_spread",
+                    "chain_node_07_log_oi",
+                    "chain_node_07_log_depth",
+                    "chain_node_07_mask",
+                    "chain_node_08_log_moneyness",
+                    "chain_node_08_iv",
+                    "chain_node_08_log_rel_spread",
+                    "chain_node_08_log_oi",
+                    "chain_node_08_log_depth",
+                    "chain_node_08_mask",
+                    "rn_proxy_eligible",
+                    "rn_forward_ratio",
+                    "rn_projection_distance",
+                    "rn_interior_mass",
+                    "rn_q_0100",
+                    "rn_q_0250",
+                    "rn_q_0500",
+                    "rn_q_1000",
+                    "rn_q_1500",
+                    "rn_q_2000",
+                    "rn_q_2500",
+                    "rn_q_3000",
+                    "rn_q_4000",
+                    "rn_q_5000",
+                    "rn_q_6000",
+                    "rn_q_7000",
+                    "rn_q_7500",
+                    "rn_q_8000",
+                    "rn_q_8500",
+                    "rn_q_9000",
+                    "rn_q_9500",
+                    "rn_q_9750",
+                    "rn_q_9900",
+                    "chain_log_volume",
+                    "chain_put_call_volume_imbalance",
+                    "chain_log_delta_oi",
+                    "chain_log_gamma_oi",
+                    "chain_log_vega_oi",
+                    "chain_volume_weighted_rel_spread",
+                    "chain_log_lag_open_interest",
+                    "chain_log_lag_oi_change",
+                    "rn_median",
+                    "rn_iqr",
+                    "rn_left_width",
+                    "rn_right_width",
+                    "chain_log_atm_iv_change_1",
+                    "chain_log_atm_iv_change_5",
+                    "chain_log_atm_iv_change_22",
+                    "chain_log_skew25_change_1",
+                    "chain_log_skew25_change_5",
+                    "chain_log_skew25_change_22",
+                    "chain_log_curvature25_change_1",
+                    "chain_log_curvature25_change_5",
+                    "chain_log_curvature25_change_22",
+                    "chain_liquidity_asymmetry",
+                    "implied_minus_realized_variance",
+                    "term_slope_prev",
+                    "term_slope_next",
+                    "rn_mean",
+                    "rn_variance",
+                    "rn_skewness",
+                    "rn_kurtosis",
+                    "rn_left_tail_integral",
+                    "rn_right_tail_integral",
+                    "is_AAPL",
+                    "is_ABBV",
+                    "is_ABT",
+                    "is_ABUS",
+                    "is_ACN",
+                    "is_ADBE",
+                    "is_ADI",
+                    "is_AEO",
+                    "is_AG",
+                    "is_AGNC",
+                    "is_AKAM",
+                    "is_ALB",
+                    "is_ALLY",
+                    "is_AMAT",
+                    "is_AMC",
+                    "is_AMD",
+                    "is_AMGN",
+                    "is_AMKR",
+                    "is_AMZN",
+                    "is_ANET",
+                    "is_APA",
+                    "is_APH",
+                    "is_APO",
+                    "is_AVAV",
+                    "is_AVGO",
+                    "is_AXP",
+                    "is_AXTI",
+                    "is_BA",
+                    "is_BAC",
+                    "is_BBY",
+                    "is_BIDU",
+                    "is_BLK",
+                    "is_BMY",
+                    "is_BP",
+                    "is_BSX",
+                    "is_BX",
+                    "is_C",
+                    "is_CAG",
+                    "is_CAT",
+                    "is_CCJ",
+                    "is_CCL",
+                    "is_CDE",
+                    "is_CHTR",
+                    "is_CIEN",
+                    "is_CLF",
+                    "is_CLS",
+                    "is_CMCSA",
+                    "is_CME",
+                    "is_CMG",
+                    "is_CNC",
+                    "is_COF",
+                    "is_COHR",
+                    "is_COP",
+                    "is_COST",
+                    "is_CPB",
+                    "is_CRM",
+                    "is_CSCO",
+                    "is_CVE",
+                    "is_CVS",
+                    "is_CVX",
+                    "is_DAL",
+                    "is_DE",
+                    "is_DHR",
+                    "is_DHT",
+                    "is_DIS",
+                    "is_DKS",
+                    "is_DUK",
+                    "is_DVN",
+                    "is_ECHO",
+                    "is_EIX",
+                    "is_ENPH",
+                    "is_EOG",
+                    "is_EPD",
+                    "is_EQT",
+                    "is_EXPE",
+                    "is_F",
+                    "is_FCEL",
+                    "is_FCX",
+                    "is_FDX",
+                    "is_FISV",
+                    "is_FRO",
+                    "is_FSLR",
+                    "is_FTNT",
+                    "is_GE",
+                    "is_GEO",
+                    "is_GILD",
+                    "is_GIS",
+                    "is_GLW",
+                    "is_GM",
+                    "is_GME",
+                    "is_GOOG",
+                    "is_GOOGL",
+                    "is_GPRO",
+                    "is_GS",
+                    "is_HAL",
+                    "is_HD",
+                    "is_HL",
+                    "is_HON",
+                    "is_HPE",
+                    "is_HPQ",
+                    "is_HUM",
+                    "is_IBM",
+                    "is_INTC",
+                    "is_INTU",
+                    "is_ISRG",
+                    "is_JBLU",
+                    "is_JNJ",
+                    "is_JPM",
+                    "is_KGC",
+                    "is_KHC",
+                    "is_KKR",
+                    "is_KLAC",
+                    "is_KMI",
+                    "is_KO",
+                    "is_KR",
+                    "is_KSS",
+                    "is_KTOS",
+                    "is_LLY"
+                  ],
+                  "fold_table": {
+                    "path": "/home/russell/data/index_options/theta-strike-screen-20261018/registration/strike-screen-folds-walkforward.jsonl",
+                    "sha256": "e8ad1594afe8982a1225203135d2d9917db5c99e3faca6c90bd2c4a84ef6330a",
+                    "holdout_start": "2024-01-01",
+                    "cal_n": 82,
+                    "roles": [
+                      "warmup",
+                      "scored"
+                    ],
+                    "notes": "Walk-forward (ADR-0270, owner 2026-10-20): warm-up fold 2017-18 to 2019 (never ranked), then yearly expanding retrains: through 2019 to 2020, through 2020 to 2021, through 2021 to 2022, through 2022 to 2023. Each fold's monitor band is the last cal_n origins of its own train window; labels purged at every boundary (label_reaches). Pilot-root copy of configs/strike-screen-folds-walkforward.jsonl (same bytes)."
+                  },
+                  "group": "symbol",
+                  "horizon": "actual_calendar_dte",
+                  "identity": [
+                    "symbol",
+                    "quote_date",
+                    "expiry"
+                  ],
+                  "min_task_cal_rows": 1,
+                  "min_task_fit_rows": 40,
+                  "models": {
+                    "horizon_empirical": {
+                      "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+                      "params": {
+                        "horizon_index": 0,
+                        "reference_index": 5,
+                        "knots": 401
+                      },
+                      "calibrate": false
+                    }
+                  },
+                  "notes": "ADR-0270 strike-screen FIT document for loss L1: a CDFExperiment queue (python -m dskit.pipeline.libs.cdf_experiment DOC --regime pooled), NOT a CDFHyperparameterStudy; the execution-path decision in docs/architecture/decision-log.md moved the fits here (every recipe scored on the whole validation window, resumable cells, per-epoch learning curves). A CDFExperiment document has no top-level notes key (its keys are exactly CDFExperiment.KEYS), so the explanations live in this study block. SHARED with its sibling documents (a test pins it): study, arms, candidates, capacity, training except the losses and the output. panel: the cached frame the panel stage of configs/strike-screen-panel-source.json writes (<its experiment.output>/panel-cache/frame.parquet); panel_sha256 is a 64-zero PLACEHOLDER: the registration step replaces it with that frame's sha256 (record.json frame_sha256) in a resolved copy, never in this file. source_hashes and dependencies are EMPTY placeholders: the registration step resolves them exactly as the R6 prepare did (sha256 of the eight anchors dskit/__init__.py, dskit/pipeline/__init__.py, dskit/pipeline/libs/__init__.py and dskit/pipeline/libs/{cdf_experiment,predictive_cdf,parquet,torch_ts,transformers}.py under the executing checkout, which must include parquet.py and exactly one cdf_experiment.py anchor; and the installed versions of lightgbm, numpy, pandas, pyarrow, scikit-learn, torch and transformers). Empty means unpinned: do not run before they are filled. features = the 279 columns of the panel source in its order: 42 price/calendar (ret_lag_0..21 at positions 6..27), own_iv, 118 chain columns, 118 symbol one-hots. The ARMS read the first 42 (price_only) and the first 161 (price_plus_chain); the experiment queue appends the 118 pooled one-hots itself (head_features), so the arms never list is_<SYM>. observed_columns is empty for both arms: the two arms then admit identical rows and groups, so their differences are the inputs, not the sample (a non-empty list would drop rows lacking every listed column from that arm). Pooled regime only; the queue adds one output head per ticker to the shared encoder trunk (118 heads, about 9.6k parameters; protocol revision 3 states this, and a single shared head is a promotion-rung axis), read from the learning curves. No decision_context and wing_metrics false: the queue trains the contexts as the fixed wings of tail_intervals (thresholds -2.5, -0.5, 0.5, 2.5, equal weights), so L1's tail_crps integrates tail_intervals and L3's decision_brier is the Brier at the wing edges; the strike-level assessment at the row's LISTED strikes is StrikeRegionScores (run-strike-region-scores*.json), not this queue. tail_weight 1.0 is required by the queue's weighted_crps column. horizon_empirical is the paired baseline (the queue overrides horizon_index 0 and reference_index 1 on its own two-column input; the declared indices are those of calendar_dte and reference_scale in features). The queue's capacity: max_parameters = min(100000, 0.25 x fit rows), head width 8 with the head under 4 parameters per fit row of every group; a cell that fits no configuration is a recorded skip, consumed. unpooled capacity is the mixture grid's and is never run. Caps (protocol, enforced by the invocation): 14400 s wall in total, 1e9 output bytes, 8 GiB host RSS increment, 12 GiB VRAM, one GPU process, no retries. Holdout: date_upper_exclusive = end_upper_exclusive = fold_table.holdout_start = 2024-01-01; within the revision-3 runbook, rows at or after 2024-01-01 are never returned, emitted, written or used (protocol windows.holdout.read_guard states the exact seal). MATRIX document (ADR-0270 rebase, 2026-10-19): the first screen as the 2026-10-18 model record specifies it, on the executable path. Arms: context (22 raw daily returns as the sequence; 16 context scalars: log sessions and calendar days per session as the DTE terms, momentum, realized-vol levels, up/down semivariance, liquidity) and context_chain (the same plus the market quantile function rn_q_* in z units, 19 values, and 9 chain scalars). Encoders: mlp, gru, tcn, dlinear, patchtst_hf32. DEVIATIONS from the record, each needing code and not yet built: sequence in raw returns (not asinh of return over rv_22); the chain branch is the rn_q quantile function, not the 13 logit differences; the queue adds one head per ticker (no shared head). CORRECTION (first launch skipped all 20 cells in 45 s: the external seam requires sequence and context positions to partition the arm's features exactly): arm feature lists are now exactly the 22 lags (oldest first) plus the context scalars (plus the chain columns). WALK-FORWARD document (template, candidate tcn; the other encoders are substituted at run time): arm context_chain only, five folds (warm-up plus four yearly retrains). LONG SCHEDULE (owner 2026-10-20, 'we shouldn't have a low number of epochs that wouldn't determine that it's not learning'): patience 50 and ceiling 150, so every fold trains at least 50 epochs past its best monitor epoch and the full train and monitor curves are recorded; the scored checkpoint is still the best-monitor epoch. ADJUSTMENT R1 (ADR-0270 ladder): single shared head (capacity.pooled.ticker_heads false), weight decay 0.3, dropout 0.2. ROUND 3 (ADR-0270, owner 2026-10-20: Theta's Greeks, IV, quotes, volume and open interest 'should be considered'): M36 wide inputs, the 66 R1 features plus 24 chain inputs the R1 arm omits (own IV, open interest and its change, quote depth, volume, put/call volume imbalance, delta-, gamma- and vega-weighted open interest, volume-weighted spread, liquidity asymmetry, implied minus realized variance, term slopes, 1-day ATM IV change, the 25-delta and put/call-OI flags, the ATM strike node and its neighbours' IV); median-imputed like every input; otherwise identical to R1. ROUND 4 (ADR-0270, owner 2026-10-20: the Greeks and additional features are likely helpful with the right model architecture): MLP hidden 64, dropout 0.3, on the 90 wide inputs (more capacity for more inputs, more regularization); otherwise identical to the wide document.",
+                  "output": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/L1/unused",
+                  "reference": "reference_scale",
+                  "reference_model": "horizon_empirical",
+                  "samples": 201,
+                  "series_identity": [
+                    "symbol",
+                    "expiry"
+                  ],
+                  "tail_intervals": [
+                    [
+                      -2.5,
+                      -0.5
+                    ],
+                    [
+                      0.5,
+                      2.5
+                    ]
+                  ],
+                  "tail_points": 101,
+                  "tail_weight": 1.0,
+                  "target": "terminal_return",
+                  "wing_metrics": false
+                },
+                "tickers": [
+                  "AAPL",
+                  "ABBV",
+                  "ABT",
+                  "ABUS",
+                  "ACN",
+                  "ADBE",
+                  "ADI",
+                  "AEO",
+                  "AG",
+                  "AGNC",
+                  "AKAM",
+                  "ALB",
+                  "ALLY",
+                  "AMAT",
+                  "AMC",
+                  "AMD",
+                  "AMGN",
+                  "AMKR",
+                  "AMZN",
+                  "ANET",
+                  "APA",
+                  "APH",
+                  "APO",
+                  "AVAV",
+                  "AVGO",
+                  "AXP",
+                  "AXTI",
+                  "BA",
+                  "BAC",
+                  "BBY",
+                  "BIDU",
+                  "BLK",
+                  "BMY",
+                  "BP",
+                  "BSX",
+                  "BX",
+                  "C",
+                  "CAG",
+                  "CAT",
+                  "CCJ",
+                  "CCL",
+                  "CDE",
+                  "CHTR",
+                  "CIEN",
+                  "CLF",
+                  "CLS",
+                  "CMCSA",
+                  "CME",
+                  "CMG",
+                  "CNC",
+                  "COF",
+                  "COHR",
+                  "COP",
+                  "COST",
+                  "CPB",
+                  "CRM",
+                  "CSCO",
+                  "CVE",
+                  "CVS",
+                  "CVX",
+                  "DAL",
+                  "DE",
+                  "DHR",
+                  "DHT",
+                  "DIS",
+                  "DKS",
+                  "DUK",
+                  "DVN",
+                  "ECHO",
+                  "EIX",
+                  "ENPH",
+                  "EOG",
+                  "EPD",
+                  "EQT",
+                  "EXPE",
+                  "F",
+                  "FCEL",
+                  "FCX",
+                  "FDX",
+                  "FISV",
+                  "FRO",
+                  "FSLR",
+                  "FTNT",
+                  "GE",
+                  "GEO",
+                  "GILD",
+                  "GIS",
+                  "GLW",
+                  "GM",
+                  "GME",
+                  "GOOG",
+                  "GOOGL",
+                  "GPRO",
+                  "GS",
+                  "HAL",
+                  "HD",
+                  "HL",
+                  "HON",
+                  "HPE",
+                  "HPQ",
+                  "HUM",
+                  "IBM",
+                  "INTC",
+                  "INTU",
+                  "ISRG",
+                  "JBLU",
+                  "JNJ",
+                  "JPM",
+                  "KGC",
+                  "KHC",
+                  "KKR",
+                  "KLAC",
+                  "KMI",
+                  "KO",
+                  "KR",
+                  "KSS",
+                  "KTOS",
+                  "LLY"
+                ],
+                "training": {
+                  "components": 3,
+                  "deterministic": true,
+                  "dropout": 0.3,
+                  "epochs": 150,
+                  "learning_rate": 0.0003,
+                  "losses": [
+                    {
+                      "kind": "crps",
+                      "weight": 1.0
+                    },
+                    {
+                      "kind": "tail_crps",
+                      "weight": 1.0
+                    }
+                  ],
+                  "patience": 50,
+                  "seeds": [
+                    11
+                  ],
+                  "weight_decay": 0.3
+                }
+              }
+            },
+            "market_cal": {
+              "method": "21-knot PIT",
+              "population": "fold fit_band; label settles before validation start"
+            },
+            "pooled": {
+              "population": "full expanding fold training band",
+              "monitor": "not applicable"
+            },
+            "baseline": {
+              "population": "per-symbol horizon empirical full expanding fold training band",
+              "monitor": "not applicable"
+            },
+            "combination": {
+              "kind": "quantile_average",
+              "learn": "rolling",
+              "components": [
+                "model",
+                "market_cal",
+                "pooled",
+                "baseline"
+              ],
+              "by": "disp",
+              "min_rows": 5000,
+              "levels": 199,
+              "max_learning_rows": 100000,
+              "refit_days": 21
+            }
+          },
+          "folds": [
+            {
+              "fold": 1,
+              "role": "warmup",
+              "train_start": "2017-01-03",
+              "train_end": "2018-12-31",
+              "val_start": "2019-01-02",
+              "val_end": "2019-12-31"
+            },
+            {
+              "fold": 2,
+              "role": "scored",
+              "train_start": "2017-01-03",
+              "train_end": "2019-12-31",
+              "val_start": "2020-01-02",
+              "val_end": "2020-12-31"
+            },
+            {
+              "fold": 3,
+              "role": "scored",
+              "train_start": "2017-01-03",
+              "train_end": "2020-12-31",
+              "val_start": "2021-01-04",
+              "val_end": "2021-12-31"
+            },
+            {
+              "fold": 4,
+              "role": "scored",
+              "train_start": "2017-01-03",
+              "train_end": "2021-12-31",
+              "val_start": "2022-01-03",
+              "val_end": "2022-12-30"
+            },
+            {
+              "fold": 5,
+              "role": "scored",
+              "train_start": "2017-01-03",
+              "train_end": "2022-12-30",
+              "val_start": "2023-01-03",
+              "val_end": "2023-12-29"
+            }
+          ],
+          "artifacts": {
+            "documents/study/run-strike-screen-fits-wf-wide-mlp64.json": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3",
+            "mio-metadata-20261027/folds.jsonl": "e8ad1594afe8982a1225203135d2d9917db5c99e3faca6c90bd2c4a84ef6330a",
+            "scores/edge-method-53-qa-mlp64-rolling-by-dispersion/fit.json": "f9ddf3ff2f45a27f0fd9c37065828ec4a8e471e65b0d2317108cfb433167e04d"
+          },
+          "label_maturity": "label_reaches boundary purge; rolling combination learns only settled prior outcomes",
+          "seed": 11,
+          "monitor": {
+            "components": 3,
+            "deterministic": true,
+            "dropout": 0.3,
+            "epochs": 150,
+            "learning_rate": 0.0003,
+            "losses": [
+              {
+                "kind": "crps",
+                "weight": 1.0
+              },
+              {
+                "kind": "tail_crps",
+                "weight": 1.0
+              }
+            ],
+            "patience": 50,
+            "seeds": [
+              11
+            ],
+            "weight_decay": 0.3
+          }
+        },
+        "implementation": {
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/__init__.py": "3f82e4aa861cf47e4a012c184ce8297e15ef0af3690d5d5bf991ab29ee06193e",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/__main__.py": "0b70bcb8081b201f46871ae62f0776855cf9a47e709c773d82e41596b9bba2e1",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/base.py": "ffe607e1a27a33c57753a51a3b2495f868b81c7eed6bcd7c4261e116cea9d564",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/default_model.py": "0898d77b5d5904a3b2e84d1f54756af21f178b39d2cb60a345222ff138a12343",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/ingest.py": "08a41ef1583065f956b74bf4972a4a72f1077d71d9fe2557546a5fb81e5b96ce",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/libs/__init__.py": "b10b1e340f4256ee328f6302f186da24b5ad149964519e7f1ab714d45fa55774",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/libs/parquet.py": "b3ef4a9cbb3c16c66d7c18cca0e38185a05350ae59286167389895e11c77f42d",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/libs/sqlite.py": "1aa264d4d6da2e39165975bc207983423e2975f6b7ac80cc4eaea666a9eb938f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/lineage.py": "a7496d04325c9e59974d0060ac9a4e9a1b2419c6e4de31bdd97b14b1470728af",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/model.py": "b472385894714c879d18321ddf60173488a3192e333092caa089da0a1ad876a3",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/record.py": "81dd03b1034d7c4c8fb798f47e22eb5d65422de3b603379bb51c3d28ae94ada0",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/registry.py": "eaac69e7c32b0d481ad07dac34f9998a33af34750d379cae1ca4b67d6b4978a4",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/store.py": "68a66bc8f2c787b1885364f34e770d93f1c52442fd65931eb25fdfe10e75edf7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/assets/sync.py": "898f580e42f2820532d146c144efa87ef4dc7628d0d0fa8dfc33b0f69d725d2d",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/__init__.py": "6605c49b34d2aaf3457853ec1b643f40002c05d48e265cc9aa36cf6a9899a2b3",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/__main__.py": "bc1ec16ed3d83bcdf29ca0c086674c2d4b3e2f7daec970e01f97219f4644edc5",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/book.py": "99a7bce287c7ed5569767e0674a17cf19f42df5b6d00d887a17bf0ce68968d1d",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/criteria.py": "7b0ea497cc314bb3e422f6d3689abac88295b7e5b5aa5d250f68f8093d5356a5",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/diagnostics.py": "6f12d7ff835ff45dedffdf38a0ebabab82df345b5f98f176bbca49fb1b2d6267",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/events.py": "7f419d9d8521fad458a9d2d0582dbcbed3036fad1b6b679e3f25f3757b81b981",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/mapping.py": "428c9e7a7a014df65e5956294736e02886f76e2a3518f0afee875525bf9ba885",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/narrative.py": "12b663953a1aee85da7b055d55aae82b21bb7343a1a518fbd14c21a085b4a6de",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/nodes.py": "5904e41e66b7253c149e82eee6f6d06388e0cf3ca3e0d3a9bd3b2cbf56af7010",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/provenance.py": "793c49850dc7241875ad23974ed0c7683a9f0b2f8d685e134acbf7b87d35d908",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/report.py": "e8e70c7e32fc102dfb5d1cddc01324e7cf71906b251c5f5e4ebc3b4d938408a7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/sections.py": "281e5b36fdddb97aafc4563e948c5300a349ede3f7122bff30982d52071d9738",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/statistics.py": "09bc374ea20a8ef06e01da3310e6e7a18c31d602d29b23fe23c5d67bbd5c3146",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/svg.py": "39f550af106398ae71448d50921ceadd857c92165713bf2a8bd6df27cba8aecc",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/evaluation/units.py": "8117221972c00ffc20ad0853edd35f5a2c2919477f434590382019ffb5a7e4f4",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/__init__.py": "5f67ed5df35be6c23f6b3051d2e20e1d2271cc8eead6ac82b608a630a99f1d2a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/__main__.py": "01f85e3ec339a8385ed6ff1a35a7dd4664de24b96d977c58b5a93871e63351d4",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/base.py": "5b89f8fb05cc89392c05d8a7b1814e9029616085d14447c572517f541ec56c32",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/hooks.py": "8fe828f2146f7efd4a1fa4d542bea4af1493bba25a625260bc1b48568d82c80c",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/locate.py": "29f616808306ad8647f1fef566f3241349b1cb5ca23e5f7eb9f0ccf72de93ad3",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/model.py": "6ef0d09cdee453f9d9e2bd8c9c49b0726a31771f83a2d23c5a84dc4bc8e09db2",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/record.py": "6f9839bb178964f5fd2b579eb205643b88b83a9824b4f219e76e342e8c2c2f3c",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/render.py": "6aa6878f96133827a166cd08ca2c940b02b75f71bb65c6b0e5d675f6d048b320",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/research.py": "7f5d6501e35faad914e9e2dfd5db51afdf8f88f79d9eb1ba0325dc6bb116fa89",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/journal/store.py": "f65b108d51f94a1dc8949aacf54a2d681d00328bf66745fd3c11b5c6236db51c",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/__init__.py": "df5cb90a2b3908b2cde8cf9430d80b26be759f4f93fbedda946f807844ab36ff",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/__main__.py": "405795b33bfa930b5c2317e74ec105876382e0f3dc6e1920dba22b9c1e19e423",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/acquire.py": "a7d997e903756596b61a46ec135f812fdcaa7388db433c545c0aa92425241793",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/artifacts.py": "7ea1bdd26fe061e476ff6ed75b18b9562e1e906806d6090ce8fdf2ba1ee775f7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/base.py": "064f502cf9629d510a49a656e638c6fb07fe44c428f8ae4e7cbc05b08ac68621",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/certify.py": "9674ebf8c93a8f2062664c86f50f45330cef885dfeea2aee2252908b2a2cc90a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/codec.py": "e0715c96794aa5aa88943fa1a247c17dcbbbbf11a6d3347e10458376478c08f4",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/connector.py": "7c0d89c455b25aa861829c413c6c923f97e9266fc530ba7131c62108a39c7b50",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/coverage.py": "c8ec8c661c738ffeba37f79753848af45b83855016171aa04c546050d28a6771",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/default_model.py": "d14338c1df353b85836d213e5016dae67a69750215df52792cf8863b64b18b7f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/layout.py": "7c1427cbc82fc98a8f298ea4c6f2769a3fde19987694e55fa5fb69cf95dc3fc8",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/leads.py": "f9f8ae6449bca2bdb0508882471b267455b01ac18a67102233d2f6201656aa01",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/__init__.py": "118936ff87d1b0ee11a3e98e2d2cba3deee34369ffd7ae48907370b6141475df",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/alpaca.py": "05837a647c1f57645a956f257b56b4eccb48e49df99c5e03126502a4ce246e35",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/alpaca_quotes.py": "24c3949fbca86651960209463b850fdd5d7409dd7e3bffc75c7f241cc0917132",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/cboe.py": "f36957d97524e3b27a33eeea0c5068537e7109c7dca8de2db11f3b5d1cfceb22",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/httpblobs.py": "05288c790073d75838337dd364a9480109cec7c57c23a33f05f53191efa12e79",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/huggingface.py": "ab4da436821258853af5dcff35978bb7d132ce3e5bf775f8bb248701e21692f6",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/kalshi.py": "9b43f4b88ac737a519d4dcd99f60062afc020ef1eb801ea7ee42e317d32c8ba3",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/kalshi_history.py": "c01ff9121a6427c9221fe33387b560ea8f232a0fb1bb884ece002f8984f389b9",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/localblobs.py": "975950cd842255cea8ef7b81ef07dfe47aa09b57aa2ad32477b10d6b0c3d0b94",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/localfiles.py": "0f3777e5286e3273c9fd43b7540396946792d452a18f94519f9ad8a4bbcff7fe",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/localtables.py": "7b4f33bcaf590a6ac80fc7e73b0101bd2bb0793552d1d77cdc118d64d8c00a18",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/optionshist.py": "dc4e302eb3ea95b6e7a0991cc922a1c609d65ad3bf79876a4616a767dfd33c98",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/parquet_export.py": "b7ca61e0bdf15c0cb4c18411214b59538ed17ddb031b0aef03bbe1d0181631bf",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/polymarket.py": "f52f041dac2847e71657d956fba84d6724ccaa88fce312b85b02fb8844f1d060",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/predexon.py": "bbbcac324b04cc45f009c38e26634c5be9470f39933d501904b04af3fb6526cc",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/restapi.py": "ad3203ddeb5e3d2380da1b45d1b01f7d266e1d43b1925b339105bc791086cd0d",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/restwindow.py": "af0afe1d6d1f4b9a51a65a5e1ccb1839a442520d1637decf6c236fffa29329ea",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/schwab.py": "2cc515faa24e4d5e2ca75900398f9f71de377553f022fb2c853218d053b6ac69",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/thetadata.py": "d817a26ae7274eac56e1b22ffc0f6e2fc5e9d46d7fd9422c632c99dc2721e295",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/yahoo.py": "72cade236cea4e2eb477ab3eb3cb0f4b5a5625dc2e6ac2ec72d9aece10875968",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/libs/zipcsv.py": "75e77406ca374951372b75061939654700b9586978e5b11072c482f2bfa88a0a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/oauth.py": "51b1b0165e92f3553da6940f8570c14160114c0c95c5d8f60570301d389ce9b5",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/observations.py": "c4669f675b531342216bcb193dc9d5b7590045b482897682f60cea1bfa59851c",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/publish.py": "ed4f1f70d244a44cc5e2e2f7f4e1357839f1f0b20cec16b1ff8cdd0b5c480e62",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/snapshot.py": "bf444f07d346f110c11c9775ae0b75fb18d21ca7f43685967ed3b1fe8d38628a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/state.py": "eb2cc4b27bf4d244d9a930d0ddd209bb1293773f44393c86c2a8311665687565",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/validate.py": "5ed1f2b90c1a162c2303731ed1ba307ccb238ce8cd4ebb56fe59c11768536244",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/onboarding/watch.py": "0378f319030b1e9142b33010c3f549bb767e793f85e0b632b15cf359f1c7e772",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/__main__.py": "9a4f4e5a45de008ecb61e46ad26023900f0d5bcc75a002e7edaae00ddc5ddbed",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/active_hurdle.py": "6d9871678ba09dae3fc8b73bfde30b36e7f8f17b04706f16d6d668df1217c221",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/attempts.py": "8acfb0571497269b00c88e97b6f7f9ee3f710d68311765ee55f080f61037f28e",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/base.py": "36e3689bf806c61c25e3ad5e7513482a670f4d10b482e93df5000196a103a575",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/benchmarks.py": "b9c984fe0dc14e7807464a8f5fe826158be459f277cc88bd78ca36abb9e1401a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/binary_curve.py": "321626dd802789e60b5f6b3ad2fd3abff99b85c994789486e0c9d0bd7ef04562",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/binary_decisions.py": "19b21fc160375b827c88f2705d62fe24eba50bb6cfefc928d0c6fe46cb8c6478",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/binary_pricing.py": "9f2bbdf366af72f2b545b0279f31bede5896239c76b998cf502b3a022aebe129",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/binary_scoring.py": "d820b5bb8bcf0e4bd4c6ce5cea0e01689b311d8275f2a6c111b10c1e822877de",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/conformance.py": "5db2c56e2752833ed5978c131fe08488c7955d6741b840565216d94191f07555",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/conquest.py": "f2feaf2086bc1734d35d71afdd741bc2d252cebb944cc5727246163a7d68a526",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/decision_outcomes.py": "433e035cf090d6efeaa8680f80e8173dc03443a48bc9cb083cecab2219ad04c1",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/digital_bounds.py": "52fe5dbb44bbb380d18d172582fa902d11708d249119cef7199cf23737531658",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/distribution_models.py": "97f34d78047ed74823d0307cfbd458b45933d450465d61635f0631aadef78747",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/distribution_scores.py": "c2867aae1eac48984a92a4f4d645e8d304ff2bcba457c7b2150d9c3d0c558849",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/document.py": "90d6b2c5cf4da39d96953360a5ce240f54b7a37e375cdc856d560869c6705904",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/driver.py": "e83ab6a4ba4a519703cb752f7bca8c969c43c61acd5bac40f788f2ac7edb24e8",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/env.py": "f8f99dfee8092e12d3ff67141becf7b593376ac1c39d9e1a19b128887406f3a6",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/event_wire.py": "c4c9e2706c63dfd323c63d6db573f0790ef9930afce69b23fb34c65f8bc74d45",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/false_signal.py": "c1cf64e19ec6720a6d27fdc68c3c2e9f5c3aecb0fbcef5bdc19c9bdb19613fcf",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/features.py": "89ddfd39da65085ea24b5867929b5b04d376760d044b04e823a6796e948ca6bf",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/fee_mechanics.py": "c6573ae4db197af1ffd70e45ae7d63d7a2fa4bf2fe6828bb50479bcebcd79a73",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/fitted.py": "e5a409b2aacb4b04ab030d281b383b7ee004e93045622ab7b8ad4ae7df501eba",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/folds.py": "14e701a1719301c9c13fdfbf44d1185849f9de37f5b2ef186a078bd61f5601cf",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/hold_return.py": "e20b50b161c635b4c8f24c938c1a672881a25a6ba8fc606b2a1528ce255d31b2",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/io.py": "79a3a33bb7e108b89e2fc6c4a20dd21914adc8e19b1a126b255f62ee16ce6722",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_availability.py": "3ee47ba818573c8e62514f9d6961a2141baca814555c0296263638ac8a0269f9",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_banking.py": "ec33bd0fabf8941786b5c74488e865fe0f1383aaa9e530727d7d29d68e9017c7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_compute.py": "bd51e6f192a44636f6464030dba7950db623a6c9b89cb035d86980b936b536c9",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_flow.py": "870d7bec3bb8462fa83ee17941697c63b65fe6cb7e47666a907999efe91e4550",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_rank.py": "8d10995073e9356591cede5c52c1ab357981885c68134eea933fa52e171e3c1a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_report.py": "ac9087430f77155e43576aaec5645184b9341300f48746c8924be6f5c8c9e36b",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_run_write.py": "6226d5969bcded9d6169b1e099901e431e3a3c2973b91918d83ba54889a78a05",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_search.py": "df8282ba509850606c8326166b4f6a63ae8e6e10abaaccba62949c3ad641ee54",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_series.py": "8cb7b0c6a21a31f3d53f9fb4b7bce6f55109d9b4a8867e04b075dbd3a2610518",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_split.py": "3bb2b9b0b9438aa75c2f47574dd7e168d1ba98454660d9f351588485402ea35b",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_stats.py": "3686a7a4016580695dd153650bdac033472ae482a36590adca201b04a575467f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/kinds_table.py": "d7168f5e4d050605c96baf4758d2eccb92bd153d9de94fd0bacb6de7a4db9b94",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/array_panel.py": "f4cab7a1a904f043ad25346ffd96324c63338597a6224d0f814f7d6e72227511",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/bar_features.py": "e23ad4cae881c9206ce38624e01b87c1ff4d659760f4d35252a16a4543ed8e12",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/binary_coherence.py": "c7ec32c77582a53a8e4c951632a5f38fe4067ec5962446510a3d0764db7df719",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/binary_market_rows.py": "893b688588a12119b37e273de5338177472466a998b730d1eaaa15aa888be52d",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/cdf_experiment.py": "5335c6279f3da971387ded0a8b72c33df54ad6fd03c7f51e6fc59d1a023dccec",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/cdf_grid_methods.py": "4276560b82979cf1567f11609f1601ba27e20f19641da99519da3009953d077e",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/cdf_research.py": "d57c873f6f0ed0de97de0d41ea4c097d40ca529678342e807f1e3cd6bc405e1c",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/chain_census.py": "5a77a35c38d28333aa4b58f12af502254d369e8807679bf6e7bcc00702b72479",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/chain_events.py": "6c3adcf0c4fb869de56c856664b55e45e5be5f9a05cd4cf2d17cc4d1ab284f49",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/chain_features.py": "91958e60f89b6429c34783afe49b487a3760350cd035b4a7a2cd781d57c52f9b",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/chain_greeks.py": "ee7ee9c06065988fcc21e8b8f1583639b75c059e3a67fc237c41f3d97ada8553",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/chain_orders.py": "3be4c9aad30b761964c584381049cd0ec07ec6ccfe67c915a2cc2c460a27e743",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/chain_panel.py": "d768fc482276539add94336dab5f6ca59c9139f2424056e4649284fcce4083ed",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/chain_parquet.py": "b88f1442a9b17b7fbf3f09cc490ab8f1b3d84e331a8e76130a73c78acdae45ed",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/chain_reuse.py": "59d425ff17e9acec1c2dca5b05978d68bfe11a1863bb5f97c8280ab8cb03b554",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/graphical_lasso.py": "71790a0f6c9f8bd8819169cdffe9dab0fe959f3b536b95227fc14542df50d29c",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/horizon_cdf.py": "e1a941c137cebba4c523f1d26fbecdcadc3bcf6f39de7e7ac6d6cb05ff8d246f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/kalman_spread.py": "d6e4ed4aaca7585b15790f22e5a9efd06bb4ffa52ab9f049bab098051fbd1049",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/kronos.py": "65c09878003cd59d1ba6d25f782c96ee0e15495df94fa41c70d39252a2ac0abc",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/lightgbm.py": "28f55c387204f75a198e718ebf604f9170de4dc391195d9f6f02d65be13b4f71",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/matplotlib.py": "2a77f8057402c613deeccdc832f1b0f182b560b3e31cb2f2b87783794bbba014",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/mlflow.py": "14660fb6f2e51e260320f346d333da3beed5648e55af4820aca8be871dc5bf08",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/neuralforecast.py": "23b1b077284bac4cf8ec50fd58ed43456a637eb7c5330a928f7394d133783ab0",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/numpy.py": "f793f3870135ad488a891b1bd3e2775f2597c575a0302f081adba7332f9459ef",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/observation_tables.py": "259cb9d7bc6d1bf67934e73f9a249709a9c7261de04838f7975e427631e2cb77",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/observations.py": "676a2e552401800a4e2b3f2c7a334d963a308afb35935e0542a9d892f0ce95b5",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/option_ledger.py": "10fbdea9fafe31d29be4f708cd1a355be28eed3274bfd1747d927b9337ba35b7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/optuna.py": "08c31845564b96accee8745199c2d09f8f2f06a501debc8fa15dbb4fb278ae37",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/pair_option_ledger.py": "25e087d439cc1005d2161182b20cf0dcd3a9b9d4374ac26fc926eee77af48e45",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/pair_spread.py": "5e6aa33d13b04b08b7684a7bf9d706a74610447188ac20935fa54c6516d62a71",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/panel_score.py": "b3ec1b86b63ccfbea0abea2cf296ddcfb02912cd53aed58be67771cb8b048672",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/panel_torch.py": "568dee3134856ea6f868662aebd692651d8e262dc485e5e0eb41bb7b27372b30",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/parquet_panel.py": "3fc402edbc45eefe046bdf9df1aefa437390511e728f1d0e9d896022bf74cc3c",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/parquet_series.py": "c7ff8b0a86edd77a7c538ff23764363f6415f1c7deddc73080f9d7564dd17289",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/pyomo.py": "cb414c1251d7089d241c23cea8362308208b033476edd6dda93a145976213ec8",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/root_stitch.py": "df815fb38b5e694eed39abd06c173a8085158f592f3e31715546a0b46f7d89e7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/sb3.py": "8022a5282a010659c9b29300c3c3468878262db94766bcb7c4d691d4932f07a4",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/sklearn.py": "4331d87ee9ddad8f46ac290419744845a3e0ab33b7d3acfc22085367ecf0236a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/sklearn_ts.py": "81daab6bca6347c08ea7a4e0e2cc67aa374290898771f8b09590c5e6a290733e",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/torch.py": "946bd99746637dc6e21e4aad3f728678ccaf55577772151e0be832fa29d1df83",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/libs/vol_estimators.py": "44a329248cbbf0836fe1f0f79f67e9f315ffa39cdd2d09654a4ce22706937bac",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/liquidation.py": "9c6cba3a2745cb51007fd052778f7a7ab910720d2a09d8b54c22b667a617c2f6",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/mean_interval.py": "0f27b8ea18eec8c4683016105c5c5388f90bb6fbe52f7eaee81c5d48579e78aa",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/metrics.py": "ce48150e8c61a5693da29055b5b952d69aa9e8ca4ddd6279084af4f3be8f49f8",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/node.py": "a7e9e443069026c21d156a51d10f241518361651893afeceb7f79552429357b1",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/option_pricing.py": "775e3455012be4bb513ab37be7b618a3bb3f4c6b80ab2af7bbdf4ccfbdce63be",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/option_structures.py": "0ebffbe128c7b1840717ce502f8342abb3111233f8015dbc7114acfce8dae96a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/ordering.py": "41447009812bd146d116909364d2982b71685ccc0edb23cec6793a7406035a0d",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/outcome_interval.py": "cfabfaaf6cd9f70a877f157af90114ddaaa0974c299f4c0e5f16f8e06f537acf",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/planner.py": "c695ec786cdf98a3441ca59e4c7a083ce8233e59a1ecac4ef141d18a7d0ef4aa",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/policy.py": "ad5f70ea2897e7c01c717bd4088231b80d368d3cdbf5b605a7fbbfa6ba1719f7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/predictions.py": "8070c893891310718a276ce625df936bbe762d1ff4e1c47ee2cd5a192840abeb",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/program_calendar.py": "6224e8896a564e57abb9b3493c54609d9989e6152e00aca5beba27a582180517",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/protocols.py": "b8a8b93578bd7ae72b132b3254247e065332595146aac70f6d884d1fbb5a9559",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/records.py": "a61cd326c1bda2eb6c275a4e2311116cc08a58adb759f7de88a1cba2d7b54718",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/registry.py": "6ba1eccd1e7e0abf043ecb02a4d11f5a8201416f868bb568090aaa3917b05132",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/release_rotation.py": "1eb29e2dd866173d30b2318c05142d54b1a1069d4c3d7d7c139dec86e86a75c0",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/resolve.py": "6cc06edbe421cc0f2c3fb8a7d0983d84d11c819a9997a20c22ad5707c82c00cd",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/runner.py": "86dddf0b704f8a71dc2b8976389ff571c595dc1f7cb63e0e4907261594fa16c8",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/runs.py": "23e3da65be2f22303295925d516dde35f6358de76ac4ac1c2a045c07fd0d9c44",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/split_policy.py": "5c7e18254d2f1d404ee2a52779b60509bdd13fd87575689c66bf8e3536aa8e18",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/stages.py": "abdc548266e2353145f3587e8b162cf99da7da1faffa5d3b247b4f86922f7a51",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/stats.py": "9837e7a83c6aecc5a38d5cd50c63851bff20120d171d19ae66b7be3912c8d669",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/study_protocol.py": "cbb74d5fa625bb6480054a426a3b639678315f8cd485533efb8fd7263e3e83c6",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/synthetic_nodes.py": "f7441f12672e2082b79f729fdb2e4a8109b448b038f89c61dde2fa7adb30ff54",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/synthetic_paths.py": "c4b1b534638968c402511ee6eb2fb0d45ba341311148750fffdbf9c6bc36b9c1",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/testing.py": "d848b47c6fa2f17452fe43753fbebd73d32e3fafe7a7c8a92e10a88ef8b2ff0f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/trainlog.py": "0d26f277df924833d0b49e763b6060ded46288710d3fdc40ed3420bb0a8a73c9",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/trust.py": "7779dd8a484042ec17e5d0d2bbfbdad37913f1cba514554c47251fe469e56f88",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/uncertainty_intake.py": "8711a21f9dded6a8bfc0da07cfe4106d8f0967ac744a684e22de773ce9e39456",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/uncertainty_set.py": "b30a92c073351d2a89872682cd181b2841f2ffaa205e6148e65d486f6fe9d02b",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/workflow.py": "d0e3712533df64ac6886851525eb480be1369a938b8417f5011ca3166e2d1803",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/workflow_batch.py": "ff493ec73e43a8db49f31816768de92c2106a01025e956806332dd9016550cc6",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/workflow_hooks.py": "994c829d0e83f02a15645d7dacb5798b17542dbf9ba52cc81e0402e4fb32a419",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/workflow_report.py": "3ae2b8da92750dcee9f4cf5634a1944be95b0a496356d425a42bef03a18077f0",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/pipeline/workflow_rollup.py": "bfe4263a82f3f3f763a85fcf2be737a03f56d8237acf968f8efb2b884d114df1",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/__init__.py": "ecb1367c3c663edd4b2170985703989e661de33f5afd324a355badda93658fec",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/__main__.py": "510ffb2a81c682bd7aa56d62a4c2374ff1b90c25df53dcc3ffa1a5aeebe2b9e4",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/accounting.py": "95858aec3d7166663e7c263e3e18a58f69273296728aa689d3436b1676ac3a03",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/alerts.py": "1b3fbe4de1a5202f0295c715f83725f6aa72b2f07085ed94c4c213240cd436c8",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/arming.py": "3a164b2f3520619011e3c6d9ec1cef999d5ab9c8be98293851c7be1e27d2cf12",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/base.py": "df687d758bd409e95f076e78d3e437c897fc8e9f5c4323512b5c8eb5fa5beabd",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/breaker.py": "abf9bf3742e1302bead7b139bcac520a6df9c325b7a9e3ed178d200fc7384af2",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/bundles.py": "938c6b59f149ce7ce540c64a35924216d1af4a871bdd00a34bde7d3cca903cf7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/cadence.py": "89e3d81129c4a4e8c5285832a17de05c8c699c627769e76ff1ea1c54d158389f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/cashflows.py": "d2ee8449819f5fb48d4d124d2865bfd842df2d3b94439514189dc00ab5aa55ef",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/clock.py": "45a038a5a9f87c9ccc93b5dcaaa142938963b0132139706d1a4795c6154378bd",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/compose.py": "4829ce39da492124322110002c9c2a1e0eb215a2747c2f3685f88e3533158f75",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/control.py": "48bccfda441d64c68a899814f1c10f5d9dc9637a66aa9da7b0a757fd95f27398",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/coordination.py": "8dcb4ab5162a87e5681984b78ed64aa360bc4861f822da035c2a2bd9b6e6dd58",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/decider.py": "b6798df60efcac9624796f2a5ab79a94977e0330f14e73bfd64c4f67eeff3382",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/document.py": "18f08a2f27a1ba8f8251e4602e262039aeb0a0b57d0f6ac36c74af1be01dcb8e",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/encumbrance.py": "f6144dd062dee6f4b3e5924f7627ddc8fe305a457a20d2a9ebf5cbfd9a5191f1",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/executor.py": "2f7ccff5e2da0efc8d83742ec6e7c17be49f907213a091e4c30bdd11b663477e",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/feed.py": "2071dc47076afc779c7359ce326d83a9ec82b301b40840b557640e47f802cb1e",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/guards.py": "4951bee8222e9c192720e8fe6f4dc9ea212bcdad63c837c2cf6d5ced79238ba6",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/health.py": "e70d1a8279950e3cfdf75d7e657d100f43336830f488ef488e946f718f69ca90",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/ids.py": "6eb9cdd57523bb738ed818f72b009112f76ecce3224719bf88f32bc7b785a4f5",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/ledger.py": "2c48e9e5880dc7e178dc33785688fb3c31495c55103e77da5e0d49d6822f99dc",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/leg.py": "ffb0a6be533cc71c7d819f9be9f9674d6a6928b593b62e4052187f9b913b865e",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/libs/__init__.py": "456f1d25d380ec57396246d4956ed4265269f6d2b1d8aa73ac73dc2390cc0659",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/libs/exchange_calendars.py": "25a22e26f75c02c0c7d85d0ae12ff147d6300fdf00f1b0e2d00c72e31e57c986",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/libs/opentelemetry.py": "6a614595a44052895be42179ba77dd7502f914a23e63914e24cc35a65613ee8f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/libs/parquet.py": "df6e5f6453e6ce9f1db14cb5b1a6bdbf217f44ba3f1a38a9889e6a5bff520167",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/libs/prometheus.py": "e561d56f647c66daee75e32a3a4f06f8aa41e4626c0b8a0ea6e9a9e1460ef6bb",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/libs/sqlite.py": "5367ca278abecc40881c11944553eeda4fc487a9013d6ecd15413fd796bdcb55",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/loop.py": "1ae632eb44e799a0bf5eafe1f480f34777f2de6c675d143f5d3e5fd33c5a3dff",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/metrics.py": "473be43d3a88520429bc6524f2b850bd42ac23e01f0182dd85ccb88e6cbe2654",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/monitors.py": "3cd658b80de23c7a73b752cd6e6514ee197773f5194f1791a9122fc1dfbc7295",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/outcomes.py": "8e89b223eefd1364927b86223a6ee890628b899a5f774f48b85afe554016cbf3",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/policy.py": "26257ee89f27c15fd7d98c348b56242e463bfe631e9df8770fbde77e2f455c6f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/readiness.py": "6d2d016a4b856fd368e83ca269fbc9bec1acb8eedfb23884ddb2496b85ecda2a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/reconcile.py": "f816c87da7d09bf077dac8ff24f931b08ea89b130977052f2bf0fec55d48be09",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/records.py": "5093b4f4f97cb4777de4601e4781844da91785b01a39fd4fc161393d0f163f4a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/redact.py": "2ff5cfbe9dca70779e92e70965bf59faaeaaacd692238ee809bca973667b0be6",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/release.py": "5d1ce622bdd00476bdaf490409fd74bbd3ad4d73cf081ff628eba06cc074c55d",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/report.py": "1cbee6cb3b8350a3032c6db528fd85eea6b5a37b5522dcdd10510bebc37b2fe2",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/resilience.py": "7b1c5c65090acb06d9a39563e932e63a8b5337ad8a065b49680e70da58f83ba8",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/sessions.py": "97b1339d79e5e1c68705d6f0925ac74c7aeca111ad981f499969857b981094f7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/state.py": "76f4d599937daa15c7777dd96dfccb453a888f73f1780f9dbb9a0a4bf666ff3f",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/verifier.py": "3e58107ddb37e9462ccdccb0b11439562520744e7d51d6d32badba7d83d888eb",
+          "/home/russell/wt/index-options-mio-schedule-20261027/dskit/production/vocab.py": "d522fbcfba6eb5597cb638fe0f3143e55d327f36e93815c855724891ab127761",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/__init__.py": "0be94b8353859ae5e745be5b16798dc8c4c110f7c440be94dff158ebf319df61",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/cdf_study.py": "1d71b23c0ce4b94fc8049c1904ec5fca538b0c0d3b46145ff2445be1cff988af",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/contracts.py": "a929e1708de7c982acbdc394c2344cff6f7fde9e52f3cc34f2e0371eaf270d41",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/datafiles.py": "2413ef2cdf5c0b55a682119fb489b9b1f7a0d535dff3d07cb9c3f3d7da8b06b7",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/distribution.py": "244224f3767428f7ee0b4d2a55978c74e9b2b06f60921fa507e82576d9bbf01a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/grid.py": "2169279a2615390ee4e0491134da2a2aaad7ece8cf9e4ea54206ea24812635d9",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/ledger_studies.py": "f24d6a3900292d4e02e7b22ad9c202421fdaba123eebcf6d535f823d6bd081d6",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/mio_contract.py": "be43cad713fa0ea99eb2f502da03a9dcfac9051edbb6561d7ac709eb94059419",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/nodes.py": "8453898fed2951df76a6717863b4359b7091d1175b0800581f98f8eb49ed52ff",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/observations.py": "30d67a6b9295538f652757fd603fe6c11c838c77564758f1de8c916ae51c8352",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/pooled.py": "8786811ee3c76acb27f907b25247a04a81bf91dfb460f48b4c42576f555384c0",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/stock_bars.py": "691280c175869249fb003f6690a9c61573854e04d0a9ca5cc273d0ca809cac40",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/strike_region_scores.py": "1473a2727f2a03efdf2d1cb9011f0af6d50ae720061b81b40deaecd03c16024a",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/theta_exact_expiry.py": "301ccc3b32178283652caedf791090eee70f6a2045ff81afab1906987bea17dd",
+          "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/index_options/theta_hypotheses.py": "6f8f3018d8060b47fecea86e5fa9292ced09aad6f3a305e5e0d90da3085502a0"
+        }
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/mio-pipelines-20261027/selection"
+  }
+}

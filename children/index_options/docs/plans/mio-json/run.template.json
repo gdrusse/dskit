@@ -1,6 +1,6 @@
 {
-  "name": "mio-run-one-packet-design",
-  "notes": "DESIGN ONLY; every uses below is a proposed wrapper. Render after a complete plan. frozen_plan and claim_request are content-bound receipts from the future protocol, not a boolean authorization flag. No pipeline run command is claimed to work today.",
+  "name": "mio-run-one-packet",
+  "notes": "Executable one-packet template. Substitute study, frozen_plan and claim_request from explicit StudyProtocolControl freeze. A development claim consumes already-exposed data; a fresh freeze requires a separately approved packet and admitted pair evidence.",
   "pipeline": {
     "open_packet": {
       "uses": "dskit.pipeline.study_protocol:StudyPacketOpen",
@@ -8,8 +8,7 @@
         "study": "${study}",
         "frozen_plan": "${frozen_plan}",
         "claim_request": "${claim_request}"
-      },
-      "notes": "PROPOSED gate. Revalidate identities, protected dates and the shared release rule. Atomically compare expected registry revision, predecessor disposition, inherited read frontier and next-cohort freeze receipt before claiming exposed. A request for a later fresh packet while an earlier packet is next refuses; retiring earlier packets forfeits their freshness. At most one active packet. Claim before descendants read values; no absent/changed/reset registry accepted."
+      }
     },
     "intake": {
       "uses": "index_options.observations:MIOPacketInputs",
@@ -18,8 +17,7 @@
       },
       "params": {
         "study": "${study}"
-      },
-      "notes": "PROPOSED reader. The permit names source pins and exact allowed read bounds. Resolve only onboarded snapshots. Pair and time filters/projections apply before materialization. Pass forecasts and date-D context/quotes to decisions; bars advance as a prefix. Keep evaluation settlements separate. Any value read consumes the declared packet, including the tail."
+      }
     },
     "study": {
       "uses": "index_options.ledger_studies:MIOPacketStudy",
@@ -30,8 +28,7 @@
       },
       "params": {
         "study": "${study}"
-      },
-      "notes": "PROPOSED wrapper of WeeklyOptionPortfolioStudy. Sequential fixed methods, same input snapshot, sparse pair allowlist and decision calendar; independent equal-funded accounts. No starts/entries/deposits from prehistory and no orders/fills/deposits in the tail. Timeout skips and whole-method failures remain visible. Validate every ledger and recorded-decision replay before completion."
+      }
     },
     "close_packet": {
       "uses": "dskit.pipeline.study_protocol:StudyPacketClose",
@@ -43,8 +40,7 @@
       },
       "params": {
         "study": "${study}"
-      },
-      "notes": "PROPOSED attested publication. Publish complete results and identity as JsonArtifact only when every required variant and settlement audit is complete. Persist completed_pending_review; no automatic frontier advancement. Driver/context failure records failed_exposed_pending_review, or leaves the durable exposed claim pending reconciliation. Neither state becomes fresh. A review receipt closes success or explicitly abandons failure before another fresh packet can open."
+      }
     }
   },
   "outputs": {

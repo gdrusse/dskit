@@ -2190,3 +2190,67 @@ def test_weekly_portfolio_shock_losses_use_estimated_betas_end_to_end():
             assert decision["shock"]["losses"][str(move)] == pytest.approx(loss, abs=1e-6)
             assert loss <= decision["shock"]["limit"]+1e-6
     assert study._method(params["methods"][0], None, recorded=copy.deepcopy(result)) == result
+
+def test_weekly_portfolio_accepts_eighteen_symbols():
+    """The selected universe is configuration, not a legacy pilot-size limit."""
+    import copy
+    params, inputs = _weekly_portfolio_fixture()
+    params["symbols"] = ["S"+str(i) for i in range(18)]
+    expanded = {}
+    for symbol in params["symbols"]:
+        expanded[symbol] = copy.deepcopy(inputs["X"])
+        for rows in expanded[symbol].values():
+            for row in rows:
+                row["symbol"] = symbol
+        expanded[symbol]["forecasts"] = []
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, expanded)
+    assert len(study.params["symbols"]) == 18
+    assert study.run()["methods"][0]["trades"] == []
+
+
+def test_funded_account_stops_deposits_at_entry_end():
+    """Due contributions on the first settlement-tail session are not credited."""
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    account = FundedOptionAccount(10000, 1000, 14, "2019-01-02",
+                                  deposit_end_before="2019-01-16")
+    account.advance("2019-01-15", {})
+    account.advance("2019-02-08", {})
+    assert account.contributions == 10000
+    assert account.deposits == []
+
+def _packet_clock_fixture():
+    params, inputs = _weekly_portfolio_fixture()
+    params["correlation_lookback"] = params["correlation_min_pairs"] = 2
+    history = ["2018-12-27", "2018-12-28", "2018-12-31"]
+    inputs["X"]["bars"] = [{"symbol": "X", "date": d, "close": 100.} for d in history] + inputs["X"]["bars"]
+    params["clocks"] = {"sessions": [r["date"] for r in inputs["X"]["bars"]],
+        "history_start": history[0], "entry_start": "2019-01-02",
+        "entry_end_before": "2019-01-08", "tail_end_before": "2019-02-09"}
+    params["selected_pairs"] = [{"id": "X30", "symbol": "X", "dte_min": 28, "dte_max": 32}]
+    return params, inputs
+
+
+def test_weekly_packet_history_entry_tail_and_replay():
+    params, inputs = _packet_clock_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    assert study.calendar[0] == "2019-01-02"
+    assert study.weeks == ["2019-01-02", "2019-01-07"]
+    assert study._returns("2019-01-02", 2)[1] == 2
+    result = study.run()["methods"][0]
+    assert len(result["trades"]) == 1
+    assert result["trades"][0]["pair_id"] == "X30"
+    assert result["trades"][0]["close_date"] == "2019-02-01"
+    assert result["contributions"] == 10000
+    assert result["decisions"][-1]["status"] == "no_entry_fill_session"
+    assert study._method(params["methods"][0], None, recorded=result) == result
+
+
+def test_weekly_packet_refuses_calendar_gap_and_overlapping_pairs():
+    params, inputs = _packet_clock_fixture()
+    inputs["X"]["bars"].pop(2)
+    with pytest.raises(ValueError, match="required session"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    params, inputs = _packet_clock_fixture()
+    params["selected_pairs"].append({"id": "overlap", "symbol": "X", "dte_min": 32, "dte_max": 40})
+    with pytest.raises(ValueError, match="overlap"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)

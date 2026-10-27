@@ -1022,6 +1022,7 @@ dskit/pipeline/
 │                      validation row, one parquet per run (ADR-0064)
 ├── ordering.py        rank vs magnitude: Mincer-Zarnowitz calibration slope,
 │                      per-timestamp cross-sectional IC + its usability guard (ADR-0068)
+├── study_protocol.py  StudyContract/ExposureRegistry: metadata plan, explicit packet controls, atomic exposure and attested results
 ├── attempts.py        the many-attempts bar: AttemptRegistry, session-block
 │                      sign-flip max_bar, the tier-2 scramble seam (ADR-0069)
 ├── outcome_interval.py REALIZED-outcome uncertainty: block-conformal predictive
