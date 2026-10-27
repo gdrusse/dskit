@@ -3,9 +3,10 @@
 Research child for **hold-vs-exit decisions on a long-term Schwab
 portfolio**: for each position, is the expected after-tax, after-cost value
 of holding passively at least the value of cashing out into an active
-strategy? Status: **scaffold only (ADR-0279)** — no Schwab pull, no model,
-no decision rule yet. Everything below the next heading is the skeleton's
-generic walkthrough, kept until the first run replaces it.
+strategy? Status: **base machinery complete (ADR-0279), skeptic-reviewed,
+no real Schwab pull yet** — every rate in the documents is a placeholder the
+owner sets. The sections after "Scoring a past decision run" are the
+skeleton's generic walkthrough.
 
 ## Hold vs redeploy (ADR-0279)
 
@@ -18,13 +19,14 @@ python -m dskit.onboarding register-source schwab --root ./ob \
 python -m dskit.onboarding authorize --connector schwab_positions --config '{}'
 python -m dskit.onboarding acquire --root ./ob --source schwab \
     --stream positions --mode backfill            # one snapshot per UTC day
-# the active strategy's backtest: one jsonl row per period (period, day, net_return)
+# the active strategy's backtest: ./inputs/active/returns.jsonl (the file stem is the
+# stream name), one row per period: {"period": ..., "day": "YYYY-MM-DD", "net_return": ...}
 python -m dskit.onboarding register-source active --root ./ob \
     --catalog-source active-src --connector localfiles \
     --config '{"path": "./inputs/active", "effective_field": "day"}' --activate
 python -m dskit.onboarding acquire --root ./ob --source active --stream returns --mode backfill
 mkdir -p decisions
-# set snapshot.where[as_of] to the pull's UTC day, then run with the SAME day:
+# set snapshot.where[as_of] AND tax.as_of to the pull's UTC day (pinned equal by a test):
 python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <that day>
 ```
 
@@ -181,7 +183,7 @@ that stays silent can never appear in a served graph.
 ## Layout
 
 ```
-_skeleton/
+portfolio_policy/
 ├── pyproject.toml         # dependencies = ["dskit"] — the only coupling
 ├── README.md / CLAUDE.md  # this file; agent orientation
 ├── portfolio_policy/           # tier-3 code; import = registration
@@ -197,7 +199,11 @@ _skeleton/
 │   ├── source-sample.json # a connector config object
 │   ├── suite-sample.json  # a validation suite
 │   ├── run-sample.json    # a pipeline document
-│   └── serve-sample.json  # a serve document — the run, served forward
+│   ├── serve-sample.json  # a serve document — the run, served forward
+│   ├── run-hold-vs-redeploy.json   # ADR-0279: positions -> tax, market -> betas, hurdle -> decide
+│   └── run-decision-outcomes.json  # ADR-0279: a past decision run scored against a later snapshot
+├── decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
+├── outcomes/              # scored hold forecasts, one file per run (gitignored)
 ├── models/                # fitted ML/optimization artifacts (gitignored)
 │   ├── README.md          # what belongs here vs the run directory
 │   ├── .gitignore         # artifacts are rebuilt, never committed
@@ -217,7 +223,7 @@ _skeleton/
 │   └── .gitkeep
 ├── docs/research/         # research agent markdown
 │   ├── README.md          # use record-research
-│   └── .gitkeep
+│   └── hold-return/       # A0001: building blocks over trailing means
 ├── journal.json           # walk-up marker for dskit.journal
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)
@@ -225,6 +231,7 @@ _skeleton/
     ├── test_connectors.py # four-verb contract + acquire→validate e2e
     ├── test_execution.py  # the venue executor's shape; the battery, one line away
     ├── test_nodes.py      # conformance suite + a document e2e
+    ├── test_hold_vs_redeploy.py  # both ADR-0279 documents e2e on a synthetic onboarding root
     └── test_production.py # the serve document validates; every template fail-closed
 ```
 

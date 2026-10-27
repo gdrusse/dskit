@@ -10,6 +10,7 @@ from dskit.pipeline.node import (
     NodeKindRegistry,
     TrainableNode,
     check_int_param,
+    check_number_param,
     node_class_errors,
     _resolve_uses_ordinary as resolve_uses,
     resolve_uses as public_resolve_uses,
@@ -415,6 +416,19 @@ def test_check_int_param_accepts_integral_floats():
     check_int_param(problems, "lead", 470.5, ge=1)
     check_int_param(problems, "lead", True, ge=1)
     assert len(problems) == 2
+@pytest.mark.parametrize("value, ok", [
+    (0.0, True), (1.0, True), (0.5, True), (1, True),
+    (-0.001, False), (1.001, False), (True, False), (float("nan"), False),
+    (float("inf"), False), ("0.5", False), (None, False),
+])
+def test_check_number_param_is_inclusive_finite_and_refuses_bool(value, ok):
+    problems = []
+    check_number_param(problems, "rate", value, lower=0.0, upper=1.0)
+    assert (problems == []) is ok, (value, problems)
+    if not ok:
+        assert problems == ["rate must be a number in [0.0, 1.0], got " + repr(value)]
+
+
 def test_public_resolver_requires_an_ordinary_document_before_import(tmp_path, monkeypatch):
     from dskit.pipeline.document import PipelineDocument
 

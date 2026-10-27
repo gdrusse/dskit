@@ -86,8 +86,14 @@ def test_unusable_rows_and_declarations_refuse(ctx):
     with pytest.raises(ValueError, match="before"):
         node.run(ctx, {"decisions": DECISIONS,
                        "positions": [{**LATER[0], "as_of": "2026-10-27"}]})
-    with pytest.raises(ValueError, match="several"):
+    with pytest.raises(ValueError, match="positions carry key.*several"):
         node.run(ctx, {"decisions": DECISIONS, "positions": LATER + [LATER[0]]})
+    with pytest.raises(ValueError, match="one as_of.*2027-10-27.*2027-10-28"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": LATER + [
+            {**LATER[2], "symbol": "X", "as_of": "2027-10-28"}]})
+    with pytest.raises(ValueError, match="position 0.*zero"):
+        node.run(ctx, {"decisions": DECISIONS,
+                       "positions": [{**LATER[0], "long_quantity": 0.0}]})
     with pytest.raises(ValueError, match="decisions carry key.*several"):
         node.run(ctx, {"decisions": DECISIONS + [DECISIONS[0]], "positions": LATER})
     with pytest.raises(ValueError, match="decision 0.*key field 'account'"):

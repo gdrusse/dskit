@@ -106,7 +106,8 @@ def _load(path, run_root, **overrides):
 def _decide(root):
     document = _load(RUN_DOC, str(root),
                      snapshot={"where": [{"field": "as_of", "op": "==", "value": DECIDED},
-                                         {"field": "asset_type", "op": "==", "value": "EQUITY"}]})
+                                         {"field": "asset_type", "op": "==", "value": "EQUITY"}]},
+                     tax={"as_of": DECIDED})
     result = run_document(document, asof=DECIDED, journal=False)
     assert result.state == "ran", (result.state, result.error)
     return result
@@ -118,8 +119,8 @@ def test_documents_are_valid_and_wire_their_stages():
         "positions", "snapshot", "tax", "market", "betas", "active_returns", "hurdle",
         "decide", "decisions"]
     where = decide.pipeline["snapshot"].params["where"]
-    assert {clause["field"] for clause in where} == {"as_of", "asset_type"}
-    assert "as_of" not in decide.pipeline["tax"].params, "the holding period reads --asof"
+    assert [clause["field"] for clause in where] == ["as_of", "asset_type"]
+    assert decide.pipeline["tax"].params["as_of"] == where[0]["value"]
     outcomes = load_document(OUTCOMES_DOC)
     assert list(outcomes.pipeline) == ["decisions", "positions", "later", "outcomes", "scored"]
     assert outcomes.pipeline["outcomes"].params["key_fields"] == ["account", "symbol"]
@@ -158,7 +159,10 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
     assert vti["redeploy_value"] == pytest.approx(redeploy_value)
     assert vti["redeploy_terminal_tax"] == 0.0
     assert vti["redeploy_net"] == pytest.approx(redeploy_value)
-    assert vti["decision"] == ("exit" if vti["redeploy_net"] > vti["hold_net"] else "hold")
+    # by hand: hold_net 2680.58 vs redeploy_net 3052.07 -> exit
+    assert vti["hold_net"] == pytest.approx(2680.58, abs=0.01)
+    assert vti["redeploy_net"] == pytest.approx(3052.07, abs=0.01)
+    assert vti["decision"] == "exit"
     summary = result.outputs["decide"]["summary"]
     assert (summary["hold_return_source"], summary["redeploy_return_source"]) == ("wired", "wired")
     assert summary["redeploy_tax_timing"] == "annual"

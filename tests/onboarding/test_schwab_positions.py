@@ -104,6 +104,23 @@ def test_read_emits_one_row_per_position_without_account_numbers():
     assert Stub.calls[1][1] == {"fields": "positions"}
 
 
+def test_a_short_position_has_a_negative_basis_and_as_of_is_the_utc_day(monkeypatch):
+    Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678", "positions": [
+        {"instrument": {"symbol": "XYZ", "assetType": "EQUITY"}, "longQuantity": 0.0,
+         "shortQuantity": 4.0, "averagePrice": 50.0, "marketValue": -180.0}]}}]
+    records, _ = _read()
+    row = records[0]["data"]
+    assert row["cost_basis"] == -200.0 and row["market_value"] == -180.0
+    late = datetime(2026, 10, 27, 23, 30, tzinfo=timezone.utc)   # 19:30 New York
+    monkeypatch.setattr(Stub, "_now", lambda self: late)
+    records, _ = _read()
+    assert records[0]["data"]["as_of"] == "2026-10-27"
+    monkeypatch.setattr(Stub, "_now",
+                        lambda self: datetime(2026, 10, 28, 0, 30, tzinfo=timezone.utc))
+    records, _ = _read()
+    assert records[0]["data"]["as_of"] == "2026-10-28"   # 20:30 New York the day before
+
+
 def test_same_day_repull_is_skipped_in_backfill_but_not_live():
     state = {"positions": {"cursor": "2026-10-27"}}
     records, _ = _read(state, "backfill")

@@ -21,12 +21,13 @@
           { "field": "asset_type", "op": "==", "value": "EQUITY" }
         ]
       },
-      "notes": "The decision date, declared: one snapshot, so a holding appears once and the tax is measured to that day; set it to the day of the pull and pass the same day as --asof. EQUITY only: cost_basis is average price x shares, and an option contract's multiplier is not applied, so option rows would get nonsense gains."
+      "notes": "The decision date, declared: one snapshot, so a holding appears once; tax.as_of below is pinned to the same day. Set both to the day of the pull. EQUITY only: cost_basis is average price x shares, and an option contract's multiplier is not applied, so option rows would get nonsense gains."
     },
     "tax": {
       "uses": "dskit.pipeline.liquidation:LiquidationTax",
       "inputs": { "records": "$snapshot.records" },
       "params": {
+        "as_of": "2026-10-27",
         "short_term_rate": 0.408,
         "long_term_rate": 0.238,
         "long_term_days": 366,
@@ -35,7 +36,7 @@
         "value_field": "market_value",
         "basis_field": "cost_basis"
       },
-      "notes": "No as_of: the holding period is measured to the run's --asof, which must be the snapshot day above. Aggregate rows carry no acquisition date, so every holding takes default_holding until a lot-level source adds an 'acquired' field (then declare acquired_field). Rates are the owner's marginal federal + NIIT placeholders; state tax is not included."
+      "notes": "as_of equals the snapshot day above (tests/test_configs.py pins the two), so the holding period is measured to the day the positions were taken whatever --asof labels the run. Aggregate rows carry no acquisition date, so every holding takes default_holding until a lot-level source adds an 'acquired' field (then declare acquired_field). Rates are the owner's marginal federal + NIIT placeholders; state tax is not included."
     },
     "market": {
       "uses": "dskit.pipeline.hold_return:MarketHoldReturn",

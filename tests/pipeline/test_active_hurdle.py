@@ -57,6 +57,11 @@ def test_five_trials_haircut_the_mean_by_the_null_maximum(ctx):
     assert out["admissible"] is True
 
 
+def test_min_dsr_is_inclusive(ctx):
+    assert _run(ctx, trials=5, min_dsr=DSR_5)["admissible"] is True
+    assert _run(ctx, trials=5, min_dsr=DSR_5 + 1e-9)["admissible"] is False
+
+
 def test_twenty_trials_fall_under_min_dsr_and_the_rate_is_withheld(ctx):
     out = _run(ctx, trials=20)
     assert out["admissible"] is False

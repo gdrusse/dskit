@@ -32585,3 +32585,19 @@ Major, 0 Critical; all three fixed, with the Minors that were defects:
   compounds geometrically downstream (~sd²/2 per period, left to
   `risk_premium`); Stage 4 scoring is `DecisionOutcomes` rows, not a
   `dskit.evaluation` render (this amendment repeals that line of the ADR).
+
+#### ADR-0279 amendment: skeptic lens 2 and closure (2026-10-27)
+
+Lens 2 (test-quality/integration, independent subagent, on `5b932df`):
+1 Major (a test asserted the duplicate-key refusal where the one-date
+refusal was meant; the latter was untested), 0 Critical; 20 arithmetic
+mutations killed, 13 survivors in untested refusal and summary lines; the
+README sequence executed literally and both documents `validate` clean.
+Fixed: the one-date and zero-quantity refusals tested; `check_number_param`
+bounds, bool, NaN, inf tested; `min_dsr` inclusive; short-position basis and
+UTC day tested; the e2e decision asserted by hand; the decision day now
+declared once per document (`snapshot.where[as_of]` = `tax.as_of`, pinned by
+a child config test); README status and the outcomes run sequence. Disclosed
+backlog in `children/portfolio_policy/docs/memos/2026-10-27-adr-0279-base-machinery.md`.
+Two clean lenses, zero unresolved Critical/Major: candidate locked; merged
+to main on the owner's "use this skeptic reviewed library asap".

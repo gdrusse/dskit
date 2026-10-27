@@ -15,18 +15,20 @@ Base machinery complete in dskit, all tier-1 by import path, all `pure`:
 Child is JSON only: `run-hold-vs-redeploy.json` (positions → tax; market →
 betas; active_returns → hurdle; → decide → `decisions/<run>.jsonl`) and
 `run-decision-outcomes.json` (that file via localtables + a later snapshot
-→ `outcomes/<run>.jsonl`). 35 dskit tests + 8 child tests green; both
-e2e tests run on localfiles stand-ins. Research A0001 (`docs/research/
-hold-return/`) grounds the hold-return model. No real Schwab pull yet;
-every rate in the documents is a placeholder. Branch
-`portfolio-policy-scaffold`, not merged: two-lens review not run.
+→ `outcomes/<run>.jsonl`). Two independent skeptic lenses passed (0
+Critical, 4 Major found and fixed); record and disclosed backlog in
+`docs/memos/2026-10-27-adr-0279-base-machinery.md`. 46 dskit + 58 child
+tests green; both e2e tests run on localfiles stand-ins. Research A0001
+grounds the hold-return model. No real Schwab pull yet; every rate in the
+documents is a placeholder. Merged to `main`.
 
 ## Next
 
 Owner: set the decision document's blocks (dividend yield, CAPE, fair
-CAPE), betas, tax rates, `trials`, `min_dsr`; choose which child's backtest
-feeds `active`/`returns`; run the README's command sequence for the first
-real snapshot + decision. Then skeptic two-lens review and merge to `main`.
+CAPE), betas, tax rates, `trials`, `min_dsr` and the snapshot day; choose
+which child's backtest feeds `active`/`returns`; run the README's command
+sequence for the first real snapshot + decision, then record it with the
+`memo` skill.
 
 ## Blocked / owner decisions
 
@@ -39,6 +41,7 @@ real snapshot + decision. Then skeptic two-lens review and merge to `main`.
 ## Read first
 
 - `README.md`
+- `docs/memos/2026-10-27-adr-0279-base-machinery.md`
 - `docs/architecture/decision-log.md` § ADR-0279 and amendments
 - `docs/research/hold-return/2026-10-27-synthesis.md`
 

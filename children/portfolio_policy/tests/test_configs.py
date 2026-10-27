@@ -58,3 +58,12 @@ def test_source_sample_validates_against_the_connectors_spec():
     # The reserved "storage" block (ADR-0036) is platform config —
     # acquire strips it before the connector sees config; mirror that.
     connector.check({k: v for k, v in config.items() if k != "storage"})
+
+
+def test_decision_day_is_declared_once_per_document():
+    """The snapshot filter and the tax date name the same day: a mismatch would
+    tax one day's positions as of another, silently, once lots carry dates."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    where = {c["field"]: c["value"] for c in document.pipeline["snapshot"].params["where"]}
+    assert document.pipeline["tax"].params["as_of"] == where["as_of"]
+    assert where["asset_type"] == "EQUITY"
