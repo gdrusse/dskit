@@ -32645,3 +32645,81 @@ child documents and tests, the READMEs. Sweep: tools/sweep/sweep rate_bounds
 require_rate check_rate_param check_horizon_param max_horizon_years min_periods
 income_rate; no near matches (only an unrelated `require_rate=` kwarg in
 statistical_arbitrage and pandas `min_periods=`).
+
+#### ADR-0279 amendment: position summary (proposed 2026-10-27, Opus research A0002; approved by owner 2026-10-27 ('you can direct an opus agent to research or build anything related to this'))
+
+**Ask.** Break the portfolio down to a few numbers: risk, expected return and
+the opportunity cost of holding. Research A0002
+(`children/portfolio_policy/docs/research/position-summary/`) chose eight per
+position and six for the portfolio; all but volatility follow from the
+`HoldVsRedeploy` rows already written.
+
+**Per position** (`v` value, `b` basis, `N` after-tax proceeds, `T` hold_net,
+`H` the row's horizon): `value`; `weight = v / sum(v)`; `expected_return =
+(hold_value / v) ** (1/H) - 1` (pre-tax, total); `volatility` (annual SD, wired
+`{symbol: sd}`) and `beta` (wired `{symbol: beta}`), `None` when not wired;
+`embedded_gain = (v - b) / v`; `tax_cost = (v - N) / v`;
+`break_even_return`, the `redeploy_return` at which `redeploy_net == T`
+under the declared terms; `opportunity_cost = (redeploy_net / T) ** (1/H) - 1`
+(> 0: exit wins; `None` when the hurdle was inadmissible); `decision`.
+
+**Break-even, closed form** (`g = (T/N) ** (1/H) - 1`, cost `c`, premium `p`,
+redeploy tax `t`). `annual`: `y = g + p`; `R = c + y / (1 - t)` when `y > 0`,
+else `R = c + y` (a negative net rate gets no tax refund). `terminal`: `G =
+(T/N - t) / (1 - t)` when `T > N` (gain branch), else `G = T/N`; `R = G **
+(1/H) - 1 + c + p`. Undeclared tax: `R = g + c + p`. With `t = 1` and a gain
+needed, no return reaches `T`: refuse by row; so does an `R` outside
+`RATE_BOUNDS`. One strategy object per timing (registry keyed like
+`REDEPLOY_TAX_TIMINGS`, `None` = untaxed); a test feeds `R` back through
+`HoldVsRedeploy` and pins `redeploy_net == hold_net`.
+
+**Portfolio** (output `metrics`, so `pipeline runs` tabulates it run over run):
+`total_value`; `expected_return = sum(w r)`; `weighted_volatility = sum(w
+sigma)`, an upper bound (exact only at correlation 1), and `beta = sum(w
+beta)`; `hhi = sum(w_s ** 2)` over symbols (accounts merged), `effective_holdings
+= 1 / hhi`, `top_weight`, `top_symbol`; `embedded_gain`, `tax_cost` on the
+totals; `break_even_return` and `opportunity_cost` from `sum(N)`, `sum(T)`,
+`sum(redeploy_net)` (exact: every row shares one redeploy rate);
+`exit_positions` / `hold_positions`. Rows on several horizons refuse.
+
+**Placement.** Tier-1 `dskit/pipeline/position_summary.py`, by import path,
+stdlib + core, `serving_effect` "pure": `PositionSummary` (role `transform`),
+params `key_fields`, `value_field`, `net_field`, `basis_field`, `symbol_field`
+and HoldVsRedeploy's `redeploy_cost`, `risk_premium`, `redeploy_tax_rate`,
+`redeploy_tax_timing` (validated by one shared `check_redeploy_params`; the
+child pins every shared param equal to `decide`'s). Row readers are
+`liquidation`'s, made public: `require_rows`, `require_number` (the signature
+the unmerged `portfolio-policy-sonnet-loop` branch gives it), `require_amount`
+(gains a `why` suffix), `check_name_params`. A wired volatility must lie in
+`VOLATILITY_BOUNDS = (0, 10)` (annual SD as a fraction; 20 for 20% refuses);
+a symbol missing from a wired table refuses by row. The total tax cost is the
+sum of row taxes, so with `loss_offset` false one position's loss does not
+offset another's gain (disclosed, overstates the cost). `BetaHoldReturns`
+gains a `betas` output (the beta each symbol was priced with), so beta is
+wired, never restated.
+
+**Volatility.** The input port ships now; the document wiring waits for a
+price source. Existing kinds only: daily bars (yahoo archive, stream `prices`,
+or Alpaca `[1, "Day"]`) -> `DailyBarFeatures.realized_vol` (window 252 on
+`adjusted_close`) -> `filter` (snapshot day) -> `ComputeFields` (x sqrt 252) ->
+`KeyBy` (symbol) -> `volatilities`.
+
+**Files.** `dskit/pipeline/position_summary.py`,
+`tests/pipeline/test_position_summary.py`; `liquidation.py`, `hold_return.py`
+and their tests; `children/portfolio_policy/configs/run-hold-vs-redeploy.json`
+(`summary` after `decide`, `summaries` writing `summary/{run}.jsonl`),
+`tests/test_hold_vs_redeploy.py`, `tests/test_configs.py`; `.gitignore`
+(`children/*/summary/`); `dskit/pipeline/README.md`, `CLAUDE.md` (+ mirror),
+the child README ("The few numbers"), CLAUDE.md (+ mirror) and lane note.
+
+**Deferred.** The volatility wiring (owner picks the bar source); a covariance
+or single-index portfolio volatility; max drawdown; per-position risk
+contribution; surfacing the numbers in `report.md`.
+
+Sweep: tools/sweep/sweep position_summary PositionSummary portfolio_summary
+breakeven_hurdle break_even opportunity_cost embedded_gain tax_cost_of_selling
+herfindahl concentration require_number require_amount check_rows BreakEven
+require_rows UntaxedBreakEven BREAK_EVEN_RULES volatilities check_name_params
+VOLATILITY_BOUNDS; no near matches
+except `require_number` on the unmerged `portfolio-policy-sonnet-loop` branch
+(same signature adopted) and the unrelated `TestJointCostBreakEven`.
