@@ -1,0 +1,50 @@
+## TL;DR
+
+The earlier small-universe M53 method beat the raw market by **0.8041%** and the recalibrated market by **0.6903%** on 449,498 market-comparable rows in **2020–2023**. In the new, controlled **2019 H2** comparison, the 65-input M53 trained on 117 names and the same recipe trained on 214 names have virtually identical loss on the same 45,254 rows. The new broad run beats both markets on its full 164-name scored set, but its 2019 H2 result is retrospective and cannot be compared directly with the older 2020–2023 win as a change caused by universe size.
+
+## Execution contract and comparisons
+
+Path [A0002](../decisioning/path.csv) makes threshold-weighted CRPS (twCRPS) the primary predictive loss: **lower is better**. This memo reports forecast scores, never trading P&L. Path A0003 sets development in 2017–2019, scored validation in 2020–2023, and seals 2024–2025 and 2026. Paths A0004/A0008 call the 2019 fold a warm-up, not a promotion score; A0005 requires more than one pooled edge for promotion. The separate 2019 H1/H2 exercise below is a **retrospective research comparison** under the 2020-01-01 settlement cutoff. It does not change those locked rules.
+
+The original 118-name cohort was defined by export completeness **through 2020**; its use for a 2019 comparison is retrospective. Of those 118, 117 occur in the frozen broad panel (AXTI is absent). The earlier published M53 used a **90-input, seed-11 MLP64** and scored **110 market-comparable names in 2020–2023**. The current controlled comparison uses an **OI-free 65-input, seed-29 MLP64** with the same M53 method recipe in two fits: 117 training names versus 214. The 65 inputs came from the 2018 feature-family screen and OI-source-clock exclusion; M53 was then the lowest-loss method among the fixed 2019 H1 menu (standalone, M48, M51, M53, M58). The 2018 full 66-input arm had a slightly lower screen loss, but its OI print clock was unverified, so it was not admitted to this 65-input comparison. This is **not** a reproduction of the old 90-input fit.
+
+Both 65-input fits used the same frozen panel and chronological folds: train 2017-01-03–2018-12-31, warm-up 2019-01-02–2019-06-28; then train 2017-01-03–2019-06-28 and score **2019-07-01–2019-12-31** (125 quote dates, settlements before 2020). Architecture, seed, optimizer, feature list, score grid, M53 settings, and row filter were held fixed. The only intentional fit change was the training ticker list. Both fit partitions completed; both listed-strike scorers and M53 pipeline runs returned state `ran`, exit code 0.
+
+## Evidence and checks
+
+The original result comes from `theta-strike-screen-20261018/scores/edge-method-53-qa-mlp64-rolling-by-dispersion/tables/windows.csv` (SHA-256 `ed0bede1a29907b50e3617902195aa857c7e868ece5ae1f8f20987926d520235`), the [round-5 memo](2026-10-21-edge-methods-round5-results.md), and the original [M53 document](../../configs/run-edge-method-53-qa-mlp64-rolling-by-dispersion.json). The original cohort file is `theta-strike-screen-20261018/registration/cohorts.json` (SHA-256 `3334cfe9d55b7f973a0e14590ea735e0fe3b41b89bc44e07955f52bbac8ecaac`).
+
+On 2026-10-27 the executed operation was two fixed fits, two listed-strike score passes, and two M53 passes. Their six JSON documents are the `fit-{selected65,small117-selected65}-2019-h2-universe-compare.json`, `score-{selected65,small117-selected65}-2019-h2-universe-compare.json`, and `method-{selected65,small117-selected65}-m53-2019-h2-universe-compare.json` files under `children/index_options/configs/theta-broad-2019-20261027/`; the comparison result JSON below pins each full config hash. Those documents are presently local and untracked, as noted in the handoff.
+
+The new comparison is pinned in `/home/russell/data/index_options/theta-broad-2019-feature-h2-20261027/registration/h2-universe-comparison.json` (SHA-256 `d0c33e28043221dff67550cc77b70011d9f000497bfc40246bc210c332106041`). The frozen panel SHA-256 is `75b37d0bccb375321ca8074797a5bb87d34c36e044d1f0fbfaa212750a6a96a2`; the fold table SHA-256 is `5a01e8437116150e6a10abf430418613f0dedeb3cae6d94432623dd8afb786af`. The broad and small scored-row Parquet SHA-256 values are respectively `997fecae26c5930b3b8efde076efbb5703ecc6f654dbff941116cf58786f5ad6` and `438dc1e640c501f70133ef67a94f85c0fe48dce927c24a4e78bcef5be3df574c`.
+
+The 45,254 market-comparable H2 rows for the 90 shared names have **identical row identities** in the small and broad results; the old 90-input broad control has those same rows too. Raw-market row scores match exactly across the three. The small and broad M53 forecast curves differ (mean absolute 13-grid-point difference 0.005516), so the near-equal losses are not duplicated predictions. The new comparison's full 82,242 scored rows consist of those 45,254 shared rows plus 36,988 rows from 74 additional names.
+
+## Results
+
+All figures are mean twCRPS on each row set. `Edge` is positive when the method beats the named market comparator. Calibrated-market numbers in the first table are **each run's own** comparator, learned on that run's training universe.
+
+| Run and score window | Market-comparable names / rows | M53 loss | Raw-market loss / edge | Own calibrated-market loss / edge |
+|---|---:|---:|---:|---:|
+| Original 90-input M53, **2020–2023** | 110 / 449,498 | 0.525581 | 0.529841 / **+0.8041%** | 0.529234 / **+0.6903%** |
+| Selected 65-input M53, **2019 H1** | 76,033 rows | 0.507939 | 0.514480 / **+1.2714%** | 0.507767 / **−0.0337%** |
+| Small-trained 65-input M53, **2019 H2 shared** | 90 / 45,254 | 0.483454069 | 0.493063227 / **+1.9489%** | 0.485128500 / **+0.3452%** |
+| Broad-trained 65-input M53, **2019 H2 shared** | 90 / 45,254 | 0.483454323 | 0.493063227 / **+1.9488%** | 0.484609987 / **+0.2385%** |
+| Broad-trained 65-input M53, **2019 H2 added** | 74 / 36,988 | 0.487788635 | 0.490638925 / **+0.5809%** | 0.488685755 / **+0.1836%** |
+| Broad-trained 65-input M53, **2019 H2 all** | 164 / 82,242 | 0.485403662 | 0.491972907 / **+1.3353%** | 0.486443047 / **+0.2137%** |
+
+Here `edge % = 100 × (comparator mean loss − method mean loss) / comparator mean loss`, using the same rows for both means. For example, the old raw-market edge is `100 × (0.529840831468 − 0.525580619400) / 0.529840831468 = +0.804055%`; the broad 2019 H2 calibrated edge is `100 × (0.486443046873 − 0.485403662129) / 0.486443046873 = +0.213670%`. Each rate is a **relative reduction in forecast loss**, not a return.
+
+### The apples-to-apples universe comparison
+
+The two shared-row H2 scores hold the **65-input model and M53 recipe, dates, observations, and raw-market baseline** fixed. The small fit loses `0.483454069180`; the broad fit loses `0.483454323042`. Small minus broad is `−0.000000253863` twCRPS on **45,254 identical rows**: their average loss is effectively tied at the displayed precision. Using the **same broad-run calibrated-market loss of `0.484609986724`** for both gives **+0.238525%** for the small fit and **+0.238473%** for the broad fit, a difference of only **0.000052 percentage points**. M53 itself uses a calibrated-market component fitted on each training universe. The small run's own calibrated market is weaker (`0.485128499610`), which makes its separate `+0.345152%` edge look larger; that number is **not** the matched benchmark contrast.
+
+The 74 added names have a smaller, still positive 2019 H2 edge: **+0.5809% raw** and **+0.1836% calibrated** on 36,988 rows. Their inclusion lowers the broad run's pooled percentage relative to its shared-name slice. A prior **90-input broad H2** control, scored on exactly the same 82,242 rows and raw-market values, gave **+1.2381% raw** and **+0.1153% calibrated**; the selected 65-input broad H2 result is higher at **+1.3353%** and **+0.2137%**, respectively. That old broad control is not the earlier 2020–2023 small-universe winner.
+
+The published 2020–2023 win is real **as a pooled score on its own validation data**: `+0.8041%` raw and `+0.6903%` calibrated over 449,498 rows. It was not a raw-market win in every year: **2022 was −2.1404% versus raw**, although **+0.4210% versus calibrated**. Its years, 90-input seed-11 fit, 110-name scored cohort, rolling yearly refits, and market calibration differ from the 2019 H2 65-input study. Therefore subtracting `0.2137%` from `0.6903%` does **not** measure the cost of expanding the universe. The controlled shared-row study finds essentially **no mean-loss change** from training on the larger universe for those 90 names in 2019 H2; it does not tell us whether the old 2020–2023 win transfers to the larger universe.
+
+## Limits, unrun work, and handoff
+
+The new H2 all-name calibrated edge has a reported `t = 1.803`; it is not a clear two-sided 5% signal even before selection and multiple comparisons. The 65 inputs and method were chosen using earlier 2018/2019 evidence, **H2 had already been viewed** in prior research, and the 117-name list uses availability through 2020. Treat all H2 figures as descriptive. The original method family was also compared repeatedly on the 2020–2023 validation period, so its post-selection `t` values are descriptive rather than a fresh confirmation. No 2024–2025 or 2026 holdout was opened, and no trading performance is implied.
+
+No new broad-universe **2020–2023 reproduction of the old 90-input seed-11 M53** was run for this memo. That would be the direct same-window transfer test of the historical winner, with a separately pinned cohort and comparator protocol; it should not be inferred from the retrospective 2019 H2 slice. No Bayesian tuning, new training, pull operation, registration change, or holdout opening was done to write this memo. The six H2 comparison JSON configs remain in the local worktree's untracked `configs/theta-broad-2019-20261027/` directory; this memo commit does not publish them. The result JSON and score tables remain in the named local data roots, with hashes above for verification. The next action is a separate, authorized and reviewed same-window comparison if the old winner's broad-universe transfer is needed; this memo itself makes no promotion decision.
