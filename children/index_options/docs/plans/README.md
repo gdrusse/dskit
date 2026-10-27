@@ -248,3 +248,87 @@ abandonment, explicit skip forfeiture, inheritance across revisions/source
 aliases, and atomic registry-revision checks. New-cohort freeze follows prior
 review; plan/open/compare apply the same rule and receipts. This is a contract
 correction, so both independent lenses restart on the next candidate.
+
+### Closed design candidate
+
+Candidate 8c6fc522e23811dd959e17c7dce3dfa62ca54e84; base 5747f179.
+Both fresh independent lenses below reviewed that same immutable candidate.
+Zero unresolved Critical/Major/Minor/Nit; MIO-C1 closed. Final additions are
+evidence only: all four JSON SHA-256 digests remain unchanged. No runtime
+implementation, market access, backtest, merge or push was performed.
+
+Retained final report, /root/mio_design_correctness_v2 (GPT-6):
+
+> PASS - design correctness/authority review. Candidate
+> 8c6fc522e23811dd959e17c7dce3dfa62ca54e84; unresolved:
+> Critical 0, Major 0, Minor 0, Nit 0.
+>
+> MIO-C1 resolved: shared chronological frontier, predecessor review/retirement,
+> imported 2020 handling, failed-run disposition, revision/alias inheritance,
+> and atomic claims now agree across plan/open/compare.
+>
+> Reviewed sparse ticker/DTE admission, external 2019 evidence, predictive
+> folds/pins, history/entry/tail boundaries, funding/fills, frozen cohorts,
+> reporting, protected dates and declared runtime gaps. No additional proven
+> design defect.
+>
+> Independently checked all four JSONs for duplicate keys/nonfinite values;
+> expanded all three templates through Workflow.expand and
+> PipelineDocument.from_obj; checked upstream references, exact fold agreement
+> and all six default tail dates.
+>
+> Inspected current study, solver, fill and funded-ledger seams. Their
+> limitations are disclosed; proposed wrappers are explicitly non-executable.
+>
+> Limits: no market data/results reads, runtime enforcement tests, solves or
+> implementation-readiness claim. No edits; HEAD and working tree remained
+> unchanged.
+
+Retained final report, /root/mio_design_integration (GPT-6):
+
+> PASS - zero unresolved Critical/Major findings.
+>
+> Reviewer: /root/mio_design_integration (GPT-6), independent
+> test-quality/integration lens. Candidate:
+> 8c6fc522e23811dd959e17c7dce3dfa62ca54e84; base: 5747f179.
+> Final checkout identity matched; worktree clean.
+>
+> Findings: Critical 0, Major 0, Minor 0, Nit 0.
+>
+> Reviewed all four JSON documents, README section 8, ADR amendment, locked
+> Path, changed-file manifest, and relevant workflow/library interfaces.
+> Checked:
+>
+> - Sparse exact/band ticker-DTE rows; external 2019 selection; empty inputs
+>   cannot imply unrestricted eligibility.
+> - Exact predictive folds, fallback disclosures, chronological
+>   history/entry/tail boundaries, account resets, deposit/fill cutoffs, and
+>   protected dates.
+> - Fixed method cohorts, complete reporting, shared solver policy, and
+>   group_screen: none.
+> - Template bindings, upstream references, proposed class ownership,
+>   unresolved pins, and explicit runtime gaps.
+> - Release correction covering predecessors, review receipts, retirement,
+>   failure, retry, revisions, aliases, and inherited read frontier.
+>
+> Executed in WSL2:
+>
+> - Focused manifest/parity plus documentation-budget checks: 5 passed.
+> - Strict parsing of four JSON files: no duplicate keys/nonfinite values.
+> - Three template expansions and PipelineDocument grammar/reference checks:
+>   passed.
+> - Fold equality and existing solver/projection parameter validation: passed.
+> - Default 60-DTE tail calculations: matched all six documented dates; no
+>   packet overlap or protected-boundary violation.
+>
+> Limits: These checks establish design consistency and JSON grammar only.
+> Proposed wrappers, atomic claims, bounded readers, replay, holiday sessions,
+> failure recovery, and reporting remain unimplemented and untested at runtime.
+> No market results were inspected; no solve, backtest, or full suite ran.
+
+Verified JSON file SHA-256 values:
+
+- compare.template.json: c7e458be7745ff94a06a2d26b1eeba6d9eb9026768ea083f1ee28e377fcb0351
+- plan.template.json: 805f7c6982cae062ace0cb674debdbc54256ed8f4e10fb1efa75d3a15aed3404
+- run.template.json: 97d2686b4913975b7e87ed7ff530611bc0f750893f17160d6450cb1149c732e7
+- study.json: e5ba3ed0f7cd14baccf9108573b397385642bafa7f5de021189d0ad15894b4aa
