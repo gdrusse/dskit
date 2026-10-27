@@ -1,6 +1,6 @@
 # RE-ENTRY — portfolio_policy
 
-Updated: 2026-10-27 by Claude Fable 5.1. Rewritten whole at every `/wrap`;
+Updated: 2026-10-27 by Claude Sonnet 5.5. Rewritten whole at every `/wrap`;
 the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
@@ -12,20 +12,23 @@ Base machinery complete in dskit, all tier-1 by import path, all `pure`:
 (`LiquidationTax`, `HoldVsRedeploy`), `pipeline/hold_return.py`
 (`MarketHoldReturn`, `BetaHoldReturns`), `pipeline/active_hurdle.py`
 (`ActiveHurdle`), `pipeline/decision_outcomes.py` (`DecisionOutcomes`).
-Child is JSON only: `run-hold-vs-redeploy.json` (positions → tax; market →
-betas; active_returns → hurdle; → decide → `decisions/<run>.jsonl`) and
-`run-decision-outcomes.json` (that file via localtables + a later snapshot
-→ `outcomes/<run>.jsonl`). Two independent skeptic lenses passed (0
-Critical, 4 Major found and fixed); record and disclosed backlog in
-`docs/memos/2026-10-27-adr-0279-base-machinery.md`. 46 dskit + 58 child
-tests green; both e2e tests run on localfiles stand-ins. Research A0001
-grounds the hold-return model. No real Schwab pull yet; every rate in the
-documents is a placeholder. Merged to `main`.
+Child is JSON only: `run-hold-vs-redeploy.json` (positions → equity longs →
+tax; market → betas; active_returns → hurdle; → decide →
+`decisions/<run>.jsonl`) and `run-decision-outcomes.json` (that file via
+localtables + a later snapshot → `outcomes/<run>.jsonl`). Two skeptic lenses
+passed, then a Sonnet round 1 (5 Major) fixed: short/zero rows refuse and the
+snapshot drops shorts; wired and computed rates held to one `RATE_BOUNDS`;
+`hurdle.min_periods` (52) required; `market.horizon_years` pinned to the
+decision's and capped by `reversion_years`; `outcomes.income_rate` (0.013 =
+the dividend yield) removes income from the projected growth. Record:
+`docs/memos/2026-10-27-adr-0279-base-machinery.md` and the decision log. No
+real Schwab pull yet; every rate in the documents is a placeholder.
 
 ## Next
 
 Owner: set the decision document's blocks (dividend yield, CAPE, fair
-CAPE), betas, tax rates, `trials`, `min_dsr` and the snapshot day; choose
+CAPE; `outcomes.income_rate` must follow the yield, a test pins it), betas,
+tax rates, `trials`, `min_dsr`, `min_periods` and the snapshot day; choose
 which child's backtest feeds `active`/`returns`; run the README's command
 sequence for the first real snapshot + decision, then record it with the
 `memo` skill.

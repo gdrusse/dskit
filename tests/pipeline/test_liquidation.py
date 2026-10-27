@@ -6,6 +6,7 @@ valued refuses by name; nothing is filled or guessed.
 
 import pytest
 
+from dskit.pipeline import liquidation
 from dskit.pipeline.liquidation import HoldVsRedeploy, LiquidationTax
 from dskit.pipeline.node import ConfigError, NodeContext
 
@@ -49,6 +50,7 @@ def test_long_short_and_defaulted_holdings_by_hand(ctx):
     assert out["summary"]["rows"] == 3
     assert out["summary"]["tax"] == 170.0
     assert out["summary"]["net"] == 3030.0
+    assert out["summary"]["holdings"] == {"long": 2, "short": 1}   # A and C long, B short
 
 
 def test_exactly_the_threshold_day_is_long(ctx):
@@ -81,6 +83,20 @@ def test_unvaluable_rows_refuse_by_name(ctx):
         _tax(ctx, [{"market_value": 10.0, "cost_basis": 5.0, "acquired": "soon"}])
     with pytest.raises(ValueError, match="row 0.*mapping"):
         _tax(ctx, [[1, 2]])
+
+
+def test_short_zero_and_negative_basis_rows_refuse_by_index_and_field(ctx):
+    # a short position (market_value -180, cost_basis -200), a zero balance and a
+    # negative basis are out of scope for a hold-vs-exit decision: the owner filters them
+    ok = {"market_value": 100.0, "cost_basis": 50.0}
+    with pytest.raises(ValueError, match="row 1.*market_value.*positive.*short"):
+        _tax(ctx, [ok, {"market_value": -180.0, "cost_basis": -200.0}])
+    with pytest.raises(ValueError, match="row 0.*market_value.*positive"):
+        _tax(ctx, [{"market_value": 0.0, "cost_basis": 0.0}])
+    with pytest.raises(ValueError, match="row 0.*cost_basis.*non-negative"):
+        _tax(ctx, [{"market_value": 100.0, "cost_basis": -1.0}])
+    # a zero basis (a gift, a spin-off) is a legitimate long position
+    assert _tax(ctx, [{"market_value": 100.0, "cost_basis": 0.0}])["records"][0]["liq_gain"] == 100.0
 
 
 def test_as_of_defaults_to_the_run_and_a_declared_one_wins(ctx, tmp_path):
@@ -217,10 +233,13 @@ def test_redeploy_tax_annual_and_terminal_by_hand(ctx):
 
 def test_a_rate_below_minus_one_refuses_instead_of_a_negative_power(ctx):
     rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 100.0}]
-    with pytest.raises(ValueError, match="below -1"):
-        HoldVsRedeploy("d", DECIDE).run(ctx, {"records": rows, "hold_returns": {"A": -1.5}})
+    # a cost can push an in-range return below -1; the power then is not a value
     with pytest.raises(ValueError, match="redeploy.*below -1"):
         _decide(ctx, rows, redeploy_return=-0.5, redeploy_cost=0.6, risk_premium=0.0)
+    # annual timing: a negative net rate gets no refund, so it is the rate itself that is refused
+    with pytest.raises(ValueError, match="redeploy.*below -1"):
+        _decide(ctx, rows, redeploy_return=-0.5, redeploy_cost=0.6, risk_premium=0.0,
+                redeploy_tax_rate=0.4, redeploy_tax_timing="annual")
 
 
 def test_terminal_tax_needs_a_basis_field_and_vice_versa(ctx):
@@ -237,3 +256,86 @@ def test_terminal_tax_needs_a_basis_field_and_vice_versa(ctx):
     row = _decide(ctx, rows)["records"][0]
     assert (row["hold_terminal_tax"], row["redeploy_terminal_tax"]) == (0.0, 0.0)
     assert row["hold_net"] == row["hold_value"]
+
+
+def test_annual_tax_hits_the_net_rate_only_when_positive_and_never_the_premium(ctx):
+    rows = [{"symbol": "A", "market_value": 1000.0, "liq_net": 1000.0}]
+    base = dict(hold_return=0.0, horizon_years=2, redeploy_tax_rate=0.4,
+                redeploy_tax_timing="annual")
+    # return .10, cost .01 -> net rate .09; tax .09 x .4 = .036 -> .054; premium .02 is not
+    # tax-shielded -> rate used .034; 1000 x 1.034^2 = 1069.156
+    out = _decide(ctx, rows, **base, redeploy_return=0.10, redeploy_cost=0.01, risk_premium=0.02)
+    assert out["records"][0]["redeploy_value"] == pytest.approx(1069.156)
+    assert out["summary"]["redeploy_rate"] == pytest.approx(0.034)
+    assert out["summary"]["redeploy_tax_rate"] == 0.4
+    # return -.05, cost .01 -> net rate -.06; a loss gets no refund -> -.06; premium .02 -> -.08;
+    # 1000 x .92^2 = 846.4 (the old (1 - t) scaling would have given 906.304)
+    out = _decide(ctx, rows, **base, redeploy_return=-0.05, redeploy_cost=0.01, risk_premium=0.02)
+    assert out["records"][0]["redeploy_value"] == pytest.approx(846.4)
+    assert out["summary"]["redeploy_rate"] == pytest.approx(-0.08)
+    # terminal and undeclared timing subtract cost and premium untaxed: .10 - .01 - .02 = .07
+    for extra in ({"redeploy_tax_rate": 0.4, "redeploy_tax_timing": "terminal"}, {}):
+        out = _decide(ctx, rows, hold_return=0.0, redeploy_return=0.10, redeploy_cost=0.01,
+                      risk_premium=0.02, **extra)
+        assert out["summary"]["redeploy_rate"] == pytest.approx(0.07)
+        assert out["records"][0]["redeploy_value"] == pytest.approx(1000.0 * 1.07 ** 2)
+
+
+def test_non_positive_value_or_net_refuses_by_index_and_field(ctx):
+    ok = {"symbol": "A", "market_value": 100.0, "liq_net": 90.0}
+    short = {"symbol": "B", "market_value": -180.0, "liq_net": -180.0}
+    with pytest.raises(ValueError, match="row 1.*market_value.*positive.*short"):
+        _decide(ctx, [ok, short])
+    with pytest.raises(ValueError, match="row 0.*market_value.*positive"):
+        _decide(ctx, [{**ok, "market_value": 0.0}])
+    with pytest.raises(ValueError, match="row 0.*liq_net.*positive"):
+        _decide(ctx, [{**ok, "liq_net": 0.0}])
+    with pytest.raises(ValueError, match="row 0.*liq_net.*positive"):
+        _decide(ctx, [{**ok, "liq_net": -5.0}])
+
+
+def test_wired_rates_outside_the_bounds_refuse_naming_the_input(ctx):
+    rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 90.0}]
+    node = HoldVsRedeploy("d", DECIDE)
+    # a percent typed where a fraction belongs: 500 means 50000%
+    with pytest.raises(ValueError, match=r"hold_returns\['A'\].*500.*fractions.*percent"):
+        node.run(ctx, {"records": rows, "hold_returns": {"A": 500}})
+    with pytest.raises(ValueError, match=r"hold_returns\['A'\]"):
+        node.run(ctx, {"records": rows, "hold_returns": {"A": -1.01}})
+    with pytest.raises(ValueError, match="redeploy_return input.*50.*fractions"):
+        node.run(ctx, {"records": rows, "redeploy_return": 50})
+    with pytest.raises(ValueError, match="redeploy_return input"):
+        node.run(ctx, {"records": rows, "redeploy_return": -2.0})
+    # the bounds are inclusive and are the ONE owner's
+    assert liquidation.RATE_BOUNDS == (-1.0, 10.0)
+    free = HoldVsRedeploy("d", {**DECIDE, "redeploy_cost": 0.0, "risk_premium": 0.0})
+    out = free.run(ctx, {"records": rows, "hold_returns": {"A": 10.0}, "redeploy_return": -1.0})
+    assert out["records"][0]["hold_value"] == pytest.approx(100.0 * 11.0 ** 2)   # (1 + 10)^2
+    assert out["records"][0]["redeploy_value"] == 0.0                            # (1 - 1)^2
+    out = free.run(ctx, {"records": rows, "hold_returns": {"A": -1.0}, "redeploy_return": 10.0})
+    assert out["records"][0]["hold_value"] == 0.0
+    assert out["records"][0]["redeploy_value"] == pytest.approx(90.0 * 11.0 ** 2)
+    with pytest.raises(ValueError, match="hold_returns"):
+        node.run(ctx, {"records": rows, "hold_returns": {"A": 10.01}})
+    with pytest.raises(ValueError, match="redeploy_return input"):
+        node.run(ctx, {"records": rows, "redeploy_return": 10.01})
+
+
+def test_cost_and_premium_cannot_be_negative_and_the_horizon_is_capped():
+    for name in ("redeploy_cost", "risk_premium"):
+        with pytest.raises(ConfigError, match=name):
+            HoldVsRedeploy("d", {**DECIDE, name: -0.01})
+        HoldVsRedeploy("d", {**DECIDE, name: 0.0})
+    assert liquidation.MAX_HORIZON_YEARS == 100
+    HoldVsRedeploy("d", {**DECIDE, "horizon_years": 100})
+    HoldVsRedeploy("d", {**DECIDE, "horizon_years": 5.0})   # integral float: a count
+    for bad in (101, 10 ** 400, 2.5, True):
+        with pytest.raises(ConfigError, match="horizon_years"):
+            HoldVsRedeploy("d", {**DECIDE, "horizon_years": bad})
+
+
+def test_an_integral_float_horizon_runs_as_the_same_int(ctx):
+    rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 90.0}]
+    out = _decide(ctx, rows, horizon_years=2.0)
+    assert out["summary"]["horizon_years"] == 2 and isinstance(out["summary"]["horizon_years"], int)
+    assert out["records"][0]["horizon_years"] == 2

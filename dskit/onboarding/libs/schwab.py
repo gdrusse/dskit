@@ -574,7 +574,9 @@ class SchwabPositionsConnector(_SchwabConnector):
     calendar day it was taken (a pull after 20:00 New York time is dated the
     next day); account numbers never leave the connector — ``account`` is
     Schwab's own ``hashValue`` from the accountNumbers endpoint. The four
-    position numbers are required on every row; nothing is defaulted.
+    position numbers are required on every row and must be finite; a symbol
+    must already be a non-empty string; an account response without a
+    ``positions`` list refuses. Nothing is defaulted or coerced.
     ``cost_basis`` is ``averagePrice x net quantity`` and so is a per-share
     basis only for shares: option rows carry no contract multiplier here,
     and a consumer that values them filters ``asset_type`` first. A backfill
@@ -651,31 +653,46 @@ class SchwabPositionsConnector(_SchwabConnector):
                 raise AssetError(
                     [f"Schwab account {a_index} has no hashValue in accountNumbers"]
                 )
-            positions = account.get("positions", [])
+            if "positions" not in account:
+                raise AssetError(
+                    [f"Schwab account {a_index} has no positions; the response must carry "
+                     "an explicit positions list (empty when the account holds nothing)"]
+                )
+            positions = account["positions"]
             if not isinstance(positions, list):
                 raise AssetError([f"Schwab account {a_index} positions is not a list"])
             for p_index, position in enumerate(positions):
                 try:
                     instrument = position["instrument"]
+                    symbol = instrument["symbol"]
+                    if not isinstance(symbol, str) or not symbol:
+                        raise ValueError("a position symbol is not a non-empty string")
                     numbers = {name: position[name] for name in _POSITION_NUMBERS}
                     if any(isinstance(v, bool) or not isinstance(v, (int, float))
                            for v in numbers.values()):
                         raise ValueError("a position number is not numeric")
-                    long_qty = float(numbers["longQuantity"])
-                    short_qty = float(numbers["shortQuantity"])
-                    average = float(numbers["averagePrice"])
+                    # float() raises OverflowError for an int no float can hold
+                    values = {name: float(v) for name, v in numbers.items()}
+                    if not all(math.isfinite(v) for v in values.values()):
+                        raise ValueError("a position number is not finite")
+                    long_qty = values["longQuantity"]
+                    short_qty = values["shortQuantity"]
+                    average = values["averagePrice"]
+                    cost_basis = average * (long_qty - short_qty)
+                    if not math.isfinite(cost_basis):
+                        raise ValueError("a position cost basis is not finite")
                     rows.append({
                         "account": hashes[number],
-                        "symbol": str(instrument["symbol"]),
+                        "symbol": symbol,
                         "asset_type": instrument.get("assetType"),
                         "as_of": as_of,
                         "long_quantity": long_qty,
                         "short_quantity": short_qty,
                         "average_price": average,
-                        "cost_basis": average * (long_qty - short_qty),
-                        "market_value": float(numbers["marketValue"]),
+                        "cost_basis": cost_basis,
+                        "market_value": values["marketValue"],
                     })
-                except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
                     raise AssetError(
                         [f"Schwab position {p_index} in account {a_index} is malformed"]
                     ) from exc

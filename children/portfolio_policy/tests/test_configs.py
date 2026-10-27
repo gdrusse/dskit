@@ -67,3 +67,22 @@ def test_decision_day_is_declared_once_per_document():
     where = {c["field"]: c["value"] for c in document.pipeline["snapshot"].params["where"]}
     assert document.pipeline["tax"].params["as_of"] == where["as_of"]
     assert where["asset_type"] == "EQUITY"
+
+
+def test_market_horizon_is_the_decision_horizon():
+    """The market blocks are an average over the horizon the decision uses; the number
+    appears in two nodes, so a mismatch must fail here, not in a quietly wrong rate."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    market = document.pipeline["market"].params
+    decide = document.pipeline["decide"].params
+    assert market["horizon_years"] == decide["horizon_years"]
+    assert market["horizon_years"] <= market["reversion_years"]
+
+
+def test_outcomes_income_is_the_market_dividend_yield():
+    """The hold forecast's income component is the yield the market node fed it; scoring the
+    forecast must remove that same number."""
+    decide = load_document(_path("run-hold-vs-redeploy.json"))
+    outcomes = load_document(_path("run-decision-outcomes.json"))
+    assert (outcomes.pipeline["outcomes"].params["income_rate"]
+            == decide.pipeline["market"].params["dividend_yield"])

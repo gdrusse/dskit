@@ -33,6 +33,9 @@ THEN = [
     {"account": ACCOUNT, "symbol": "AAPL", "asset_type": "EQUITY", "as_of": DECIDED,
      "long_quantity": 3.0, "short_quantity": 0.0, "average_price": 150.0,
      "cost_basis": 450.0, "market_value": 600.0},
+    {"account": ACCOUNT, "symbol": "XYZ", "asset_type": "EQUITY", "as_of": DECIDED,
+     "long_quantity": 0.0, "short_quantity": 4.0, "average_price": 50.0,
+     "cost_basis": -200.0, "market_value": -180.0},
     {"account": ACCOUNT, "symbol": "SPY   261218C00500000", "asset_type": "OPTION",
      "as_of": DECIDED, "long_quantity": 1.0, "short_quantity": 0.0, "average_price": 12.0,
      "cost_basis": 12.0, "market_value": 1500.0},
@@ -103,11 +106,18 @@ def _load(path, run_root, **overrides):
     return replace(document, outputs=OutputsConfig(run_root=os.path.join(run_root, "runs")))
 
 
+def _shipped_where(day):
+    """The shipped snapshot filter with only its decision day replaced, so every other clause
+    (equities only, longs only) runs exactly as shipped."""
+    with open(RUN_DOC) as fh:
+        where = json.load(fh)["pipeline"]["snapshot"]["params"]["where"]
+    return [{**clause, "value": day} if clause["field"] == "as_of" else clause for clause in where]
+
+
 def _decide(root):
-    document = _load(RUN_DOC, str(root),
-                     snapshot={"where": [{"field": "as_of", "op": "==", "value": DECIDED},
-                                         {"field": "asset_type", "op": "==", "value": "EQUITY"}]},
-                     tax={"as_of": DECIDED})
+    # twelve weekly returns stand in for a year: the shipped floor is 52 (one year)
+    document = _load(RUN_DOC, str(root), snapshot={"where": _shipped_where(DECIDED)},
+                     tax={"as_of": DECIDED}, hurdle={"min_periods": 12})
     result = run_document(document, asof=DECIDED, journal=False)
     assert result.state == "ran", (result.state, result.error)
     return result
@@ -119,8 +129,10 @@ def test_documents_are_valid_and_wire_their_stages():
         "positions", "snapshot", "tax", "market", "betas", "active_returns", "hurdle",
         "decide", "decisions"]
     where = decide.pipeline["snapshot"].params["where"]
-    assert [clause["field"] for clause in where] == ["as_of", "asset_type"]
+    assert [clause["field"] for clause in where] == ["as_of", "asset_type", "long_quantity"]
     assert decide.pipeline["tax"].params["as_of"] == where[0]["value"]
+    assert where[2] == {"field": "long_quantity", "op": ">", "value": 0}, "shorts are filtered out"
+    assert decide.pipeline["hurdle"].params["min_periods"] == 52, "one year of weekly returns"
     outcomes = load_document(OUTCOMES_DOC)
     assert list(outcomes.pipeline) == ["decisions", "positions", "later", "outcomes", "scored"]
     assert outcomes.pipeline["outcomes"].params["key_fields"] == ["account", "symbol"]
@@ -131,14 +143,14 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
     monkeypatch.chdir(root)
     result = _decide(root)
     rows = {row["symbol"]: row for row in result.outputs["decide"]["records"]}
-    assert set(rows) == {"VTI", "AAPL"}, "one snapshot day, equities only"
+    assert set(rows) == {"VTI", "AAPL"}, "one snapshot day, equities only, no short XYZ"
     vti = rows["VTI"]
     # default_holding long at 0.238, measured to --asof: tax 500 x .238 = 119, net 2381
     assert result.outputs["tax"]["summary"]["as_of"] == DECIDED
     assert vti["liq_holding"] == "long"
     assert vti["liq_tax"] == pytest.approx(119.0)
     assert vti["liq_net"] == pytest.approx(2381.0)
-    # market: .013 + .02 + .025 + ((27/36)^(1/10) - 1) = 0.058 - 0.028366 = 0.029634
+    # market: .013 + .02 + .025 + ((27/36)^(1/10) - 1) = 0.058 - 0.028358 = 0.029642
     market = 0.058 + (27.0 / 36.0) ** 0.1 - 1.0
     assert result.outputs["market"]["rate"] == pytest.approx(market)
     rates = result.outputs["betas"]["rates"]
@@ -197,7 +209,13 @@ def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):
     assert rows["AAPL"]["realized_growth"] == pytest.approx(0.9)
     decided_vti = {r["symbol"]: r for r in decided.outputs["decide"]["records"]}["VTI"]
     elapsed = 365 / 365.25
-    assert rows["VTI"]["projected_growth"] == pytest.approx(
-        (decided_vti["hold_value"] / 2500.0) ** (elapsed / 5))
+    # total growth a year is 1 + the VTI hold rate (beta 1: the market, 1.029642); the forecast's
+    # 1.3% dividend (income_rate, the market node's yield) is removed -> 1.016642 a year of price
+    # growth, ^(365/365.25) = 1.016630
+    market = 0.058 + (27.0 / 36.0) ** 0.1 - 1.0
+    total = (decided_vti["hold_value"] / 2500.0) ** (1 / 5)
+    assert total == pytest.approx(1.0 + market)
+    assert rows["VTI"]["projected_growth"] == pytest.approx((total - 0.013) ** elapsed)
+    assert rows["VTI"]["projected_growth"] == pytest.approx(1.016630, abs=1e-5)
     assert result.outputs["outcomes"]["summary"]["unmatched"] == []
     assert os.path.isfile(result.outputs["scored"]["path"])

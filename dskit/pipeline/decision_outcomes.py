@@ -5,12 +5,26 @@ from its value then to ``hold_value`` over ``horizon_years``. The only honest
 test of that forecast is the position's later price, and this module owns
 exactly that join, on the declared ``key_fields`` (an account and a symbol,
 say — one symbol held in two accounts is two positions): for each decided key
-that still appears in a later snapshot, the pro-rated projected growth for the time elapsed,
-``(hold_value / value) ** (elapsed_years / horizon_years)``, against the
-realized per-share growth, ``(later value / later quantity) / (value /
-quantity)``. Per-share, so a purchase or a sale between the two dates is not
-mistaken for a return; without a declared quantity field the value itself is
-the measure. ``surprise`` is realized minus projected.
+that still appears in a later snapshot, the pro-rated projected growth for the
+time elapsed against the realized per-share growth, ``(later value / later
+quantity) / (value / quantity)``. Per-share, so a purchase or a sale between
+the two dates is not mistaken for a return; without a declared quantity field
+the value itself is the measure. ``surprise`` is realized minus projected.
+
+The two sides are not the same kind of return. ``hold_value`` is a TOTAL
+return forecast (price plus income), while a position's market value moves with
+price only. So the projection removes the income first, per year:
+
+    g = (hold_value / value) ** (1 / horizon_years)      total growth a year
+    p = g - income_rate                                  price growth a year
+    projected = p ** elapsed_years
+
+``income_rate`` is the annual income component of the hold forecast; the
+document sets it to the market dividend yield it fed the forecast. This is an
+approximation: every holding is assumed to pay that same yield (beta scaling of
+income is ignored), and income is subtracted from the growth FACTOR rather than
+compounded separately. A year whose ``p`` is not above zero refuses, because a
+non-positive base has no growth path.
 
 Only the hold side is scored here. The active side is scored where it runs
 — a child's own production ledger — never by this node.
@@ -29,7 +43,7 @@ from datetime import date
 
 from dskit.pipeline.binary_curve import name_ok
 from dskit.pipeline.document import date_problem
-from dskit.pipeline.node import Node, reject_unknown_params
+from dskit.pipeline.node import Node, check_number_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 __all__ = ["DecisionOutcomes"]
@@ -49,7 +63,9 @@ class DecisionOutcomes(Node):
         what identifies one position on both inputs; ``as_of_field``,
         ``value_field`` (field names, REQUIRED), shared by both inputs;
         ``quantity_field`` (field name, optional): the share count on both
-        inputs, making growth per share.
+        inputs, making growth per share; ``income_rate`` (number in
+        ``[0, 1]``, REQUIRED): the annual income component of the hold
+        forecast, removed from the projected growth (see the module docstring).
 
     Inputs
     ------
@@ -65,7 +81,7 @@ class DecisionOutcomes(Node):
 
         node = DecisionOutcomes("outcomes", {"key_fields": ["account", "symbol"],
             "as_of_field": "as_of", "value_field": "market_value",
-            "quantity_field": "long_quantity"})
+            "quantity_field": "long_quantity", "income_rate": 0.013})
         out = node.run(ctx, {"decisions": decided, "positions": later})
         out["records"][0]["surprise"]
     """
@@ -73,8 +89,8 @@ class DecisionOutcomes(Node):
     role = "transform"
     outputs = ("records", "summary")
 
-    _PARAMS = ("key_fields", "as_of_field", "value_field", "quantity_field")
-    _REQUIRED = ("key_fields", "as_of_field", "value_field")
+    _PARAMS = ("key_fields", "as_of_field", "value_field", "quantity_field", "income_rate")
+    _REQUIRED = ("key_fields", "as_of_field", "value_field", "income_rate")
 
     @classmethod
     def validate_params(cls, params):
@@ -95,6 +111,8 @@ class DecisionOutcomes(Node):
         for name in ("as_of_field", "value_field", "quantity_field"):
             if name in params and not name_ok(params[name]):
                 problems.append(f"{name} must be a non-empty field name, got {params[name]!r}")
+        if "income_rate" in params:
+            check_number_param(problems, "income_rate", params["income_rate"], lower=0.0, upper=1.0)
         return problems
 
     def _key(self, what, index, row):
@@ -204,7 +222,16 @@ class DecisionOutcomes(Node):
                                         self._number("decision", index, row, "hold_value"),
                                         "hold_value")
             elapsed = (later_day - decided).days / _DAYS_PER_YEAR
-            projected = (hold_value / value) ** (elapsed / float(horizon))
+            income = float(self.params["income_rate"])
+            total_growth = (hold_value / value) ** (1.0 / float(horizon))
+            price_growth = total_growth - income
+            if price_growth <= 0.0:
+                raise ValueError(
+                    f"{self.key}: decision {index} income_rate {income!r} leaves a price growth "
+                    f"factor of {price_growth!r} a year from a total of {total_growth!r}; "
+                    "a non-positive base has no growth path"
+                )
+            projected = price_growth ** elapsed
             realized = later[key] / then
             surprise = realized - projected
             decision = row.get("decision")

@@ -24,6 +24,7 @@ MARKET = {
     "cape": 36.0,
     "fair_cape": 27.0,
     "reversion_years": 10,
+    "horizon_years": 5,
 }
 
 
@@ -36,6 +37,7 @@ def test_market_rate_is_the_sum_of_named_blocks(ctx):
         "dividend_yield": 0.013, "real_growth": 0.02, "inflation": 0.025,
         "valuation": pytest.approx(reversion)}
     assert out["summary"]["rate"] == pytest.approx(out["rate"])
+    assert out["summary"]["horizon_years"] == 5
 
 
 def test_a_fairly_valued_market_has_no_valuation_block(ctx):
@@ -55,6 +57,37 @@ def test_market_fingerprint_is_its_params_and_bad_blocks_refuse():
         MarketHoldReturn("m", {k: v for k, v in MARKET.items() if k != "inflation"})
     with pytest.raises(ConfigError, match="unknown"):
         MarketHoldReturn("m", {**MARKET, "alpha": 0.1})
+
+
+def test_the_horizon_cannot_outrun_the_reversion(ctx):
+    # the drift is spread over reversion_years; a longer horizon would compound it past full reversion
+    MarketHoldReturn("m", {**MARKET, "horizon_years": 10})            # equal is allowed
+    with pytest.raises(ConfigError, match="horizon_years.*exceeds reversion_years.*past full reversion"):
+        MarketHoldReturn("m", {**MARKET, "horizon_years": 11})
+    with pytest.raises(ConfigError, match="missing.*horizon_years"):
+        MarketHoldReturn("m", {k: v for k, v in MARKET.items() if k != "horizon_years"})
+    with pytest.raises(ConfigError, match="horizon_years"):
+        MarketHoldReturn("m", {**MARKET, "horizon_years": 0})
+    with pytest.raises(ConfigError, match="horizon_years"):
+        MarketHoldReturn("m", {**MARKET, "horizon_years": 2.5})
+    # the cap is the shared one: 100 years is allowed only with a reversion that long
+    MarketHoldReturn("m", {**MARKET, "horizon_years": 100, "reversion_years": 100})
+    with pytest.raises(ConfigError, match="horizon_years.*at most 100"):
+        MarketHoldReturn("m", {**MARKET, "horizon_years": 101, "reversion_years": 101})
+    # the drift formula is untouched by the horizon
+    one = MarketHoldReturn("m", {**MARKET, "horizon_years": 1}).run(ctx, {})["rate"]
+    assert one == pytest.approx(MarketHoldReturn("m", MARKET).run(ctx, {})["rate"])
+
+
+def test_a_market_rate_outside_the_bounds_refuses(ctx):
+    # cape 1 against a fair 1000 in one year: valuation +999, a rate of ~1000x
+    wild = {**MARKET, "cape": 1.0, "fair_cape": 1000.0, "reversion_years": 1, "horizon_years": 1}
+    with pytest.raises(ValueError, match="market rate.*outside.*fractions.*percent"):
+        MarketHoldReturn("m", wild).run(ctx, {})
+    # fair CAPE a thousandth of today's in one year: valuation -0.999, rate
+    # 0.013 + 0.02 + 0.025 - 0.999 = -0.941, inside [-1, 10], so it runs
+    low = {**MARKET, "cape": 1000.0, "fair_cape": 1.0, "reversion_years": 1, "horizon_years": 1}
+    assert MarketHoldReturn("m", low).run(ctx, {})["rate"] == pytest.approx(-0.941)
 
 
 BETAS = {
@@ -80,6 +113,22 @@ def test_a_symbol_without_a_beta_refuses_unless_a_default_is_declared(ctx):
         ctx, {"records": rows, "market": 0.10})
     assert out["rates"] == {"NEW": pytest.approx(0.10)}
     assert out["summary"]["defaulted"] == ["NEW"]
+
+
+def test_a_computed_beta_rate_outside_the_bounds_refuses_by_symbol(ctx):
+    # 0.04 + 200 x (0.10 - 0.04) = 12.04 > 10; 0.04 - 100 x 0.06 = -5.96 < -1
+    for beta in (200.0, -100.0):
+        node = BetaHoldReturns("b", {**BETAS, "betas": {"VTI": 1.0, "WILD": beta}})
+        with pytest.raises(ValueError, match="rate for 'WILD'.*outside.*fractions.*percent"):
+            node.run(ctx, {"records": [{"symbol": "VTI"}, {"symbol": "WILD"}], "market": 0.10})
+    # a defaulted beta is held to the same bound
+    node = BetaHoldReturns("b", {**BETAS, "default_beta": 200.0})
+    with pytest.raises(ValueError, match="rate for 'NEW'"):
+        node.run(ctx, {"records": [{"symbol": "NEW"}], "market": 0.10})
+    # inclusive: 0.04 + 100 x 0.06 = 6.04 is in range
+    node = BetaHoldReturns("b", {**BETAS, "betas": {"HIGH": 100.0}})
+    assert node.run(ctx, {"records": [{"symbol": "HIGH"}], "market": 0.10})["rates"]["HIGH"] == \
+        pytest.approx(6.04)
 
 
 def test_beta_inputs_and_declarations_refuse_by_name(ctx):

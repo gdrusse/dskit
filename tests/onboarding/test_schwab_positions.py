@@ -154,6 +154,56 @@ def test_malformed_bodies_are_asset_errors():
         _read()
 
 
+def _one(**over):
+    """An accounts body with one position, fields overridden."""
+    position = {"instrument": {"symbol": "X", "assetType": "EQUITY"}, "longQuantity": 1.0,
+                "shortQuantity": 0.0, "averagePrice": 1.0, "marketValue": 1.0}
+    position.update(over)
+    return [{"securitiesAccount": {"accountNumber": "12345678", "positions": [position]}}]
+
+
+def test_symbol_must_be_a_non_empty_string_never_coerced():
+    for bad in (123, None, "", ["VTI"], True):
+        Stub.bodies[ACCOUNTS_URL] = _one(instrument={"symbol": bad, "assetType": "EQUITY"})
+        with pytest.raises(AssetError, match="position 0 in account 0 is malformed"):
+            _read()
+    Stub.bodies[ACCOUNTS_URL] = _one(instrument={"assetType": "EQUITY"})
+    with pytest.raises(AssetError, match="malformed"):
+        _read()
+    Stub.bodies[ACCOUNTS_URL] = _one(instrument={"symbol": "VTI", "assetType": "EQUITY"})
+    assert _read()[0][0]["data"]["symbol"] == "VTI"
+
+
+def test_position_numbers_must_be_finite():
+    bad = (float("nan"), float("inf"), float("-inf"), 10 ** 400)
+    for name in ("longQuantity", "shortQuantity", "averagePrice", "marketValue"):
+        for value in bad:
+            Stub.bodies[ACCOUNTS_URL] = _one(**{name: value})
+            with pytest.raises(AssetError, match="position 0 in account 0 is malformed"):
+                _read()
+    # finite factors whose product overflows: the derived cost basis is held to the same rule
+    Stub.bodies[ACCOUNTS_URL] = _one(longQuantity=1e300, averagePrice=1e300)
+    with pytest.raises(AssetError, match="position 0 in account 0 is malformed"):
+        _read()
+    # a negative market value is a short, finite and so still emitted (consumers filter it)
+    Stub.bodies[ACCOUNTS_URL] = _one(marketValue=-180.0)
+    assert _read()[0][0]["data"]["market_value"] == -180.0
+
+
+def test_an_account_without_a_positions_key_refuses_never_defaults_to_empty():
+    Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678"}}]
+    with pytest.raises(AssetError, match="account 0 has no positions"):
+        _read()
+    # an explicit empty list is the provider saying "none", and emits nothing
+    Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678",
+                                                         "positions": []}}]
+    assert _read()[0] == []
+    Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678",
+                                                         "positions": None}}]
+    with pytest.raises(AssetError, match="positions is not a list"):
+        _read()
+
+
 def test_check_probes_accounts_and_transient_failures_retry_then_refuse(monkeypatch):
     monkeypatch.setattr("dskit.onboarding.libs.schwab.time.sleep", lambda s: None)
     Stub().check({"max_retries": 0})

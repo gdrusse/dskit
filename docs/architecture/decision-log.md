@@ -32601,3 +32601,47 @@ a child config test); README status and the outcomes run sequence. Disclosed
 backlog in `children/portfolio_policy/docs/memos/2026-10-27-adr-0279-base-machinery.md`.
 Two clean lenses, zero unresolved Critical/Major: candidate locked; merged
 to main on the owner's "use this skeptic reviewed library asap".
+
+#### ADR-0279 amendment: Sonnet round 1 corrections (2026-10-27)
+
+A Sonnet reviewer found 5 Major on the locked slice; all five fixed (RED first),
+with the listed Minors:
+
+- Major 1 — short and zero rows. `LiquidationTax` refuses `value_field <= 0` and
+  `basis_field < 0`; `HoldVsRedeploy` refuses `value <= 0` and `net <= 0`, each
+  by row index and field. The decision document's `snapshot` filter gains
+  `long_quantity > 0` (`kinds_flow` `CLAUSE_OPS` has `>`); the e2e test carries a
+  short XYZ row to prove it.
+- Major 2 — wired rates unchecked. One owner, `liquidation.RATE_BOUNDS = (-1, 10)`
+  (plus `require_rate` / `check_rate_param`), replaces the two private bound pairs.
+  `HoldVsRedeploy` refuses any wired `hold_returns` entry or `redeploy_return`
+  input outside it; `MarketHoldReturn`, `BetaHoldReturns` (per symbol) and
+  `ActiveHurdle` (deflated rate, before admissibility) refuse a computed rate
+  outside it, the message naming "fractions, not percent".
+- Major 3 — `ActiveHurdle` gains REQUIRED `min_periods` (int >= 2); the private
+  `_MIN_PERIODS` is gone. The document sets 52; the e2e overrides it to 12.
+- Major 4 — `MarketHoldReturn` gains REQUIRED `horizon_years` and refuses one
+  beyond `reversion_years` (the drift would compound past full reversion). The
+  document sets 5; a child test pins it equal to `decide.horizon_years`. The
+  drift formula is unchanged.
+- Major 5 — `DecisionOutcomes` gains REQUIRED `income_rate` ([0, 1]): projected =
+  `((hold_value / value) ** (1 / horizon_years) - income_rate) ** elapsed`, because
+  the forecast is total return and the realized side is price only. A non-positive
+  base refuses. The document sets 0.013; a child test pins it equal to
+  `market.dividend_yield`. Approximation disclosed in the module docstring: one
+  yield for every holding, beta scaling of income ignored.
+- Minors fixed: annual redeploy tax is `net - max(net, 0) x t` with the
+  `risk_premium` subtracted untaxed (a loss gets no refund); `redeploy_cost` and
+  `risk_premium` >= 0; `horizon_years` 1..`MAX_HORIZON_YEARS` (100) in both
+  kinds; Schwab positions refuse a non-str or empty symbol, a non-finite number
+  (and a cost basis that overflows) and an account without a `positions` key;
+  `check_number_param` refuses an int beyond 2**53 instead of raising
+  OverflowError; `ActiveHurdle` counts run as ints exactly as validated;
+  `by_holding`, `redeploy_tax_rate` and a two-hold `mean_surprise` now asserted;
+  the "few basis points" disclosure replaced by the honest tens-of-bp-to-a-point
+  statement, still left to `risk_premium`.
+Files: the five pipeline modules and onboarding `schwab.py`, their tests, the two
+child documents and tests, the READMEs. Sweep: tools/sweep/sweep rate_bounds
+require_rate check_rate_param check_horizon_param max_horizon_years min_periods
+income_rate; no near matches (only an unrelated `require_rate=` kwarg in
+statistical_arbitrage and pandas `min_periods=`).

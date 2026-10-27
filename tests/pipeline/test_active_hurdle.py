@@ -24,6 +24,7 @@ HURDLE = {
     "periods_per_year": 52,
     "trials": 5,
     "min_dsr": 0.5,
+    "min_periods": 12,
 }
 
 
@@ -73,10 +74,8 @@ def test_twenty_trials_fall_under_min_dsr_and_the_rate_is_withheld(ctx):
 def test_unusable_series_and_declarations_refuse(ctx):
     with pytest.raises(ValueError, match="row 1.*net_return"):
         _run(ctx, rows=[{"net_return": 0.1}, {"net_return": "x"}])
-    with pytest.raises(ValueError, match="at least 2"):
-        _run(ctx, rows=[{"net_return": 0.1}])
     with pytest.raises(ValueError, match="no usable Sharpe"):
-        _run(ctx, rows=[{"net_return": 0.01}] * 6)
+        _run(ctx, rows=[{"net_return": 0.01}] * 6, min_periods=2)
     with pytest.raises(ValueError, match="row 1.*mapping"):
         _run(ctx, rows=[{"net_return": 0.1}, [0.2]])
     with pytest.raises(ConfigError, match="trials"):
@@ -87,6 +86,42 @@ def test_unusable_series_and_declarations_refuse(ctx):
         ActiveHurdle("h", {**HURDLE, "periods_per_year": 0})
     with pytest.raises(ConfigError, match="unknown"):
         ActiveHurdle("h", {**HURDLE, "alpha": 0.0})
+
+
+def test_a_series_shorter_than_min_periods_refuses_by_name(ctx):
+    rows = _rows([0.01, -0.005, 0.02])
+    with pytest.raises(ValueError, match="min_periods.*4.*got 3"):
+        _run(ctx, rows=rows, min_periods=4)
+    # exactly min_periods runs; the declared floor is the only floor
+    assert _run(ctx, rows=rows, min_periods=3)["summary"]["periods"] == 3
+    assert _run(ctx, rows=rows, min_periods=2)["summary"]["periods"] == 3
+    with pytest.raises(ConfigError, match="min_periods"):
+        ActiveHurdle("h", {**HURDLE, "min_periods": 1})
+    with pytest.raises(ConfigError, match="min_periods"):
+        ActiveHurdle("h", {**HURDLE, "min_periods": True})
+    with pytest.raises(ConfigError, match="missing.*min_periods"):
+        ActiveHurdle("h", {k: v for k, v in HURDLE.items() if k != "min_periods"})
+
+
+def test_a_percent_unit_series_refuses_with_the_fractions_message(ctx):
+    percent = [value * 100 for value in RETURNS]          # 0.55 a week = 28.6 a year
+    with pytest.raises(ValueError, match="deflated rate.*outside.*fractions.*percent"):
+        _run(ctx, rows=_rows(percent), trials=1)
+    # five trials shrink it to (0.55 - 0.3978 x 0.8702) x 52 = 10.6, still over 10; and the
+    # strategy is inadmissible at min_dsr 1.0 (dsr 0.76): the bound is checked before admissibility
+    with pytest.raises(ValueError, match="fractions"):
+        _run(ctx, rows=_rows(percent), trials=5, min_dsr=1.0)
+
+
+def test_integral_floats_are_accepted_and_run_as_the_same_ints(ctx):
+    plain = _run(ctx)
+    floats = _run(ctx, periods_per_year=52.0, trials=5.0, min_periods=12.0)
+    assert floats["rate"] == plain["rate"]
+    summary = floats["summary"]
+    assert (summary["periods_per_year"], summary["trials"]) == (52, 5)
+    assert isinstance(summary["periods_per_year"], int) and isinstance(summary["trials"], int)
+    with pytest.raises(ConfigError, match="trials"):
+        ActiveHurdle("h", {**HURDLE, "trials": 5.5})
 
 
 DECIDE = {

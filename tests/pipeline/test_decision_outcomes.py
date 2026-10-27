@@ -2,7 +2,10 @@
 
 Growth is per share (value / quantity) so a buy or sell between the two dates
 does not masquerade as a return; without a quantity field the value itself is
-the measure. Every number here is worked by hand.
+the measure. The forecast is a TOTAL return (price + income) and the realized
+side is price only, so the projection removes ``income_rate`` a year before it
+is compounded: projected = (g - income_rate) ** elapsed, g = (hold / value) **
+(1 / horizon). Every number here is worked by hand.
 """
 
 import pytest
@@ -24,6 +27,7 @@ PARAMS = {
     "as_of_field": "as_of",
     "value_field": "market_value",
     "quantity_field": "long_quantity",
+    "income_rate": 0.013,
 }
 
 DECISIONS = [
@@ -49,11 +53,15 @@ def test_outcomes_by_hand(ctx):
     vti, aapl = out["records"]
     elapsed = 365 / 365.25
     assert vti["elapsed_years"] == pytest.approx(elapsed)
-    assert vti["projected_growth"] == pytest.approx(1.2 ** (elapsed / 5))
+    # VTI: total growth per year g = 1.2^(1/5) = e^(0.18232/5) = 1.037137; less the 1.3% income
+    # leaves 1.024137 price growth a year; over 365/365.25 of a year that is 1.024121
+    assert vti["projected_growth"] == pytest.approx((1.2 ** 0.2 - 0.013) ** elapsed)
+    assert vti["projected_growth"] == pytest.approx(1.024121, abs=1e-6)
     assert vti["realized_growth"] == pytest.approx((5500.0 / 20.0) / (2500.0 / 10.0))   # 1.1
-    assert vti["surprise"] == pytest.approx(1.1 - 1.2 ** (elapsed / 5))
+    assert vti["surprise"] == pytest.approx(1.1 - 1.024121, abs=1e-6)
     assert aapl["realized_growth"] == pytest.approx(0.9)
-    assert aapl["projected_growth"] == pytest.approx(1.5 ** (elapsed / 5))
+    # AAPL: g = 1.5^(1/5) = 1.084472, p = 1.071472, ^0.999316 = 1.071421
+    assert aapl["projected_growth"] == pytest.approx(1.071421, abs=1e-6)
     assert aapl["decision"] == "exit"
     assert vti["account"] == "A1" and vti["symbol"] == "VTI"
     assert out["summary"]["scored"] == 2
@@ -62,6 +70,74 @@ def test_outcomes_by_hand(ctx):
         (vti["surprise"] + aapl["surprise"]) / 2)
     assert out["summary"]["by_decision"]["exit"]["mean_surprise"] == pytest.approx(aapl["surprise"])
     assert out["summary"]["by_decision"]["hold"]["count"] == 1
+
+
+def test_income_is_removed_before_compounding_by_hand(ctx):
+    # 2026-10-27 -> 2030-10-27 is 1461 days = 4 x 365.25, so elapsed is exactly 4.0 years.
+    # Every hold is worth 10000 now; per-year TOTAL growth g, income 1%, price growth g - .01.
+    params = {k: v for k, v in PARAMS.items() if k != "quantity_field"}
+    params["income_rate"] = 0.01
+    top = 10000.0 * 1.05 ** 5          # 12762.815625: g = 1.05 over the 5-year horizon
+    decided = [
+        {"account": "A", "symbol": "UP", "as_of": "2026-10-27", "market_value": 10000.0,
+         "hold_value": top, "horizon_years": 5, "decision": "hold"},
+        {"account": "A", "symbol": "MID", "as_of": "2026-10-27", "market_value": 10000.0,
+         "hold_value": top, "horizon_years": 5, "decision": "hold"},
+        {"account": "A", "symbol": "FLAT", "as_of": "2026-10-27", "market_value": 10000.0,
+         "hold_value": 10000.0, "horizon_years": 5, "decision": "exit"},
+    ]
+    later = [
+        {"account": "A", "symbol": "UP", "as_of": "2030-10-27", "market_value": 13000.0},
+        {"account": "A", "symbol": "MID", "as_of": "2030-10-27", "market_value": 11000.0},
+        {"account": "A", "symbol": "FLAT", "as_of": "2030-10-27", "market_value": 9000.0},
+    ]
+    out = DecisionOutcomes("o", params).run(ctx, {"decisions": decided, "positions": later})
+    up, mid, flat = out["records"]
+    assert up["elapsed_years"] == 4.0
+    # g = 1.05, price growth 1.04, over 4 years: 1.04^2 = 1.0816, 1.0816^2 = 1.16985856
+    assert up["projected_growth"] == pytest.approx(1.16985856)
+    assert mid["projected_growth"] == pytest.approx(1.16985856)
+    # FLAT: g = 1, price growth .99, .99^2 = .9801, .9801^2 = .96059601
+    assert flat["projected_growth"] == pytest.approx(0.96059601)
+    # surprise = realized - projected: 1.3 - 1.16985856, 1.1 - 1.16985856, .9 - .96059601
+    assert up["surprise"] == pytest.approx(0.13014144)
+    assert mid["surprise"] == pytest.approx(-0.06985856)
+    assert flat["surprise"] == pytest.approx(-0.06059601)
+    by = out["summary"]["by_decision"]
+    # two holds with DIFFERENT surprises: mean (.13014144 - .06985856) / 2 = .03014144
+    assert by["hold"]["count"] == 2
+    assert by["hold"]["mean_surprise"] == pytest.approx(0.03014144)
+    assert by["exit"] == {"count": 1, "mean_surprise": pytest.approx(-0.06059601)}
+    # all three: (.06028288 - .06059601) / 3 = -.00031313 / 3
+    assert out["summary"]["mean_surprise"] == pytest.approx(-0.00031313 / 3)
+    # no income to remove: projected is the plain pro-rata total growth, 1.05^4 = 1.21550625
+    plain = DecisionOutcomes("o", {**params, "income_rate": 0.0}).run(
+        ctx, {"decisions": decided[:1], "positions": later[:1]})
+    assert plain["records"][0]["projected_growth"] == pytest.approx(1.21550625)
+
+
+def test_income_that_swallows_the_growth_refuses_by_decision(ctx):
+    # hold_value = 10000 x .5^5 = 312.5 over 5 years makes g exactly .5 a year, so an income of
+    # 60% a year would leave a price factor of -0.1 and one of 50% leaves exactly 0: neither
+    # has a growth path
+    params = {k: v for k, v in PARAMS.items() if k != "quantity_field"}
+    row = {"account": "A", "symbol": "UP", "as_of": "2026-10-27", "market_value": 10000.0,
+           "hold_value": 10000.0 * 0.5 ** 5, "horizon_years": 5, "decision": "hold"}
+    later = [{"account": "A", "symbol": "UP", "as_of": "2027-10-27", "market_value": 5000.0}]
+    for income in (0.6, 0.5):
+        with pytest.raises(ValueError, match=f"decision 0.*income_rate {income}.*price growth"):
+            DecisionOutcomes("o", {**params, "income_rate": income}).run(
+                ctx, {"decisions": [row], "positions": later})
+    # an income below g runs: p = .5 - .4 = .1, and .1^(365/365.25) = 0.1003...
+    out = DecisionOutcomes("o", {**params, "income_rate": 0.4}).run(
+        ctx, {"decisions": [row], "positions": later})
+    assert out["records"][0]["projected_growth"] == pytest.approx(0.1 ** (365 / 365.25))
+    # a price that is forecast to FALL while income is paid is legitimate: g = 1.05, income 6%
+    # leaves a factor of .99, and .99^(365/365.25) = .98999...
+    grow = {**row, "hold_value": 10000.0 * 1.05 ** 5}
+    out = DecisionOutcomes("o", {**params, "income_rate": 0.06}).run(
+        ctx, {"decisions": [grow], "positions": later})
+    assert out["records"][0]["projected_growth"] == pytest.approx(0.99 ** (365 / 365.25))
 
 
 def test_a_decision_without_a_later_row_is_unmatched_not_scored(ctx):
@@ -109,6 +185,13 @@ def test_unusable_rows_and_declarations_refuse(ctx):
         DecisionOutcomes("o", {**PARAMS, "key_fields": ["symbol", "symbol"]})
     with pytest.raises(ConfigError, match="unknown"):
         DecisionOutcomes("o", {**PARAMS, "extra": 1})
+    with pytest.raises(ConfigError, match="missing.*income_rate"):
+        DecisionOutcomes("o", {k: v for k, v in PARAMS.items() if k != "income_rate"})
+    for bad in (-0.01, 1.01, True, "0.01", float("nan")):
+        with pytest.raises(ConfigError, match="income_rate"):
+            DecisionOutcomes("o", {**PARAMS, "income_rate": bad})
+    DecisionOutcomes("o", {**PARAMS, "income_rate": 0})
+    DecisionOutcomes("o", {**PARAMS, "income_rate": 1})
 
 
 def test_every_adr_0279_kind_serves_pure():

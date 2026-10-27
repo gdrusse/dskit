@@ -38,7 +38,13 @@ backtest's mean by what `trials` variants of nothing would have found and
 withholds it below `min_dsr`, in which case every holding holds. The hold
 path is taxed once at the horizon (`terminal_tax_rate`); the active path pays
 its short-term rate every year (`redeploy_tax_rate`, `annual`). Equities
-only: option rows are filtered out, their basis carries no multiplier. Rows
+only, and long only: the `snapshot` filter drops option rows (their basis
+carries no multiplier) and short positions (`long_quantity > 0`), because the
+kinds refuse a short or zero-value row by index rather than decide on it.
+`hurdle.min_periods` (52, a year of weekly returns) is the fewest backtest
+periods it will accept, and returns are fractions (0.01 = 1%), never percent.
+`market.horizon_years` is the decision horizon (pinned equal to
+`decide.horizon_years` by a test) and may not exceed `reversion_years`. Rows
 land in `decisions/<run>.jsonl`, one per account x symbol, advisory only.
 Aggregate positions carry no lots, so every holding takes `default_holding`
 until a lot-level export is onboarded.
@@ -61,8 +67,12 @@ python -m dskit.pipeline run configs/run-decision-outcomes.json --asof <that day
 
 `<run-name>` is the decision run's directory name (the stem of its
 `decisions/<run>.jsonl`). `outcomes/<run>.jsonl` holds, per account and
-symbol, the growth the decision assumed (pro rata for the time elapsed), the
-realized per-share growth, and the surprise. It scores the hold forecast only.
+symbol, the price growth the decision assumed, the realized per-share growth,
+and the surprise. The forecast is a total return and the snapshot's market
+value is price only, so `outcomes.income_rate` (0.013, pinned equal to the
+decision document's `market.dividend_yield`) is removed from each year's
+growth before it is compounded for the time elapsed. It scores the hold
+forecast only.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds

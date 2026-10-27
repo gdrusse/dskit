@@ -34,8 +34,20 @@ over realizes short-term gains every year, so the rate compounds as
 once at the horizon over the after-tax net it started from. Without the
 declarations a path's tax is zero, and the summary says so.
 
+The redeploy rate is built in a fixed order: ``net_rate = redeploy_return -
+redeploy_cost``; under ``annual`` timing the tax takes ``max(net_rate, 0) x t``
+(a negative rate gets no refund) and nothing else; the ``risk_premium`` is
+then subtracted untaxed, since it is a haircut for forecast uncertainty and not
+income. Under ``terminal`` or no timing, ``rate = net_rate - risk_premium``.
+
 Rows that cannot be valued refuse by index and field name; nothing is filled.
-Every rate, horizon and field name is a param: the module carries no table.
+That includes a short position or a negative balance: a hold-vs-exit decision
+is about a long holding, so a value at or below zero (and, for the tax, a
+negative basis) refuses and the document filters such rows before this
+module sees them. Wired rates are checked where they arrive: a ``hold_returns``
+entry or a ``redeploy_return`` outside :data:`RATE_BOUNDS` refuses, because the
+usual cause is a percent where a fraction belongs. Every rate, horizon and
+field name is a param: the module carries no table.
 
 Import cost: stdlib + the pipeline core.
 """
@@ -50,7 +62,10 @@ from dskit.pipeline.document import date_problem
 from dskit.pipeline.node import Node, check_int_param, check_number_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
-__all__ = ["HOLDINGS", "REDEPLOY_TAX_TIMINGS", "HoldVsRedeploy", "LiquidationTax"]
+__all__ = [
+    "HOLDINGS", "MAX_HORIZON_YEARS", "RATE_BOUNDS", "REDEPLOY_TAX_TIMINGS", "HoldVsRedeploy",
+    "LiquidationTax", "check_horizon_param", "check_rate_param", "require_rate",
+]
 
 #: The two holding classes a tax schedule distinguishes.
 HOLDINGS = ("long", "short")
@@ -67,7 +82,41 @@ _DECISION_OPTIONAL = (
     "hold_return", "redeploy_return", "terminal_tax_rate", "basis_field",
     "redeploy_tax_rate", "redeploy_tax_timing",
 )
-_RATE_LOWER, _RATE_UPPER = -1.0, 10.0
+#: The one owner of the annual-return bounds (inclusive): -100% to +1000%. A return is a
+#: fraction; a value outside is almost surely a percent (5 for 5%) and refuses.
+RATE_BOUNDS = (-1.0, 10.0)
+#: The longest horizon, in years, any ADR-0279 kind accepts.
+MAX_HORIZON_YEARS = 100
+
+_OUT_OF_SCOPE = "short positions and negative balances are out of scope for a hold-vs-exit decision"
+
+
+def check_rate_param(problems, name, value):
+    """Append a problem unless ``value`` is a finite number inside :data:`RATE_BOUNDS`."""
+    check_number_param(problems, name, value, lower=RATE_BOUNDS[0], upper=RATE_BOUNDS[1])
+
+
+def check_horizon_param(problems, name, value):
+    """Append a problem unless ``value`` is an int in ``[1, MAX_HORIZON_YEARS]``."""
+    before = len(problems)
+    check_int_param(problems, name, value, ge=1)
+    if len(problems) == before and value > MAX_HORIZON_YEARS:
+        problems.append(f"{name} must be at most {MAX_HORIZON_YEARS} years, got {value!r}")
+
+
+def require_rate(key, what, value):
+    """Return ``float(value)`` when it lies inside :data:`RATE_BOUNDS`; refuse by name otherwise.
+
+    The run-time twin of :func:`check_rate_param`, for a rate that arrived on a wire or
+    was computed rather than declared.
+    """
+    low, high = RATE_BOUNDS
+    if not low <= value <= high:
+        raise ValueError(
+            f"{key}: {what} {value!r} is outside [{low}, {high}]; returns must be "
+            "fractions (0.05 is 5%), not percent"
+        )
+    return float(value)
 
 
 def _check_names(problems, params, names):
@@ -97,6 +146,17 @@ def _number(key, index, row, field):
     return float(value)
 
 
+def _amount(key, index, row, field, *, allow_zero):
+    """Return the number ``row[field]`` holds, positive (or zero when allowed); refuse otherwise."""
+    value = _number(key, index, row, field)
+    if value < 0.0 or (value == 0.0 and not allow_zero):
+        raise ValueError(
+            f"{key}: row {index} field {field!r} must be "
+            f"{'non-negative' if allow_zero else 'positive'}, got {value!r}; {_OUT_OF_SCOPE}"
+        )
+    return value
+
+
 def _growth(key, what, rate, years):
     """Return ``(1 + rate) ** years``; refuse a rate below -1, whose power is not a value."""
     if 1.0 + rate < 0.0:
@@ -107,7 +167,9 @@ def _growth(key, what, rate, years):
 class LiquidationTax(Node):
     """Per-row liquidation: proceeds, gain, holding class, rate, tax, net.
 
-    Role ``transform``. See the module docstring for the rule.
+    Role ``transform``. See the module docstring for the rule. A row whose
+    ``value_field`` is at or below zero, or whose ``basis_field`` is negative
+    (a short position, a negative balance), refuses by index and field.
 
     Parameters
     ----------
@@ -207,8 +269,8 @@ class LiquidationTax(Node):
         rates = {"long": self.params["long_term_rate"], "short": self.params["short_term_rate"]}
         out, total_tax, total_net, by_holding = [], 0.0, 0.0, {"long": 0, "short": 0}
         for index, row in enumerate(records):
-            proceeds = _number(self.key, index, row, self.params["value_field"])
-            basis = _number(self.key, index, row, self.params["basis_field"])
+            proceeds = _amount(self.key, index, row, self.params["value_field"], allow_zero=False)
+            basis = _amount(self.key, index, row, self.params["basis_field"], allow_zero=True)
             holding = self._holding(index, row, as_of)
             gain = proceeds - basis
             taxable = gain if self.params["loss_offset"] else max(gain, 0.0)
@@ -229,20 +291,22 @@ class LiquidationTax(Node):
 class HoldVsRedeploy(Node):
     """Terminal value of holding the gross position vs redeploying the net.
 
-    Role ``transform``. See the module docstring for the rule.
+    Role ``transform``. See the module docstring for the rule. A row whose
+    ``value_field`` or ``net_field`` is at or below zero refuses by index and
+    field, as does a wired rate outside :data:`RATE_BOUNDS`.
 
     Parameters
     ----------
     params : dict
-        ``horizon_years`` (int >= 1, REQUIRED); ``hold_return`` (a number in
+        ``horizon_years`` (int in ``[1, 100]``, REQUIRED); ``hold_return`` (a number in
         ``[-1, 10]`` or ``{symbol: number}``): the annual return of holding,
         per symbol when a mapping (a row whose symbol is absent refuses);
         required unless ``hold_returns`` is wired; ``redeploy_return``
         (number in ``[-1, 10]``): the annual return of the alternative;
         required unless the ``redeploy_return`` input is wired;
-        ``redeploy_cost`` / ``risk_premium`` (numbers in ``[-1, 10]``,
+        ``redeploy_cost`` / ``risk_premium`` (numbers in ``[0, 10]``,
         REQUIRED): its annual cost and the premium charged for the
-        forecast's own uncertainty; ``value_field`` / ``net_field`` /
+        forecast's own uncertainty (neither is a credit); ``value_field`` / ``net_field`` /
         ``symbol_field`` (field names, REQUIRED); ``terminal_tax_rate``
         (number in ``[0, 1]``) and ``basis_field`` (field name), together or
         not at all: the hold path's tax on its gain at the horizon;
@@ -293,22 +357,22 @@ class HoldVsRedeploy(Node):
         if missing:
             problems.append(f"missing required params {missing}")
         if "horizon_years" in params:
-            check_int_param(problems, "horizon_years", params["horizon_years"], ge=1)
+            check_horizon_param(problems, "horizon_years", params["horizon_years"])
         hold = params.get("hold_return")
         if "hold_return" in params:
             if isinstance(hold, dict):
                 if not hold or not all(name_ok(k) for k in hold):
                     problems.append("hold_return mapping must be {symbol: number}, non-empty")
                 for symbol, value in hold.items():
-                    check_number_param(problems, f"hold_return[{symbol!r}]", value,
-                                       lower=_RATE_LOWER, upper=_RATE_UPPER)
+                    check_rate_param(problems, f"hold_return[{symbol!r}]", value)
             else:
-                check_number_param(problems, "hold_return", hold,
-                                   lower=_RATE_LOWER, upper=_RATE_UPPER)
-        for name in ("redeploy_return", "redeploy_cost", "risk_premium"):
+                check_rate_param(problems, "hold_return", hold)
+        if "redeploy_return" in params:
+            check_rate_param(problems, "redeploy_return", params["redeploy_return"])
+        for name in ("redeploy_cost", "risk_premium"):
             if name in params:
                 check_number_param(problems, name, params[name],
-                                   lower=_RATE_LOWER, upper=_RATE_UPPER)
+                                   lower=0.0, upper=RATE_BOUNDS[1])
         _check_names(problems, params,
                      [n for n in ("value_field", "net_field", "symbol_field", "basis_field")
                       if n in params])
@@ -364,6 +428,8 @@ class HoldVsRedeploy(Node):
             raise ValueError(
                 f"{self.key}: hold_returns must be a {{symbol: number}} mapping, got {wired!r}"
             )
+        for symbol, value in wired.items():
+            require_rate(self.key, f"hold_returns[{symbol!r}]", value)
         return wired, "wired"
 
     def _redeploy_source(self, inputs):
@@ -381,17 +447,21 @@ class HoldVsRedeploy(Node):
             raise ValueError(
                 f"{self.key}: redeploy_return input must be a number or None, got {wired!r}"
             )
-        return float(wired), "wired"
+        return require_rate(self.key, "redeploy_return input", wired), "wired"
 
-    def _redeploy_path(self, net, redeploy_rate, years):
-        """Return ``(value, terminal_tax, net)`` of redeploying ``net`` under the declared tax."""
-        rate = self.params.get("redeploy_tax_rate")
-        timing = self.params.get("redeploy_tax_timing")
-        if timing == "annual":
-            value = net * _growth(self.key, "redeploy after-tax", redeploy_rate * (1.0 - rate), years)
-            return value, 0.0, value
-        value = net * _growth(self.key, "redeploy", redeploy_rate, years)
-        tax = max(value - net, 0.0) * rate if timing == "terminal" else 0.0
+    def _redeploy_rate(self, redeploy_return):
+        """Return the annual rate the redeploy path compounds at (see the module docstring)."""
+        rate = redeploy_return - self.params["redeploy_cost"]
+        if self.params.get("redeploy_tax_timing") == "annual":
+            rate -= max(rate, 0.0) * self.params["redeploy_tax_rate"]
+        return rate - self.params["risk_premium"]
+
+    def _redeploy_path(self, net, rate, years):
+        """Return ``(value, terminal_tax, net)`` of redeploying ``net`` at ``rate`` under the declared tax."""
+        value = net * _growth(self.key, "redeploy", rate, years)
+        tax = 0.0
+        if self.params.get("redeploy_tax_timing") == "terminal":
+            tax = max(value - net, 0.0) * self.params["redeploy_tax_rate"]
         return value, tax, value - tax
 
     def run(self, ctx, inputs):
@@ -400,19 +470,18 @@ class HoldVsRedeploy(Node):
         _check_rows(self.key, records, _DECISION_FIELDS)
         hold, hold_source = self._hold_source(inputs)
         redeploy_return, redeploy_source = self._redeploy_source(inputs)
-        years = self.params["horizon_years"]
+        years = int(self.params["horizon_years"])
         basis_field = self.params.get("basis_field")
         terminal_rate = self.params.get("terminal_tax_rate")
         redeploy_rate = None
         if redeploy_return is not None:
-            redeploy_rate = (redeploy_return - self.params["redeploy_cost"]
-                             - self.params["risk_premium"])
+            redeploy_rate = self._redeploy_rate(redeploy_return)
         out, hold_total, hold_net_total = [], 0.0, 0.0
         redeploy_total = redeploy_net_total = 0.0 if redeploy_rate is not None else None
         decisions = {"hold": 0, "exit": 0}
         for index, row in enumerate(records):
-            value = _number(self.key, index, row, self.params["value_field"])
-            net = _number(self.key, index, row, self.params["net_field"])
+            value = _amount(self.key, index, row, self.params["value_field"], allow_zero=False)
+            net = _amount(self.key, index, row, self.params["net_field"], allow_zero=False)
             hold_value = value * _growth(self.key, f"row {index} hold",
                                          self._hold_rate(index, row, hold), years)
             hold_tax = 0.0
