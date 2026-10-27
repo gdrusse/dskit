@@ -78,23 +78,48 @@
     },
     {
       "id": "units",
-      "symbol": "q, A_t(P), η_m, x̂_t, B_t, L_m",
-      "definition": "q is an option contract quote; A_t is the admitted quote set. η_m is a frozen MIO formulation/parameter set, x̂_t its returned integer contract vector, B_t account capital in USD, and L_m its replay ledger. Contracts use the multiplier and fees in pinned params."
+      "symbol": "q, A_t(P), η_ν, x̂_t, B_t, L_ν",
+      "definition": "q is an option contract quote; A_t is the admitted quote set. η_ν is a frozen MIO formulation/parameter set, x̂_t its returned integer contract vector, B_t account capital in USD, and L_ν its replay ledger. Contracts use the multiplier and fees in pinned params."
     },
     {
       "id": "m51ready",
       "symbol": "K={model,market_cal,pooled,baseline}; R_K={i: ∀k∈K, finite(F_{k,i}(Z))}",
-      "definition": "finite means every scalar in the grid vector is a finite real number. R_K is target readiness: it does not require a known outcome or market_eligible=true. The row may receive fitted QA only if its whole-fold QA fit exists and i∈R_K."
+      "definition": "finite means every scalar in the grid vector is a finite real number. R_K is target readiness: it does not require a known outcome or market_eligible=true. The row may receive fitted QA only if its whole-fold QA fit exists and i∈R_K. All these row predicates are over Ω_score, not the complete predictive panel."
     },
     {
       "id": "m51teach",
       "symbol": "U_QA = R_K ∩ {i: market_eligibleᵢ ∧ finite(zᵢ)}",
-      "definition": "QA learning eligibility requires all four component grid CDFs, the eligible flag and a finite outcome. It is stricter than target readiness and differs from the market PIT-map learning set."
+      "definition": "QA learning eligibility requires all four component grid CDFs, the eligible flag and a finite outcome. It is stricter than target readiness and differs from the market PIT-map learning set. Its rows retain source fold, band and order."
     },
     {
       "id": "m51pit",
       "symbol": "U_PIT = {i: market_eligibleᵢ ∧ finite(zᵢ) ∧ finite(u_market,i) ∧ finite(F_market,i(Z))}",
       "definition": "u_market is the declared market_pit column, not a recomputation from the truncated grid. PIT calibration needs only the source market CDF and PIT, not all four QA components."
+    },
+    {
+      "id": "stride",
+      "symbol": "S_L(A)=(a_j : j=0,k,2k,…<n), k=max(1,ceil(n/L)), A=(a₀,…,aₙ₋₁)",
+      "definition": "Deterministic stride in the input row order, not a random sample or the first L rows. L=∞ gives every row. Scoring bands are ordered by (symbol,quote_date,expiry); QA preserves source-artifact order after its learning filters. Each global/bucket QA fit applies its own stride."
+    },
+    {
+      "id": "scoringrows",
+      "symbol": "T̃_f=S₁₀₀₀₀₀(T_f); Ṽ_f=V_f; Ω_score=rows(R-scores); T_f^src={r∈Ω_score:r.fold=f∧r.band=fit}; V_f^src={r∈Ω_score:r.fold=f∧r.band=val}",
+      "definition": "T and V are full predictive populations. T̃ is the scored fit subset, Ṽ is the complete validation band. Source records preserve (fold,band,symbol,quote_date,expiry), so repeated physical observations in different folds remain separate. T_f^src and V_f^src are the scored versions of T̃_f and Ṽ_f. Their exact byte identity is the pinned rows.parquet; full and scored counts are in R-scores."
+    },
+    {
+      "id": "reportrows",
+      "symbol": "K_report={method,model,market,market_cal,pooled,baseline}; U_report={r∈Ω_score:r.fold∈{2,3,4,5}∧r.band=val∧finite(z_r)∧∀k∈K_report,finite(F_k,r(Z))}",
+      "definition": "Common ranked-validation reporting rows for the pinned M51 tables. This mask is distinct from U_PIT, U_QA and target readiness R_K. No fitted=true condition or separate market_eligible condition is imposed by the table constructor. A declared grouping additionally excludes rows lacking any of that grouping's category codes."
+    },
+    {
+      "id": "gatecomparators",
+      "symbol": "R_gate={raw market, per-name horizon baseline}∪{recalibrated market, pooled horizon baseline}",
+      "definition": "A0007 adds recalibrated market and pooled baseline once built; both are built in this recorded dependency, so all four references apply now. This comparator set is separate from A0005's two-reference promotion rule and from descriptive reporting's additional base-model comparator."
+    },
+    {
+      "id": "mioindex",
+      "symbol": "ν ∈ N_MIO; η_ν, x̂_t^ν, L_ν, O_ν",
+      "definition": "ν indexes MIO formulations; the future set N_MIO is undecided. It is separate from m∈{T,M}, which indexes the two predictive-model roles."
     }
   ],
   "functions": [
@@ -125,13 +150,13 @@
     },
     {
       "id": "marketcal",
-      "formula": "A_f^PIT=T_f∩U_PIT; Ĝ_f=PITMap₂₁({u_market,i:i∈A_f^PIT}); F̂_market_cal,i=Ĝ_f∘F_market,i",
-      "meaning": "Estimate the empirical PIT CDF at 21 equally spaced knots and interpolate. Apply within the same fold. If A_f^PIT is empty the calibrated component remains missing; this is separate from both early-stop C_f and QA learning."
+      "formula": "A_f^PIT=T_f^src∩U_PIT; Ĝ_f=PITMap₂₁({u_market,r:r∈A_f^PIT}); F̂_market_cal,r=Ĝ_f∘F_market,r",
+      "meaning": "Learn on the pinned source artifact's sampled fit rows for fold f. Estimate the empirical PIT CDF at 21 equally spaced knots and interpolate across all source rows of that fold. If A_f^PIT is empty the calibrated component remains missing. Full T_f instead supplies neural/empirical fitting; C_f supplies early stopping."
     },
     {
       "id": "blend",
-      "formula": "L_f=(⋃_{g<f}V_g)∩E(v_f)∩U_QA; ŵ_f,global=FitQA_JSON(L_f); ŵ_f,b=FitQA_JSON(L_f∩bucket_b) when |L_f∩bucket_b|≥5000; ŵ_f(i)=ŵ_f,b(i) if fitted, else ŵ_f,global; F̂_f,i^M51=Inverse(Σ_{k∈K}ŵ_f,k(i)Q̂_f,k,i) if a whole-fold fit exists and i∈R_K, else F̂_model,i",
-      "meaning": "The whole-fold fit declines if fewer than 5000 eligible learning rows exist. Otherwise it fits a global QA and any sufficiently large dispersion buckets. Missing/undersized buckets use the global QA and still have fitted=true on ready rows. MLP fallback with fitted=false is used only when the whole-fold fit is absent/declined or the target lacks a required component. Fold 1 has no prior validation and uses MLP fallback. Each fit uses deterministic stride sampling capped at 100000 learning rows and 199 quantile levels; weights lie on the simplex. FitQA denotes the numerical algorithm, not a global optimum guarantee."
+      "formula": "L_f=(⋃_{g<f}V_g^src)∩E(v_f)∩U_QA; ŵ_f,global=FitQA(S₁₀₀₀₀₀(L_f)); ŵ_f,b=FitQA(S₁₀₀₀₀₀(L_f∩bucket_b)) when |L_f∩bucket_b|≥5000; ŵ_f(r)=ŵ_f,b(r) if fitted, else ŵ_f,global; F̂_f,r^M51=Inverse(Σ_{k∈K}ŵ_f,k(r)Q̂_f,k,r) if a whole-fold fit exists and r∈R_K, else F̂_model,r",
+      "meaning": "Whole-fold fitting declines when |L_f|<5000, tested before striding. Otherwise fit global QA and each bucket with at least 5000 pre-stride rows. Each applies a separate deterministic stride capped at 100000 and uses 199 quantile levels. A missing/undersized bucket uses global QA and remains fitted=true on ready targets. MLP fallback with fitted=false applies when the whole-fold fit is absent/declined or a target lacks a component. Fold 1 has empty prior-validation evidence. Source-validation learning has strict settlement τ<v_f. No external-component joins, feature-conditioned filters or recency weighting apply to this JSON. QA weights lie on the simplex; the numerical fit is not a global optimum certificate."
     },
     {
       "id": "promotion",
@@ -140,8 +165,8 @@
     },
     {
       "id": "cellgate",
-      "formula": "Pass(c) ⇔ Σ_y 1{J(m,c,y)<J(raw,c,y) ∧ J(m,c,y)<J(name,c,y)}≥3 AND Σ_r 1{same paired inequalities in regime r}≥3",
-      "meaning": "c=(ticker,expiry rank) from A0006. Path A0007: at least 3/4 years and 3/5 regimes; report pass count beside chance expectation, no multiplicity correction yet. Not the 2019 MIO pair-admission rule."
+      "formula": "Win(c,I)=1{∀r∈R_gate, J_A0002(m,c,I)<J_A0002(r,c,I)}; Pass(c) ⇔ Σ_{y∈{2020,2021,2022,2023}}Win(c,I_y)≥3 AND Σ_{r∈{S0,S1,S2,S3,S4}}Win(c,I_r)≥3",
+      "meaning": "For c=(ticker,expiry rank), compare paired A0002 scores on the same declared eligible observations. All four now-built references in R_gate apply. Path A0007 requires at least 3/4 years and 3/5 regimes; report pass count beside chance expectation without a multiplicity correction. Exact gate execution and pass set are not pinned here. A0005 promotion remains a separate two-reference rule; this is not the 2019 MIO pair-admission rule."
     },
     {
       "id": "selectpairs",
@@ -150,12 +175,12 @@
     },
     {
       "id": "solve",
-      "formula": "A_t(P)={q : ∃(s,[d⁻,d⁺])∈P, symbol(q)=s ∧ d⁻≤d(q)≤d⁺ ∧ eligible_JSON(q,t)}; x̂_tᵐ = Solve_{η_m}(F̂_t,A_t(P),B_t)",
+      "formula": "A_t(P)={q : ∃(s,[d⁻,d⁺])∈P, symbol(q)=s ∧ d⁻≤d(q)≤d⁺ ∧ eligible_JSON(q,t)}; x̂_t^ν = Solve_{η_ν}(F̂_t,A_t(P),B_t)",
       "meaning": "Eligibility, constraints and objective come from the resolved run params. Returned incumbent is not labeled x* without an optimality certificate. Future sparse-pair adapter and exact formulation set are not implemented by the design templates."
     },
     {
       "id": "replay",
-      "formula": "L_m = Replay_JSON({x̂_tᵐ},quotes,settlements,funding); O_m = Report_JSON(L_m)",
+      "formula": "L_ν = Replay_JSON({x̂_t^ν},quotes,settlements,funding); O_ν = Report_JSON(L_ν)",
       "meaning": "For future packets, history, entry and settlement windows must be separately specified and pinned. Each packet comparison uses the same admitted pairs and frozen variants. Exact packet dates, η set and promotion criterion remain undecided."
     },
     {
@@ -165,13 +190,13 @@
     },
     {
       "id": "score_rows",
-      "formula": "U_f=ScoreRows_JSON(F̂_fᴹ,T_f∪V_f,market,baselines); U=⋃_{f=1}⁵{(f,bandᵢ,i,F̂_model,i(Z),F_market,i(Z),F_baseline,i(Z),F_pooled,i(Z),u_market,i,market_eligibleᵢ,zᵢ)}",
-      "meaning": "Score saved MLP fits on their own fit and validation bands, retaining fold/band identity, component forecasts, context and outcomes. This completed pipeline emits M51's source rows; it does not train or select another model."
+      "formula": "B_f^name={FitEmpirical(T_f|symbol=s)}_{s∈S_f}; B_f^pool=FitEmpirical({(dᵢ,zᵢ):i∈T_f}); Ω_score=⨿_{f=1}⁵ ScoreRows_JSON(F̂_fᴹ,B_f^name,B_f^pool,market,T̃_f,Ṽ_f)",
+      "meaning": "Restore the saved neural checkpoint, reconstruct per-name and pooled horizon-empirical baselines from all full fit rows T_f, then score the stride-selected T̃_f and complete Ṽ_f. Per-name baseline uses horizon/reference scaling; pooled baseline uses standardized outcomes and reference one. Unseen horizons map to the nearest fitted horizon under the existing owner rule. Preserve fold/band/physical identity and row order; emit component CDFs, declared PITs, outcomes, context and market eligibility. No new neural fit or model selection occurs. R-scores records both full and scored counts."
     },
     {
       "id": "slice_score",
-      "formula": "A_r=(V₂∪V₃∪V₄∪V₅)∩{i:tᵢ∈I_r}; Y_r=ReportSlices_JSON({(i,F̂_m,i,zᵢ):i∈A_r})",
-      "meaning": "Report paired predictive scores and descriptive decompositions within the one named regime. This does not compute the aggregate A0007 expiry-rank cell gate."
+      "formula": "A_r=U_report∩{i:tᵢ∈I_r}; Y_r=ReportSlices_JSON({(i,F̂_k,i,zᵢ):i∈A_r,k∈K_report})",
+      "meaning": "Use the common finite ranked-validation population, then the named regime and valid category codes for each declared grouping. Report paired scores and descriptive decompositions. This is separate from PIT/QA learning masks and does not compute the aggregate A0007 expiry-rank gate."
     },
     {
       "id": "hypersearch",
@@ -180,8 +205,8 @@
     },
     {
       "id": "mio_study",
-      "formula": "O_m=Report_JSON(Replay_JSON({Solve_{η_m}(F̂_t,A_t(P),B_t)}_t,quotes,settlements,funding))",
-      "meaning": "Compose quote admission, the saved MIO solver, account replay and reporting. For the recorded 2020 execution use its pinned params and bounded script. For future packets, P, η_m and all history/entry/settlement windows remain to be fixed in executable JSON."
+      "formula": "O_ν=Report_JSON(Replay_JSON({Solve_{η_ν}(F̂_t,A_t(P),B_t)}_t,quotes,settlements,funding))",
+      "meaning": "Compose quote admission, the saved MIO solver, account replay and reporting. For the recorded 2020 execution use its pinned params and bounded script. For future packets, P, η_ν and all history/entry/settlement windows remain to be fixed in executable JSON."
     }
   ],
   "population": {
@@ -330,6 +355,48 @@
     "legacy_2020_dte_calendar_days": [
       1,
       60
+    ],
+    "scoring_populations": [
+      {
+        "fold": 1,
+        "full_fit_rows": 260392,
+        "scoring_fit_stride": 3,
+        "scored_fit_rows": 86798,
+        "full_validation_rows": 160754,
+        "scored_validation_rows": 160754
+      },
+      {
+        "fold": 2,
+        "full_fit_rows": 426603,
+        "scoring_fit_stride": 5,
+        "scored_fit_rows": 85321,
+        "full_validation_rows": 177194,
+        "scored_validation_rows": 177194
+      },
+      {
+        "fold": 3,
+        "full_fit_rows": 605633,
+        "scoring_fit_stride": 7,
+        "scored_fit_rows": 86519,
+        "full_validation_rows": 181285,
+        "scored_validation_rows": 181285
+      },
+      {
+        "fold": 4,
+        "full_fit_rows": 788405,
+        "scoring_fit_stride": 8,
+        "scored_fit_rows": 98551,
+        "full_validation_rows": 181588,
+        "scored_validation_rows": 181588
+      },
+      {
+        "fold": 5,
+        "full_fit_rows": 970019,
+        "scoring_fit_stride": 10,
+        "scored_fit_rows": 97002,
+        "full_validation_rows": 171118,
+        "scored_validation_rows": 171118
+      }
     ]
   },
   "windows": [
@@ -369,7 +436,8 @@
       "configs": [
         "path",
         "folds",
-        "tcn"
+        "tcn",
+        "resolved-tcn"
       ],
       "runs": [
         "R-tcn-f1",
@@ -395,7 +463,8 @@
         "path",
         "folds",
         "tcn",
-        "m51"
+        "m51",
+        "resolved-tcn"
       ],
       "runs": [
         "R-tcn-f2",
@@ -462,7 +531,7 @@
       "start": null,
       "end_exclusive": null,
       "status": "undecided",
-      "inputs": "P₁₉*, frozen F̂, formulation set {η_m}, packet boundaries",
+      "inputs": "P₁₉*, frozen F̂, formulation set {η_ν}, packet boundaries",
       "operation": "mio_study",
       "outputs": "paired reports → revision decision → next unopened packet",
       "configs": [
@@ -510,7 +579,9 @@
         "folds",
         "tcn",
         "mlp",
-        "m51"
+        "m51",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [],
       "notes": "Reader guard begins Jan 1; the Path holdout's first session is Jan 2.",
@@ -591,7 +662,9 @@
         "folds",
         "tcn",
         "mlp",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f1",
@@ -628,7 +701,9 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f1",
@@ -666,7 +741,9 @@
         "tcn",
         "mlp",
         "m51",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f1",
@@ -698,13 +775,14 @@
       "start": null,
       "end_exclusive": null,
       "status": "recorded",
-      "inputs": "L_1, component forecasts, dispersion bucket",
+      "inputs": "L_1 from prior V_g^src, component forecasts, dispersion bucket",
       "operation": "blend",
       "outputs": "ŵ_1, F̂^M51_1; fallback flag",
       "configs": [
         "m51",
         "mlp",
-        "folds"
+        "folds",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-m51",
@@ -723,17 +801,19 @@
       "start": "2017-01-03",
       "end_exclusive": "2018-09-04",
       "status": "recorded",
-      "inputs": "T_1 ∩ U_PIT, F_market, u_market",
+      "inputs": "T_1^src ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_1, F̂_market_cal",
       "configs": [
         "m51",
-        "folds"
+        "folds",
+        "scores"
       ],
       "runs": [
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
-      "notes": "Own fit band; labels must settle before 2018-09-04. Distinct from C_1, the early-stop monitor.",
+      "notes": "Origin envelope of the sampled source-fit population; 260392 full fit rows → stride 3 → 86798 scored fit rows before PIT eligibility. Labels remain strictly before the displayed upper endpoint. This is distinct from full T_1 and early-stop C_1.",
       "authority": [
         "executed M51 params"
       ],
@@ -753,7 +833,9 @@
         "folds",
         "tcn",
         "mlp",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f2",
@@ -790,7 +872,9 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f2",
@@ -828,7 +912,9 @@
         "tcn",
         "mlp",
         "m51",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f2",
@@ -886,13 +972,14 @@
       "start": "2019-01-02",
       "end_exclusive": "2020-01-01",
       "status": "recorded",
-      "inputs": "L_2, component forecasts, dispersion bucket",
+      "inputs": "L_2 from prior V_g^src, component forecasts, dispersion bucket",
       "operation": "blend",
       "outputs": "ŵ_2, F̂^M51_2; fallback flag",
       "configs": [
         "m51",
         "mlp",
-        "folds"
+        "folds",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-m51",
@@ -912,17 +999,19 @@
       "start": "2017-01-03",
       "end_exclusive": "2019-09-05",
       "status": "recorded",
-      "inputs": "T_2 ∩ U_PIT, F_market, u_market",
+      "inputs": "T_2^src ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_2, F̂_market_cal",
       "configs": [
         "m51",
-        "folds"
+        "folds",
+        "scores"
       ],
       "runs": [
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
-      "notes": "Own fit band; labels must settle before 2019-09-05. Distinct from C_2, the early-stop monitor.",
+      "notes": "Origin envelope of the sampled source-fit population; 426603 full fit rows → stride 5 → 85321 scored fit rows before PIT eligibility. Labels remain strictly before the displayed upper endpoint. This is distinct from full T_2 and early-stop C_2.",
       "authority": [
         "executed M51 params"
       ],
@@ -942,7 +1031,9 @@
         "folds",
         "tcn",
         "mlp",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f3",
@@ -979,7 +1070,9 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f3",
@@ -1017,7 +1110,9 @@
         "tcn",
         "mlp",
         "m51",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f3",
@@ -1075,13 +1170,14 @@
       "start": "2019-01-02",
       "end_exclusive": "2021-01-01",
       "status": "recorded",
-      "inputs": "L_3, component forecasts, dispersion bucket",
+      "inputs": "L_3 from prior V_g^src, component forecasts, dispersion bucket",
       "operation": "blend",
       "outputs": "ŵ_3, F̂^M51_3; fallback flag",
       "configs": [
         "m51",
         "mlp",
-        "folds"
+        "folds",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-m51",
@@ -1102,17 +1198,19 @@
       "start": "2017-01-03",
       "end_exclusive": "2020-09-04",
       "status": "recorded",
-      "inputs": "T_3 ∩ U_PIT, F_market, u_market",
+      "inputs": "T_3^src ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_3, F̂_market_cal",
       "configs": [
         "m51",
-        "folds"
+        "folds",
+        "scores"
       ],
       "runs": [
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
-      "notes": "Own fit band; labels must settle before 2020-09-04. Distinct from C_3, the early-stop monitor.",
+      "notes": "Origin envelope of the sampled source-fit population; 605633 full fit rows → stride 7 → 86519 scored fit rows before PIT eligibility. Labels remain strictly before the displayed upper endpoint. This is distinct from full T_3 and early-stop C_3.",
       "authority": [
         "executed M51 params"
       ],
@@ -1132,7 +1230,9 @@
         "folds",
         "tcn",
         "mlp",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f4",
@@ -1169,7 +1269,9 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f4",
@@ -1207,7 +1309,9 @@
         "tcn",
         "mlp",
         "m51",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f4",
@@ -1265,13 +1369,14 @@
       "start": "2019-01-02",
       "end_exclusive": "2022-01-01",
       "status": "recorded",
-      "inputs": "L_4, component forecasts, dispersion bucket",
+      "inputs": "L_4 from prior V_g^src, component forecasts, dispersion bucket",
       "operation": "blend",
       "outputs": "ŵ_4, F̂^M51_4; fallback flag",
       "configs": [
         "m51",
         "mlp",
-        "folds"
+        "folds",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-m51",
@@ -1293,17 +1398,19 @@
       "start": "2017-01-03",
       "end_exclusive": "2021-09-07",
       "status": "recorded",
-      "inputs": "T_4 ∩ U_PIT, F_market, u_market",
+      "inputs": "T_4^src ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_4, F̂_market_cal",
       "configs": [
         "m51",
-        "folds"
+        "folds",
+        "scores"
       ],
       "runs": [
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
-      "notes": "Own fit band; labels must settle before 2021-09-07. Distinct from C_4, the early-stop monitor.",
+      "notes": "Origin envelope of the sampled source-fit population; 788405 full fit rows → stride 8 → 98551 scored fit rows before PIT eligibility. Labels remain strictly before the displayed upper endpoint. This is distinct from full T_4 and early-stop C_4.",
       "authority": [
         "executed M51 params"
       ],
@@ -1323,7 +1430,9 @@
         "folds",
         "tcn",
         "mlp",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f5",
@@ -1360,7 +1469,9 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f5",
@@ -1398,7 +1509,9 @@
         "tcn",
         "mlp",
         "m51",
-        "scores"
+        "scores",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-tcn-f5",
@@ -1430,13 +1543,14 @@
       "start": "2019-01-02",
       "end_exclusive": "2022-12-31",
       "status": "recorded",
-      "inputs": "L_5, component forecasts, dispersion bucket",
+      "inputs": "L_5 from prior V_g^src, component forecasts, dispersion bucket",
       "operation": "blend",
       "outputs": "ŵ_5, F̂^M51_5; fallback flag",
       "configs": [
         "m51",
         "mlp",
-        "folds"
+        "folds",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-m51",
@@ -1459,17 +1573,19 @@
       "start": "2017-01-03",
       "end_exclusive": "2022-09-06",
       "status": "recorded",
-      "inputs": "T_5 ∩ U_PIT, F_market, u_market",
+      "inputs": "T_5^src ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_5, F̂_market_cal",
       "configs": [
         "m51",
-        "folds"
+        "folds",
+        "scores"
       ],
       "runs": [
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
-      "notes": "Own fit band; labels must settle before 2022-09-06. Distinct from C_5, the early-stop monitor.",
+      "notes": "Origin envelope of the sampled source-fit population; 970019 full fit rows → stride 10 → 97002 scored fit rows before PIT eligibility. Labels remain strictly before the displayed upper endpoint. This is distinct from full T_5 and early-stop C_5.",
       "authority": [
         "executed M51 params"
       ],
@@ -1482,7 +1598,7 @@
       "start": "2020-01-02",
       "end_exclusive": "2020-02-15",
       "status": "recorded",
-      "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-01-02,2020-02-15);S_f), paired forecasts",
+      "inputs": "U_report ∩ {i:tᵢ∈I_S0}, K_report forecasts",
       "operation": "slice_score",
       "outputs": "Y_S0: paired regime scores and descriptive slices",
       "configs": [
@@ -1505,7 +1621,7 @@
       "start": "2020-02-15",
       "end_exclusive": "2020-07-01",
       "status": "recorded",
-      "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-02-15,2020-07-01);S_f), paired forecasts",
+      "inputs": "U_report ∩ {i:tᵢ∈I_S1}, K_report forecasts",
       "operation": "slice_score",
       "outputs": "Y_S1: paired regime scores and descriptive slices",
       "configs": [
@@ -1528,7 +1644,7 @@
       "start": "2020-07-01",
       "end_exclusive": "2022-01-01",
       "status": "recorded",
-      "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-07-01,2022-01-01);S_f), paired forecasts",
+      "inputs": "U_report ∩ {i:tᵢ∈I_S2}, K_report forecasts",
       "operation": "slice_score",
       "outputs": "Y_S2: paired regime scores and descriptive slices",
       "configs": [
@@ -1551,7 +1667,7 @@
       "start": "2022-01-03",
       "end_exclusive": "2022-12-31",
       "status": "recorded",
-      "inputs": "(V₂∪⋯∪V₅) ∩ D([2022-01-03,2022-12-31);S_f), paired forecasts",
+      "inputs": "U_report ∩ {i:tᵢ∈I_S3}, K_report forecasts",
       "operation": "slice_score",
       "outputs": "Y_S3: paired regime scores and descriptive slices",
       "configs": [
@@ -1574,7 +1690,7 @@
       "start": "2023-01-03",
       "end_exclusive": "2023-12-30",
       "status": "recorded",
-      "inputs": "(V₂∪⋯∪V₅) ∩ D([2023-01-03,2023-12-30);S_f), paired forecasts",
+      "inputs": "U_report ∩ {i:tᵢ∈I_S4}, K_report forecasts",
       "operation": "slice_score",
       "outputs": "Y_S4: paired regime scores and descriptive slices",
       "configs": [
@@ -1623,7 +1739,9 @@
       "outputs": "λ* (undecided)",
       "configs": [
         "tcn",
-        "mlp"
+        "mlp",
+        "resolved-tcn",
+        "resolved-wide_mlp64"
       ],
       "runs": [],
       "notes": "The recorded fits use fixed settings and early stopping. No additional HPO window or search grid has been adopted.",
@@ -1636,13 +1754,14 @@
       "start": "2017-01-03",
       "end_exclusive": "2024-01-01",
       "status": "recorded",
-      "inputs": "{F̂_fᴹ,T_f,V_f}_{f=1}⁵, market and horizon baselines",
+      "inputs": "{F̂_fᴹ,T_f,V_f}_{f=1}⁵ and raw market; empirical baselines reconstructed on full T_f",
       "operation": "score_rows",
-      "outputs": "U: pinned fold/band/component forecast rows for M51",
+      "outputs": "Ω_score: sampled fit + complete validation records with fold/band identity",
       "configs": [
         "scores",
         "folds",
-        "mlp"
+        "mlp",
+        "resolved-wide_mlp64"
       ],
       "runs": [
         "R-scores",
@@ -1652,7 +1771,7 @@
         "R-wide_mlp64-f4",
         "R-wide_mlp64-f5"
       ],
-      "notes": "Origin envelope of the union of five fit/validation bands; overlaps are kept distinct by fold and band. Early-stop C_f is not a scoring band here. Source bytes are the verified M51 input artifact.",
+      "notes": "Origin envelope across all five folds. Full T_f is used to reconstruct the empirical baselines; only its scoring rows are strided to at most 100000 per fold. Validation is complete. C_f is not scored. Exact per-fold counts and source bytes are pinned in R-scores.",
       "authority": [
         "executed StrikeRegionScores pipeline"
       ]
@@ -1664,7 +1783,7 @@
       "start": "2020-01-02",
       "end_exclusive": "2024-01-01",
       "status": "locked",
-      "inputs": "Complete paired scores for all four years and five regimes, c=(ticker,expiry rank)",
+      "inputs": "Complete paired scores across 4 years and 5 regimes; all four R_gate references; c=(ticker,expiry rank)",
       "operation": "cellgate",
       "outputs": "{c:Pass(c)}; execution result not pinned here",
       "configs": [
@@ -1672,7 +1791,7 @@
         "m51"
       ],
       "runs": [],
-      "notes": "A0007 is the locked aggregate rule. M51's saved JSON emits descriptive scores; a separate walk-forward analysis with method rows applies the expiry-rank gate. Exact gate execution provenance was not recovered; no pass set is asserted by this document.",
+      "notes": "A0007 is the locked aggregate rule. M51's saved JSON emits descriptive scores; a separate walk-forward analysis with method rows applies the expiry-rank gate. Exact gate execution provenance was not recovered; no pass set is asserted by this document. The recalibrated market and pooled baseline have been built, so A0007's conditional addition is active.",
       "authority": [
         "A0006",
         "A0007"
@@ -1708,13 +1827,13 @@
       "id": "tcn",
       "path": "children/index_options/configs/run-strike-screen-fits-walkforward.json",
       "sha256": "a1469cc1ef893de9fa437e7c76a8e9582a074f6c34f52ba54069efb9f8cb2332",
-      "role": "TCN recipe template. Zero panel hash and empty dependency/code pins are unresolved placeholders, not the executed invocation."
+      "role": "Repository TCN recipe template with placeholder pins; exact saved resolved invocation is resolved-tcn."
     },
     {
       "id": "mlp",
       "path": "children/index_options/configs/run-strike-screen-fits-wf-wide-mlp64.json",
       "sha256": "16ca896c5487b97e4191390d5bca59aa94d45030e9e1c75e9d33fa99942d5609",
-      "role": "M51 dependency recipe template; the same unresolved invocation placeholders apply."
+      "role": "Repository MLP recipe template with placeholder pins; exact saved resolved invocation is resolved-wide_mlp64."
     },
     {
       "id": "scores",
@@ -1757,6 +1876,20 @@
       "path": "children/index_options/docs/plans/mio-json/compare.template.json",
       "sha256": "c7e458be7745ff94a06a2d26b1eeba6d9eb9026768ea083f1ee28e377fcb0351",
       "role": "Proposed interface only; not executable or an accepted dated schedule. Null pins remain unresolved."
+    },
+    {
+      "id": "resolved-tcn",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
+      "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
+      "role": "Saved resolved CDFExperiment invocation; config identity plus ordered fold-band identities reproduces all five completed cell identities.",
+      "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f"
+    },
+    {
+      "id": "resolved-wide_mlp64",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-wide-mlp64.json",
+      "sha256": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3",
+      "role": "Saved resolved CDFExperiment invocation; config identity plus ordered fold-band identities reproduces all five completed cell identities.",
+      "experiment_identity": "0cbcaaf55229023150e1bdc0292cd8cbde3382d051e5ae94d682cf4614f9f990"
     }
   ],
   "runs": [
@@ -2356,8 +2489,39 @@
         "training_telemetry": true,
         "weight_decay": 0.01
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-tcn",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
+        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
+        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "7c4c8cb0fa8ea26834c8f843fc3bfbe701aa41cd138d77c045f3a1161b205f59",
+        "6207668de6c57a9bcaac7e977165679f42f61611374f7401ecf9761308e6c582",
+        "a2e3a6ce8290d27a33e7f3fb0de690691fbe57e1539095ef41fd8f0895686a7d"
+      ]
     },
     {
       "id": "R-tcn-f2",
@@ -2882,8 +3046,39 @@
         "training_telemetry": true,
         "weight_decay": 0.01
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-tcn",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
+        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
+        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "95636d6bfb92e2dcfdf22aa0d468a532fc199b5069f4d61e2c44da0c5f8701c3",
+        "29d6ead4ab88d31522d6a6f0645b9d3b0fb53103703d29adb90363f79ed56aca",
+        "be95cd32387b7d374b4f2215e2bf2c88ee4f7f7e260317c515de505ad5a7d00d"
+      ]
     },
     {
       "id": "R-tcn-f3",
@@ -3410,8 +3605,39 @@
         "training_telemetry": true,
         "weight_decay": 0.01
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-tcn",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
+        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
+        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "da1d2c260a257a171138e20b0e9e3427e7980c317b621f78d4767527ff092312",
+        "3cbd5e22ab665d330c3eeaf627ee2edde48936ff9237e23cda1dc85949f1a2d2",
+        "17daf3443fb9ca940454d53f2d54540d956c1a6b1b697c6e5aaefc765864df8b"
+      ]
     },
     {
       "id": "R-tcn-f4",
@@ -3938,8 +4164,39 @@
         "training_telemetry": true,
         "weight_decay": 0.01
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-tcn",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
+        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
+        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "6070f65012e9775dcc5f4944c4b5d1d39c9051752e7f84509e0e6d1f787c1338",
+        "46c9662a352cd0cc7cf1707d2a056498beb47073db6c909a8e4bc61fa3bdc0e1",
+        "6d7e6b0fe5743180904e1cd888db73794a03952fcdcaa3da4fb4bb5820f7a52d"
+      ]
     },
     {
       "id": "R-tcn-f5",
@@ -4464,8 +4721,39 @@
         "training_telemetry": true,
         "weight_decay": 0.01
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-tcn",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
+        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
+        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "c9496a621bd4830c0169edb3b5dfcf64f55d987752c9cd30d45e720974cbe744",
+        "03cb9f6463640b5c69f535b15e339376b3a3aeafdf5f50745a2b877bc74d50f6",
+        "d7a79dde14afc7b1f9f65f80d16140b8fb2a6da44be8b5311cf3f2eb669eac2f"
+      ]
     },
     {
       "id": "R-wide_mlp64-f1",
@@ -4912,8 +5200,39 @@
         "training_telemetry": true,
         "weight_decay": 0.3
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-wide_mlp64",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-wide-mlp64.json",
+        "sha256": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3",
+        "experiment_identity": "0cbcaaf55229023150e1bdc0292cd8cbde3382d051e5ae94d682cf4614f9f990",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "5335c6279f3da971387ded0a8b72c33df54ad6fd03c7f51e6fc59d1a023dccec",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "7c4c8cb0fa8ea26834c8f843fc3bfbe701aa41cd138d77c045f3a1161b205f59",
+        "6207668de6c57a9bcaac7e977165679f42f61611374f7401ecf9761308e6c582",
+        "a2e3a6ce8290d27a33e7f3fb0de690691fbe57e1539095ef41fd8f0895686a7d"
+      ]
     },
     {
       "id": "R-wide_mlp64-f2",
@@ -5360,8 +5679,39 @@
         "training_telemetry": true,
         "weight_decay": 0.3
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-wide_mlp64",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-wide-mlp64.json",
+        "sha256": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3",
+        "experiment_identity": "0cbcaaf55229023150e1bdc0292cd8cbde3382d051e5ae94d682cf4614f9f990",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "5335c6279f3da971387ded0a8b72c33df54ad6fd03c7f51e6fc59d1a023dccec",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "95636d6bfb92e2dcfdf22aa0d468a532fc199b5069f4d61e2c44da0c5f8701c3",
+        "29d6ead4ab88d31522d6a6f0645b9d3b0fb53103703d29adb90363f79ed56aca",
+        "be95cd32387b7d374b4f2215e2bf2c88ee4f7f7e260317c515de505ad5a7d00d"
+      ]
     },
     {
       "id": "R-wide_mlp64-f3",
@@ -5809,8 +6159,39 @@
         "training_telemetry": true,
         "weight_decay": 0.3
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-wide_mlp64",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-wide-mlp64.json",
+        "sha256": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3",
+        "experiment_identity": "0cbcaaf55229023150e1bdc0292cd8cbde3382d051e5ae94d682cf4614f9f990",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "5335c6279f3da971387ded0a8b72c33df54ad6fd03c7f51e6fc59d1a023dccec",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "da1d2c260a257a171138e20b0e9e3427e7980c317b621f78d4767527ff092312",
+        "3cbd5e22ab665d330c3eeaf627ee2edde48936ff9237e23cda1dc85949f1a2d2",
+        "17daf3443fb9ca940454d53f2d54540d956c1a6b1b697c6e5aaefc765864df8b"
+      ]
     },
     {
       "id": "R-wide_mlp64-f4",
@@ -6258,8 +6639,39 @@
         "training_telemetry": true,
         "weight_decay": 0.3
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-wide_mlp64",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-wide-mlp64.json",
+        "sha256": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3",
+        "experiment_identity": "0cbcaaf55229023150e1bdc0292cd8cbde3382d051e5ae94d682cf4614f9f990",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "5335c6279f3da971387ded0a8b72c33df54ad6fd03c7f51e6fc59d1a023dccec",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "6070f65012e9775dcc5f4944c4b5d1d39c9051752e7f84509e0e6d1f787c1338",
+        "46c9662a352cd0cc7cf1707d2a056498beb47073db6c909a8e4bc61fa3bdc0e1",
+        "6d7e6b0fe5743180904e1cd888db73794a03952fcdcaa3da4fb4bb5820f7a52d"
+      ]
     },
     {
       "id": "R-wide_mlp64-f5",
@@ -6706,8 +7118,39 @@
         "training_telemetry": true,
         "weight_decay": 0.3
       },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
-      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
+      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
+      "resolved_document": {
+        "id": "resolved-wide_mlp64",
+        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-wide-mlp64.json",
+        "sha256": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3",
+        "experiment_identity": "0cbcaaf55229023150e1bdc0292cd8cbde3382d051e5ae94d682cf4614f9f990",
+        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "source_hashes": {
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "5335c6279f3da971387ded0a8b72c33df54ad6fd03c7f51e6fc59d1a023dccec",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
+          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
+        },
+        "dependencies": {
+          "lightgbm": "4.7.0",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "scikit-learn": "1.9.0",
+          "torch": "2.11.0+cu128",
+          "transformers": "5.16.1"
+        }
+      },
+      "band_identities": [
+        "c9496a621bd4830c0169edb3b5dfcf64f55d987752c9cd30d45e720974cbe744",
+        "03cb9f6463640b5c69f535b15e339376b3a3aeafdf5f50745a2b877bc74d50f6",
+        "d7a79dde14afc7b1f9f65f80d16140b8fb2a6da44be8b5311cf3f2eb669eac2f"
+      ]
     },
     {
       "id": "R-mio2020",
@@ -6735,8 +7178,61 @@
         "resolved.json": "7f25c24ef005e3698bb0d06da935229e11797d1e4ba4a796778dbc8d8f415004",
         "result.json": "23b26d014c219080cefddff634c839ae1c451885a2625bf50baf2451a5ef6147"
       },
-      "verification": "RunAttestation completed and scores node bound to saved config; document hash matches resolved. Its row output is the byte-verified M51 source.",
-      "limitation": "Local saved evidence, not a signed attestation; original code/environment binding was not recovered."
+      "verification": "RunAttestation completed and scores node bound to saved config; document hash matches resolved. Its row output is the byte-verified M51 source. Summary pins the resolved MLP document, panel and neural checkpoints. Sampling counts agree with deterministic stride over the recorded full bands.",
+      "limitation": "Local saved evidence. The scorer's original process environment is not independently attested.",
+      "scoring_populations": [
+        {
+          "fold": 1,
+          "full_fit_rows": 260392,
+          "scoring_fit_stride": 3,
+          "scored_fit_rows": 86798,
+          "full_validation_rows": 160754,
+          "scored_validation_rows": 160754
+        },
+        {
+          "fold": 2,
+          "full_fit_rows": 426603,
+          "scoring_fit_stride": 5,
+          "scored_fit_rows": 85321,
+          "full_validation_rows": 177194,
+          "scored_validation_rows": 177194
+        },
+        {
+          "fold": 3,
+          "full_fit_rows": 605633,
+          "scoring_fit_stride": 7,
+          "scored_fit_rows": 86519,
+          "full_validation_rows": 181285,
+          "scored_validation_rows": 181285
+        },
+        {
+          "fold": 4,
+          "full_fit_rows": 788405,
+          "scoring_fit_stride": 8,
+          "scored_fit_rows": 98551,
+          "full_validation_rows": 181588,
+          "scored_validation_rows": 181588
+        },
+        {
+          "fold": 5,
+          "full_fit_rows": 970019,
+          "scoring_fit_stride": 10,
+          "scored_fit_rows": 97002,
+          "full_validation_rows": 171118,
+          "scored_validation_rows": 171118
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/strike-region-scores-wf-wide-mlp64/summary.json",
+          "sha256": "cafefe842e40ebcf005fab354b65eeca9eae8a6df12b4c630e4013820cd821a2"
+        },
+        {
+          "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/strike-region-scores-wf-wide-mlp64/rows.parquet",
+          "sha256": "f0db364e4d149fe7dc22a34e2de90ef117599d32a2ab6705fe8da8e03f7b2c85"
+        }
+      ],
+      "experiment_identity": "0cbcaaf55229023150e1bdc0292cd8cbde3382d051e5ae94d682cf4614f9f990"
     }
   ],
   "inspected_code": [
@@ -6818,31 +7314,6 @@
       ]
     },
     {
-      "id": "P1",
-      "kind": "provenance not recovered",
-      "question": "Exact resolved CDFExperiment invocation and original code/environment bindings for the ten pinned fit artifacts",
-      "windows": [
-        "F1T",
-        "F1C",
-        "F1V",
-        "F2T",
-        "F2C",
-        "F2V",
-        "F2L",
-        "F3T",
-        "F3C",
-        "F3V",
-        "F3L",
-        "F4T",
-        "F4C",
-        "F4V",
-        "F4L",
-        "F5T",
-        "F5C",
-        "F5V"
-      ]
-    },
-    {
       "id": "P2",
       "kind": "legacy provenance limitation",
       "question": "2020 script identity pins params and counts, not original source content; no pipeline run attestation",
@@ -6862,5 +7333,15 @@
   "maintenance": {
     "update_skill": "update-tdd",
     "procedure": "Update current decisions and the canonical JSON first; rederive both visual and chart from windows. Pin exact resolved configs and run artifacts; keep unknown execution evidence distinct from undecided policy. Verify hashes without opening protected data. Never convert a proposal into a decision implicitly."
+  },
+  "provenance_recovered": {
+    "resolved_fit_invocations": "Both saved resolved documents recovered; all ten fit identities independently reproduced from config identity, groups and ordered bounded fold-band identity columns.",
+    "bounded_columns": [
+      "symbol",
+      "quote_date",
+      "expiry",
+      "settlement_date"
+    ],
+    "no_outcomes_decoded": true
   }
 }

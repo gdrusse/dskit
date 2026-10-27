@@ -32784,3 +32784,80 @@ New canonical SHA256:
 New canvas SHA256:
 21e9ff06312529c82e2c12aa23c1ed1925818b458a4d6a41bec6c2c749d9d0a0
 Both final lenses restart on this corrected candidate.
+
+TDD review round 2 stopped candidate 3cc5cb8b04d2222a7478184aacc3519ed4c0983c
+at the correctness/authority gate; no second lens was spent on a candidate
+whose A0007 authority formula was invalid. Reviewer GPT-6,
+ /root/tdd_correctness_final. Unresolved C0 / M2 / minor1 / nit0.
+Retained report (formatting normalized):
+
+C4 Major: marketcal used full T_f and SCORES omitted scoring subsampling.
+Executed fit_band_sample=100000 gives populations to scored counts
+260392->86798, 426603->85321, 605633->86519, 788405->98551,
+970019->97002. Validation is unsampled. Actual _sample and _PitMap on
+200000 alternating PITs [.1,.9,...] yield G(.5)=.5 on full T but 1.0
+on the stride sample of .1 values. Literal TDD implementation changes
+calibration, QA weights and downstream forecasts. Define sampled scoring-fit
+rows, anchor (fold,band,identity) to the pinned artifact and use its fit band
+for PIT learning; preserve full T for neural and empirical fitting.
+
+C5 Major: current A0007 formula omits built calibrated-market and pooled
+references. Path adds them when built and both are present. With model .9,
+raw/name 1.0, calibrated/pooled .8 in every year/regime, the old formula
+passes and the applicable four-reference gate fails. Express the full
+comparator set, keep A0005 separate and retain missing gate execution
+provenance; no existing pass result is being overturned.
+
+C6 Minor: scoring prose said no model is trained, omitting _baselines and
+_pooled reconstruction from ALL full T before scoring sampling. Restore the
+neural checkpoint and state these empirical fits separately to avoid fitting
+baselines on the smaller score population.
+
+Original C1/C2/C3/I1 corrections were present. Required convergence checkpoint:
+one bounded batch correction is supported. Full population inventory is
+bounded validated panel -> configured tickers in identity order -> fold
+calendar, strict fit/monitor purges and ticker admission -> full T/C/V ->
+saved neural checkpoint and empirical baselines fitted on full T ->
+scoring-fit stride and complete validation, retaining fold/band identity ->
+PIT learning on eligible/finite source-fit rows -> QA learning on eligible,
+component-ready earlier source-validation rows with matured labels ->
+whole-population minimum counts, independent global/bucket QA strides ->
+bucket/global prediction and model fallback -> reporting on ranked validation
+with finite outcome and ALL reported forecasts -> declared grouping masks.
+Artifact anchoring is sound if order and fold/band multiplicity are preserved,
+full T remains distinct, and reporting is separate from PIT/QA/readiness.
+No external-component joins, feature-conditioned filters or recency weighting
+apply to this JSON. No runtime, Path, date or research decision change needed.
+
+Checks passed: immutable/clean candidate; 48 IDs/references/dates; 13 config
+and five code hashes; canonical/canvas equality; 73 recorded file hashes;
+three completed node/document attestations; ten fit manifests, memberships,
+supports, settings/checkpoints; five fold/regime conversions and strict
+settlement seams; 82-origin boundaries from date-only projection; panel and
+M51 artifact byte hashes; both synthetic counterexamples.
+Limits: no market task, protected outcome read, Path edit, full suite, visual
+render or repeated TypeScript check. At that candidate, original resolved
+invocations remained unrecovered.
+
+Checkpoint correction now applied as one batch: ordered S_L, distinct full
+T/V and sampled scoring/artifact populations, full-T empirical reconstruction,
+source-fit PIT learning, source-validation QA learning with independent strides,
+distinct report-common mask and all four currently built A0007 comparators.
+Predictive model index m and MIO formulation index nu are distinct.
+
+Additional provenance recovery: saved resolved TCN and MLP invocations found
+under documents/study. Their config identities plus groups and ordered
+fold-band identity hashes reproduce ALL ten complete fit identities. Only
+symbol, quote_date, expiry and settlement_date were projected under both
+pre-2024 bounds; no outcomes decoded. Saved panel bytes were already verified.
+Source/dependency declarations and exact document hashes now appear with
+each fit, replacing the obsolete unrecovered-invocation limitation.
+
+Corrected checks: 48 windows / 15 config refs / 15 execution records; exact
+references, config/run hashes, date/purge boundaries and snapshot equality;
+no orphan config; TypeScript zero; rendered-tree harness 15 states and 808
+existing-file actions. Skill unchanged. New canonical SHA256:
+4db996fee2058789c8d76245d42367a39358793fc7d00e1d76e87da4bd9b78ea
+New canvas SHA256:
+9cf52c78a283f3a104f93bee27657109d7756adf7cc44585ff6e69d41e406950
+Both final independent lenses restart on this bounded corrected candidate.
