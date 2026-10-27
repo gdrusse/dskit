@@ -80,6 +80,21 @@
       "id": "units",
       "symbol": "q, A_t(P), η_m, x̂_t, B_t, L_m",
       "definition": "q is an option contract quote; A_t is the admitted quote set. η_m is a frozen MIO formulation/parameter set, x̂_t its returned integer contract vector, B_t account capital in USD, and L_m its replay ledger. Contracts use the multiplier and fees in pinned params."
+    },
+    {
+      "id": "m51ready",
+      "symbol": "K={model,market_cal,pooled,baseline}; R_K={i: ∀k∈K, finite(F_{k,i}(Z))}",
+      "definition": "finite means every scalar in the grid vector is a finite real number. R_K is target readiness: it does not require a known outcome or market_eligible=true. The row may receive fitted QA only if its whole-fold QA fit exists and i∈R_K."
+    },
+    {
+      "id": "m51teach",
+      "symbol": "U_QA = R_K ∩ {i: market_eligibleᵢ ∧ finite(zᵢ)}",
+      "definition": "QA learning eligibility requires all four component grid CDFs, the eligible flag and a finite outcome. It is stricter than target readiness and differs from the market PIT-map learning set."
+    },
+    {
+      "id": "m51pit",
+      "symbol": "U_PIT = {i: market_eligibleᵢ ∧ finite(zᵢ) ∧ finite(u_market,i) ∧ finite(F_market,i(Z))}",
+      "definition": "u_market is the declared market_pit column, not a recomputation from the truncated grid. PIT calibration needs only the source market CDF and PIT, not all four QA components."
     }
   ],
   "functions": [
@@ -110,13 +125,13 @@
     },
     {
       "id": "marketcal",
-      "formula": "Ĝ_f = PITMap₂₁({F_market,i(zᵢ): i∈T_f ∩ eligible_M51}); F̂_market_cal,i = Ĝ_f ∘ F_market,i",
-      "meaning": "The recorded M51 pipeline fits its market PIT map from the current fold's fit band, using its pinned component eligibility/finite-value filters."
+      "formula": "A_f^PIT=T_f∩U_PIT; Ĝ_f=PITMap₂₁({u_market,i:i∈A_f^PIT}); F̂_market_cal,i=Ĝ_f∘F_market,i",
+      "meaning": "Estimate the empirical PIT CDF at 21 equally spaced knots and interpolate. Apply within the same fold. If A_f^PIT is empty the calibrated component remains missing; this is separate from both early-stop C_f and QA learning."
     },
     {
       "id": "blend",
-      "formula": "L_f = (⋃_{g<f} V_g) ∩ E(v_f) ∩ eligible_M51; ŵ_{f,b} = FitQA_JSON(L_f ∩ bucket_b); Q̂_f(u)=Σ_j ŵ_{f,b,j} Q̂_{f,j}(u)",
-      "meaning": "j∈{model,market_cal,pooled,baseline}; nonnegative simplex weights, 199 quantile levels, dispersion buckets in JSON, min_rows=5000 and learning cap=100000. Invert averaged quantiles to a CDF. f=1 and insufficient buckets fall back to the MLP component, with fitted=false. FitQA is the numerical algorithm, not a claim of global minimization."
+      "formula": "L_f=(⋃_{g<f}V_g)∩E(v_f)∩U_QA; ŵ_f,global=FitQA_JSON(L_f); ŵ_f,b=FitQA_JSON(L_f∩bucket_b) when |L_f∩bucket_b|≥5000; ŵ_f(i)=ŵ_f,b(i) if fitted, else ŵ_f,global; F̂_f,i^M51=Inverse(Σ_{k∈K}ŵ_f,k(i)Q̂_f,k,i) if a whole-fold fit exists and i∈R_K, else F̂_model,i",
+      "meaning": "The whole-fold fit declines if fewer than 5000 eligible learning rows exist. Otherwise it fits a global QA and any sufficiently large dispersion buckets. Missing/undersized buckets use the global QA and still have fitted=true on ready rows. MLP fallback with fitted=false is used only when the whole-fold fit is absent/declined or the target lacks a required component. Fold 1 has no prior validation and uses MLP fallback. Each fit uses deterministic stride sampling capped at 100000 learning rows and 199 quantile levels; weights lie on the simplex. FitQA denotes the numerical algorithm, not a global optimum guarantee."
     },
     {
       "id": "promotion",
@@ -147,6 +162,26 @@
       "id": "closed",
       "formula": "Read(I)=∅; Fit(I)=∅; Select(I)=∅; Report(I)=∅ while sealed",
       "meaning": "2024-25 is a separately authorized single-opening holdout for promoted recipes. 2026 stays closed permanently. This records policy for this lane; it does not assert nobody ever inspected those years in any other project."
+    },
+    {
+      "id": "score_rows",
+      "formula": "U_f=ScoreRows_JSON(F̂_fᴹ,T_f∪V_f,market,baselines); U=⋃_{f=1}⁵{(f,bandᵢ,i,F̂_model,i(Z),F_market,i(Z),F_baseline,i(Z),F_pooled,i(Z),u_market,i,market_eligibleᵢ,zᵢ)}",
+      "meaning": "Score saved MLP fits on their own fit and validation bands, retaining fold/band identity, component forecasts, context and outcomes. This completed pipeline emits M51's source rows; it does not train or select another model."
+    },
+    {
+      "id": "slice_score",
+      "formula": "A_r=(V₂∪V₃∪V₄∪V₅)∩{i:tᵢ∈I_r}; Y_r=ReportSlices_JSON({(i,F̂_m,i,zᵢ):i∈A_r})",
+      "meaning": "Report paired predictive scores and descriptive decompositions within the one named regime. This does not compute the aggregate A0007 expiry-rank cell gate."
+    },
+    {
+      "id": "hypersearch",
+      "formula": "HyperSearch(Λ_search,D_tune,J_search) → λ*; Λ_search,D_tune,J_search = undecided",
+      "meaning": "Signature of the unassigned future hyperparameter-selection operation. Search domain, fitting/tuning windows, selection objective and execution JSON are undecided. No optimizer, ranking method or data allocation is adopted by this notation; it is distinct from the recorded epoch-monitor operation."
+    },
+    {
+      "id": "mio_study",
+      "formula": "O_m=Report_JSON(Replay_JSON({Solve_{η_m}(F̂_t,A_t(P),B_t)}_t,quotes,settlements,funding))",
+      "meaning": "Compose quote admission, the saved MIO solver, account replay and reporting. For the recorded 2020 execution use its pinned params and bounded script. For future packets, P, η_m and all history/entry/settlement windows remain to be fixed in executable JSON."
     }
   ],
   "population": {
@@ -405,7 +440,7 @@
       "end_exclusive": "2021-01-01",
       "status": "recorded",
       "inputs": "F̂^M51; saved 17-name universe; 1≤DTE≤60; saved params",
-      "operation": "replay",
+      "operation": "mio_study",
       "outputs": "bounded 2020 study record; no chosen final MIO",
       "configs": [
         "mio2020",
@@ -428,7 +463,7 @@
       "end_exclusive": null,
       "status": "undecided",
       "inputs": "P₁₉*, frozen F̂, formulation set {η_m}, packet boundaries",
-      "operation": "replay",
+      "operation": "mio_study",
       "outputs": "paired reports → revision decision → next unopened packet",
       "configs": [
         "mio-study",
@@ -555,11 +590,13 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "scores"
       ],
       "runs": [
         "R-tcn-f1",
-        "R-wide_mlp64-f1"
+        "R-wide_mlp64-f1",
+        "R-scores"
       ],
       "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
       "authority": [
@@ -628,12 +665,14 @@
         "folds",
         "tcn",
         "mlp",
-        "m51"
+        "m51",
+        "scores"
       ],
       "runs": [
         "R-tcn-f1",
         "R-wide_mlp64-f1",
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
       "notes": "Never ranked; additionally τ<2020-01-02.",
       "authority": [
@@ -684,7 +723,7 @@
       "start": "2017-01-03",
       "end_exclusive": "2018-09-04",
       "status": "recorded",
-      "inputs": "T_1 ∩ eligible_M51, F_market",
+      "inputs": "T_1 ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_1, F̂_market_cal",
       "configs": [
@@ -713,11 +752,13 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "scores"
       ],
       "runs": [
         "R-tcn-f2",
-        "R-wide_mlp64-f2"
+        "R-wide_mlp64-f2",
+        "R-scores"
       ],
       "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
       "authority": [
@@ -786,12 +827,14 @@
         "folds",
         "tcn",
         "mlp",
-        "m51"
+        "m51",
+        "scores"
       ],
       "runs": [
         "R-tcn-f2",
         "R-wide_mlp64-f2",
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
       "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
       "authority": [
@@ -856,7 +899,7 @@
         "R-wide_mlp64-f1",
         "R-wide_mlp64-f2"
       ],
-      "notes": "Prior validation ORIGIN envelope; require τ<2020-01-02, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded.",
+      "notes": "Prior validation ORIGIN envelope; require τ<2020-01-02, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded. Undersized buckets use the fitted global QA; unready target rows keep the MLP fallback.",
       "authority": [
         "executed M51 params"
       ],
@@ -869,7 +912,7 @@
       "start": "2017-01-03",
       "end_exclusive": "2019-09-05",
       "status": "recorded",
-      "inputs": "T_2 ∩ eligible_M51, F_market",
+      "inputs": "T_2 ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_2, F̂_market_cal",
       "configs": [
@@ -898,11 +941,13 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "scores"
       ],
       "runs": [
         "R-tcn-f3",
-        "R-wide_mlp64-f3"
+        "R-wide_mlp64-f3",
+        "R-scores"
       ],
       "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
       "authority": [
@@ -971,12 +1016,14 @@
         "folds",
         "tcn",
         "mlp",
-        "m51"
+        "m51",
+        "scores"
       ],
       "runs": [
         "R-tcn-f3",
         "R-wide_mlp64-f3",
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
       "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
       "authority": [
@@ -1042,7 +1089,7 @@
         "R-wide_mlp64-f2",
         "R-wide_mlp64-f3"
       ],
-      "notes": "Prior validation ORIGIN envelope; require τ<2021-01-04, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded.",
+      "notes": "Prior validation ORIGIN envelope; require τ<2021-01-04, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded. Undersized buckets use the fitted global QA; unready target rows keep the MLP fallback.",
       "authority": [
         "executed M51 params"
       ],
@@ -1055,7 +1102,7 @@
       "start": "2017-01-03",
       "end_exclusive": "2020-09-04",
       "status": "recorded",
-      "inputs": "T_3 ∩ eligible_M51, F_market",
+      "inputs": "T_3 ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_3, F̂_market_cal",
       "configs": [
@@ -1084,11 +1131,13 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "scores"
       ],
       "runs": [
         "R-tcn-f4",
-        "R-wide_mlp64-f4"
+        "R-wide_mlp64-f4",
+        "R-scores"
       ],
       "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
       "authority": [
@@ -1157,12 +1206,14 @@
         "folds",
         "tcn",
         "mlp",
-        "m51"
+        "m51",
+        "scores"
       ],
       "runs": [
         "R-tcn-f4",
         "R-wide_mlp64-f4",
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
       "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
       "authority": [
@@ -1229,7 +1280,7 @@
         "R-wide_mlp64-f3",
         "R-wide_mlp64-f4"
       ],
-      "notes": "Prior validation ORIGIN envelope; require τ<2022-01-03, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded.",
+      "notes": "Prior validation ORIGIN envelope; require τ<2022-01-03, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded. Undersized buckets use the fitted global QA; unready target rows keep the MLP fallback.",
       "authority": [
         "executed M51 params"
       ],
@@ -1242,7 +1293,7 @@
       "start": "2017-01-03",
       "end_exclusive": "2021-09-07",
       "status": "recorded",
-      "inputs": "T_4 ∩ eligible_M51, F_market",
+      "inputs": "T_4 ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_4, F̂_market_cal",
       "configs": [
@@ -1271,11 +1322,13 @@
       "configs": [
         "folds",
         "tcn",
-        "mlp"
+        "mlp",
+        "scores"
       ],
       "runs": [
         "R-tcn-f5",
-        "R-wide_mlp64-f5"
+        "R-wide_mlp64-f5",
+        "R-scores"
       ],
       "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
       "authority": [
@@ -1344,12 +1397,14 @@
         "folds",
         "tcn",
         "mlp",
-        "m51"
+        "m51",
+        "scores"
       ],
       "runs": [
         "R-tcn-f5",
         "R-wide_mlp64-f5",
-        "R-m51"
+        "R-m51",
+        "R-scores"
       ],
       "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
       "authority": [
@@ -1391,7 +1446,7 @@
         "R-wide_mlp64-f4",
         "R-wide_mlp64-f5"
       ],
-      "notes": "Prior validation ORIGIN envelope; require τ<2023-01-03, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded.",
+      "notes": "Prior validation ORIGIN envelope; require τ<2023-01-03, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded. Undersized buckets use the fitted global QA; unready target rows keep the MLP fallback.",
       "authority": [
         "executed M51 params"
       ],
@@ -1404,7 +1459,7 @@
       "start": "2017-01-03",
       "end_exclusive": "2022-09-06",
       "status": "recorded",
-      "inputs": "T_5 ∩ eligible_M51, F_market",
+      "inputs": "T_5 ∩ U_PIT, F_market, u_market",
       "operation": "marketcal",
       "outputs": "Ĝ_5, F̂_market_cal",
       "configs": [
@@ -1428,8 +1483,8 @@
       "end_exclusive": "2020-02-15",
       "status": "recorded",
       "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-01-02,2020-02-15);S_f), paired forecasts",
-      "operation": "cellgate",
-      "outputs": "J by S0; cell/year/regime eligibility evidence",
+      "operation": "slice_score",
+      "outputs": "Y_S0: paired regime scores and descriptive slices",
       "configs": [
         "path",
         "m51"
@@ -1437,7 +1492,7 @@
       "runs": [
         "R-m51"
       ],
-      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test. Aggregate A0007 pass/fail is a separate analysis, not an output asserted for this pinned M51 pipeline.",
       "authority": [
         "A0007",
         "executed M51 regime definitions"
@@ -1451,8 +1506,8 @@
       "end_exclusive": "2020-07-01",
       "status": "recorded",
       "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-02-15,2020-07-01);S_f), paired forecasts",
-      "operation": "cellgate",
-      "outputs": "J by S1; cell/year/regime eligibility evidence",
+      "operation": "slice_score",
+      "outputs": "Y_S1: paired regime scores and descriptive slices",
       "configs": [
         "path",
         "m51"
@@ -1460,7 +1515,7 @@
       "runs": [
         "R-m51"
       ],
-      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test. Aggregate A0007 pass/fail is a separate analysis, not an output asserted for this pinned M51 pipeline.",
       "authority": [
         "A0007",
         "executed M51 regime definitions"
@@ -1474,8 +1529,8 @@
       "end_exclusive": "2022-01-01",
       "status": "recorded",
       "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-07-01,2022-01-01);S_f), paired forecasts",
-      "operation": "cellgate",
-      "outputs": "J by S2; cell/year/regime eligibility evidence",
+      "operation": "slice_score",
+      "outputs": "Y_S2: paired regime scores and descriptive slices",
       "configs": [
         "path",
         "m51"
@@ -1483,7 +1538,7 @@
       "runs": [
         "R-m51"
       ],
-      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test. Aggregate A0007 pass/fail is a separate analysis, not an output asserted for this pinned M51 pipeline.",
       "authority": [
         "A0007",
         "executed M51 regime definitions"
@@ -1497,8 +1552,8 @@
       "end_exclusive": "2022-12-31",
       "status": "recorded",
       "inputs": "(V₂∪⋯∪V₅) ∩ D([2022-01-03,2022-12-31);S_f), paired forecasts",
-      "operation": "cellgate",
-      "outputs": "J by S3; cell/year/regime eligibility evidence",
+      "operation": "slice_score",
+      "outputs": "Y_S3: paired regime scores and descriptive slices",
       "configs": [
         "path",
         "m51"
@@ -1506,7 +1561,7 @@
       "runs": [
         "R-m51"
       ],
-      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test. Aggregate A0007 pass/fail is a separate analysis, not an output asserted for this pinned M51 pipeline.",
       "authority": [
         "A0007",
         "executed M51 regime definitions"
@@ -1520,8 +1575,8 @@
       "end_exclusive": "2023-12-30",
       "status": "recorded",
       "inputs": "(V₂∪⋯∪V₅) ∩ D([2023-01-03,2023-12-30);S_f), paired forecasts",
-      "operation": "cellgate",
-      "outputs": "J by S4; cell/year/regime eligibility evidence",
+      "operation": "slice_score",
+      "outputs": "Y_S4: paired regime scores and descriptive slices",
       "configs": [
         "path",
         "m51"
@@ -1529,7 +1584,7 @@
       "runs": [
         "R-m51"
       ],
-      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test. Aggregate A0007 pass/fail is a separate analysis, not an output asserted for this pinned M51 pipeline.",
       "authority": [
         "A0007",
         "executed M51 regime definitions"
@@ -1564,7 +1619,7 @@
       "end_exclusive": null,
       "status": "undecided",
       "inputs": "Search set Λ_search; tuning/validation assignment",
-      "operation": "monitor",
+      "operation": "hypersearch",
       "outputs": "λ* (undecided)",
       "configs": [
         "tcn",
@@ -1573,6 +1628,55 @@
       "runs": [],
       "notes": "The recorded fits use fixed settings and early stopping. No additional HPO window or search grid has been adopted.",
       "authority": []
+    },
+    {
+      "id": "SCORES",
+      "label": "Produce M51 source rows",
+      "group": "Blending",
+      "start": "2017-01-03",
+      "end_exclusive": "2024-01-01",
+      "status": "recorded",
+      "inputs": "{F̂_fᴹ,T_f,V_f}_{f=1}⁵, market and horizon baselines",
+      "operation": "score_rows",
+      "outputs": "U: pinned fold/band/component forecast rows for M51",
+      "configs": [
+        "scores",
+        "folds",
+        "mlp"
+      ],
+      "runs": [
+        "R-scores",
+        "R-wide_mlp64-f1",
+        "R-wide_mlp64-f2",
+        "R-wide_mlp64-f3",
+        "R-wide_mlp64-f4",
+        "R-wide_mlp64-f5"
+      ],
+      "notes": "Origin envelope of the union of five fit/validation bands; overlaps are kept distinct by fold and band. Early-stop C_f is not a scoring band here. Source bytes are the verified M51 input artifact.",
+      "authority": [
+        "executed StrikeRegionScores pipeline"
+      ]
+    },
+    {
+      "id": "CELLGATE",
+      "label": "Aggregate predictive cell gate",
+      "group": "Reporting",
+      "start": "2020-01-02",
+      "end_exclusive": "2024-01-01",
+      "status": "locked",
+      "inputs": "Complete paired scores for all four years and five regimes, c=(ticker,expiry rank)",
+      "operation": "cellgate",
+      "outputs": "{c:Pass(c)}; execution result not pinned here",
+      "configs": [
+        "path",
+        "m51"
+      ],
+      "runs": [],
+      "notes": "A0007 is the locked aggregate rule. M51's saved JSON emits descriptive scores; a separate walk-forward analysis with method rows applies the expiry-rank gate. Exact gate execution provenance was not recovered; no pass set is asserted by this document.",
+      "authority": [
+        "A0006",
+        "A0007"
+      ]
     }
   ],
   "configs": [
@@ -6617,6 +6721,22 @@
       },
       "verification": "Saved params/result/runner bytes pinned; recorded legacy identity retained.",
       "limitation": "Legacy identity hashes params plus per-symbol row counts, not source content. These retrospective hashes do not prove the original source bytes. No pipeline run_hash exists for this script execution."
+    },
+    {
+      "id": "R-scores",
+      "kind": "pipeline",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/run-wf-wide-mlp64/strike-region-scores-2023-12-31-593914d6",
+      "identity": "593914d64874e467ea2888e4eb6e1205640fbe0fc0f2bdc71d5d65cd5d7f99f6",
+      "document_hash": "36abefe7c3eaf4819ed24a5fc1b01147650d2a807a1838bd705eebd878ca7948",
+      "asof": "2023-12-31",
+      "node": "scores",
+      "files": {
+        "config.json": "12b276d5a1cb8874b303bb58c0a548427f03fd72dd3595a8298e11f61abc2947",
+        "resolved.json": "7f25c24ef005e3698bb0d06da935229e11797d1e4ba4a796778dbc8d8f415004",
+        "result.json": "23b26d014c219080cefddff634c839ae1c451885a2625bf50baf2451a5ef6147"
+      },
+      "verification": "RunAttestation completed and scores node bound to saved config; document hash matches resolved. Its row output is the byte-verified M51 source.",
+      "limitation": "Local saved evidence, not a signed attestation; original code/environment binding was not recovered."
     }
   ],
   "inspected_code": [
@@ -6728,6 +6848,14 @@
       "question": "2020 script identity pins params and counts, not original source content; no pipeline run attestation",
       "windows": [
         "M20"
+      ]
+    },
+    {
+      "id": "P3",
+      "kind": "provenance not recovered",
+      "question": "Exact invocation and output pins for the separate aggregate A0007 expiry-rank cell analysis",
+      "windows": [
+        "CELLGATE"
       ]
     }
   ],

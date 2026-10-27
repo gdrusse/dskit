@@ -32700,3 +32700,87 @@ stopping, label purging/tails and M51 learning; (4) exact JSON/run pins and
 honest missing provenance; (5) protected/unassigned/undecided periods;
 (6) single visual/chart registry, filters and readable endpoint details;
 (7) skill maintenance contract, pointers and focused checks.
+
+TDD review round 1, candidate e3f3fe8bf209596e0936c8e91abc4291bd30b963:
+independent reports retained below (formatting normalized).
+
+Correctness/authority — GPT-6, /root/tdd_correctness:
+Verdict: changes required; unresolved Critical 0 / Major 1 / Minor 2 / Nit 0.
+
+C1 Major: M51 fallback mathematics describes a different forecast.
+Location: technical-design.json functions.blend (lines 118-119), mirrored canvas.
+The document says insufficient dispersion buckets use the MLP with fitted=false.
+_CellFitting.fit/predict instead fits global QA weights when total evidence is
+sufficient; missing/undersized buckets use global QA. _fit_block retains MLP
+when the whole fit declines or the target lacks a required component.
+Market PIT-map and QA-learning eligibility also differ; eligible_M51 was undefined.
+Saved fold 2 has all three bucket fits, 262515 targets, 142399 fitted and 120116
+fallback rows, so insufficient buckets cannot explain them. Two synthetic
+checks passed: unknown bucket returns global QA .75 rather than model .1;
+missing required component returns model .1 and fitted=false despite a valid
+whole-fold fit. Following the original TDD would produce different forecasts
+and downstream MIO eligibility. Define separate market-map, QA-learning and
+target-readiness sets and a piecewise bucket/global/model forecast.
+
+C2 Minor: score-producing pipeline orphaned from chart, execution omitted.
+Config scores was referenced by no window. Completed execution available at
+scores/run-wf-wide-mlp64/strike-region-scores-2023-12-31-593914d6,
+run hash 593914d64874e467ea2888e4eb6e1205640fbe0fc0f2bdc71d5d65cd5d7f99f6,
+document hash 36abefe7c3eaf4819ed24a5fc1b01147650d2a807a1838bd705eebd878ca7948.
+State ran and scores output matches M51 source. The chart skips a relevant JSON
+execution, although source bytes were pinned. Associate scoring with fold/
+forecast windows and retain verified config/completion pins.
+
+C3 Minor: S0-S4 slices invoke the aggregate cellgate they cannot compute.
+Each has one regime's inputs, but cellgate requires at least three years and
+three regimes. The M51 JSON itself distinguishes descriptive tables from the
+A0007 expiry-rank gate produced by a separate analysis with method rows.
+Use a slice-scoring operation; show the complete aggregate gate separately
+with actual provenance or an explicitly unpinned execution state.
+
+Checks: immutable HEAD/clean worktree; Path/workflow/ADR; JSON/canvas equality;
+13 config, 5 code and declared external hashes; 46 IDs/date ordering;
+10 fit memberships/supports; five fold endpoints; fit/monitor purging,
+admission/checkpoint selection, M51 learning/calibration/fallback and bounded
+2020 runner; current authority versus proposals; settlement/history/gap/seal;
+shared visual/chart registry; maintenance skill.
+Limits: no protected outcomes, market jobs, refit, backtest or full suite.
+Original code/environment bindings unrecovered. Did not rehash every large
+artifact, visually render the canvas or repeat TypeScript.
+
+Integration — GPT-6, /root/tdd_integration:
+Additional finding I1 Minor: Reporting/HPO uses monitor and displays visited-
+epoch argmin/checkpoint mathematics while inputs are Lambda_search and output
+lambda*. This conflates HPO with early stopping; undecided state limits impact.
+Give HPO its own explicitly undecided operation. Independently confirmed C1
+global fallback, C2 the sole unreferenced scores config, C3 aggregate cellgate
+on single slices. Additional counts C0/M0/minor1/nit0; combined backlog
+C0/M1/minor3/nit0, correction required.
+
+Checks: candidate/external hashes; author JSON check; TypeScript zero;
+skill validation; focused 5 tests; independent transpiled-component harness
+across all 15 group/fold combinations. Timeline/chart IDs agree, assigned
+windows have two circles and null dates none, selection fallback and nonempty
+views work, 577 file actions resolve. Formulas/paths/pins are exposed except C2.
+Limits: SDK stand-ins verify component logic and structure, not host pixels,
+typography or dispatch. No screenshot, market job, protected outcomes or full
+suite. Did not independently recompute every split/large-artifact hash.
+
+Batch correction: C1 separated U_PIT, U_QA and R_K and specified global/bucket/
+model forecast branches; C2 added verified R-scores and a scoring window with
+fold references; C3 made regimes descriptive slice_score and added the locked
+aggregate gate with missing execution provenance explicit; I1 added the
+undecided hypersearch signature. MIO rows now name the composed solve/replay/
+report operator. No new recipe, allocation or execution decision was adopted.
+
+Corrected candidate checks: 48 windows, 13 config references, 15 run records;
+no orphan config; all references/dates/purge seams; canonical/canvas equality;
+TypeScript zero diagnostics. The unchanged integration harness
+/tmp/check-tdd-rendered-tree.cjs (SHA256
+96c9ab45146f928fb3cbfbcab94ae0de43b9f2ec902f9a8f850be6bea4e8f3b1)
+now passes all 15 states and 659 existing-file actions. External skill unchanged.
+New canonical SHA256:
+8e7191df6f1717aeffbd1632d56cc77a8515b0b4bd0a2cae94307af72c4b12dc
+New canvas SHA256:
+21e9ff06312529c82e2c12aa23c1ed1925818b458a4d6a41bec6c2c749d9d0a0
+Both final lenses restart on this corrected candidate.
