@@ -18,11 +18,16 @@ which case it is a negative tax: the offset a realized loss gives elsewhere.
 ``horizon_years``: holding the gross position at ``hold_return`` (a number, or
 one per symbol) against redeploying the after-tax net at ``redeploy_return``
 less ``redeploy_cost`` less ``risk_premium``. ``decision`` is ``exit`` only when
-the redeploy path is strictly ahead; a tie holds. An optional ``hold_returns``
-input (``{symbol: rate}``, from :mod:`dskit.pipeline.hold_return`) overrides
-the ``hold_return`` param, so an estimate is wired, never pasted. The first
-cut ignores the tax still owed at the end of the hold path, which favours
-holding.
+the redeploy path is strictly ahead; a tie holds. Two optional inputs replace
+the matching params so estimates are wired, never pasted: ``hold_returns``
+(``{symbol: rate}``, from :mod:`dskit.pipeline.hold_return`) and
+``redeploy_return`` (a number from :mod:`dskit.pipeline.active_hurdle`, or
+``None`` when that hurdle was inadmissible, which holds every row). When
+``terminal_tax_rate`` and ``basis_field`` are declared, both paths are
+liquidated at the horizon and taxed on their gain — the hold path over the
+original basis, the redeploy path over the after-tax net it started from —
+so the comparison is net to net; without them the terminal tax is zero on
+both sides, which favours holding.
 
 Rows that cannot be valued refuse by index and field name; nothing is filled.
 Every rate, horizon and field name is a param: the module carries no table.
@@ -44,7 +49,12 @@ __all__ = ["HOLDINGS", "HoldVsRedeploy", "LiquidationTax"]
 HOLDINGS = ("long", "short")
 
 _LIQ_FIELDS = ("liq_proceeds", "liq_gain", "liq_holding", "liq_rate", "liq_tax", "liq_net")
-_DECISION_FIELDS = ("hold_value", "redeploy_value", "advantage", "decision")
+_DECISION_FIELDS = (
+    "hold_value", "hold_terminal_tax", "hold_net", "redeploy_value",
+    "redeploy_terminal_tax", "redeploy_net", "advantage", "decision",
+)
+#: HoldVsRedeploy params that may be absent: the two a wire can replace and the terminal-tax pair.
+_DECISION_OPTIONAL = ("hold_return", "redeploy_return", "terminal_tax_rate", "basis_field")
 
 
 def _name_ok(value):
@@ -216,19 +226,26 @@ class HoldVsRedeploy(Node):
         ``horizon_years`` (int >= 1, REQUIRED); ``hold_return`` (a number in
         ``[-1, 10]`` or ``{symbol: number}``): the annual return of holding,
         per symbol when a mapping (a row whose symbol is absent refuses);
-        required unless ``hold_returns`` is wired; ``redeploy_return`` / ``redeploy_cost`` / ``risk_premium``
-        (numbers in ``[-1, 10]``, REQUIRED): the annual return of the
-        alternative, its annual cost and the premium charged for the
+        required unless ``hold_returns`` is wired; ``redeploy_return``
+        (number in ``[-1, 10]``): the annual return of the alternative;
+        required unless the ``redeploy_return`` input is wired;
+        ``redeploy_cost`` / ``risk_premium`` (numbers in ``[-1, 10]``,
+        REQUIRED): its annual cost and the premium charged for the
         forecast's own uncertainty; ``value_field`` / ``net_field`` /
-        ``symbol_field`` (field names, REQUIRED).
+        ``symbol_field`` (field names, REQUIRED); ``terminal_tax_rate``
+        (number in ``[0, 1]``) and ``basis_field`` (field name), together or
+        not at all: the tax on each path's gain at the horizon.
 
     Inputs
     ------
     ``records`` (REQUIRED)
-        Mapping rows carrying the three declared fields.
+        Mapping rows carrying the declared fields.
     ``hold_returns`` (optional)
         ``{symbol: rate}``; when wired it replaces the ``hold_return`` param
         for every row, and a row whose symbol is absent refuses.
+    ``redeploy_return`` (optional)
+        A number that replaces the ``redeploy_return`` param, or ``None``:
+        no admissible alternative, every row holds.
 
     Examples
     --------
@@ -249,8 +266,9 @@ class HoldVsRedeploy(Node):
     _PARAMS = (
         "horizon_years", "hold_return", "redeploy_return", "redeploy_cost",
         "risk_premium", "value_field", "net_field", "symbol_field",
+        "terminal_tax_rate", "basis_field",
     )
-    _REQUIRED = tuple(name for name in _PARAMS if name != "hold_return")
+    _REQUIRED = tuple(name for name in _PARAMS if name not in _DECISION_OPTIONAL)
     _RATE_LOWER, _RATE_UPPER = -1.0, 10.0
 
     @classmethod
@@ -279,7 +297,13 @@ class HoldVsRedeploy(Node):
                 _check_rate(problems, name, params[name],
                             lower=cls._RATE_LOWER, upper=cls._RATE_UPPER)
         _check_names(problems, params,
-                     [n for n in ("value_field", "net_field", "symbol_field") if n in params])
+                     [n for n in ("value_field", "net_field", "symbol_field", "basis_field")
+                      if n in params])
+        if ("terminal_tax_rate" in params) != ("basis_field" in params):
+            problems.append("terminal_tax_rate and basis_field are declared together or not at all")
+        if "terminal_tax_rate" in params:
+            _check_rate(problems, "terminal_tax_rate", params["terminal_tax_rate"],
+                        lower=0.0, upper=1.0)
         return problems
 
     def _hold_rate(self, index, row, hold):
@@ -311,31 +335,73 @@ class HoldVsRedeploy(Node):
             )
         return wired, "wired"
 
+    def _redeploy_source(self, inputs):
+        """Return ``(annual rate or None, source)`` for the redeploy path."""
+        if "redeploy_return" not in inputs:
+            if "redeploy_return" not in self.params:
+                raise ValueError(
+                    f"{self.key}: no redeploy_return param and no redeploy_return input"
+                )
+            return self.params["redeploy_return"], "param"
+        wired = inputs["redeploy_return"]
+        if wired is None:
+            return None, "inadmissible"
+        if not number_ok(wired):
+            raise ValueError(f"{self.key}: redeploy_return input must be a number or None, got {wired!r}")
+        return float(wired), "wired"
+
+    def _terminal_tax(self, terminal, basis):
+        """Return the tax on a path's gain at the horizon; a loss pays none."""
+        rate = self.params.get("terminal_tax_rate")
+        if rate is None:
+            return 0.0
+        return max(terminal - basis, 0.0) * rate
+
     def run(self, ctx, inputs):
         """Compare the two paths on every row; return the rows with the decision and a summary."""
         records = inputs.get("records")
         _check_rows(self.key, records, _DECISION_FIELDS)
-        hold, source = self._hold_source(inputs)
+        hold, hold_source = self._hold_source(inputs)
+        redeploy_return, redeploy_source = self._redeploy_source(inputs)
         years = self.params["horizon_years"]
-        redeploy_rate = (self.params["redeploy_return"] - self.params["redeploy_cost"]
-                         - self.params["risk_premium"])
-        out, hold_total, redeploy_total = [], 0.0, 0.0
+        basis_field = self.params.get("basis_field")
+        redeploy_rate = None
+        if redeploy_return is not None:
+            redeploy_rate = (redeploy_return - self.params["redeploy_cost"]
+                             - self.params["risk_premium"])
+        out, hold_total, hold_net_total = [], 0.0, 0.0
+        redeploy_total = redeploy_net_total = 0.0 if redeploy_rate is not None else None
         decisions = {"hold": 0, "exit": 0}
         for index, row in enumerate(records):
             value = _number(self.key, index, row, self.params["value_field"])
             net = _number(self.key, index, row, self.params["net_field"])
+            basis = _number(self.key, index, row, basis_field) if basis_field else None
             hold_value = value * math.pow(1.0 + self._hold_rate(index, row, hold), years)
-            redeploy_value = net * math.pow(1.0 + redeploy_rate, years)
-            advantage = redeploy_value - hold_value
-            decision = "exit" if advantage > 0.0 else "hold"
-            out.append({**row, "hold_value": hold_value, "redeploy_value": redeploy_value,
+            hold_tax = self._terminal_tax(hold_value, basis) if basis_field else 0.0
+            hold_net = hold_value - hold_tax
+            if redeploy_rate is None:
+                redeploy_value = redeploy_tax = redeploy_net = advantage = None
+                decision = "hold"
+            else:
+                redeploy_value = net * math.pow(1.0 + redeploy_rate, years)
+                redeploy_tax = self._terminal_tax(redeploy_value, net) if basis_field else 0.0
+                redeploy_net = redeploy_value - redeploy_tax
+                advantage = redeploy_net - hold_net
+                decision = "exit" if advantage > 0.0 else "hold"
+                redeploy_total += redeploy_value
+                redeploy_net_total += redeploy_net
+            out.append({**row, "hold_value": hold_value, "hold_terminal_tax": hold_tax,
+                        "hold_net": hold_net, "redeploy_value": redeploy_value,
+                        "redeploy_terminal_tax": redeploy_tax, "redeploy_net": redeploy_net,
                         "advantage": advantage, "decision": decision})
             hold_total += hold_value
-            redeploy_total += redeploy_value
+            hold_net_total += hold_net
             decisions[decision] += 1
         self.log.info("%s: %d row(s), %s", self.key, len(out), decisions)
         return {"records": out, "summary": {
             "stage": "hold vs redeploy", "rows": len(out), "decisions": decisions,
-            "hold_value": hold_total, "redeploy_value": redeploy_total,
+            "hold_value": hold_total, "hold_net": hold_net_total,
+            "redeploy_value": redeploy_total, "redeploy_net": redeploy_net_total,
             "redeploy_rate": redeploy_rate, "horizon_years": years,
-            "hold_return_source": source}}
+            "hold_return_source": hold_source, "redeploy_return_source": redeploy_source,
+            "terminal_tax_rate": self.params.get("terminal_tax_rate")}}

@@ -831,9 +831,16 @@ they register only into private registries, never the default one.
   negative tax only when `loss_offset` is true), then the terminal value of
   holding the gross position at `hold_return` against redeploying the after-tax
   net at `redeploy_return - redeploy_cost - risk_premium` over `horizon_years`;
-  `decision` is `exit` only when redeploying is strictly ahead; an optional
-  `hold_returns` input (`{symbol: rate}`) overrides the param. The first cut
-  ignores the tax still owed at the end of the hold path.
+  `decision` is `exit` only when redeploying is strictly ahead. Optional
+  inputs `hold_returns` (`{symbol: rate}`) and `redeploy_return` (a number,
+  or `None` = no admissible alternative, every row holds) replace the matching
+  params; `terminal_tax_rate` + `basis_field` liquidate both paths at the
+  horizon and tax each on its own gain, so the comparison is net to net.
+- `active_hurdle.py` (`ActiveHurdle`) (ADR-0279, by import path): a backtest's
+  per-period net returns into the deflated annual return an active strategy may
+  claim, `(mean - E[max null Sharpe over trials] x sd) x periods_per_year`
+  (`stats.deflated_sharpe_ratio`); below `min_dsr` the hurdle is withheld
+  (`rate` is `None`, `admissible` false).
 - `hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`) (ADR-0279, research
   A0001, by import path): the market's expected nominal return as named blocks
   (dividend yield + real growth + inflation + `(fair_cape / cape) **
@@ -1078,9 +1085,12 @@ dskit/pipeline/
 ├── binary_scoring.py  BucketedBinaryScore: model vs market Brier / log-loss, take-rule profit, a
 │                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
-│                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon; decision `exit` only when redeploy wins
+│                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon, both liquidated and taxed at the
+│                      horizon when `terminal_tax_rate` is declared; `hold_returns` / `redeploy_return` input ports; decision `exit` only when redeploy wins
 ├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, role data) + BetaHoldReturns
 │                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
+├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
+│                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr) -> HoldVsRedeploy's `redeploy_return` port
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its

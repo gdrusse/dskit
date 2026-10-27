@@ -18,14 +18,22 @@ python -m dskit.onboarding register-source schwab --root ./ob \
 python -m dskit.onboarding authorize --connector schwab_positions --config '{}'
 python -m dskit.onboarding acquire --root ./ob --source schwab \
     --stream positions --mode backfill            # one snapshot per UTC day
+# the active strategy's backtest: one jsonl row per period (period, day, net_return)
+python -m dskit.onboarding register-source active --root ./ob \
+    --catalog-source active-src --connector localfiles \
+    --config '{"path": "./inputs/active", "effective_field": "day"}' --activate
+python -m dskit.onboarding acquire --root ./ob --source active --stream returns --mode backfill
 mkdir -p decisions
 python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <YYYY-MM-DD>
 ```
 
-`configs/run-hold-vs-redeploy.json` holds every rate, return, horizon and
-premium; set them before the first run. The hold return is never a literal:
-`market` builds it from dividend yield + real growth + inflation + CAPE drift
-and `betas` scales it per symbol (research A0001). Rows land in `decisions/<run>.jsonl`,
+`configs/run-hold-vs-redeploy.json` holds every rate, horizon and field name;
+set them before the first run. Neither return is a literal: `market` builds
+the hold return from dividend yield + real growth + inflation + CAPE drift and
+`betas` scales it per symbol (research A0001); `hurdle` deflates the active
+backtest's mean by what `trials` variants of nothing would have found and
+withholds it below `min_dsr`, in which case every holding holds. Both paths
+are liquidated and taxed at the horizon (`terminal_tax_rate`). Rows land in `decisions/<run>.jsonl`,
 one per account x symbol, advisory only. Aggregate positions carry no lots, so
 every holding takes `default_holding` until a lot-level export is onboarded.
 

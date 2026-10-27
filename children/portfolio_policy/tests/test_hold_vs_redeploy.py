@@ -30,6 +30,12 @@ ROWS = [
 ]
 
 
+# Twelve weekly net returns with mean 0.0055 and sd 0.0087; among five trials the
+# expected max null Sharpe is 0.3978 (pinned in dskit's test_active_hurdle).
+ACTIVE = [0.01, -0.005, 0.02, 0.0, 0.015, -0.01, 0.005, 0.01, 0.012, -0.002, 0.008, 0.003]
+EMAX_5 = 0.39777384449675074
+
+
 def _cli(cwd, *args):
     subprocess.run([sys.executable, "-m", "dskit.onboarding", *args], cwd=cwd, check=True,
                    capture_output=True, text=True)
@@ -43,6 +49,12 @@ def positions_root(tmp_path):
     with open(data / "positions.jsonl", "w") as fh:
         for row in ROWS:
             fh.write(json.dumps(row) + "\n")
+    active = tmp_path / "active"
+    active.mkdir()
+    with open(active / "returns.jsonl", "w") as fh:
+        for index, value in enumerate(ACTIVE):
+            fh.write(json.dumps({"period": f"2026-W{index + 1:02d}", "net_return": value,
+                                 "day": f"2026-{(index // 4) + 1:02d}-{(index % 4) * 7 + 1:02d}"}) + "\n")
     (tmp_path / "decisions").mkdir()
     _cli(tmp_path, "init", "--root", "./ob")
     _cli(tmp_path, "register-source", "schwab", "--root", "./ob",
@@ -51,13 +63,19 @@ def positions_root(tmp_path):
          "--activate")
     _cli(tmp_path, "acquire", "--root", "./ob", "--source", "schwab",
          "--stream", "positions", "--mode", "backfill")
+    _cli(tmp_path, "register-source", "active", "--root", "./ob",
+         "--catalog-source", "active-src", "--connector", "localfiles",
+         "--config", json.dumps({"path": str(active), "effective_field": "day"}),
+         "--activate")
+    _cli(tmp_path, "acquire", "--root", "./ob", "--source", "active",
+         "--stream", "returns", "--mode", "backfill")
     return tmp_path
 
 
 def test_document_is_valid_and_wires_the_four_stages():
     document = load_document(RUN_DOC)
     assert list(document.pipeline) == [
-        "positions", "tax", "market", "betas", "decide", "decisions"]
+        "positions", "tax", "market", "betas", "active_returns", "hurdle", "decide", "decisions"]
     assert document.hash
 
 
@@ -80,12 +98,24 @@ def test_hold_vs_redeploy_end_to_end(positions_root, monkeypatch):
     rates = result.outputs["betas"]["rates"]
     assert rates["VTI"] == pytest.approx(0.04 + 1.0 * (market - 0.04))
     assert rates["AAPL"] == pytest.approx(0.04 + 1.2 * (market - 0.04))
-    # hold 2500 x (1+VTI)^5 vs redeploy 2381 x 1.07^5: 2890 vs 3340 -> exit
-    assert vti["hold_value"] == pytest.approx(2500.0 * (1.0 + rates["VTI"]) ** 5)
-    assert vti["redeploy_value"] == pytest.approx(2381.0 * 1.07 ** 5)
+    # hurdle: (0.0055 - 0.3978 x 0.0087) x 52 = 0.1060, admissible (dsr 0.76 >= 0.5)
+    mean = sum(ACTIVE) / len(ACTIVE)
+    sd = (sum((x - mean) ** 2 for x in ACTIVE) / (len(ACTIVE) - 1)) ** 0.5
+    hurdle = (mean - EMAX_5 * sd) * 52
+    assert result.outputs["hurdle"]["rate"] == pytest.approx(hurdle)
+    assert result.outputs["hurdle"]["admissible"] is True
+    # hold 2500 x (1+VTI)^5 taxed on the gain over 2000; redeploy 2381 x (1+hurdle-.02)^5
+    # taxed on the gain over 2381; both at .238
+    hold_value = 2500.0 * (1.0 + rates["VTI"]) ** 5
+    redeploy_value = 2381.0 * (1.0 + hurdle - 0.02) ** 5
+    assert vti["hold_value"] == pytest.approx(hold_value)
+    assert vti["hold_net"] == pytest.approx(hold_value - max(hold_value - 2000.0, 0.0) * 0.238)
+    assert vti["redeploy_value"] == pytest.approx(redeploy_value)
+    assert vti["redeploy_net"] == pytest.approx(redeploy_value - (redeploy_value - 2381.0) * 0.238)
     assert vti["decision"] == "exit"
-    assert result.outputs["decide"]["summary"]["hold_return_source"] == "wired"
-    assert result.outputs["decide"]["summary"]["decisions"] == {"hold": 0, "exit": 2}
+    summary = result.outputs["decide"]["summary"]
+    assert (summary["hold_return_source"], summary["redeploy_return_source"]) == ("wired", "wired")
+    assert summary["decisions"] == {"hold": 0, "exit": 2}
     written = result.outputs["decisions"]["path"]
     assert os.path.dirname(os.path.abspath(written)) == str(positions_root / "decisions")
     with open(written) as fh:

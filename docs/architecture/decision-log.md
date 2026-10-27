@@ -32520,3 +32520,21 @@ the summary names the source. The child document wires positions → market →
 betas → decide; `hold_return` is no longer a document literal.
 Files: `dskit/pipeline/hold_return.py`, `tests/pipeline/test_hold_return.py`.
 Sweep: hold_return market_return beta_returns cape_reversion; no near matches.
+
+#### ADR-0279 amendment: active hurdle, terminal tax, wired decision (owner 2026-10-27, "build all the machinery")
+
+Built, tier-1 by import path: `dskit/pipeline/active_hurdle.py` —
+`ActiveHurdle`, a backtest's per-period net returns (onboarded, so a WORM
+snapshot) into `(mean - E[max null Sharpe over trials] x sd) x periods`,
+with `stats.deflated_sharpe_ratio`'s DSR as the pre-registered admissibility
+bar (`min_dsr`); below it `rate` is `None`. `HoldVsRedeploy` gains the
+`redeploy_return` input port (`None` = every row holds, source
+`inadmissible`) and the optional `terminal_tax_rate` + `basis_field` pair:
+both paths liquidated at the horizon and taxed on their own gain (hold over
+the original basis, redeploy over its after-tax start), closing the
+hold-favouring bias the first cut named. The child document now carries no
+return literal at all: hold from `$betas.rates`, redeploy from
+`$hurdle.rate`; `active_returns` is a second onboarded source (`active` /
+`returns`). Files: `dskit/pipeline/active_hurdle.py`,
+`tests/pipeline/test_active_hurdle.py`. Sweep: active_hurdle deflated_rate
+terminal_tax; no near matches.

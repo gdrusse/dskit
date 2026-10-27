@@ -19,10 +19,11 @@ scaled by beta per stock; never a trailing mean.
 
 ## Next
 
-Built on owner permission: `dskit/pipeline/hold_return.py`
-(`MarketHoldReturn`, `BetaHoldReturns`) and the wired `hold_returns` port;
-document now positions → tax → market → betas → decide. Owner sets the
-document's blocks, betas, rates/returns and runs the README's command
+Base machinery complete in dskit (all by import path): `liquidation.py`,
+`hold_return.py`, `active_hurdle.py`; `HoldVsRedeploy` takes both returns
+wired and taxes both paths at the horizon. Document: positions → tax,
+market → betas, active_returns → hurdle, → decide → decisions. Owner sets
+the document's blocks, betas, tax rates, `trials`, `min_dsr` and runs the README's command
 sequence for the first real snapshot + decision. Then: per-symbol
 `hold_return` from price history (Stage 2 model) and `redeploy_return`
 from a child's scored backtest (Stage 3 hurdle).
@@ -31,7 +32,7 @@ from a child's scored backtest (Stage 3 hurdle).
 
 - Lot-level data: a Schwab lot CSV through `localfiles` (then declare
   `acquired_field`) vs aggregate-only; both work, lots are more accurate.
-- Deferred tax on the hold path is ignored in this cut (favours holding).
+- Which child's backtest feeds `active` / `returns`, and its honest `trials`.
 - Cap-gains rates and holding-period rules the tax drag uses (config, not code).
 
 ## Read first

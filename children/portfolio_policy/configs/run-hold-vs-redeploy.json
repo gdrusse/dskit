@@ -1,6 +1,6 @@
 {
   "name": "portfolio_policy-hold-vs-redeploy",
-  "notes": "ADR-0279 Stages 1-4 on aggregate positions: the latest schwab_positions snapshot -> liquidation tax per holding -> hold vs redeploy decision -> rows written. Every rate, horizon, premium and field name is a value of THIS document; the kinds carry none. The as_of, rates and returns below are placeholders the owner sets before the first real run; they are the experiment's identity, so changing them changes the hash on purpose.",
+  "notes": "ADR-0279 Stages 1-4 on aggregate positions: the latest schwab_positions snapshot -> liquidation tax per holding; market blocks -> beta hold returns; an onboarded backtest series -> deflated active hurdle; hold vs redeploy decision -> rows written. Every rate, horizon, premium and field name is a value of THIS document; the kinds carry none. The as_of, rates and returns below are placeholders the owner sets before the first real run; they are the experiment's identity, so changing them changes the hash on purpose.",
   "pipeline": {
     "positions": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
@@ -49,19 +49,45 @@
       },
       "notes": "risk_free + beta x (market - risk_free) per symbol. betas is the owner's table (a 5-year monthly beta from any public source); a holding missing from it refuses, on purpose: no default_beta here, so a new position cannot be silently priced as the market."
     },
+    "active_returns": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./ob",
+        "source": "active",
+        "stream": "returns",
+        "key_fields": ["period"]
+      },
+      "notes": "Role 'data': the per-period NET returns of the active strategy the cash would go to, onboarded from a child's scored backtest (one jsonl row per period: period, net_return) through localfiles. Data enters through onboarding, so the series the hurdle is built on is a WORM snapshot with a digest, not a pasted number."
+    },
+    "hurdle": {
+      "uses": "dskit.pipeline.active_hurdle:ActiveHurdle",
+      "inputs": { "records": "$active_returns.records" },
+      "params": {
+        "return_field": "net_return",
+        "periods_per_year": 52,
+        "trials": 5,
+        "min_dsr": 0.5
+      },
+      "notes": "Stage 3: (mean - E[max null Sharpe] x sd) x periods, the return left once what selection alone would have found is removed. trials is the owner's honest count of strategy variants tried; min_dsr is the pre-registered admissibility bar — below it the hurdle is withheld and every holding holds."
+    },
     "decide": {
       "uses": "dskit.pipeline.liquidation:HoldVsRedeploy",
-      "inputs": { "records": "$tax.records", "hold_returns": "$betas.rates" },
+      "inputs": {
+        "records": "$tax.records",
+        "hold_returns": "$betas.rates",
+        "redeploy_return": "$hurdle.rate"
+      },
       "params": {
         "horizon_years": 5,
-        "redeploy_return": 0.12,
         "redeploy_cost": 0.02,
-        "risk_premium": 0.03,
+        "risk_premium": 0.0,
         "value_field": "market_value",
         "net_field": "liq_net",
-        "symbol_field": "symbol"
+        "symbol_field": "symbol",
+        "terminal_tax_rate": 0.238,
+        "basis_field": "cost_basis"
       },
-      "notes": "hold_return comes wired from $betas.rates (no hold_return param, so nothing can be pasted). redeploy_return is Stage 3's active hurdle, to be sourced from a child's scored backtest and haircut for selection (deflated Sharpe), never a hope; risk_premium carries that haircut until a child reports a deflated figure."
+      "notes": "Both returns come wired: hold from $betas.rates, redeploy from $hurdle.rate (None when inadmissible -> hold). No return literal exists in this node. risk_premium is 0 because the hurdle is already deflated; raise it only for a cost the hurdle cannot see. terminal_tax_rate liquidates BOTH paths at the horizon at the long-term rate (hold over the original basis, redeploy over its after-tax start), so the comparison is net to net."
     },
     "decisions": {
       "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",

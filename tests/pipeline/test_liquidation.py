@@ -155,3 +155,40 @@ def test_a_tie_holds_and_bad_declarations_refuse(ctx):
         HoldVsRedeploy("d", {**DECIDE, "hold_return": "high"})
     with pytest.raises(ConfigError, match="unknown"):
         HoldVsRedeploy("d", {**DECIDE, "extra": 1})
+
+
+def test_terminal_tax_is_charged_symmetrically_on_both_paths(ctx):
+    # hold: 2500 x 1.07^2 = 2862.25, gain over basis 2000 = 862.25 x .2 = 172.45 -> 2689.80
+    # redeploy: 2400 x 1.10^2 = 2904.0, gain over new basis 2400 = 504 x .2 = 100.8 -> 2803.20
+    rows = [{"symbol": "A", "market_value": 2500.0, "liq_net": 2400.0, "cost_basis": 2000.0}]
+    out = _decide(ctx, rows, terminal_tax_rate=0.2, basis_field="cost_basis")
+    row = out["records"][0]
+    assert row["hold_terminal_tax"] == pytest.approx(172.45)
+    assert row["redeploy_terminal_tax"] == pytest.approx(100.8)
+    assert row["hold_net"] == pytest.approx(2689.80)
+    assert row["redeploy_net"] == pytest.approx(2803.20)
+    assert row["advantage"] == pytest.approx(113.40)
+    assert row["decision"] == "exit"
+    assert out["summary"]["hold_net"] == pytest.approx(2689.80)
+    # a terminal loss pays no terminal tax
+    rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 100.0, "cost_basis": 500.0}]
+    row = _decide(ctx, rows, terminal_tax_rate=0.2, basis_field="cost_basis",
+                  hold_return=0.0, redeploy_return=0.0, redeploy_cost=0.0,
+                  risk_premium=0.0)["records"][0]
+    assert row["hold_terminal_tax"] == 0.0 and row["redeploy_terminal_tax"] == 0.0
+
+
+def test_terminal_tax_needs_a_basis_field_and_vice_versa(ctx):
+    with pytest.raises(ConfigError, match="basis_field"):
+        HoldVsRedeploy("d", {**DECIDE, "terminal_tax_rate": 0.2})
+    with pytest.raises(ConfigError, match="terminal_tax_rate"):
+        HoldVsRedeploy("d", {**DECIDE, "basis_field": "cost_basis"})
+    with pytest.raises(ConfigError, match="terminal_tax_rate"):
+        HoldVsRedeploy("d", {**DECIDE, "terminal_tax_rate": 1.5, "basis_field": "b"})
+    rows = [{"symbol": "A", "market_value": 1.0, "liq_net": 1.0}]
+    with pytest.raises(ValueError, match="row 0.*cost_basis"):
+        _decide(ctx, rows, terminal_tax_rate=0.2, basis_field="cost_basis")
+    # without the pair, the fields are present and zero so a consumer sees one shape
+    row = _decide(ctx, rows)["records"][0]
+    assert (row["hold_terminal_tax"], row["redeploy_terminal_tax"]) == (0.0, 0.0)
+    assert row["hold_net"] == row["hold_value"]

@@ -126,9 +126,12 @@ dskit/pipeline/
 ├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0256)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
-│                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon; decision `exit` only when redeploy wins
+│                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon, both liquidated and taxed at the
+│                      horizon when `terminal_tax_rate` is declared; `hold_returns` / `redeploy_return` input ports; decision `exit` only when redeploy wins
 ├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, role data) + BetaHoldReturns
 │                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
+├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
+│                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr) -> HoldVsRedeploy's `redeploy_return` port
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
