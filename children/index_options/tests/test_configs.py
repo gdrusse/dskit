@@ -176,6 +176,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/source-optionshist-chain.json",
         "fixtures/contracts.jsonl", "fixtures/quotes.jsonl", "fixtures/settlements.jsonl",
         "docs/decisioning/actions.csv", "docs/decisioning/path.csv", "docs/decisioning/README.md",
+        "docs/decisioning/technical-design.json",
         "docs/explanations/README.md", "docs/plans/README.md", "docs/memos/README.md",
         "docs/research/README.md", "docs/research/.gitkeep",
         "docs/research/scenario-stress/2026-10-26-option-book-repricing.md",
@@ -633,7 +634,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
     # Exact approved inventory, including the prescription memos and 2020 evidence.
     # Four owner-requested, explicitly non-executable MIO JSON design files.
-    assert len(actual) == 777
+    assert len(actual) == 778
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

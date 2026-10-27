@@ -32643,3 +32643,60 @@ expansion, reference wiring, date arithmetic, existing solver-param compatibilit
 and manifest/parity checks. Independent design reviews before delivery.
 Sweep: mio-study ticker-dte eligibility release-window settlement-tail
 weekly-option-portfolio (35 refs, 90 other worktrees; reuse inventoried above).
+
+#### ADR-0278 amendment: owner-requested data-use TDD (2026-10-27)
+
+Owner requests a technical design document answering what each time window
+does, with a mathematical input/operation/output chart, matching number line,
+folds, JSON references and exact run pins. This is a record of current
+decisions and their execution dependencies, not a new testing policy.
+Base: 95096f4c; origin/main 5747f179 remains an ancestor. Path A0001-A0008
+stays owner-only. The TCN Path recipe and M51's recorded MLP dependency are
+separate roles; final reconciliation and unapproved MIO packet dates remain
+undecided. Unknown historical invocation pins are missing provenance, not
+unmade research decisions. No performance results or experiment catalog.
+
+Requested artifacts authorize one canonical child document,
+docs/decisioning/technical-design.json; its managed
+index-options-TDD.canvas.tsx presentation; and a personal update-tdd/SKILL.md.
+Existing edits: this ADR, child README/CLAUDE/AGENTS pointers and exact file
+manifest. Reuse Path, the fold JSONL, saved fit completion manifests,
+RunAttestation, existing MIO design templates and Canvas Table/SVG primitives.
+No runtime adapters, changes to model configuration, new market runs, protected
+outcome reads, Path edits, merge or push. Inspection uses bounded metadata,
+hashes and a quote-date projection of the already bounded panel only.
+
+Acceptance: identical chart/visual window registry; explicit half-open
+intervals and calendar-day DTE; fit/monitor/validation and settlement clocks;
+clear sets/functions and fixed hyperparameters versus checkpoint selection;
+all five folds and current evaluation regimes; full declared horizon and
+unassigned/undecided uses; exact artifact/run/config identities with provenance
+limits. Check the JSON references and math/date invariants, Canvas TypeScript,
+skill metadata, and focused manifest/doc checks. Independent correctness and
+presentation/integration reviews on an immutable candidate; no full suite.
+Sweep: technical-design TDD data-use windows provenance (35 refs, 90 worktrees).
+Existing strike-screen technical-design note is superseded where Path A0008
+or saved current-dependency metadata differs; it is not a second authority.
+
+TDD candidate evidence: 46 windows, 13 config references and 14 saved execution
+records; all references/date orderings and strict fit/monitor label seams checked.
+All ten model artifact manifests verified; preparation and M51 RunAttestation
+completed/document/node checks passed. Panel and M51 source/forecast bytes
+verified without decoding outcomes. Canonical/canvas embedded data are equal.
+Canvas typecheck: zero diagnostics. Skill metadata: valid. Focused manifest,
+agent parity and document checks: 5 passed (project venv, WSL2); no full suite.
+
+External review inputs (not repository blobs):
+- Canvas: /home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-TDD.canvas.tsx
+  SHA256 ec874235be3263d5da60927213631c38018e950d6527fe04cae6bf2035af06a1
+- Personal skill: /mnt/c/Users/russe/.codex/skills/update-tdd/SKILL.md
+  SHA256 9eba67bc75459e27858a26355d0ae1fcbc3eea074fa5141b0c65e4958ae2c20d
+- Canonical JSON SHA256:
+  95aaef6dc2bfabaaeea402b5625c339ba709a721526b708b38e29ac65b7f5953
+
+Review matrix: (1) current authority versus proposals/dependencies;
+(2) observation/population and function notation; (3) all five folds, early
+stopping, label purging/tails and M51 learning; (4) exact JSON/run pins and
+honest missing provenance; (5) protected/unassigned/undecided periods;
+(6) single visual/chart registry, filters and readable endpoint details;
+(7) skill maintenance contract, pointers and focused checks.

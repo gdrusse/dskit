@@ -1,0 +1,6738 @@
+{
+  "schema": "index-options-technical-design/v1",
+  "title": "Index options · Technical Design Document",
+  "as_of": "2026-10-27",
+  "executable": false,
+  "purpose": "What do, or did we do, with the time available in our data?",
+  "authority_base_commit": "95096f4c",
+  "date_convention": "All windows [start,end_exclusive). Null endpoints mean no assigned dates; B1 has an empty evidence set.",
+  "coverage": {
+    "reader_history_start": "2016-01-04",
+    "model_observation_start": "2017-01-03",
+    "current_reader_end_exclusive": "2024-01-01",
+    "declared_horizon_end_exclusive": "2027-01-01",
+    "note": "Declared protocol horizon through calendar 2026, not a claim of observed data through 2026-12-31. Protected rows were not inspected."
+  },
+  "presentation": {
+    "canvas": "/home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-TDD.canvas.tsx",
+    "single_registry": "windows drives both the table and the number line; identical active filter; null-date rows remain listed without invented coordinates.",
+    "detail": "Endpoint dots mark exact nominal boundaries; observed support and label purges remain in table details."
+  },
+  "decisions": [
+    "A0008's current Path recipe is TCN, chain arm, seed 11, one model alone. M51 uses wide_mlp64 in its saved model slot; that recorded dependency does not change Path.",
+    "2019 warm-up is never ranked as predictive validation. User-requested 2019 MIO pair selection is a separate, still unspecified operation.",
+    "2020 is already exposed for MIO development. Predictive selection used 2020-23, so future MIO-only comparisons there are not untouched full-system tests.",
+    "The draft MIO JSON interfaces remain design-only. Their suggested dates and example variants are not decisions in this document.",
+    "2024-25 is the lane's separately opened holdout; 2026 is permanently sealed. No new fitting, scoring or replay was done to write this TDD."
+  ],
+  "symbols": [
+    {
+      "id": "obs",
+      "symbol": "i = (sᵢ, tᵢ, eᵢ, τᵢ, xᵢ, zᵢ)",
+      "definition": "One predictive observation is (ticker, quote date, expiry), with settlement τ, features x known at origin t, and outcome z = log(terminal_price/spot)/reference_scale. The saved panel fixes the scale and feature definitions."
+    },
+    {
+      "id": "dates",
+      "symbol": "[a,b) = {t : a ≤ t < b}",
+      "definition": "All displayed intervals are half-open ISO calendar dates. Source fold ends and observed maximum dates are inclusive and are converted by adding one day. A band spans possible dates, not continuous observations."
+    },
+    {
+      "id": "pop",
+      "symbol": "D(I; S) = {i ∈ Ω : tᵢ ∈ I ∧ sᵢ ∈ S}; E(c) = {i : τᵢ < c}",
+      "definition": "Ω is the pinned prepared panel, with quote and settlement strictly before 2024-01-01. S₀ is the ticker list in the pinned recipe. Earlier-side membership always requires settlement strictly before its boundary."
+    },
+    {
+      "id": "groups",
+      "symbol": "S_f = {s ∈ S₀ : n_fit(s,f) ≥ 40 ∧ n_cal(s,f) ≥ 1 ∧ n_val(s,f) > 0}",
+      "definition": "Counts use the fold bands before admission. The configured minimum disjoint-label count is zero. Exact retained memberships are stored in each R-model-f run; both current dependency lanes have the same memberships. This is predictive sample admission, not the undecided 2019 MIO gate."
+    },
+    {
+      "id": "cal",
+      "symbol": "c_f = first(last₈₂({t ∈ calendar(Ω|S₀) : a_f ≤ t < b_f}))",
+      "definition": "a_f and b_f are the training-window endpoints. c_f is the first of the last 82 distinct observed quote dates in that window, not 82 calendar days. b_f is inclusive train_end + one day."
+    },
+    {
+      "id": "bands",
+      "symbol": "T_f = D([a_f,c_f); S_f) ∩ E(c_f); C_f = D([c_f,b_f); S_f) ∩ E(v_f)",
+      "definition": "T is optimization fit data. C is the early-stop monitor, named cal in saved files. v_f is first validation quote date. Label purging can leave a gap before either seam."
+    },
+    {
+      "id": "val",
+      "symbol": "V_f = D([v_f,w_f); S_f) ∩ E(2024-01-01); V₁ ← V₁ ∩ E(2020-01-02)",
+      "definition": "w_f is inclusive val_end + one day. f=1 is warm-up only. f=2…5 are scored. Scored validation labels may settle in the next year; later learning admits them only after settlement."
+    },
+    {
+      "id": "models",
+      "symbol": "m ∈ {T, M}; Λ_fᵐ = {λ_fᵐ}",
+      "definition": "T = Path TCN, M = wide_mlp64 dependency of the recorded M51 run. Each λ is the fixed saved settings object, including seed 11, epochs ≤150 and patience 50. These are two roles, not an approved model tournament or HPO grid."
+    },
+    {
+      "id": "estimate",
+      "symbol": "θ̂, F̂, Q̂, ŵ; e*; P₁₉*, m*",
+      "definition": "Hats denote estimated parameters, forecasts, quantiles or numerically fitted weights. e* is the selected visited checkpoint. P₁₉* and m* denote intended selected pairs and final recipe; neither has been chosen here. No global optimizer guarantee is implied for MIO."
+    },
+    {
+      "id": "mio",
+      "symbol": "p = (s,[d⁻,d⁺]) ∈ S × N², 1 ≤ d⁻ ≤ d⁺; d(q)=expiry(q)−signal_date(q)",
+      "definition": "A pair means one ticker plus an exact DTE (d⁻=d⁺) or inclusive DTE band, measured in calendar days at the signal date. P is a sparse set of these pairs; never a Cartesian expansion. Predictive expiry-rank cells (A0006) are a separate axis."
+    },
+    {
+      "id": "units",
+      "symbol": "q, A_t(P), η_m, x̂_t, B_t, L_m",
+      "definition": "q is an option contract quote; A_t is the admitted quote set. η_m is a frozen MIO formulation/parameter set, x̂_t its returned integer contract vector, B_t account capital in USD, and L_m its replay ledger. Contracts use the multiplier and fees in pinned params."
+    }
+  ],
+  "functions": [
+    {
+      "id": "prepare",
+      "formula": "Ω = Prepare_JSON(Q_chain, B_daily); xᵢ = Features_{≤tᵢ}(Q_chain, B_daily)",
+      "meaning": "Build exact-expiry tables and then the panel. 2016 is lag/RV and first-seen history; emitted model observations start 2017-01-03. Preparation does not fit a predictive model."
+    },
+    {
+      "id": "fit",
+      "formula": "θ̂_{f,e}ᵐ = Train_{λ_fᵐ}(T_f, e); ℓ_λ = CRPS + tail_CRPS",
+      "meaning": "Optimization visits epochs using the fixed config. The tail objective integrates the configured intervals [-2.5,-0.5] and [0.5,2.5]; it is distinct from the reporting grid score. Feature scaling/imputation is fitted on T_f only."
+    },
+    {
+      "id": "monitor",
+      "formula": "e_f* = first argmin_{e ∈ visited epochs} |C_f|⁻¹ Σ_{i∈C_f} ℓ_λ(F̂_{f,e}(·|xᵢ),zᵢ); F̂_f = F_{θ̂_{f,e_f*}}",
+      "meaning": "Monitor the same configured training objective, patience 50, restore the best visited checkpoint. This selects an epoch; no current HPO search window or λ* is recorded."
+    },
+    {
+      "id": "score",
+      "formula": "J_Z(F̂; A) = |A|⁻¹ Σ_{i∈A} trapz_{z∈Z}[w(z)(F̂ᵢ(z)−1{zᵢ≤z})²]",
+      "meaning": "M51 grid score: Z={-3,-2.5,…,3}; w=1 at |z|=0.5…2.5 and 0.25 at z=0,±3. Report A0002 primary twCRPS plus full CRPS, strike Brier/reliability and PIT/tail diagnostics under their registered implementations. Grid13 is an approximation, not the full-distribution integral."
+    },
+    {
+      "id": "evaluate",
+      "formula": "Y_f = Eval_A0002({(i,F̂_f(·|xᵢ),zᵢ) : i∈V_f}); Y = Aggregate(Y₂,…,Y₅)",
+      "meaning": "2019 warm-up is never ranked. Report full validation and each year/regime; strike regions are decompositions, not an evaluation subset selected by outcomes."
+    },
+    {
+      "id": "marketcal",
+      "formula": "Ĝ_f = PITMap₂₁({F_market,i(zᵢ): i∈T_f ∩ eligible_M51}); F̂_market_cal,i = Ĝ_f ∘ F_market,i",
+      "meaning": "The recorded M51 pipeline fits its market PIT map from the current fold's fit band, using its pinned component eligibility/finite-value filters."
+    },
+    {
+      "id": "blend",
+      "formula": "L_f = (⋃_{g<f} V_g) ∩ E(v_f) ∩ eligible_M51; ŵ_{f,b} = FitQA_JSON(L_f ∩ bucket_b); Q̂_f(u)=Σ_j ŵ_{f,b,j} Q̂_{f,j}(u)",
+      "meaning": "j∈{model,market_cal,pooled,baseline}; nonnegative simplex weights, 199 quantile levels, dispersion buckets in JSON, min_rows=5000 and learning cap=100000. Invert averaged quantiles to a CDF. f=1 and insufficient buckets fall back to the MLP component, with fitted=false. FitQA is the numerical algorithm, not a claim of global minimization."
+    },
+    {
+      "id": "promotion",
+      "formula": "Eligible(m) ⇔ Skill_A0002(m,r;V₂:₅)>0 for both r AND count_y[Skill(m,r;V_y)>0 for both r]≥3",
+      "meaning": "Path A0005 compares horizon_empirical and raw market on paired evidence, with two-way expiry/symbol cluster intervals; never choose the best cell. A0004 promotion seeds are {11,29,47}; A0008's current run is seed 11 alone. Final promotion execution and recipe remain undecided."
+    },
+    {
+      "id": "cellgate",
+      "formula": "Pass(c) ⇔ Σ_y 1{J(m,c,y)<J(raw,c,y) ∧ J(m,c,y)<J(name,c,y)}≥3 AND Σ_r 1{same paired inequalities in regime r}≥3",
+      "meaning": "c=(ticker,expiry rank) from A0006. Path A0007: at least 3/4 years and 3/5 regimes; report pass count beside chance expectation, no multiplicity correction yet. Not the 2019 MIO pair-admission rule."
+    },
+    {
+      "id": "selectpairs",
+      "formula": "P₁₉* = Select_{g₁₉}({i : 2019-01-01≤tᵢ<2020-01-01 ∧ τᵢ<2020-01-01})",
+      "meaning": "User decision: only ticker/DTE pairs doing well in 2019 enter MIO testing. g₁₉, scoring definition, exact periods and selected members are undecided; 2019 is the enclosing selection year. No criterion is invented here."
+    },
+    {
+      "id": "solve",
+      "formula": "A_t(P)={q : ∃(s,[d⁻,d⁺])∈P, symbol(q)=s ∧ d⁻≤d(q)≤d⁺ ∧ eligible_JSON(q,t)}; x̂_tᵐ = Solve_{η_m}(F̂_t,A_t(P),B_t)",
+      "meaning": "Eligibility, constraints and objective come from the resolved run params. Returned incumbent is not labeled x* without an optimality certificate. Future sparse-pair adapter and exact formulation set are not implemented by the design templates."
+    },
+    {
+      "id": "replay",
+      "formula": "L_m = Replay_JSON({x̂_tᵐ},quotes,settlements,funding); O_m = Report_JSON(L_m)",
+      "meaning": "For future packets, history, entry and settlement windows must be separately specified and pinned. Each packet comparison uses the same admitted pairs and frozen variants. Exact packet dates, η set and promotion criterion remain undecided."
+    },
+    {
+      "id": "closed",
+      "formula": "Read(I)=∅; Fit(I)=∅; Select(I)=∅; Report(I)=∅ while sealed",
+      "meaning": "2024-25 is a separately authorized single-opening holdout for promoted recipes. 2026 stays closed permanently. This records policy for this lane; it does not assert nobody ever inspected those years in any other project."
+    }
+  ],
+  "population": {
+    "recipe_symbols": [
+      "AAPL",
+      "ABBV",
+      "ABT",
+      "ABUS",
+      "ACN",
+      "ADBE",
+      "ADI",
+      "AEO",
+      "AG",
+      "AGNC",
+      "AKAM",
+      "ALB",
+      "ALLY",
+      "AMAT",
+      "AMC",
+      "AMD",
+      "AMGN",
+      "AMKR",
+      "AMZN",
+      "ANET",
+      "APA",
+      "APH",
+      "APO",
+      "AVAV",
+      "AVGO",
+      "AXP",
+      "AXTI",
+      "BA",
+      "BAC",
+      "BBY",
+      "BIDU",
+      "BLK",
+      "BMY",
+      "BP",
+      "BSX",
+      "BX",
+      "C",
+      "CAG",
+      "CAT",
+      "CCJ",
+      "CCL",
+      "CDE",
+      "CHTR",
+      "CIEN",
+      "CLF",
+      "CLS",
+      "CMCSA",
+      "CME",
+      "CMG",
+      "CNC",
+      "COF",
+      "COHR",
+      "COP",
+      "COST",
+      "CPB",
+      "CRM",
+      "CSCO",
+      "CVE",
+      "CVS",
+      "CVX",
+      "DAL",
+      "DE",
+      "DHR",
+      "DHT",
+      "DIS",
+      "DKS",
+      "DUK",
+      "DVN",
+      "ECHO",
+      "EIX",
+      "ENPH",
+      "EOG",
+      "EPD",
+      "EQT",
+      "EXPE",
+      "F",
+      "FCEL",
+      "FCX",
+      "FDX",
+      "FISV",
+      "FRO",
+      "FSLR",
+      "FTNT",
+      "GE",
+      "GEO",
+      "GILD",
+      "GIS",
+      "GLW",
+      "GM",
+      "GME",
+      "GOOG",
+      "GOOGL",
+      "GPRO",
+      "GS",
+      "HAL",
+      "HD",
+      "HL",
+      "HON",
+      "HPE",
+      "HPQ",
+      "HUM",
+      "IBM",
+      "INTC",
+      "INTU",
+      "ISRG",
+      "JBLU",
+      "JNJ",
+      "JPM",
+      "KGC",
+      "KHC",
+      "KKR",
+      "KLAC",
+      "KMI",
+      "KO",
+      "KR",
+      "KSS",
+      "KTOS",
+      "LLY"
+    ],
+    "fit_membership": "Exact symbols per model/fold are in runs[].symbols; count-based predictive admission only.",
+    "future_mio_selected_pairs": null,
+    "future_mio_gate": null,
+    "legacy_2020_symbols": [
+      "ABBV",
+      "ACN",
+      "AMGN",
+      "AMZN",
+      "BA",
+      "CAT",
+      "CME",
+      "COF",
+      "GILD",
+      "GLW",
+      "GM",
+      "GOOG",
+      "GOOGL",
+      "HON",
+      "HUM",
+      "ISRG",
+      "JPM"
+    ],
+    "legacy_2020_dte_calendar_days": [
+      1,
+      60
+    ]
+  },
+  "windows": [
+    {
+      "id": "HIST",
+      "label": "History for features",
+      "group": "Overview",
+      "start": "2016-01-04",
+      "end_exclusive": "2017-01-03",
+      "status": "recorded",
+      "inputs": "Q_chain ∪ B_daily, t<2017-01-03",
+      "operation": "prepare",
+      "outputs": "lag/RV history; first_seen metadata",
+      "configs": [
+        "prep",
+        "panel"
+      ],
+      "runs": [
+        "R-prep",
+        "R-panel"
+      ],
+      "notes": "No pre-2017 model rows emitted. This is the start of the current source reader, not a claim about the earliest date of every archive.",
+      "authority": [
+        "prep params"
+      ]
+    },
+    {
+      "id": "DEV",
+      "label": "Predictive development",
+      "group": "Overview",
+      "start": "2017-01-03",
+      "end_exclusive": "2020-01-01",
+      "status": "locked",
+      "inputs": "D([2017-01-03,2020-01-01);S₀), Λᵀ",
+      "operation": "fit",
+      "outputs": "T_f, C_f and warm-up V₁; no ranked 2019 score",
+      "configs": [
+        "path",
+        "folds",
+        "tcn"
+      ],
+      "runs": [
+        "R-tcn-f1",
+        "R-tcn-f2"
+      ],
+      "notes": "Outer development envelope; fold rows supply the actual optimization and monitor boundaries.",
+      "authority": [
+        "A0003",
+        "A0008"
+      ]
+    },
+    {
+      "id": "VAL",
+      "label": "Predictive validation",
+      "group": "Overview",
+      "start": "2020-01-02",
+      "end_exclusive": "2024-01-01",
+      "status": "locked",
+      "inputs": "V₂ ∪ V₃ ∪ V₄ ∪ V₅, F̂_f",
+      "operation": "evaluate",
+      "outputs": "Y; annual/regime scores and eligibility evidence",
+      "configs": [
+        "path",
+        "folds",
+        "tcn",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f2",
+        "R-tcn-f3",
+        "R-tcn-f4",
+        "R-tcn-f5",
+        "R-m51"
+      ],
+      "notes": "Used for predictive selection, including M51. A later MIO comparison here is not untouched end-to-end testing.",
+      "authority": [
+        "A0002",
+        "A0003",
+        "A0005",
+        "A0007",
+        "A0008"
+      ]
+    },
+    {
+      "id": "P19",
+      "label": "2019 pair selection",
+      "group": "Overview",
+      "start": "2019-01-01",
+      "end_exclusive": "2020-01-01",
+      "status": "undecided",
+      "inputs": "2019 evidence ∩ E(2020-01-01), g₁₉",
+      "operation": "selectpairs",
+      "outputs": "P₁₉* (undecided)",
+      "configs": [
+        "mio-study"
+      ],
+      "runs": [],
+      "notes": "2019 is accepted as the selection year; exact subperiods, criterion and pair list are not decided. Warm-up forecast origins start Jan 2. Draft templates do not establish a completed selection.",
+      "authority": [
+        "user: 2019 admission, criterion deferred"
+      ]
+    },
+    {
+      "id": "M20",
+      "label": "MIO development already exposed",
+      "group": "Overview",
+      "start": "2020-01-02",
+      "end_exclusive": "2021-01-01",
+      "status": "recorded",
+      "inputs": "F̂^M51; saved 17-name universe; 1≤DTE≤60; saved params",
+      "operation": "replay",
+      "outputs": "bounded 2020 study record; no chosen final MIO",
+      "configs": [
+        "mio2020",
+        "m51"
+      ],
+      "runs": [
+        "R-mio2020",
+        "R-m51"
+      ],
+      "notes": "Entry, expiry and settlement all cut before 2021-01-01 in this legacy run. Its 17 names are not P₁₉*. Only its footprint/pins are retained here; this TDD is not an experiment history.",
+      "authority": [
+        "saved run2020.py and result"
+      ]
+    },
+    {
+      "id": "MNEXT",
+      "label": "Next MIO rounds",
+      "group": "Overview",
+      "start": null,
+      "end_exclusive": null,
+      "status": "undecided",
+      "inputs": "P₁₉*, frozen F̂, formulation set {η_m}, packet boundaries",
+      "operation": "replay",
+      "outputs": "paired reports → revision decision → next unopened packet",
+      "configs": [
+        "mio-study",
+        "mio-plan.template",
+        "mio-run.template",
+        "mio-compare.template"
+      ],
+      "runs": [],
+      "notes": "Candidate envelope is the unprotected 2020-23 history. Exact weeks, history/entry/tail boundaries, variants and comparison rule are undecided. Previously proposed dated packets are not adopted by this TDD.",
+      "authority": [
+        "user: staged testing with time to revise"
+      ]
+    },
+    {
+      "id": "HREFIT",
+      "label": "Final predictive refit",
+      "group": "Overview",
+      "start": "2017-01-03",
+      "end_exclusive": "2024-01-01",
+      "status": "undecided",
+      "inputs": "Promoted recipe m*, training evidence with τ<2024-01-01",
+      "operation": "fit",
+      "outputs": "F̂_holdout (unexecuted/unpinned here)",
+      "configs": [
+        "path"
+      ],
+      "runs": [],
+      "notes": "Path A0004 specifies training through 2023 before the single holdout. Final recipe, monitor split, executable JSON and run are undecided.",
+      "authority": [
+        "A0004"
+      ]
+    },
+    {
+      "id": "HGUARD",
+      "label": "Holdout boundary guard",
+      "group": "Overview",
+      "start": "2024-01-01",
+      "end_exclusive": "2024-01-02",
+      "status": "sealed",
+      "inputs": "Rows reaching 2024-01-01",
+      "operation": "closed",
+      "outputs": "∅ under current pre-holdout readers",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp",
+        "m51"
+      ],
+      "runs": [],
+      "notes": "Reader guard begins Jan 1; the Path holdout's first session is Jan 2.",
+      "authority": [
+        "A0003",
+        "fold_table.holdout_start"
+      ]
+    },
+    {
+      "id": "HOLD",
+      "label": "Single-opening holdout",
+      "group": "Overview",
+      "start": "2024-01-02",
+      "end_exclusive": "2025-11-29",
+      "status": "sealed",
+      "inputs": "Frozen promoted recipe and predeclared evaluation protocol",
+      "operation": "closed",
+      "outputs": "One holdout report after separate opening; no run pinned",
+      "configs": [
+        "path"
+      ],
+      "runs": [],
+      "notes": "Inclusive Path end is 2025-11-28. Recipe, execution JSON and opening decision are unresolved. A valid later opening must respect label settlement at the terminal boundary.",
+      "authority": [
+        "A0003",
+        "A0004"
+      ]
+    },
+    {
+      "id": "GAP25",
+      "label": "No assigned use",
+      "group": "Overview",
+      "start": "2025-11-29",
+      "end_exclusive": "2026-01-01",
+      "status": "undecided",
+      "inputs": "Any available rows in this interval",
+      "operation": "closed",
+      "outputs": "No assigned analysis",
+      "configs": [
+        "path"
+      ],
+      "runs": [],
+      "notes": "Path ends its holdout on Nov 28. The remaining 2025 calendar interval has no assigned use; do not silently extend the holdout.",
+      "authority": [
+        "A0003 gap"
+      ]
+    },
+    {
+      "id": "SEALED26",
+      "label": "Permanently closed year",
+      "group": "Overview",
+      "start": "2026-01-01",
+      "end_exclusive": "2027-01-01",
+      "status": "sealed",
+      "inputs": "Any 2026 observations, if available",
+      "operation": "closed",
+      "outputs": "∅",
+      "configs": [
+        "path"
+      ],
+      "runs": [],
+      "notes": "This marks the entire declared 2026 exclusion. Actual coverage and future dates were not checked.",
+      "authority": [
+        "A0003"
+      ]
+    },
+    {
+      "id": "F1T",
+      "label": "Fold 1 · optimize",
+      "group": "Folds",
+      "start": "2017-01-03",
+      "end_exclusive": "2018-09-04",
+      "status": "recorded",
+      "inputs": "T_1, Λ_1ᵀ, Λ_1ᴹ",
+      "operation": "fit",
+      "outputs": "{θ̂_{1,e}ᵀ, θ̂_{1,e}ᴹ}_e",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f1",
+        "R-wide_mlp64-f1"
+      ],
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 1,
+      "observed_support": {
+        "quote_date": [
+          "2017-01-03",
+          "2018-08-30"
+        ],
+        "settlement_date": [
+          "2017-01-06",
+          "2018-08-31"
+        ]
+      }
+    },
+    {
+      "id": "F1C",
+      "label": "Fold 1 · early stop",
+      "group": "Folds",
+      "start": "2018-09-04",
+      "end_exclusive": "2019-01-01",
+      "status": "recorded",
+      "inputs": "C_1, {θ̂_{1,e}}_e",
+      "operation": "monitor",
+      "outputs": "e*ᵀ=1; e*ᴹ=23; F̂_1",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f1",
+        "R-wide_mlp64-f1"
+      ],
+      "notes": "Last 82 observed training origins before purge; require τ<2019-01-02. This is checkpoint selection, not predictive validation.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 1,
+      "observed_support": {
+        "quote_date": [
+          "2018-09-04",
+          "2018-12-27"
+        ],
+        "settlement_date": [
+          "2018-09-07",
+          "2018-12-28"
+        ]
+      }
+    },
+    {
+      "id": "F1V",
+      "label": "Fold 1 · warm-up",
+      "group": "Folds",
+      "start": "2019-01-02",
+      "end_exclusive": "2020-01-01",
+      "status": "recorded",
+      "inputs": "V_1, F̂_1",
+      "operation": "evaluate",
+      "outputs": "Timing/learning diagnostics only",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f1",
+        "R-wide_mlp64-f1",
+        "R-m51"
+      ],
+      "notes": "Never ranked; additionally τ<2020-01-02.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 1,
+      "observed_support": {
+        "quote_date": [
+          "2019-01-02",
+          "2019-12-26"
+        ],
+        "settlement_date": [
+          "2019-01-04",
+          "2019-12-27"
+        ]
+      }
+    },
+    {
+      "id": "B1",
+      "label": "M51 fold 1 · prior validation",
+      "group": "Blending",
+      "start": null,
+      "end_exclusive": null,
+      "status": "recorded",
+      "inputs": "L_1, component forecasts, dispersion bucket",
+      "operation": "blend",
+      "outputs": "ŵ_1, F̂^M51_1; fallback flag",
+      "configs": [
+        "m51",
+        "mlp",
+        "folds"
+      ],
+      "runs": [
+        "R-m51",
+        "R-wide_mlp64-f1"
+      ],
+      "notes": "Empty prior-fold evidence; MLP fallback.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 1
+    },
+    {
+      "id": "G1",
+      "label": "M51 fold 1 · market PIT map",
+      "group": "Blending",
+      "start": "2017-01-03",
+      "end_exclusive": "2018-09-04",
+      "status": "recorded",
+      "inputs": "T_1 ∩ eligible_M51, F_market",
+      "operation": "marketcal",
+      "outputs": "Ĝ_1, F̂_market_cal",
+      "configs": [
+        "m51",
+        "folds"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Own fit band; labels must settle before 2018-09-04. Distinct from C_1, the early-stop monitor.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 1
+    },
+    {
+      "id": "F2T",
+      "label": "Fold 2 · optimize",
+      "group": "Folds",
+      "start": "2017-01-03",
+      "end_exclusive": "2019-09-05",
+      "status": "recorded",
+      "inputs": "T_2, Λ_2ᵀ, Λ_2ᴹ",
+      "operation": "fit",
+      "outputs": "{θ̂_{2,e}ᵀ, θ̂_{2,e}ᴹ}_e",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f2",
+        "R-wide_mlp64-f2"
+      ],
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 2,
+      "observed_support": {
+        "quote_date": [
+          "2017-01-03",
+          "2019-08-29"
+        ],
+        "settlement_date": [
+          "2017-01-06",
+          "2019-08-30"
+        ]
+      }
+    },
+    {
+      "id": "F2C",
+      "label": "Fold 2 · early stop",
+      "group": "Folds",
+      "start": "2019-09-05",
+      "end_exclusive": "2020-01-01",
+      "status": "recorded",
+      "inputs": "C_2, {θ̂_{2,e}}_e",
+      "operation": "monitor",
+      "outputs": "e*ᵀ=2; e*ᴹ=2; F̂_2",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f2",
+        "R-wide_mlp64-f2"
+      ],
+      "notes": "Last 82 observed training origins before purge; require τ<2020-01-02. This is checkpoint selection, not predictive validation.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 2,
+      "observed_support": {
+        "quote_date": [
+          "2019-09-05",
+          "2019-12-26"
+        ],
+        "settlement_date": [
+          "2019-09-06",
+          "2019-12-27"
+        ]
+      }
+    },
+    {
+      "id": "F2V",
+      "label": "Fold 2 · 2020 validation",
+      "group": "Folds",
+      "start": "2020-01-02",
+      "end_exclusive": "2021-01-01",
+      "status": "recorded",
+      "inputs": "V_2, F̂_2",
+      "operation": "evaluate",
+      "outputs": "Y_2",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f2",
+        "R-wide_mlp64-f2",
+        "R-m51"
+      ],
+      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 2,
+      "observed_support": {
+        "quote_date": [
+          "2020-01-02",
+          "2020-12-31"
+        ],
+        "settlement_date": [
+          "2020-01-03",
+          "2021-02-19"
+        ]
+      }
+    },
+    {
+      "id": "F2L",
+      "label": "Fold 2 · settlement tail",
+      "group": "Folds",
+      "start": "2021-01-01",
+      "end_exclusive": "2021-02-20",
+      "status": "recorded",
+      "inputs": "{i∈V_2: τᵢ≥2021-01-01}",
+      "operation": "evaluate",
+      "outputs": "matured labels for Y_2",
+      "configs": [
+        "folds",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f2",
+        "R-wide_mlp64-f2"
+      ],
+      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 2,
+      "clock": "settlement"
+    },
+    {
+      "id": "B2",
+      "label": "M51 fold 2 · prior validation",
+      "group": "Blending",
+      "start": "2019-01-02",
+      "end_exclusive": "2020-01-01",
+      "status": "recorded",
+      "inputs": "L_2, component forecasts, dispersion bucket",
+      "operation": "blend",
+      "outputs": "ŵ_2, F̂^M51_2; fallback flag",
+      "configs": [
+        "m51",
+        "mlp",
+        "folds"
+      ],
+      "runs": [
+        "R-m51",
+        "R-wide_mlp64-f1",
+        "R-wide_mlp64-f2"
+      ],
+      "notes": "Prior validation ORIGIN envelope; require τ<2020-01-02, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 2
+    },
+    {
+      "id": "G2",
+      "label": "M51 fold 2 · market PIT map",
+      "group": "Blending",
+      "start": "2017-01-03",
+      "end_exclusive": "2019-09-05",
+      "status": "recorded",
+      "inputs": "T_2 ∩ eligible_M51, F_market",
+      "operation": "marketcal",
+      "outputs": "Ĝ_2, F̂_market_cal",
+      "configs": [
+        "m51",
+        "folds"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Own fit band; labels must settle before 2019-09-05. Distinct from C_2, the early-stop monitor.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 2
+    },
+    {
+      "id": "F3T",
+      "label": "Fold 3 · optimize",
+      "group": "Folds",
+      "start": "2017-01-03",
+      "end_exclusive": "2020-09-04",
+      "status": "recorded",
+      "inputs": "T_3, Λ_3ᵀ, Λ_3ᴹ",
+      "operation": "fit",
+      "outputs": "{θ̂_{3,e}ᵀ, θ̂_{3,e}ᴹ}_e",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f3",
+        "R-wide_mlp64-f3"
+      ],
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 3,
+      "observed_support": {
+        "quote_date": [
+          "2017-01-03",
+          "2020-08-27"
+        ],
+        "settlement_date": [
+          "2017-01-06",
+          "2020-08-28"
+        ]
+      }
+    },
+    {
+      "id": "F3C",
+      "label": "Fold 3 · early stop",
+      "group": "Folds",
+      "start": "2020-09-04",
+      "end_exclusive": "2021-01-01",
+      "status": "recorded",
+      "inputs": "C_3, {θ̂_{3,e}}_e",
+      "operation": "monitor",
+      "outputs": "e*ᵀ=1; e*ᴹ=45; F̂_3",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f3",
+        "R-wide_mlp64-f3"
+      ],
+      "notes": "Last 82 observed training origins before purge; require τ<2021-01-04. This is checkpoint selection, not predictive validation.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 3,
+      "observed_support": {
+        "quote_date": [
+          "2020-09-04",
+          "2020-12-30"
+        ],
+        "settlement_date": [
+          "2020-09-11",
+          "2020-12-31"
+        ]
+      }
+    },
+    {
+      "id": "F3V",
+      "label": "Fold 3 · 2021 validation",
+      "group": "Folds",
+      "start": "2021-01-04",
+      "end_exclusive": "2022-01-01",
+      "status": "recorded",
+      "inputs": "V_3, F̂_3",
+      "operation": "evaluate",
+      "outputs": "Y_3",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f3",
+        "R-wide_mlp64-f3",
+        "R-m51"
+      ],
+      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 3,
+      "observed_support": {
+        "quote_date": [
+          "2021-01-04",
+          "2021-12-31"
+        ],
+        "settlement_date": [
+          "2021-01-08",
+          "2022-02-18"
+        ]
+      }
+    },
+    {
+      "id": "F3L",
+      "label": "Fold 3 · settlement tail",
+      "group": "Folds",
+      "start": "2022-01-01",
+      "end_exclusive": "2022-02-19",
+      "status": "recorded",
+      "inputs": "{i∈V_3: τᵢ≥2022-01-01}",
+      "operation": "evaluate",
+      "outputs": "matured labels for Y_3",
+      "configs": [
+        "folds",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f3",
+        "R-wide_mlp64-f3"
+      ],
+      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 3,
+      "clock": "settlement"
+    },
+    {
+      "id": "B3",
+      "label": "M51 fold 3 · prior validation",
+      "group": "Blending",
+      "start": "2019-01-02",
+      "end_exclusive": "2021-01-01",
+      "status": "recorded",
+      "inputs": "L_3, component forecasts, dispersion bucket",
+      "operation": "blend",
+      "outputs": "ŵ_3, F̂^M51_3; fallback flag",
+      "configs": [
+        "m51",
+        "mlp",
+        "folds"
+      ],
+      "runs": [
+        "R-m51",
+        "R-wide_mlp64-f1",
+        "R-wide_mlp64-f2",
+        "R-wide_mlp64-f3"
+      ],
+      "notes": "Prior validation ORIGIN envelope; require τ<2021-01-04, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 3
+    },
+    {
+      "id": "G3",
+      "label": "M51 fold 3 · market PIT map",
+      "group": "Blending",
+      "start": "2017-01-03",
+      "end_exclusive": "2020-09-04",
+      "status": "recorded",
+      "inputs": "T_3 ∩ eligible_M51, F_market",
+      "operation": "marketcal",
+      "outputs": "Ĝ_3, F̂_market_cal",
+      "configs": [
+        "m51",
+        "folds"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Own fit band; labels must settle before 2020-09-04. Distinct from C_3, the early-stop monitor.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 3
+    },
+    {
+      "id": "F4T",
+      "label": "Fold 4 · optimize",
+      "group": "Folds",
+      "start": "2017-01-03",
+      "end_exclusive": "2021-09-07",
+      "status": "recorded",
+      "inputs": "T_4, Λ_4ᵀ, Λ_4ᴹ",
+      "operation": "fit",
+      "outputs": "{θ̂_{4,e}ᵀ, θ̂_{4,e}ᴹ}_e",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f4",
+        "R-wide_mlp64-f4"
+      ],
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 4,
+      "observed_support": {
+        "quote_date": [
+          "2017-01-03",
+          "2021-09-02"
+        ],
+        "settlement_date": [
+          "2017-01-06",
+          "2021-09-03"
+        ]
+      }
+    },
+    {
+      "id": "F4C",
+      "label": "Fold 4 · early stop",
+      "group": "Folds",
+      "start": "2021-09-07",
+      "end_exclusive": "2022-01-01",
+      "status": "recorded",
+      "inputs": "C_4, {θ̂_{4,e}}_e",
+      "operation": "monitor",
+      "outputs": "e*ᵀ=2; e*ᴹ=1; F̂_4",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f4",
+        "R-wide_mlp64-f4"
+      ],
+      "notes": "Last 82 observed training origins before purge; require τ<2022-01-03. This is checkpoint selection, not predictive validation.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 4,
+      "observed_support": {
+        "quote_date": [
+          "2021-09-07",
+          "2021-12-30"
+        ],
+        "settlement_date": [
+          "2021-09-10",
+          "2021-12-31"
+        ]
+      }
+    },
+    {
+      "id": "F4V",
+      "label": "Fold 4 · 2022 validation",
+      "group": "Folds",
+      "start": "2022-01-03",
+      "end_exclusive": "2022-12-31",
+      "status": "recorded",
+      "inputs": "V_4, F̂_4",
+      "operation": "evaluate",
+      "outputs": "Y_4",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f4",
+        "R-wide_mlp64-f4",
+        "R-m51"
+      ],
+      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 4,
+      "observed_support": {
+        "quote_date": [
+          "2022-01-03",
+          "2022-12-30"
+        ],
+        "settlement_date": [
+          "2022-01-07",
+          "2023-02-17"
+        ]
+      }
+    },
+    {
+      "id": "F4L",
+      "label": "Fold 4 · settlement tail",
+      "group": "Folds",
+      "start": "2022-12-31",
+      "end_exclusive": "2023-02-18",
+      "status": "recorded",
+      "inputs": "{i∈V_4: τᵢ≥2022-12-31}",
+      "operation": "evaluate",
+      "outputs": "matured labels for Y_4",
+      "configs": [
+        "folds",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f4",
+        "R-wide_mlp64-f4"
+      ],
+      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 4,
+      "clock": "settlement"
+    },
+    {
+      "id": "B4",
+      "label": "M51 fold 4 · prior validation",
+      "group": "Blending",
+      "start": "2019-01-02",
+      "end_exclusive": "2022-01-01",
+      "status": "recorded",
+      "inputs": "L_4, component forecasts, dispersion bucket",
+      "operation": "blend",
+      "outputs": "ŵ_4, F̂^M51_4; fallback flag",
+      "configs": [
+        "m51",
+        "mlp",
+        "folds"
+      ],
+      "runs": [
+        "R-m51",
+        "R-wide_mlp64-f1",
+        "R-wide_mlp64-f2",
+        "R-wide_mlp64-f3",
+        "R-wide_mlp64-f4"
+      ],
+      "notes": "Prior validation ORIGIN envelope; require τ<2022-01-03, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 4
+    },
+    {
+      "id": "G4",
+      "label": "M51 fold 4 · market PIT map",
+      "group": "Blending",
+      "start": "2017-01-03",
+      "end_exclusive": "2021-09-07",
+      "status": "recorded",
+      "inputs": "T_4 ∩ eligible_M51, F_market",
+      "operation": "marketcal",
+      "outputs": "Ĝ_4, F̂_market_cal",
+      "configs": [
+        "m51",
+        "folds"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Own fit band; labels must settle before 2021-09-07. Distinct from C_4, the early-stop monitor.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 4
+    },
+    {
+      "id": "F5T",
+      "label": "Fold 5 · optimize",
+      "group": "Folds",
+      "start": "2017-01-03",
+      "end_exclusive": "2022-09-06",
+      "status": "recorded",
+      "inputs": "T_5, Λ_5ᵀ, Λ_5ᴹ",
+      "operation": "fit",
+      "outputs": "{θ̂_{5,e}ᵀ, θ̂_{5,e}ᴹ}_e",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f5",
+        "R-wide_mlp64-f5"
+      ],
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 5,
+      "observed_support": {
+        "quote_date": [
+          "2017-01-03",
+          "2022-09-01"
+        ],
+        "settlement_date": [
+          "2017-01-06",
+          "2022-09-02"
+        ]
+      }
+    },
+    {
+      "id": "F5C",
+      "label": "Fold 5 · early stop",
+      "group": "Folds",
+      "start": "2022-09-06",
+      "end_exclusive": "2022-12-31",
+      "status": "recorded",
+      "inputs": "C_5, {θ̂_{5,e}}_e",
+      "operation": "monitor",
+      "outputs": "e*ᵀ=2; e*ᴹ=1; F̂_5",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp"
+      ],
+      "runs": [
+        "R-tcn-f5",
+        "R-wide_mlp64-f5"
+      ],
+      "notes": "Last 82 observed training origins before purge; require τ<2023-01-03. This is checkpoint selection, not predictive validation.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 5,
+      "observed_support": {
+        "quote_date": [
+          "2022-09-06",
+          "2022-12-29"
+        ],
+        "settlement_date": [
+          "2022-09-09",
+          "2022-12-30"
+        ]
+      }
+    },
+    {
+      "id": "F5V",
+      "label": "Fold 5 · 2023 validation",
+      "group": "Folds",
+      "start": "2023-01-03",
+      "end_exclusive": "2023-12-30",
+      "status": "recorded",
+      "inputs": "V_5, F̂_5",
+      "operation": "evaluate",
+      "outputs": "Y_5",
+      "configs": [
+        "folds",
+        "tcn",
+        "mlp",
+        "m51"
+      ],
+      "runs": [
+        "R-tcn-f5",
+        "R-wide_mlp64-f5",
+        "R-m51"
+      ],
+      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
+      "authority": [
+        "A0008",
+        "saved fit metadata"
+      ],
+      "fold": 5,
+      "observed_support": {
+        "quote_date": [
+          "2023-01-03",
+          "2023-12-28"
+        ],
+        "settlement_date": [
+          "2023-01-06",
+          "2023-12-29"
+        ]
+      }
+    },
+    {
+      "id": "B5",
+      "label": "M51 fold 5 · prior validation",
+      "group": "Blending",
+      "start": "2019-01-02",
+      "end_exclusive": "2022-12-31",
+      "status": "recorded",
+      "inputs": "L_5, component forecasts, dispersion bucket",
+      "operation": "blend",
+      "outputs": "ŵ_5, F̂^M51_5; fallback flag",
+      "configs": [
+        "m51",
+        "mlp",
+        "folds"
+      ],
+      "runs": [
+        "R-m51",
+        "R-wide_mlp64-f1",
+        "R-wide_mlp64-f2",
+        "R-wide_mlp64-f3",
+        "R-wide_mlp64-f4",
+        "R-wide_mlp64-f5"
+      ],
+      "notes": "Prior validation ORIGIN envelope; require τ<2023-01-03, eligible rows, and sufficient rows per bucket. Gaps between yearly windows remain excluded.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 5
+    },
+    {
+      "id": "G5",
+      "label": "M51 fold 5 · market PIT map",
+      "group": "Blending",
+      "start": "2017-01-03",
+      "end_exclusive": "2022-09-06",
+      "status": "recorded",
+      "inputs": "T_5 ∩ eligible_M51, F_market",
+      "operation": "marketcal",
+      "outputs": "Ĝ_5, F̂_market_cal",
+      "configs": [
+        "m51",
+        "folds"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Own fit band; labels must settle before 2022-09-06. Distinct from C_5, the early-stop monitor.",
+      "authority": [
+        "executed M51 params"
+      ],
+      "fold": 5
+    },
+    {
+      "id": "S0",
+      "label": "Pre-crash",
+      "group": "Reporting",
+      "start": "2020-01-02",
+      "end_exclusive": "2020-02-15",
+      "status": "recorded",
+      "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-01-02,2020-02-15);S_f), paired forecasts",
+      "operation": "cellgate",
+      "outputs": "J by S0; cell/year/regime eligibility evidence",
+      "configs": [
+        "path",
+        "m51"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "authority": [
+        "A0007",
+        "executed M51 regime definitions"
+      ]
+    },
+    {
+      "id": "S1",
+      "label": "COVID crash",
+      "group": "Reporting",
+      "start": "2020-02-15",
+      "end_exclusive": "2020-07-01",
+      "status": "recorded",
+      "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-02-15,2020-07-01);S_f), paired forecasts",
+      "operation": "cellgate",
+      "outputs": "J by S1; cell/year/regime eligibility evidence",
+      "configs": [
+        "path",
+        "m51"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "authority": [
+        "A0007",
+        "executed M51 regime definitions"
+      ]
+    },
+    {
+      "id": "S2",
+      "label": "Recovery",
+      "group": "Reporting",
+      "start": "2020-07-01",
+      "end_exclusive": "2022-01-01",
+      "status": "recorded",
+      "inputs": "(V₂∪⋯∪V₅) ∩ D([2020-07-01,2022-01-01);S_f), paired forecasts",
+      "operation": "cellgate",
+      "outputs": "J by S2; cell/year/regime eligibility evidence",
+      "configs": [
+        "path",
+        "m51"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "authority": [
+        "A0007",
+        "executed M51 regime definitions"
+      ]
+    },
+    {
+      "id": "S3",
+      "label": "Rate shock",
+      "group": "Reporting",
+      "start": "2022-01-03",
+      "end_exclusive": "2022-12-31",
+      "status": "recorded",
+      "inputs": "(V₂∪⋯∪V₅) ∩ D([2022-01-03,2022-12-31);S_f), paired forecasts",
+      "operation": "cellgate",
+      "outputs": "J by S3; cell/year/regime eligibility evidence",
+      "configs": [
+        "path",
+        "m51"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "authority": [
+        "A0007",
+        "executed M51 regime definitions"
+      ]
+    },
+    {
+      "id": "S4",
+      "label": "2023",
+      "group": "Reporting",
+      "start": "2023-01-03",
+      "end_exclusive": "2023-12-30",
+      "status": "recorded",
+      "inputs": "(V₂∪⋯∪V₅) ∩ D([2023-01-03,2023-12-30);S_f), paired forecasts",
+      "operation": "cellgate",
+      "outputs": "J by S4; cell/year/regime eligibility evidence",
+      "configs": [
+        "path",
+        "m51"
+      ],
+      "runs": [
+        "R-m51"
+      ],
+      "notes": "Reporting origin slice; same label-maturity rule as its parent folds. This is not a new independent test.",
+      "authority": [
+        "A0007",
+        "executed M51 regime definitions"
+      ]
+    },
+    {
+      "id": "PROMOTE",
+      "label": "Predictive promotion decision",
+      "group": "Reporting",
+      "start": "2020-01-02",
+      "end_exclusive": "2024-01-01",
+      "status": "undecided",
+      "inputs": "Paired validation evidence, candidate recipe, seeds {11,29,47}",
+      "operation": "promotion",
+      "outputs": "m* (undecided)",
+      "configs": [
+        "path"
+      ],
+      "runs": [],
+      "notes": "The rule is locked; final promoted recipe, full promotion run pins and TCN/M51 reconciliation are not established by this TDD.",
+      "authority": [
+        "A0004",
+        "A0005",
+        "A0008"
+      ]
+    },
+    {
+      "id": "HPO",
+      "label": "Additional hyperparameter search",
+      "group": "Reporting",
+      "start": null,
+      "end_exclusive": null,
+      "status": "undecided",
+      "inputs": "Search set Λ_search; tuning/validation assignment",
+      "operation": "monitor",
+      "outputs": "λ* (undecided)",
+      "configs": [
+        "tcn",
+        "mlp"
+      ],
+      "runs": [],
+      "notes": "The recorded fits use fixed settings and early stopping. No additional HPO window or search grid has been adopted.",
+      "authority": []
+    }
+  ],
+  "configs": [
+    {
+      "id": "path",
+      "path": "children/index_options/docs/decisioning/path.csv",
+      "sha256": "3958c5c8399cae1817bebef3da3ba0e5893294f44144dbeec39f6e40d1e8275b",
+      "role": "Owner decisions; A0008 supersedes A0004's screen rung only."
+    },
+    {
+      "id": "folds",
+      "path": "children/index_options/configs/strike-screen-folds-walkforward.jsonl",
+      "sha256": "e8ad1594afe8982a1225203135d2d9917db5c99e3faca6c90bd2c4a84ef6330a",
+      "role": "Executed five-fold schedule, inclusive source ends."
+    },
+    {
+      "id": "prep",
+      "path": "children/index_options/configs/run-theta-exact-expiry-tables.json",
+      "sha256": "a4402ad25a611a36de0b0040d89fd370304645f204edd32f07025b7c5fafbed3",
+      "role": "Preparation pipeline; exact executed copy is R-prep/config.json."
+    },
+    {
+      "id": "panel",
+      "path": "children/index_options/configs/strike-screen-panel-source.json",
+      "sha256": "a4c6cc31c0f0ac32bd7093553865ebdbb2dccad6d833000313a7dcd05dc45d00",
+      "role": "Panel stage only. Embedded search candidates are not the training recipe."
+    },
+    {
+      "id": "tcn",
+      "path": "children/index_options/configs/run-strike-screen-fits-walkforward.json",
+      "sha256": "a1469cc1ef893de9fa437e7c76a8e9582a074f6c34f52ba54069efb9f8cb2332",
+      "role": "TCN recipe template. Zero panel hash and empty dependency/code pins are unresolved placeholders, not the executed invocation."
+    },
+    {
+      "id": "mlp",
+      "path": "children/index_options/configs/run-strike-screen-fits-wf-wide-mlp64.json",
+      "sha256": "16ca896c5487b97e4191390d5bca59aa94d45030e9e1c75e9d33fa99942d5609",
+      "role": "M51 dependency recipe template; the same unresolved invocation placeholders apply."
+    },
+    {
+      "id": "scores",
+      "path": "children/index_options/configs/run-strike-region-scores-wf-wide-mlp64.json",
+      "sha256": "8e164848f3566759c3604a4c443f55302b94d444d866fd690e6a546aab12b027",
+      "role": "Score saved MLP fits for M51; no fitting."
+    },
+    {
+      "id": "m51",
+      "path": "children/index_options/configs/run-edge-method-51-qa-mlp64-by-dispersion.json",
+      "sha256": "abec1b9e0b08a965b5ea308fc5558985cb1eaddebc2d214fef2fdeff7586d709",
+      "role": "M51 pipeline. Actual model-slot/source params specify wide_mlp64; the copied TCN sentence in notes is stale."
+    },
+    {
+      "id": "mio2020",
+      "path": "children/index_options/docs/memos/data/2026-10-26-shock-rows-2020/params-2020.json",
+      "sha256": "72e7dd8a1e48a42f1009eb25b55c8072b6af605f5af870cb424038c0335c349f",
+      "role": "Saved params for the bounded executed 2020 study; this was a Python runner, not a pipeline attestation."
+    },
+    {
+      "id": "mio-study",
+      "path": "children/index_options/docs/plans/mio-json/study.json",
+      "sha256": "e5ba3ed0f7cd14baccf9108573b397385642bafa7f5de021189d0ad15894b4aa",
+      "role": "Proposed interface only; not executable or an accepted dated schedule. Null pins remain unresolved."
+    },
+    {
+      "id": "mio-plan.template",
+      "path": "children/index_options/docs/plans/mio-json/plan.template.json",
+      "sha256": "805f7c6982cae062ace0cb674debdbc54256ed8f4e10fb1efa75d3a15aed3404",
+      "role": "Proposed interface only; not executable or an accepted dated schedule. Null pins remain unresolved."
+    },
+    {
+      "id": "mio-run.template",
+      "path": "children/index_options/docs/plans/mio-json/run.template.json",
+      "sha256": "97d2686b4913975b7e87ed7ff530611bc0f750893f17160d6450cb1149c732e7",
+      "role": "Proposed interface only; not executable or an accepted dated schedule. Null pins remain unresolved."
+    },
+    {
+      "id": "mio-compare.template",
+      "path": "children/index_options/docs/plans/mio-json/compare.template.json",
+      "sha256": "c7e458be7745ff94a06a2d26b1eeba6d9eb9026768ea083f1ee28e377fcb0351",
+      "role": "Proposed interface only; not executable or an accepted dated schedule. Null pins remain unresolved."
+    }
+  ],
+  "runs": [
+    {
+      "id": "R-prep",
+      "kind": "pipeline",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/prepare/exact-expiry-run/theta-exact-expiry-tables-2023-12-31-d184ffd9",
+      "identity": "d184ffd97879fa3801f247f4d35c48438409015ff67dc87f65e118cc71ec902e",
+      "document_hash": "6202bb3f082fce225c9d58fc6f97c54f3209f8d9b49e1ce63cc1c42f19c1020c",
+      "asof": "2023-12-31",
+      "files": {
+        "config.json": "c27c5f70efe5861c0cfc16005616e3b65bf7904dc0db44fc98d035b19cb66dd1",
+        "resolved.json": "387ebbe680b2248d3e911489849c19042ddba42cafaec75441f5514eb34f778f",
+        "result.json": "54e5d3cbcae829ffdd83c91c12424b3a203a62407027a9da2728f2f609ef5d40"
+      },
+      "verification": "RunAttestation completed + node_output_for_document; saved config document hash matches resolved; raw file hashes recorded.",
+      "node": "tables",
+      "source_fingerprints": {
+        "bars": {
+          "kind": "ParquetStreamRows",
+          "sha256": "29cf072abe2563bc4c86c7b0373dd150b77386f2e810789b710292cb2ada9781"
+        },
+        "chain": {
+          "kind": "ParquetChainRows",
+          "sha256": "dc244b8321f67fa3eec8c12088c350987e37dad7200e07b6a753f1e579344761"
+        }
+      },
+      "limitation": "Local saved evidence, not a signed attestation. Full data_fingerprint is in the pinned resolved.json."
+    },
+    {
+      "id": "R-m51",
+      "kind": "pipeline",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/run-edge-method-51-qa-mlp64-by-dispersion/edge-method-51-qa-mlp64-by-dispersion-2023-12-31-341c0186",
+      "identity": "341c018672d99e2f45c99204feabdb4e9d7b874be4f5311e1f00128b02ef3c9a",
+      "document_hash": "e8088a262984b703a7b537438ca505b125d18f6f7488b3831bde751faaf40c72",
+      "asof": "2023-12-31",
+      "files": {
+        "config.json": "7340d8d202c92389aae55c468f954a3de8f4f2faff5c7e1786f1b93555c3d123",
+        "resolved.json": "c4555d3029cc0ec9e1196022d654f6f8c7ff4a897731ca3fa02e0364ea170fc4",
+        "result.json": "d9d87c17a7f00170d80f130c0ad7f62f190274532ca4afd1b502d81338b01e4c"
+      },
+      "verification": "RunAttestation completed + node_output_for_document; saved config document hash matches resolved; raw file hashes recorded. M51 forecasts, fit metadata and summary hashed; source row bytes verified against the configured SHA256.",
+      "node": "method",
+      "source_fingerprints": {},
+      "limitation": "Local saved evidence, not a signed attestation. Full data_fingerprint is in the pinned resolved.json.",
+      "artifacts": [
+        {
+          "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/edge-method-51-qa-mlp64-by-dispersion/summary.json",
+          "sha256": "4f63a74eb221a6c0ab06e24b15a5e84e90a94863692c540d486ca3db1b20de2a"
+        },
+        {
+          "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/edge-method-51-qa-mlp64-by-dispersion/fit.json",
+          "sha256": "aea633756fa7ef7a919c377ccd8ef46615913a96aea8692309c322a354fa9856"
+        },
+        {
+          "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/edge-method-51-qa-mlp64-by-dispersion/forecasts.parquet",
+          "sha256": "8360a63d7b42bf66a58f59855942bac2b44ca702dcb57c27638d26d2ec4fcc40"
+        },
+        {
+          "path": "/home/russell/data/index_options/theta-strike-screen-20261018/scores/strike-region-scores-wf-wide-mlp64/rows.parquet",
+          "sha256": "f0db364e4d149fe7dc22a34e2de90ef117599d32a2ab6705fe8da8e03f7b2c85"
+        }
+      ]
+    },
+    {
+      "id": "R-panel",
+      "kind": "panel_cache",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/panel/panel-cache",
+      "identity": "66b9a4360f22e2f2f0ec9168246958d41c47d3cd06975c9e0a8ce2afde1c32cb",
+      "files": {
+        "record.json": "19e66164aedc623a0d523357204cef93ff06259b9fba74eb36ab5143b377a6b7",
+        "frame.parquet": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144"
+      },
+      "verification": "Frame bytes match record.json SHA256; dates only projected to recover the 82-origin boundaries.",
+      "limitation": "Cache identity is not a pipeline run_hash. Original invocation/code/environment binding was not recovered."
+    },
+    {
+      "id": "R-tcn-f1",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/1/pooled",
+      "identity": "5bbc533e3ca88dc611ae54a3d71fe6dda8496d8202804fd91b3dc6ea9baa8dc4",
+      "fold": 1,
+      "model": "tcn",
+      "files": {
+        "fit/complete.json": "c0e4039c903a63cb537d772690909171c41074453d3ed0744e61e81c64a1c892",
+        "fit/metadata.json": "7b2517401b85cb49411922e1854091afb73ce5aaacd01d35c0a668467f8c31c2",
+        "fit/model/state.json": "e52bf28df6edf2aa26dec15b81b08e5109c8a845bf78ee79f5c8f6578252247c",
+        "fit/model/weights.pt": "22517db38790949b465d166e5d96e46e54c8124f82bf531e5c585b787f518c21",
+        "completed/summary.json": "c5f71f0fd7cec429a09f680e169bb65d93775ee1ab4a8c3f3f9f0a764fa18f0e",
+        "completed/complete.json": "df9ada7645eeecbf46b0837309866b12eeb6ccb6eab8e09b6e216d30f56dcef5"
+      },
+      "best_epoch": 1,
+      "epochs_visited": 51,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS",
+        "LLY"
+      ],
+      "band_counts": [
+        260392,
+        44890,
+        160754
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2018-08-30"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2018-08-31"
+          ]
+        },
+        {
+          "quote_date": [
+            "2018-09-04",
+            "2018-12-27"
+          ],
+          "settlement_date": [
+            "2018-09-07",
+            "2018-12-28"
+          ]
+        },
+        {
+          "quote_date": [
+            "2019-01-02",
+            "2019-12-26"
+          ],
+          "settlement_date": [
+            "2019-01-04",
+            "2019-12-27"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.1,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "tcn",
+              "arch_params": {
+                "dilations": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16
+                ],
+                "hidden_size": 16,
+                "kernel_size": 2
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65
+        ],
+        "head_features": [
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 65098,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.01
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-tcn-f2",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/2/pooled",
+      "identity": "264e6ddbf0af87af89ef1816633003593ca5318ddaaaba597f41cab73024099d",
+      "fold": 2,
+      "model": "tcn",
+      "files": {
+        "fit/complete.json": "8f524a995f0042a721033fc22b7c325595931f5f1403448ca723acf95d694852",
+        "fit/metadata.json": "bf162e365ca76f7ea14f25b20d7cf8c554bbaeb7a81cb606c55600a0a7683519",
+        "fit/model/state.json": "872a5fb51f939c1d42a56fa561aad3f66a625fb5d2002430e83931d347c2e9f8",
+        "fit/model/weights.pt": "560eea1690f81be77048e7875baf74a2a5b1e04beb56b3a8669e6462a7f6d9da",
+        "completed/summary.json": "ba44522fe525c17b1a53f91727cff08f89c1032cd182108f937af58fe55f25c7",
+        "completed/complete.json": "b28373550eeda523a755fe35b2a7202ae41a60058c83e1fb8a70ebae3cc33218"
+      },
+      "best_epoch": 2,
+      "epochs_visited": 52,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "ECHO",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS"
+      ],
+      "band_counts": [
+        426603,
+        44334,
+        177194
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2019-08-29"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2019-08-30"
+          ]
+        },
+        {
+          "quote_date": [
+            "2019-09-05",
+            "2019-12-26"
+          ],
+          "settlement_date": [
+            "2019-09-06",
+            "2019-12-27"
+          ]
+        },
+        {
+          "quote_date": [
+            "2020-01-02",
+            "2020-12-31"
+          ],
+          "settlement_date": [
+            "2020-01-03",
+            "2021-02-19"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.1,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "tcn",
+              "arch_params": {
+                "dilations": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16
+                ],
+                "hidden_size": 16,
+                "kernel_size": 2
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65
+        ],
+        "head_features": [
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 100000,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.01
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-tcn-f3",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/3/pooled",
+      "identity": "4f6f5cd5287355f3bc9554bc2f468b059ef7c97a9fa111eae745a28093d40cc0",
+      "fold": 3,
+      "model": "tcn",
+      "files": {
+        "fit/complete.json": "37cb64e3a9e409bbc705f48a845b5183341360e281675dac7c94bb5c885e0ce9",
+        "fit/metadata.json": "2439fdea0cc3d8705f419655adb87d24232ebc7f4ef41251c98db4dcc40bce1c",
+        "fit/model/state.json": "8db5931e8290a32b21d839b916e6b746fea9f47ebbe85c88231e5ee4d6c22910",
+        "fit/model/weights.pt": "717cd451e7b1a0c89958f1cf0c54d3389e391613177bdf6ecb2a38c2093ecb57",
+        "completed/summary.json": "fb23f6a221fc92c8851bb5ef9af849b44aece5fe208f3932726c292d11c5fb76",
+        "completed/complete.json": "136179e4be966ae642665bde9101816d61e9cfcd7e85f1ddaa63b2257dd65ae8"
+      },
+      "best_epoch": 1,
+      "epochs_visited": 51,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "ECHO",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS",
+        "LLY"
+      ],
+      "band_counts": [
+        605633,
+        47529,
+        181285
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2020-08-27"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2020-08-28"
+          ]
+        },
+        {
+          "quote_date": [
+            "2020-09-04",
+            "2020-12-30"
+          ],
+          "settlement_date": [
+            "2020-09-11",
+            "2020-12-31"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-01-04",
+            "2021-12-31"
+          ],
+          "settlement_date": [
+            "2021-01-08",
+            "2022-02-18"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.1,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "tcn",
+              "arch_params": {
+                "dilations": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16
+                ],
+                "hidden_size": 16,
+                "kernel_size": 2
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65
+        ],
+        "head_features": [
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181,
+          182
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 100000,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.01
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-tcn-f4",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/4/pooled",
+      "identity": "040de2574e652553a7da077a04553266781cca357272e5f794e1fa80188b1812",
+      "fold": 4,
+      "model": "tcn",
+      "files": {
+        "fit/complete.json": "f4e61fedeb4187324b4f1dc348046e3e2ab666d82e70deb0a75b978d9d42cf7e",
+        "fit/metadata.json": "cc64c909b6ab3d2a125649fdc991790dadfa0567ba186272fd49aa0d32a812a1",
+        "fit/model/state.json": "1c0bf42ce8d03c6541bdd7ba7d95a2d3d384c4f38dfa54f4e92690983ee4170a",
+        "fit/model/weights.pt": "ba7e4452a9deb37d7076b7fecaea9ab11a42bbae0582c4fb5d1a70957fc49d0d",
+        "completed/summary.json": "23b0459d5b8e4e5c2a7221c258d12326b6a73cc7c5bc180f5389689ca594ff62",
+        "completed/complete.json": "ee04b5fa44f2c694fb53e59e174c0b1c33e44082aa3177ef00b30d2c4deedcd5"
+      },
+      "best_epoch": 2,
+      "epochs_visited": 52,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COHR",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS",
+        "LLY"
+      ],
+      "band_counts": [
+        788405,
+        47810,
+        181588
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2021-09-02"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2021-09-03"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-09-07",
+            "2021-12-30"
+          ],
+          "settlement_date": [
+            "2021-09-10",
+            "2021-12-31"
+          ]
+        },
+        {
+          "quote_date": [
+            "2022-01-03",
+            "2022-12-30"
+          ],
+          "settlement_date": [
+            "2022-01-07",
+            "2023-02-17"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.1,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "tcn",
+              "arch_params": {
+                "dilations": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16
+                ],
+                "hidden_size": 16,
+                "kernel_size": 2
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65
+        ],
+        "head_features": [
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181,
+          182
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 100000,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.01
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-tcn-f5",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/5/pooled",
+      "identity": "3d84b77ee9c85fdd327a9d71bb93c20d31359f8f7124c1d31b3d084172b74ec0",
+      "fold": 5,
+      "model": "tcn",
+      "files": {
+        "fit/complete.json": "dd0833a18fd2bef19f36df8c856b668ef7cd489ac7e94a2f2066db38befd46fd",
+        "fit/metadata.json": "70165281d1aa8bf2fef81bc29d16c587c66f780a1634862f07eb8d366d92ada6",
+        "fit/model/state.json": "3d5ddac056daa690b399d081ca690bba36a9ee3f2cc6da30ca1f824fa82eeda6",
+        "fit/model/weights.pt": "0ddceae24763763e5314389729b1c2a97e91b22b31e49702ef2722d3b3543d85",
+        "completed/summary.json": "a780a7b6823961d46f58dff3ad894f5730ef0a780b945ded68a4fd2bc6c84a6f",
+        "completed/complete.json": "d38d5c37cc6a0591816a93b9eef3a6d89c6a419957a8e6f37805b77ffbc8ffca"
+      },
+      "best_epoch": 2,
+      "epochs_visited": 52,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS",
+        "LLY"
+      ],
+      "band_counts": [
+        970019,
+        48238,
+        171118
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2022-09-01"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2022-09-02"
+          ]
+        },
+        {
+          "quote_date": [
+            "2022-09-06",
+            "2022-12-29"
+          ],
+          "settlement_date": [
+            "2022-09-09",
+            "2022-12-30"
+          ]
+        },
+        {
+          "quote_date": [
+            "2023-01-03",
+            "2023-12-28"
+          ],
+          "settlement_date": [
+            "2023-01-06",
+            "2023-12-29"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.1,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "tcn",
+              "arch_params": {
+                "dilations": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16
+                ],
+                "hidden_size": 16,
+                "kernel_size": 2
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65
+        ],
+        "head_features": [
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 100000,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.01
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-wide_mlp64-f1",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-wide-mlp64/pooled/context_chain/wide_mlp64/1/pooled",
+      "identity": "5630db4e516819526035bba3505d9669c7f7b192e662414518b3db32138fe8dc",
+      "fold": 1,
+      "model": "wide_mlp64",
+      "files": {
+        "fit/complete.json": "47114abb854b21e91064414cf8c47ee200f7a46dfd19b786f463322c4feb89f0",
+        "fit/metadata.json": "93721d9122ce32dd1c2ad9b882d7cb733b6eb8c5520cac035e1e8281466540d5",
+        "fit/model/state.json": "4ddbbd26fa8f6e4cd73e325d27fcec6dab97b220b9f28a6c5ef325700e16d2b5",
+        "fit/model/weights.pt": "ffc746371a5a37033dde985621e6ecb6be5b740479179f4cb682e60fa92a303c",
+        "completed/summary.json": "f57085f12d685f69f69759ad7b8855ffb7f71947b5729aae0f628f835805cfde",
+        "completed/complete.json": "acb791adaf219e451b883a5d3433f5ca33a32f78a9312a51db2b74c023d16adb"
+      },
+      "best_epoch": 23,
+      "epochs_visited": 73,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS",
+        "LLY"
+      ],
+      "band_counts": [
+        260392,
+        44890,
+        160754
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2018-08-30"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2018-08-31"
+          ]
+        },
+        {
+          "quote_date": [
+            "2018-09-04",
+            "2018-12-27"
+          ],
+          "settlement_date": [
+            "2018-09-07",
+            "2018-12-28"
+          ]
+        },
+        {
+          "quote_date": [
+            "2019-01-02",
+            "2019-12-26"
+          ],
+          "settlement_date": [
+            "2019-01-04",
+            "2019-12-27"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.3,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "mlp",
+              "arch_params": {
+                "hidden_size": 64
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 65098,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.3
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-wide_mlp64-f2",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-wide-mlp64/pooled/context_chain/wide_mlp64/2/pooled",
+      "identity": "74e20bbd1c8b35664ec33e9d65232a83f1a05f57e1e3a4d182ea0ea2180aa4e6",
+      "fold": 2,
+      "model": "wide_mlp64",
+      "files": {
+        "fit/complete.json": "d09d95737947de8888240b6841edde96d498d484118a5edad851a9f856e5a7d1",
+        "fit/metadata.json": "3ecfbd67414aa64a8e06ec623b7313059855df2e5c89a5488ce484b92ee0a93c",
+        "fit/model/state.json": "92b6b149afee9ddbd2a8ad1545a079abe55dd9000c136c9ed40800cd5b445153",
+        "fit/model/weights.pt": "451b01e4956a338008c31bd9d56faeb40a4abe003bae50872f2703b589e4c1ce",
+        "completed/summary.json": "a3537a653e5b3df127f870228c4c137e980c601abf73456ebf7ed1163351e2bd",
+        "completed/complete.json": "69d5737997f3fbfe218d8a0c5c344a84d8429b9f6f4e70f55861aa2ed40b34c7"
+      },
+      "best_epoch": 2,
+      "epochs_visited": 52,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "ECHO",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS"
+      ],
+      "band_counts": [
+        426603,
+        44334,
+        177194
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2019-08-29"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2019-08-30"
+          ]
+        },
+        {
+          "quote_date": [
+            "2019-09-05",
+            "2019-12-26"
+          ],
+          "settlement_date": [
+            "2019-09-06",
+            "2019-12-27"
+          ]
+        },
+        {
+          "quote_date": [
+            "2020-01-02",
+            "2020-12-31"
+          ],
+          "settlement_date": [
+            "2020-01-03",
+            "2021-02-19"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.3,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "mlp",
+              "arch_params": {
+                "hidden_size": 64
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 100000,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.3
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-wide_mlp64-f3",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-wide-mlp64/pooled/context_chain/wide_mlp64/3/pooled",
+      "identity": "ec229752c1ecb38e726067deb22bccce0211eb6250d949898637359a65a89e86",
+      "fold": 3,
+      "model": "wide_mlp64",
+      "files": {
+        "fit/complete.json": "486e16a28acdf7310dc058af6c01e1f86b5115b0f53535c53c6e670113973898",
+        "fit/metadata.json": "da4283b352d495d00abb0f4b82c7bb6f20ad6a1ba7ae37310488bcdfbdd85111",
+        "fit/model/state.json": "257350a6f5c76412883f38de7b3447cec6c03dcb5a95ed71090a34ba625089d7",
+        "fit/model/weights.pt": "f80aa11e4f23aa54863d83b9cbace514e21b96a9c65f4cf1950f49c5ed87d841",
+        "completed/summary.json": "f3bd783a7b4ee04edb306f50a9f7c0f5d7085b77d7d0328832e79ecb683f5905",
+        "completed/complete.json": "8fc973b62fc8c917ad29e0045043a25b5deac432cb0c3680d004d00c0ebee92c"
+      },
+      "best_epoch": 45,
+      "epochs_visited": 95,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "ECHO",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS",
+        "LLY"
+      ],
+      "band_counts": [
+        605633,
+        47529,
+        181285
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2020-08-27"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2020-08-28"
+          ]
+        },
+        {
+          "quote_date": [
+            "2020-09-04",
+            "2020-12-30"
+          ],
+          "settlement_date": [
+            "2020-09-11",
+            "2020-12-31"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-01-04",
+            "2021-12-31"
+          ],
+          "settlement_date": [
+            "2021-01-08",
+            "2022-02-18"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.3,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "mlp",
+              "arch_params": {
+                "hidden_size": 64
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 100000,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.3
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-wide_mlp64-f4",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-wide-mlp64/pooled/context_chain/wide_mlp64/4/pooled",
+      "identity": "73cf574b8c1623a43442e63351b7b51440b0da609f665a08a9f8509260bb99b2",
+      "fold": 4,
+      "model": "wide_mlp64",
+      "files": {
+        "fit/complete.json": "fadd5bba9db47f58989c7e06c1129f084f12fafbac9f670a673c694959151291",
+        "fit/metadata.json": "60ee7b861b0e9728af1d6f6e675b4da16f9b1a7e0b2d62378080258830f2d224",
+        "fit/model/state.json": "1de4ba1bee4b50baf63ffff5821ba045f628978c2f275cbec9c599d30d7c9ac4",
+        "fit/model/weights.pt": "cbb7ad263cd944ffbbe0c1cf425acba774e6862647e4b4cf2f56149211371d65",
+        "completed/summary.json": "82b7184e22e56a0b817b1e081aa74623555f59fbc712d443035e3e902212d3d6",
+        "completed/complete.json": "b981972d1037c2026f373f4c24e9905bc86b8f7f1e5975cd7e2bd1980aec9fa0"
+      },
+      "best_epoch": 1,
+      "epochs_visited": 51,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COHR",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS",
+        "LLY"
+      ],
+      "band_counts": [
+        788405,
+        47810,
+        181588
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2021-09-02"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2021-09-03"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-09-07",
+            "2021-12-30"
+          ],
+          "settlement_date": [
+            "2021-09-10",
+            "2021-12-31"
+          ]
+        },
+        {
+          "quote_date": [
+            "2022-01-03",
+            "2022-12-30"
+          ],
+          "settlement_date": [
+            "2022-01-07",
+            "2023-02-17"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.3,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "mlp",
+              "arch_params": {
+                "hidden_size": 64
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 100000,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.3
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-wide_mlp64-f5",
+      "kind": "cdf_fit",
+      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-wide-mlp64/pooled/context_chain/wide_mlp64/5/pooled",
+      "identity": "8c61a2026317a262140733ad4d4c58e685cfbb96f8dec007e154f9ceb9de11b7",
+      "fold": 5,
+      "model": "wide_mlp64",
+      "files": {
+        "fit/complete.json": "42614d855afaf4491945ba6e973e3a90947f7a03f5ef87f1099a64fe88af78d0",
+        "fit/metadata.json": "29e1ac027fa6b566a456174e2135c4e75d05121ba23b6c0d557f4b023ed22440",
+        "fit/model/state.json": "cc54e695f89152e5d28fc693141af4ab81506d6aa90388c61f660928105005fd",
+        "fit/model/weights.pt": "e7730f15cfc212813403757acfed2853321a728e7c6e6477fe051950fbc365c3",
+        "completed/summary.json": "6d7e5efe4996fc6188ea01e38f9e6956dc6c3c859c8b7a3aacea27030d403423",
+        "completed/complete.json": "6b430eb14f958a0fa6a20cfe0ea46ccc099badbf7839902ed45191e890f0ec02"
+      },
+      "best_epoch": 1,
+      "epochs_visited": 51,
+      "symbols": [
+        "AAPL",
+        "ABBV",
+        "ABT",
+        "ABUS",
+        "ACN",
+        "ADBE",
+        "ADI",
+        "AEO",
+        "AG",
+        "AGNC",
+        "AKAM",
+        "ALB",
+        "ALLY",
+        "AMAT",
+        "AMC",
+        "AMD",
+        "AMGN",
+        "AMKR",
+        "AMZN",
+        "ANET",
+        "APA",
+        "APH",
+        "APO",
+        "AVAV",
+        "AVGO",
+        "AXP",
+        "AXTI",
+        "BA",
+        "BAC",
+        "BBY",
+        "BIDU",
+        "BLK",
+        "BMY",
+        "BP",
+        "BSX",
+        "BX",
+        "C",
+        "CAG",
+        "CAT",
+        "CCJ",
+        "CCL",
+        "CDE",
+        "CHTR",
+        "CIEN",
+        "CLF",
+        "CLS",
+        "CMCSA",
+        "CME",
+        "CMG",
+        "CNC",
+        "COF",
+        "COP",
+        "COST",
+        "CPB",
+        "CRM",
+        "CSCO",
+        "CVE",
+        "CVS",
+        "CVX",
+        "DAL",
+        "DE",
+        "DHR",
+        "DHT",
+        "DIS",
+        "DKS",
+        "DUK",
+        "DVN",
+        "EIX",
+        "ENPH",
+        "EOG",
+        "EPD",
+        "EQT",
+        "EXPE",
+        "F",
+        "FCEL",
+        "FCX",
+        "FDX",
+        "FISV",
+        "FRO",
+        "FSLR",
+        "FTNT",
+        "GE",
+        "GEO",
+        "GILD",
+        "GIS",
+        "GLW",
+        "GM",
+        "GME",
+        "GOOG",
+        "GOOGL",
+        "GPRO",
+        "GS",
+        "HAL",
+        "HD",
+        "HL",
+        "HON",
+        "HPE",
+        "HPQ",
+        "HUM",
+        "IBM",
+        "INTC",
+        "INTU",
+        "ISRG",
+        "JBLU",
+        "JNJ",
+        "JPM",
+        "KGC",
+        "KHC",
+        "KKR",
+        "KLAC",
+        "KMI",
+        "KO",
+        "KR",
+        "KSS",
+        "KTOS",
+        "LLY"
+      ],
+      "band_counts": [
+        970019,
+        48238,
+        171118
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2022-09-01"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2022-09-02"
+          ]
+        },
+        {
+          "quote_date": [
+            "2022-09-06",
+            "2022-12-29"
+          ],
+          "settlement_date": [
+            "2022-09-09",
+            "2022-12-30"
+          ]
+        },
+        {
+          "quote_date": [
+            "2023-01-03",
+            "2023-12-28"
+          ],
+          "settlement_date": [
+            "2023-01-06",
+            "2023-12-29"
+          ]
+        }
+      ],
+      "settings": {
+        "batch_size": 512,
+        "components": 3,
+        "deterministic": true,
+        "device": "cuda",
+        "dropout": 0.3,
+        "encoder": {
+          "adapter": {
+            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+            "params": {
+              "arch": "mlp",
+              "arch_params": {
+                "hidden_size": 64
+              },
+              "width": 16
+            }
+          },
+          "context_indices": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89
+          ],
+          "kind": "external",
+          "sequence_indices": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ]
+          ]
+        },
+        "epochs": 150,
+        "feature_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89
+        ],
+        "hidden": [
+          8
+        ],
+        "learning_rate": 0.0003,
+        "losses": [
+          {
+            "kind": "crps",
+            "weight": 1.0
+          },
+          {
+            "kind": "tail_crps",
+            "weight": 1.0
+          }
+        ],
+        "mask_constant_features": true,
+        "max_parameters": 100000,
+        "patience": 50,
+        "seeds": [
+          11
+        ],
+        "training_telemetry": true,
+        "weight_decay": 0.3
+      },
+      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256.",
+      "limitation": "Exact resolved CDFExperiment invocation, original code hashes and package versions were not recovered. Repo recipe hash is not asserted to be that invocation."
+    },
+    {
+      "id": "R-mio2020",
+      "kind": "legacy_bounded_study",
+      "path": "children/index_options/docs/memos/data/2026-10-26-shock-rows-2020",
+      "identity": "1d0146f2404a70f82a2a828203679ab7f1d910ff98b4c8762c2d424df246d35b",
+      "files": {
+        "params-2020.json": "72e7dd8a1e48a42f1009eb25b55c8072b6af605f5af870cb424038c0335c349f",
+        "result-2020-1d0146f2404a.json": "1ab38540eb8784d2539561f2fca1879a1cda9de10bcd541169538cea66a656d2",
+        "run2020.py": "cff0e27b7b6d2d54262c1b17426d004dc10baaab0cd04112544f001adcf1b466"
+      },
+      "verification": "Saved params/result/runner bytes pinned; recorded legacy identity retained.",
+      "limitation": "Legacy identity hashes params plus per-symbol row counts, not source content. These retrospective hashes do not prove the original source bytes. No pipeline run_hash exists for this script execution."
+    }
+  ],
+  "inspected_code": [
+    {
+      "path": "dskit/pipeline/libs/predictive_cdf.py",
+      "sha256": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+      "role": "Code inspected for this document; not proof of the original execution's code version."
+    },
+    {
+      "path": "dskit/pipeline/libs/cdf_experiment.py",
+      "sha256": "5335c6279f3da971387ded0a8b72c33df54ad6fd03c7f51e6fc59d1a023dccec",
+      "role": "Code inspected for this document; not proof of the original execution's code version."
+    },
+    {
+      "path": "dskit/pipeline/libs/cdf_grid_methods.py",
+      "sha256": "4276560b82979cf1567f11609f1601ba27e20f19641da99519da3009953d077e",
+      "role": "Code inspected for this document; not proof of the original execution's code version."
+    },
+    {
+      "path": "children/index_options/index_options/strike_region_scores.py",
+      "sha256": "1473a2727f2a03efdf2d1cb9011f0af6d50ae720061b81b40deaecd03c16024a",
+      "role": "Code inspected for this document; not proof of the original execution's code version."
+    },
+    {
+      "path": "children/index_options/docs/memos/data/2026-10-26-shock-rows-2020/run2020.py",
+      "sha256": "cff0e27b7b6d2d54262c1b17426d004dc10baaab0cd04112544f001adcf1b466",
+      "role": "Code inspected for this document; not proof of the original execution's code version."
+    }
+  ],
+  "unresolved": [
+    {
+      "id": "U1",
+      "kind": "undecided",
+      "question": "2019 admission criterion, exact 2019 subperiods and selected ticker/DTE pairs",
+      "windows": [
+        "P19"
+      ]
+    },
+    {
+      "id": "U2",
+      "kind": "undecided",
+      "question": "Final predictive promotion and reconciliation of Path TCN with the recorded M51 dependency",
+      "windows": [
+        "PROMOTE",
+        "HREFIT"
+      ]
+    },
+    {
+      "id": "U3",
+      "kind": "undecided",
+      "question": "Next MIO packet dates, separate history/entry/settlement tails, formulation cohort and advancement rule",
+      "windows": [
+        "MNEXT"
+      ]
+    },
+    {
+      "id": "U4",
+      "kind": "undecided",
+      "question": "Any additional HPO search and its data allocation",
+      "windows": [
+        "HPO"
+      ]
+    },
+    {
+      "id": "U5",
+      "kind": "undecided",
+      "question": "Holdout execution JSON, exact final refit/monitor split and opening",
+      "windows": [
+        "HREFIT",
+        "HOLD"
+      ]
+    },
+    {
+      "id": "U6",
+      "kind": "undecided",
+      "question": "Use, if any, of late 2025 after the Path holdout endpoint",
+      "windows": [
+        "GAP25"
+      ]
+    },
+    {
+      "id": "P1",
+      "kind": "provenance not recovered",
+      "question": "Exact resolved CDFExperiment invocation and original code/environment bindings for the ten pinned fit artifacts",
+      "windows": [
+        "F1T",
+        "F1C",
+        "F1V",
+        "F2T",
+        "F2C",
+        "F2V",
+        "F2L",
+        "F3T",
+        "F3C",
+        "F3V",
+        "F3L",
+        "F4T",
+        "F4C",
+        "F4V",
+        "F4L",
+        "F5T",
+        "F5C",
+        "F5V"
+      ]
+    },
+    {
+      "id": "P2",
+      "kind": "legacy provenance limitation",
+      "question": "2020 script identity pins params and counts, not original source content; no pipeline run attestation",
+      "windows": [
+        "M20"
+      ]
+    }
+  ],
+  "maintenance": {
+    "update_skill": "update-tdd",
+    "procedure": "Update current decisions and the canonical JSON first; rederive both visual and chart from windows. Pin exact resolved configs and run artifacts; keep unknown execution evidence distinct from undecided policy. Verify hashes without opening protected data. Never convert a proposal into a decision implicitly."
+  }
+}
