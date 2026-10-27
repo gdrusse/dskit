@@ -32447,7 +32447,7 @@ on 69 refs and 85 worktrees. Owners: dskit/pipeline/libs/pyomo.py,
 children/index_options/index_options/ledger_studies.py, their focused
 tests, both READMEs. Builds and lenses on Sonnet subagents.
 
-#### ADR-0279: `portfolio_policy` child — hold passively vs cash out into active strategies (PROPOSED 2026-10-27)
+#### ADR-0279: `portfolio_policy` child — hold passively vs cash out into active strategies (approved by Russell 2026-10-27, "A")
 
 **Question.** For each long-term holding in the owner's Schwab portfolio, is
 the expected after-tax, after-cost value of holding at least the value of

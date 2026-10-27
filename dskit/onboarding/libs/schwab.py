@@ -1,6 +1,7 @@
-"""Schwab price-history bars normalized to the onboarding bar vocabulary.
+"""Schwab REST connectors: price-history bars and account positions.
 
-Phase 1 deliberately wraps only REST price-history candles. The connector
+Phase 1 wraps REST price-history candles; ADR-0279 adds a point-in-time
+``positions`` snapshot of every linked account. The connector
 re-requests a declared overlap on live pulls so corrected closed minutes become
 new bitemporal evidence; downstream observation scanning chooses the latest
 acquisition. OAuth values and token paths are named through environment
@@ -9,6 +10,7 @@ variables, and token refresh is delegated to the generic onboarding service.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import time
@@ -30,7 +32,11 @@ __all__ = [
     "DEFAULT_LIVE_LOOKBACK_MINUTES",
     "DEFAULT_OVERLAP_MINUTES",
     "DEFAULT_TOKEN_PATH_ENV",
+    "POSITION_FIELDS",
+    "POSITION_KEY_FIELDS",
+    "POSITION_STREAM",
     "SchwabBarsConnector",
+    "SchwabPositionsConnector",
 ]
 
 BAR_INTERVAL = (1, "Minute")
@@ -44,6 +50,14 @@ DEFAULT_TOKEN_PATH_ENV = "SCHWAB_TOKEN_PATH"
 _AUTHORIZATION_URL = "https://api.schwabapi.com/v1/oauth/authorize"
 _TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
 _PRICE_HISTORY_URL = "https://api.schwabapi.com/marketdata/v1/pricehistory"
+_ACCOUNTS_URL = "https://api.schwabapi.com/trader/v1/accounts"
+POSITION_STREAM = "positions"
+POSITION_FIELDS = (
+    "account", "symbol", "asset_type", "as_of", "long_quantity",
+    "short_quantity", "average_price", "cost_basis", "market_value",
+)
+POSITION_KEY_FIELDS = ("account", "symbol", "as_of")
+_ACCOUNT_DIGEST_CHARS = 16
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
@@ -60,7 +74,164 @@ def _positive_number(problems, name, value):
         problems.append(f"config.{name} must be a positive number, got {value!r}")
 
 
-class SchwabBarsConnector(Connector):
+
+def _env_knobs(problems, config):
+    """Resolve the four OAuth environment-variable names, recording problems."""
+    envs = {
+        "client_id_env": config.get("client_id_env", DEFAULT_CLIENT_ID_ENV),
+        "client_secret_env": config.get(
+            "client_secret_env", DEFAULT_CLIENT_SECRET_ENV
+        ),
+        "callback_url_env": config.get(
+            "callback_url_env", DEFAULT_CALLBACK_URL_ENV
+        ),
+        "token_path_env": config.get("token_path_env", DEFAULT_TOKEN_PATH_ENV),
+    }
+    for name, value in envs.items():
+        if not isinstance(value, str) or not value:
+            problems.append(
+                f"config.{name} must be a non-empty environment-variable name"
+            )
+    return envs
+
+
+def _transport_knobs(problems, config):
+    """Resolve timeout and max_retries, recording problems."""
+    timeout = config.get("timeout", _DEFAULT_TIMEOUT)
+    _positive_number(problems, "timeout", timeout)
+    max_retries = config.get("max_retries", _DEFAULT_MAX_RETRIES)
+    if (
+        isinstance(max_retries, bool)
+        or not isinstance(max_retries, int)
+        or max_retries < 0
+    ):
+        problems.append(
+            f"config.max_retries must be an int >= 0, got {max_retries!r}"
+        )
+    return {"timeout": timeout, "max_retries": max_retries}
+
+
+_SHARED_SPEC = {
+    "client_id_env": {
+        "secret": True,
+        "notes": "Environment-variable name holding the app key; "
+                 f"default {DEFAULT_CLIENT_ID_ENV}.",
+    },
+    "client_secret_env": {
+        "secret": True,
+        "notes": "Environment-variable name holding the app secret; "
+                 f"default {DEFAULT_CLIENT_SECRET_ENV}.",
+    },
+    "callback_url_env": {
+        "secret": True,
+        "notes": "Environment-variable name holding the callback URL; "
+                 f"default {DEFAULT_CALLBACK_URL_ENV}.",
+    },
+    "token_path_env": {
+        "secret": True,
+        "notes": "Environment-variable name holding the token path; "
+                 f"default {DEFAULT_TOKEN_PATH_ENV}.",
+    },
+    "timeout": {
+        "notes": f"HTTP timeout in seconds; default {_DEFAULT_TIMEOUT}.",
+    },
+    "max_retries": {
+        "notes": "Extra attempts on throttling, server, and network "
+                 f"failures, every wait capped at {MAX_BACKOFF_S:g} s; "
+                 f"default {_DEFAULT_MAX_RETRIES}.",
+    },
+}
+
+
+class _SchwabConnector(Connector):
+    """OAuth, clock and retrying JSON transport shared by the Schwab packs."""
+
+    def _oauth_service(self, knobs):
+        """Build the generic token service from named environment values."""
+        return OAuth2TokenService(
+            client_id_env=knobs["client_id_env"],
+            client_secret_env=knobs["client_secret_env"],
+            callback_url_env=knobs["callback_url_env"],
+            token_path_env=knobs["token_path_env"],
+            authorization_url=_AUTHORIZATION_URL,
+            token_url=_TOKEN_URL,
+        )
+
+    def oauth_service(self, config):
+        """Build the OAuth service used by manual authorization.
+
+        Parameters
+        ----------
+        config : dict
+            Schwab source configuration.
+
+        Returns
+        -------
+        OAuth2TokenService
+            Service bound to Schwab endpoints and named environment values.
+
+        Raises
+        ------
+        AssetError
+            If connector config is invalid.
+        """
+        return self._oauth_service(self.resolve_knobs(config))
+
+    def _access_token(self, knobs):
+        """Resolve or refresh bearer material immediately before a request."""
+        return self._oauth_service(knobs).ensure_access_token()
+
+    def _now(self):
+        """Return the current UTC instant through a test seam."""
+        return datetime.now(timezone.utc)
+
+    def _request(self, token, label, url, params, timeout):
+        """Perform one authenticated GET and decode the JSON body."""
+        if params:
+            url = f"{url}?" + urllib.parse.urlencode(params)
+        request = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {token}"}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                status = response.getcode()
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code in _RETRY_STATUSES:
+                raise ConnectionError(f"HTTP {exc.code}") from exc
+            raise AssetError(
+                [f"Schwab request failed for {label!r} (HTTP {exc.code})"]
+            ) from exc
+        if not 200 <= status < 300:
+            if status in _RETRY_STATUSES:
+                raise ConnectionError(f"HTTP {status}")
+            raise AssetError(
+                [f"Schwab request failed for {label!r} (HTTP {status})"]
+            )
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise AssetError(
+                [f"Schwab request for {label!r} returned malformed JSON"]
+            ) from exc
+
+    def _get(self, token, label, url, params, knobs):
+        """Retry transient failures through the single transport seam."""
+        last = None
+        for attempt in range(knobs["max_retries"] + 1):
+            if attempt:
+                time.sleep(backoff(attempt))
+            try:
+                return self._request(token, label, url, params, knobs["timeout"])
+            except (ConnectionError, OSError) as exc:
+                last = str(exc)
+        raise AssetError(
+            [f"Schwab request for {label!r} failed after "
+             f"{knobs['max_retries'] + 1} attempt(s): {last}"]
+        )
+
+
+class SchwabBarsConnector(_SchwabConnector):
     """Closed one-minute Schwab candles with overlap-aware live pulls.
 
     Parameters
@@ -108,34 +279,7 @@ class SchwabBarsConnector(Connector):
                 "notes": "Closed minutes re-requested on every live pull; "
                          f"default {DEFAULT_OVERLAP_MINUTES}.",
             },
-            "client_id_env": {
-                "secret": True,
-                "notes": "Environment-variable name holding the app key; "
-                         f"default {DEFAULT_CLIENT_ID_ENV}.",
-            },
-            "client_secret_env": {
-                "secret": True,
-                "notes": "Environment-variable name holding the app secret; "
-                         f"default {DEFAULT_CLIENT_SECRET_ENV}.",
-            },
-            "callback_url_env": {
-                "secret": True,
-                "notes": "Environment-variable name holding the callback URL; "
-                         f"default {DEFAULT_CALLBACK_URL_ENV}.",
-            },
-            "token_path_env": {
-                "secret": True,
-                "notes": "Environment-variable name holding the token path; "
-                         f"default {DEFAULT_TOKEN_PATH_ENV}.",
-            },
-            "timeout": {
-                "notes": f"HTTP timeout in seconds; default {_DEFAULT_TIMEOUT}.",
-            },
-            "max_retries": {
-                "notes": "Extra attempts on throttling, server, and network "
-                         f"failures, every wait capped at {MAX_BACKOFF_S:g} s; "
-                         f"default {_DEFAULT_MAX_RETRIES}.",
-            },
+            **_SHARED_SPEC,
         }}
 
     def resolve_knobs(self, config):
@@ -185,39 +329,10 @@ class SchwabBarsConnector(Connector):
             "live_lookback_minutes", DEFAULT_LIVE_LOOKBACK_MINUTES
         )
         overlap = config.get("overlap_minutes", DEFAULT_OVERLAP_MINUTES)
-        timeout = config.get("timeout", _DEFAULT_TIMEOUT)
         _positive_number(problems, "live_lookback_minutes", lookback)
         _positive_number(problems, "overlap_minutes", overlap)
-        _positive_number(problems, "timeout", timeout)
-        max_retries = config.get("max_retries", _DEFAULT_MAX_RETRIES)
-        if (
-            isinstance(max_retries, bool)
-            or not isinstance(max_retries, int)
-            or max_retries < 0
-        ):
-            problems.append(
-                "config.max_retries must be an int >= 0, "
-                f"got {max_retries!r}"
-            )
-        envs = {
-            "client_id_env": config.get(
-                "client_id_env", DEFAULT_CLIENT_ID_ENV
-            ),
-            "client_secret_env": config.get(
-                "client_secret_env", DEFAULT_CLIENT_SECRET_ENV
-            ),
-            "callback_url_env": config.get(
-                "callback_url_env", DEFAULT_CALLBACK_URL_ENV
-            ),
-            "token_path_env": config.get(
-                "token_path_env", DEFAULT_TOKEN_PATH_ENV
-            ),
-        }
-        for name, value in envs.items():
-            if not isinstance(value, str) or not value:
-                problems.append(
-                    f"config.{name} must be a non-empty environment-variable name"
-                )
+        transport = _transport_knobs(problems, config)
+        envs = _env_knobs(problems, config)
         if problems:
             raise AssetError(problems)
         parse_utc(start)
@@ -227,50 +342,9 @@ class SchwabBarsConnector(Connector):
             "timeframe": BAR_INTERVAL,
             "live_lookback_minutes": lookback,
             "overlap_minutes": overlap,
-            "timeout": timeout,
-            "max_retries": max_retries,
+            **transport,
             **envs,
         }
-
-    def _oauth_service(self, knobs):
-        """Build the generic token service from named environment values."""
-        return OAuth2TokenService(
-            client_id_env=knobs["client_id_env"],
-            client_secret_env=knobs["client_secret_env"],
-            callback_url_env=knobs["callback_url_env"],
-            token_path_env=knobs["token_path_env"],
-            authorization_url=_AUTHORIZATION_URL,
-            token_url=_TOKEN_URL,
-        )
-
-    def oauth_service(self, config):
-        """Build the OAuth service used by manual authorization.
-
-        Parameters
-        ----------
-        config : dict
-            Schwab source configuration.
-
-        Returns
-        -------
-        OAuth2TokenService
-            Service bound to Schwab endpoints and named environment values.
-
-        Raises
-        ------
-        AssetError
-            If connector config is invalid.
-        """
-        return self._oauth_service(self.resolve_knobs(config))
-
-    def _access_token(self, knobs):
-        """Resolve or refresh bearer material immediately before a request."""
-        return self._oauth_service(knobs).ensure_access_token()
-
-    def _now(self):
-        """Return the current UTC instant through a test seam."""
-        return datetime.now(timezone.utc)
-
     def _window(self, knobs, cursor, mode):
         """Return a provider window whose end excludes the open minute."""
         end = self._now().replace(second=0, microsecond=0)
@@ -291,35 +365,9 @@ class SchwabBarsConnector(Connector):
         if end <= start:
             return None, None
         return start, end
-
     def _fetch(self, token, symbol, params, timeout):
-        """Perform one authenticated GET and decode a JSON object."""
-        url = f"{_PRICE_HISTORY_URL}?" + urllib.parse.urlencode(params)
-        request = urllib.request.Request(
-            url, headers={"Authorization": f"Bearer {token}"}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                status = response.getcode()
-                body = response.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code in _RETRY_STATUSES:
-                raise ConnectionError(f"HTTP {exc.code}") from exc
-            raise AssetError(
-                [f"Schwab price history failed for {symbol!r} (HTTP {exc.code})"]
-            ) from exc
-        if not 200 <= status < 300:
-            if status in _RETRY_STATUSES:
-                raise ConnectionError(f"HTTP {status}")
-            raise AssetError(
-                [f"Schwab price history failed for {symbol!r} (HTTP {status})"]
-            )
-        try:
-            body = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise AssetError(
-                [f"Schwab price history for {symbol!r} returned malformed JSON"]
-            ) from exc
+        """Perform one price-history GET and require a JSON object."""
+        body = self._request(token, symbol, _PRICE_HISTORY_URL, params, timeout)
         if not isinstance(body, dict):
             raise AssetError(
                 [f"Schwab price history for {symbol!r} returned a non-object"]
@@ -523,4 +571,175 @@ class SchwabBarsConnector(Connector):
                 if emitted_dt is None or effective_dt > emitted_dt:
                     emitted, emitted_dt = effective, effective_dt
             new_state.setdefault(stream, {})["cursor"] = emitted
+        yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
+
+
+class SchwabPositionsConnector(_SchwabConnector):
+    """Point-in-time positions of every linked Schwab account (ADR-0279).
+
+    Each pull emits one row per account and symbol dated by the UTC day it
+    was taken; account numbers never leave the connector, only a short
+    digest. A backfill pull skips a day already checkpointed; a live pull
+    always re-snapshots, and bitemporal dedup keeps the latest acquisition.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; config and checkpoints supply all state.
+    """
+
+    def spec(self):
+        """Declare the default-deny positions configuration catalogue."""
+        return {"params": dict(_SHARED_SPEC)}
+
+    def resolve_knobs(self, config):
+        """Validate config and resolve OAuth and transport settings.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration after reserved keys are removed.
+
+        Returns
+        -------
+        dict
+            Resolved OAuth and transport settings.
+
+        Raises
+        ------
+        AssetError
+            Listing all malformed values.
+        """
+        if not isinstance(config, dict):
+            raise AssetError(
+                [f"config must be a dict, got {type(config).__name__}"]
+            )
+        problems = []
+        transport = _transport_knobs(problems, config)
+        envs = _env_knobs(problems, config)
+        if problems:
+            raise AssetError(problems)
+        return {**transport, **envs}
+
+    @staticmethod
+    def _account_digest(number):
+        """Return the short stable digest that stands in for an account number."""
+        return hashlib.sha256(str(number).encode("utf-8")).hexdigest()[
+            :_ACCOUNT_DIGEST_CHARS
+        ]
+
+    def _rows(self, body, as_of):
+        """Validate and normalize every position in an accounts response."""
+        if not isinstance(body, list):
+            raise AssetError(["Schwab accounts response is not an accounts list"])
+        rows = []
+        for a_index, entry in enumerate(body):
+            account = entry.get("securitiesAccount") if isinstance(entry, dict) else None
+            if not isinstance(account, dict) or "accountNumber" not in account:
+                raise AssetError([f"Schwab account {a_index} is malformed"])
+            digest = self._account_digest(account["accountNumber"])
+            positions = account.get("positions", [])
+            if not isinstance(positions, list):
+                raise AssetError([f"Schwab account {a_index} positions is not a list"])
+            for p_index, position in enumerate(positions):
+                try:
+                    instrument = position["instrument"]
+                    long_qty = float(position.get("longQuantity", 0.0))
+                    short_qty = float(position.get("shortQuantity", 0.0))
+                    average = float(position.get("averagePrice", 0.0))
+                    rows.append({
+                        "account": digest,
+                        "symbol": str(instrument["symbol"]),
+                        "asset_type": instrument.get("assetType"),
+                        "as_of": as_of,
+                        "long_quantity": long_qty,
+                        "short_quantity": short_qty,
+                        "average_price": average,
+                        "cost_basis": average * (long_qty - short_qty),
+                        "market_value": float(position.get("marketValue", 0.0)),
+                    })
+                except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                    raise AssetError(
+                        [f"Schwab position {p_index} in account {a_index} is malformed"]
+                    ) from exc
+        rows.sort(key=lambda row: (row["account"], row["symbol"]))
+        return rows
+
+    def check(self, config):
+        """Validate OAuth and perform one non-persisting accounts probe."""
+        knobs = self.resolve_knobs(config)
+        token = self._access_token(knobs)
+        self._get(token, "accounts", _ACCOUNTS_URL, {}, knobs)
+
+    def discover(self, config):
+        """Describe the ``positions`` stream offline."""
+        self.resolve_knobs(config)
+        return [{
+            "stream": POSITION_STREAM,
+            "schema": {"fields": list(POSITION_FIELDS)},
+            "primary_key": list(POSITION_KEY_FIELDS),
+        }]
+
+    def read(self, config, streams, state, mode):
+        """Emit one positions snapshot dated today, then checkpoint the day.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+        streams : list
+            Requested streams; only ``positions`` exists.
+        state : dict
+            Prior mode-keyed connector checkpoint.
+        mode : str
+            ``backfill`` (skip a checkpointed day) or ``live`` (always pull).
+
+        Yields
+        ------
+        dict
+            Onboarding protocol messages.
+
+        Raises
+        ------
+        AssetError
+            If arguments, config, OAuth, or provider data are invalid.
+        """
+        if not isinstance(state, dict):
+            raise AssetError([f"state must be a dict, got {state!r}"])
+        if not isinstance(streams, list) or not streams:
+            raise AssetError([f"streams must be a non-empty list, got {streams!r}"])
+        if mode not in MODES:
+            raise AssetError([f"mode must be one of {MODES}, got {mode!r}"])
+        knobs = self.resolve_knobs(config)
+        new_state = {key: dict(value) for key, value in state.items()}
+        as_of = self._now().date().isoformat()
+        for stream in streams:
+            if stream != POSITION_STREAM:
+                raise AssetError(
+                    [f"unknown stream {stream!r}; discovered: {[POSITION_STREAM]}"]
+                )
+            yield {
+                "protocol": PROTOCOL,
+                "type": "SCHEMA",
+                "stream": stream,
+                "schema": {"fields": list(POSITION_FIELDS)},
+            }
+            cursor = state.get(stream, {}).get("cursor", "")
+            if mode == "backfill" and cursor == as_of:
+                new_state.setdefault(stream, {})["cursor"] = cursor
+                continue
+            token = self._access_token(knobs)
+            body = self._get(
+                token, "accounts", _ACCOUNTS_URL, {"fields": "positions"}, knobs
+            )
+            for row in self._rows(body, as_of):
+                yield {
+                    "protocol": PROTOCOL,
+                    "type": "RECORD",
+                    "stream": stream,
+                    "effective_date": as_of,
+                    "kind": "observation",
+                    "data": row,
+                }
+            new_state.setdefault(stream, {})["cursor"] = as_of
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}

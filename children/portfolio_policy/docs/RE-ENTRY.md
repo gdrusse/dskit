@@ -5,17 +5,20 @@ the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
 
-Scaffold copied from `_skeleton`; ADR-0279 proposed. No code beyond the
-skeleton, no data pulled.
+ADR-0279 approved 2026-10-27. Stage 1 landed in dskit: `schwab_positions`
+connector (`dskit/onboarding/libs/schwab.py`, shared OAuth/transport base
+with the bars pack), 5 stub tests green. No real Schwab pull yet.
 
 ## Next
 
-Owner ratifies ADR-0279, then Stage 1: a `positions` stream on the dskit
-Schwab connector (tier-2 graduation) and a tax-lot asset model.
+Owner runs the first real pull (`authorize --connector schwab_positions`,
+then `acquire --mode backfill`); then Stage 1b: tax-lot asset model. Schwab's
+Trader API exposes aggregate positions, not lots — lots likely need a
+Schwab CSV export through `localfiles`.
 
 ## Blocked / owner decisions
 
-- ADR-0279 ratification.
+- Lot-level data source: Schwab CSV export vs aggregate-only (decides Stage 1b).
 - Cap-gains rates and holding-period rules the tax drag uses (config, not code).
 
 ## Read first

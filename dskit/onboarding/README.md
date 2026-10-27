@@ -165,7 +165,9 @@ Alpaca adds trade count/VWAP; Schwab emits those fields as null and
 re-requests a declared live overlap so bitemporal dedup retains the
 latest evidence. Alpaca bounds the SDK's in-memory response with
 `chunk_days` (default 31). Install `dskit[alpaca]` for Alpaca; Schwab
-REST is stdlib-only.
+REST is stdlib-only. `schwab_positions` (ADR-0279) snapshots every linked
+account's holdings as `positions` keyed by `(account, symbol, as_of)`;
+account numbers are replaced by a short digest and never stored.
 
 The `polymarket` pack (ADR-0075) is keyless: Gamma `events` (one row per
 market, settlement and fee fields; the cursor is recorded, never consulted —
