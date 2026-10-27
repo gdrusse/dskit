@@ -33180,3 +33180,28 @@ changed after reviewed candidate3d5f6411. JSON, HTML, canvas and skill hashes
 remain exactly the review values above. git diff --check passes. Focused
 manifest/docs tests passed again:5 passed in0.94s with project WSL venv and
 candidate PYTHONPATH. Remote main remained5747f179 before branch publication.
+
+2026-10-27 owner-directed merge and branch purge:
+Owner asked: "Were these not skeptic reviewed? If so merge and purge".
+Confirmed: correctness/authority and integration independently reviewed corrected
+candidate3d5f6411; both follow-ups PASS with Critical0/Major0/Minor0/Nit0.
+The prior final message had disclosed that only fresh reviewer contexts remained
+outstanding. The owner's explicit merge instruction accepts the completed
+reviews for this bounded document/design publication packet. It supersedes the
+previous review-branch-only disposition, not the retained factual review record
+or the general workflow. No finding or runtime protection is waived.
+
+Fetch confirms origin/main5747f179 remains an ancestor of published4bcd58eb;
+no reviewed dependency changed. Current scope is evidence/re-entry updates only,
+then fast-forward main publication and expected-head deletion of this task's
+contained branch. Preserve unrelated worktrees, branches and local main checkout.
+The detached checkout remains available for the canvas's local file links.
+No new code, design contract, market execution or protected-window opening.
+
+Next research work remains pinning the model-zoo output and selecting a separate
+implementation packet; design JSONs are not executable wrappers.
+
+Pre-merge checks: all reviewed code/tests/contracts remain identical to3d5f6411;
+only four evidence/handoff/archive files differ. JSON/HTML/canvas/skill SHA256
+values match the retained review. git diff --check passes; focused manifest
+and document-budget tests:5 passed in0.87s. No full-suite rerun.

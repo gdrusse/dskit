@@ -8,15 +8,14 @@ Updated: 2026-10-27 by GPT-6. Previous notes: docs/archive/re-entry/index_option
 - The data-use TDD ships as docs/decisioning/technical-design.json plus self-contained technical-design.html. Both chart and number line use the same 49 window records, with folds, mathematical populations/functions, 13 config pins and 10 execution records. The managed canvas mirrors the canonical snapshot.
 - Recorded M51/MLP folds explain the existing 2020 MIO dependency. They do not select the future zoo winner. The TDD records the 2020 exposure footprint and provenance limits; saved results are unchanged.
 - docs/plans/mio-json contains study plus plan/run/compare JSON designs for sparse ticker/DTE pairs, frozen cohorts and sequential packet exposure. They are design-only; the proposed calendar is not adopted by the TDD and the required wrapper nodes do not exist yet.
-- Publication candidate 3d5f6411: both existing independent follow-ups PASS, zero findings; required fresh contexts unavailable, so main merge remains blocked and only the review branch is authorized. Five focused manifest/docs tests passed, JSON/hash/purge checks passed, canvas TypeScript zero, and browser checks passed all 15 filter states and 49 selections. No new fit, score, replay or protected-window read.
+- Reviewed candidate 3d5f6411: both independent skeptic follow-ups PASS, zero findings. On 2026-10-27 the owner confirmed acceptance of those reviews and directed merge and purge. This resolves the publication-only fresh-context hold for this packet; the retained reports remain accurately labeled as follow-ups. Five focused manifest/docs tests passed; JSON/hash/purge checks, canvas TypeScript and browser checks passed. No market execution or protected-window read.
 
 ## Next
 
-1. Obtain two fresh final reviews on unchanged candidate 3d5f6411 before merging main; current independent follow-ups do not close that process gate.
-2. Pin the selected complete model-zoo output: candidate set, comparison contract, applicable promotion/eligibility evidence, selection JSON, recipe and exact forecast artifact/run hashes.
-3. Supply the sparse 2019-qualified ticker/DTE set when the owner decides its criterion and exact periods; those choices were explicitly deferred.
-4. Agree the first MIO packet's history, entry and settlement windows plus frozen formulation cohort. Previously exposed 2020 is development; predictive validation already used 2020-23.
-5. Implement the missing generic study wrappers only under an approved implementation packet before treating the design JSONs as executable.
+1. Pin the selected complete model-zoo output: candidate set, comparison contract, applicable promotion/eligibility evidence, selection JSON, recipe and exact forecast artifact/run hashes.
+2. Supply the sparse 2019-qualified ticker/DTE set when the owner decides its criterion and exact periods; those choices were explicitly deferred.
+3. Agree the first MIO packet's history, entry and settlement windows plus frozen formulation cohort. Previously exposed 2020 is development; predictive validation already used 2020-23.
+4. Implement the missing generic study wrappers only under an approved implementation packet before treating the design JSONs as executable.
 
 ## Blocked / owner decisions
 
