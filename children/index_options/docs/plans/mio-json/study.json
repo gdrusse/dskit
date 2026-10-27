@@ -419,20 +419,64 @@
       "claim": "atomic_before_first_value_read",
       "states": [
         "unopened",
+        "imported_exposed_pending_review",
         "claimed_exposed",
-        "completed",
-        "failed_exposed"
+        "completed_pending_review",
+        "failed_exposed_pending_review",
+        "reviewed_closed",
+        "retired_unread"
       ],
       "failed_run": "remains_exposed",
       "retry": "same_frozen_identity_only_logged_as_replay",
       "concurrent_claim": "refuse",
       "intervals": "record_actual_and_planned_source_read_bounds_including_history_and_tail",
-      "initialization": "import_known_prior_exposure_refuse_missing_or_reset_registry"
+      "initialization": "import_known_prior_exposure_refuse_missing_or_reset_registry",
+      "evidence_domain": null
     },
     "freshness": "MIO_only_and_only_if_registry_and_prior_inspection_record_allow_it",
     "confirmation": "freeze_all_variants_before_2023_any_later_edit_requires_new_fresh_data",
     "trust_model": "cooperative_local_researchers_and_pinned_artifacts_not_protection_against_hostile_code_or_manual_file_reads",
-    "notes": "The generic workflow ledger alone cannot enforce this exposure policy: a new output directory must not make a previously read period fresh. A claim consumes the packet even if one variant fails before publication. No automatic adaptive loop across calendar packets. Manual past reads must be declared; the proposed runner cannot discover human knowledge."
+    "notes": "The generic workflow ledger alone cannot enforce this exposure policy: a new output directory must not make a previously read period fresh. A claim consumes the packet even if one variant fails before publication. No automatic adaptive loop across calendar packets. Manual past reads must be declared; the proposed runner cannot discover human knowledge.",
+    "release": {
+      "sequence": "declared_packet_order_with_matching_predecessor_links",
+      "fresh_open": "only_next_unconsumed_packet_at_shared_frontier",
+      "predecessor_required": "reviewed_closed_or_explicitly_retired_unread",
+      "first_development_packet": "imported_2020_exposure_is_development_only_not_fresh",
+      "imported_2020": "import_existing_exposure_before_planning_then_run_as_development_or_close_with_an_explicit_prior_exposure_review_receipt",
+      "after_success": "completed_pending_review_cannot_advance_until_review_receipt_is_recorded",
+      "after_failure": "failed_exposed_pending_review_blocks_advancement_until_same_identity_retry_or_explicit_reviewed_abandonment",
+      "skip": "explicitly_retire_only_the_current_frontier_packet_without_reading_it_record_reason_then_advance_never_restore_its_fresh_status",
+      "backward_open": "development_or_same_identity_replay_only_never_fresh",
+      "read_frontier": "fresh_entry_start_must_be_at_or_after_every_prior_MIO_source_read_end_before_including_tail_across_revisions_and_aliases",
+      "new_revision": "inherit_all_exposure_retirements_review_receipts_and_monotone_frontier_no_calendar_reorder_may_restore_earlier_freshness",
+      "next_cohort": "freeze_after_predecessor_review_and_before_atomic_claim",
+      "claim_request_required": [
+        "evidence_domain",
+        "expected_registry_revision",
+        "packet_id",
+        "plan_sha256",
+        "cohort_sha256",
+        "predecessor_disposition_receipt_sha256",
+        "next_cohort_freeze_receipt_sha256"
+      ],
+      "atomic_claim": "compare_and_swap_registry_revision_check_predecessor_frontier_read_bounds_and_receipts_then_claim_exposed_with_at_most_one_active_packet",
+      "shared_rule": "plan_previews_same_rule_open_rechecks_atomically_compare_verifies_release_receipt",
+      "receipt_required": [
+        "evidence_domain",
+        "registry_revision_before",
+        "registry_revision_after",
+        "previous_frontier",
+        "new_frontier",
+        "predecessor_disposition_receipt_sha256",
+        "next_cohort_freeze_receipt_sha256",
+        "plan_sha256",
+        "cohort_sha256",
+        "source_pins_sha256",
+        "read_bounds",
+        "freshness_classification"
+      ],
+      "notes": "An unopened interval alone is insufficient for freshness. For example, an attempted 2022 fresh claim while 2021 is next must refuse; explicitly retiring 2021 permits moving forward but later 2021 runs are development only. A new work directory, source alias, source version, cohort or study revision cannot reset the evidence-domain frontier. The mandatory evidence domain and prior-exposure import are inputs to the future shared registry, not a claim that today's code enforces them."
+    }
   },
   "report": {
     "primary_metric": null,

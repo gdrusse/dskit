@@ -9,7 +9,7 @@
         "frozen_plan": "${frozen_plan}",
         "claim_request": "${claim_request}"
       },
-      "notes": "PROPOSED gate. Independently revalidate all input identities and protected dates. Atomically claim in the shared exposure registry before descendants can read values. Plan-only checks never claim. Persist exposed state through child failure. No absent/changed/reset ledger accepted."
+      "notes": "PROPOSED gate. Revalidate identities, protected dates and the shared release rule. Atomically compare expected registry revision, predecessor disposition, inherited read frontier and next-cohort freeze receipt before claiming exposed. A request for a later fresh packet while an earlier packet is next refuses; retiring earlier packets forfeits their freshness. At most one active packet. Claim before descendants read values; no absent/changed/reset registry accepted."
     },
     "intake": {
       "uses": "index_options.observations:MIOPacketInputs",
@@ -44,7 +44,7 @@
       "params": {
         "study": "${study}"
       },
-      "notes": "PROPOSED attested publication. Publish complete results and identity as JsonArtifact only when every required variant and settlement audit is complete. Driver/context failure leaves the already-claimed packet exposed; it never reopens. Do not auto-advance to another packet."
+      "notes": "PROPOSED attested publication. Publish complete results and identity as JsonArtifact only when every required variant and settlement audit is complete. Persist completed_pending_review; no automatic frontier advancement. Driver/context failure records failed_exposed_pending_review, or leaves the durable exposed claim pending reconciliation. Neither state becomes fresh. A review receipt closes success or explicitly abandons failure before another fresh packet can open."
     }
   },
   "outputs": {

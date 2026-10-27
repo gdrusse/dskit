@@ -7,7 +7,7 @@
       "params": {
         "study": "${study}"
       },
-      "notes": "PROPOSED generic node: validates sources/pins, calendar intervals, one selected packet and declared cohort. Resolve all behavior into params so the standard identity includes it. Accept arbitrary unit/horizon rows with domain hooks; no option-specific logic in dskit."
+      "notes": "PROPOSED generic node: validates sources/pins, calendar intervals, one selected packet and declared cohort. Preview the shared release rule: next frontier only, predecessor reviewed/retired, inherited exposure, source aliases and next-cohort freeze receipt. Resolve all behavior into params so standard identity includes it. Accept arbitrary unit/horizon rows with domain hooks; no option-specific logic in dskit."
     },
     "option_contract": {
       "uses": "index_options.ledger_studies:MIOPacketPlan",

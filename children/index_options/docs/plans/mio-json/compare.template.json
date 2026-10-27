@@ -8,7 +8,7 @@
         "study": "${study}",
         "result_receipts": "${result_receipts}"
       },
-      "notes": "PROPOSED verifier. Verify exact receipt, artifact content, source and computation identities plus shared exposure records. A result from another pair set, source snapshot, packet or cohort cannot substitute. Failed variants prevent a complete comparison."
+      "notes": "PROPOSED verifier. Verify exact receipt, artifact content, source/computation identities and shared exposure record, including predecessor disposition, monotone frontier and cohort-freeze receipt. Reconcile claimed freshness with actual prior reads and retirements across revisions/aliases. Another pair set, source snapshot, packet or cohort cannot substitute. Failed variants prevent a complete comparison."
     },
     "comparison": {
       "uses": "index_options.ledger_studies:MIOPacketCompare",

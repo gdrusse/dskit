@@ -230,3 +230,21 @@ For max DTE 60, tail ends are 2020-08-07, 2021-05-21, 2021-11-19,
 The four-file manifest addition required updating its pinned count 773 -> 777.
 
 Focused manifest/parity and documentation-budget checks: 5 passed.
+
+### Independent design review
+
+Candidate 6ceb2516c6828fb6e9e2aaeede68cb16cb6dccc5; reviewer
+/root/mio_design_correctness (GPT-6), correctness/authority lens.
+Verdict: 0 Critical, 1 Major, 0 Minor, 0 Nit. MIO-C1: the written checks allowed
+2022 to be opened, followed by new variants on unopened 2021, because predecessor
+IDs did not define a state transition. This invalidated the temporal boundary;
+that candidate stopped before a second lens. Reviewer inspected all four
+documents, Path and current study/fill/replay/account seams; independently
+confirmed folds and all tail dates; no market reads or runtime tests.
+
+Correction: protocol.release now defines next-frontier-only fresh claims,
+predecessor review/retirement, imported-2020 handling, failed-run retry or
+abandonment, explicit skip forfeiture, inheritance across revisions/source
+aliases, and atomic registry-revision checks. New-cohort freeze follows prior
+review; plan/open/compare apply the same rule and receipts. This is a contract
+correction, so both independent lenses restart on the next candidate.
