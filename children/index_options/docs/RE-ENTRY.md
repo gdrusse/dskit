@@ -1,40 +1,41 @@
 # RE-ENTRY — index_options
 
-Updated: 2026-10-26 by GPT-6. Previous notes: docs/archive/re-entry/index_options.md.
+Updated: 2026-10-27 by GPT-6. Previous notes: docs/archive/re-entry/index_options.md.
 
 ## Now
 
-- Publication integration combines main 64f95755 (scenario repricer) and Fable 1fd8d7ac (MIO candidate bf39ae97 plus the 2020 memo). Reviewed candidate 254f4ae4: two fresh independent GPT-6 lenses PASS, C0/M0. Runtime/configs/results retain parent blobs; only the exact manifest adds eight approved evidence paths and fixes its stale count.
-- ADR-0278 MIO additions are default-off: LP group screen, per-contract and short-notional reserve floors, generic joint rows, and trailing-beta common-shock loss limits. With joint rows the LP screen restricts candidates and can exclude useful hedge groups; its certificate is for that restricted program.
-- Fable's completed 2020 test: shock rows net +$4,197.20, stress +$3,212.70, TWR +12.14%, marked drawdown 37.62%; no-shock net −$8,908.05; equal-weight stock comparison +$7,354. No timeouts in either method. M51 fitted forecasts where available, fallback elsewhere; seven BA books dominate. Saved results and limitations: docs/memos/2026-10-26-shock-rows-2020-test.md and its data directory.
-- Eight saved 2019 weeks with screen plus short-notional 0.2 certified in 0.4–11 seconds; v11 had five timeouts in those weeks. This changes economic choices as well as runtime. No new backtest or full suite is part of publication.
-- Prior audited results stand: old funded M05 at 28–32 DTE net +$6,800.05, stress +$403.80; full-DTE v11 net −$7,804.40, 34/53 timeout skips. Both original memos and the completed canvas remain preserved. Prediction leaders remain M51/M53.
-- Separate JSON diagnostic: OptionScenarioReprice reprices a synthetic book under named forward/IV/time/rate shocks; sample worst declared loss $7,492.72 at expiry selloff. No probabilities, fills or decision eligibility. Reviewed scenario candidate a2b9f0a2 had two clean final lenses.
+- Owner correction: A0008 retains the yearly expanding cadence and uses the best complete output from the model zoo. The selected recipe/output run/hash is not yet pinned; TCN is no longer the prescribed choice.
+- The data-use TDD ships as docs/decisioning/technical-design.json plus self-contained technical-design.html. Both chart and number line use the same 49 window records, with folds, mathematical populations/functions, 13 config pins and 10 execution records. The managed canvas mirrors the canonical snapshot.
+- Recorded M51/MLP folds explain the existing 2020 MIO dependency. They do not select the future zoo winner. The TDD records the 2020 exposure footprint and provenance limits; saved results are unchanged.
+- docs/plans/mio-json contains study plus plan/run/compare JSON designs for sparse ticker/DTE pairs, frozen cohorts and sequential packet exposure. They are design-only; the proposed calendar is not adopted by the TDD and the required wrapper nodes do not exist yet.
+- Publication candidate 3d5f6411: both existing independent follow-ups PASS, zero findings; required fresh contexts unavailable, so main merge remains blocked and only the review branch is authorized. Five focused manifest/docs tests passed, JSON/hash/purge checks passed, canvas TypeScript zero, and browser checks passed all 15 filter states and 49 selections. No new fit, score, replay or protected-window read.
 
 ## Next
 
-1. Publication is authorized for combined main and the retained Fable branch. Integration evidence: 1,447 focused tests passed, 13 skipped; corrected manifest/docs five passed; independent integration 21 passed plus six inventory probes. No full-suite or historical replay rerun.
-2. Decide where to register the 2020 run config, whether hedge groups may bypass the screen, and how to calibrate loss_fraction and moves. Preserve free option legs, integer quantities and cash.
-3. A 2019 comparison of the new MIO remains proposed; no new study is launched by this integration. Audit forecast plausibility, BA concentration and whether the shock rule mainly acts as a loss budget.
-4. Use the separate scenario JSON for hypothetical diagnostics only. Its forward/IV/time/rate shocks are not the MIO's terminal beta-shock rows.
+1. Obtain two fresh final reviews on unchanged candidate 3d5f6411 before merging main; current independent follow-ups do not close that process gate.
+2. Pin the selected complete model-zoo output: candidate set, comparison contract, applicable promotion/eligibility evidence, selection JSON, recipe and exact forecast artifact/run hashes.
+3. Supply the sparse 2019-qualified ticker/DTE set when the owner decides its criterion and exact periods; those choices were explicitly deferred.
+4. Agree the first MIO packet's history, entry and settlement windows plus frozen formulation cohort. Previously exposed 2020 is development; predictive validation already used 2020-23.
+5. Implement the missing generic study wrappers only under an approved implementation packet before treating the design JSONs as executable.
 
 ## Blocked / owner decisions
 
-- Owner authorized publishing the completed work. The 2020 execution approval and evidence are recorded in Fable's ADR-0278 amendment; this publication opens no additional window. Locked A0001–A0008 remain binding; 2024–25 and 2026 remain sealed.
-- Fable's carried Minors: beta_lookback, funding floor, minimum-pair and timeout-None test coverage; no upper shock-move bound; restricted-program certificate label. American assignment, broker margin and intraday fills are unmodeled; short-notional 0.2 is a research charge.
-- Scenario Minor: very small represented shocks can leave float marks unchanged within the declared gross-value envelope.
-- Prior installed-venv CLI mismatch was avoided by using candidate PYTHONPATH; pre-existing E702 in test_ledger_studies.py remains. Exact-manifest omissions reproduced on both parents and are corrected: eight explicit memo/evidence paths, strict equality and count 773.
+- Exact zoo winner/output pin, 2019 admission rule/pairs, future MIO dates/cohort and HPO allocation are undecided. The TDD distinguishes these from unrecovered historical provenance.
+- The separate aggregate A0007 gate execution is unpinned. Legacy 2020 identity bound params/counts rather than original source bytes; the TDD discloses that limitation.
+- Existing Fable/scenario limitations and results remain in the prior memos: restricted-program LP certificate, American assignment/broker margin/intraday modeling gaps and prior minor test-coverage backlog.
+- 2024-25 remains the separately authorized single-opening holdout; 2026 is permanently closed. No opening is authorized by publishing these documents.
 
 ## Read first
 
-- Root/lane AGENTS.md and docs/skills/implementation-workflow.md.
-- docs/decisioning/path.csv and canonical ADR-0278, including the 2026-10-26 amendment.
-- docs/memos/2026-10-26-shock-rows-2020-test.md and its publication addendum.
-- docs/memos/2026-10-26-mio-high-level-status.md and docs/memos/2026-10-25-prescription-session-results.md.
-- configs/run-option-scenario-stress.json and docs/research/scenario-stress/2026-10-26-option-book-repricing.md.
+- docs/decisioning/path.csv and technical-design.html / technical-design.json.
+- docs/plans/README.md section 8 and docs/plans/mio-json/study.json.
+- Root docs/architecture/decision-log.md, ADR-0278 publication and TDD amendments.
+- docs/memos/2026-10-26-shock-rows-2020-test.md and its saved evidence directory.
+- Root/child AGENTS.md, docs/skills/implementation-workflow.md and skeptic-review.md.
 
 ## Do not
 
-- Do not open holdout/2026, pull Theta data, change Path/Current Work, or edit the saved v11 canvas or 2020 evidence.
-- WSL2 only; project venv, numerical threads 1. Preserve other worktrees and the saved Fable conversation.
-- Do not claim an unrestricted optimum for LP-screened joint rows, or treat historical research gains as promotion evidence.
+- Open protected data, run studies or promote a recipe from this documentation task.
+- Treat proposed packet dates, design-only JSONs or a recorded dependency as a selected executable plan.
+- Change owner decisions without a new instruction; edit saved 2020 results; reset other worktrees.
+- Claim an unrestricted optimum for LP-screened joint rows or use MIO returns to select predictive outputs.

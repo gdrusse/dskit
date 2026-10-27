@@ -33075,3 +33075,108 @@ Corrected external and tracked review hashes:
   e77d0d9df7496bcf614b21555a68b4bc5f705841d3457b6fe45aef5766ebb0ff
 - /tmp/check-zoo-binding.py
   4b1522e2b91faa7cd54d6d3b6957457f255b5d81118ffe0d638f6aa3071e0f5f
+
+2026-10-27 corrected publication candidate review follow-ups:
+Candidate 3d5f6411b87f08ba40d0dc1d07a226bb2ba2e8b4; base5747f179.
+A new fresh correctness allocation was attempted after the correction and
+returned "agent thread limit reached". Existing independent reviewers therefore
+reviewed the immutable corrected candidate. Their reports below support a
+bounded review-branch push only. They do NOT satisfy the repository's required
+two fresh final contexts. Main merge remains blocked on that process gate.
+No review protection is waived; no runtime or research approval is inferred.
+
+Retained correctness/authority follow-up — GPT-6, /root/tdd_zoo_authority:
+PASS; unresolved Critical0/Major0/Minor0/Nit0. Z1 and Z2 resolved; no additional
+findings. This is an existing independent reviewer follow-up, not a fresh-context
+review. Full assigned correctness matrix covered at the design-contract level.
+
+Z1 disposition: recipe is null; structural selection, recipe, run, artifact,
+training and source pins are required; six equalities bind source and selected
+producer across all eight node bindings. Unbound/mismatch must refuse before
+claims/reads. No historical-M51 default or universal cal/early-stop remains.
+Z2 disposition: full-T empirical reconstruction is distinguished from restoring
+neural checkpoints. Prior population, scoring, fallback and purge corrections
+remain intact.
+
+Reviewer checks in WSL2:
+- Inspected and ran /tmp/check-zoo-binding.py: eight bindings, unbound fixture,
+  two recipes including no-monitor, six mismatches, three document identities.
+- Independently exercised 76 invalid declaration cases and eight individual
+  valid binding changes. Invalid cases failed the declared predicates; every
+  valid change altered all three document identities.
+- Canonical check:49 windows/13 configs/10 runs, references, checked hashes,
+  purges. Both embedded snapshots and all five ADR hashes agree.
+- Canonical diff from stopped d93694d5 is only the Z2 role description and
+  MIO-study hash. Mathematics, folds, tails, gates, protections and run pins
+  remain exact. MIO calendar, exposure, accounts, variants, reports and all
+  three templates remain unchanged. HTML rendering/filter/selection/link code
+  remains unchanged. Candidate HEAD was clean.
+
+Reviewer limits: temporary interpreters verify declarations/identities, not
+production runtime refusal or synthetic receipt contents. Future wrappers and
+artifact-content tests are required. Unchanged large artifacts were not rehashed;
+prior unchanged-identity evidence applies. No edits, protected reads, jobs,
+full suite, browser or TypeScript check. Supports review-branch preservation,
+not formal closure or main readiness.
+
+Retained integration follow-up — GPT-6, /root/tdd_integration:
+PASS; candidate3d5f6411b87f08ba40d0dc1d07a226bb2ba2e8b4; base5747f179.
+Findings Critical0/Major0/Minor0/Nit0. Existing independent reviewer follow-up,
+not a fresh-context review; the fresh integration requirement remains open
+because allocation failed. This report does not declare merge readiness.
+
+Verified:
+- Clean candidate and base ancestor; only document/design/publication scope,
+  no runtime implementation change.
+- Path confined to owner-authorized A0008 recipe correction. Other rows and
+  Current Work unchanged.
+- Future zoo selection distinct from historical M51/MLP; pins unresolved.
+- Canonical49 windows/13 configs/10 run records; references, checked hashes,
+  intervals/purges and canvas snapshot equality pass.
+- Canvas TypeScript zero diagnostics.
+- Canvas harness15 filter states: matching chart/timeline IDs, correct endpoint
+  counts,644 existing-file actions.
+- Independent HTML renderer harness15 filter states and49 selections/keyboard
+  actions: correct functions/config hashes/complete assigned run records;
+  two endpoint marks for dated windows and none for null dates; fold control
+  hidden outside fold views;323 repository-link instances resolve in checkout.
+- Absolute artifact paths display as local WSL evidence; embedded JSON/source
+  hash matches canonical; no external script/stylesheet dependencies.
+- Skill metadata valid; maintenance covers both presentations, relative links,
+  owner decisions versus historical dependencies.
+
+After inspection, /tmp/check-zoo-binding.py passed eight expanded nodes carrying
+the current study contract and three document identities changed from stopped
+preset-M51. Unbound, two bound recipe fixtures and six producer-field mismatches
+behave as declared. These are temporary contract-interpreter/document-identity
+checks, not implemented runtime refusals or artifact-content verification.
+
+Focused tests independently passed (five):
+  children/index_options/tests/test_configs.py::test_exact_manifest_and_agent_parity
+  tests/docs/test_budgets.py
+No full suite.
+
+Review hashes:
+JSON05ee09d99f79989286e572f3b23293311f72013413aee53c6e7102971c5bb34d
+HTML113384eeadd1ff5c9977a84bb77f95229e1df4ca80e78ddda04871398a609c6e
+Canvas3cb79b1b535f1322a4f4dbceb2011d6023507299b13c38e85212e2e113893354
+Skille77d0d9df7496bcf614b21555a68b4bc5f705841d3457b6fe45aef5766ebb0ff
+
+Integration limits: DOM/SDK stand-ins verify renderer logic, not pixels or host
+file-opening dispatch. Author's actual-browser screenshots were not independently
+repeated. Unchanged large artifacts and mathematical derivations were not
+revalidated. No edits, market execution, protected outcome decoding, new agent
+or full-suite run.
+
+Publication disposition: both existing follow-ups have zero findings, while
+fresh-context process closure is outstanding. Push authorized bounded branch
+codex/index-options-tdd-20261027; do not merge main. Next process action: two
+fresh final contexts on these unchanged reviewed blobs/dependencies. Any changed
+contract/dependency needs corresponding renewed review. Evidence/handoff-only
+edits preserve the reviewed artifact hashes and will receive the focused checks.
+
+Handoff verification: only the four existing evidence/re-entry/archive files
+changed after reviewed candidate3d5f6411. JSON, HTML, canvas and skill hashes
+remain exactly the review values above. git diff --check passes. Focused
+manifest/docs tests passed again:5 passed in0.94s with project WSL venv and
+candidate PYTHONPATH. Remote main remained5747f179 before branch publication.

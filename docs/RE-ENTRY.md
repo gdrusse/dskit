@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-26: main synced; 37 local/2 remote contained branches purged; unmerged/dirty work retained; sweep receipt below |
-| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-26: Fable MIO/2020 evidence integrated with scenario repricer; candidate254f4ae4 two clean lenses, focused checks pass; shock net +$4,197 vs stock comparison +$7,354; holdout sealed |
+| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-27: 49-window TDD/HTML and arbitrary-pair MIO JSON designs; best model-zoo output replaces fixed TCN; candidate3d5f6411 follow-ups PASS,5 tests; review branch only, fresh final reviews pending |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |
