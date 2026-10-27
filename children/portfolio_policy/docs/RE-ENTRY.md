@@ -5,42 +5,45 @@ the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
 
-ADR-0279 approved 2026-10-27; amendment (autonomous) records Stage 2.
-In dskit: `schwab_positions` connector (5 stub tests) and
-`dskit/pipeline/liquidation.py` — `LiquidationTax` + `HoldVsRedeploy`
-(9 hand-worked tests). Child: `configs/run-hold-vs-redeploy.json`
-positions → tax → decide → `decisions/<run>.jsonl`, e2e test green on a
-localfiles stand-in. No real Schwab pull yet; document rates are
-placeholders.
-
-Research A0001 (`docs/research/hold-return/2026-10-27-synthesis.md`):
-`hold_return` should be yield + growth + CAPE reversion for the market,
-scaled by beta per stock; never a trailing mean.
+ADR-0279 approved 2026-10-27 with four amendments (owner: "work
+autonomously", "permission to build", "build all the machinery").
+Base machinery complete in dskit, all tier-1 by import path, all `pure`:
+`onboarding/libs/schwab.py` (`schwab_positions`), `pipeline/liquidation.py`
+(`LiquidationTax`, `HoldVsRedeploy`), `pipeline/hold_return.py`
+(`MarketHoldReturn`, `BetaHoldReturns`), `pipeline/active_hurdle.py`
+(`ActiveHurdle`), `pipeline/decision_outcomes.py` (`DecisionOutcomes`).
+Child is JSON only: `run-hold-vs-redeploy.json` (positions → tax; market →
+betas; active_returns → hurdle; → decide → `decisions/<run>.jsonl`) and
+`run-decision-outcomes.json` (that file via localtables + a later snapshot
+→ `outcomes/<run>.jsonl`). 35 dskit tests + 8 child tests green; both
+e2e tests run on localfiles stand-ins. Research A0001 (`docs/research/
+hold-return/`) grounds the hold-return model. No real Schwab pull yet;
+every rate in the documents is a placeholder. Branch
+`portfolio-policy-scaffold`, not merged: two-lens review not run.
 
 ## Next
 
-Base machinery complete in dskit (all by import path): `liquidation.py`,
-`hold_return.py`, `active_hurdle.py`; `HoldVsRedeploy` takes both returns
-wired and taxes both paths at the horizon. Document: positions → tax,
-market → betas, active_returns → hurdle, → decide → decisions. Owner sets
-the document's blocks, betas, tax rates, `trials`, `min_dsr` and runs the README's command
-sequence for the first real snapshot + decision. Then: per-symbol
-`hold_return` from price history (Stage 2 model) and `redeploy_return`
-from a child's scored backtest (Stage 3 hurdle).
+Owner: set the decision document's blocks (dividend yield, CAPE, fair
+CAPE), betas, tax rates, `trials`, `min_dsr`; choose which child's backtest
+feeds `active`/`returns`; run the README's command sequence for the first
+real snapshot + decision. Then skeptic two-lens review and merge to `main`.
 
 ## Blocked / owner decisions
 
 - Lot-level data: a Schwab lot CSV through `localfiles` (then declare
   `acquired_field`) vs aggregate-only; both work, lots are more accurate.
 - Which child's backtest feeds `active` / `returns`, and its honest `trials`.
-- Cap-gains rates and holding-period rules the tax drag uses (config, not code).
+- Cadence: a weekly scheduled `pipeline run` vs a `dskit.production` serve
+  document (deferred: advisory, no order path).
 
 ## Read first
 
 - `README.md`
-- `docs/architecture/decision-log.md` § ADR-0279
+- `docs/architecture/decision-log.md` § ADR-0279 and amendments
+- `docs/research/hold-return/2026-10-27-synthesis.md`
 
 ## Do not
 
-- No live orders, ever (research child; exit signals are advisory).
-- No Schwab pull or model fit before ADR-0279 is ratified.
+- No live orders, ever (research child; decisions are advisory).
+- No real Schwab pull before the owner sets the document values.
+- Do not paste a return into either document: both arrive wired.

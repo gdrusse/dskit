@@ -14,7 +14,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
 | intraday_equities | `children/intraday_equities/docs/RE-ENTRY.md` | 2026-10-12: fill-window relabel: next-bar-fill IC 0.01-0.02 (5-min rows), 0.002-0.005 (1-min rows); no fill-reachable edge |
 | pmquant | `children/pmquant/docs/RE-ENTRY.md` | 2026-09-04: child landed; waits on PREDEXON_API_KEY and the real-data twin |
-| portfolio_policy | `children/portfolio_policy/docs/RE-ENTRY.md` | 2026-10-27: ADR-0279 approved; child scaffolded; Stage 1 `schwab_positions` connector green on stubs, no real pull yet |
+| portfolio_policy | `children/portfolio_policy/docs/RE-ENTRY.md` | 2026-10-27: ADR-0279 base machinery complete (schwab_positions, liquidation, hold_return, active_hurdle, decision_outcomes); two child documents, e2e green on stand-ins; no real pull; branch unmerged, lenses pending |
 | intraday_poc | `children/intraday_poc/docs/RE-ENTRY.md` | legacy worked example; no active lane |
 
 ## Core (dskit itself)
