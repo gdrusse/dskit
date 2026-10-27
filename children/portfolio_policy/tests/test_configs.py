@@ -67,3 +67,44 @@ def test_decision_day_is_declared_once_per_document():
     where = {c["field"]: c["value"] for c in document.pipeline["snapshot"].params["where"]}
     assert document.pipeline["tax"].params["as_of"] == where["as_of"]
     assert where["asset_type"] == "EQUITY"
+
+
+def test_market_horizon_is_the_decision_horizon():
+    """The market blocks are an average over the horizon the decision uses; the number
+    appears in two nodes, so a mismatch must fail here, not in a quietly wrong rate."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    market = document.pipeline["market"].params
+    decide = document.pipeline["decide"].params
+    assert market["horizon_years"] == decide["horizon_years"]
+    assert market["horizon_years"] <= market["reversion_years"]
+
+
+def test_outcomes_income_is_the_market_dividend_yield():
+    """The hold forecast's income component is the yield the market node fed it; scoring the
+    forecast must remove that same number."""
+    decide = load_document(_path("run-hold-vs-redeploy.json"))
+    outcomes = load_document(_path("run-decision-outcomes.json"))
+    assert (outcomes.pipeline["outcomes"].params["income_rate"]
+            == decide.pipeline["market"].params["dividend_yield"])
+
+
+def test_tax_rates_are_declared_once_per_path_and_agree():
+    """The hold path's terminal rate and the redeploy path's annual rate restate the tax
+    schedule's long and short rates; a mismatch would tax the two paths on different schedules."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    tax = document.pipeline["tax"].params
+    decide = document.pipeline["decide"].params
+    assert tax["long_term_rate"] == decide["terminal_tax_rate"]
+    assert tax["short_term_rate"] == decide["redeploy_tax_rate"]
+
+
+def test_the_scoring_snapshot_keeps_the_decision_snapshots_universe():
+    """A decided position is scored only if the later snapshot filter can still see it, so
+    its asset and side clauses restate the decision document's; the date is its own."""
+    decide = load_document(_path("run-hold-vs-redeploy.json"))
+    outcomes = load_document(_path("run-decision-outcomes.json"))
+    clauses = decide.pipeline["snapshot"].params["where"]
+    later = outcomes.pipeline["later"].params["where"]
+    assert [c["field"] for c in later] == ["as_of", "asset_type", "long_quantity"]
+    assert later[1:] == [c for c in clauses if c["field"] != "as_of"]
+    assert later[2] == {"field": "long_quantity", "op": ">", "value": 0}

@@ -429,6 +429,17 @@ def test_check_number_param_is_inclusive_finite_and_refuses_bool(value, ok):
         assert problems == ["rate must be a number in [0.0, 1.0], got " + repr(value)]
 
 
+def test_check_number_param_refuses_a_huge_int_instead_of_overflowing():
+    # int -> float overflows inside math.isfinite; a refusal must be a problem, not a raise
+    for value in (10 ** 400, -(10 ** 400), 2 ** 53 + 1):
+        problems = []
+        check_number_param(problems, "rate", value, lower=-1e30, upper=1e30)
+        assert problems == ["rate must be a number in [-1e+30, 1e+30], got " + repr(value)]
+    problems = []
+    check_number_param(problems, "rate", 2 ** 53, lower=0.0, upper=1e30)   # the last exact int
+    assert problems == []
+
+
 def test_public_resolver_requires_an_ordinary_document_before_import(tmp_path, monkeypatch):
     from dskit.pipeline.document import PipelineDocument
 

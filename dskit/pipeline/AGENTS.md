@@ -128,13 +128,18 @@ dskit/pipeline/
 ├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
 │                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon, both liquidated and taxed at the
-│                      horizon when `terminal_tax_rate` is declared; `hold_returns` / `redeploy_return` input ports; decision `exit` only when redeploy wins
-├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, role data) + BetaHoldReturns
+│                      horizon when `terminal_tax_rate` is declared; `hold_returns` / `redeploy_return` input ports (wired rates held to `RATE_BOUNDS`, -100%..+200%);
+│                      short / non-positive rows refuse; annual redeploy tax on a positive net rate only; decision `exit` only when redeploy wins;
+│                      `require_number`: the one numeric row-field reader of the three row-reading ADR-0279 kinds; `MAX_COUNT` (10**6) +
+│                      `check_count_param`: the one ceiling of a count param; an acquisition date after `as_of` refuses
+├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, `horizon_years` <= `reversion_years`, role data) + BetaHoldReturns
 │                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
-│                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr) -> HoldVsRedeploy's `redeploy_return` port
+│                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr), declared `min_periods` floor -> HoldVsRedeploy's `redeploy_return` port;
+│                      a constant series (spread within `stats.NO_VARIANCE_RTOL`) has no Sharpe and refuses
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
-│                      projected (pro rata) vs realized growth, surprise by decision; the hold side's own score
+│                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score;
+│                      only decision-matched later rows are value-checked (structural refusals cover all)
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:

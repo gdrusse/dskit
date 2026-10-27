@@ -32602,6 +32602,163 @@ backlog in `children/portfolio_policy/docs/memos/2026-10-27-adr-0279-base-machin
 Two clean lenses, zero unresolved Critical/Major: candidate locked; merged
 to main on the owner's "use this skeptic reviewed library asap".
 
+#### ADR-0279 amendment: Sonnet round 1 corrections (2026-10-27)
+
+A Sonnet reviewer found 5 Major on the locked slice; all five fixed (RED first),
+with the listed Minors:
+
+- Major 1 — short and zero rows. `LiquidationTax` refuses `value_field <= 0` and
+  `basis_field < 0`; `HoldVsRedeploy` refuses `value <= 0` and `net <= 0`, each
+  by row index and field. The decision document's `snapshot` filter gains
+  `long_quantity > 0` (`kinds_flow` `CLAUSE_OPS` has `>`); the e2e test carries a
+  short XYZ row to prove it.
+- Major 2 — wired rates unchecked. One owner, `liquidation.RATE_BOUNDS = (-1, 10)`
+  (plus `require_rate` / `check_rate_param`), replaces the two private bound pairs.
+  `HoldVsRedeploy` refuses any wired `hold_returns` entry or `redeploy_return`
+  input outside it; `MarketHoldReturn`, `BetaHoldReturns` (per symbol) and
+  `ActiveHurdle` (deflated rate, before admissibility) refuse a computed rate
+  outside it, the message naming "fractions, not percent".
+- Major 3 — `ActiveHurdle` gains REQUIRED `min_periods` (int >= 2); the private
+  `_MIN_PERIODS` is gone. The document sets 52; the e2e overrides it to 12.
+- Major 4 — `MarketHoldReturn` gains REQUIRED `horizon_years` and refuses one
+  beyond `reversion_years` (the drift would compound past full reversion). The
+  document sets 5; a child test pins it equal to `decide.horizon_years`. The
+  drift formula is unchanged.
+- Major 5 — `DecisionOutcomes` gains REQUIRED `income_rate` ([0, 1]): projected =
+  `((hold_value / value) ** (1 / horizon_years) - income_rate) ** elapsed`, because
+  the forecast is total return and the realized side is price only. A non-positive
+  base refuses. The document sets 0.013; a child test pins it equal to
+  `market.dividend_yield`. Approximation disclosed in the module docstring: one
+  yield for every holding, beta scaling of income ignored.
+- Minors fixed: annual redeploy tax is `net - max(net, 0) x t` with the
+  `risk_premium` subtracted untaxed (a loss gets no refund); `redeploy_cost` and
+  `risk_premium` >= 0; `horizon_years` 1..`MAX_HORIZON_YEARS` (100) in both
+  kinds; Schwab positions refuse a non-str or empty symbol, a non-finite number
+  (and a cost basis that overflows) and an account without a `positions` key;
+  `check_number_param` refuses an int beyond 2**53 instead of raising
+  OverflowError; `ActiveHurdle` counts run as ints exactly as validated;
+  `by_holding`, `redeploy_tax_rate` and a two-hold `mean_surprise` now asserted;
+  the "few basis points" disclosure replaced by the honest tens-of-bp-to-a-point
+  statement, still left to `risk_premium`.
+Files: the five pipeline modules and onboarding `schwab.py`, their tests, the two
+child documents and tests, the READMEs. Sweep: tools/sweep/sweep rate_bounds
+require_rate check_rate_param check_horizon_param max_horizon_years min_periods
+income_rate; no near matches (only an unrelated `require_rate=` kwarg in
+statistical_arbitrage and pandas `min_periods=`).
+
+#### ADR-0279 amendment: Sonnet round 2 corrections (2026-10-27)
+
+The Sonnet reviewer's second round found 2 Major on the round-1 slice; both fixed
+(RED first), with the Minors and Nits below.
+
+- Major 1 — one short row anywhere in the later snapshot refused the whole scoring
+  run. Fixed both ways: `run-decision-outcomes.json` `later.where` gains
+  `asset_type == EQUITY` and `long_quantity > 0` (a child test pins them equal to the
+  decision document's clauses), and `DecisionOutcomes` reads value and quantity only
+  for keys a decision matches. The one-date, undated-row, missing-key and
+  duplicate-key refusals still cover every later row; an undecided short, closed lot,
+  option or text value is simply not scored. The child e2e's later snapshot now
+  carries the short XYZ and the option, and runs the scoring document both with the
+  shipped filter and with it reduced to the date alone.
+- Major 2 — single-value fixtures. Second-value tests, each shown to fail when the
+  parameter is hardcoded: `horizon_years=3` (hand-worked, 1.05^4), `periods_per_year=12`
+  on the same twelve returns, `risk_free=0.02`, `long_term_days=366` (a row held 365
+  days is short, 366 long) and `default_holding="short"`.
+- Minor 1 — the bars pack's error nouns are restored through `_NOUN` on
+  `_SchwabConnector` ("Schwab price history" for bars, "Schwab accounts" for
+  positions); transport-level tests (`urllib.request.urlopen` scripted) cover the
+  Bearer header, URL-encoded params, a 503 retried then refused, a 404 refused at once,
+  malformed JSON, for both packs.
+- Minor 2 — `RATE_BOUNDS` is now (-1.0, 2.0) (-100% to +200%): 7 for 7% refuses; cost
+  and premium share the ceiling. Docstrings, READMEs and the document note follow.
+- Minor 3 — `tax.long_term_rate == decide.terminal_tax_rate` and `tax.short_term_rate ==
+  decide.redeploy_tax_rate` are pinned by a child test; the child e2e reads every rate,
+  market block, beta, risk-free, cost, premium, hurdle period count and income rate from
+  the loaded documents (it pins only the hurdle's `trials` 5 / `min_dsr` 0.5, which the
+  recorded E[max Sharpe] belongs to, as it already pinned `min_periods`).
+- Minor 4 — Limits disclosed in the child README and the module docstrings: every
+  account is treated as taxable (type discarded); the hold path's dividends are untaxed;
+  splits and spin-offs corrupt `DecisionOutcomes` per-share growth; the `EQUITY`
+  filter's reach for ETFs and mutual funds is unverified until a real pull; excluded-row
+  counts are not yet reported.
+- Minor 5 — the `decide` note no longer implies `risk_premium` 0 is safe: the
+  simple-vs-geometric gap (about sd^2/2 a year) is left to it, to be set from the
+  backtest's volatility.
+- Minor 7 — one row-number reader: `liquidation.require_number(key, what, index, row,
+  field)` (exported), imported by `decision_outcomes` and `active_hurdle`; a test pins
+  identity.
+- Nits — PEP 8 blank lines and a deep-copied shared spec in `schwab.py`; a positions
+  "malformed" error names the symbol when it is known; the onboarding README and
+  CLAUDE tree mention positions; `test_min_dsr_is_inclusive` takes its boundary from the
+  node's own summary.
+- Not changed: the round-1 disclosures stand (hurdle E[max Sharpe] pinned from one
+  recorded evaluation; arithmetic mean compounded geometrically; Stage 4 is
+  `DecisionOutcomes` rows).
+Files: `liquidation.py`, `decision_outcomes.py`, `active_hurdle.py`, `hold_return.py`,
+onboarding `schwab.py`, their tests and `tests/onboarding/stub_connectors.py`, the two
+child documents, child tests and README, the pipeline and onboarding READMEs and
+CLAUDE/AGENTS pairs. Sweep: tools/sweep/sweep require_number scripted_urlopen _NOUN
+shared_spec; no near matches.
+
+#### ADR-0279 amendment: Sonnet round 3 corrections (2026-10-27)
+
+The Sonnet reviewer's third round found 1 Major on the round-2 slice; fixed, with
+the Minors and Nits below. Each new test was shown to fail on a mutant in a scratch
+copy of the tree (not the repo) and, where the defect was real, was RED first.
+
+- Major 1 — the hardcoding family was not fully swept. Hand-worked second-value
+  tests: `MarketHoldReturn` yield .02 / growth .03 / inflation .01 (all three
+  together, each alone, then with the CAPE drift on); `LiquidationTax` short .3 /
+  long .15 on a short-dated and a long-dated row; `HoldVsRedeploy` terminal .3 and
+  annual .25 in one test (and terminal timing at .25), so a swapped rate fails too.
+  Hardcoding any of the seven to its fixture value survives the round-2 tests and is
+  now killed. Every field-name param (`value_field`, `basis_field`, `acquired_field`,
+  `net_field`, `symbol_field`, `return_field`, `key_fields`, `as_of_field`,
+  `quantity_field`) runs once renamed with the same hand numbers; hardcoding any
+  default spelling is killed.
+- Minor 1 — terminal timing with a negative net rate (`redeploy_return` 0, cost .02):
+  no terminal tax, `redeploy_net == redeploy_value < net`.
+- Minor 2 — `ActiveHurdle` refused nothing for `[0.0123] * 52`: the float mean carries
+  noise, so sd was ~1e-17 and the Sharpe 7e15, read as an admissible 64% hurdle. A
+  series whose spread is within `stats.NO_VARIANCE_RTOL` of its largest magnitude now
+  refuses ("no usable Sharpe") before any Sharpe is computed, boundary inclusive. The
+  tolerance is stats' one constant, imported; stats' own comparison helper is private,
+  so its two-line spread test is restated here (a public helper there is the follow-up).
+- Minor 3 — `DecisionOutcomes` reads `horizon_years` through `require_number` and
+  `_positive`; 0, -1, 0.0, -0.5, text, bool, null, nan and inf refuse by decision.
+- Minors 4-5 — Schwab: the URL is encoded for `BRK/B`, a space, `&` and `=`; a bool
+  position number, an empty / non-str / missing `hashValue`, a non-list accountNumbers
+  body, a malformed account entry, and the positions config and `read` argument guards
+  each refuse by name.
+- Minors 6-7 — one renamed-fields test per node; one parametrized bad-declaration test
+  per node asserting exactly one named problem per case, so every `validate_params`
+  refusal line is pinned (checked by neutering each refusal statement in turn: 0
+  survivors in the four modules and the positions pack); wired `hold_returns` /
+  `redeploy_return` type checks and records-must-be-a-list at run.
+- Minor 8 — the memo's decision rule step 3 states the real rule (`net_rate = r - cost`;
+  `taxed = net_rate - max(net_rate, 0) x t`; `used = taxed - premium`), the scoring line
+  carries `income_rate`, the HTTP-mapping backlog item is retired.
+- Minor 9 — an acquisition date after `as_of` refuses by row and field; it was read as
+  "short" from negative days held. The same day is zero days held and still runs.
+- Nits — an empty later snapshot says "got none", not "several: []"; the positions
+  docstring reads "after 20:00 New York time, 19:00 in standard time"; the child README
+  names `SCHWAB_APP_KEY`, `SCHWAB_APP_SECRET`, `SCHWAB_CALLBACK_URL`,
+  `SCHWAB_TOKEN_PATH` and the `authorize --code` exchange; `decide.notes` says
+  `redeploy_cost` sits on top of returns the backtest already netted (0 if it netted
+  its costs; the document hash is unchanged, notes are stripped); a defaulted symbol
+  in two rows is listed once; `liquidation.MAX_COUNT` (10**6) and `check_count_param`
+  refuse an int past it for `reversion_years`, `trials` and `periods_per_year` (10**400
+  raised OverflowError at run).
+- Not changed: the earlier disclosures stand. The Phase-1 `SchwabBarsConnector` (not
+  ADR-0279) keeps 11 untested refusals, disclosed in the memo.
+Files: `liquidation.py`, `hold_return.py`, `active_hurdle.py`, `decision_outcomes.py`,
+onboarding `schwab.py` (docstring), their tests, the child README and `decide` note,
+the pipeline README and CLAUDE/AGENTS pair, the memo. Sweep: tools/sweep/sweep
+max_count check_count_param count_cap huge_int; near matches only private
+`_check_count` helpers in `false_signal`, `mean_interval` and `uncertainty_set`
+(private to their modules, raising rather than accumulating) and `check_int_param`,
+which the new helper wraps.
+
 
 #### ADR-0278 amendment: staged MIO JSON design (2026-10-27)
 

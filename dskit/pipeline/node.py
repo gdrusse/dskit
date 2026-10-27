@@ -68,6 +68,10 @@ __all__ = [
     "resolve_uses",
 ]
 
+#: Largest magnitude at which an int is still exactly a float; beyond it ``math.isfinite``
+#: raises OverflowError (or the float silently rounds), so ``check_number_param`` refuses.
+_MAX_EXACT_INT = 2 ** 53
+
 _NODE_KEY_OK = r"^[a-z_][a-z0-9_]*$"
 _KIND_OK = r"^[a-z][a-z0-9_-]*$"
 _NODE_KEY_MATCH = re.compile(_NODE_KEY_OK).match  # compiled once; hot in validation
@@ -191,7 +195,8 @@ def check_number_param(problems, name, value, *, lower, upper) -> None:
 
     The sibling of :func:`check_int_param` for a rate, a weight or a
     fraction: ``bool`` is refused (it is an ``int``), as is a NaN, an
-    infinity or anything that is not a number. Both bounds are required
+    infinity, an int too large to be exactly a float (beyond ``2**53``, where
+    ``math.isfinite`` would raise) or anything that is not a number. Both bounds are required
     for the same reason ``ge`` is above — a bound the caller did not state
     is a bound nobody can review.
 
@@ -222,6 +227,7 @@ def check_number_param(problems, name, value, *, lower, upper) -> None:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
+        or (isinstance(value, int) and abs(value) > _MAX_EXACT_INT)
         or not math.isfinite(value)
         or not lower <= value <= upper
     ):

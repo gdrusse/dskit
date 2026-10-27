@@ -169,7 +169,11 @@ REST is stdlib-only. `schwab_positions` (ADR-0279) snapshots every linked
 account's holdings as `positions` keyed by `(account, symbol, as_of)` (the
 UTC day of the pull); `account` is Schwab's own `hashValue` from the
 accountNumbers endpoint, so no account number is stored; the four position
-numbers are required, never defaulted.
+numbers are required, never defaulted. The account type is not read (every
+account is treated as taxable downstream) and an ETF or mutual fund's
+`asset_type` is unverified until a real pull, so a consumer filtering
+`EQUITY` should check it. Transport refusals name the pack's request
+("Schwab price history failed for 'AAPL' (HTTP 404)", "Schwab accounts ...").
 
 The `polymarket` pack (ADR-0075) is keyless: Gamma `events` (one row per
 market, settlement and fee fields; the cursor is recorded, never consulted —
@@ -445,7 +449,7 @@ dskit/onboarding/
 │   ├── restwindow.py  declarative time-window REST: window / cursor pagination, positional rows, epoch instants, a dynamic record key; standalone (stdlib urllib, ADR-0240)
 │   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
 │   ├── zipcsv.py      httpblobs transform: a vendor zip of one CSV -> typed parquet under a JSON layout (pyarrow inside transform, ADR-0242)
-│   ├── schwab.py      Schwab closed-minute REST bars + OAuth refresh
+│   ├── schwab.py      Schwab closed-minute REST bars + point-in-time account positions (`schwab_positions`, ADR-0279) + OAuth refresh
 │   └── thetadata.py   ThetaData daily option chains + underlying bars from a local Theta Terminal: per-root newest-first cursor, batch_units, ordered concurrency (stdlib urllib, ADR-0263); ThetaOptionEodExport (Parquet schema + quality checks)
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        the CLI: python -m dskit.onboarding

@@ -16,7 +16,12 @@ From the child root, after `pip install -e .` and a Schwab OAuth session:
 python -m dskit.onboarding init --root ./ob
 python -m dskit.onboarding register-source schwab --root ./ob \
     --catalog-source schwab-src --connector schwab_positions --config '{}' --activate
-python -m dskit.onboarding authorize --connector schwab_positions --config '{}'
+# the OAuth values are read from the environment (never from the config): the Schwab app key
+# and secret, the callback URL registered for the app, and where the token file will be saved
+export SCHWAB_APP_KEY=... SCHWAB_APP_SECRET=... SCHWAB_CALLBACK_URL=... SCHWAB_TOKEN_PATH=./schwab-token.json
+python -m dskit.onboarding authorize --connector schwab_positions --config '{}'    # prints the login URL
+# approve it in the browser, then pass the code (or the whole callback URL it redirected to):
+python -m dskit.onboarding authorize --connector schwab_positions --config '{}' --code '<code or callback URL>'
 python -m dskit.onboarding acquire --root ./ob --source schwab \
     --stream positions --mode backfill            # one snapshot per UTC day
 # the active strategy's backtest: ./inputs/active/returns.jsonl (the file stem is the
@@ -38,10 +43,32 @@ backtest's mean by what `trials` variants of nothing would have found and
 withholds it below `min_dsr`, in which case every holding holds. The hold
 path is taxed once at the horizon (`terminal_tax_rate`); the active path pays
 its short-term rate every year (`redeploy_tax_rate`, `annual`). Equities
-only: option rows are filtered out, their basis carries no multiplier. Rows
+only, and long only: the `snapshot` filter drops option rows (their basis
+carries no multiplier) and short positions (`long_quantity > 0`), because the
+kinds refuse a short or zero-value row by index rather than decide on it.
+`hurdle.min_periods` (52, a year of weekly returns) is the fewest backtest
+periods it will accept, and returns are fractions (0.01 = 1%), never percent.
+`market.horizon_years` is the decision horizon (pinned equal to
+`decide.horizon_years` by a test) and may not exceed `reversion_years`. Rows
 land in `decisions/<run>.jsonl`, one per account x symbol, advisory only.
 Aggregate positions carry no lots, so every holding takes `default_holding`
-until a lot-level export is onboarded.
+until a lot-level export is onboarded. `decide.risk_premium` ships at 0.0 as a
+placeholder, not as a claim that zero is safe: the hurdle's arithmetic mean
+compounds geometrically, a gap of about sd^2 / 2 a year, so set it from the
+backtest's annual volatility (`hurdle` summary `annual_sd`) before a real run.
+
+**Limits** (disclosed, not modelled):
+
+- Every linked account is treated as taxable; the account type is discarded, so
+  an IRA or 401(k) position is taxed as if sold in a brokerage account.
+- The hold path's dividends are untaxed (only its terminal gain is), which
+  favours holding.
+- A split or spin-off between a decision and its scoring corrupts the
+  per-share growth `DecisionOutcomes` reads; it is taken for a return.
+- The `EQUITY` filter's reach for ETFs and mutual funds is unverified until a
+  real pull: if Schwab labels them otherwise they are dropped silently.
+- Rows the filters drop (options, shorts, other asset types) are not counted or
+  reported yet.
 
 ### Scoring a past decision run
 
@@ -59,10 +86,19 @@ mkdir -p outcomes
 python -m dskit.pipeline run configs/run-decision-outcomes.json --asof <that day>
 ```
 
+`later` keeps the same equity longs the decision did (a test pins the clauses
+equal), but only decided positions are read: an undecided short or option row
+in the snapshot is never scored and cannot stop the run, and a decided position
+the filter no longer sees is listed `unmatched`.
+
 `<run-name>` is the decision run's directory name (the stem of its
 `decisions/<run>.jsonl`). `outcomes/<run>.jsonl` holds, per account and
-symbol, the growth the decision assumed (pro rata for the time elapsed), the
-realized per-share growth, and the surprise. It scores the hold forecast only.
+symbol, the price growth the decision assumed, the realized per-share growth,
+and the surprise. The forecast is a total return and the snapshot's market
+value is price only, so `outcomes.income_rate` (0.013, pinned equal to the
+decision document's `market.dividend_yield`) is removed from each year's
+growth before it is compounded for the time elapsed. It scores the hold
+forecast only.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds

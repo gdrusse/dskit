@@ -20,18 +20,25 @@ stream and a declared beta table and emits ``{symbol: rate}``, which
 :class:`~dskit.pipeline.liquidation.HoldVsRedeploy` takes on its optional
 ``hold_returns`` input port. Every number is a param of the document.
 
+The valuation drift is spread over ``reversion_years``, so the market rate is an
+average for a horizon no longer than that: ``horizon_years`` (the decision's
+horizon, pinned equal to the decision node's by the document's tests) may not
+exceed ``reversion_years``, or the drift would compound past full reversion.
+Every rate this module computes is held to :data:`~dskit.pipeline.liquidation.RATE_BOUNDS`.
+
 Import cost: stdlib + the pipeline core.
 """
 
 from __future__ import annotations
 
 from dskit.pipeline.binary_curve import name_ok
-from dskit.pipeline.node import Node, check_int_param, check_number_param, reject_unknown_params
+from dskit.pipeline.liquidation import (
+    check_count_param, check_horizon_param, check_rate_param, require_rate,
+)
+from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 __all__ = ["BetaHoldReturns", "MarketHoldReturn"]
-
-_RATE_LOWER, _RATE_UPPER = -1.0, 10.0
 
 
 class MarketHoldReturn(Node):
@@ -43,10 +50,12 @@ class MarketHoldReturn(Node):
     ----------
     params : dict
         ``dividend_yield``, ``real_growth``, ``inflation`` (numbers in
-        ``[-1, 10]``, REQUIRED); ``cape``, ``fair_cape`` (positive numbers,
+        ``[-1, 2]``, REQUIRED); ``cape``, ``fair_cape`` (positive numbers,
         REQUIRED): the current and the fair cyclically adjusted P/E;
-        ``reversion_years`` (int >= 1, REQUIRED): the years over which the
-        valuation is assumed to drift to fair.
+        ``reversion_years`` (int in ``[1, 10**6]``, REQUIRED): the years over
+        which the valuation is assumed to drift to fair; ``horizon_years`` (int in
+        ``[1, 100]``, REQUIRED): the decision horizon this rate serves, at most
+        ``reversion_years``. The computed rate must lie in ``[-1, 2]``.
 
     Examples
     --------
@@ -54,7 +63,8 @@ class MarketHoldReturn(Node):
 
         node = MarketHoldReturn("market", {
             "dividend_yield": 0.013, "real_growth": 0.02, "inflation": 0.025,
-            "cape": 36.0, "fair_cape": 27.0, "reversion_years": 10})
+            "cape": 36.0, "fair_cape": 27.0, "reversion_years": 10,
+            "horizon_years": 5})
         node.run(ctx, {})["rate"]   # 0.058 - 0.0284 = 0.0296
     """
 
@@ -62,7 +72,7 @@ class MarketHoldReturn(Node):
     outputs = ("rate", "blocks", "summary")
 
     _PARAMS = ("dividend_yield", "real_growth", "inflation", "cape", "fair_cape",
-               "reversion_years")
+               "reversion_years", "horizon_years")
 
     @classmethod
     def validate_params(cls, params):
@@ -74,12 +84,24 @@ class MarketHoldReturn(Node):
             problems.append(f"missing required params {missing}")
         for name in ("dividend_yield", "real_growth", "inflation"):
             if name in params:
-                check_number_param(problems, name, params[name], lower=_RATE_LOWER, upper=_RATE_UPPER)
+                check_rate_param(problems, name, params[name])
         for name in ("cape", "fair_cape"):
             if name in params and (not number_ok(params[name]) or params[name] <= 0.0):
                 problems.append(f"{name} must be a positive number, got {params[name]!r}")
+        reversion_problems = len(problems)
         if "reversion_years" in params:
-            check_int_param(problems, "reversion_years", params["reversion_years"], ge=1)
+            check_count_param(problems, "reversion_years", params["reversion_years"], ge=1)
+        reversion_ok = "reversion_years" in params and len(problems) == reversion_problems
+        horizon_problems = len(problems)
+        if "horizon_years" in params:
+            check_horizon_param(problems, "horizon_years", params["horizon_years"])
+        horizon_ok = "horizon_years" in params and len(problems) == horizon_problems
+        if reversion_ok and horizon_ok and params["horizon_years"] > params["reversion_years"]:
+            problems.append(
+                f"horizon_years ({params['horizon_years']}) exceeds reversion_years "
+                f"({params['reversion_years']}): the valuation drift is spread over "
+                "reversion_years; a horizon beyond it would compound it past full reversion"
+            )
         return problems
 
     @classmethod
@@ -99,10 +121,11 @@ class MarketHoldReturn(Node):
                   "real_growth": float(p["real_growth"]),
                   "inflation": float(p["inflation"]),
                   "valuation": valuation}
-        rate = sum(blocks.values())
+        rate = require_rate(self.key, "market rate", sum(blocks.values()))
         self.log.info("%s: market hold return %.4f %s", self.key, rate, blocks)
         return {"rate": rate, "blocks": blocks,
-                "summary": {"stage": "market hold return", "rate": rate, **blocks}}
+                "summary": {"stage": "market hold return", "rate": rate,
+                            "horizon_years": int(p["horizon_years"]), **blocks}}
 
 
 class BetaHoldReturns(Node):
@@ -113,7 +136,7 @@ class BetaHoldReturns(Node):
     Parameters
     ----------
     params : dict
-        ``risk_free`` (number in ``[-1, 10]``, REQUIRED); ``betas``
+        ``risk_free`` (number in ``[-1, 2]``, REQUIRED); ``betas``
         (non-empty ``{symbol: number}``, REQUIRED); ``symbol_field`` (field
         name, REQUIRED); ``default_beta`` (number, optional): the beta of a
         symbol absent from ``betas``; without it such a symbol refuses.
@@ -150,8 +173,7 @@ class BetaHoldReturns(Node):
         if missing:
             problems.append(f"missing required params {missing}")
         if "risk_free" in params:
-            check_number_param(problems, "risk_free", params["risk_free"],
-                               lower=_RATE_LOWER, upper=_RATE_UPPER)
+            check_rate_param(problems, "risk_free", params["risk_free"])
         betas = params.get("betas")
         if "betas" in params:
             if not isinstance(betas, dict) or not betas or not all(name_ok(k) for k in betas):
@@ -199,7 +221,9 @@ class BetaHoldReturns(Node):
                 defaulted.append(symbol)
             else:
                 raise ValueError(f"{self.key}: row {index} has no beta for symbol {symbol!r}")
-            rates[symbol] = self.params["risk_free"] + beta * (market - self.params["risk_free"])
+            rates[symbol] = require_rate(
+                self.key, f"rate for {symbol!r}",
+                self.params["risk_free"] + beta * (market - self.params["risk_free"]))
         self.log.info("%s: %d symbol(s), market %.4f", self.key, len(rates), market)
         return {"rates": rates, "summary": {
             "stage": "beta hold returns", "symbols": len(rates), "market": market,

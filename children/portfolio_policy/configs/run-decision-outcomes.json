@@ -26,9 +26,13 @@
       "uses": "filter",
       "inputs": { "records": "$positions.records" },
       "params": {
-        "where": [ { "field": "as_of", "op": "==", "value": "2027-10-27" } ]
+        "where": [
+          { "field": "as_of", "op": "==", "value": "2027-10-27" },
+          { "field": "asset_type", "op": "==", "value": "EQUITY" },
+          { "field": "long_quantity", "op": ">", "value": 0 }
+        ]
       },
-      "notes": "The observation date, declared: one snapshot, so the elapsed time is one number. Set it to a day a positions pull exists for."
+      "notes": "The observation date, declared: one snapshot, so the elapsed time is one number. Set it to a day a positions pull exists for. The two other clauses restate the decision document's snapshot filter (equity longs; tests/test_configs.py pins them equal) so the scored universe is the decided one. They are not what keeps the run alive: DecisionOutcomes reads only the rows a decision matches, so an undecided short or option row is simply not scored. A decided position the filter can no longer see (sold, or no longer EQUITY) is listed as unmatched. Rows dropped here are not counted yet."
     },
     "outcomes": {
       "uses": "dskit.pipeline.decision_outcomes:DecisionOutcomes",
@@ -37,9 +41,10 @@
         "key_fields": ["account", "symbol"],
         "as_of_field": "as_of",
         "value_field": "market_value",
-        "quantity_field": "long_quantity"
+        "quantity_field": "long_quantity",
+        "income_rate": 0.013
       },
-      "notes": "Joined on account + symbol (one symbol in two accounts is two positions). Per-share growth (market_value / long_quantity) so a buy or a sell between the two dates is not read as a return; surprise = realized - projected (pro rata for the elapsed fraction of horizon_years)."
+      "notes": "Joined on account + symbol (one symbol in two accounts is two positions). Per-share growth (market_value / long_quantity) so a buy or a sell between the two dates is not read as a return; surprise = realized - projected. The forecast is a TOTAL return (price + dividends) and market_value is price only, so each year's total growth g = (hold_value / value)^(1/horizon_years) has income_rate removed before compounding for the elapsed years: projected = (g - income_rate)^elapsed. income_rate is the market dividend yield the decision run fed its forecast (tests/test_configs.py pins it equal to run-hold-vs-redeploy.json market.dividend_yield); beta scaling of income is ignored."
     },
     "scored": {
       "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
