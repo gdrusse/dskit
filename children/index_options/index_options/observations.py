@@ -12,10 +12,11 @@ from dskit.pipeline.libs.numpy import narrow_params
 from dskit.pipeline.libs.observations import DEFAULT_TS_OUT, ObservationRows
 from dskit.pipeline.node import check_int_param
 from dskit.pipeline.records import number_ok, price_ok
+from dskit.pipeline.study_protocol import StudyNode
 
 from .contracts import CashIndexContract, _IndexQuote, _IndexSettlement
 
-__all__ = ["ChainQuoteRows", "ContractRows", "IndexCloseRows", "QuoteRows", "SettlementRows"]
+__all__ = ["MIOPacketInputs", "ChainQuoteRows", "ContractRows", "IndexCloseRows", "QuoteRows", "SettlementRows"]
 
 
 def _settlement_date(expiry):
@@ -665,3 +666,108 @@ class ChainQuoteRows(ObservationRows):
                  "bid_size": r["bid_size"], "ask_size": r["ask_size"], "iv": r["iv"],
                  "underlying_price": r["underlying_price"], "asof_ms": r["asof_ms"]}
                 for r in records]
+
+
+class MIOPacketInputs(StudyNode):
+    """Read one durably claimed option packet with pushed time/pair predicates.
+
+    Parameters
+    ----------
+    params : dict
+        Executable study. The permit must arrive from StudyPacketOpen.
+
+    Examples
+    --------
+    bounded = MIOPacketInputs("intake", {"study": study}).run(ctx, {"permit": permit})
+    """
+
+    role = "transform"
+    outputs = ("bounded_inputs", "provenance")
+
+    def fingerprint(self, ctx=None):
+        """Return only configured metadata; never hash market bytes before claim."""
+        from dskit.pipeline.base import value_hash
+        return value_hash(self.params["study"]["domain"]["sources"])
+
+    def run(self, ctx, inputs):
+        from dskit.pipeline.base import value_hash
+        from dskit.pipeline.libs.parquet import DateBoundedParquet
+        from dskit.onboarding.artifacts import PinnedPayloadSource
+        from .mio_contract import MIOStudyContract
+        import pyarrow as pa
+        import pyarrow.dataset as ds
+
+        plan, registry = self.plan(), self.registry()
+        permit = inputs["permit"]
+        registry.verify(plan, permit)
+        if not plan["runnable"]:
+            raise ValueError("unbound packet")
+        d = self.params["study"]["domain"]
+        packet = MIOStudyContract.packet(self.params["study"])
+        symbols, pairs = d["params"]["symbols"], d["pairs"]
+        bounds = plan["read_bounds"]
+        tail = bounds["chain"]["end_before"]
+        checked = {}
+
+        def read(role, key, columns, temporal, where=None):
+            binding = d["sources"][role]
+            source = PinnedPayloadSource(binding["pin"])
+            relative = binding["files"][key]
+            path = source.file(relative, verify=True)
+            checked[path] = (source, relative)
+            rows = [row for batch in DateBoundedParquet(path, columns, temporal).batches(where=where)
+                    for row in batch.to_pylist()]
+            return [{k: v.isoformat() if isinstance(v, date) else v for k, v in r.items()} for r in rows]
+
+        sessions = read("sessions", "shared", ["date"], {"date": bounds["sessions"]})
+        calendar = [r["date"] for r in sessions]
+        if not calendar or calendar != sorted(set(calendar)):
+            raise ValueError("session source must be unique and ordered")
+        identity = ["symbol", "quote_date", "expiry", "fold", "band"]
+        delta = ds.field("expiry").cast(pa.date32()).cast(pa.int32())-ds.field("quote_date").cast(pa.date32()).cast(pa.int32())
+        pair_filter = None
+        for pair in pairs:
+            term = ((ds.field("symbol") == pair["symbol"]) & (delta >= pair["dte_min"])
+                    & (delta <= pair["dte_max"]))
+            pair_filter = term if pair_filter is None else pair_filter | term
+        allowed = pair_filter & (ds.field("fold") == d["params"]["bridge"]["fold"]) & (ds.field("band") == "val")
+        temporal = {"quote_date": bounds["forecasts"], "expiry": {"end_before": tail}}
+        forecasts = read("forecasts", "shared",
+                         identity+["fitted"]+["method_cdf_"+s for s in d["params"]["bridge"]["grid_labels"]],
+                         temporal, allowed)
+        contexts = read("contexts", "shared", identity+["spot", "reference_scale", "settlement_date"],
+                        {**temporal, "settlement_date": {"end_before": tail}}, allowed)
+        data = {}
+        for symbol in symbols:
+            fs = [r for r in forecasts if r["symbol"] == symbol]
+            cs = [r for r in contexts if r["symbol"] == symbol]
+            expiries = sorted({r["expiry"] for r in fs})
+            chain = read("chain", symbol,
+                         ["symbol", "date", "expiration", "type", "strike_raw", "strike", "bid", "ask",
+                          "bid_size", "ask_size", "basis_factor", "underlying_price"],
+                         {"date": bounds["chain"], "expiration": {"end_before": tail}},
+                         (ds.field("symbol") == symbol) & ds.field("expiration").isin(expiries))
+            bars = read("bars", symbol, ["symbol", "date", "close"],
+                        {"date": bounds["bars"]}, ds.field("symbol") == symbol)
+            basis = read("chain", symbol, ["symbol", "date", "basis_factor"],
+                         {"date": bounds["chain"]}, ds.field("symbol") == symbol)
+            factors = {}
+            for row in basis:
+                if row["date"] in factors and factors[row["date"]] != row["basis_factor"]:
+                    raise ValueError("inconsistent daily basis metadata")
+                factors[row["date"]] = row["basis_factor"]
+            for row in bars:
+                if row["date"] in factors:
+                    row["basis_factor"] = factors[row["date"]]
+            data[symbol] = {"forecasts": fs, "contexts": cs, "chain": chain, "bars": bars}
+        # Detect drift during the bounded scan as well as before it.
+        for source, relative in checked.values():
+            source.file(relative, verify=True)
+        bounded = {"inputs": data, "clocks": {
+            "sessions": calendar, "history_start": d["history_start"], "entry_start": packet["start"],
+            "entry_end_before": packet["end_before"], "tail_end_before": tail}}
+        provenance = {"plan_sha256": plan["sha256"], "inputs_sha256": value_hash(bounded),
+                      "source_pins_sha256": value_hash(plan["source_pins"]), "read_bounds": bounds,
+                      "counts": {s: {k: len(v) for k, v in rows.items()} for s, rows in data.items()}}
+        registry.bind(plan, permit, "inputs", provenance)
+        return {"bounded_inputs": bounded, "provenance": provenance}

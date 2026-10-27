@@ -50,7 +50,10 @@ def test_shipped_suite_passes_each_nonempty_snapshot(child_root, rows, store_fac
 
 def test_exact_manifest_and_agent_parity(child_root):
     expected = {
-        # ADR-0278: owner-requested JSON-only MIO design, not runnable configs.
+        # Owner-approved executable MIO packet and model-zoo selection.
+        "index_options/mio_contract.py", "tests/test_mio_packets.py",
+        "configs/mio-selection.json", "configs/mio-debug.json", "configs/source-mio-inputs.json",
+        # The future schedule reference remains unadopted.
         "docs/plans/mio-json/study.json",
         "docs/plans/mio-json/plan.template.json",
         "docs/plans/mio-json/run.template.json",
@@ -635,7 +638,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
     # Exact approved inventory, including the prescription memos and 2020 evidence.
     # Four owner-requested, explicitly non-executable MIO JSON design files.
-    assert len(actual) == 779
+    assert len(actual) == 784
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

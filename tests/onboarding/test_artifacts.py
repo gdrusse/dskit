@@ -255,3 +255,35 @@ def test_an_unreadable_sibling_manifest_is_loud_not_skipped(root, registry, sour
         fh.write("{not json")
     with pytest.raises(AssetError, match="cannot read manifest"):
         payload_files(root, "blobs", "files")  # never a silent fall back to a staler tree
+
+def test_explicit_payload_pin_is_metadata_only_and_checks_named_bytes(root, registry, source):
+    from dskit.onboarding.artifacts import PinnedPayloadSource
+    _acquire(root, registry)
+    got = payload_files(root, "blobs", "files")
+    pin = {"root": root.root, "source": "blobs", "stream": "files",
+           "snapshot": got["snapshot"], "manifest_sha256": got["manifest_sha256"],
+           "files": got["sha256"]}
+    reader = PinnedPayloadSource(pin)
+    relative = next(iter(pin["files"]))
+    path = Path(reader.file(relative, verify=True))
+    path.write_bytes(path.read_bytes()+b"drift")
+    assert reader.file(relative) == str(path)
+    with pytest.raises(ValueError, match="drift"):
+        reader.file(relative, verify=True)
+    with pytest.raises(ValueError, match="undeclared"):
+        reader.file("../outside")
+
+
+def test_explicit_payload_pin_refuses_manifest_and_path_substitution(root, registry, source):
+    from dskit.onboarding.artifacts import PinnedPayloadSource
+    _acquire(root, registry)
+    got = payload_files(root, "blobs", "files")
+    pin = {"root": root.root, "source": "blobs", "stream": "files",
+           "snapshot": got["snapshot"], "manifest_sha256": got["manifest_sha256"],
+           "files": got["sha256"]}
+    with pytest.raises(ValueError, match="manifest"):
+        PinnedPayloadSource({**pin, "manifest_sha256": "0"*64})
+    with pytest.raises(ValueError, match="unsafe"):
+        PinnedPayloadSource({**pin, "stream": "../files"})
+    with pytest.raises(ValueError, match="unsafe"):
+        PinnedPayloadSource({**pin, "snapshot": "../"+pin["snapshot"]})

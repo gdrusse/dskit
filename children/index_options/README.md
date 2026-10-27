@@ -736,3 +736,25 @@ Prescription bridge and funded option-portfolio amendments are canonical ADR-027
 Proposed staged MIO JSON interface: [plan and templates](docs/plans/README.md#8-mio-json-pipeline-design-2026-10-27). Externally selected ticker/DTE pairs, chronological packets and fixed variants; design only, runtime adapters pending.
 
 Current data-use TDD: [open the chart and timeline](docs/decisioning/technical-design.html), backed by the [window registry, mathematics and exact run pins](docs/decisioning/technical-design.json). Open the self-contained HTML locally; GitHub displays its source. Future MIO uses the best model-zoo output; exact winner/pins and other undecided choices remain explicit.
+
+### Executable MIO packets
+
+[Technical design](docs/decisioning/technical-design.html) records the current
+windows and exact runs. [Selection JSON](configs/mio-selection.json) pins the
+best complete saved model-zoo output. [Development JSON](configs/mio-debug.json)
+contains one already-exposed 2020 packet; its two pairs are debug fixtures.
+
+The executable study is `pipeline.plan.params.study`: explicit sparse pairs,
+source snapshot/file pins, predictive receipt, code/dependency pins and three
+clocks. Copy that object into the [plan/run/compare templates](docs/plans/mio-json/).
+The shared registry must already exist with the pinned UUID/domain. Initialize
+once through `StudyProtocolControl` (`action: initialize`, explicit
+`prior_exposure` and protected `end_before`). Controls also provide freeze,
+same-identity retry, review, abandonment, retirement and append-only extension.
+Missing/reset registries refuse; a new output directory never restores freshness.
+
+Use `python -m dskit.pipeline run <rendered.json> --asof <date>` in WSL.
+A completed cohort remains pending review. Fresh windows require separate
+2019 admission evidence and an explicit next-cohort freeze. The current task
+stops before that freeze. Daily basis factors are bounded date metadata;
+option quotes are filtered to selected signal-date expiry bands.

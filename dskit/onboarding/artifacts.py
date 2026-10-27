@@ -26,7 +26,7 @@ from .base import AssetError, _check_segment, _raise_if, parse_utc
 from .layout import OnboardingRoot
 from .snapshot import read_manifest, snapshot_hash, verify_snapshot
 
-__all__ = ["payload_files"]
+__all__ = ["payload_files", "PinnedPayloadSource"]
 
 
 def _stream_files(snap_dir, manifest, prefix):
@@ -165,3 +165,78 @@ def payload_files(root, source, stream, *, verify=False) -> dict:
         "files": {rel: payload.joinpath(*rel.split("/")) for rel, _sha in files},
         "sha256": dict(files),
     }
+
+
+class PinnedPayloadSource:
+    """Resolve explicit acquired file pins without an implicit latest snapshot.
+
+    Parameters
+    ----------
+    pin : dict
+        root, source, snapshot, stream, manifest_sha256 and files (relative
+        filename to SHA256). Metadata lookup never opens a payload.
+
+    Examples
+    --------
+    source = PinnedPayloadSource(pin)
+    path = source.file("rows.parquet", verify=True)
+    """
+
+    def __init__(self, pin):
+        from pathlib import Path
+        from dskit.onboarding.layout import OnboardingRoot
+        from dskit.onboarding.snapshot import read_manifest, snapshot_hash
+
+        if set(pin) != {"root", "source", "snapshot", "stream", "manifest_sha256", "files"}:
+            raise ValueError("explicit pinned source required")
+        if (not isinstance(pin["files"], dict) or not pin["files"]
+                or any(not isinstance(v, str) or len(v) != 64 for v in pin["files"].values())):
+            raise ValueError("nonempty pinned file digests required")
+        self.pin = pin
+        snapshot = Path(OnboardingRoot(pin["root"]).snapshot_dir(pin["source"], pin["snapshot"]))
+        if snapshot.resolve().parent != Path(OnboardingRoot(pin["root"]).raw_dir(pin["source"])).resolve():
+            raise ValueError("unsafe snapshot")
+        manifest = read_manifest(str(snapshot))
+        if snapshot_hash(manifest) != pin["manifest_sha256"] or manifest.get("source") != pin["source"]:
+            raise ValueError("source manifest drift or source mismatch")
+        if (not isinstance(pin["stream"], str) or Path(pin["stream"]).name != pin["stream"]
+                or pin["stream"] in {".", ".."}):
+            raise ValueError("unsafe source stream")
+        self.directory = snapshot/"payload"/pin["stream"]
+        entries = {e["relpath"]: e["sha256"] for e in manifest["files"]}
+        for rel, digest in pin["files"].items():
+            if Path(rel).is_absolute() or ".." in Path(rel).parts:
+                raise ValueError("unsafe relative payload")
+            if entries.get(pin["stream"]+"/"+rel) != digest:
+                raise ValueError("payload pin absent from manifest: "+rel)
+
+    def file(self, relative, *, verify=False):
+        """Resolve one declared file, optionally hashing bytes after authorization.
+
+        Parameters
+        ----------
+        relative : str
+            Exact declared relative filename.
+        verify : bool
+            Rehash this file; callers must acquire a read permit first.
+
+        Returns
+        -------
+        str
+            Resolved source path.
+
+        Raises
+        ------
+        ValueError
+            Undeclared file, path escape or byte drift.
+        """
+        from .base import file_digest
+
+        if relative not in self.pin["files"]:
+            raise ValueError("undeclared source file")
+        path = self.directory/relative
+        if not path.resolve().is_relative_to(self.directory.resolve()):
+            raise ValueError("payload escaped source")
+        if verify and file_digest(str(path)) != self.pin["files"][relative]:
+            raise ValueError("source payload drift")
+        return str(path)

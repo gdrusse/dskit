@@ -975,6 +975,8 @@ class FundedOptionAccount:
         Positive calendar-day contribution interval.
     start : str
         ISO first account date. The first recurring deposit is one interval later.
+    deposit_end_before : str or None
+        Optional exclusive session cutoff. Due deposits on or after it are skipped.
 
     Examples
     --------
@@ -983,13 +985,18 @@ class FundedOptionAccount:
         account = FundedOptionAccount(10000., 1000., 14, "2019-01-02")
     """
 
-    def __init__(self, initial, deposit, every_days, start):
+    def __init__(self, initial, deposit, every_days, start, *, deposit_end_before=None):
         from datetime import timedelta
 
         if (not price_ok(initial) or not number_ok(deposit) or deposit < 0
                 or type(every_days) is not int or every_days < 1):
             raise ValueError("invalid account funding policy")
         self._day(start)
+        if deposit_end_before is not None:
+            self._day(deposit_end_before)
+            if deposit_end_before <= start:
+                raise ValueError("deposit cutoff must follow account start")
+        self.deposit_end_before = deposit_end_before
         self.initial, self.deposit, self.every_days = float(initial), float(deposit), every_days
         self.contributions, self.realized, self.cash = float(initial), 0., float(initial)
         self.open, self.closed, self.deposits = {}, [], []
@@ -1040,7 +1047,8 @@ class FundedOptionAccount:
             raise ValueError("settlements must cover maturities within reserved losses")
         contributed = 0.
         while self.next_deposit <= date.fromisoformat(day):
-            contributed += self.deposit
+            if self.deposit_end_before is None or day < self.deposit_end_before:
+                contributed += self.deposit
             self.next_deposit += timedelta(days=self.every_days)
         self.contributions += contributed
         self.cash += contributed

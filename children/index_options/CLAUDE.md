@@ -220,7 +220,7 @@ docs/RE-ENTRY.md            # the lane note: Now / Next / Blocked; rewritten who
 docs/explanations/README.md # glossary and worked synthetic payoff
                             # robust-condor-selection.md (+ .svg): robust selection by hand
 docs/plans/README.md        # gated research stages
-docs/plans/mio-json/       # study.json + plan/run/compare.template.json (proposed; not executable)
+docs/plans/mio-json/       # study.json (future schedule design); executable plan/run/compare templates
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
@@ -229,3 +229,9 @@ tests/                     # conftest.py; test_contracts, observations, nodes,
                            # quote_backtest, debit_backtest, ledger_studies, theta_hypotheses (+ theta_synthetic.py, its
                            # synthetic world), theta_exact_expiry, strike_screen_panel_source, strike_screen_fits, strike_region_scores (.py)
 ```
+
+2026-10-27 owner-approved executable MIO packet: use mio_contract.py plus the
+observations/ledger_studies wrappers and generic study_protocol.py. The scoped
+real debug reuses exposed2020 with M53; no fresh-packet freeze, holdout or2026
+read. Sparse day bands are independent of predictive expiry-rank cells.
+The shared registry and exact content/run pins govern every packet entrypoint.

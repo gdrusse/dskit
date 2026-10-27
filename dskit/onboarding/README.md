@@ -426,7 +426,7 @@ dskit/onboarding/
 ├── oauth.py           OAuth2 manual exchange + atomic owner-only refresh tokens
 ├── snapshot.py        Merkle manifests, WORM commits, verify, find-by-hash
 ├── acquire.py         run_acquisition: pull -> snapshot -> evidence -> checkpoint
-├── artifacts.py       payload_files: source + stream -> the latest snapshot's acquired files and digests (ADR-0225)
+├── artifacts.py       PinnedPayloadSource (explicit snapshot/file pins); payload_files: source + stream -> the latest snapshot's acquired files and digests (ADR-0225)
 ├── validate.py        ValidationSuite / Rule, the rule engine, run_suite
 ├── certify.py         certify: the decision over one result (block gate enforced)
 ├── publish.py         publish_version: pointer manifest into the outbox
