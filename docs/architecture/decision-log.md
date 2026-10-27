@@ -33004,3 +33004,74 @@ Review input SHA256 values:
   e1d74c0c80f80676b5a6a78d747f4281b9f7e89c729d577cf78676b70bbe29af
 - /mnt/c/Users/russe/.codex/skills/update-tdd/SKILL.md
   e77d0d9df7496bcf614b21555a68b4bc5f705841d3457b6fe45aef5766ebb0ff
+
+
+Fresh correctness/authority review stopped candidate
+d93694d536d5a0d7d0ad0ddee29a047ac6733e06 before the integration lens.
+Reviewer GPT-6 /root/tdd_zoo_authority; base5747f179, amendment base027de2b5.
+Retained report: changes required; C0/M1/minor1/nit0; full assigned matrix
+completed, no other proven findings.
+
+Z1 Major: study.predictive still prescribes M51/cal_n82/last82 early stopping
+at study.json lines62,106,108,113. All eight params.study bindings inherit those
+fields. Expanded PipelineDocument hashes for all three templates equal the
+prior027de2b5 expansions: the owner correction was only in identity-excluded
+notes. Future wrappers could freeze M51 without selection evidence and reject
+another legitimate winner. This violates owner-amended A0008 and the matrix.
+Family: historical dependency retained as future authority; incomplete
+propagation across equivalent entrypoints. No wrong market run occurred.
+
+Z2 Minor: configs[scores].role in TDD line1822 still says no fitting, while
+strike_region_scores.py1119 reconstructs _baselines/_pooled on fullT through
+HorizonEmpiricalCDF.fit. Detailed formulas are right, so impact is limited.
+Family residual C6 scoring description. Clarify no neural refit.
+
+Independent checks passed: all65unique file hashes, three pipeline attestations,
+five MLP fit/completion identities; all15 ordered band identities, memberships,
+counts, monitor boundaries, settings/checkpoints, ten scored fit/val identities
+from bounded identity/date columns. Five synthetic fallback/stride checks.
+49windows/13configs/10runs, fold/regime/tail/protected/null boundaries, matching
+HTML/canvas snapshots, all15 source filter states, repository/run links; narrow
+A0008 purpose-only change, parity, skill hash, ancestry, unchanged runtime code,
+six proposed packet tails; final clean candidate identity.
+Limits: no protected outcomes, market execution, real fits/backtests, full
+suite, edits, browser rendering or repeated TypeScript. Historical process
+environments declared rather than independently attested.
+
+Independent correction checkpoint supports a bounded whole-family correction:
+inventory predictive, forecast source, protocol freeze/identity, all8bindings,
+active README and all TDD/presentation pins together. Exercise unresolved and
+two distinct selected recipes, one without old early-stop settings; different
+identities and explicit source mismatch refusal. No runtime implementation or
+new research decision needed; earlier population/fallback corrections intact.
+
+Batch correction: selection state/recipe/pins now unresolved required behavior
+under params.study. Explicit pointer equalities bind the selected producer to
+the onboarded forecast source. Planner must report unbound as runnable=false;
+open/intake refuse unbound/mismatched content before reads, and comparisons
+verify the same receipt. Exact recipe-specific training protocol is required;
+historical cal_n82/early-stop assumptions removed. Existing cadence and exposure
+lifecycle unchanged. README/current TDD/canvas/HTML/config hashes swept together.
+Z2 catalog now states empirical reconstruction and no neural refit.
+
+Corrected candidate checks: all8expanded params.study bindings match; all3
+PipelineDocument identities change from the stopped preset-M51 contract.
+Temporary pointer-contract interpreter checks unbound rejection, two distinct
+bound recipes (one with explicit no-monitor training protocol) and six producer
+field mismatches. Both fixture identities differ for all3documents. This is
+declaration/identity validation, NOT implemented wrapper/content-verification
+enforcement. The future runtime refusal cases remain mandatory.
+Command: project venv python -B /tmp/check-zoo-binding.py with candidate
+PYTHONPATH; script SHA retained below. No file or market reader is invoked.
+JSON/hash/purge/snapshot checks pass; focused manifest/docs5 pass again.
+Corrected external and tracked review hashes:
+- /home/russell/wt/index-options-mio-schedule-20261027/children/index_options/docs/decisioning/technical-design.json
+  05ee09d99f79989286e572f3b23293311f72013413aee53c6e7102971c5bb34d
+- /home/russell/wt/index-options-mio-schedule-20261027/children/index_options/docs/decisioning/technical-design.html
+  113384eeadd1ff5c9977a84bb77f95229e1df4ca80e78ddda04871398a609c6e
+- /home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-TDD.canvas.tsx
+  3cb79b1b535f1322a4f4dbceb2011d6023507299b13c38e85212e2e113893354
+- /mnt/c/Users/russe/.codex/skills/update-tdd/SKILL.md
+  e77d0d9df7496bcf614b21555a68b4bc5f705841d3457b6fe45aef5766ebb0ff
+- /tmp/check-zoo-binding.py
+  4b1522e2b91faa7cd54d6d3b6957457f255b5d81118ffe0d638f6aa3071e0f5f

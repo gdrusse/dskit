@@ -199,11 +199,19 @@ only marks/settles existing positions. Do not concatenate reset account equity
 curves. Pair rows apply before projection/optimization and again at replay;
 no cross-product of tickers and DTEs.
 
-A0001-A0008 stay unchanged: yearly predictive refits and purged labels; 2019 is
-predictive warmup, used here only for externally supplied MIO eligibility.
-M51's 2019 predictions are fallback; M51 selection already used 2020-23.
+Owner correction 2026-10-27: A0008 uses the best complete model-zoo output.
+The structured predictive selection and producer pins must be bound and agree
+with the forecast source before execution; the historical M51 recipe and its
+82-origin monitor are not defaults. A0003 and the yearly cadence remain binding.
+2019 is predictive warmup, used here only for external MIO eligibility.
+The recorded M51 dependency used fallback in 2019 and selection on 2020-23.
 Thus later packets support MIO-only comparisons. 2024-25 needs the separate
 single-opening holdout protocol; 2026 remains permanently closed.
+
+Current selection binding is specified in study.json's protocol.predictive_binding.
+It is a proposed contract: the wrapper implementation and runtime refusal tests
+remain future work. The records below retain the original design review; the
+publication amendment and current review locks are in ADR-0278.
 
 ### Scope and verification record
 

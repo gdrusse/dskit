@@ -1819,7 +1819,7 @@
       "id": "scores",
       "path": "children/index_options/configs/run-strike-region-scores-wf-wide-mlp64.json",
       "sha256": "8e164848f3566759c3604a4c443f55302b94d444d866fd690e6a546aab12b027",
-      "role": "Score saved MLP fits for M51; no fitting."
+      "role": "Restore saved MLP neural checkpoints for M51, reconstruct empirical baselines on full T_f, then score; no neural refit."
     },
     {
       "id": "m51",
@@ -1836,7 +1836,7 @@
     {
       "id": "mio-study",
       "path": "children/index_options/docs/plans/mio-json/study.json",
-      "sha256": "7bab84d8bac5fc999616cf5e9c9e320cf861ac5b9d0c9831496bffb5d6de358a",
+      "sha256": "ac0490568a5b76845c9dd52a83cf8ce699435ea8b2b42144752def1cf15e2c32",
       "role": "Proposed interface only; not executable or an accepted dated schedule. Null pins remain unresolved."
     },
     {

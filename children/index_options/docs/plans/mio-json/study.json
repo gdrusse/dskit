@@ -59,7 +59,7 @@
     "changes": "new_study_revision_inherits_all_prior_exposure"
   },
   "predictive": {
-    "recipe": "edge-method-51-qa-mlp64-by-dispersion",
+    "recipe": null,
     "fold_source": "../../../configs/strike-screen-folds-walkforward.jsonl",
     "folds": [
       {
@@ -103,14 +103,24 @@
         "val_end": "2023-12-29"
       }
     ],
-    "cal_n": 82,
     "training_labels": "settled_before_validation_start",
-    "early_stopping": "last_82_training_origins_with_label_purge",
     "require_fitted": false,
     "fallback_policy": "retain_and_report_fitted_and_fallback_counts_separately",
     "refit": "none_in_these_pipelines_use_saved_forecasts",
     "recipe_changes": "new_study_revision_inherits_all_prior_exposure",
-    "notes": "A0003 and A0008's yearly cadence remain unchanged; the owner correction on 2026-10-27 replaces fixed TCN with the best model-zoo output. The exact winning recipe and forecast run/hash must be pinned before MIO packet execution. 2019 is predictive warmup, never a forecast-promotion ranking; M51 in 2019 is a fallback. The requested 2019 selection is external MIO admission, with its criterion left unset. M51 was compared on 2020-2023, so later packets are MIO-only evidence, not untouched full-system tests."
+    "notes": "Owner 2026-10-27: bind the best complete model-zoo output. Recipe and selection/run/output/training-protocol pins are unresolved required inputs. The selected recipe's manifest declares any early stopping or an explicit not-applicable state; no MLP-specific 82-origin rule is imposed. A0003 and A0008 yearly cadence/purged boundaries remain binding. Historical M51/MLP belongs only to the recorded 2020 dependency in the TDD. 2019 remains predictive warm-up; 2019 MIO admission is separate and deferred. Later 2020-23 packets are MIO-only comparisons because predictive selection already used this period.",
+    "selection": {
+      "policy": "best_model_zoo_output",
+      "state": "unbound",
+      "selection_contract_sha256": null,
+      "selection_receipt_sha256": null,
+      "resolved_recipe_sha256": null,
+      "forecast_run_hash": null,
+      "forecast_artifact_sha256": null,
+      "training_protocol_manifest_sha256": null,
+      "forecasts_source_manifest_sha256": null
+    },
+    "training_protocol": "verify_selected_recipe_manifest_including_each_component_and_fold_split_no_universal_early_stop_setting"
   },
   "sources": {
     "forecasts": {
@@ -118,7 +128,14 @@
       "source": null,
       "stream": null,
       "snapshot": null,
-      "manifest_sha256": null
+      "manifest_sha256": null,
+      "producer": {
+        "recipe": null,
+        "resolved_recipe_sha256": null,
+        "run_hash": null,
+        "artifact_sha256": null,
+        "training_protocol_manifest_sha256": null
+      }
     },
     "contexts": {
       "root": null,
@@ -402,6 +419,7 @@
       "pair_set",
       "selection_evidence",
       "predictive_recipe",
+      "predictive_selection_receipt_and_training_protocol",
       "source_snapshot_pins",
       "packet_dates_and_tail",
       "all_variant_parameters",
@@ -476,6 +494,64 @@
         "freshness_classification"
       ],
       "notes": "An unopened interval alone is insufficient for freshness. For example, an attempted 2022 fresh claim while 2021 is next must refuse; explicitly retiring 2021 permits moving forward but later 2021 runs are development only. A new work directory, source alias, source version, cohort or study revision cannot reset the evidence-domain frontier. The mandatory evidence domain and prior-exposure import are inputs to the future shared registry, not a claim that today's code enforces them."
+    },
+    "predictive_binding": {
+      "scope": "same_rule_for_plan_open_intake_close_and_comparison",
+      "policy_pointer": "/predictive/selection/policy",
+      "policy_equals": "best_model_zoo_output",
+      "state_pointer": "/predictive/selection/state",
+      "state_equals": "bound",
+      "required_nonempty_strings": [
+        "/predictive/recipe",
+        "/predictive/selection/selection_contract_sha256",
+        "/predictive/selection/selection_receipt_sha256",
+        "/predictive/selection/resolved_recipe_sha256",
+        "/predictive/selection/forecast_run_hash",
+        "/predictive/selection/forecast_artifact_sha256",
+        "/predictive/selection/training_protocol_manifest_sha256",
+        "/predictive/selection/forecasts_source_manifest_sha256"
+      ],
+      "sha256_pointers": [
+        "/predictive/selection/selection_contract_sha256",
+        "/predictive/selection/selection_receipt_sha256",
+        "/predictive/selection/resolved_recipe_sha256",
+        "/predictive/selection/forecast_run_hash",
+        "/predictive/selection/forecast_artifact_sha256",
+        "/predictive/selection/training_protocol_manifest_sha256",
+        "/predictive/selection/forecasts_source_manifest_sha256"
+      ],
+      "required_equalities": [
+        [
+          "/predictive/recipe",
+          "/sources/forecasts/producer/recipe"
+        ],
+        [
+          "/predictive/selection/resolved_recipe_sha256",
+          "/sources/forecasts/producer/resolved_recipe_sha256"
+        ],
+        [
+          "/predictive/selection/forecast_run_hash",
+          "/sources/forecasts/producer/run_hash"
+        ],
+        [
+          "/predictive/selection/forecast_artifact_sha256",
+          "/sources/forecasts/producer/artifact_sha256"
+        ],
+        [
+          "/predictive/selection/training_protocol_manifest_sha256",
+          "/sources/forecasts/producer/training_protocol_manifest_sha256"
+        ],
+        [
+          "/predictive/selection/forecasts_source_manifest_sha256",
+          "/sources/forecasts/manifest_sha256"
+        ]
+      ],
+      "missing_or_unbound": "plan_reports_missing_inputs_and_runnable_false_open_refuses_before_claim_or_value_read",
+      "mismatch": "refuse_before_claim_or_value_read_and_refuse_comparison",
+      "verification": "verify_selected_recipe_contract_and_selection_receipt_then_resolved_recipe_run_completion_artifact_and_training_protocol_hashes_against_forecast_source_content",
+      "training_protocol": "all_learned_components_and_folds_must_declare_training_monitor_calibration_populations_and_settings_or_explicit_not_applicable_preserve_label_maturity",
+      "identity": "all_fields_are_resolved_in_every_nodes_params.study_and_in_plan_and_result_receipts",
+      "no_implicit_fallback": "never_default_an_unresolved_or_mismatched_winner_to_historical_M51"
     }
   },
   "report": {
