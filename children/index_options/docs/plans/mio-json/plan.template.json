@@ -1,0 +1,26 @@
+{
+  "name": "mio-plan-design",
+  "notes": "DESIGN ONLY. ${study} is the object in study.json, substituted with the existing dskit.pipeline.workflow.expand. Proposed uses below do not exist. This document must not read market values or run MIOs. Null pins and empty pairs may be shown as missing, but cannot produce a runnable receipt.",
+  "pipeline": {
+    "protocol": {
+      "uses": "dskit.pipeline.study_protocol:StudyProtocolPlan",
+      "params": {
+        "study": "${study}"
+      },
+      "notes": "PROPOSED generic node: validates sources/pins, calendar intervals, one selected packet and declared cohort. Resolve all behavior into params so the standard identity includes it. Accept arbitrary unit/horizon rows with domain hooks; no option-specific logic in dskit."
+    },
+    "option_contract": {
+      "uses": "index_options.ledger_studies:MIOPacketPlan",
+      "inputs": {
+        "plan": "$protocol.plan"
+      },
+      "params": {
+        "study": "${study}"
+      },
+      "notes": "PROPOSED child hook: validate integer DTE pair bands, expiry-based clocks, required source projections, actual-session calendar, fold choice, longest-DTE tail and all supported variant methods. Output plan, missing_inputs and runnable=false until fully bound."
+    }
+  },
+  "outputs": {
+    "run_root": "${output_root}"
+  }
+}

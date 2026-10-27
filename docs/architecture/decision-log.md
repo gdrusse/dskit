@@ -32601,3 +32601,45 @@ a child config test); README status and the outcomes run sequence. Disclosed
 backlog in `children/portfolio_policy/docs/memos/2026-10-27-adr-0279-base-machinery.md`.
 Two clean lenses, zero unresolved Critical/Major: candidate locked; merged
 to main on the owner's "use this skeptic reviewed library asap".
+
+
+#### ADR-0278 amendment: staged MIO JSON design (2026-10-27)
+
+Owner requested arbitrary ticker-DTE implementations, then narrowed this turn:
+"Don't worry about that now. Just design the JSON pipelines." Deliver design
+documents only; do not choose the 2019 gate, fit, replay market data or implement
+runtime machinery. Base: 5747f179 (current origin/main). The explicit request
+authorizes the four requested JSON files under the child's docs/plans/mio-json/.
+
+Contract: externally selected sparse ticker/DTE pairs, evidence settled before
+2020-01-01; unchanged predictive Path A0001-A0008; one chronological packet per
+invocation, fixed variant cohort, distinct history/entry/settlement clocks,
+independent packet accounts, and permanent exposure after first read. All
+selection thresholds remain external. 2020 is exposed development; 2021-23 can
+support MIO-only comparisons because M51 was selected on those predictive years.
+2024-25 remains a separate single-opening holdout; 2026 remains permanently shut.
+Proposed behavior is not enforced by today's WeeklyOptionPortfolioStudy.
+
+Inventory: pipeline Workflow/expand, PipelineDocument, RunAttestation,
+JsonArtifact, onboarding snapshots, CDFQuoteOptionSelect,
+WeeklyOptionPortfolioStudy, TransportPortfolioSolve, FundedOptionAccount.
+The existing study has a 17-name bound, one shared DTE band and one time window;
+it cannot implement this design through params alone. Future generic protocol
+and exposure handling belong in dskit; the option pair/quote/account adapter
+belongs in the child and must reuse the existing portfolio solver and ledger.
+
+Allowed edits: this ADR; child docs/plans/README.md (contract, checks, review);
+docs/plans/mio-json/{study,plan.template,run.template,compare.template}.json;
+child README/CLAUDE/AGENTS contents pointers; tests/test_configs.py manifest.
+Non-goals: runtime classes, automatic gate selection, changing Path, data reads,
+source acquisition, MIO solves, backtests, deployment, merge or push.
+
+Design acceptance matrix: sparse pairs/exact and band DTE; source and forecast
+identity; chronological packets including labels and history; fill and deposit
+cutoffs; immutable variants and exposure on failed runs; separate accounts;
+complete paired reporting without winner selection; protected years; template
+expansion and JSON grammar; explicitly named missing runtime seams. Verify JSON,
+expansion, reference wiring, date arithmetic, existing solver-param compatibility
+and manifest/parity checks. Independent design reviews before delivery.
+Sweep: mio-study ticker-dte eligibility release-window settlement-tail
+weekly-option-portfolio (35 refs, 90 other worktrees; reuse inventoried above).
