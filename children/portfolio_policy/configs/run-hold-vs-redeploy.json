@@ -10,13 +10,23 @@
         "stream": "positions",
         "key_fields": ["account", "symbol", "as_of"]
       },
-      "notes": "Role 'data': the deduplicated positions snapshot acquired through dskit.onboarding (connector schwab_positions). One row per account x symbol x day; latest acquisition wins."
+      "notes": "Role 'data': EVERY positions snapshot acquired through dskit.onboarding (connector schwab_positions), one row per account x symbol x day; latest acquisition wins per key. The filter below picks one day."
+    },
+    "snapshot": {
+      "uses": "filter",
+      "inputs": { "records": "$positions.records" },
+      "params": {
+        "where": [
+          { "field": "as_of", "op": "==", "value": "2026-10-27" },
+          { "field": "asset_type", "op": "==", "value": "EQUITY" }
+        ]
+      },
+      "notes": "The decision date, declared: one snapshot, so a holding appears once and the tax is measured to that day; set it to the day of the pull and pass the same day as --asof. EQUITY only: cost_basis is average price x shares, and an option contract's multiplier is not applied, so option rows would get nonsense gains."
     },
     "tax": {
       "uses": "dskit.pipeline.liquidation:LiquidationTax",
-      "inputs": { "records": "$positions.records" },
+      "inputs": { "records": "$snapshot.records" },
       "params": {
-        "as_of": "2026-10-27",
         "short_term_rate": 0.408,
         "long_term_rate": 0.238,
         "long_term_days": 366,
@@ -25,7 +35,7 @@
         "value_field": "market_value",
         "basis_field": "cost_basis"
       },
-      "notes": "Aggregate rows carry no acquisition date, so every holding takes default_holding until a lot-level source adds an 'acquired' field (then declare acquired_field). Rates are the owner's marginal federal + NIIT placeholders; state tax is not included."
+      "notes": "No as_of: the holding period is measured to the run's --asof, which must be the snapshot day above. Aggregate rows carry no acquisition date, so every holding takes default_holding until a lot-level source adds an 'acquired' field (then declare acquired_field). Rates are the owner's marginal federal + NIIT placeholders; state tax is not included."
     },
     "market": {
       "uses": "dskit.pipeline.hold_return:MarketHoldReturn",
@@ -41,7 +51,7 @@
     },
     "betas": {
       "uses": "dskit.pipeline.hold_return:BetaHoldReturns",
-      "inputs": { "records": "$positions.records", "market": "$market.rate" },
+      "inputs": { "records": "$snapshot.records", "market": "$market.rate" },
       "params": {
         "risk_free": 0.04,
         "betas": { "VTI": 1.0, "AAPL": 1.2 },
@@ -85,9 +95,11 @@
         "net_field": "liq_net",
         "symbol_field": "symbol",
         "terminal_tax_rate": 0.238,
-        "basis_field": "cost_basis"
+        "basis_field": "cost_basis",
+        "redeploy_tax_rate": 0.408,
+        "redeploy_tax_timing": "annual"
       },
-      "notes": "Both returns come wired: hold from $betas.rates, redeploy from $hurdle.rate (None when inadmissible -> hold). No return literal exists in this node. risk_premium is 0 because the hurdle is already deflated; raise it only for a cost the hurdle cannot see. terminal_tax_rate liquidates BOTH paths at the horizon at the long-term rate (hold over the original basis, redeploy over its after-tax start), so the comparison is net to net."
+      "notes": "Both returns come wired: hold from $betas.rates, redeploy from $hurdle.rate (None when inadmissible -> hold). No return literal exists in this node. risk_premium is 0 because the hurdle is already deflated; raise it only for a cost the hurdle cannot see. Taxes differ by path on purpose: the hold path realizes its gain once at the horizon at the long-term rate over the original basis; the active path turns over, so it pays the short-term rate every year (annual timing) and owes nothing at the end. Net to net."
     },
     "decisions": {
       "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",

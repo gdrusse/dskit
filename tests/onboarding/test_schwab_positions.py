@@ -11,6 +11,8 @@ from dskit.onboarding.libs.schwab import SchwabPositionsConnector
 
 CONFIG = {}
 
+HASHES = [{"accountNumber": "12345678", "hashValue": "F00DBEEFCAFE4C0DE"}]
+
 ACCOUNTS = [
     {"securitiesAccount": {
         "accountNumber": "12345678",
@@ -34,9 +36,9 @@ NOW = datetime(2026, 10, 27, 14, 30, tzinfo=timezone.utc)
 
 
 class Stub(SchwabPositionsConnector):
-    """Scripted transport and clock."""
+    """Scripted transport and clock: one body per endpoint."""
 
-    body = ACCOUNTS
+    bodies = {}
     calls = []
 
     def _now(self):
@@ -47,12 +49,19 @@ class Stub(SchwabPositionsConnector):
 
     def _request(self, token, label, url, params, timeout):
         type(self).calls.append((url, dict(params)))
-        return type(self).body
+        body = type(self).bodies[url]
+        if isinstance(body, Exception):
+            raise body
+        return body
+
+
+ACCOUNTS_URL = "https://api.schwabapi.com/trader/v1/accounts"
+NUMBERS_URL = ACCOUNTS_URL + "/accountNumbers"
 
 
 @pytest.fixture(autouse=True)
 def reset():
-    Stub.body = ACCOUNTS
+    Stub.bodies = {ACCOUNTS_URL: ACCOUNTS, NUMBERS_URL: HASHES}
     Stub.calls = []
     yield
 
@@ -89,9 +98,10 @@ def test_read_emits_one_row_per_position_without_account_numbers():
     assert vti["market_value"] == 2500.0
     assert vti["asset_type"] == "EQUITY"
     assert "12345678" not in str(messages)
-    assert len(vti["account"]) == 16
+    assert vti["account"] == "F00DBEEFCAFE4C0DE"
     assert messages[-1]["state"]["positions"]["cursor"] == "2026-10-27"
-    assert Stub.calls[0][1] == {"fields": "positions"}
+    assert [call[0] for call in Stub.calls] == [NUMBERS_URL, ACCOUNTS_URL]
+    assert Stub.calls[1][1] == {"fields": "positions"}
 
 
 def test_same_day_repull_is_skipped_in_backfill_but_not_live():
@@ -102,11 +112,37 @@ def test_same_day_repull_is_skipped_in_backfill_but_not_live():
     assert len(records) == 2
 
 
-def test_malformed_body_is_an_asset_error():
-    Stub.body = {"not": "a list"}
+def test_malformed_bodies_are_asset_errors():
+    Stub.bodies[ACCOUNTS_URL] = {"not": "a list"}
     with pytest.raises(AssetError, match="accounts list"):
         _read()
-    Stub.body = [{"securitiesAccount": {"accountNumber": "1", "positions": [
-        {"instrument": {"symbol": "X"}, "longQuantity": "ten"}]}}]
+    Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678", "positions": [
+        {"instrument": {"symbol": "X"}, "longQuantity": "ten", "shortQuantity": 0.0,
+         "averagePrice": 1.0, "marketValue": 1.0}]}}]
     with pytest.raises(AssetError, match="malformed"):
         _read()
+    # a missing number is malformed, never defaulted to zero
+    Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678", "positions": [
+        {"instrument": {"symbol": "X"}, "longQuantity": 1.0, "shortQuantity": 0.0,
+         "averagePrice": 1.0}]}}]
+    with pytest.raises(AssetError, match="malformed"):
+        _read()
+    # an account absent from accountNumbers refuses rather than inventing a digest
+    Stub.bodies[NUMBERS_URL] = []
+    Stub.bodies[ACCOUNTS_URL] = ACCOUNTS
+    with pytest.raises(AssetError, match="hashValue"):
+        _read()
+    Stub.bodies[NUMBERS_URL] = [{"accountNumber": "12345678"}]
+    with pytest.raises(AssetError, match="accountNumbers entry 0"):
+        _read()
+
+
+def test_check_probes_accounts_and_transient_failures_retry_then_refuse(monkeypatch):
+    monkeypatch.setattr("dskit.onboarding.libs.schwab.time.sleep", lambda s: None)
+    Stub().check({"max_retries": 0})
+    assert [call[0] for call in Stub.calls] == [ACCOUNTS_URL]
+    Stub.calls = []
+    Stub.bodies[ACCOUNTS_URL] = ConnectionError("HTTP 503")
+    with pytest.raises(AssetError, match="after 3 attempt"):
+        Stub().check({"max_retries": 2})
+    assert len(Stub.calls) == 3

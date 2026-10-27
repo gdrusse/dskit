@@ -16,7 +16,6 @@ def ctx(tmp_path):
 
 
 TAX = {
-    "as_of": "2026-10-27",
     "short_term_rate": 0.4,
     "long_term_rate": 0.2,
     "long_term_days": 365,
@@ -84,6 +83,14 @@ def test_unvaluable_rows_refuse_by_name(ctx):
         _tax(ctx, [[1, 2]])
 
 
+def test_as_of_defaults_to_the_run_and_a_declared_one_wins(ctx, tmp_path):
+    rows = [{"market_value": 10.0, "cost_basis": 0.0, "acquired": "2025-10-27"}]
+    assert _tax(ctx, rows)["summary"]["as_of"] == "2026-10-27"
+    assert _tax(ctx, rows, as_of="2026-01-01")["records"][0]["liq_holding"] == "short"
+    with pytest.raises(ValueError, match="as_of"):
+        _tax(NodeContext(name="x", asof="soon", run_dir=str(tmp_path)), rows)
+
+
 def test_bad_declarations_refuse_at_construction():
     with pytest.raises(ConfigError, match="unknown"):
         LiquidationTax("t", {**TAX, "surprise": 1})
@@ -93,6 +100,8 @@ def test_bad_declarations_refuse_at_construction():
         LiquidationTax("t", {**TAX, "default_holding": "medium"})
     with pytest.raises(ConfigError, match="as_of"):
         LiquidationTax("t", {**TAX, "as_of": "yesterday"})
+    with pytest.raises(ConfigError, match="as_of"):
+        LiquidationTax("t", {**TAX, "as_of": "2026-W40"})
     with pytest.raises(ConfigError, match="long_term_days"):
         LiquidationTax("t", {**TAX, "long_term_days": 0})
     with pytest.raises(ConfigError, match="loss_offset"):
@@ -157,11 +166,12 @@ def test_a_tie_holds_and_bad_declarations_refuse(ctx):
         HoldVsRedeploy("d", {**DECIDE, "extra": 1})
 
 
-def test_terminal_tax_is_charged_symmetrically_on_both_paths(ctx):
+def test_terminal_tax_on_both_paths_by_hand(ctx):
     # hold: 2500 x 1.07^2 = 2862.25, gain over basis 2000 = 862.25 x .2 = 172.45 -> 2689.80
     # redeploy: 2400 x 1.10^2 = 2904.0, gain over new basis 2400 = 504 x .2 = 100.8 -> 2803.20
     rows = [{"symbol": "A", "market_value": 2500.0, "liq_net": 2400.0, "cost_basis": 2000.0}]
-    out = _decide(ctx, rows, terminal_tax_rate=0.2, basis_field="cost_basis")
+    out = _decide(ctx, rows, terminal_tax_rate=0.2, basis_field="cost_basis",
+                  redeploy_tax_rate=0.2, redeploy_tax_timing="terminal")
     row = out["records"][0]
     assert row["hold_terminal_tax"] == pytest.approx(172.45)
     assert row["redeploy_terminal_tax"] == pytest.approx(100.8)
@@ -173,9 +183,44 @@ def test_terminal_tax_is_charged_symmetrically_on_both_paths(ctx):
     # a terminal loss pays no terminal tax
     rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 100.0, "cost_basis": 500.0}]
     row = _decide(ctx, rows, terminal_tax_rate=0.2, basis_field="cost_basis",
+                  redeploy_tax_rate=0.2, redeploy_tax_timing="terminal",
                   hold_return=0.0, redeploy_return=0.0, redeploy_cost=0.0,
                   risk_premium=0.0)["records"][0]
     assert row["hold_terminal_tax"] == 0.0 and row["redeploy_terminal_tax"] == 0.0
+
+
+def test_redeploy_tax_annual_and_terminal_by_hand(ctx):
+    # redeploy 1000 at 10% for 2 years; ST rate .4
+    rows = [{"symbol": "A", "market_value": 1000.0, "liq_net": 1000.0}]
+    base = dict(hold_return=0.0, redeploy_return=0.1, redeploy_cost=0.0, risk_premium=0.0)
+    # annual: 1000 x (1 + .1 x .6)^2 = 1123.60, no terminal tax
+    row = _decide(ctx, rows, **base, redeploy_tax_rate=0.4,
+                  redeploy_tax_timing="annual")["records"][0]
+    assert row["redeploy_value"] == pytest.approx(1123.60)
+    assert row["redeploy_terminal_tax"] == 0.0
+    assert row["redeploy_net"] == pytest.approx(1123.60)
+    # terminal: 1000 x 1.1^2 = 1210, gain 210 x .4 = 84 -> 1126
+    row = _decide(ctx, rows, **base, redeploy_tax_rate=0.4,
+                  redeploy_tax_timing="terminal")["records"][0]
+    assert row["redeploy_value"] == pytest.approx(1210.0)
+    assert row["redeploy_terminal_tax"] == pytest.approx(84.0)
+    assert row["redeploy_net"] == pytest.approx(1126.0)
+    # undeclared: no tax on the redeploy path, and the summary says so
+    out = _decide(ctx, rows, **base)
+    assert out["records"][0]["redeploy_net"] == pytest.approx(1210.0)
+    assert out["summary"]["redeploy_tax_timing"] is None
+    with pytest.raises(ConfigError, match="redeploy_tax_timing"):
+        HoldVsRedeploy("d", {**DECIDE, "redeploy_tax_rate": 0.4})
+    with pytest.raises(ConfigError, match="redeploy_tax_timing"):
+        HoldVsRedeploy("d", {**DECIDE, "redeploy_tax_rate": 0.4, "redeploy_tax_timing": "monthly"})
+
+
+def test_a_rate_below_minus_one_refuses_instead_of_a_negative_power(ctx):
+    rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 100.0}]
+    with pytest.raises(ValueError, match="below -1"):
+        HoldVsRedeploy("d", DECIDE).run(ctx, {"records": rows, "hold_returns": {"A": -1.5}})
+    with pytest.raises(ValueError, match="redeploy.*below -1"):
+        _decide(ctx, rows, redeploy_return=-0.5, redeploy_cost=0.6, risk_premium=0.0)
 
 
 def test_terminal_tax_needs_a_basis_field_and_vice_versa(ctx):

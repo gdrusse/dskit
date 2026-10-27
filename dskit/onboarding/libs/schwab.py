@@ -10,7 +10,6 @@ variables, and token refresh is delegated to the generic onboarding service.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import time
@@ -51,13 +50,14 @@ _AUTHORIZATION_URL = "https://api.schwabapi.com/v1/oauth/authorize"
 _TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
 _PRICE_HISTORY_URL = "https://api.schwabapi.com/marketdata/v1/pricehistory"
 _ACCOUNTS_URL = "https://api.schwabapi.com/trader/v1/accounts"
+_ACCOUNT_NUMBERS_URL = "https://api.schwabapi.com/trader/v1/accounts/accountNumbers"
 POSITION_STREAM = "positions"
 POSITION_FIELDS = (
     "account", "symbol", "asset_type", "as_of", "long_quantity",
     "short_quantity", "average_price", "cost_basis", "market_value",
 )
 POSITION_KEY_FIELDS = ("account", "symbol", "as_of")
-_ACCOUNT_DIGEST_CHARS = 16
+_POSITION_NUMBERS = ("longQuantity", "shortQuantity", "averagePrice", "marketValue")
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
@@ -367,28 +367,21 @@ class SchwabBarsConnector(_SchwabConnector):
         return start, end
     def _fetch(self, token, symbol, params, timeout):
         """Perform one price-history GET and require a JSON object."""
-        body = self._request(token, symbol, _PRICE_HISTORY_URL, params, timeout)
+        body = super()._request(token, symbol, _PRICE_HISTORY_URL, params, timeout)
         if not isinstance(body, dict):
             raise AssetError(
                 [f"Schwab price history for {symbol!r} returned a non-object"]
             )
         return body
 
+    def _request(self, token, label, url, params, timeout):
+        """Route the bars pack's one request through its ``_fetch`` seam."""
+        return self._fetch(token, label, params, timeout)
+
     def _get_json(self, token, symbol, params, knobs):
-        """Retry transient failures through the single transport seam."""
-        last = None
-        params = {"symbol": symbol, **params}
-        for attempt in range(knobs["max_retries"] + 1):
-            if attempt:
-                time.sleep(backoff(attempt))
-            try:
-                return self._fetch(token, symbol, params, knobs["timeout"])
-            except (ConnectionError, OSError) as exc:
-                last = str(exc)
-        raise AssetError(
-            [f"Schwab price history for {symbol!r} failed after "
-             f"{knobs['max_retries'] + 1} attempt(s): {last}"]
-        )
+        """Return one price-history object; the base transport retries transient failures."""
+        return self._get(token, symbol, _PRICE_HISTORY_URL, {"symbol": symbol, **params}, knobs)
+
 
     def _params(self, start, end):
         """Build the fixed Phase-1 one-minute price-history query."""
@@ -577,10 +570,16 @@ class SchwabBarsConnector(_SchwabConnector):
 class SchwabPositionsConnector(_SchwabConnector):
     """Point-in-time positions of every linked Schwab account (ADR-0279).
 
-    Each pull emits one row per account and symbol dated by the UTC day it
-    was taken; account numbers never leave the connector, only a short
-    digest. A backfill pull skips a day already checkpointed; a live pull
-    always re-snapshots, and bitemporal dedup keeps the latest acquisition.
+    Each pull emits one row per account and symbol dated ``as_of`` = the UTC
+    calendar day it was taken (a pull after 20:00 New York time is dated the
+    next day); account numbers never leave the connector — ``account`` is
+    Schwab's own ``hashValue`` from the accountNumbers endpoint. The four
+    position numbers are required on every row; nothing is defaulted.
+    ``cost_basis`` is ``averagePrice x net quantity`` and so is a per-share
+    basis only for shares: option rows carry no contract multiplier here,
+    and a consumer that values them filters ``asset_type`` first. A backfill
+    pull skips a day already checkpointed; a live pull always re-snapshots,
+    and bitemporal dedup keeps the latest acquisition.
 
     Parameters
     ----------
@@ -621,14 +620,24 @@ class SchwabPositionsConnector(_SchwabConnector):
             raise AssetError(problems)
         return {**transport, **envs}
 
-    @staticmethod
-    def _account_digest(number):
-        """Return the short stable digest that stands in for an account number."""
-        return hashlib.sha256(str(number).encode("utf-8")).hexdigest()[
-            :_ACCOUNT_DIGEST_CHARS
-        ]
+    def _hashes(self, token, knobs):
+        """Return ``{accountNumber: hashValue}`` from Schwab's own account-number digest list."""
+        body = self._get(token, "accountNumbers", _ACCOUNT_NUMBERS_URL, {}, knobs)
+        if not isinstance(body, list):
+            raise AssetError(["Schwab accountNumbers response is not a list"])
+        hashes = {}
+        for index, entry in enumerate(body):
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("accountNumber"), str)
+                or not isinstance(entry.get("hashValue"), str)
+                or not entry["hashValue"]
+            ):
+                raise AssetError([f"Schwab accountNumbers entry {index} is malformed"])
+            hashes[entry["accountNumber"]] = entry["hashValue"]
+        return hashes
 
-    def _rows(self, body, as_of):
+    def _rows(self, body, hashes, as_of):
         """Validate and normalize every position in an accounts response."""
         if not isinstance(body, list):
             raise AssetError(["Schwab accounts response is not an accounts list"])
@@ -637,18 +646,26 @@ class SchwabPositionsConnector(_SchwabConnector):
             account = entry.get("securitiesAccount") if isinstance(entry, dict) else None
             if not isinstance(account, dict) or "accountNumber" not in account:
                 raise AssetError([f"Schwab account {a_index} is malformed"])
-            digest = self._account_digest(account["accountNumber"])
+            number = account["accountNumber"]
+            if number not in hashes:
+                raise AssetError(
+                    [f"Schwab account {a_index} has no hashValue in accountNumbers"]
+                )
             positions = account.get("positions", [])
             if not isinstance(positions, list):
                 raise AssetError([f"Schwab account {a_index} positions is not a list"])
             for p_index, position in enumerate(positions):
                 try:
                     instrument = position["instrument"]
-                    long_qty = float(position.get("longQuantity", 0.0))
-                    short_qty = float(position.get("shortQuantity", 0.0))
-                    average = float(position.get("averagePrice", 0.0))
+                    numbers = {name: position[name] for name in _POSITION_NUMBERS}
+                    if any(isinstance(v, bool) or not isinstance(v, (int, float))
+                           for v in numbers.values()):
+                        raise ValueError("a position number is not numeric")
+                    long_qty = float(numbers["longQuantity"])
+                    short_qty = float(numbers["shortQuantity"])
+                    average = float(numbers["averagePrice"])
                     rows.append({
-                        "account": digest,
+                        "account": hashes[number],
                         "symbol": str(instrument["symbol"]),
                         "asset_type": instrument.get("assetType"),
                         "as_of": as_of,
@@ -656,7 +673,7 @@ class SchwabPositionsConnector(_SchwabConnector):
                         "short_quantity": short_qty,
                         "average_price": average,
                         "cost_basis": average * (long_qty - short_qty),
-                        "market_value": float(position.get("marketValue", 0.0)),
+                        "market_value": float(numbers["marketValue"]),
                     })
                 except (KeyError, TypeError, ValueError, AttributeError) as exc:
                     raise AssetError(
@@ -729,10 +746,11 @@ class SchwabPositionsConnector(_SchwabConnector):
                 new_state.setdefault(stream, {})["cursor"] = cursor
                 continue
             token = self._access_token(knobs)
+            hashes = self._hashes(token, knobs)
             body = self._get(
                 token, "accounts", _ACCOUNTS_URL, {"fields": "positions"}, knobs
             )
-            for row in self._rows(body, as_of):
+            for row in self._rows(body, hashes, as_of):
                 yield {
                     "protocol": PROTOCOL,
                     "type": "RECORD",

@@ -834,8 +834,12 @@ they register only into private registries, never the default one.
   `decision` is `exit` only when redeploying is strictly ahead. Optional
   inputs `hold_returns` (`{symbol: rate}`) and `redeploy_return` (a number,
   or `None` = no admissible alternative, every row holds) replace the matching
-  params; `terminal_tax_rate` + `basis_field` liquidate both paths at the
-  horizon and tax each on its own gain, so the comparison is net to net.
+  params. Taxes are declared per path: `terminal_tax_rate` + `basis_field`
+  tax the hold path's gain once at the horizon; `redeploy_tax_rate` +
+  `redeploy_tax_timing` tax the redeploy path either `annual` (compounds at
+  `r x (1 - t)`, nothing owed at the end — a strategy that turns over) or
+  `terminal`. `LiquidationTax.as_of` defaults to the run's `--asof`. A rate
+  below -1 on either path refuses.
 - `active_hurdle.py` (`ActiveHurdle`) (ADR-0279, by import path): a backtest's
   per-period net returns into the deflated annual return an active strategy may
   claim, `(mean - E[max null Sharpe over trials] x sd) x periods_per_year`
@@ -844,8 +848,9 @@ they register only into private registries, never the default one.
 - `decision_outcomes.py` (`DecisionOutcomes`) (ADR-0279, by import path): the
   feedback loop — each decision row's pro-rated projected growth,
   `(hold_value / value) ** (elapsed / horizon_years)`, against the realized
-  per-share growth from a later snapshot on one date; `surprise` per row and
-  by decision; decided symbols missing later are listed unmatched, not scored.
+  per-share growth from a later snapshot on one date, joined on declared
+  `key_fields` (account + symbol, say); `surprise` per row and by decision;
+  decided positions missing later are listed unmatched, not scored.
   Every ADR-0279 kind answers `serving_effect` "pure".
 - `hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`) (ADR-0279, research
   A0001, by import path): the market's expected nominal return as named blocks

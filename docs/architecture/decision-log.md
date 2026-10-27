@@ -32556,3 +32556,32 @@ advisory, so a scheduled `pipeline run` is the fit until an order path
 exists. Files: `dskit/pipeline/decision_outcomes.py`,
 `tests/pipeline/test_decision_outcomes.py`, the child config.
 Sweep: decision_outcomes projected_growth realized_growth; no near matches.
+
+#### ADR-0279 amendment: skeptic lens 1 corrections (2026-10-27)
+
+Lens 1 (Claude general-purpose subagent, correctness/authority) found 3
+Major, 0 Critical; all three fixed, with the Minors that were defects:
+
+- Major 1 — the decision document read EVERY snapshot. Now a `filter` on
+  `as_of` and `asset_type == EQUITY` (one day, shares only; option basis
+  carries no multiplier) and `LiquidationTax.as_of` defaults to `--asof`.
+- Major 2 — the redeploy path was taxed once at the long-term rate though a
+  turning-over strategy realizes short-term gains yearly. `HoldVsRedeploy`
+  gains `redeploy_tax_rate` + `redeploy_tax_timing` (`annual` compounds at
+  `r x (1 - t)`; `terminal` as before); the hold path keeps
+  `terminal_tax_rate` + `basis_field`. The document declares `annual` at the
+  short-term rate.
+- Major 3 — `DecisionOutcomes` joined on symbol alone; now on declared
+  `key_fields` (account + symbol in the document).
+- Minors fixed: shared owners (`document.date_problem`, `binary_curve.name_ok`,
+  new `node.check_number_param` beside `check_int_param`); zero-variance
+  series and non-positive values refuse by name; a rate below -1 refuses;
+  Schwab position numbers required, `account` = Schwab's `hashValue`
+  (accountNumbers endpoint) instead of a brute-forceable digest; `_get_json`
+  rides the base retry loop; `check()` and the retry path tested; UTC-day
+  `as_of` documented; arithmetic-mean hurdle documented.
+- Disclosed, not changed: `test_active_hurdle` pins E[max Sharpe] from one
+  recorded evaluation rather than a closed form; the hurdle's arithmetic mean
+  compounds geometrically downstream (~sd²/2 per period, left to
+  `risk_premium`); Stage 4 scoring is `DecisionOutcomes` rows, not a
+  `dskit.evaluation` render (this amendment repeals that line of the ADR).

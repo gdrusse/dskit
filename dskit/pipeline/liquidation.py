@@ -13,6 +13,7 @@ at least ``long_term_days`` before ``as_of``, ``short`` when it is nearer, and
 ``default_holding`` when the row carries no date), the rate that class pays,
 the tax and the net. A loss pays no tax unless ``loss_offset`` is declared, in
 which case it is a negative tax: the offset a realized loss gives elsewhere.
+``as_of`` defaults to the run's own as-of date.
 
 :class:`HoldVsRedeploy` (role ``transform``) compares two terminal values over
 ``horizon_years``: holding the gross position at ``hold_return`` (a number, or
@@ -22,17 +23,21 @@ the redeploy path is strictly ahead; a tie holds. Two optional inputs replace
 the matching params so estimates are wired, never pasted: ``hold_returns``
 (``{symbol: rate}``, from :mod:`dskit.pipeline.hold_return`) and
 ``redeploy_return`` (a number from :mod:`dskit.pipeline.active_hurdle`, or
-``None`` when that hurdle was inadmissible, which holds every row). When
-``terminal_tax_rate`` and ``basis_field`` are declared, both paths are
-liquidated at the horizon and taxed on their gain — the hold path over the
-original basis, the redeploy path over the after-tax net it started from —
-so the comparison is net to net; without them the terminal tax is zero on
-both sides, which favours holding.
+``None`` when that hurdle was inadmissible, which holds every row).
+
+Taxes on the two paths are declared separately because they are paid
+differently. The hold path realizes its gain once, at the horizon, over the
+original basis: ``terminal_tax_rate`` with ``basis_field``. The redeploy path
+pays ``redeploy_tax_rate`` either ``annual`` — a strategy that turns its book
+over realizes short-term gains every year, so the rate compounds as
+``(1 + r x (1 - t)) ** years`` with nothing owed at the end — or ``terminal``,
+once at the horizon over the after-tax net it started from. Without the
+declarations a path's tax is zero, and the summary says so.
 
 Rows that cannot be valued refuse by index and field name; nothing is filled.
 Every rate, horizon and field name is a param: the module carries no table.
 
-Import cost: stdlib only.
+Import cost: stdlib + the pipeline core.
 """
 
 from __future__ import annotations
@@ -40,47 +45,35 @@ from __future__ import annotations
 import math
 from datetime import date
 
-from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.binary_curve import name_ok
+from dskit.pipeline.document import date_problem
+from dskit.pipeline.node import Node, check_int_param, check_number_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
-__all__ = ["HOLDINGS", "HoldVsRedeploy", "LiquidationTax"]
+__all__ = ["HOLDINGS", "REDEPLOY_TAX_TIMINGS", "HoldVsRedeploy", "LiquidationTax"]
 
 #: The two holding classes a tax schedule distinguishes.
 HOLDINGS = ("long", "short")
+#: When the redeploy path pays its tax: every year as it turns over, or once at the horizon.
+REDEPLOY_TAX_TIMINGS = ("annual", "terminal")
 
 _LIQ_FIELDS = ("liq_proceeds", "liq_gain", "liq_holding", "liq_rate", "liq_tax", "liq_net")
 _DECISION_FIELDS = (
     "horizon_years", "hold_value", "hold_terminal_tax", "hold_net", "redeploy_value",
     "redeploy_terminal_tax", "redeploy_net", "advantage", "decision",
 )
-#: HoldVsRedeploy params that may be absent: the two a wire can replace and the terminal-tax pair.
-_DECISION_OPTIONAL = ("hold_return", "redeploy_return", "terminal_tax_rate", "basis_field")
-
-
-def _name_ok(value):
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _iso_date(value):
-    """Return the date a strict ISO ``YYYY-MM-DD`` string names, else ``None``."""
-    if not _name_ok(value):
-        return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
-
-
-def _check_rate(problems, name, value, *, lower, upper):
-    """Append a problem unless ``value`` is a number in ``[lower, upper]``."""
-    if not number_ok(value) or not lower <= value <= upper:
-        problems.append(f"{name} must be a number in [{lower}, {upper}], got {value!r}")
+#: HoldVsRedeploy params that may be absent: the two a wire can replace and the two tax pairs.
+_DECISION_OPTIONAL = (
+    "hold_return", "redeploy_return", "terminal_tax_rate", "basis_field",
+    "redeploy_tax_rate", "redeploy_tax_timing",
+)
+_RATE_LOWER, _RATE_UPPER = -1.0, 10.0
 
 
 def _check_names(problems, params, names):
     """Append a problem for every field-name param that is not a name."""
     for name in names:
-        if not _name_ok(params.get(name)):
+        if not name_ok(params.get(name)):
             problems.append(f"{name} must be a non-empty field name, got {params.get(name)!r}")
 
 
@@ -104,6 +97,13 @@ def _number(key, index, row, field):
     return float(value)
 
 
+def _growth(key, what, rate, years):
+    """Return ``(1 + rate) ** years``; refuse a rate below -1, whose power is not a value."""
+    if 1.0 + rate < 0.0:
+        raise ValueError(f"{key}: {what} rate {rate!r} is below -1, so no terminal value exists")
+    return math.pow(1.0 + rate, years)
+
+
 class LiquidationTax(Node):
     """Per-row liquidation: proceeds, gain, holding class, rate, tax, net.
 
@@ -112,29 +112,29 @@ class LiquidationTax(Node):
     Parameters
     ----------
     params : dict
-        ``as_of`` (ISO date, REQUIRED): the liquidation date the holding
-        period is measured to; ``short_term_rate`` / ``long_term_rate``
-        (numbers in ``[0, 1]``, REQUIRED); ``long_term_days`` (int >= 1,
-        REQUIRED): days held at which a position is ``long``;
-        ``default_holding`` (``long`` | ``short``, REQUIRED): the class of a
-        row with no acquisition date; ``loss_offset`` (bool, REQUIRED):
-        whether a loss is a negative tax; ``value_field`` / ``basis_field``
-        (field names, REQUIRED); ``acquired_field`` (field name, optional):
-        the ISO date the position was acquired, absent or null on a row
-        means ``default_holding``.
+        ``short_term_rate`` / ``long_term_rate`` (numbers in ``[0, 1]``,
+        REQUIRED); ``long_term_days`` (int >= 1, REQUIRED): days held at
+        which a position is ``long``; ``default_holding`` (``long`` |
+        ``short``, REQUIRED): the class of a row with no acquisition date;
+        ``loss_offset`` (bool, REQUIRED): whether a loss is a negative tax;
+        ``value_field`` / ``basis_field`` (field names, REQUIRED);
+        ``acquired_field`` (field name, optional): the ISO date the position
+        was acquired, absent or null on a row means ``default_holding``;
+        ``as_of`` (ISO date, optional): the liquidation date the holding
+        period is measured to; absent means the run's as-of date.
 
     Examples
     --------
     Tax a long-term gain at the long rate::
 
         node = LiquidationTax("tax", {
-            "as_of": "2026-10-27", "short_term_rate": 0.4, "long_term_rate": 0.2,
-            "long_term_days": 365, "default_holding": "long", "loss_offset": False,
+            "short_term_rate": 0.4, "long_term_rate": 0.2, "long_term_days": 365,
+            "default_holding": "long", "loss_offset": False,
             "value_field": "market_value", "basis_field": "cost_basis",
             "acquired_field": "acquired"})
         out = node.run(ctx, {"records": [
             {"market_value": 2500.0, "cost_basis": 2000.0, "acquired": "2024-01-01"}]})
-        out["records"][0]["liq_tax"]   # 100.0
+        out["records"][0]["liq_tax"]   # 100.0 when ctx.asof is 2026-10-27
     """
 
     role = "transform"
@@ -144,7 +144,7 @@ class LiquidationTax(Node):
         "as_of", "short_term_rate", "long_term_rate", "long_term_days",
         "default_holding", "loss_offset", "value_field", "basis_field", "acquired_field",
     )
-    _REQUIRED = tuple(name for name in _PARAMS if name != "acquired_field")
+    _REQUIRED = tuple(name for name in _PARAMS if name not in ("as_of", "acquired_field"))
 
     @classmethod
     def validate_params(cls, params):
@@ -154,11 +154,11 @@ class LiquidationTax(Node):
         missing = sorted(set(cls._REQUIRED) - set(params))
         if missing:
             problems.append(f"missing required params {missing}")
-        if "as_of" in params and _iso_date(params["as_of"]) is None:
+        if "as_of" in params and date_problem(params["as_of"]):
             problems.append(f"as_of must be an ISO date, got {params['as_of']!r}")
         for name in ("short_term_rate", "long_term_rate"):
             if name in params:
-                _check_rate(problems, name, params[name], lower=0.0, upper=1.0)
+                check_number_param(problems, name, params[name], lower=0.0, upper=1.0)
         if "long_term_days" in params:
             check_int_param(problems, "long_term_days", params["long_term_days"], ge=1)
         if "default_holding" in params and params["default_holding"] not in HOLDINGS:
@@ -168,7 +168,7 @@ class LiquidationTax(Node):
         if "loss_offset" in params and not isinstance(params["loss_offset"], bool):
             problems.append(f"loss_offset must be a bool, got {params['loss_offset']!r}")
         _check_names(problems, params, [n for n in ("value_field", "basis_field") if n in params])
-        if params.get("acquired_field") is not None and not _name_ok(params["acquired_field"]):
+        if params.get("acquired_field") is not None and not name_ok(params["acquired_field"]):
             problems.append(
                 f"acquired_field must be a non-empty field name, got {params['acquired_field']!r}"
             )
@@ -179,25 +179,31 @@ class LiquidationTax(Node):
         """Answer ``pure``: the node reads nothing but its inputs and params."""
         return "pure"
 
+    def _as_of(self, ctx):
+        """Return the liquidation date: the param, else the run's as-of."""
+        value = self.params.get("as_of", ctx.asof)
+        if date_problem(value):
+            raise ValueError(f"{self.key}: no usable as_of date (param or run), got {value!r}")
+        return date.fromisoformat(value)
+
     def _holding(self, index, row, as_of):
         """Return the holding class of one row, from its acquisition date or the default."""
         field = self.params.get("acquired_field")
         acquired = row.get(field) if field is not None else None
         if acquired is None:
             return self.params["default_holding"]
-        day = _iso_date(acquired)
-        if day is None:
+        if date_problem(acquired):
             raise ValueError(
                 f"{self.key}: row {index} field {field!r} is not an ISO date, got {acquired!r}"
             )
-        held = (as_of - day).days
+        held = (as_of - date.fromisoformat(acquired)).days
         return "long" if held >= self.params["long_term_days"] else "short"
 
     def run(self, ctx, inputs):
         """Liquidate every row; return the rows with the six ``liq_*`` fields and a summary."""
         records = inputs.get("records")
         _check_rows(self.key, records, _LIQ_FIELDS)
-        as_of = _iso_date(self.params["as_of"])
+        as_of = self._as_of(ctx)
         rates = {"long": self.params["long_term_rate"], "short": self.params["short_term_rate"]}
         out, total_tax, total_net, by_holding = [], 0.0, 0.0, {"long": 0, "short": 0}
         for index, row in enumerate(records):
@@ -216,8 +222,8 @@ class LiquidationTax(Node):
             by_holding[holding] += 1
         self.log.info("%s: %d row(s), tax %.2f, net %.2f", self.key, len(out), total_tax, total_net)
         return {"records": out, "summary": {
-            "stage": "liquidation tax", "rows": len(out), "tax": total_tax,
-            "net": total_net, "holdings": by_holding}}
+            "stage": "liquidation tax", "as_of": as_of.isoformat(), "rows": len(out),
+            "tax": total_tax, "net": total_net, "holdings": by_holding}}
 
 
 class HoldVsRedeploy(Node):
@@ -239,7 +245,10 @@ class HoldVsRedeploy(Node):
         forecast's own uncertainty; ``value_field`` / ``net_field`` /
         ``symbol_field`` (field names, REQUIRED); ``terminal_tax_rate``
         (number in ``[0, 1]``) and ``basis_field`` (field name), together or
-        not at all: the tax on each path's gain at the horizon.
+        not at all: the hold path's tax on its gain at the horizon;
+        ``redeploy_tax_rate`` (number in ``[0, 1]``) and
+        ``redeploy_tax_timing`` (``annual`` | ``terminal``), together or not
+        at all: the redeploy path's tax and when it is paid.
 
     Inputs
     ------
@@ -271,10 +280,9 @@ class HoldVsRedeploy(Node):
     _PARAMS = (
         "horizon_years", "hold_return", "redeploy_return", "redeploy_cost",
         "risk_premium", "value_field", "net_field", "symbol_field",
-        "terminal_tax_rate", "basis_field",
+        "terminal_tax_rate", "basis_field", "redeploy_tax_rate", "redeploy_tax_timing",
     )
     _REQUIRED = tuple(name for name in _PARAMS if name not in _DECISION_OPTIONAL)
-    _RATE_LOWER, _RATE_UPPER = -1.0, 10.0
 
     @classmethod
     def validate_params(cls, params):
@@ -289,26 +297,39 @@ class HoldVsRedeploy(Node):
         hold = params.get("hold_return")
         if "hold_return" in params:
             if isinstance(hold, dict):
-                if not hold or not all(_name_ok(k) for k in hold):
+                if not hold or not all(name_ok(k) for k in hold):
                     problems.append("hold_return mapping must be {symbol: number}, non-empty")
                 for symbol, value in hold.items():
-                    _check_rate(problems, f"hold_return[{symbol!r}]", value,
-                                lower=cls._RATE_LOWER, upper=cls._RATE_UPPER)
+                    check_number_param(problems, f"hold_return[{symbol!r}]", value,
+                                       lower=_RATE_LOWER, upper=_RATE_UPPER)
             else:
-                _check_rate(problems, "hold_return", hold,
-                            lower=cls._RATE_LOWER, upper=cls._RATE_UPPER)
+                check_number_param(problems, "hold_return", hold,
+                                   lower=_RATE_LOWER, upper=_RATE_UPPER)
         for name in ("redeploy_return", "redeploy_cost", "risk_premium"):
             if name in params:
-                _check_rate(problems, name, params[name],
-                            lower=cls._RATE_LOWER, upper=cls._RATE_UPPER)
+                check_number_param(problems, name, params[name],
+                                   lower=_RATE_LOWER, upper=_RATE_UPPER)
         _check_names(problems, params,
                      [n for n in ("value_field", "net_field", "symbol_field", "basis_field")
                       if n in params])
         if ("terminal_tax_rate" in params) != ("basis_field" in params):
             problems.append("terminal_tax_rate and basis_field are declared together or not at all")
         if "terminal_tax_rate" in params:
-            _check_rate(problems, "terminal_tax_rate", params["terminal_tax_rate"],
-                        lower=0.0, upper=1.0)
+            check_number_param(problems, "terminal_tax_rate", params["terminal_tax_rate"],
+                               lower=0.0, upper=1.0)
+        if ("redeploy_tax_rate" in params) != ("redeploy_tax_timing" in params):
+            problems.append(
+                "redeploy_tax_rate and redeploy_tax_timing are declared together or not at all"
+            )
+        if "redeploy_tax_rate" in params:
+            check_number_param(problems, "redeploy_tax_rate", params["redeploy_tax_rate"],
+                               lower=0.0, upper=1.0)
+        if ("redeploy_tax_timing" in params
+                and params["redeploy_tax_timing"] not in REDEPLOY_TAX_TIMINGS):
+            problems.append(
+                f"redeploy_tax_timing must be one of {list(REDEPLOY_TAX_TIMINGS)}, "
+                f"got {params['redeploy_tax_timing']!r}"
+            )
         return problems
 
     @classmethod
@@ -357,15 +378,21 @@ class HoldVsRedeploy(Node):
         if wired is None:
             return None, "inadmissible"
         if not number_ok(wired):
-            raise ValueError(f"{self.key}: redeploy_return input must be a number or None, got {wired!r}")
+            raise ValueError(
+                f"{self.key}: redeploy_return input must be a number or None, got {wired!r}"
+            )
         return float(wired), "wired"
 
-    def _terminal_tax(self, terminal, basis):
-        """Return the tax on a path's gain at the horizon; a loss pays none."""
-        rate = self.params.get("terminal_tax_rate")
-        if rate is None:
-            return 0.0
-        return max(terminal - basis, 0.0) * rate
+    def _redeploy_path(self, net, redeploy_rate, years):
+        """Return ``(value, terminal_tax, net)`` of redeploying ``net`` under the declared tax."""
+        rate = self.params.get("redeploy_tax_rate")
+        timing = self.params.get("redeploy_tax_timing")
+        if timing == "annual":
+            value = net * _growth(self.key, "redeploy after-tax", redeploy_rate * (1.0 - rate), years)
+            return value, 0.0, value
+        value = net * _growth(self.key, "redeploy", redeploy_rate, years)
+        tax = max(value - net, 0.0) * rate if timing == "terminal" else 0.0
+        return value, tax, value - tax
 
     def run(self, ctx, inputs):
         """Compare the two paths on every row; return the rows with the decision and a summary."""
@@ -375,6 +402,7 @@ class HoldVsRedeploy(Node):
         redeploy_return, redeploy_source = self._redeploy_source(inputs)
         years = self.params["horizon_years"]
         basis_field = self.params.get("basis_field")
+        terminal_rate = self.params.get("terminal_tax_rate")
         redeploy_rate = None
         if redeploy_return is not None:
             redeploy_rate = (redeploy_return - self.params["redeploy_cost"]
@@ -385,17 +413,19 @@ class HoldVsRedeploy(Node):
         for index, row in enumerate(records):
             value = _number(self.key, index, row, self.params["value_field"])
             net = _number(self.key, index, row, self.params["net_field"])
-            basis = _number(self.key, index, row, basis_field) if basis_field else None
-            hold_value = value * math.pow(1.0 + self._hold_rate(index, row, hold), years)
-            hold_tax = self._terminal_tax(hold_value, basis) if basis_field else 0.0
+            hold_value = value * _growth(self.key, f"row {index} hold",
+                                         self._hold_rate(index, row, hold), years)
+            hold_tax = 0.0
+            if basis_field:
+                basis = _number(self.key, index, row, basis_field)
+                hold_tax = max(hold_value - basis, 0.0) * terminal_rate
             hold_net = hold_value - hold_tax
             if redeploy_rate is None:
                 redeploy_value = redeploy_tax = redeploy_net = advantage = None
                 decision = "hold"
             else:
-                redeploy_value = net * math.pow(1.0 + redeploy_rate, years)
-                redeploy_tax = self._terminal_tax(redeploy_value, net) if basis_field else 0.0
-                redeploy_net = redeploy_value - redeploy_tax
+                redeploy_value, redeploy_tax, redeploy_net = self._redeploy_path(
+                    net, redeploy_rate, years)
                 advantage = redeploy_net - hold_net
                 decision = "exit" if advantage > 0.0 else "hold"
                 redeploy_total += redeploy_value
@@ -415,4 +445,6 @@ class HoldVsRedeploy(Node):
             "redeploy_value": redeploy_total, "redeploy_net": redeploy_net_total,
             "redeploy_rate": redeploy_rate, "horizon_years": years,
             "hold_return_source": hold_source, "redeploy_return_source": redeploy_source,
-            "terminal_tax_rate": self.params.get("terminal_tax_rate")}}
+            "terminal_tax_rate": terminal_rate,
+            "redeploy_tax_rate": self.params.get("redeploy_tax_rate"),
+            "redeploy_tax_timing": self.params.get("redeploy_tax_timing")}}

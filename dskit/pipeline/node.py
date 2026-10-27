@@ -34,6 +34,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import os
 import re
 from abc import ABC, abstractmethod
@@ -51,6 +52,7 @@ __all__ = [
     "DEFAULT_NODE_KINDS",
     "JsonArtifact",
     "Node",
+    "check_number_param",
     "NodeContext",
     "NodeKindRegistry",
     "ResolvedUse",
@@ -182,6 +184,48 @@ def check_int_param(problems, name, value, *, ge) -> None:
         value = int(value)
     if not isinstance(value, int) or value < ge:
         problems.append(f"{name} must be an int >= {ge}, got {value!r}")
+
+
+def check_number_param(problems, name, value, *, lower, upper) -> None:
+    """Append a problem unless ``value`` is a finite real number in ``[lower, upper]``.
+
+    The sibling of :func:`check_int_param` for a rate, a weight or a
+    fraction: ``bool`` is refused (it is an ``int``), as is a NaN, an
+    infinity or anything that is not a number. Both bounds are required
+    for the same reason ``ge`` is above — a bound the caller did not state
+    is a bound nobody can review.
+
+    Parameters
+    ----------
+    problems : list of str
+        The accumulator. Appended to in place.
+    name : str
+        The knob's name, used in the message.
+    value : object
+        The declared value.
+    lower, upper : float
+        Inclusive bounds.
+
+    Returns
+    -------
+    None
+        Problems are appended to ``problems``.
+
+    Examples
+    --------
+    Refuse a tax rate above one::
+
+        problems = []
+        check_number_param(problems, "rate", 1.5, lower=0.0, upper=1.0)
+        len(problems)   # 1
+    """
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not lower <= value <= upper
+    ):
+        problems.append(f"{name} must be a number in [{lower}, {upper}], got {value!r}")
 
 
 def atomic_write(path, raw) -> None:

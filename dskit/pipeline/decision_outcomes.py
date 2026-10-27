@@ -3,8 +3,9 @@
 A hold-vs-redeploy decision is a forecast: the position was expected to grow
 from its value then to ``hold_value`` over ``horizon_years``. The only honest
 test of that forecast is the position's later price, and this module owns
-exactly that join: for each decided symbol that still appears in a later
-snapshot, the pro-rated projected growth for the time elapsed,
+exactly that join, on the declared ``key_fields`` (an account and a symbol,
+say — one symbol held in two accounts is two positions): for each decided key
+that still appears in a later snapshot, the pro-rated projected growth for the time elapsed,
 ``(hold_value / value) ** (elapsed_years / horizon_years)``, against the
 realized per-share growth, ``(later value / later quantity) / (value /
 quantity)``. Per-share, so a purchase or a sale between the two dates is not
@@ -19,13 +20,15 @@ decided symbol absent from the later snapshot is listed as unmatched, not
 scored; a later snapshot carrying several dates refuses, because one
 observation date is what makes the elapsed time a single number.
 
-Import cost: stdlib only.
+Import cost: stdlib + the pipeline core.
 """
 
 from __future__ import annotations
 
 from datetime import date
 
+from dskit.pipeline.binary_curve import name_ok
+from dskit.pipeline.document import date_problem
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
@@ -34,45 +37,33 @@ __all__ = ["DecisionOutcomes"]
 _DAYS_PER_YEAR = 365.25
 
 
-def _name_ok(value):
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _iso_date(value):
-    """Return the date a strict ISO ``YYYY-MM-DD`` string names, else ``None``."""
-    if not _name_ok(value):
-        return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
-
-
 class DecisionOutcomes(Node):
-    """Projected vs realized per-share growth for every decided symbol seen later.
+    """Projected vs realized per-share growth for every decided position seen later.
 
     Role ``transform``. See the module docstring for the rule.
 
     Parameters
     ----------
     params : dict
-        ``symbol_field``, ``as_of_field``, ``value_field`` (field names,
-        REQUIRED), shared by both inputs; ``quantity_field`` (field name,
-        optional): the share count on both inputs, making growth per share.
+        ``key_fields`` (non-empty list of distinct field names, REQUIRED):
+        what identifies one position on both inputs; ``as_of_field``,
+        ``value_field`` (field names, REQUIRED), shared by both inputs;
+        ``quantity_field`` (field name, optional): the share count on both
+        inputs, making growth per share.
 
     Inputs
     ------
     ``decisions`` (REQUIRED)
         Rows written by :class:`~dskit.pipeline.liquidation.HoldVsRedeploy`:
-        the three fields plus ``hold_value``, ``horizon_years``, ``decision``.
+        the fields above plus ``hold_value``, ``horizon_years``, ``decision``.
     ``positions`` (REQUIRED)
-        A later snapshot, one row per symbol, all on one ``as_of``.
+        A later snapshot, one row per key, all on one ``as_of``.
 
     Examples
     --------
     One year into a five-year forecast::
 
-        node = DecisionOutcomes("outcomes", {"symbol_field": "symbol",
+        node = DecisionOutcomes("outcomes", {"key_fields": ["account", "symbol"],
             "as_of_field": "as_of", "value_field": "market_value",
             "quantity_field": "long_quantity"})
         out = node.run(ctx, {"decisions": decided, "positions": later})
@@ -82,8 +73,8 @@ class DecisionOutcomes(Node):
     role = "transform"
     outputs = ("records", "summary")
 
-    _PARAMS = ("symbol_field", "as_of_field", "value_field", "quantity_field")
-    _REQUIRED = ("symbol_field", "as_of_field", "value_field")
+    _PARAMS = ("key_fields", "as_of_field", "value_field", "quantity_field")
+    _REQUIRED = ("key_fields", "as_of_field", "value_field")
 
     @classmethod
     def validate_params(cls, params):
@@ -93,10 +84,30 @@ class DecisionOutcomes(Node):
         missing = sorted(set(cls._REQUIRED) - set(params))
         if missing:
             problems.append(f"missing required params {missing}")
-        for name in cls._PARAMS:
-            if name in params and not _name_ok(params[name]):
+        keys = params.get("key_fields")
+        if "key_fields" in params and (
+            not isinstance(keys, list) or not keys or not all(name_ok(k) for k in keys)
+            or len(set(keys)) != len(keys)
+        ):
+            problems.append(
+                f"key_fields must be a non-empty list of distinct field names, got {keys!r}"
+            )
+        for name in ("as_of_field", "value_field", "quantity_field"):
+            if name in params and not name_ok(params[name]):
                 problems.append(f"{name} must be a non-empty field name, got {params[name]!r}")
         return problems
+
+    def _key(self, what, index, row):
+        """Return the row's key tuple; refuse a row missing any key field."""
+        if not isinstance(row, dict):
+            raise ValueError(f"{self.key}: {what} {index} must be a mapping, got {type(row).__name__}")
+        key = []
+        for field in self.params["key_fields"]:
+            value = row.get(field)
+            if value is None or isinstance(value, (dict, list)):
+                raise ValueError(f"{self.key}: {what} {index} has no usable key field {field!r}")
+            key.append(value)
+        return tuple(key)
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
@@ -123,25 +134,28 @@ class DecisionOutcomes(Node):
             raise ValueError(f"{self.key}: {what} {index} has zero {field!r}")
         return value / quantity
 
+    def _positive(self, what, index, value, label):
+        """Return ``value`` when it is above zero; a growth ratio needs a positive start."""
+        if value <= 0.0:
+            raise ValueError(f"{self.key}: {what} {index} has non-positive {label} {value!r}")
+        return value
+
     def _later(self, positions):
-        """Return ``(as_of, {symbol: measure})`` from the later snapshot; refuse several dates."""
+        """Return ``(as_of, {key: measure})`` from the later snapshot; refuse several dates."""
         if not isinstance(positions, list):
             raise ValueError(f"{self.key}: positions must be a list")
-        symbol_field, as_of_field = self.params["symbol_field"], self.params["as_of_field"]
+        as_of_field = self.params["as_of_field"]
         dates, measures = set(), {}
         for index, row in enumerate(positions):
-            if not isinstance(row, dict) or not _name_ok(row.get(symbol_field)):
-                raise ValueError(f"{self.key}: position {index} has no symbol in {symbol_field!r}")
-            day = _iso_date(row.get(as_of_field))
-            if day is None:
+            key = self._key("position", index, row)
+            if date_problem(row.get(as_of_field)):
                 raise ValueError(
                     f"{self.key}: position {index} field {as_of_field!r} is not an ISO date"
                 )
-            dates.add(day)
-            symbol = row[symbol_field]
-            if symbol in measures:
-                raise ValueError(f"{self.key}: positions carry symbol {symbol!r} several times")
-            measures[symbol] = self._per_unit("position", index, row)
+            dates.add(date.fromisoformat(row[as_of_field]))
+            if key in measures:
+                raise ValueError(f"{self.key}: positions carry key {key!r} several times")
+            measures[key] = self._per_unit("position", index, row)
         if len(dates) != 1:
             raise ValueError(
                 f"{self.key}: positions must carry one as_of, got several: "
@@ -155,24 +169,25 @@ class DecisionOutcomes(Node):
         if not isinstance(decisions, list):
             raise ValueError(f"{self.key}: decisions must be a list")
         later_day, later = self._later(inputs.get("positions"))
-        symbol_field, as_of_field = self.params["symbol_field"], self.params["as_of_field"]
-        out, unmatched, by_decision = [], [], {}
+        as_of_field, key_fields = self.params["as_of_field"], self.params["key_fields"]
+        out, unmatched, by_decision, seen = [], [], {}, set()
         for index, row in enumerate(decisions):
-            if not isinstance(row, dict) or not _name_ok(row.get(symbol_field)):
-                raise ValueError(f"{self.key}: decision {index} has no symbol in {symbol_field!r}")
-            symbol = row[symbol_field]
-            decided = _iso_date(row.get(as_of_field))
-            if decided is None:
+            key = self._key("decision", index, row)
+            if key in seen:
+                raise ValueError(f"{self.key}: decisions carry key {key!r} several times")
+            seen.add(key)
+            if date_problem(row.get(as_of_field)):
                 raise ValueError(
                     f"{self.key}: decision {index} field {as_of_field!r} is not an ISO date"
                 )
+            decided = date.fromisoformat(row[as_of_field])
             if later_day <= decided:
                 raise ValueError(
                     f"{self.key}: decision {index} dated {decided} is not before the "
                     f"positions as_of {later_day}"
                 )
-            if symbol not in later:
-                unmatched.append(symbol)
+            if key not in later:
+                unmatched.append(key)
                 continue
             horizon = row.get("horizon_years")
             if not number_ok(horizon) or horizon <= 0:
@@ -180,21 +195,31 @@ class DecisionOutcomes(Node):
                     f"{self.key}: decision {index} field 'horizon_years' is not a positive "
                     f"number, got {horizon!r}"
                 )
-            then = self._per_unit("decision", index, row)
-            value = self._number("decision", index, row, self.params["value_field"])
-            hold_value = self._number("decision", index, row, "hold_value")
+            then = self._positive("decision", index, self._per_unit("decision", index, row),
+                                  "measure")
+            value = self._positive("decision", index,
+                                   self._number("decision", index, row, self.params["value_field"]),
+                                   self.params["value_field"])
+            hold_value = self._positive("decision", index,
+                                        self._number("decision", index, row, "hold_value"),
+                                        "hold_value")
             elapsed = (later_day - decided).days / _DAYS_PER_YEAR
             projected = (hold_value / value) ** (elapsed / float(horizon))
-            realized = later[symbol] / then
+            realized = later[key] / then
             surprise = realized - projected
             decision = row.get("decision")
+            if decision not in ("hold", "exit"):
+                raise ValueError(
+                    f"{self.key}: decision {index} field 'decision' must be hold or exit, "
+                    f"got {decision!r}"
+                )
             out.append({
-                symbol_field: symbol, "decided_as_of": decided.isoformat(),
+                **dict(zip(key_fields, key)), "decided_as_of": decided.isoformat(),
                 "observed_as_of": later_day.isoformat(), "elapsed_years": elapsed,
                 "projected_growth": projected, "realized_growth": realized,
                 "surprise": surprise, "decision": decision,
             })
-            bucket = by_decision.setdefault(str(decision), {"count": 0, "sum": 0.0})
+            bucket = by_decision.setdefault(decision, {"count": 0, "sum": 0.0})
             bucket["count"] += 1
             bucket["sum"] += surprise
         summary_by = {
@@ -206,5 +231,6 @@ class DecisionOutcomes(Node):
                       self.key, len(out), len(unmatched), mean)
         return {"records": out, "summary": {
             "stage": "decision outcomes", "scored": len(out),
-            "observed_as_of": later_day.isoformat(), "unmatched": sorted(unmatched),
+            "observed_as_of": later_day.isoformat(),
+            "unmatched": [dict(zip(key_fields, key)) for key in sorted(unmatched, key=repr)],
             "mean_surprise": mean, "by_decision": summary_by}}

@@ -70,6 +70,10 @@ def test_unusable_series_and_declarations_refuse(ctx):
         _run(ctx, rows=[{"net_return": 0.1}, {"net_return": "x"}])
     with pytest.raises(ValueError, match="at least 2"):
         _run(ctx, rows=[{"net_return": 0.1}])
+    with pytest.raises(ValueError, match="no usable Sharpe"):
+        _run(ctx, rows=[{"net_return": 0.01}] * 6)
+    with pytest.raises(ValueError, match="row 1.*mapping"):
+        _run(ctx, rows=[{"net_return": 0.1}, [0.2]])
     with pytest.raises(ConfigError, match="trials"):
         ActiveHurdle("h", {**HURDLE, "trials": 0})
     with pytest.raises(ConfigError, match="min_dsr"):

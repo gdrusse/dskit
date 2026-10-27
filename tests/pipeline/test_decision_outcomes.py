@@ -20,7 +20,7 @@ def ctx(tmp_path):
 
 
 PARAMS = {
-    "symbol_field": "symbol",
+    "key_fields": ["account", "symbol"],
     "as_of_field": "as_of",
     "value_field": "market_value",
     "quantity_field": "long_quantity",
@@ -28,16 +28,19 @@ PARAMS = {
 
 DECISIONS = [
     # projected 5-year hold growth 2500 -> 3000 (x1.2); one year in, pro rata x1.2^(1/5)
-    {"symbol": "VTI", "as_of": "2026-10-27", "market_value": 2500.0, "long_quantity": 10.0,
-     "hold_value": 3000.0, "horizon_years": 5, "decision": "hold"},
-    {"symbol": "AAPL", "as_of": "2026-10-27", "market_value": 600.0, "long_quantity": 3.0,
-     "hold_value": 900.0, "horizon_years": 5, "decision": "exit"},
+    {"account": "A1", "symbol": "VTI", "as_of": "2026-10-27", "market_value": 2500.0,
+     "long_quantity": 10.0, "hold_value": 3000.0, "horizon_years": 5, "decision": "hold"},
+    {"account": "A1", "symbol": "AAPL", "as_of": "2026-10-27", "market_value": 600.0,
+     "long_quantity": 3.0, "hold_value": 900.0, "horizon_years": 5, "decision": "exit"},
 ]
-# 365 days later; VTI bought more shares (quantity 20), AAPL unchanged
+# 365 days later; VTI bought more shares (quantity 20), AAPL unchanged; VTI also held in A2
 LATER = [
-    {"symbol": "VTI", "as_of": "2027-10-27", "market_value": 5500.0, "long_quantity": 20.0},
-    {"symbol": "AAPL", "as_of": "2027-10-27", "market_value": 540.0, "long_quantity": 3.0},
-    {"symbol": "NEW", "as_of": "2027-10-27", "market_value": 10.0, "long_quantity": 1.0},
+    {"account": "A1", "symbol": "VTI", "as_of": "2027-10-27", "market_value": 5500.0,
+     "long_quantity": 20.0},
+    {"account": "A1", "symbol": "AAPL", "as_of": "2027-10-27", "market_value": 540.0,
+     "long_quantity": 3.0},
+    {"account": "A2", "symbol": "VTI", "as_of": "2027-10-27", "market_value": 10.0,
+     "long_quantity": 1.0},
 ]
 
 
@@ -52,6 +55,7 @@ def test_outcomes_by_hand(ctx):
     assert aapl["realized_growth"] == pytest.approx(0.9)
     assert aapl["projected_growth"] == pytest.approx(1.5 ** (elapsed / 5))
     assert aapl["decision"] == "exit"
+    assert vti["account"] == "A1" and vti["symbol"] == "VTI"
     assert out["summary"]["scored"] == 2
     assert out["summary"]["unmatched"] == []
     assert out["summary"]["mean_surprise"] == pytest.approx(
@@ -63,7 +67,7 @@ def test_outcomes_by_hand(ctx):
 def test_a_decision_without_a_later_row_is_unmatched_not_scored(ctx):
     out = DecisionOutcomes("o", PARAMS).run(ctx, {"decisions": DECISIONS, "positions": LATER[1:]})
     assert [r["symbol"] for r in out["records"]] == ["AAPL"]
-    assert out["summary"]["unmatched"] == ["VTI"]
+    assert out["summary"]["unmatched"] == [{"account": "A1", "symbol": "VTI"}]
 
 
 def test_without_a_quantity_field_value_is_the_measure(ctx):
@@ -84,8 +88,19 @@ def test_unusable_rows_and_declarations_refuse(ctx):
                        "positions": [{**LATER[0], "as_of": "2026-10-27"}]})
     with pytest.raises(ValueError, match="several"):
         node.run(ctx, {"decisions": DECISIONS, "positions": LATER + [LATER[0]]})
+    with pytest.raises(ValueError, match="decisions carry key.*several"):
+        node.run(ctx, {"decisions": DECISIONS + [DECISIONS[0]], "positions": LATER})
+    with pytest.raises(ValueError, match="decision 0.*key field 'account'"):
+        node.run(ctx, {"decisions": [{k: v for k, v in DECISIONS[0].items() if k != "account"}],
+                       "positions": LATER})
+    with pytest.raises(ValueError, match="decision 0.*non-positive"):
+        node.run(ctx, {"decisions": [{**DECISIONS[0], "market_value": 0.0}], "positions": LATER})
+    with pytest.raises(ValueError, match="decision 0.*'decision'"):
+        node.run(ctx, {"decisions": [{**DECISIONS[0], "decision": "maybe"}], "positions": LATER})
     with pytest.raises(ConfigError, match="missing"):
-        DecisionOutcomes("o", {"symbol_field": "symbol"})
+        DecisionOutcomes("o", {"key_fields": ["symbol"]})
+    with pytest.raises(ConfigError, match="key_fields"):
+        DecisionOutcomes("o", {**PARAMS, "key_fields": ["symbol", "symbol"]})
     with pytest.raises(ConfigError, match="unknown"):
         DecisionOutcomes("o", {**PARAMS, "extra": 1})
 

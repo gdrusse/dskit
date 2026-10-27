@@ -24,7 +24,8 @@ python -m dskit.onboarding register-source active --root ./ob \
     --config '{"path": "./inputs/active", "effective_field": "day"}' --activate
 python -m dskit.onboarding acquire --root ./ob --source active --stream returns --mode backfill
 mkdir -p decisions
-python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <YYYY-MM-DD>
+# set snapshot.where[as_of] to the pull's UTC day, then run with the SAME day:
+python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <that day>
 ```
 
 `configs/run-hold-vs-redeploy.json` holds every rate, horizon and field name;
@@ -32,8 +33,10 @@ set them before the first run. Neither return is a literal: `market` builds
 the hold return from dividend yield + real growth + inflation + CAPE drift and
 `betas` scales it per symbol (research A0001); `hurdle` deflates the active
 backtest's mean by what `trials` variants of nothing would have found and
-withholds it below `min_dsr`, in which case every holding holds. Both paths
-are liquidated and taxed at the horizon (`terminal_tax_rate`). Rows land in `decisions/<run>.jsonl`,
+withholds it below `min_dsr`, in which case every holding holds. The hold
+path is taxed once at the horizon (`terminal_tax_rate`); the active path pays
+its short-term rate every year (`redeploy_tax_rate`, `annual`). Equities
+only: option rows are filtered out, their basis carries no multiplier. Rows land in `decisions/<run>.jsonl`,
 one per account x symbol, advisory only. Aggregate positions carry no lots, so
 every holding takes `default_holding` until a lot-level export is onboarded.
 

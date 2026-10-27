@@ -9,7 +9,11 @@ strategy may claim once that part is removed, by one rule:
 
 where ``E[max null Sharpe]`` is the per-period Sharpe the best of ``trials``
 zero-skill strategies would show (:func:`~dskit.pipeline.stats.deflated_sharpe_ratio`,
-Bailey & López de Prado 2014). The deflated Sharpe probability from the same
+Bailey & López de Prado 2014). ``mean`` is the arithmetic per-period mean, so
+the annual rate is arithmetic too; a consumer that compounds it over years
+overstates the geometric path by about ``sd^2 / 2`` per period, which for a
+weekly series of a few percent vol is a few basis points a year and is left to
+the document's ``risk_premium``. The deflated Sharpe probability from the same
 call is the pre-registered admissibility criterion: below ``min_dsr`` the
 strategy has not shown skill beyond its own search, and the hurdle is withheld
 (``rate`` is ``None``), which :class:`~dskit.pipeline.liquidation.HoldVsRedeploy`
@@ -26,7 +30,8 @@ from __future__ import annotations
 
 import math
 
-from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.binary_curve import name_ok
+from dskit.pipeline.node import Node, check_int_param, check_number_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.stats import deflated_sharpe_ratio, sharpe_ratio
 
@@ -78,15 +83,13 @@ class ActiveHurdle(Node):
         if missing:
             problems.append(f"missing required params {missing}")
         field = params.get("return_field")
-        if "return_field" in params and not (isinstance(field, str) and field.strip()):
+        if "return_field" in params and not name_ok(field):
             problems.append(f"return_field must be a non-empty field name, got {field!r}")
         for name in ("periods_per_year", "trials"):
             if name in params:
                 check_int_param(problems, name, params[name], ge=1)
-        if "min_dsr" in params and (
-            not number_ok(params["min_dsr"]) or not 0.0 <= params["min_dsr"] <= 1.0
-        ):
-            problems.append(f"min_dsr must be a number in [0, 1], got {params['min_dsr']!r}")
+        if "min_dsr" in params:
+            check_number_param(problems, "min_dsr", params["min_dsr"], lower=0.0, upper=1.0)
         return problems
 
     @classmethod
@@ -101,7 +104,9 @@ class ActiveHurdle(Node):
         field = self.params["return_field"]
         series = []
         for index, row in enumerate(records):
-            value = row.get(field) if isinstance(row, dict) else None
+            if not isinstance(row, dict):
+                raise ValueError(f"{self.key}: row {index} must be a mapping, got {type(row).__name__}")
+            value = row.get(field)
             if not number_ok(value):
                 raise ValueError(
                     f"{self.key}: row {index} field {field!r} is not a number, got {value!r}"
@@ -120,6 +125,11 @@ class ActiveHurdle(Node):
         found = sharpe_ratio(series)
         deflated = deflated_sharpe_ratio(series, self.params["trials"])
         expected_max = deflated["expected_max_sharpe"]
+        if deflated["dsr"] is None or expected_max is None:
+            raise ValueError(
+                f"{self.key}: the series has no usable Sharpe (sd {found['sd']!r}); "
+                "a hurdle needs a dispersed return series"
+            )
         haircut = expected_max * found["sd"] * periods
         deflated_rate = found["mean"] * periods - haircut
         dsr = deflated["dsr"]

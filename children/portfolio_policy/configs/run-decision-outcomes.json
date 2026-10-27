@@ -34,12 +34,12 @@
       "uses": "dskit.pipeline.decision_outcomes:DecisionOutcomes",
       "inputs": { "decisions": "$decisions.records", "positions": "$later.records" },
       "params": {
-        "symbol_field": "symbol",
+        "key_fields": ["account", "symbol"],
         "as_of_field": "as_of",
         "value_field": "market_value",
         "quantity_field": "long_quantity"
       },
-      "notes": "Per-share growth (market_value / long_quantity) so a buy or a sell between the two dates is not read as a return; surprise = realized - projected (pro rata for the elapsed fraction of horizon_years)."
+      "notes": "Joined on account + symbol (one symbol in two accounts is two positions). Per-share growth (market_value / long_quantity) so a buy or a sell between the two dates is not read as a return; surprise = realized - projected (pro rata for the elapsed fraction of horizon_years)."
     },
     "scored": {
       "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",

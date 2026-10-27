@@ -20,27 +20,18 @@ stream and a declared beta table and emits ``{symbol: rate}``, which
 :class:`~dskit.pipeline.liquidation.HoldVsRedeploy` takes on its optional
 ``hold_returns`` input port. Every number is a param of the document.
 
-Import cost: stdlib only.
+Import cost: stdlib + the pipeline core.
 """
 
 from __future__ import annotations
 
-from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.binary_curve import name_ok
+from dskit.pipeline.node import Node, check_int_param, check_number_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 __all__ = ["BetaHoldReturns", "MarketHoldReturn"]
 
 _RATE_LOWER, _RATE_UPPER = -1.0, 10.0
-
-
-def _name_ok(value):
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _check_number(problems, name, value, *, lower, upper):
-    """Append a problem unless ``value`` is a number in ``[lower, upper]``."""
-    if not number_ok(value) or not lower <= value <= upper:
-        problems.append(f"{name} must be a number in [{lower}, {upper}], got {value!r}")
 
 
 class MarketHoldReturn(Node):
@@ -83,7 +74,7 @@ class MarketHoldReturn(Node):
             problems.append(f"missing required params {missing}")
         for name in ("dividend_yield", "real_growth", "inflation"):
             if name in params:
-                _check_number(problems, name, params[name], lower=_RATE_LOWER, upper=_RATE_UPPER)
+                check_number_param(problems, name, params[name], lower=_RATE_LOWER, upper=_RATE_UPPER)
         for name in ("cape", "fair_cape"):
             if name in params and (not number_ok(params[name]) or params[name] <= 0.0):
                 problems.append(f"{name} must be a positive number, got {params[name]!r}")
@@ -159,17 +150,17 @@ class BetaHoldReturns(Node):
         if missing:
             problems.append(f"missing required params {missing}")
         if "risk_free" in params:
-            _check_number(problems, "risk_free", params["risk_free"],
-                          lower=_RATE_LOWER, upper=_RATE_UPPER)
+            check_number_param(problems, "risk_free", params["risk_free"],
+                               lower=_RATE_LOWER, upper=_RATE_UPPER)
         betas = params.get("betas")
         if "betas" in params:
-            if not isinstance(betas, dict) or not betas or not all(_name_ok(k) for k in betas):
+            if not isinstance(betas, dict) or not betas or not all(name_ok(k) for k in betas):
                 problems.append(f"betas must be a non-empty {{symbol: number}}, got {betas!r}")
             else:
                 for symbol, beta in betas.items():
                     if not number_ok(beta):
                         problems.append(f"betas[{symbol!r}] must be a number, got {beta!r}")
-        if "symbol_field" in params and not _name_ok(params["symbol_field"]):
+        if "symbol_field" in params and not name_ok(params["symbol_field"]):
             problems.append(
                 f"symbol_field must be a non-empty field name, got {params['symbol_field']!r}"
             )
@@ -194,7 +185,7 @@ class BetaHoldReturns(Node):
         betas = self.params["betas"]
         rates, defaulted = {}, []
         for index, row in enumerate(records):
-            if not isinstance(row, dict) or not _name_ok(row.get(field)):
+            if not isinstance(row, dict) or not name_ok(row.get(field)):
                 raise ValueError(
                     f"{self.key}: row {index} has no symbol in field {field!r}"
                 )
