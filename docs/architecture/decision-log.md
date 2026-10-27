@@ -32758,3 +32758,607 @@ max_count check_count_param count_cap huge_int; near matches only private
 `_check_count` helpers in `false_signal`, `mean_interval` and `uncertainty_set`
 (private to their modules, raising rather than accumulating) and `check_int_param`,
 which the new helper wraps.
+
+
+#### ADR-0278 amendment: staged MIO JSON design (2026-10-27)
+
+Owner requested arbitrary ticker-DTE implementations, then narrowed this turn:
+"Don't worry about that now. Just design the JSON pipelines." Deliver design
+documents only; do not choose the 2019 gate, fit, replay market data or implement
+runtime machinery. Base: 5747f179 (current origin/main). The explicit request
+authorizes the four requested JSON files under the child's docs/plans/mio-json/.
+
+Contract: externally selected sparse ticker/DTE pairs, evidence settled before
+2020-01-01; unchanged predictive Path A0001-A0008; one chronological packet per
+invocation, fixed variant cohort, distinct history/entry/settlement clocks,
+independent packet accounts, and permanent exposure after first read. All
+selection thresholds remain external. 2020 is exposed development; 2021-23 can
+support MIO-only comparisons because M51 was selected on those predictive years.
+2024-25 remains a separate single-opening holdout; 2026 remains permanently shut.
+Proposed behavior is not enforced by today's WeeklyOptionPortfolioStudy.
+
+Inventory: pipeline Workflow/expand, PipelineDocument, RunAttestation,
+JsonArtifact, onboarding snapshots, CDFQuoteOptionSelect,
+WeeklyOptionPortfolioStudy, TransportPortfolioSolve, FundedOptionAccount.
+The existing study has a 17-name bound, one shared DTE band and one time window;
+it cannot implement this design through params alone. Future generic protocol
+and exposure handling belong in dskit; the option pair/quote/account adapter
+belongs in the child and must reuse the existing portfolio solver and ledger.
+
+Allowed edits: this ADR; child docs/plans/README.md (contract, checks, review);
+docs/plans/mio-json/{study,plan.template,run.template,compare.template}.json;
+child README/CLAUDE/AGENTS contents pointers; tests/test_configs.py manifest.
+Non-goals: runtime classes, automatic gate selection, changing Path, data reads,
+source acquisition, MIO solves, backtests, deployment, merge or push.
+
+Design acceptance matrix: sparse pairs/exact and band DTE; source and forecast
+identity; chronological packets including labels and history; fill and deposit
+cutoffs; immutable variants and exposure on failed runs; separate accounts;
+complete paired reporting without winner selection; protected years; template
+expansion and JSON grammar; explicitly named missing runtime seams. Verify JSON,
+expansion, reference wiring, date arithmetic, existing solver-param compatibility
+and manifest/parity checks. Independent design reviews before delivery.
+Sweep: mio-study ticker-dte eligibility release-window settlement-tail
+weekly-option-portfolio (35 refs, 90 other worktrees; reuse inventoried above).
+
+#### ADR-0278 amendment: owner-requested data-use TDD (2026-10-27)
+
+Owner requests a technical design document answering what each time window
+does, with a mathematical input/operation/output chart, matching number line,
+folds, JSON references and exact run pins. This is a record of current
+decisions and their execution dependencies, not a new testing policy.
+Base: 95096f4c; origin/main 5747f179 remains an ancestor. Path A0001-A0008
+stays owner-only. The TCN Path recipe and M51's recorded MLP dependency are
+separate roles; final reconciliation and unapproved MIO packet dates remain
+undecided. Unknown historical invocation pins are missing provenance, not
+unmade research decisions. No performance results or experiment catalog.
+
+Requested artifacts authorize one canonical child document,
+docs/decisioning/technical-design.json; its managed
+index-options-TDD.canvas.tsx presentation; and a personal update-tdd/SKILL.md.
+Existing edits: this ADR, child README/CLAUDE/AGENTS pointers and exact file
+manifest. Reuse Path, the fold JSONL, saved fit completion manifests,
+RunAttestation, existing MIO design templates and Canvas Table/SVG primitives.
+No runtime adapters, changes to model configuration, new market runs, protected
+outcome reads, Path edits, merge or push. Inspection uses bounded metadata,
+hashes and a quote-date projection of the already bounded panel only.
+
+Acceptance: identical chart/visual window registry; explicit half-open
+intervals and calendar-day DTE; fit/monitor/validation and settlement clocks;
+clear sets/functions and fixed hyperparameters versus checkpoint selection;
+all five folds and current evaluation regimes; full declared horizon and
+unassigned/undecided uses; exact artifact/run/config identities with provenance
+limits. Check the JSON references and math/date invariants, Canvas TypeScript,
+skill metadata, and focused manifest/doc checks. Independent correctness and
+presentation/integration reviews on an immutable candidate; no full suite.
+Sweep: technical-design TDD data-use windows provenance (35 refs, 90 worktrees).
+Existing strike-screen technical-design note is superseded where Path A0008
+or saved current-dependency metadata differs; it is not a second authority.
+
+TDD candidate evidence: 46 windows, 13 config references and 14 saved execution
+records; all references/date orderings and strict fit/monitor label seams checked.
+All ten model artifact manifests verified; preparation and M51 RunAttestation
+completed/document/node checks passed. Panel and M51 source/forecast bytes
+verified without decoding outcomes. Canonical/canvas embedded data are equal.
+Canvas typecheck: zero diagnostics. Skill metadata: valid. Focused manifest,
+agent parity and document checks: 5 passed (project venv, WSL2); no full suite.
+
+External review inputs (not repository blobs):
+- Canvas: /home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-TDD.canvas.tsx
+  SHA256 ec874235be3263d5da60927213631c38018e950d6527fe04cae6bf2035af06a1
+- Personal skill: /mnt/c/Users/russe/.codex/skills/update-tdd/SKILL.md
+  SHA256 9eba67bc75459e27858a26355d0ae1fcbc3eea074fa5141b0c65e4958ae2c20d
+- Canonical JSON SHA256:
+  95aaef6dc2bfabaaeea402b5625c339ba709a721526b708b38e29ac65b7f5953
+
+Review matrix: (1) current authority versus proposals/dependencies;
+(2) observation/population and function notation; (3) all five folds, early
+stopping, label purging/tails and M51 learning; (4) exact JSON/run pins and
+honest missing provenance; (5) protected/unassigned/undecided periods;
+(6) single visual/chart registry, filters and readable endpoint details;
+(7) skill maintenance contract, pointers and focused checks.
+
+TDD review round 1, candidate e3f3fe8bf209596e0936c8e91abc4291bd30b963:
+independent reports retained below (formatting normalized).
+
+Correctness/authority — GPT-6, /root/tdd_correctness:
+Verdict: changes required; unresolved Critical 0 / Major 1 / Minor 2 / Nit 0.
+
+C1 Major: M51 fallback mathematics describes a different forecast.
+Location: technical-design.json functions.blend (lines 118-119), mirrored canvas.
+The document says insufficient dispersion buckets use the MLP with fitted=false.
+_CellFitting.fit/predict instead fits global QA weights when total evidence is
+sufficient; missing/undersized buckets use global QA. _fit_block retains MLP
+when the whole fit declines or the target lacks a required component.
+Market PIT-map and QA-learning eligibility also differ; eligible_M51 was undefined.
+Saved fold 2 has all three bucket fits, 262515 targets, 142399 fitted and 120116
+fallback rows, so insufficient buckets cannot explain them. Two synthetic
+checks passed: unknown bucket returns global QA .75 rather than model .1;
+missing required component returns model .1 and fitted=false despite a valid
+whole-fold fit. Following the original TDD would produce different forecasts
+and downstream MIO eligibility. Define separate market-map, QA-learning and
+target-readiness sets and a piecewise bucket/global/model forecast.
+
+C2 Minor: score-producing pipeline orphaned from chart, execution omitted.
+Config scores was referenced by no window. Completed execution available at
+scores/run-wf-wide-mlp64/strike-region-scores-2023-12-31-593914d6,
+run hash 593914d64874e467ea2888e4eb6e1205640fbe0fc0f2bdc71d5d65cd5d7f99f6,
+document hash 36abefe7c3eaf4819ed24a5fc1b01147650d2a807a1838bd705eebd878ca7948.
+State ran and scores output matches M51 source. The chart skips a relevant JSON
+execution, although source bytes were pinned. Associate scoring with fold/
+forecast windows and retain verified config/completion pins.
+
+C3 Minor: S0-S4 slices invoke the aggregate cellgate they cannot compute.
+Each has one regime's inputs, but cellgate requires at least three years and
+three regimes. The M51 JSON itself distinguishes descriptive tables from the
+A0007 expiry-rank gate produced by a separate analysis with method rows.
+Use a slice-scoring operation; show the complete aggregate gate separately
+with actual provenance or an explicitly unpinned execution state.
+
+Checks: immutable HEAD/clean worktree; Path/workflow/ADR; JSON/canvas equality;
+13 config, 5 code and declared external hashes; 46 IDs/date ordering;
+10 fit memberships/supports; five fold endpoints; fit/monitor purging,
+admission/checkpoint selection, M51 learning/calibration/fallback and bounded
+2020 runner; current authority versus proposals; settlement/history/gap/seal;
+shared visual/chart registry; maintenance skill.
+Limits: no protected outcomes, market jobs, refit, backtest or full suite.
+Original code/environment bindings unrecovered. Did not rehash every large
+artifact, visually render the canvas or repeat TypeScript.
+
+Integration — GPT-6, /root/tdd_integration:
+Additional finding I1 Minor: Reporting/HPO uses monitor and displays visited-
+epoch argmin/checkpoint mathematics while inputs are Lambda_search and output
+lambda*. This conflates HPO with early stopping; undecided state limits impact.
+Give HPO its own explicitly undecided operation. Independently confirmed C1
+global fallback, C2 the sole unreferenced scores config, C3 aggregate cellgate
+on single slices. Additional counts C0/M0/minor1/nit0; combined backlog
+C0/M1/minor3/nit0, correction required.
+
+Checks: candidate/external hashes; author JSON check; TypeScript zero;
+skill validation; focused 5 tests; independent transpiled-component harness
+across all 15 group/fold combinations. Timeline/chart IDs agree, assigned
+windows have two circles and null dates none, selection fallback and nonempty
+views work, 577 file actions resolve. Formulas/paths/pins are exposed except C2.
+Limits: SDK stand-ins verify component logic and structure, not host pixels,
+typography or dispatch. No screenshot, market job, protected outcomes or full
+suite. Did not independently recompute every split/large-artifact hash.
+
+Batch correction: C1 separated U_PIT, U_QA and R_K and specified global/bucket/
+model forecast branches; C2 added verified R-scores and a scoring window with
+fold references; C3 made regimes descriptive slice_score and added the locked
+aggregate gate with missing execution provenance explicit; I1 added the
+undecided hypersearch signature. MIO rows now name the composed solve/replay/
+report operator. No new recipe, allocation or execution decision was adopted.
+
+Corrected candidate checks: 48 windows, 13 config references, 15 run records;
+no orphan config; all references/dates/purge seams; canonical/canvas equality;
+TypeScript zero diagnostics. The unchanged integration harness
+/tmp/check-tdd-rendered-tree.cjs (SHA256
+96c9ab45146f928fb3cbfbcab94ae0de43b9f2ec902f9a8f850be6bea4e8f3b1)
+now passes all 15 states and 659 existing-file actions. External skill unchanged.
+New canonical SHA256:
+8e7191df6f1717aeffbd1632d56cc77a8515b0b4bd0a2cae94307af72c4b12dc
+New canvas SHA256:
+21e9ff06312529c82e2c12aa23c1ed1925818b458a4d6a41bec6c2c749d9d0a0
+Both final lenses restart on this corrected candidate.
+
+TDD review round 2 stopped candidate 3cc5cb8b04d2222a7478184aacc3519ed4c0983c
+at the correctness/authority gate; no second lens was spent on a candidate
+whose A0007 authority formula was invalid. Reviewer GPT-6,
+ /root/tdd_correctness_final. Unresolved C0 / M2 / minor1 / nit0.
+Retained report (formatting normalized):
+
+C4 Major: marketcal used full T_f and SCORES omitted scoring subsampling.
+Executed fit_band_sample=100000 gives populations to scored counts
+260392->86798, 426603->85321, 605633->86519, 788405->98551,
+970019->97002. Validation is unsampled. Actual _sample and _PitMap on
+200000 alternating PITs [.1,.9,...] yield G(.5)=.5 on full T but 1.0
+on the stride sample of .1 values. Literal TDD implementation changes
+calibration, QA weights and downstream forecasts. Define sampled scoring-fit
+rows, anchor (fold,band,identity) to the pinned artifact and use its fit band
+for PIT learning; preserve full T for neural and empirical fitting.
+
+C5 Major: current A0007 formula omits built calibrated-market and pooled
+references. Path adds them when built and both are present. With model .9,
+raw/name 1.0, calibrated/pooled .8 in every year/regime, the old formula
+passes and the applicable four-reference gate fails. Express the full
+comparator set, keep A0005 separate and retain missing gate execution
+provenance; no existing pass result is being overturned.
+
+C6 Minor: scoring prose said no model is trained, omitting _baselines and
+_pooled reconstruction from ALL full T before scoring sampling. Restore the
+neural checkpoint and state these empirical fits separately to avoid fitting
+baselines on the smaller score population.
+
+Original C1/C2/C3/I1 corrections were present. Required convergence checkpoint:
+one bounded batch correction is supported. Full population inventory is
+bounded validated panel -> configured tickers in identity order -> fold
+calendar, strict fit/monitor purges and ticker admission -> full T/C/V ->
+saved neural checkpoint and empirical baselines fitted on full T ->
+scoring-fit stride and complete validation, retaining fold/band identity ->
+PIT learning on eligible/finite source-fit rows -> QA learning on eligible,
+component-ready earlier source-validation rows with matured labels ->
+whole-population minimum counts, independent global/bucket QA strides ->
+bucket/global prediction and model fallback -> reporting on ranked validation
+with finite outcome and ALL reported forecasts -> declared grouping masks.
+Artifact anchoring is sound if order and fold/band multiplicity are preserved,
+full T remains distinct, and reporting is separate from PIT/QA/readiness.
+No external-component joins, feature-conditioned filters or recency weighting
+apply to this JSON. No runtime, Path, date or research decision change needed.
+
+Checks passed: immutable/clean candidate; 48 IDs/references/dates; 13 config
+and five code hashes; canonical/canvas equality; 73 recorded file hashes;
+three completed node/document attestations; ten fit manifests, memberships,
+supports, settings/checkpoints; five fold/regime conversions and strict
+settlement seams; 82-origin boundaries from date-only projection; panel and
+M51 artifact byte hashes; both synthetic counterexamples.
+Limits: no market task, protected outcome read, Path edit, full suite, visual
+render or repeated TypeScript check. At that candidate, original resolved
+invocations remained unrecovered.
+
+Checkpoint correction now applied as one batch: ordered S_L, distinct full
+T/V and sampled scoring/artifact populations, full-T empirical reconstruction,
+source-fit PIT learning, source-validation QA learning with independent strides,
+distinct report-common mask and all four currently built A0007 comparators.
+Predictive model index m and MIO formulation index nu are distinct.
+
+Additional provenance recovery: saved resolved TCN and MLP invocations found
+under documents/study. Their config identities plus groups and ordered
+fold-band identity hashes reproduce ALL ten complete fit identities. Only
+symbol, quote_date, expiry and settlement_date were projected under both
+pre-2024 bounds; no outcomes decoded. Saved panel bytes were already verified.
+Source/dependency declarations and exact document hashes now appear with
+each fit, replacing the obsolete unrecovered-invocation limitation.
+
+Corrected checks: 48 windows / 15 config refs / 15 execution records; exact
+references, config/run hashes, date/purge boundaries and snapshot equality;
+no orphan config; TypeScript zero; rendered-tree harness 15 states and 808
+existing-file actions. Skill unchanged. New canonical SHA256:
+4db996fee2058789c8d76245d42367a39358793fc7d00e1d76e87da4bd9b78ea
+New canvas SHA256:
+9cf52c78a283f3a104f93bee27657109d7756adf7cc44585ff6e69d41e406950
+Both final independent lenses restart on this bounded corrected candidate.
+
+TDD final feasible follow-ups on immutable candidate
+3558f4b8b847512b6028c0af7778e4b5e6cba7a3 (base 95096f4c).
+These are existing independent reviewer follow-ups, NOT fresh-context reviews.
+New reviewer allocation and activation of an older independent reviewer both
+returned "agent thread limit reached". This limitation does not waive the
+workflow's fresh-context requirement. The artifact is built and checked locally;
+formal candidate closure remains open. No merge, push, runtime implementation,
+market execution or protected-window opening is claimed.
+
+Correctness/authority retained report — GPT-6, /root/tdd_correctness_final:
+PASS. Unresolved Critical 0 / Major 0 / Minor 0 / Nit 0.
+C4, C5 and C6 are resolved. The document distinguishes full fit populations,
+scoring subsamples, artifact rows, PIT/QA learning and reporting masks;
+reconstructs empirical baselines from full T; and applies all four currently
+built A0007 references. Earlier C1/C2/C3/I1 corrections remain intact.
+
+Independent verification passed:
+- Reproduced all ten fit identities from recovered configs and bounded
+  identity/date columns, independently deriving ticker admission and monitor
+  boundaries.
+- Matched every scored fit/validation band's ordered physical identities
+  against the prescribed stride/full-validation populations.
+- Verified canonical/canvas/skill hashes and canonical/canvas equality;
+  48 windows, 15 configs and 15 run references.
+- Verified 80 run/artifact hash entries, three pipeline attestations and ten
+  fit manifests, settings and checkpoints.
+- Rechecked current authority, mathematical stages, fixed settings versus
+  checkpoint/HPO selection, settlement boundaries, protected periods,
+  undecided choices and provenance distinctions.
+No edits, market runs, protected outcomes or full suite. Visual rendering and
+TypeScript were not repeated by this lens. Historical process environments
+remain declared bindings rather than independently attested execution
+environments, as disclosed. This existing reviewer's follow-up does not satisfy
+the fresh-context requirement by itself and is not recorded as doing so.
+
+Integration retained report — GPT-6, /root/tdd_integration:
+PASS. Unresolved Critical 0 / Major 0 / Minor 0 / Nit 0.
+Existing independent reviewer follow-up, not a fresh-context review; allocation
+limitation remains disclosed.
+
+Verified:
+- Clean worktree at stated candidate.
+- Canonical JSON/embedded snapshot equality and exact three hashes below.
+- 48 windows, 15 configs, 15 execution records; references and checked hashes
+  pass; no orphan config.
+- All 15 reachable group/fold states preserve timeline/chart IDs, endpoint
+  counts and selection fallback; 808 displayed file actions resolve to existing
+  WSL files.
+- Additional selection checks cover all 48 windows: exact operation, every
+  assigned run record and every config hash appear in selected details.
+  Chart/SVG click selection works; changing groups resets the fold filter.
+- All five folds, settlement tails, null dates and scoring/gate rows accessible.
+- I1 corrected: explicitly undecided hypersearch separate from epoch monitoring.
+- C2/C3 corrected: score config/run evidence exposed, regime slice_score and
+  separate aggregate gate row.
+- Skill maintenance instructions consistent with current artifact structure.
+
+Checks, after source inspection, in WSL2:
+  /home/russell/dskit/.venv/bin/python -B /tmp/check-index-options-tdd.py
+  /home/russell/.vscode-server/bin/e646868227c3e3a9e3f24277c8c7220be42c0be7/node /tmp/typecheck-tdd.cjs
+  /home/russell/.vscode-server/bin/e646868227c3e3a9e3f24277c8c7220be42c0be7/node /tmp/check-tdd-rendered-tree.cjs
+JSON checks passed; TypeScript 0 diagnostics; rendered-tree checks passed.
+Focused pytest:
+  children/index_options/tests/test_configs.py::test_exact_manifest_and_agent_parity
+  tests/docs/test_budgets.py
+Result: 5 passed. Additional all-window selection checks ran as an ephemeral
+stdin extension of the inspected harness; no reviewed artifact edited.
+
+Integration limits: SDK stand-ins verify component structure/handlers, not host
+pixels, typography or actual file-opening dispatch. No screenshot-level
+verification. Did not independently reproduce all mathematical populations or
+rehash large parquet artifacts. No market execution, protected outcome decoding
+or full suite.
+
+Unchanged reviewed evidence:
+- Canonical JSON SHA256:
+  4db996fee2058789c8d76245d42367a39358793fc7d00e1d76e87da4bd9b78ea
+- Canvas SHA256:
+  9cf52c78a283f3a104f93bee27657109d7756adf7cc44585ff6e69d41e406950
+- Personal skill SHA256:
+  9eba67bc75459e27858a26355d0ae1fcbc3eea074fa5141b0c65e4958ae2c20d
+All former findings C1-C6/I1 resolved; no remaining Minor/Nit backlog.
+Final evidence-only amendment verified these hashes and the unchanged candidate
+content, contract/matrix and dependency references. Only this review record is
+appended. Canvas opening was requested and returned queued, not confirmed visible.
+Next bounded process action: fresh correctness/authority and integration contexts
+on unchanged candidate content when reviewer allocation is available. Until then
+do not call the required review gate closed or the branch ready to land.
+
+
+2026-10-27 owner correction and publication packet:
+Owner: user explicitly requests testing, writing the TDD in index_options and
+pushing, and corrects the forecast source to the best model-zoo output.
+Base 027de2b5; origin/main 5747f179 still ancestor. Prior local JSON MIO design
+and TDD commits form one publication slice; no runtime adapters are added.
+This owner instruction authorizes the narrow A0008 recipe correction, mirrored
+through the journal renderer. Other Path rows and Current Work stay identical.
+The yearly cadence, scoring, gates and sealed dates remain binding.
+
+Acceptance: future MIO consumes a pinned selected complete zoo output; no fixed
+TCN choice or invented winning recipe. TCN fit records are removed from the
+current TDD; M51/MLP pins remain only as the existing 2020 execution dependency.
+Selection contract/candidate set and exact winner/output pins remain undecided.
+The current document adds ZOO selection, separates promotion eligibility from
+argmin selection and uses a generic final-refit signature. No new data is read.
+
+Owner-authorized artifact manifest addition: one self-contained
+children/index_options/docs/decisioning/technical-design.html, the repository
+presentation of the canonical JSON, with matching number-line/table records.
+The managed canvas remains the chat presentation of the same snapshot.
+Existing README/instruction pointers, exact manifest and personal update-tdd
+maintenance instructions are the remaining bounded files. Wrap also updates
+the existing lane/index/archive records. No runtime, solver or backtest changes.
+
+Review matrix carries all prior TDD invariants and adds:
+(8) owner model-zoo amendment consistently represented across Path/TDD/MIO
+design; fixed historical component settings never constrain arbitrary winner;
+(9) tracked HTML and canvas snapshot equality, all shared filter/selection
+states and exact run/config details; portable repository links and explicitly
+local WSL artifact paths; actual browser visual smoke check;
+(10) publication ancestry, unchanged runtime/protected boundaries, focused
+manifest/docs checks and fresh independent final correctness/integration.
+Previous unresolved process gate requires fresh contexts on this candidate.
+
+Publication candidate checks: 5 focused manifest/docs tests passed; canonical
+structure/hash/purge checks passed; canvas TypeScript zero diagnostics and all
+15 filter states/644 local file actions passed; skill metadata valid.
+Actual browser on WSL-served self-contained HTML: all 15 group/fold states
+preserve chart/timeline IDs; all 49 row selections expose exact details; fold
+control hidden outside fold views; no console errors. Overview and fold 2
+screenshots visually inspected. HTML/canvas embedded JSON equals canonical.
+Narrow A0008-only Path edit and all Current Work values checked against027de2b5.
+No market run, new fit, protected data decoding or full suite.
+Review input SHA256 values:
+- /home/russell/wt/index-options-mio-schedule-20261027/children/index_options/docs/decisioning/technical-design.json
+  4fa312e23c1daf1905dcfe2102f169e6f3202b2ef116c96711111176b387f97a
+- /home/russell/wt/index-options-mio-schedule-20261027/children/index_options/docs/decisioning/technical-design.html
+  ade3ac99c0d8c21ae0f3f550e67f483859ec421db5b70fa517d46b55be609c9f
+- /home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-TDD.canvas.tsx
+  e1d74c0c80f80676b5a6a78d747f4281b9f7e89c729d577cf78676b70bbe29af
+- /mnt/c/Users/russe/.codex/skills/update-tdd/SKILL.md
+  e77d0d9df7496bcf614b21555a68b4bc5f705841d3457b6fe45aef5766ebb0ff
+
+
+Fresh correctness/authority review stopped candidate
+d93694d536d5a0d7d0ad0ddee29a047ac6733e06 before the integration lens.
+Reviewer GPT-6 /root/tdd_zoo_authority; base5747f179, amendment base027de2b5.
+Retained report: changes required; C0/M1/minor1/nit0; full assigned matrix
+completed, no other proven findings.
+
+Z1 Major: study.predictive still prescribes M51/cal_n82/last82 early stopping
+at study.json lines62,106,108,113. All eight params.study bindings inherit those
+fields. Expanded PipelineDocument hashes for all three templates equal the
+prior027de2b5 expansions: the owner correction was only in identity-excluded
+notes. Future wrappers could freeze M51 without selection evidence and reject
+another legitimate winner. This violates owner-amended A0008 and the matrix.
+Family: historical dependency retained as future authority; incomplete
+propagation across equivalent entrypoints. No wrong market run occurred.
+
+Z2 Minor: configs[scores].role in TDD line1822 still says no fitting, while
+strike_region_scores.py1119 reconstructs _baselines/_pooled on fullT through
+HorizonEmpiricalCDF.fit. Detailed formulas are right, so impact is limited.
+Family residual C6 scoring description. Clarify no neural refit.
+
+Independent checks passed: all65unique file hashes, three pipeline attestations,
+five MLP fit/completion identities; all15 ordered band identities, memberships,
+counts, monitor boundaries, settings/checkpoints, ten scored fit/val identities
+from bounded identity/date columns. Five synthetic fallback/stride checks.
+49windows/13configs/10runs, fold/regime/tail/protected/null boundaries, matching
+HTML/canvas snapshots, all15 source filter states, repository/run links; narrow
+A0008 purpose-only change, parity, skill hash, ancestry, unchanged runtime code,
+six proposed packet tails; final clean candidate identity.
+Limits: no protected outcomes, market execution, real fits/backtests, full
+suite, edits, browser rendering or repeated TypeScript. Historical process
+environments declared rather than independently attested.
+
+Independent correction checkpoint supports a bounded whole-family correction:
+inventory predictive, forecast source, protocol freeze/identity, all8bindings,
+active README and all TDD/presentation pins together. Exercise unresolved and
+two distinct selected recipes, one without old early-stop settings; different
+identities and explicit source mismatch refusal. No runtime implementation or
+new research decision needed; earlier population/fallback corrections intact.
+
+Batch correction: selection state/recipe/pins now unresolved required behavior
+under params.study. Explicit pointer equalities bind the selected producer to
+the onboarded forecast source. Planner must report unbound as runnable=false;
+open/intake refuse unbound/mismatched content before reads, and comparisons
+verify the same receipt. Exact recipe-specific training protocol is required;
+historical cal_n82/early-stop assumptions removed. Existing cadence and exposure
+lifecycle unchanged. README/current TDD/canvas/HTML/config hashes swept together.
+Z2 catalog now states empirical reconstruction and no neural refit.
+
+Corrected candidate checks: all8expanded params.study bindings match; all3
+PipelineDocument identities change from the stopped preset-M51 contract.
+Temporary pointer-contract interpreter checks unbound rejection, two distinct
+bound recipes (one with explicit no-monitor training protocol) and six producer
+field mismatches. Both fixture identities differ for all3documents. This is
+declaration/identity validation, NOT implemented wrapper/content-verification
+enforcement. The future runtime refusal cases remain mandatory.
+Command: project venv python -B /tmp/check-zoo-binding.py with candidate
+PYTHONPATH; script SHA retained below. No file or market reader is invoked.
+JSON/hash/purge/snapshot checks pass; focused manifest/docs5 pass again.
+Corrected external and tracked review hashes:
+- /home/russell/wt/index-options-mio-schedule-20261027/children/index_options/docs/decisioning/technical-design.json
+  05ee09d99f79989286e572f3b23293311f72013413aee53c6e7102971c5bb34d
+- /home/russell/wt/index-options-mio-schedule-20261027/children/index_options/docs/decisioning/technical-design.html
+  113384eeadd1ff5c9977a84bb77f95229e1df4ca80e78ddda04871398a609c6e
+- /home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-TDD.canvas.tsx
+  3cb79b1b535f1322a4f4dbceb2011d6023507299b13c38e85212e2e113893354
+- /mnt/c/Users/russe/.codex/skills/update-tdd/SKILL.md
+  e77d0d9df7496bcf614b21555a68b4bc5f705841d3457b6fe45aef5766ebb0ff
+- /tmp/check-zoo-binding.py
+  4b1522e2b91faa7cd54d6d3b6957457f255b5d81118ffe0d638f6aa3071e0f5f
+
+2026-10-27 corrected publication candidate review follow-ups:
+Candidate 3d5f6411b87f08ba40d0dc1d07a226bb2ba2e8b4; base5747f179.
+A new fresh correctness allocation was attempted after the correction and
+returned "agent thread limit reached". Existing independent reviewers therefore
+reviewed the immutable corrected candidate. Their reports below support a
+bounded review-branch push only. They do NOT satisfy the repository's required
+two fresh final contexts. Main merge remains blocked on that process gate.
+No review protection is waived; no runtime or research approval is inferred.
+
+Retained correctness/authority follow-up — GPT-6, /root/tdd_zoo_authority:
+PASS; unresolved Critical0/Major0/Minor0/Nit0. Z1 and Z2 resolved; no additional
+findings. This is an existing independent reviewer follow-up, not a fresh-context
+review. Full assigned correctness matrix covered at the design-contract level.
+
+Z1 disposition: recipe is null; structural selection, recipe, run, artifact,
+training and source pins are required; six equalities bind source and selected
+producer across all eight node bindings. Unbound/mismatch must refuse before
+claims/reads. No historical-M51 default or universal cal/early-stop remains.
+Z2 disposition: full-T empirical reconstruction is distinguished from restoring
+neural checkpoints. Prior population, scoring, fallback and purge corrections
+remain intact.
+
+Reviewer checks in WSL2:
+- Inspected and ran /tmp/check-zoo-binding.py: eight bindings, unbound fixture,
+  two recipes including no-monitor, six mismatches, three document identities.
+- Independently exercised 76 invalid declaration cases and eight individual
+  valid binding changes. Invalid cases failed the declared predicates; every
+  valid change altered all three document identities.
+- Canonical check:49 windows/13 configs/10 runs, references, checked hashes,
+  purges. Both embedded snapshots and all five ADR hashes agree.
+- Canonical diff from stopped d93694d5 is only the Z2 role description and
+  MIO-study hash. Mathematics, folds, tails, gates, protections and run pins
+  remain exact. MIO calendar, exposure, accounts, variants, reports and all
+  three templates remain unchanged. HTML rendering/filter/selection/link code
+  remains unchanged. Candidate HEAD was clean.
+
+Reviewer limits: temporary interpreters verify declarations/identities, not
+production runtime refusal or synthetic receipt contents. Future wrappers and
+artifact-content tests are required. Unchanged large artifacts were not rehashed;
+prior unchanged-identity evidence applies. No edits, protected reads, jobs,
+full suite, browser or TypeScript check. Supports review-branch preservation,
+not formal closure or main readiness.
+
+Retained integration follow-up — GPT-6, /root/tdd_integration:
+PASS; candidate3d5f6411b87f08ba40d0dc1d07a226bb2ba2e8b4; base5747f179.
+Findings Critical0/Major0/Minor0/Nit0. Existing independent reviewer follow-up,
+not a fresh-context review; the fresh integration requirement remains open
+because allocation failed. This report does not declare merge readiness.
+
+Verified:
+- Clean candidate and base ancestor; only document/design/publication scope,
+  no runtime implementation change.
+- Path confined to owner-authorized A0008 recipe correction. Other rows and
+  Current Work unchanged.
+- Future zoo selection distinct from historical M51/MLP; pins unresolved.
+- Canonical49 windows/13 configs/10 run records; references, checked hashes,
+  intervals/purges and canvas snapshot equality pass.
+- Canvas TypeScript zero diagnostics.
+- Canvas harness15 filter states: matching chart/timeline IDs, correct endpoint
+  counts,644 existing-file actions.
+- Independent HTML renderer harness15 filter states and49 selections/keyboard
+  actions: correct functions/config hashes/complete assigned run records;
+  two endpoint marks for dated windows and none for null dates; fold control
+  hidden outside fold views;323 repository-link instances resolve in checkout.
+- Absolute artifact paths display as local WSL evidence; embedded JSON/source
+  hash matches canonical; no external script/stylesheet dependencies.
+- Skill metadata valid; maintenance covers both presentations, relative links,
+  owner decisions versus historical dependencies.
+
+After inspection, /tmp/check-zoo-binding.py passed eight expanded nodes carrying
+the current study contract and three document identities changed from stopped
+preset-M51. Unbound, two bound recipe fixtures and six producer-field mismatches
+behave as declared. These are temporary contract-interpreter/document-identity
+checks, not implemented runtime refusals or artifact-content verification.
+
+Focused tests independently passed (five):
+  children/index_options/tests/test_configs.py::test_exact_manifest_and_agent_parity
+  tests/docs/test_budgets.py
+No full suite.
+
+Review hashes:
+JSON05ee09d99f79989286e572f3b23293311f72013413aee53c6e7102971c5bb34d
+HTML113384eeadd1ff5c9977a84bb77f95229e1df4ca80e78ddda04871398a609c6e
+Canvas3cb79b1b535f1322a4f4dbceb2011d6023507299b13c38e85212e2e113893354
+Skille77d0d9df7496bcf614b21555a68b4bc5f705841d3457b6fe45aef5766ebb0ff
+
+Integration limits: DOM/SDK stand-ins verify renderer logic, not pixels or host
+file-opening dispatch. Author's actual-browser screenshots were not independently
+repeated. Unchanged large artifacts and mathematical derivations were not
+revalidated. No edits, market execution, protected outcome decoding, new agent
+or full-suite run.
+
+Publication disposition: both existing follow-ups have zero findings, while
+fresh-context process closure is outstanding. Push authorized bounded branch
+codex/index-options-tdd-20261027; do not merge main. Next process action: two
+fresh final contexts on these unchanged reviewed blobs/dependencies. Any changed
+contract/dependency needs corresponding renewed review. Evidence/handoff-only
+edits preserve the reviewed artifact hashes and will receive the focused checks.
+
+Handoff verification: only the four existing evidence/re-entry/archive files
+changed after reviewed candidate3d5f6411. JSON, HTML, canvas and skill hashes
+remain exactly the review values above. git diff --check passes. Focused
+manifest/docs tests passed again:5 passed in0.94s with project WSL venv and
+candidate PYTHONPATH. Remote main remained5747f179 before branch publication.
+
+2026-10-27 owner-directed merge and branch purge:
+Owner asked: "Were these not skeptic reviewed? If so merge and purge".
+Confirmed: correctness/authority and integration independently reviewed corrected
+candidate3d5f6411; both follow-ups PASS with Critical0/Major0/Minor0/Nit0.
+The prior final message had disclosed that only fresh reviewer contexts remained
+outstanding. The owner's explicit merge instruction accepts the completed
+reviews for this bounded document/design publication packet. It supersedes the
+previous review-branch-only disposition, not the retained factual review record
+or the general workflow. No finding or runtime protection is waived.
+
+Fetch confirms origin/main5747f179 remains an ancestor of published4bcd58eb;
+no reviewed dependency changed. Current scope is evidence/re-entry updates only,
+then fast-forward main publication and expected-head deletion of this task's
+contained branch. Preserve unrelated worktrees, branches and local main checkout.
+The detached checkout remains available for the canvas's local file links.
+No new code, design contract, market execution or protected-window opening.
+
+Next research work remains pinning the model-zoo output and selecting a separate
+implementation packet; design JSONs are not executable wrappers.
+
+Pre-merge checks: all reviewed code/tests/contracts remain identical to3d5f6411;
+only four evidence/handoff/archive files differ. JSON/HTML/canvas/skill SHA256
+values match the retained review. git diff --check passes; focused manifest
+and document-budget tests:5 passed in0.87s. No full-suite rerun.

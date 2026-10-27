@@ -1,0 +1,28 @@
+{
+  "name": "mio-compare-packet-design",
+  "notes": "DESIGN ONLY. Read verified completed packet artifacts, never raw future data. proposed uses must be implemented. Comparison is descriptive; selection criteria remain a separate owner input.",
+  "pipeline": {
+    "results": {
+      "uses": "dskit.pipeline.study_protocol:StudyPacketResults",
+      "params": {
+        "study": "${study}",
+        "result_receipts": "${result_receipts}"
+      },
+      "notes": "PROPOSED verifier. Verify exact receipt, artifact content, source/computation identities and shared exposure record, including predecessor disposition, monotone frontier and cohort-freeze receipt. Reconcile claimed freshness with actual prior reads and retirements across revisions/aliases. Another pair set, source snapshot, packet or cohort cannot substitute. Failed variants prevent a complete comparison."
+    },
+    "comparison": {
+      "uses": "index_options.ledger_studies:MIOPacketCompare",
+      "inputs": {
+        "results": "$results.results",
+        "identities": "$results.identities"
+      },
+      "params": {
+        "study": "${study}"
+      },
+      "notes": "PROPOSED child report node. Produce per-method, per-packet and pair/week coverage with the declared metrics, paired method deltas within each packet and replay/timeout status. Keep different cohorts and reset account curves separate. Produce report as JsonArtifact. Report no winner while primary_metric/selection thresholds are unset."
+    }
+  },
+  "outputs": {
+    "run_root": "${output_root}"
+  }
+}

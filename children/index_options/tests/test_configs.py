@@ -50,6 +50,11 @@ def test_shipped_suite_passes_each_nonempty_snapshot(child_root, rows, store_fac
 
 def test_exact_manifest_and_agent_parity(child_root):
     expected = {
+        # ADR-0278: owner-requested JSON-only MIO design, not runnable configs.
+        "docs/plans/mio-json/study.json",
+        "docs/plans/mio-json/plan.template.json",
+        "docs/plans/mio-json/run.template.json",
+        "docs/plans/mio-json/compare.template.json",
         "configs/run-theta-market-proxy.json",
         "configs/run-option-scenario-stress.json",
         # Published prescription memos and saved 2020 shock-row evidence.
@@ -171,6 +176,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/source-optionshist-chain.json",
         "fixtures/contracts.jsonl", "fixtures/quotes.jsonl", "fixtures/settlements.jsonl",
         "docs/decisioning/actions.csv", "docs/decisioning/path.csv", "docs/decisioning/README.md",
+        "docs/decisioning/technical-design.json",
+        "docs/decisioning/technical-design.html",
         "docs/explanations/README.md", "docs/plans/README.md", "docs/memos/README.md",
         "docs/research/README.md", "docs/research/.gitkeep",
         "docs/research/scenario-stress/2026-10-26-option-book-repricing.md",
@@ -627,7 +634,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Plus the three CDFExperiment fit documents, the L3 scoring document and the fits test = 586
     # (the arms document and test were renamed to the panel source, a net zero); plus the block-shift control document = 587.
     # Exact approved inventory, including the prescription memos and 2020 evidence.
-    assert len(actual) == 773
+    # Four owner-requested, explicitly non-executable MIO JSON design files.
+    assert len(actual) == 779
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
