@@ -2,8 +2,11 @@
 
 ## TL;DR
 
-The hold-vs-redeploy framework is built end to end and passed two independent
-skeptic lenses (0 Critical, 4 Major found and fixed). Nothing has touched a
+The hold-vs-redeploy framework is built end to end, with a per-position and
+portfolio summary (`PositionSummary`), and has passed two independent skeptic
+lenses plus two Sonnet review/fix loops (base slice: 4 rounds, 8 Major fixed;
+summary slice: 2 rounds, 2 Major fixed; 0 Critical throughout; both loops
+closed CLEAN). Nothing has touched a
 real Schwab account yet: every number in the two documents is a placeholder
 the owner sets before the first real run, and both end-to-end tests run on a
 synthetic onboarding root with `localfiles` standing in for the Schwab pull.
@@ -40,9 +43,10 @@ keeping the "Schwab price history" nouns and the URL-encoding case).
 
 Tier 3, `children/portfolio_policy` (JSON only): `configs/run-hold-vs-redeploy.json`
 (positions → snapshot filter → tax; market → betas; active_returns →
-hurdle; → decide → `decisions/<run>.jsonl`) and
-`configs/run-decision-outcomes.json` (decisions via `localtables` + a later
-snapshot → outcomes → `outcomes/<run>.jsonl`); `tests/test_hold_vs_redeploy.py`
+hurdle; → decide → `decisions/<run>.jsonl`; → summary →
+`summary/<run>.jsonl`) and `configs/run-decision-outcomes.json` (decisions
+via `localtables` + a later snapshot → outcomes → `outcomes/<run>.jsonl`);
+`tests/test_hold_vs_redeploy.py`
 runs both in their shipped shape; `tests/test_configs.py` pins the decision
 day declared twice in one document.
 
@@ -160,6 +164,20 @@ per-share growth; the active side is scored where it runs.
   own suite (182 failures on `main` before this branch).
 
 ## Disclosed backlog (Minor / Nit, not fixed)
+
+Position-summary loop round 2 (reviewer on `85c4bf1`) returned CLEAN — 0
+Critical, 0 Major — closing that loop; its Minors, left open:
+
+- The child e2e hardcodes that VTI exits with the shipped placeholders; a
+  larger `risk_premium` turns it red. Fix: derive the expected decision from
+  the document (`(opportunity_cost > 0) == (hurdle > break_even)`).
+- Portfolio `expected_return` is the constant-weight mean `sum(w·r)`, while
+  the portfolio break-even and opportunity cost use pooled totals; the two
+  differ (undocumented).
+- `PositionSummary` assumes every row shares one redeploy rate (true when the
+  rows come from one `decide`); not checked at run time.
+- Extreme magnitudes (`10**400`, `1e-308`) raise a bare `OverflowError` or
+  yield `inf` rather than a named refusal (same family as above).
 
 Round 4 of the Sonnet loop (reviewer on `75fe315`) returned CLEAN — 0
 Critical, 0 Major — closing the loop; its Minors, left open and disclosed:
