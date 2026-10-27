@@ -85,9 +85,14 @@ def test_a_market_rate_outside_the_bounds_refuses(ctx):
     with pytest.raises(ValueError, match="market rate.*outside.*fractions.*percent"):
         MarketHoldReturn("m", wild).run(ctx, {})
     # fair CAPE a thousandth of today's in one year: valuation -0.999, rate
-    # 0.013 + 0.02 + 0.025 - 0.999 = -0.941, inside [-1, 10], so it runs
+    # 0.013 + 0.02 + 0.025 - 0.999 = -0.941, inside [-1, 2], so it runs
     low = {**MARKET, "cape": 1000.0, "fair_cape": 1.0, "reversion_years": 1, "horizon_years": 1}
     assert MarketHoldReturn("m", low).run(ctx, {})["rate"] == pytest.approx(-0.941)
+    # a market priced at a third of fair for one year: valuation (30 / 10) - 1 = +2.0, so the
+    # rate is 0.058 + 2.0 = 2.058, past the +200% ceiling a fraction can plausibly reach
+    third = {**MARKET, "cape": 10.0, "fair_cape": 30.0, "reversion_years": 1, "horizon_years": 1}
+    with pytest.raises(ValueError, match="market rate.*2.058.*outside"):
+        MarketHoldReturn("m", third).run(ctx, {})
 
 
 BETAS = {
@@ -105,6 +110,23 @@ def test_beta_rates_by_hand(ctx):
                               "market": 0.10, "risk_free": 0.04, "defaulted": []}
 
 
+def test_beta_rates_follow_the_declared_risk_free_by_hand(ctx):
+    # risk_free 0.02, market 0.10: the excess is 0.08, VTI 0.02 + 1.0 x 0.08 = 0.10 and
+    # AAPL 0.02 + 1.2 x 0.08 = 0.116 (at risk_free 0.04 it was 0.112); a beta of 0 earns the
+    # risk-free rate itself and a beta of 0.5 half the excess, 0.02 + 0.04 = 0.06
+    params = {**BETAS, "risk_free": 0.02, "betas": {"VTI": 1.0, "AAPL": 1.2, "CASH": 0.0,
+                                                    "BOND": 0.5}}
+    rows = [{"symbol": s} for s in ("VTI", "AAPL", "CASH", "BOND")]
+    out = BetaHoldReturns("b", params).run(ctx, {"records": rows, "market": 0.10})
+    assert out["rates"] == {"VTI": pytest.approx(0.10), "AAPL": pytest.approx(0.116),
+                            "CASH": pytest.approx(0.02), "BOND": pytest.approx(0.06)}
+    assert out["summary"]["risk_free"] == 0.02
+    # a negative risk-free rate is a legitimate declaration: -0.01 + 1.2 x 0.11 = 0.122
+    neg = BetaHoldReturns("b", {**BETAS, "risk_free": -0.01}).run(
+        ctx, {"records": [{"symbol": "AAPL"}], "market": 0.10})
+    assert neg["rates"]["AAPL"] == pytest.approx(0.122)
+
+
 def test_a_symbol_without_a_beta_refuses_unless_a_default_is_declared(ctx):
     rows = [{"symbol": "NEW"}]
     with pytest.raises(ValueError, match="row 0.*beta.*'NEW'"):
@@ -116,8 +138,9 @@ def test_a_symbol_without_a_beta_refuses_unless_a_default_is_declared(ctx):
 
 
 def test_a_computed_beta_rate_outside_the_bounds_refuses_by_symbol(ctx):
-    # 0.04 + 200 x (0.10 - 0.04) = 12.04 > 10; 0.04 - 100 x 0.06 = -5.96 < -1
-    for beta in (200.0, -100.0):
+    # 0.04 + 200 x (0.10 - 0.04) = 12.04 > 2; 0.04 - 100 x 0.06 = -5.96 < -1;
+    # 0.04 + 40 x 0.06 = 2.44 > 2
+    for beta in (200.0, -100.0, 40.0):
         node = BetaHoldReturns("b", {**BETAS, "betas": {"VTI": 1.0, "WILD": beta}})
         with pytest.raises(ValueError, match="rate for 'WILD'.*outside.*fractions.*percent"):
             node.run(ctx, {"records": [{"symbol": "VTI"}, {"symbol": "WILD"}], "market": 0.10})
@@ -125,10 +148,16 @@ def test_a_computed_beta_rate_outside_the_bounds_refuses_by_symbol(ctx):
     node = BetaHoldReturns("b", {**BETAS, "default_beta": 200.0})
     with pytest.raises(ValueError, match="rate for 'NEW'"):
         node.run(ctx, {"records": [{"symbol": "NEW"}], "market": 0.10})
-    # inclusive: 0.04 + 100 x 0.06 = 6.04 is in range
-    node = BetaHoldReturns("b", {**BETAS, "betas": {"HIGH": 100.0}})
-    assert node.run(ctx, {"records": [{"symbol": "HIGH"}], "market": 0.10})["rates"]["HIGH"] == \
-        pytest.approx(6.04)
+    # inclusive at the +200% ceiling: risk_free 0, market 0.5, beta 4 -> 4 x 0.5 = 2.0
+    ceiling = {**BETAS, "risk_free": 0.0}
+    node = BetaHoldReturns("b", {**ceiling, "betas": {"HIGH": 4.0}})
+    assert node.run(ctx, {"records": [{"symbol": "HIGH"}], "market": 0.5})["rates"]["HIGH"] == 2.0
+    # and just past it, beta 4.2 -> 2.1, refuses; the floor is inclusive too: beta -2 -> -1.0
+    node = BetaHoldReturns("b", {**ceiling, "betas": {"HIGH": 4.2}})
+    with pytest.raises(ValueError, match="rate for 'HIGH'.*2.1"):
+        node.run(ctx, {"records": [{"symbol": "HIGH"}], "market": 0.5})
+    node = BetaHoldReturns("b", {**ceiling, "betas": {"LOW": -2.0}})
+    assert node.run(ctx, {"records": [{"symbol": "LOW"}], "market": 0.5})["rates"]["LOW"] == -1.0
 
 
 def test_beta_inputs_and_declarations_refuse_by_name(ctx):

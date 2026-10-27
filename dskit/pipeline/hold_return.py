@@ -48,12 +48,12 @@ class MarketHoldReturn(Node):
     ----------
     params : dict
         ``dividend_yield``, ``real_growth``, ``inflation`` (numbers in
-        ``[-1, 10]``, REQUIRED); ``cape``, ``fair_cape`` (positive numbers,
+        ``[-1, 2]``, REQUIRED); ``cape``, ``fair_cape`` (positive numbers,
         REQUIRED): the current and the fair cyclically adjusted P/E;
         ``reversion_years`` (int >= 1, REQUIRED): the years over which the
         valuation is assumed to drift to fair; ``horizon_years`` (int in
         ``[1, 100]``, REQUIRED): the decision horizon this rate serves, at most
-        ``reversion_years``. The computed rate must lie in ``[-1, 10]``.
+        ``reversion_years``. The computed rate must lie in ``[-1, 2]``.
 
     Examples
     --------
@@ -134,7 +134,7 @@ class BetaHoldReturns(Node):
     Parameters
     ----------
     params : dict
-        ``risk_free`` (number in ``[-1, 10]``, REQUIRED); ``betas``
+        ``risk_free`` (number in ``[-1, 2]``, REQUIRED); ``betas``
         (non-empty ``{symbol: number}``, REQUIRED); ``symbol_field`` (field
         name, REQUIRED); ``default_beta`` (number, optional): the beta of a
         symbol absent from ``betas``; without it such a symbol refuses.

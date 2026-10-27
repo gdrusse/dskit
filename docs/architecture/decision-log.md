@@ -32645,3 +32645,57 @@ child documents and tests, the READMEs. Sweep: tools/sweep/sweep rate_bounds
 require_rate check_rate_param check_horizon_param max_horizon_years min_periods
 income_rate; no near matches (only an unrelated `require_rate=` kwarg in
 statistical_arbitrage and pandas `min_periods=`).
+
+#### ADR-0279 amendment: Sonnet round 2 corrections (2026-10-27)
+
+The Sonnet reviewer's second round found 2 Major on the round-1 slice; both fixed
+(RED first), with the Minors and Nits below.
+
+- Major 1 — one short row anywhere in the later snapshot refused the whole scoring
+  run. Fixed both ways: `run-decision-outcomes.json` `later.where` gains
+  `asset_type == EQUITY` and `long_quantity > 0` (a child test pins them equal to the
+  decision document's clauses), and `DecisionOutcomes` reads value and quantity only
+  for keys a decision matches. The one-date, undated-row, missing-key and
+  duplicate-key refusals still cover every later row; an undecided short, closed lot,
+  option or text value is simply not scored. The child e2e's later snapshot now
+  carries the short XYZ and the option, and runs the scoring document both with the
+  shipped filter and with it reduced to the date alone.
+- Major 2 — single-value fixtures. Second-value tests, each shown to fail when the
+  parameter is hardcoded: `horizon_years=3` (hand-worked, 1.05^4), `periods_per_year=12`
+  on the same twelve returns, `risk_free=0.02`, `long_term_days=366` (a row held 365
+  days is short, 366 long) and `default_holding="short"`.
+- Minor 1 — the bars pack's error nouns are restored through `_NOUN` on
+  `_SchwabConnector` ("Schwab price history" for bars, "Schwab accounts" for
+  positions); transport-level tests (`urllib.request.urlopen` scripted) cover the
+  Bearer header, URL-encoded params, a 503 retried then refused, a 404 refused at once,
+  malformed JSON, for both packs.
+- Minor 2 — `RATE_BOUNDS` is now (-1.0, 2.0) (-100% to +200%): 7 for 7% refuses; cost
+  and premium share the ceiling. Docstrings, READMEs and the document note follow.
+- Minor 3 — `tax.long_term_rate == decide.terminal_tax_rate` and `tax.short_term_rate ==
+  decide.redeploy_tax_rate` are pinned by a child test; the child e2e reads every rate,
+  market block, beta, risk-free, cost, premium, hurdle period count and income rate from
+  the loaded documents (it pins only the hurdle's `trials` 5 / `min_dsr` 0.5, which the
+  recorded E[max Sharpe] belongs to, as it already pinned `min_periods`).
+- Minor 4 — Limits disclosed in the child README and the module docstrings: every
+  account is treated as taxable (type discarded); the hold path's dividends are untaxed;
+  splits and spin-offs corrupt `DecisionOutcomes` per-share growth; the `EQUITY`
+  filter's reach for ETFs and mutual funds is unverified until a real pull; excluded-row
+  counts are not yet reported.
+- Minor 5 — the `decide` note no longer implies `risk_premium` 0 is safe: the
+  simple-vs-geometric gap (about sd^2/2 a year) is left to it, to be set from the
+  backtest's volatility.
+- Minor 7 — one row-number reader: `liquidation.require_number(key, what, index, row,
+  field)` (exported), imported by `decision_outcomes` and `active_hurdle`; a test pins
+  identity.
+- Nits — PEP 8 blank lines and a deep-copied shared spec in `schwab.py`; a positions
+  "malformed" error names the symbol when it is known; the onboarding README and
+  CLAUDE tree mention positions; `test_min_dsr_is_inclusive` takes its boundary from the
+  node's own summary.
+- Not changed: the round-1 disclosures stand (hurdle E[max Sharpe] pinned from one
+  recorded evaluation; arithmetic mean compounded geometrically; Stage 4 is
+  `DecisionOutcomes` rows).
+Files: `liquidation.py`, `decision_outcomes.py`, `active_hurdle.py`, `hold_return.py`,
+onboarding `schwab.py`, their tests and `tests/onboarding/stub_connectors.py`, the two
+child documents, child tests and README, the pipeline and onboarding READMEs and
+CLAUDE/AGENTS pairs. Sweep: tools/sweep/sweep require_number scripted_urlopen _NOUN
+shared_spec; no near matches.

@@ -842,8 +842,12 @@ they register only into private registries, never the default one.
   refund); `risk_premium` (>= 0, as is the cost) is subtracted untaxed. A
   short or zero `value_field` / `net_field` (and, in `LiquidationTax`, a
   negative basis) refuses by row and field, as does any wired rate outside
-  `RATE_BOUNDS = (-1, 10)` (a percent typed for a fraction) and a rate below
-  -1 after costs. `LiquidationTax.as_of` defaults to the run's `--asof`.
+  `RATE_BOUNDS = (-1, 2)` (-100% to +200%; a percent typed for a fraction, 7
+  for 7%, is +700%) and a rate below -1 after costs. `LiquidationTax.as_of`
+  defaults to the run's `--asof`. `require_number(key, what, index, row, field)`
+  is the one numeric row-field reader (`active_hurdle` and `decision_outcomes`
+  import it). Limits, not modelled: every row is taxed as a taxable holding (no
+  account type), and the hold path's dividends are untaxed, which favours holding.
 - `active_hurdle.py` (`ActiveHurdle`) (ADR-0279, by import path): a backtest's
   per-period net returns into the deflated annual return an active strategy may
   claim, `(mean - E[max null Sharpe over trials] x sd) x periods_per_year`
@@ -860,8 +864,12 @@ they register only into private registries, never the default one.
   `income_rate` is required, the document's dividend yield), against the realized
   per-share growth from a later snapshot on one date, joined on declared
   `key_fields` (account + symbol, say); `surprise` per row and by decision;
-  decided positions missing later are listed unmatched, not scored.
-  Every ADR-0279 kind answers `serving_effect` "pure".
+  decided positions missing later are listed unmatched, not scored. A later
+  snapshot refuses on several dates or a repeated key over every row, but a
+  row's value and quantity are read only when a decision matches its key, so
+  an undecided short or zero-quantity row never stops the run. Per-share growth
+  reads a split or spin-off as a return (not detected). Every ADR-0279 kind
+  answers `serving_effect` "pure".
 - `hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`) (ADR-0279, research
   A0001, by import path): the market's expected nominal return as named blocks
   (dividend yield + real growth + inflation + `(fair_cape / cape) **
@@ -1109,14 +1117,16 @@ dskit/pipeline/
 │                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
 │                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon, both liquidated and taxed at the
-│                      horizon when `terminal_tax_rate` is declared; `hold_returns` / `redeploy_return` input ports (wired rates held to `RATE_BOUNDS`);
-│                      short / non-positive rows refuse; annual redeploy tax on a positive net rate only; decision `exit` only when redeploy wins
+│                      horizon when `terminal_tax_rate` is declared; `hold_returns` / `redeploy_return` input ports (wired rates held to `RATE_BOUNDS`, -100%..+200%);
+│                      short / non-positive rows refuse; annual redeploy tax on a positive net rate only; decision `exit` only when redeploy wins;
+│                      `require_number`: the one numeric row-field reader of the three row-reading ADR-0279 kinds
 ├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, `horizon_years` <= `reversion_years`, role data) + BetaHoldReturns
 │                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
 │                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr), declared `min_periods` floor -> HoldVsRedeploy's `redeploy_return` port
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
-│                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score
+│                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score;
+│                      only decision-matched later rows are value-checked (structural refusals cover all)
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its

@@ -1,15 +1,21 @@
 """Schwab REST connectors: price-history bars and account positions.
 
 Phase 1 wraps REST price-history candles; ADR-0279 adds a point-in-time
-``positions`` snapshot of every linked account. The connector
+``positions`` snapshot of every linked account. The bars connector
 re-requests a declared overlap on live pulls so corrected closed minutes become
 new bitemporal evidence; downstream observation scanning chooses the latest
 acquisition. OAuth values and token paths are named through environment
 variables, and token refresh is delegated to the generic onboarding service.
+
+Both packs share one transport (:class:`_SchwabConnector`): a bearer-token GET,
+retried on throttling, server and network failures, whose refusals name the
+pack's request through ``_NOUN`` ("Schwab price history" for bars, "Schwab
+accounts" for positions).
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import time
@@ -72,7 +78,6 @@ def _positive_number(problems, name, value):
         or value <= 0
     ):
         problems.append(f"config.{name} must be a positive number, got {value!r}")
-
 
 
 def _env_knobs(problems, config):
@@ -143,8 +148,19 @@ _SHARED_SPEC = {
 }
 
 
+def _shared_spec():
+    """Return a fresh copy of the knobs both packs declare, so no spec aliases another's."""
+    return copy.deepcopy(_SHARED_SPEC)
+
+
 class _SchwabConnector(Connector):
-    """OAuth, clock and retrying JSON transport shared by the Schwab packs."""
+    """OAuth, clock and retrying JSON transport shared by the Schwab packs.
+
+    ``_NOUN`` names what the pack requests in every transport refusal ("Schwab
+    price history failed for 'AAPL' (HTTP 404)"); each pack overrides it.
+    """
+
+    _NOUN = "Schwab request"
 
     def _oauth_service(self, knobs):
         """Build the generic token service from named environment values."""
@@ -200,19 +216,19 @@ class _SchwabConnector(Connector):
             if exc.code in _RETRY_STATUSES:
                 raise ConnectionError(f"HTTP {exc.code}") from exc
             raise AssetError(
-                [f"Schwab request failed for {label!r} (HTTP {exc.code})"]
+                [f"{self._NOUN} failed for {label!r} (HTTP {exc.code})"]
             ) from exc
         if not 200 <= status < 300:
             if status in _RETRY_STATUSES:
                 raise ConnectionError(f"HTTP {status}")
             raise AssetError(
-                [f"Schwab request failed for {label!r} (HTTP {status})"]
+                [f"{self._NOUN} failed for {label!r} (HTTP {status})"]
             )
         try:
             return json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise AssetError(
-                [f"Schwab request for {label!r} returned malformed JSON"]
+                [f"{self._NOUN} for {label!r} returned malformed JSON"]
             ) from exc
 
     def _get(self, token, label, url, params, knobs):
@@ -226,7 +242,7 @@ class _SchwabConnector(Connector):
             except (ConnectionError, OSError) as exc:
                 last = str(exc)
         raise AssetError(
-            [f"Schwab request for {label!r} failed after "
+            [f"{self._NOUN} for {label!r} failed after "
              f"{knobs['max_retries'] + 1} attempt(s): {last}"]
         )
 
@@ -249,6 +265,8 @@ class SchwabBarsConnector(_SchwabConnector):
             "start": "2026-01-01",
         })
     """
+
+    _NOUN = "Schwab price history"
 
     def spec(self):
         """Declare the default-deny Schwab configuration catalogue.
@@ -279,7 +297,7 @@ class SchwabBarsConnector(_SchwabConnector):
                 "notes": "Closed minutes re-requested on every live pull; "
                          f"default {DEFAULT_OVERLAP_MINUTES}.",
             },
-            **_SHARED_SPEC,
+            **_shared_spec(),
         }}
 
     def resolve_knobs(self, config):
@@ -345,6 +363,7 @@ class SchwabBarsConnector(_SchwabConnector):
             **transport,
             **envs,
         }
+
     def _window(self, knobs, cursor, mode):
         """Return a provider window whose end excludes the open minute."""
         end = self._now().replace(second=0, microsecond=0)
@@ -365,6 +384,7 @@ class SchwabBarsConnector(_SchwabConnector):
         if end <= start:
             return None, None
         return start, end
+
     def _fetch(self, token, symbol, params, timeout):
         """Perform one price-history GET and require a JSON object."""
         body = super()._request(token, symbol, _PRICE_HISTORY_URL, params, timeout)
@@ -381,7 +401,6 @@ class SchwabBarsConnector(_SchwabConnector):
     def _get_json(self, token, symbol, params, knobs):
         """Return one price-history object; the base transport retries transient failures."""
         return self._get(token, symbol, _PRICE_HISTORY_URL, {"symbol": symbol, **params}, knobs)
-
 
     def _params(self, start, end):
         """Build the fixed Phase-1 one-minute price-history query."""
@@ -583,15 +602,24 @@ class SchwabPositionsConnector(_SchwabConnector):
     pull skips a day already checkpointed; a live pull always re-snapshots,
     and bitemporal dedup keeps the latest acquisition.
 
+    Limits, disclosed rather than modelled. The account's ``type`` (cash, margin,
+    IRA) is not read, so every linked account is treated as taxable downstream.
+    ``asset_type`` is the instrument's ``assetType`` as Schwab sends it; whether
+    an ETF or a mutual fund arrives as ``EQUITY`` is unverified until a real pull,
+    so a consumer that filters ``asset_type == "EQUITY"`` may drop them without
+    saying so.
+
     Parameters
     ----------
     None
         The connector is stateless; config and checkpoints supply all state.
     """
 
+    _NOUN = "Schwab accounts"
+
     def spec(self):
         """Declare the default-deny positions configuration catalogue."""
-        return {"params": dict(_SHARED_SPEC)}
+        return {"params": _shared_spec()}
 
     def resolve_knobs(self, config):
         """Validate config and resolve OAuth and transport settings.
@@ -638,6 +666,13 @@ class SchwabPositionsConnector(_SchwabConnector):
                 raise AssetError([f"Schwab accountNumbers entry {index} is malformed"])
             hashes[entry["accountNumber"]] = entry["hashValue"]
         return hashes
+
+    @staticmethod
+    def _symbol_note(position):
+        """Return `` (symbol 'X')`` when the position names a usable symbol, else nothing."""
+        instrument = position.get("instrument") if isinstance(position, dict) else None
+        symbol = instrument.get("symbol") if isinstance(instrument, dict) else None
+        return f" (symbol {symbol!r})" if isinstance(symbol, str) and symbol else ""
 
     def _rows(self, body, hashes, as_of):
         """Validate and normalize every position in an accounts response."""
@@ -694,7 +729,8 @@ class SchwabPositionsConnector(_SchwabConnector):
                     })
                 except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
                     raise AssetError(
-                        [f"Schwab position {p_index} in account {a_index} is malformed"]
+                        [f"Schwab position {p_index} in account {a_index} is malformed"
+                         f"{self._symbol_note(position)}"]
                     ) from exc
         rows.sort(key=lambda row: (row["account"], row["symbol"]))
         return rows

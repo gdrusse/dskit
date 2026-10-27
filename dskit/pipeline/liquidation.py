@@ -45,9 +45,22 @@ That includes a short position or a negative balance: a hold-vs-exit decision
 is about a long holding, so a value at or below zero (and, for the tax, a
 negative basis) refuses and the document filters such rows before this
 module sees them. Wired rates are checked where they arrive: a ``hold_returns``
-entry or a ``redeploy_return`` outside :data:`RATE_BOUNDS` refuses, because the
-usual cause is a percent where a fraction belongs. Every rate, horizon and
-field name is a param: the module carries no table.
+entry or a ``redeploy_return`` outside :data:`RATE_BOUNDS` (-100% to +200%)
+refuses, because the usual cause is a percent where a fraction belongs (7 for
+7% is +700%). Every rate, horizon and field name is a param: the module carries
+no table.
+
+Limits, disclosed rather than modelled. Every row is taxed as a taxable holding:
+the account type is not an input, so a position in an IRA or a 401(k) is taxed
+as if it were liquidated in a brokerage account. The hold path's dividends are
+untaxed (``hold_return`` is a total return and only the terminal gain is taxed),
+which favours holding; the redeploy path's annual tax does take its share of each
+year's positive net return.
+No state tax, wash-sale rule or loss carry-forward is modelled.
+
+:func:`require_number` is the one reader of a numeric row field for the three
+row-reading kinds (this module, :mod:`~dskit.pipeline.active_hurdle` and
+:mod:`~dskit.pipeline.decision_outcomes`).
 
 Import cost: stdlib + the pipeline core.
 """
@@ -64,7 +77,8 @@ from dskit.pipeline.records import number_ok
 
 __all__ = [
     "HOLDINGS", "MAX_HORIZON_YEARS", "RATE_BOUNDS", "REDEPLOY_TAX_TIMINGS", "HoldVsRedeploy",
-    "LiquidationTax", "check_horizon_param", "check_rate_param", "require_rate",
+    "LiquidationTax", "check_horizon_param", "check_rate_param", "require_number",
+    "require_rate",
 ]
 
 #: The two holding classes a tax schedule distinguishes.
@@ -82,9 +96,9 @@ _DECISION_OPTIONAL = (
     "hold_return", "redeploy_return", "terminal_tax_rate", "basis_field",
     "redeploy_tax_rate", "redeploy_tax_timing",
 )
-#: The one owner of the annual-return bounds (inclusive): -100% to +1000%. A return is a
-#: fraction; a value outside is almost surely a percent (5 for 5%) and refuses.
-RATE_BOUNDS = (-1.0, 10.0)
+#: The one owner of the annual-return bounds (inclusive): -100% to +200%. A return is a
+#: fraction; a value outside is almost surely a percent (7 for 7% is +700%) and refuses.
+RATE_BOUNDS = (-1.0, 2.0)
 #: The longest horizon, in years, any ADR-0279 kind accepts.
 MAX_HORIZON_YEARS = 100
 
@@ -138,17 +152,22 @@ def _check_rows(key, records, outputs):
             raise ValueError(f"{key}: row {index} already carries {taken}")
 
 
-def _number(key, index, row, field):
-    """Return the number ``row[field]`` holds; refuse by index and field otherwise."""
+def require_number(key, what, index, row, field):
+    """Return the number ``row[field]`` holds as a float; refuse by node, input, index and field.
+
+    The one reader of a numeric row field for every ADR-0279 kind that reads rows.
+    ``what`` names the input in the message (``row``, ``position``, ``decision``).
+    A missing field, a ``bool``, a non-finite value or a non-number all refuse.
+    """
     value = row.get(field)
     if not number_ok(value):
-        raise ValueError(f"{key}: row {index} field {field!r} is not a number, got {value!r}")
+        raise ValueError(f"{key}: {what} {index} field {field!r} is not a number, got {value!r}")
     return float(value)
 
 
 def _amount(key, index, row, field, *, allow_zero):
     """Return the number ``row[field]`` holds, positive (or zero when allowed); refuse otherwise."""
-    value = _number(key, index, row, field)
+    value = require_number(key, "row", index, row, field)
     if value < 0.0 or (value == 0.0 and not allow_zero):
         raise ValueError(
             f"{key}: row {index} field {field!r} must be "
@@ -299,12 +318,12 @@ class HoldVsRedeploy(Node):
     ----------
     params : dict
         ``horizon_years`` (int in ``[1, 100]``, REQUIRED); ``hold_return`` (a number in
-        ``[-1, 10]`` or ``{symbol: number}``): the annual return of holding,
+        ``[-1, 2]`` or ``{symbol: number}``): the annual return of holding,
         per symbol when a mapping (a row whose symbol is absent refuses);
         required unless ``hold_returns`` is wired; ``redeploy_return``
-        (number in ``[-1, 10]``): the annual return of the alternative;
+        (number in ``[-1, 2]``): the annual return of the alternative;
         required unless the ``redeploy_return`` input is wired;
-        ``redeploy_cost`` / ``risk_premium`` (numbers in ``[0, 10]``,
+        ``redeploy_cost`` / ``risk_premium`` (numbers in ``[0, 2]``,
         REQUIRED): its annual cost and the premium charged for the
         forecast's own uncertainty (neither is a credit); ``value_field`` / ``net_field`` /
         ``symbol_field`` (field names, REQUIRED); ``terminal_tax_rate``
@@ -486,7 +505,7 @@ class HoldVsRedeploy(Node):
                                          self._hold_rate(index, row, hold), years)
             hold_tax = 0.0
             if basis_field:
-                basis = _number(self.key, index, row, basis_field)
+                basis = require_number(self.key, "row", index, row, basis_field)
                 hold_tax = max(hold_value - basis, 0.0) * terminal_rate
             hold_net = hold_value - hold_tax
             if redeploy_rate is None:

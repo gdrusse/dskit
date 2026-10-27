@@ -5,7 +5,11 @@ filters to the earlier day and the scoring run to the later one, exactly as
 the documents are written. The onboarding root is built the way the owner will
 build it — the CLI verbs, from the child root — with ``localfiles`` standing in
 for ``schwab_positions`` (the observations kind reads the root, never the
-connector). The numbers are worked by hand from the documents' own rates.
+connector). The expectations are worked by hand in this file from the rates the
+loaded documents declare, never from literals, so an owner replacing a
+placeholder keeps the suite green. With the placeholders shipped on 2026-10-27
+the same arithmetic gives, for VTI: tax 119, net 2381, hold_net 2680.58 against
+redeploy_net 3052.07, so ``exit``.
 """
 
 import json
@@ -40,18 +44,24 @@ THEN = [
      "as_of": DECIDED, "long_quantity": 1.0, "short_quantity": 0.0, "average_price": 12.0,
      "cost_basis": 12.0, "market_value": 1500.0},
 ]
-# a year later (today, so the snapshot is not a forecast): VTI doubled its share count and
-# its price rose 10%; AAPL fell 10%; the option is gone
+# a year later (today, so the snapshot is not a forecast): VTI doubled its share count and its
+# price rose 10%; AAPL fell 10%; the short XYZ (zero long quantity) and the option are still
+# there, undecided, exactly the rows a real later pull carries
 LATER = [
     {**THEN[0], "as_of": LATER_DAY, "long_quantity": 20.0, "market_value": 5500.0,
      "cost_basis": 4500.0},
     {**THEN[1], "as_of": LATER_DAY, "market_value": 540.0},
+    {**THEN[2], "as_of": LATER_DAY},
+    {**THEN[3], "as_of": LATER_DAY},
 ]
 
-# Twelve weekly net returns with mean 0.0055 and sd 0.0087; among five trials the
-# expected max null Sharpe is 0.3978 (pinned in dskit's test_active_hurdle).
+# Twelve weekly net returns with mean 0.0055 and sd 0.0087; among FIVE trials the expected max
+# null Sharpe is 0.3978 (pinned in dskit's test_active_hurdle). The e2e run therefore pins the
+# hurdle's trials and min_dsr to the values that figure belongs to (as it already pins
+# min_periods to the twelve returns it has); every other number is read from the document.
 ACTIVE = [0.01, -0.005, 0.02, 0.0, 0.015, -0.01, 0.005, 0.01, 0.012, -0.002, 0.008, 0.003]
 EMAX_5 = 0.39777384449675074
+HURDLE_PINS = {"min_periods": 12, "trials": 5, "min_dsr": 0.5}
 
 
 def _cli(cwd, *args):
@@ -106,18 +116,35 @@ def _load(path, run_root, **overrides):
     return replace(document, outputs=OutputsConfig(run_root=os.path.join(run_root, "runs")))
 
 
-def _shipped_where(day):
-    """The shipped snapshot filter with only its decision day replaced, so every other clause
-    (equities only, longs only) runs exactly as shipped."""
-    with open(RUN_DOC) as fh:
-        where = json.load(fh)["pipeline"]["snapshot"]["params"]["where"]
+def _shipped(path, node):
+    """The params one node of a shipped document declares: where every expectation reads from."""
+    return load_document(path).pipeline[node].params
+
+
+def _shipped_where(path, node, day):
+    """A shipped filter with only its date replaced, so every other clause (equities only,
+    longs only) runs exactly as shipped."""
+    where = _shipped(path, node)["where"]
     return [{**clause, "value": day} if clause["field"] == "as_of" else clause for clause in where]
 
 
+def _expected_rates():
+    """``(market, {symbol: rate})`` worked by hand from the decision document's declarations:
+    market = yield + growth + inflation + ((fair CAPE / CAPE) ** (1 / years) - 1);
+    symbol = risk_free + beta x (market - risk_free)."""
+    m, b = _shipped(RUN_DOC, "market"), _shipped(RUN_DOC, "betas")
+    market = (m["dividend_yield"] + m["real_growth"] + m["inflation"]
+              + (m["fair_cape"] / m["cape"]) ** (1.0 / m["reversion_years"]) - 1.0)
+    return market, {symbol: b["risk_free"] + beta * (market - b["risk_free"])
+                    for symbol, beta in b["betas"].items()}
+
+
 def _decide(root):
-    # twelve weekly returns stand in for a year: the shipped floor is 52 (one year)
-    document = _load(RUN_DOC, str(root), snapshot={"where": _shipped_where(DECIDED)},
-                     tax={"as_of": DECIDED}, hurdle={"min_periods": 12})
+    # twelve weekly returns stand in for a year: the shipped floor is 52 (one year), and the
+    # E[max null Sharpe] worked below is for five trials of this series
+    document = _load(RUN_DOC, str(root),
+                     snapshot={"where": _shipped_where(RUN_DOC, "snapshot", DECIDED)},
+                     tax={"as_of": DECIDED}, hurdle=HURDLE_PINS)
     result = run_document(document, asof=DECIDED, journal=False)
     assert result.state == "ran", (result.state, result.error)
     return result
@@ -134,6 +161,9 @@ def test_documents_are_valid_and_wire_their_stages():
     assert where[2] == {"field": "long_quantity", "op": ">", "value": 0}, "shorts are filtered out"
     assert decide.pipeline["hurdle"].params["min_periods"] == 52, "one year of weekly returns"
     outcomes = load_document(OUTCOMES_DOC)
+    later = outcomes.pipeline["later"].params["where"]
+    assert [clause["field"] for clause in later] == ["as_of", "asset_type", "long_quantity"]
+    assert later[2] == where[2], "the scoring snapshot drops shorts too"
     assert list(outcomes.pipeline) == ["decisions", "positions", "later", "outcomes", "scored"]
     assert outcomes.pipeline["outcomes"].params["key_fields"] == ["account", "symbol"]
     assert decide.hash and outcomes.hash
@@ -142,42 +172,53 @@ def test_documents_are_valid_and_wire_their_stages():
 def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
     monkeypatch.chdir(root)
     result = _decide(root)
+    tax, decide = _shipped(RUN_DOC, "tax"), _shipped(RUN_DOC, "decide")
+    hurdle_periods = _shipped(RUN_DOC, "hurdle")["periods_per_year"]
     rows = {row["symbol"]: row for row in result.outputs["decide"]["records"]}
     assert set(rows) == {"VTI", "AAPL"}, "one snapshot day, equities only, no short XYZ"
     vti = rows["VTI"]
-    # default_holding long at 0.238, measured to --asof: tax 500 x .238 = 119, net 2381
+    # aggregate rows carry no date, so the declared default class and its rate apply, measured
+    # to --asof: tax = (2500 - 2000) x rate, net = 2500 - tax
+    holding = tax["default_holding"]
+    rate = tax[f"{holding}_term_rate"]
+    liq_tax = (2500.0 - 2000.0) * rate
+    liq_net = 2500.0 - liq_tax
     assert result.outputs["tax"]["summary"]["as_of"] == DECIDED
-    assert vti["liq_holding"] == "long"
-    assert vti["liq_tax"] == pytest.approx(119.0)
-    assert vti["liq_net"] == pytest.approx(2381.0)
-    # market: .013 + .02 + .025 + ((27/36)^(1/10) - 1) = 0.058 - 0.028358 = 0.029642
-    market = 0.058 + (27.0 / 36.0) ** 0.1 - 1.0
+    assert vti["liq_holding"] == holding
+    assert vti["liq_tax"] == pytest.approx(liq_tax)
+    assert vti["liq_net"] == pytest.approx(liq_net)
+    market, expected = _expected_rates()
     assert result.outputs["market"]["rate"] == pytest.approx(market)
     rates = result.outputs["betas"]["rates"]
-    assert rates["VTI"] == pytest.approx(0.04 + 1.0 * (market - 0.04))
-    assert rates["AAPL"] == pytest.approx(0.04 + 1.2 * (market - 0.04))
-    # hurdle: (0.0055 - 0.3978 x 0.0087) x 52 = 0.1060, admissible (dsr 0.76 >= 0.5)
+    assert rates["VTI"] == pytest.approx(expected["VTI"])
+    assert rates["AAPL"] == pytest.approx(expected["AAPL"])
+    # hurdle: (mean - E[max null Sharpe] x sd) x periods a year; admissible at the pinned dsr bar
     mean = sum(ACTIVE) / len(ACTIVE)
     sd = (sum((x - mean) ** 2 for x in ACTIVE) / (len(ACTIVE) - 1)) ** 0.5
-    hurdle = (mean - EMAX_5 * sd) * 52
+    hurdle = (mean - EMAX_5 * sd) * hurdle_periods
     assert result.outputs["hurdle"]["rate"] == pytest.approx(hurdle)
     assert result.outputs["hurdle"]["admissible"] is True
-    # hold 2500 x (1+VTI)^5, gain over 2000 taxed at .238 once;
-    # redeploy 2381 x (1 + (hurdle - .02) x (1 - .408))^5, taxed every year, nothing at the end
-    hold_value = 2500.0 * (1.0 + rates["VTI"]) ** 5
-    redeploy_value = 2381.0 * (1.0 + (hurdle - 0.02) * (1.0 - 0.408)) ** 5
+    # hold 2500 x (1 + r)^H, its gain over the basis 2000 taxed once at the terminal rate;
+    # redeploy: net rate = hurdle - cost, the short-term tax takes its share of a positive rate
+    # EVERY year (annual timing, nothing owed at the end), the premium comes off untaxed
+    horizon = decide["horizon_years"]
+    assert decide["redeploy_tax_timing"] == "annual", "this test works the annual path by hand"
+    hold_value = 2500.0 * (1.0 + expected["VTI"]) ** horizon
+    hold_net = hold_value - max(hold_value - 2000.0, 0.0) * decide["terminal_tax_rate"]
+    net_rate = hurdle - decide["redeploy_cost"]
+    redeploy_rate = (net_rate - max(net_rate, 0.0) * decide["redeploy_tax_rate"]
+                     - decide["risk_premium"])
+    redeploy_value = liq_net * (1.0 + redeploy_rate) ** horizon
+    assert vti["horizon_years"] == horizon
     assert vti["hold_value"] == pytest.approx(hold_value)
-    assert vti["hold_net"] == pytest.approx(hold_value - max(hold_value - 2000.0, 0.0) * 0.238)
+    assert vti["hold_net"] == pytest.approx(hold_net)
     assert vti["redeploy_value"] == pytest.approx(redeploy_value)
     assert vti["redeploy_terminal_tax"] == 0.0
     assert vti["redeploy_net"] == pytest.approx(redeploy_value)
-    # by hand: hold_net 2680.58 vs redeploy_net 3052.07 -> exit
-    assert vti["hold_net"] == pytest.approx(2680.58, abs=0.01)
-    assert vti["redeploy_net"] == pytest.approx(3052.07, abs=0.01)
-    assert vti["decision"] == "exit"
+    assert vti["decision"] == ("exit" if redeploy_value > hold_net else "hold")
     summary = result.outputs["decide"]["summary"]
     assert (summary["hold_return_source"], summary["redeploy_return_source"]) == ("wired", "wired")
-    assert summary["redeploy_tax_timing"] == "annual"
+    assert summary["redeploy_tax_timing"] == decide["redeploy_tax_timing"]
     written = result.outputs["decisions"]["path"]
     assert os.path.dirname(os.path.abspath(written)) == str(root / "decisions")
     with open(written) as fh:
@@ -186,10 +227,7 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
     assert all(json.loads(line)["run_id"] == os.path.basename(result.run_dir) for line in lines)
 
 
-def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):
-    monkeypatch.chdir(root)
-    decided = _decide(root)
-    run_name = os.path.basename(decided.run_dir)
+def _acquire_decisions(root, run_name):
     _cli(root, "register-source", "decisions", "--root", "./ob",
          "--catalog-source", "decisions-src", "--connector", "localtables",
          "--config", json.dumps({"path": str(root / "decisions"), "layout": "file",
@@ -197,25 +235,49 @@ def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):
          "--activate")
     _cli(root, "acquire", "--root", "./ob", "--source", "decisions",
          "--stream", run_name, "--mode", "backfill")
-    document = _load(OUTCOMES_DOC, str(root),
-                     decisions={"stream": run_name},
-                     later={"where": [{"field": "as_of", "op": "==", "value": LATER_DAY}]})
+
+
+def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):
+    monkeypatch.chdir(root)
+    decided = _decide(root)
+    run_name = os.path.basename(decided.run_dir)
+    _acquire_decisions(root, run_name)
+    document = _load(OUTCOMES_DOC, str(root), decisions={"stream": run_name},
+                     later={"where": _shipped_where(OUTCOMES_DOC, "later", LATER_DAY)})
     result = run_document(document, asof=LATER_DAY, journal=False)
     assert result.state == "ran", (result.state, result.error)
+    # the shipped later filter keeps the equity longs and drops the short XYZ and the option
+    assert {row["symbol"] for row in result.outputs["later"]["records"]} == {"VTI", "AAPL"}
     rows = {row["symbol"]: row for row in result.outputs["outcomes"]["records"]}
     assert set(rows) == {"VTI", "AAPL"}
     assert rows["VTI"]["account"] == ACCOUNT
     assert rows["VTI"]["realized_growth"] == pytest.approx(1.1)
     assert rows["AAPL"]["realized_growth"] == pytest.approx(0.9)
+    # total growth a year is 1 + the VTI hold rate; the forecast's income component (the
+    # outcomes document's income_rate) is removed -> price growth a year, compounded for the
+    # 365 days elapsed (365 / 365.25 of a year)
     decided_vti = {r["symbol"]: r for r in decided.outputs["decide"]["records"]}["VTI"]
+    income = _shipped(OUTCOMES_DOC, "outcomes")["income_rate"]
+    horizon = _shipped(RUN_DOC, "decide")["horizon_years"]
+    _, expected = _expected_rates()
     elapsed = 365 / 365.25
-    # total growth a year is 1 + the VTI hold rate (beta 1: the market, 1.029642); the forecast's
-    # 1.3% dividend (income_rate, the market node's yield) is removed -> 1.016642 a year of price
-    # growth, ^(365/365.25) = 1.016630
-    market = 0.058 + (27.0 / 36.0) ** 0.1 - 1.0
-    total = (decided_vti["hold_value"] / 2500.0) ** (1 / 5)
-    assert total == pytest.approx(1.0 + market)
-    assert rows["VTI"]["projected_growth"] == pytest.approx((total - 0.013) ** elapsed)
-    assert rows["VTI"]["projected_growth"] == pytest.approx(1.016630, abs=1e-5)
+    total = (decided_vti["hold_value"] / 2500.0) ** (1 / horizon)
+    assert total == pytest.approx(1.0 + expected["VTI"])
+    assert rows["VTI"]["projected_growth"] == pytest.approx((1.0 + expected["VTI"] - income) ** elapsed)
     assert result.outputs["outcomes"]["summary"]["unmatched"] == []
     assert os.path.isfile(result.outputs["scored"]["path"])
+
+
+def test_an_undecided_zero_quantity_row_never_refuses_the_scoring_run(root, monkeypatch):
+    """Even with the later filter reduced to the date alone, the short XYZ (zero long quantity)
+    and the option the decision never covered are not scored and so cannot stop the run."""
+    monkeypatch.chdir(root)
+    decided = _decide(root)
+    run_name = os.path.basename(decided.run_dir)
+    _acquire_decisions(root, run_name)
+    document = _load(OUTCOMES_DOC, str(root), decisions={"stream": run_name},
+                     later={"where": [{"field": "as_of", "op": "==", "value": LATER_DAY}]})
+    result = run_document(document, asof=LATER_DAY, journal=False)
+    assert result.state == "ran", (result.state, result.error)
+    assert len(result.outputs["later"]["records"]) == 4
+    assert {row["symbol"] for row in result.outputs["outcomes"]["records"]} == {"VTI", "AAPL"}

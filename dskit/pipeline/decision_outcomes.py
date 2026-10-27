@@ -30,9 +30,19 @@ Only the hold side is scored here. The active side is scored where it runs
 — a child's own production ledger — never by this node.
 
 :class:`DecisionOutcomes` (role ``transform``) is wired by import path. A
-decided symbol absent from the later snapshot is listed as unmatched, not
+decided key absent from the later snapshot is listed as unmatched, not
 scored; a later snapshot carrying several dates refuses, because one
-observation date is what makes the elapsed time a single number.
+observation date is what makes the elapsed time a single number, as does one
+carrying a key twice. Those structural refusals cover EVERY later row; the
+value and quantity checks cover only the rows a decision matches, so a short, a
+closed lot or an option nobody decided on is simply not scored and never stops
+the run (the document filters the universe; this node does not need it to).
+
+Limits, disclosed rather than modelled. Growth is per share, so a stock split,
+reverse split or spin-off between the two dates changes the share count without
+a purchase and is read as a return (a 2-for-1 split looks like a 50% loss); none
+is detected or adjusted here. The income removed from the projection is one
+yield for every holding, and no tax is applied to either side.
 
 Import cost: stdlib + the pipeline core.
 """
@@ -43,6 +53,7 @@ from datetime import date
 
 from dskit.pipeline.binary_curve import name_ok
 from dskit.pipeline.document import date_problem
+from dskit.pipeline.liquidation import require_number
 from dskit.pipeline.node import Node, check_number_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
@@ -73,7 +84,8 @@ class DecisionOutcomes(Node):
         Rows written by :class:`~dskit.pipeline.liquidation.HoldVsRedeploy`:
         the fields above plus ``hold_value``, ``horizon_years``, ``decision``.
     ``positions`` (REQUIRED)
-        A later snapshot, one row per key, all on one ``as_of``.
+        A later snapshot, one row per key, all on one ``as_of``. Only the rows
+        a decision matches need a usable value and quantity.
 
     Examples
     --------
@@ -132,22 +144,13 @@ class DecisionOutcomes(Node):
         """Answer ``pure``: the node reads nothing but its inputs and params."""
         return "pure"
 
-    def _number(self, what, index, row, field):
-        """Return the number ``row[field]`` holds; refuse by input, index and field."""
-        value = row.get(field)
-        if not number_ok(value):
-            raise ValueError(
-                f"{self.key}: {what} {index} field {field!r} is not a number, got {value!r}"
-            )
-        return float(value)
-
     def _per_unit(self, what, index, row):
         """Return the row's measure: value per share when a quantity field is declared."""
-        value = self._number(what, index, row, self.params["value_field"])
+        value = require_number(self.key, what, index, row, self.params["value_field"])
         field = self.params.get("quantity_field")
         if field is None:
             return value
-        quantity = self._number(what, index, row, field)
+        quantity = require_number(self.key, what, index, row, field)
         if quantity == 0.0:
             raise ValueError(f"{self.key}: {what} {index} has zero {field!r}")
         return value / quantity
@@ -159,11 +162,15 @@ class DecisionOutcomes(Node):
         return value
 
     def _later(self, positions):
-        """Return ``(as_of, {key: measure})`` from the later snapshot; refuse several dates."""
+        """Return ``(as_of, {key: (index, row)})`` from the later snapshot.
+
+        Refuses several dates, an undated row, a missing key field and a repeated key
+        over EVERY row; the rows' values are read later, only for the keys a decision matches.
+        """
         if not isinstance(positions, list):
             raise ValueError(f"{self.key}: positions must be a list")
         as_of_field = self.params["as_of_field"]
-        dates, measures = set(), {}
+        dates, rows = set(), {}
         for index, row in enumerate(positions):
             key = self._key("position", index, row)
             if date_problem(row.get(as_of_field)):
@@ -171,15 +178,15 @@ class DecisionOutcomes(Node):
                     f"{self.key}: position {index} field {as_of_field!r} is not an ISO date"
                 )
             dates.add(date.fromisoformat(row[as_of_field]))
-            if key in measures:
+            if key in rows:
                 raise ValueError(f"{self.key}: positions carry key {key!r} several times")
-            measures[key] = self._per_unit("position", index, row)
+            rows[key] = (index, row)
         if len(dates) != 1:
             raise ValueError(
                 f"{self.key}: positions must carry one as_of, got several: "
                 f"{sorted(d.isoformat() for d in dates)}"
             )
-        return dates.pop(), measures
+        return dates.pop(), rows
 
     def run(self, ctx, inputs):
         """Return one scored row per matched symbol, and a summary with the unmatched."""
@@ -215,12 +222,13 @@ class DecisionOutcomes(Node):
                 )
             then = self._positive("decision", index, self._per_unit("decision", index, row),
                                   "measure")
-            value = self._positive("decision", index,
-                                   self._number("decision", index, row, self.params["value_field"]),
-                                   self.params["value_field"])
-            hold_value = self._positive("decision", index,
-                                        self._number("decision", index, row, "hold_value"),
-                                        "hold_value")
+            value = self._positive(
+                "decision", index,
+                require_number(self.key, "decision", index, row, self.params["value_field"]),
+                self.params["value_field"])
+            hold_value = self._positive(
+                "decision", index,
+                require_number(self.key, "decision", index, row, "hold_value"), "hold_value")
             elapsed = (later_day - decided).days / _DAYS_PER_YEAR
             income = float(self.params["income_rate"])
             total_growth = (hold_value / value) ** (1.0 / float(horizon))
@@ -232,7 +240,8 @@ class DecisionOutcomes(Node):
                     "a non-positive base has no growth path"
                 )
             projected = price_growth ** elapsed
-            realized = later[key] / then
+            position_index, position = later[key]
+            realized = self._per_unit("position", position_index, position) / then
             surprise = realized - projected
             decision = row.get("decision")
             if decision not in ("hold", "exit"):

@@ -36,9 +36,8 @@ from __future__ import annotations
 import math
 
 from dskit.pipeline.binary_curve import name_ok
-from dskit.pipeline.liquidation import require_rate
+from dskit.pipeline.liquidation import require_number, require_rate
 from dskit.pipeline.node import Node, check_int_param, check_number_param, reject_unknown_params
-from dskit.pipeline.records import number_ok
 from dskit.pipeline.stats import deflated_sharpe_ratio, sharpe_ratio
 
 __all__ = ["ActiveHurdle"]
@@ -115,12 +114,7 @@ class ActiveHurdle(Node):
         for index, row in enumerate(records):
             if not isinstance(row, dict):
                 raise ValueError(f"{self.key}: row {index} must be a mapping, got {type(row).__name__}")
-            value = row.get(field)
-            if not number_ok(value):
-                raise ValueError(
-                    f"{self.key}: row {index} field {field!r} is not a number, got {value!r}"
-                )
-            series.append(float(value))
+            series.append(require_number(self.key, "row", index, row, field))
         floor = int(self.params["min_periods"])
         if len(series) < floor:
             raise ValueError(

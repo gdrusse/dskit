@@ -16,19 +16,26 @@ Child is JSON only: `run-hold-vs-redeploy.json` (positions → equity longs →
 tax; market → betas; active_returns → hurdle; → decide →
 `decisions/<run>.jsonl`) and `run-decision-outcomes.json` (that file via
 localtables + a later snapshot → `outcomes/<run>.jsonl`). Two skeptic lenses
-passed, then a Sonnet round 1 (5 Major) fixed: short/zero rows refuse and the
+passed, then a Sonnet loop. Round 1 (5 Major): short/zero rows refuse and the
 snapshot drops shorts; wired and computed rates held to one `RATE_BOUNDS`;
 `hurdle.min_periods` (52) required; `market.horizon_years` pinned to the
 decision's and capped by `reversion_years`; `outcomes.income_rate` (0.013 =
-the dividend yield) removes income from the projected growth. Record:
-`docs/memos/2026-10-27-adr-0279-base-machinery.md` and the decision log. No
-real Schwab pull yet; every rate in the documents is a placeholder.
+the dividend yield) removes income from the projected growth. Round 2 (2
+Major): the scoring run reads only decision-matched later rows (and `later`
+filters equity longs), so an undecided short cannot refuse it; second-value
+tests for every hardcodable param. Also: `RATE_BOUNDS` is -100%..+200%, bars/
+positions errors keep their nouns, one `require_number`, the child e2e reads
+rates from the documents, and the README lists Limits (taxable-only accounts,
+untaxed hold dividends, splits, ETF `asset_type`, uncounted exclusions).
+Record: `docs/memos/2026-10-27-adr-0279-base-machinery.md` and the decision
+log. No real Schwab pull yet; every rate in the documents is a placeholder,
+and `decide.risk_premium` 0.0 is one to set from the backtest's volatility.
 
 ## Next
 
 Owner: set the decision document's blocks (dividend yield, CAPE, fair
 CAPE; `outcomes.income_rate` must follow the yield, a test pins it), betas,
-tax rates, `trials`, `min_dsr`, `min_periods` and the snapshot day; choose
+tax rates (`decide`'s two must follow `tax`'s, pinned too), `trials`, `min_dsr`, `min_periods` and the snapshot day; choose
 which child's backtest feeds `active`/`returns`; run the README's command
 sequence for the first real snapshot + decision, then record it with the
 `memo` skill.

@@ -6,7 +6,7 @@ valued refuses by name; nothing is filled or guessed.
 
 import pytest
 
-from dskit.pipeline import liquidation
+from dskit.pipeline import active_hurdle, decision_outcomes, liquidation
 from dskit.pipeline.liquidation import HoldVsRedeploy, LiquidationTax
 from dskit.pipeline.node import ConfigError, NodeContext
 
@@ -58,6 +58,44 @@ def test_exactly_the_threshold_day_is_long(ctx):
     assert _tax(ctx, rows)["records"][0]["liq_holding"] == "long"
     rows = [{"market_value": 10.0, "cost_basis": 0.0, "acquired": "2025-10-28"}]
     assert _tax(ctx, rows)["records"][0]["liq_holding"] == "short"
+
+
+def test_the_long_term_threshold_is_the_declared_day_count(ctx):
+    # as_of 2026-10-27: 2025-10-27 is exactly 365 days before it (no 29 February between),
+    # 2025-10-26 is 366
+    day365 = {"market_value": 10.0, "cost_basis": 0.0, "acquired": "2025-10-27"}
+    day366 = {"market_value": 10.0, "cost_basis": 0.0, "acquired": "2025-10-26"}
+    rows = [day365, day366]
+
+    def holdings(**over):
+        return [r["liq_holding"] for r in _tax(ctx, rows, **over)["records"]]
+
+    assert holdings(long_term_days=365) == ["long", "long"]
+    # the shipped 366 ("more than a year" across any leap day): 365 days held is still short
+    assert holdings(long_term_days=366) == ["short", "long"]
+    assert holdings(long_term_days=367) == ["short", "short"]
+    assert holdings(long_term_days=1) == ["long", "long"]
+    # the rate follows the class: 10 gain x .4 short, 10 x .2 long
+    taxed = _tax(ctx, rows, long_term_days=366)["records"]
+    assert (taxed[0]["liq_rate"], taxed[0]["liq_tax"]) == (0.4, 4.0)
+    assert (taxed[1]["liq_rate"], taxed[1]["liq_tax"]) == (0.2, 2.0)
+
+
+def test_default_holding_short_taxes_every_undated_row_at_the_short_rate(ctx):
+    rows = [
+        {"market_value": 100.0, "cost_basis": 50.0},                         # no date field
+        {"market_value": 100.0, "cost_basis": 50.0, "acquired": None},       # a null date
+        {"market_value": 100.0, "cost_basis": 50.0, "acquired": "2020-01-01"},  # dated: long
+    ]
+    out = _tax(ctx, rows, default_holding="short")
+    assert [r["liq_holding"] for r in out["records"]] == ["short", "short", "long"]
+    # 50 gain: x .4 = 20 on the two undated rows, x .2 = 10 on the dated long one
+    assert [r["liq_tax"] for r in out["records"]] == [20.0, 20.0, 10.0]
+    assert out["summary"]["holdings"] == {"long": 1, "short": 2}
+    assert out["summary"]["tax"] == 50.0
+    # the same rows under the other default flip only the undated ones
+    out = _tax(ctx, rows, default_holding="long")
+    assert [r["liq_tax"] for r in out["records"]] == [10.0, 10.0, 10.0]
 
 
 def test_a_loss_is_untaxed_unless_offset_is_declared(ctx):
@@ -294,38 +332,67 @@ def test_non_positive_value_or_net_refuses_by_index_and_field(ctx):
         _decide(ctx, [{**ok, "liq_net": -5.0}])
 
 
+def test_require_number_is_the_one_row_number_reader():
+    assert "require_number" in liquidation.__all__
+    require_number = liquidation.require_number
+    assert require_number("k", "row", 3, {"f": 2}, "f") == 2.0
+    assert isinstance(require_number("k", "row", 3, {"f": 2}, "f"), float)
+    with pytest.raises(ValueError) as caught:
+        require_number("k", "position", 3, {"f": "five"}, "f")
+    assert str(caught.value) == "k: position 3 field 'f' is not a number, got 'five'"
+    for bad in (None, True, float("nan"), float("inf"), "1"):
+        with pytest.raises(ValueError, match="row 0 field 'f' is not a number"):
+            require_number("k", "row", 0, {"f": bad}, "f")
+    with pytest.raises(ValueError, match="row 0 field 'f' is not a number, got None"):
+        require_number("k", "row", 0, {}, "f")
+    # the other row-reading kinds import this owner instead of carrying a copy
+    assert decision_outcomes.require_number is require_number
+    assert active_hurdle.require_number is require_number
+
+
 def test_wired_rates_outside_the_bounds_refuse_naming_the_input(ctx):
     rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 90.0}]
     node = HoldVsRedeploy("d", DECIDE)
-    # a percent typed where a fraction belongs: 500 means 50000%
+    # a percent typed where a fraction belongs: 500 means 50000%, and 7 (7%) means +700%
     with pytest.raises(ValueError, match=r"hold_returns\['A'\].*500.*fractions.*percent"):
         node.run(ctx, {"records": rows, "hold_returns": {"A": 500}})
+    with pytest.raises(ValueError, match=r"hold_returns\['A'\].*7.*fractions.*percent"):
+        node.run(ctx, {"records": rows, "hold_returns": {"A": 7}})
     with pytest.raises(ValueError, match=r"hold_returns\['A'\]"):
         node.run(ctx, {"records": rows, "hold_returns": {"A": -1.01}})
     with pytest.raises(ValueError, match="redeploy_return input.*50.*fractions"):
         node.run(ctx, {"records": rows, "redeploy_return": 50})
+    with pytest.raises(ValueError, match="redeploy_return input.*7.*fractions"):
+        node.run(ctx, {"records": rows, "redeploy_return": 7})
     with pytest.raises(ValueError, match="redeploy_return input"):
         node.run(ctx, {"records": rows, "redeploy_return": -2.0})
-    # the bounds are inclusive and are the ONE owner's
-    assert liquidation.RATE_BOUNDS == (-1.0, 10.0)
+    # the bounds are inclusive and are the ONE owner's: -100% to +200%
+    assert liquidation.RATE_BOUNDS == (-1.0, 2.0)
     free = HoldVsRedeploy("d", {**DECIDE, "redeploy_cost": 0.0, "risk_premium": 0.0})
-    out = free.run(ctx, {"records": rows, "hold_returns": {"A": 10.0}, "redeploy_return": -1.0})
-    assert out["records"][0]["hold_value"] == pytest.approx(100.0 * 11.0 ** 2)   # (1 + 10)^2
+    out = free.run(ctx, {"records": rows, "hold_returns": {"A": 2.0}, "redeploy_return": -1.0})
+    assert out["records"][0]["hold_value"] == pytest.approx(100.0 * 3.0 ** 2)    # (1 + 2)^2
     assert out["records"][0]["redeploy_value"] == 0.0                            # (1 - 1)^2
-    out = free.run(ctx, {"records": rows, "hold_returns": {"A": -1.0}, "redeploy_return": 10.0})
+    out = free.run(ctx, {"records": rows, "hold_returns": {"A": -1.0}, "redeploy_return": 2.0})
     assert out["records"][0]["hold_value"] == 0.0
-    assert out["records"][0]["redeploy_value"] == pytest.approx(90.0 * 11.0 ** 2)
+    assert out["records"][0]["redeploy_value"] == pytest.approx(90.0 * 3.0 ** 2)
     with pytest.raises(ValueError, match="hold_returns"):
-        node.run(ctx, {"records": rows, "hold_returns": {"A": 10.01}})
+        node.run(ctx, {"records": rows, "hold_returns": {"A": 2.01}})
     with pytest.raises(ValueError, match="redeploy_return input"):
-        node.run(ctx, {"records": rows, "redeploy_return": 10.01})
+        node.run(ctx, {"records": rows, "redeploy_return": 2.01})
+    # the same ceiling bounds a declared return
+    with pytest.raises(ConfigError, match="hold_return"):
+        HoldVsRedeploy("d", {**DECIDE, "hold_return": 7})
+    HoldVsRedeploy("d", {**DECIDE, "hold_return": 2.0, "redeploy_return": -1.0})
 
 
 def test_cost_and_premium_cannot_be_negative_and_the_horizon_is_capped():
     for name in ("redeploy_cost", "risk_premium"):
         with pytest.raises(ConfigError, match=name):
             HoldVsRedeploy("d", {**DECIDE, name: -0.01})
+        with pytest.raises(ConfigError, match=name):
+            HoldVsRedeploy("d", {**DECIDE, name: 2.01})
         HoldVsRedeploy("d", {**DECIDE, name: 0.0})
+        HoldVsRedeploy("d", {**DECIDE, name: 2.0})
     assert liquidation.MAX_HORIZON_YEARS == 100
     HoldVsRedeploy("d", {**DECIDE, "horizon_years": 100})
     HoldVsRedeploy("d", {**DECIDE, "horizon_years": 5.0})   # integral float: a count

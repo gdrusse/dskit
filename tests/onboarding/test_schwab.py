@@ -1,5 +1,8 @@
 """Schwab price-history bars: OAuth, overlap, and closed-minute evidence."""
 
+import json
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 import pytest
@@ -10,7 +13,7 @@ from dskit.onboarding import check_config, check_message, run_acquisition
 from dskit.onboarding.libs import schwab
 from dskit.onboarding.libs.schwab import SchwabBarsConnector
 
-from .stub_connectors import StubSchwabBarsConnector
+from .stub_connectors import ScriptedUrlopen, StubSchwabBarsConnector
 
 CONFIG = {
     "symbols": ["AAPL"],
@@ -199,3 +202,36 @@ def test_backoff_never_exceeds_the_shared_ceiling(monkeypatch):
     assert waits[:3] == [0.5, 1.0, 2.0]
     assert max(waits) == MAX_BACKOFF_S
     assert all(w <= MAX_BACKOFF_S for w in waits)
+
+
+PRICE_URL = "https://api.schwabapi.com/marketdata/v1/pricehistory"
+KNOBS = {"max_retries": 1, "timeout": 5}
+
+
+def _http(code):
+    return urllib.error.HTTPError(PRICE_URL, code, "scripted", {}, None)
+
+
+@pytest.mark.parametrize("outcomes, message", [
+    ([_http(404)], r"Schwab price history failed for 'AAPL' \(HTTP 404\)"),
+    ([(404, b"")], r"Schwab price history failed for 'AAPL' \(HTTP 404\)"),
+    ([_http(503), _http(503)],
+     r"Schwab price history for 'AAPL' failed after 2 attempt\(s\): HTTP 503"),
+    ([(200, b"{not json")], r"Schwab price history for 'AAPL' returned malformed JSON"),
+    ([(200, json.dumps([1]).encode())], r"Schwab price history for 'AAPL' returned a non-object"),
+])
+def test_bars_transport_errors_keep_the_price_history_noun(monkeypatch, outcomes, message):
+    monkeypatch.setattr(schwab.time, "sleep", lambda s: None)
+    monkeypatch.setattr(urllib.request, "urlopen", ScriptedUrlopen(*outcomes))
+    with pytest.raises(AssetError, match=message):
+        SchwabBarsConnector()._get_json("tok", "AAPL", {"frequency": 1}, KNOBS)
+
+
+def test_bars_transport_puts_the_symbol_first_and_sends_the_bearer_token(monkeypatch):
+    fake = ScriptedUrlopen((200, json.dumps({"candles": []}).encode()))
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    body = SchwabBarsConnector()._get_json("tok", "AAPL", {"frequency": 1}, KNOBS)
+    assert body == {"candles": []}
+    ((url, headers, timeout),) = fake.requests
+    assert url == PRICE_URL + "?symbol=AAPL&frequency=1"
+    assert headers == {"Authorization": "Bearer tok"} and timeout == 5

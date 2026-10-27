@@ -1,5 +1,8 @@
 """Schwab account positions: a point-in-time snapshot stream (ADR-0279)."""
 
+import json
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 import pytest
@@ -7,7 +10,9 @@ import pytest
 from dskit.assets.base import AssetError
 from dskit.onboarding import check_config, check_message
 from dskit.onboarding.connector import resolve_connector
-from dskit.onboarding.libs.schwab import SchwabPositionsConnector
+from dskit.onboarding.libs.schwab import SchwabBarsConnector, SchwabPositionsConnector
+
+from .stub_connectors import ScriptedUrlopen
 
 CONFIG = {}
 
@@ -213,3 +218,123 @@ def test_check_probes_accounts_and_transient_failures_retry_then_refuse(monkeypa
     with pytest.raises(AssetError, match="after 3 attempt"):
         Stub().check({"max_retries": 2})
     assert len(Stub.calls) == 3
+
+
+def test_a_malformed_position_names_its_symbol_when_it_has_one():
+    # the symbol is known: the message says which holding
+    Stub.bodies[ACCOUNTS_URL] = _one(longQuantity="ten")
+    with pytest.raises(AssetError) as caught:
+        _read()
+    assert caught.value.errors == ["Schwab position 0 in account 0 is malformed (symbol 'X')"]
+    # no usable symbol: no suffix, nothing invented
+    for bad in (_one(instrument={"assetType": "EQUITY"}),
+                _one(instrument={"symbol": 123, "assetType": "EQUITY"}),
+                _one(instrument="VTI")):
+        Stub.bodies[ACCOUNTS_URL] = bad
+        with pytest.raises(AssetError) as caught:
+            _read()
+        assert caught.value.errors == ["Schwab position 0 in account 0 is malformed"]
+    # a non-mapping position has no symbol either
+    Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678",
+                                                         "positions": ["VTI"]}}]
+    with pytest.raises(AssetError) as caught:
+        _read()
+    assert caught.value.errors == ["Schwab position 0 in account 0 is malformed"]
+
+
+def test_each_spec_is_its_own_copy_of_the_shared_knobs():
+    first = SchwabPositionsConnector().spec()
+    first["params"]["timeout"]["notes"] = "tampered"
+    first["params"]["client_id_env"]["secret"] = False
+    again = SchwabPositionsConnector().spec()
+    assert again["params"]["timeout"]["notes"].startswith("HTTP timeout in seconds")
+    assert again["params"]["client_id_env"]["secret"] is True
+    bars = SchwabBarsConnector().spec()
+    assert bars["params"]["timeout"]["notes"].startswith("HTTP timeout in seconds")
+    assert bars["params"]["max_retries"] is not again["params"]["max_retries"]
+
+
+class Wire(SchwabPositionsConnector):
+    """The real transport; only the clock and the OAuth token are stubbed."""
+
+    def _now(self):
+        return NOW
+
+    def _access_token(self, knobs):
+        return "tok"
+
+
+def _http(code):
+    return urllib.error.HTTPError(ACCOUNTS_URL, code, "scripted", {}, None)
+
+
+def _body(value):
+    return (200, json.dumps(value).encode("utf-8"))
+
+
+@pytest.fixture
+def waits(monkeypatch):
+    seen = []
+    monkeypatch.setattr("dskit.onboarding.libs.schwab.time.sleep", seen.append)
+    return seen
+
+
+def test_wire_sends_a_bearer_header_and_encodes_params_in_the_url(monkeypatch):
+    fake = ScriptedUrlopen(_body(HASHES), _body(ACCOUNTS))
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    messages = list(Wire().read(CONFIG, ["positions"], {}, "backfill"))
+    rows = [m["data"] for m in messages if m["type"] == "RECORD"]
+    assert [r["symbol"] for r in rows] == ["AAPL", "VTI"]
+    (numbers_url, numbers_headers, _), (accounts_url, accounts_headers, timeout) = fake.requests
+    assert numbers_url == NUMBERS_URL                      # no params, no query string
+    assert accounts_url == ACCOUNTS_URL + "?fields=positions"
+    assert numbers_headers == accounts_headers == {"Authorization": "Bearer tok"}
+    assert timeout == 30                                   # the shared default
+
+
+def test_wire_503_is_retried_then_refused_after_max_retries(monkeypatch, waits):
+    fake = ScriptedUrlopen(_http(503), _http(503), _http(503))
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    with pytest.raises(AssetError) as caught:
+        Wire().check({"max_retries": 2})
+    assert caught.value.errors == [
+        "Schwab accounts for 'accounts' failed after 3 attempt(s): HTTP 503"]
+    assert len(fake.requests) == 3
+    assert waits == [0.5, 1.0]                             # backoff before attempts 2 and 3
+    # a transient failure that clears is not an error: 429, then a good body
+    fake = ScriptedUrlopen(_http(429), _body(ACCOUNTS))
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    Wire().check({"max_retries": 2})
+    assert len(fake.requests) == 2
+
+
+def test_wire_a_returned_retryable_status_is_retried_too(monkeypatch, waits):
+    fake = ScriptedUrlopen((502, b""), (502, b""))
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    with pytest.raises(AssetError, match=r"failed after 2 attempt\(s\): HTTP 502"):
+        Wire().check({"max_retries": 1})
+    assert len(fake.requests) == 2
+
+
+def test_wire_404_is_refused_at_once_naming_the_noun(monkeypatch, waits):
+    fake = ScriptedUrlopen(_http(404))
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    with pytest.raises(AssetError) as caught:
+        Wire().check({"max_retries": 3})
+    assert caught.value.errors == ["Schwab accounts failed for 'accounts' (HTTP 404)"]
+    assert len(fake.requests) == 1 and waits == []         # not retried, not waited on
+    # the same refusal when the status comes back as a response instead of an exception
+    fake = ScriptedUrlopen((404, b""))
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    with pytest.raises(AssetError, match=r"Schwab accounts failed for 'accounts' \(HTTP 404\)"):
+        Wire().check({"max_retries": 3})
+
+
+def test_wire_malformed_json_is_refused_naming_the_noun(monkeypatch, waits):
+    for raw in (b"{not json", b"\xff\xfe"):
+        fake = ScriptedUrlopen((200, raw))
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+        with pytest.raises(AssetError) as caught:
+            Wire().check({"max_retries": 3})
+        assert caught.value.errors == ["Schwab accounts for 'accounts' returned malformed JSON"]
+        assert len(fake.requests) == 1 and waits == []

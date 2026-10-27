@@ -76,3 +76,52 @@ class StubSchwabBarsConnector(SchwabBarsConnector):
         """Return the scripted body and record sanitized request metadata."""
         type(self).calls.append((symbol, dict(params), timeout))
         return dict(type(self).responses.get(symbol, {"candles": []}))
+
+
+class _ScriptedResponse:
+    """A context-managed HTTP response with a status and a body."""
+
+    def __init__(self, status, body):
+        self._status, self._body = status, body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def getcode(self):
+        """Return the scripted HTTP status."""
+        return self._status
+
+    def read(self):
+        """Return the scripted body bytes."""
+        return self._body
+
+
+class ScriptedUrlopen:
+    """A stand-in for ``urllib.request.urlopen`` that replays scripted outcomes.
+
+    Each outcome is an exception (raised) or a ``(status, body_bytes)`` pair
+    (returned as a response). Every request is recorded as ``(url, headers,
+    timeout)``; asking for more requests than were scripted raises ``IndexError``,
+    which is how a test proves an error was not retried.
+
+    Examples
+    --------
+    One 503 then a good body::
+
+        fake = ScriptedUrlopen(HTTPError(url, 503, "busy", {}, None), (200, b"[]"))
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+    """
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.requests = []
+
+    def __call__(self, request, timeout=None):
+        self.requests.append((request.full_url, dict(request.header_items()), timeout))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return _ScriptedResponse(*outcome)

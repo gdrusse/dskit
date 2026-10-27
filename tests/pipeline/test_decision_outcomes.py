@@ -140,6 +140,75 @@ def test_income_that_swallows_the_growth_refuses_by_decision(ctx):
     assert out["records"][0]["projected_growth"] == pytest.approx(0.99 ** (365 / 365.25))
 
 
+def test_an_undecided_later_row_is_never_validated_or_scored(ctx):
+    # positions nobody decided on: a closed lot (zero quantity), a short (zero long quantity,
+    # negative value), a row with no quantity at all and one with a text value. None of them
+    # is scored, so none may refuse the run; the decided rows score exactly as without them.
+    extra = [
+        {"account": "A9", "symbol": "ZERO", "as_of": "2027-10-27", "market_value": 0.0,
+         "long_quantity": 0.0},
+        {"account": "A9", "symbol": "SHORT", "as_of": "2027-10-27", "market_value": -180.0,
+         "long_quantity": 0.0},
+        {"account": "A9", "symbol": "NOQTY", "as_of": "2027-10-27", "market_value": 5.0},
+        {"account": "A9", "symbol": "TEXT", "as_of": "2027-10-27", "market_value": "n/a",
+         "long_quantity": 1.0},
+    ]
+    node = DecisionOutcomes("o", PARAMS)
+    plain = node.run(ctx, {"decisions": DECISIONS, "positions": LATER})
+    out = node.run(ctx, {"decisions": DECISIONS, "positions": extra[:2] + LATER + extra[2:]})
+    assert [r["symbol"] for r in out["records"]] == ["VTI", "AAPL"]
+    assert out["records"] == plain["records"]
+    assert out["summary"] == plain["summary"]
+    assert out["summary"]["unmatched"] == []
+
+
+def test_the_later_snapshot_keeps_its_structural_refusals_for_every_row(ctx):
+    # an undecided row still has to be addressable, dated, unique and on the one date
+    node = DecisionOutcomes("o", PARAMS)
+    zero = {"account": "A9", "symbol": "ZERO", "as_of": "2027-10-27", "market_value": 0.0,
+            "long_quantity": 0.0}
+    with pytest.raises(ValueError, match="positions carry key.*several"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": LATER + [zero, zero]})
+    with pytest.raises(ValueError, match="position 3.*as_of"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": LATER + [{**zero, "as_of": "soon"}]})
+    with pytest.raises(ValueError, match="position 3.*key field 'symbol'"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": LATER + [
+            {k: v for k, v in zero.items() if k != "symbol"}]})
+    with pytest.raises(ValueError, match="one as_of.*2027-10-27.*2027-10-28"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": LATER + [
+            {**zero, "as_of": "2027-10-28"}]})
+    # a MATCHED row is validated, and the message names its position in the snapshot
+    with pytest.raises(ValueError, match="position 1.*zero"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": [
+            zero, {**LATER[0], "long_quantity": 0.0}, LATER[1]]})
+    with pytest.raises(ValueError, match="position 0.*market_value.*not a number"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": [
+            {**LATER[0], "market_value": "n/a"}, LATER[1]]})
+
+
+def test_horizon_years_is_read_from_the_decision_row_by_hand(ctx):
+    # horizon 3: hold_value 1331 = 1000 x 1.1^3, so the total growth is 1.1 a year; income 5%
+    # leaves a price growth of 1.05; 2026-10-27 -> 2030-10-27 is 1461 days = exactly 4 years,
+    # and 1.05^4 = 1.21550625. Realized 1300 / 1000 = 1.3, so the surprise is 0.08449375.
+    params = {k: v for k, v in PARAMS.items() if k != "quantity_field"}
+    params["income_rate"] = 0.05
+    row = {"account": "A", "symbol": "H3", "as_of": "2026-10-27", "market_value": 1000.0,
+           "hold_value": 1331.0, "horizon_years": 3, "decision": "hold"}
+    later = [{"account": "A", "symbol": "H3", "as_of": "2030-10-27", "market_value": 1300.0}]
+    node = DecisionOutcomes("o", params)
+    scored = node.run(ctx, {"decisions": [row], "positions": later})["records"][0]
+    assert scored["elapsed_years"] == 4.0
+    assert scored["projected_growth"] == pytest.approx(1.21550625)
+    assert scored["surprise"] == pytest.approx(0.08449375)
+    # the same hold_value read over 5 years is a different forecast: 1.331^0.2 = 1.058853, less
+    # the income 1.008853, ^4 = 1.035884
+    five = node.run(ctx, {"decisions": [{**row, "horizon_years": 5}], "positions": later})
+    assert five["records"][0]["projected_growth"] == pytest.approx(1.035884, abs=1e-5)
+    # and a one-year horizon: g = 1331 / 1000 = 1.331, price growth 1.281, ^4 = 2.6928
+    one = node.run(ctx, {"decisions": [{**row, "horizon_years": 1}], "positions": later})
+    assert one["records"][0]["projected_growth"] == pytest.approx(1.281 ** 4)
+
+
 def test_a_decision_without_a_later_row_is_unmatched_not_scored(ctx):
     out = DecisionOutcomes("o", PARAMS).run(ctx, {"decisions": DECISIONS, "positions": LATER[1:]})
     assert [r["symbol"] for r in out["records"]] == ["AAPL"]

@@ -59,8 +59,33 @@ def test_five_trials_haircut_the_mean_by_the_null_maximum(ctx):
 
 
 def test_min_dsr_is_inclusive(ctx):
-    assert _run(ctx, trials=5, min_dsr=DSR_5)["admissible"] is True
-    assert _run(ctx, trials=5, min_dsr=DSR_5 + 1e-9)["admissible"] is False
+    # the boundary is the node's own dsr, so the test holds to the last bit whatever the
+    # platform's float rounding; DSR_5 is the recorded value it must be close to
+    dsr = _run(ctx, trials=5)["summary"]["dsr"]
+    assert dsr == pytest.approx(DSR_5)
+    assert _run(ctx, trials=5, min_dsr=dsr)["admissible"] is True
+    assert _run(ctx, trials=5, min_dsr=dsr + 1e-9)["admissible"] is False
+    assert _run(ctx, trials=5, min_dsr=dsr - 1e-9)["admissible"] is True
+
+
+def test_periods_per_year_annualizes_and_does_not_touch_the_sharpe(ctx):
+    # the same twelve returns read as MONTHLY: mean 0.066 / 12 periods = 0.0055 a period, so the
+    # one-trial annual rate is 0.0055 x 12 = 0.066 (x 52 was 0.286), and sd 0.0087021 grows by
+    # sqrt(12) = 3.4641 to 0.030145 (not by sqrt(52))
+    out = _run(ctx, trials=1, periods_per_year=12)
+    assert out["rate"] == pytest.approx(0.066)
+    assert out["summary"]["periods_per_year"] == 12
+    assert out["summary"]["annual_mean"] == pytest.approx(0.066)
+    assert out["summary"]["annual_sd"] == pytest.approx(0.030145, abs=1e-6)
+    # five trials: the null-Sharpe haircut is per period, so it scales by 12 too
+    five = _run(ctx, trials=5, periods_per_year=12)
+    assert five["rate"] == pytest.approx((MEAN - EMAX_5 * SD) * 12)
+    assert five["summary"]["haircut"] == pytest.approx(EMAX_5 * SD * 12)
+    # the Sharpe, its deflated probability and the admissibility verdict are per period
+    weekly = _run(ctx, trials=5)
+    assert five["summary"]["sharpe"] == weekly["summary"]["sharpe"]
+    assert five["summary"]["dsr"] == weekly["summary"]["dsr"]
+    assert five["admissible"] is True and weekly["admissible"] is True
 
 
 def test_twenty_trials_fall_under_min_dsr_and_the_rate_is_withheld(ctx):
@@ -107,7 +132,7 @@ def test_a_percent_unit_series_refuses_with_the_fractions_message(ctx):
     percent = [value * 100 for value in RETURNS]          # 0.55 a week = 28.6 a year
     with pytest.raises(ValueError, match="deflated rate.*outside.*fractions.*percent"):
         _run(ctx, rows=_rows(percent), trials=1)
-    # five trials shrink it to (0.55 - 0.3978 x 0.8702) x 52 = 10.6, still over 10; and the
+    # five trials shrink it to (0.55 - 0.3978 x 0.8702) x 52 = 10.6, still over 2; and the
     # strategy is inadmissible at min_dsr 1.0 (dsr 0.76): the bound is checked before admissibility
     with pytest.raises(ValueError, match="fractions"):
         _run(ctx, rows=_rows(percent), trials=5, min_dsr=1.0)
