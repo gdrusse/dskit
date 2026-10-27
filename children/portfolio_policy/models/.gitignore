@@ -1,0 +1,6 @@
+# Fitted artifacts are rebuilt from run documents; only the folder's
+# own bookkeeping files are tracked.
+*
+!/.gitignore
+!/.gitkeep
+!/README.md

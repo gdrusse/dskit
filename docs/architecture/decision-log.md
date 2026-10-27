@@ -32446,3 +32446,36 @@ Sweep: tools/sweep/sweep joint_rows shock_rows beta_shock; no near matches
 on 69 refs and 85 worktrees. Owners: dskit/pipeline/libs/pyomo.py,
 children/index_options/index_options/ledger_studies.py, their focused
 tests, both READMEs. Builds and lenses on Sonnet subagents.
+
+#### ADR-0279: `portfolio_policy` child — hold passively vs cash out into active strategies (PROPOSED 2026-10-27)
+
+**Question.** For each long-term holding in the owner's Schwab portfolio, is
+the expected after-tax, after-cost value of holding at least the value of
+selling and redeploying into an active strategy? Output is an advisory
+per-position hold/exit signal with pre-registered thresholds; never an order.
+
+**Structure (four stages, each a JSON document).**
+1. **Snapshot.** A `positions` stream on `dskit.onboarding.libs.schwab`
+   (tier-2 graduation; today only `bars` exists): symbol, lots, cost basis,
+   acquisition dates. WORM snapshots as for any source.
+2. **Hold model.** Expected return and variance per holding from price
+   history plus a tax-drag term: realized gain x rate by lot holding period.
+   Rates and periods are config.
+3. **Active hurdle.** The after-tax, after-cost return an active strategy
+   must beat. Candidates come from this repo's own children's scored
+   backtests (`index_options`, `statistical_arbitrage`) via their evaluation
+   reports; no new strategy research here.
+4. **Decision rule.** Hold iff E[hold] - tax drag >= E[active] - costs - a
+   risk premium for the forecast's own uncertainty; rendered through
+   `dskit.evaluation` with PASS/FAIL/INCONCLUSIVE criteria declared before
+   the first run.
+
+**Placement.** Positions stream and tax-lot accounting are generic:
+`dskit/onboarding/libs/schwab.py` and a tier-2 lot ledger. The hurdle
+wiring, thresholds and the owner's rates stay in `children/portfolio_policy`.
+
+**Not in scope.** Live orders, option overlays, anything the existing
+children already answer.
+
+Sweep: tools/sweep/sweep portfolio_policy hold_vs_active exit_policy; no near
+matches. Scaffold copied from `children/_skeleton` in the same commit.
