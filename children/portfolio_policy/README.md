@@ -23,7 +23,9 @@ python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <YYYY-MM-D
 ```
 
 `configs/run-hold-vs-redeploy.json` holds every rate, return, horizon and
-premium; set them before the first run. Rows land in `decisions/<run>.jsonl`,
+premium; set them before the first run. The hold return is never a literal:
+`market` builds it from dividend yield + real growth + inflation + CAPE drift
+and `betas` scales it per symbol (research A0001). Rows land in `decisions/<run>.jsonl`,
 one per account x symbol, advisory only. Aggregate positions carry no lots, so
 every holding takes `default_holding` until a lot-level export is onboarded.
 

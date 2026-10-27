@@ -27,12 +27,33 @@
       },
       "notes": "Aggregate rows carry no acquisition date, so every holding takes default_holding until a lot-level source adds an 'acquired' field (then declare acquired_field). Rates are the owner's marginal federal + NIIT placeholders; state tax is not included."
     },
+    "market": {
+      "uses": "dskit.pipeline.hold_return:MarketHoldReturn",
+      "params": {
+        "dividend_yield": 0.013,
+        "real_growth": 0.02,
+        "inflation": 0.025,
+        "cape": 36.0,
+        "fair_cape": 27.0,
+        "reversion_years": 10
+      },
+      "notes": "Role 'data': the market's expected nominal return from four public numbers (research A0001): S&P 500 dividend yield, long-run real earnings growth, expected inflation, and the drift from today's Shiller CAPE toward a fair CAPE over reversion_years. Placeholders; the owner refreshes them from public data before each real run."
+    },
+    "betas": {
+      "uses": "dskit.pipeline.hold_return:BetaHoldReturns",
+      "inputs": { "records": "$positions.records", "market": "$market.rate" },
+      "params": {
+        "risk_free": 0.04,
+        "betas": { "VTI": 1.0, "AAPL": 1.2 },
+        "symbol_field": "symbol"
+      },
+      "notes": "risk_free + beta x (market - risk_free) per symbol. betas is the owner's table (a 5-year monthly beta from any public source); a holding missing from it refuses, on purpose: no default_beta here, so a new position cannot be silently priced as the market."
+    },
     "decide": {
       "uses": "dskit.pipeline.liquidation:HoldVsRedeploy",
-      "inputs": { "records": "$tax.records" },
+      "inputs": { "records": "$tax.records", "hold_returns": "$betas.rates" },
       "params": {
         "horizon_years": 5,
-        "hold_return": 0.07,
         "redeploy_return": 0.12,
         "redeploy_cost": 0.02,
         "risk_premium": 0.03,
@@ -40,7 +61,7 @@
         "net_field": "liq_net",
         "symbol_field": "symbol"
       },
-      "notes": "hold_return may become {symbol: rate} once Stage 2's per-holding expected returns exist; redeploy_return is Stage 3's active hurdle, to be sourced from a child's scored backtest, never a hope."
+      "notes": "hold_return comes wired from $betas.rates (no hold_return param, so nothing can be pasted). redeploy_return is Stage 3's active hurdle, to be sourced from a child's scored backtest and haircut for selection (deflated Sharpe), never a hope; risk_premium carries that haircut until a child reports a deflated figure."
     },
     "decisions": {
       "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",

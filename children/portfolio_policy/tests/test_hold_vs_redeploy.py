@@ -56,7 +56,8 @@ def positions_root(tmp_path):
 
 def test_document_is_valid_and_wires_the_four_stages():
     document = load_document(RUN_DOC)
-    assert list(document.pipeline) == ["positions", "tax", "decide", "decisions"]
+    assert list(document.pipeline) == [
+        "positions", "tax", "market", "betas", "decide", "decisions"]
     assert document.hash
 
 
@@ -73,11 +74,18 @@ def test_hold_vs_redeploy_end_to_end(positions_root, monkeypatch):
     assert vti["liq_holding"] == "long"
     assert vti["liq_tax"] == pytest.approx(119.0)
     assert vti["liq_net"] == pytest.approx(2381.0)
-    # hold 2500 x 1.07^5; redeploy 2381 x 1.07^5 -> hold (same rate, less capital)
-    assert vti["hold_value"] == pytest.approx(2500.0 * 1.07 ** 5)
+    # market: .013 + .02 + .025 + ((27/36)^(1/10) - 1) = 0.058 - 0.028366 = 0.029634
+    market = 0.058 + (27.0 / 36.0) ** 0.1 - 1.0
+    assert result.outputs["market"]["rate"] == pytest.approx(market)
+    rates = result.outputs["betas"]["rates"]
+    assert rates["VTI"] == pytest.approx(0.04 + 1.0 * (market - 0.04))
+    assert rates["AAPL"] == pytest.approx(0.04 + 1.2 * (market - 0.04))
+    # hold 2500 x (1+VTI)^5 vs redeploy 2381 x 1.07^5: 2890 vs 3340 -> exit
+    assert vti["hold_value"] == pytest.approx(2500.0 * (1.0 + rates["VTI"]) ** 5)
     assert vti["redeploy_value"] == pytest.approx(2381.0 * 1.07 ** 5)
-    assert vti["decision"] == "hold"
-    assert result.outputs["decide"]["summary"]["decisions"] == {"hold": 2, "exit": 0}
+    assert vti["decision"] == "exit"
+    assert result.outputs["decide"]["summary"]["hold_return_source"] == "wired"
+    assert result.outputs["decide"]["summary"]["decisions"] == {"hold": 0, "exit": 2}
     written = result.outputs["decisions"]["path"]
     assert os.path.dirname(os.path.abspath(written)) == str(positions_root / "decisions")
     with open(written) as fh:

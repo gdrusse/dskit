@@ -19,9 +19,10 @@ scaled by beta per stock; never a trailing mean.
 
 ## Next
 
-Owner picks the hold_return implementation (research proposes
-`MarketHoldReturn` + `BetaHoldReturns` nodes and a `hold_returns` input
-port on `HoldVsRedeploy`). Then the owner sets the document's rates/returns and runs the README's command
+Built on owner permission: `dskit/pipeline/hold_return.py`
+(`MarketHoldReturn`, `BetaHoldReturns`) and the wired `hold_returns` port;
+document now positions → tax → market → betas → decide. Owner sets the
+document's blocks, betas, rates/returns and runs the README's command
 sequence for the first real snapshot + decision. Then: per-symbol
 `hold_return` from price history (Stage 2 model) and `redeploy_return`
 from a child's scored backtest (Stage 3 hurdle).

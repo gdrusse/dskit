@@ -127,6 +127,8 @@ dskit/pipeline/
 ├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
 │                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon; decision `exit` only when redeploy wins
+├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, role data) + BetaHoldReturns
+│                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:

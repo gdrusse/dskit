@@ -18,8 +18,11 @@ which case it is a negative tax: the offset a realized loss gives elsewhere.
 ``horizon_years``: holding the gross position at ``hold_return`` (a number, or
 one per symbol) against redeploying the after-tax net at ``redeploy_return``
 less ``redeploy_cost`` less ``risk_premium``. ``decision`` is ``exit`` only when
-the redeploy path is strictly ahead; a tie holds. The first cut ignores the
-tax still owed at the end of the hold path, which favours holding.
+the redeploy path is strictly ahead; a tie holds. An optional ``hold_returns``
+input (``{symbol: rate}``, from :mod:`dskit.pipeline.hold_return`) overrides
+the ``hold_return`` param, so an estimate is wired, never pasted. The first
+cut ignores the tax still owed at the end of the hold path, which favours
+holding.
 
 Rows that cannot be valued refuse by index and field name; nothing is filled.
 Every rate, horizon and field name is a param: the module carries no table.
@@ -211,13 +214,21 @@ class HoldVsRedeploy(Node):
     ----------
     params : dict
         ``horizon_years`` (int >= 1, REQUIRED); ``hold_return`` (a number in
-        ``[-1, 10]`` or ``{symbol: number}``, REQUIRED): the annual return
-        of holding, per symbol when a mapping (a row whose symbol is absent
-        refuses); ``redeploy_return`` / ``redeploy_cost`` / ``risk_premium``
+        ``[-1, 10]`` or ``{symbol: number}``): the annual return of holding,
+        per symbol when a mapping (a row whose symbol is absent refuses);
+        required unless ``hold_returns`` is wired; ``redeploy_return`` / ``redeploy_cost`` / ``risk_premium``
         (numbers in ``[-1, 10]``, REQUIRED): the annual return of the
         alternative, its annual cost and the premium charged for the
         forecast's own uncertainty; ``value_field`` / ``net_field`` /
         ``symbol_field`` (field names, REQUIRED).
+
+    Inputs
+    ------
+    ``records`` (REQUIRED)
+        Mapping rows carrying the three declared fields.
+    ``hold_returns`` (optional)
+        ``{symbol: rate}``; when wired it replaces the ``hold_return`` param
+        for every row, and a row whose symbol is absent refuses.
 
     Examples
     --------
@@ -239,6 +250,7 @@ class HoldVsRedeploy(Node):
         "horizon_years", "hold_return", "redeploy_return", "redeploy_cost",
         "risk_premium", "value_field", "net_field", "symbol_field",
     )
+    _REQUIRED = tuple(name for name in _PARAMS if name != "hold_return")
     _RATE_LOWER, _RATE_UPPER = -1.0, 10.0
 
     @classmethod
@@ -246,7 +258,7 @@ class HoldVsRedeploy(Node):
         """List problems with ``params``, empty when none."""
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
-        missing = sorted(set(cls._PARAMS) - set(params))
+        missing = sorted(set(cls._REQUIRED) - set(params))
         if missing:
             problems.append(f"missing required params {missing}")
         if "horizon_years" in params:
@@ -270,9 +282,8 @@ class HoldVsRedeploy(Node):
                      [n for n in ("value_field", "net_field", "symbol_field") if n in params])
         return problems
 
-    def _hold_rate(self, index, row):
+    def _hold_rate(self, index, row, hold):
         """Return the annual hold return of one row: the scalar, or the symbol's entry."""
-        hold = self.params["hold_return"]
         if not isinstance(hold, dict):
             return float(hold)
         symbol = row.get(self.params["symbol_field"])
@@ -282,10 +293,29 @@ class HoldVsRedeploy(Node):
             )
         return float(hold[symbol])
 
+    def _hold_source(self, inputs):
+        """Return ``(rates, source)``: the wired ``hold_returns`` when present, else the param."""
+        if "hold_returns" not in inputs:
+            if "hold_return" not in self.params:
+                raise ValueError(
+                    f"{self.key}: no hold_return param and no hold_returns input"
+                )
+            return self.params["hold_return"], "param"
+        wired = inputs["hold_returns"]
+        if (
+            not isinstance(wired, dict)
+            or not all(isinstance(k, str) and number_ok(v) for k, v in wired.items())
+        ):
+            raise ValueError(
+                f"{self.key}: hold_returns must be a {{symbol: number}} mapping, got {wired!r}"
+            )
+        return wired, "wired"
+
     def run(self, ctx, inputs):
         """Compare the two paths on every row; return the rows with the decision and a summary."""
         records = inputs.get("records")
         _check_rows(self.key, records, _DECISION_FIELDS)
+        hold, source = self._hold_source(inputs)
         years = self.params["horizon_years"]
         redeploy_rate = (self.params["redeploy_return"] - self.params["redeploy_cost"]
                          - self.params["risk_premium"])
@@ -294,7 +324,7 @@ class HoldVsRedeploy(Node):
         for index, row in enumerate(records):
             value = _number(self.key, index, row, self.params["value_field"])
             net = _number(self.key, index, row, self.params["net_field"])
-            hold_value = value * math.pow(1.0 + self._hold_rate(index, row), years)
+            hold_value = value * math.pow(1.0 + self._hold_rate(index, row, hold), years)
             redeploy_value = net * math.pow(1.0 + redeploy_rate, years)
             advantage = redeploy_value - hold_value
             decision = "exit" if advantage > 0.0 else "hold"
@@ -307,4 +337,5 @@ class HoldVsRedeploy(Node):
         return {"records": out, "summary": {
             "stage": "hold vs redeploy", "rows": len(out), "decisions": decisions,
             "hold_value": hold_total, "redeploy_value": redeploy_total,
-            "redeploy_rate": redeploy_rate, "horizon_years": years}}
+            "redeploy_rate": redeploy_rate, "horizon_years": years,
+            "hold_return_source": source}}

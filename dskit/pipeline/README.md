@@ -831,8 +831,15 @@ they register only into private registries, never the default one.
   negative tax only when `loss_offset` is true), then the terminal value of
   holding the gross position at `hold_return` against redeploying the after-tax
   net at `redeploy_return - redeploy_cost - risk_premium` over `horizon_years`;
-  `decision` is `exit` only when redeploying is strictly ahead. The first cut
+  `decision` is `exit` only when redeploying is strictly ahead; an optional
+  `hold_returns` input (`{symbol: rate}`) overrides the param. The first cut
   ignores the tax still owed at the end of the hold path.
+- `hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`) (ADR-0279, research
+  A0001, by import path): the market's expected nominal return as named blocks
+  (dividend yield + real growth + inflation + `(fair_cape / cape) **
+  (1 / reversion_years) - 1`), then `risk_free + beta x (market - risk_free)`
+  per symbol from a declared beta table; a symbol without a beta refuses
+  unless `default_beta` is declared.
 - `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
   `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
   out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one
@@ -1072,6 +1079,8 @@ dskit/pipeline/
 │                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
 │                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon; decision `exit` only when redeploy wins
+├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, role data) + BetaHoldReturns
+│                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its

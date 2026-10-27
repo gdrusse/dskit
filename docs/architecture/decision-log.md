@@ -32505,3 +32505,18 @@ Files: `dskit/pipeline/liquidation.py`, `tests/pipeline/test_liquidation.py`,
 the child config and `tests/test_hold_vs_redeploy.py`, README notes.
 Sweep: tax_lot tax_drag capital_gains lot_ledger holding_period
 hold_vs_exit; no near matches.
+
+#### ADR-0279 amendment: hold_return estimation built (owner 2026-10-27, "permission to build")
+
+Research A0001 (`children/portfolio_policy/docs/research/hold-return/`)
+found trailing means the noisiest estimator and recommended building blocks.
+Built: `dskit/pipeline/hold_return.py` — `MarketHoldReturn` (role `data`,
+params are its fingerprint: dividend_yield + real_growth + inflation +
+`(fair_cape / cape) ** (1 / reversion_years) - 1`) and `BetaHoldReturns`
+(`risk_free + beta x (market - risk_free)` per symbol; refuses an unknown
+symbol unless `default_beta`). `HoldVsRedeploy` gains an optional
+`hold_returns` input port that replaces the now-optional `hold_return` param;
+the summary names the source. The child document wires positions → market →
+betas → decide; `hold_return` is no longer a document literal.
+Files: `dskit/pipeline/hold_return.py`, `tests/pipeline/test_hold_return.py`.
+Sweep: hold_return market_return beta_returns cape_reversion; no near matches.
