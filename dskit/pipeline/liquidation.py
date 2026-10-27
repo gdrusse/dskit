@@ -49,6 +49,12 @@ entry or a ``redeploy_return`` outside :data:`RATE_BOUNDS` refuses, because the
 usual cause is a percent where a fraction belongs. Every rate, horizon and
 field name is a param: the module carries no table.
 
+The row readers (:func:`require_rows`, :func:`require_number`,
+:func:`require_amount`) and the param checks (:func:`check_name_params`,
+:func:`check_redeploy_params`) are public because
+:mod:`~dskit.pipeline.position_summary` reads the same rows under the same
+rules; this module is their one owner.
+
 Import cost: stdlib + the pipeline core.
 """
 
@@ -63,8 +69,10 @@ from dskit.pipeline.node import Node, check_int_param, check_number_param, rejec
 from dskit.pipeline.records import number_ok
 
 __all__ = [
-    "HOLDINGS", "MAX_HORIZON_YEARS", "RATE_BOUNDS", "REDEPLOY_TAX_TIMINGS", "HoldVsRedeploy",
-    "LiquidationTax", "check_horizon_param", "check_rate_param", "require_rate",
+    "DECISION_FIELDS", "HOLDINGS", "MAX_HORIZON_YEARS", "RATE_BOUNDS", "REDEPLOY_TAX_TIMINGS",
+    "HoldVsRedeploy", "LiquidationTax", "check_horizon_param", "check_name_params",
+    "check_rate_param", "check_redeploy_params", "require_amount", "require_number",
+    "require_rate", "require_rows",
 ]
 
 #: The two holding classes a tax schedule distinguishes.
@@ -73,7 +81,8 @@ HOLDINGS = ("long", "short")
 REDEPLOY_TAX_TIMINGS = ("annual", "terminal")
 
 _LIQ_FIELDS = ("liq_proceeds", "liq_gain", "liq_holding", "liq_rate", "liq_tax", "liq_net")
-_DECISION_FIELDS = (
+#: The fields :class:`HoldVsRedeploy` adds to every row, which a reader of its rows may name.
+DECISION_FIELDS = (
     "horizon_years", "hold_value", "hold_terminal_tax", "hold_net", "redeploy_value",
     "redeploy_terminal_tax", "redeploy_net", "advantage", "decision",
 )
@@ -119,15 +128,42 @@ def require_rate(key, what, value):
     return float(value)
 
 
-def _check_names(problems, params, names):
-    """Append a problem for every field-name param that is not a name."""
+def check_name_params(problems, params, names):
+    """Append a problem for every listed param that is present and not a field name."""
     for name in names:
-        if not name_ok(params.get(name)):
-            problems.append(f"{name} must be a non-empty field name, got {params.get(name)!r}")
+        if name in params and not name_ok(params[name]):
+            problems.append(f"{name} must be a non-empty field name, got {params[name]!r}")
 
 
-def _check_rows(key, records, outputs):
-    """Refuse a non-list, a non-mapping row, or a row already carrying an output."""
+def check_redeploy_params(problems, params):
+    """Append a problem for each redeploy term in ``params`` that is malformed.
+
+    The one owner of the redeploy path's declared terms, shared by every kind that
+    restates them: ``redeploy_cost`` / ``risk_premium`` in ``[0, RATE_BOUNDS[1]]``;
+    ``redeploy_tax_rate`` in ``[0, 1]`` and ``redeploy_tax_timing`` in
+    :data:`REDEPLOY_TAX_TIMINGS`, declared together or not at all. Presence of the
+    first two is the caller's rule.
+    """
+    for name in ("redeploy_cost", "risk_premium"):
+        if name in params:
+            check_number_param(problems, name, params[name], lower=0.0, upper=RATE_BOUNDS[1])
+    if ("redeploy_tax_rate" in params) != ("redeploy_tax_timing" in params):
+        problems.append(
+            "redeploy_tax_rate and redeploy_tax_timing are declared together or not at all"
+        )
+    if "redeploy_tax_rate" in params:
+        check_number_param(problems, "redeploy_tax_rate", params["redeploy_tax_rate"],
+                           lower=0.0, upper=1.0)
+    if ("redeploy_tax_timing" in params
+            and params["redeploy_tax_timing"] not in REDEPLOY_TAX_TIMINGS):
+        problems.append(
+            f"redeploy_tax_timing must be one of {list(REDEPLOY_TAX_TIMINGS)}, "
+            f"got {params['redeploy_tax_timing']!r}"
+        )
+
+
+def require_rows(key, records, outputs):
+    """Refuse a non-list, a non-mapping row, or a row already carrying one of ``outputs``."""
     if not isinstance(records, list):
         raise ValueError(f"{key}: records must be a list, got {type(records).__name__}")
     for index, row in enumerate(records):
@@ -138,21 +174,29 @@ def _check_rows(key, records, outputs):
             raise ValueError(f"{key}: row {index} already carries {taken}")
 
 
-def _number(key, index, row, field):
-    """Return the number ``row[field]`` holds; refuse by index and field otherwise."""
+def require_number(key, what, index, row, field):
+    """Return the number ``row[field]`` holds as a float; refuse by node, input, index and field.
+
+    ``what`` names the input in the message (``row``, ``position``, ``decision``). A
+    missing field, a ``bool``, a non-finite value or a non-number all refuse.
+    """
     value = row.get(field)
     if not number_ok(value):
-        raise ValueError(f"{key}: row {index} field {field!r} is not a number, got {value!r}")
+        raise ValueError(f"{key}: {what} {index} field {field!r} is not a number, got {value!r}")
     return float(value)
 
 
-def _amount(key, index, row, field, *, allow_zero):
-    """Return the number ``row[field]`` holds, positive (or zero when allowed); refuse otherwise."""
-    value = _number(key, index, row, field)
+def require_amount(key, index, row, field, *, allow_zero, why=_OUT_OF_SCOPE):
+    """Return the number ``row[field]`` holds, positive (or zero when allowed); refuse otherwise.
+
+    ``why`` ends the refusal: by default, that short positions and negative balances
+    are out of scope for a hold-vs-exit decision.
+    """
+    value = require_number(key, "row", index, row, field)
     if value < 0.0 or (value == 0.0 and not allow_zero):
         raise ValueError(
             f"{key}: row {index} field {field!r} must be "
-            f"{'non-negative' if allow_zero else 'positive'}, got {value!r}; {_OUT_OF_SCOPE}"
+            f"{'non-negative' if allow_zero else 'positive'}, got {value!r}; {why}"
         )
     return value
 
@@ -229,7 +273,7 @@ class LiquidationTax(Node):
             )
         if "loss_offset" in params and not isinstance(params["loss_offset"], bool):
             problems.append(f"loss_offset must be a bool, got {params['loss_offset']!r}")
-        _check_names(problems, params, [n for n in ("value_field", "basis_field") if n in params])
+        check_name_params(problems, params, ("value_field", "basis_field"))
         if params.get("acquired_field") is not None and not name_ok(params["acquired_field"]):
             problems.append(
                 f"acquired_field must be a non-empty field name, got {params['acquired_field']!r}"
@@ -264,13 +308,15 @@ class LiquidationTax(Node):
     def run(self, ctx, inputs):
         """Liquidate every row; return the rows with the six ``liq_*`` fields and a summary."""
         records = inputs.get("records")
-        _check_rows(self.key, records, _LIQ_FIELDS)
+        require_rows(self.key, records, _LIQ_FIELDS)
         as_of = self._as_of(ctx)
         rates = {"long": self.params["long_term_rate"], "short": self.params["short_term_rate"]}
         out, total_tax, total_net, by_holding = [], 0.0, 0.0, {"long": 0, "short": 0}
         for index, row in enumerate(records):
-            proceeds = _amount(self.key, index, row, self.params["value_field"], allow_zero=False)
-            basis = _amount(self.key, index, row, self.params["basis_field"], allow_zero=True)
+            proceeds = require_amount(self.key, index, row, self.params["value_field"],
+                                      allow_zero=False)
+            basis = require_amount(self.key, index, row, self.params["basis_field"],
+                                   allow_zero=True)
             holding = self._holding(index, row, as_of)
             gain = proceeds - basis
             taxable = gain if self.params["loss_offset"] else max(gain, 0.0)
@@ -369,31 +415,14 @@ class HoldVsRedeploy(Node):
                 check_rate_param(problems, "hold_return", hold)
         if "redeploy_return" in params:
             check_rate_param(problems, "redeploy_return", params["redeploy_return"])
-        for name in ("redeploy_cost", "risk_premium"):
-            if name in params:
-                check_number_param(problems, name, params[name],
-                                   lower=0.0, upper=RATE_BOUNDS[1])
-        _check_names(problems, params,
-                     [n for n in ("value_field", "net_field", "symbol_field", "basis_field")
-                      if n in params])
+        check_redeploy_params(problems, params)
+        check_name_params(problems, params,
+                          ("value_field", "net_field", "symbol_field", "basis_field"))
         if ("terminal_tax_rate" in params) != ("basis_field" in params):
             problems.append("terminal_tax_rate and basis_field are declared together or not at all")
         if "terminal_tax_rate" in params:
             check_number_param(problems, "terminal_tax_rate", params["terminal_tax_rate"],
                                lower=0.0, upper=1.0)
-        if ("redeploy_tax_rate" in params) != ("redeploy_tax_timing" in params):
-            problems.append(
-                "redeploy_tax_rate and redeploy_tax_timing are declared together or not at all"
-            )
-        if "redeploy_tax_rate" in params:
-            check_number_param(problems, "redeploy_tax_rate", params["redeploy_tax_rate"],
-                               lower=0.0, upper=1.0)
-        if ("redeploy_tax_timing" in params
-                and params["redeploy_tax_timing"] not in REDEPLOY_TAX_TIMINGS):
-            problems.append(
-                f"redeploy_tax_timing must be one of {list(REDEPLOY_TAX_TIMINGS)}, "
-                f"got {params['redeploy_tax_timing']!r}"
-            )
         return problems
 
     @classmethod
@@ -467,7 +496,7 @@ class HoldVsRedeploy(Node):
     def run(self, ctx, inputs):
         """Compare the two paths on every row; return the rows with the decision and a summary."""
         records = inputs.get("records")
-        _check_rows(self.key, records, _DECISION_FIELDS)
+        require_rows(self.key, records, DECISION_FIELDS)
         hold, hold_source = self._hold_source(inputs)
         redeploy_return, redeploy_source = self._redeploy_source(inputs)
         years = int(self.params["horizon_years"])
@@ -480,13 +509,14 @@ class HoldVsRedeploy(Node):
         redeploy_total = redeploy_net_total = 0.0 if redeploy_rate is not None else None
         decisions = {"hold": 0, "exit": 0}
         for index, row in enumerate(records):
-            value = _amount(self.key, index, row, self.params["value_field"], allow_zero=False)
-            net = _amount(self.key, index, row, self.params["net_field"], allow_zero=False)
+            value = require_amount(self.key, index, row, self.params["value_field"],
+                                   allow_zero=False)
+            net = require_amount(self.key, index, row, self.params["net_field"], allow_zero=False)
             hold_value = value * _growth(self.key, f"row {index} hold",
                                          self._hold_rate(index, row, hold), years)
             hold_tax = 0.0
             if basis_field:
-                basis = _number(self.key, index, row, basis_field)
+                basis = require_number(self.key, "row", index, row, basis_field)
                 hold_tax = max(hold_value - basis, 0.0) * terminal_rate
             hold_net = hold_value - hold_tax
             if redeploy_rate is None:

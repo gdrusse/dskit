@@ -146,6 +146,16 @@ class BetaHoldReturns(Node):
     ``market`` (REQUIRED)
         The market's expected annual return, a number.
 
+    Outputs
+    -------
+    ``rates``
+        ``{symbol: rate}`` for every symbol seen on the rows.
+    ``betas``
+        ``{symbol: beta}``, the beta each rate was priced with (the declared one, or
+        ``default_beta``), so a reader of the betas is wired, never restated.
+    ``summary``
+        Counts, the market, the risk-free rate and the defaulted symbols.
+
     Examples
     --------
     Two holdings against a 10% market::
@@ -157,7 +167,7 @@ class BetaHoldReturns(Node):
     """
 
     role = "transform"
-    outputs = ("rates", "summary")
+    outputs = ("rates", "betas", "summary")
 
     _PARAMS = ("risk_free", "betas", "symbol_field", "default_beta")
     _REQUIRED = ("risk_free", "betas", "symbol_field")
@@ -194,7 +204,7 @@ class BetaHoldReturns(Node):
         return "pure"
 
     def run(self, ctx, inputs):
-        """Return ``{symbol: rate}`` for every symbol seen on the rows, and a summary."""
+        """Return ``{symbol: rate}`` and ``{symbol: beta}`` for every symbol seen on the rows, and a summary."""
         records = inputs.get("records")
         market = inputs.get("market")
         if not isinstance(records, list):
@@ -203,7 +213,7 @@ class BetaHoldReturns(Node):
             raise ValueError(f"{self.key}: market must be a number, got {market!r}")
         field = self.params["symbol_field"]
         betas = self.params["betas"]
-        rates, defaulted = {}, []
+        rates, used, defaulted = {}, {}, []
         for index, row in enumerate(records):
             if not isinstance(row, dict) or not name_ok(row.get(field)):
                 raise ValueError(
@@ -222,7 +232,8 @@ class BetaHoldReturns(Node):
             rates[symbol] = require_rate(
                 self.key, f"rate for {symbol!r}",
                 self.params["risk_free"] + beta * (market - self.params["risk_free"]))
+            used[symbol] = float(beta)
         self.log.info("%s: %d symbol(s), market %.4f", self.key, len(rates), market)
-        return {"rates": rates, "summary": {
+        return {"rates": rates, "betas": used, "summary": {
             "stage": "beta hold returns", "symbols": len(rates), "market": market,
             "risk_free": self.params["risk_free"], "defaulted": sorted(defaulted)}}

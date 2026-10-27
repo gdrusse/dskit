@@ -24,16 +24,27 @@ the dividend yield) removes income from the projected growth. Record:
 `docs/memos/2026-10-27-adr-0279-base-machinery.md` and the decision log. No
 real Schwab pull yet; every rate in the documents is a placeholder.
 
+2026-10-27 (Opus 5.5, branch `portfolio-summary`, not merged): research A0002
+and an ADR-0279 amendment chose the few numbers; `pipeline/position_summary.py`
+(`PositionSummary`) gives per holding weight, expected return, beta,
+volatility (port only), embedded gain, tax cost, break-even return and
+opportunity cost, plus portfolio metrics; the document writes
+`summary/<run>.jsonl`. Tested, not yet lens-reviewed.
+
 ## Next
 
-Owner: set the decision document's blocks (dividend yield, CAPE, fair
-CAPE; `outcomes.income_rate` must follow the yield, a test pins it), betas,
-tax rates, `trials`, `min_dsr`, `min_periods` and the snapshot day; choose
-which child's backtest feeds `active`/`returns`; run the README's command
-sequence for the first real snapshot + decision, then record it with the
-`memo` skill.
+Two skeptic lenses on `portfolio-summary`, then merge. Owner: set the
+decision document's blocks (dividend yield, CAPE, fair CAPE;
+`outcomes.income_rate` must follow the yield), betas, tax rates, `trials`,
+`min_dsr`, `min_periods` and the snapshot day; choose which child's backtest
+feeds `active`/`returns`; run the README sequence, then record it with `memo`.
 
 ## Blocked / owner decisions
+
+- Volatility source for the summary: a yahoo chart archive per symbol or
+  Alpaca daily bars; then wire realized_vol -> filter -> ComputeFields -> keyby.
+- `portfolio-policy-sonnet-loop` (rounds 2-3, unmerged) also edits
+  `liquidation.py`; its `require_number` signature matches this branch's.
 
 - Lot-level data: a Schwab lot CSV through `localfiles` (then declare
   `acquired_field`) vs aggregate-only; both work, lots are more accurate.
@@ -47,6 +58,7 @@ sequence for the first real snapshot + decision, then record it with the
 - `docs/memos/2026-10-27-adr-0279-base-machinery.md`
 - `docs/architecture/decision-log.md` § ADR-0279 and amendments
 - `docs/research/hold-return/2026-10-27-synthesis.md`
+- `docs/research/position-summary/2026-10-27-synthesis.md`
 
 ## Do not
 

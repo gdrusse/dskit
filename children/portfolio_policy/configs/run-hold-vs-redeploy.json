@@ -114,6 +114,35 @@
         "overwrite": false
       },
       "notes": "Role 'report': the advisory rows, one per holding, with liq_* and the decision, in ./decisions under the invoking cwd, one file per run so no run shadows another (ADR-0247). Never an order."
+    },
+    "summary": {
+      "uses": "dskit.pipeline.position_summary:PositionSummary",
+      "inputs": {
+        "records": "$decide.records",
+        "betas": "$betas.betas"
+      },
+      "params": {
+        "key_fields": ["account", "symbol"],
+        "symbol_field": "symbol",
+        "value_field": "market_value",
+        "net_field": "liq_net",
+        "basis_field": "cost_basis",
+        "redeploy_cost": 0.02,
+        "risk_premium": 0.0,
+        "redeploy_tax_rate": 0.408,
+        "redeploy_tax_timing": "annual"
+      },
+      "notes": "The few numbers (research A0002): per holding its weight, expected return a year, beta, embedded gain and tax cost of selling as shares of value, the break-even active return at which exiting ties holding, and the after-tax opportunity cost of holding a year (above zero: exit wins); the portfolio's totals, weighted return and beta, concentration by symbol (HHI, top weight) and aggregate opportunity cost in its metrics output. The field names and the four redeploy terms restate decide's, pinned equal by tests/test_configs.py, so the break-even inverts exactly the comparison decide made. betas is wired from the beta table that priced the hold return. volatilities is not wired yet: it needs daily closes onboarded (a yahoo chart archive or Alpaca daily bars) -> DailyBarFeatures realized_vol -> filter to the snapshot day -> ComputeFields x sqrt(252) -> keyby symbol; until then volatility is null."
+    },
+    "summaries": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "inputs": { "records": "$summary.records" },
+      "params": {
+        "path": "summary/{run}.jsonl",
+        "source": "position summary per account x symbol",
+        "overwrite": false
+      },
+      "notes": "Role 'report': one summary row per holding in ./summary under the invoking cwd, one file per run (ADR-0247). The portfolio numbers are the summary node's metrics: carry.json in the run directory holds them and `python -m dskit.pipeline runs` tabulates them run over run."
     }
   },
   "outputs": {

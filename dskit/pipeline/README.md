@@ -869,7 +869,22 @@ they register only into private registries, never the default one.
   per symbol from a declared beta table; a symbol without a beta refuses
   unless `default_beta` is declared. `horizon_years` (required, <= `reversion_years`,
   pinned to the decision's by the child's tests) keeps the drift from compounding
-  past full reversion; any computed rate outside `RATE_BOUNDS` refuses.
+  past full reversion; any computed rate outside `RATE_BOUNDS` refuses. A
+  `betas` output carries the beta each symbol was priced with.
+- `position_summary.py` (`PositionSummary`) (ADR-0279, research A0002, by import
+  path): a `HoldVsRedeploy` run reduced to a few numbers. Per position: weight,
+  expected return a year `(hold_value / value) ** (1/H) - 1`, volatility and beta
+  (optional `{symbol: number}` inputs; a volatility is a fraction in `[0, 10]`),
+  embedded gain and tax cost of selling as shares of value, the break-even
+  `redeploy_return` at which `redeploy_net == hold_net` (closed form per
+  `redeploy_tax_timing`, one `BreakEvenRule` each in `BREAK_EVEN_RULES`), and the
+  after-tax opportunity cost `(redeploy_net / hold_net) ** (1/H) - 1` (> 0: exit
+  wins). Output `metrics`: total value, weighted return / volatility (an upper
+  bound) / beta, HHI by symbol with `effective_holdings` and the top weight,
+  totals' tax cost and embedded gain, break-even and opportunity cost, exit / hold
+  counts. Redeploy terms restate `HoldVsRedeploy`'s through the shared
+  `liquidation.check_redeploy_params`; rows read through liquidation's public
+  `require_rows` / `require_number` / `require_amount`.
 - `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
   `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
   out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one
@@ -1110,13 +1125,16 @@ dskit/pipeline/
 ├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
 │                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon, both liquidated and taxed at the
 │                      horizon when `terminal_tax_rate` is declared; `hold_returns` / `redeploy_return` input ports (wired rates held to `RATE_BOUNDS`);
-│                      short / non-positive rows refuse; annual redeploy tax on a positive net rate only; decision `exit` only when redeploy wins
+│                      short / non-positive rows refuse; annual redeploy tax on a positive net rate only; decision `exit` only when redeploy wins;
+│                      owns the shared row readers (`require_rows` / `require_number` / `require_amount`) and `check_redeploy_params`
 ├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, `horizon_years` <= `reversion_years`, role data) + BetaHoldReturns
-│                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
+│                      (risk_free + beta x (market - risk_free) per symbol, plus the `betas` used) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
 │                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr), declared `min_periods` floor -> HoldVsRedeploy's `redeploy_return` port
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
 │                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score
+├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
+│                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its

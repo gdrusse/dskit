@@ -108,6 +108,7 @@ portfolio_policy/           # tier-3 code: connectors.py, nodes.py, and the four
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample / run-hold-vs-redeploy
 decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
+summary/               # the few numbers per holding, one file per run (gitignored)
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated

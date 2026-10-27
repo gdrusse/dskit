@@ -77,7 +77,7 @@ def root(tmp_path):
         {"period": f"2025-W{i + 1:02d}", "net_return": v,
          "day": f"2025-{(i // 4) + 1:02d}-{(i % 4) * 7 + 1:02d}"}
         for i, v in enumerate(ACTIVE)])
-    for name in ("decisions", "outcomes"):
+    for name in ("decisions", "outcomes", "summary"):
         (tmp_path / name).mkdir()
     _cli(tmp_path, "init", "--root", "./ob")
     _cli(tmp_path, "register-source", "schwab", "--root", "./ob",
@@ -127,7 +127,9 @@ def test_documents_are_valid_and_wire_their_stages():
     decide = load_document(RUN_DOC)
     assert list(decide.pipeline) == [
         "positions", "snapshot", "tax", "market", "betas", "active_returns", "hurdle",
-        "decide", "decisions"]
+        "decide", "decisions", "summary", "summaries"]
+    assert decide.pipeline["summary"].inputs == {"records": "$decide.records",
+                                                 "betas": "$betas.betas"}
     where = decide.pipeline["snapshot"].params["where"]
     assert [clause["field"] for clause in where] == ["as_of", "asset_type", "long_quantity"]
     assert decide.pipeline["tax"].params["as_of"] == where[0]["value"]
@@ -184,6 +186,51 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
         lines = fh.read().splitlines()
     assert len(lines) == 2
     assert all(json.loads(line)["run_id"] == os.path.basename(result.run_dir) for line in lines)
+
+
+def test_position_summary_end_to_end(root, monkeypatch):
+    """The few numbers, worked by hand from the same rows: VTI 2500 (basis 2000, net 2381),
+    AAPL 600 (basis 450, net 564.30), five years, redeploy taxed .408 a year after a .02 cost."""
+    monkeypatch.chdir(root)
+    result = _decide(root)
+    rows = {row["symbol"]: row for row in result.outputs["summary"]["records"]}
+    decided = {row["symbol"]: row for row in result.outputs["decide"]["records"]}
+    rates = result.outputs["betas"]["rates"]
+    vti, aapl = rows["VTI"], rows["AAPL"]
+    assert list(vti)[:2] == ["account", "symbol"] and vti["account"] == ACCOUNT
+    assert vti["weight"] == pytest.approx(2500.0 / 3100.0)
+    assert vti["expected_return"] == pytest.approx(rates["VTI"])     # the beta rate, a year
+    assert (vti["beta"], aapl["beta"]) == (1.0, 1.2)
+    assert vti["volatility"] is None, "no price history is wired yet"
+    assert vti["embedded_gain"] == pytest.approx(0.2)                 # 500 / 2500
+    assert vti["tax_cost"] == pytest.approx(0.0476)                   # 119 / 2500
+    assert aapl["tax_cost"] == pytest.approx(35.7 / 600.0)            # 150 x .238
+    # break-even: g = (hold_net / net)^(1/5) - 1, then .02 + g / (1 - .408)
+    hold_net = decided["VTI"]["hold_net"]
+    g = (hold_net / 2381.0) ** 0.2 - 1.0
+    assert vti["break_even_return"] == pytest.approx(0.02 + g / (1.0 - 0.408))
+    assert vti["break_even_return"] == pytest.approx(0.060516, abs=1e-6)
+    # opportunity cost: (3052.07 / 2680.58)^(1/5) - 1 = 2.63% a year, so exit
+    assert vti["opportunity_cost"] == pytest.approx(
+        (decided["VTI"]["redeploy_net"] / hold_net) ** 0.2 - 1.0)
+    assert vti["opportunity_cost"] == pytest.approx(0.026297, abs=1e-6)
+    assert vti["decision"] == "exit"
+    assert result.outputs["hurdle"]["rate"] > vti["break_even_return"], "the hurdle clears it"
+    m = result.outputs["summary"]["metrics"]
+    assert (m["positions"], m["total_value"]) == (2, 3100.0)
+    assert m["beta"] == pytest.approx((2500.0 + 600.0 * 1.2) / 3100.0)
+    assert m["hhi"] == pytest.approx((2500.0 ** 2 + 600.0 ** 2) / 3100.0 ** 2)
+    assert (m["top_symbol"], m["top_weight"]) == ("VTI", pytest.approx(2500.0 / 3100.0))
+    assert m["tax_cost"] == pytest.approx((119.0 + 35.7) / 3100.0)
+    assert m["opportunity_cost"] == pytest.approx(0.026570, abs=1e-6)
+    assert m["weighted_volatility"] is None
+    assert (m["exit_positions"], m["hold_positions"]) == (2, 0)
+    written = result.outputs["summaries"]["path"]
+    assert os.path.dirname(os.path.abspath(written)) == str(root / "summary")
+    with open(written) as fh:
+        assert len(fh.read().splitlines()) == 2
+    with open(os.path.join(result.run_dir, "carry.json")) as fh:
+        assert json.load(fh)["summary"]["metrics"]["hhi"] == pytest.approx(m["hhi"])
 
 
 def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):

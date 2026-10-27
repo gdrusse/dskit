@@ -3,10 +3,11 @@
 Research child for **hold-vs-exit decisions on a long-term Schwab
 portfolio**: for each position, is the expected after-tax, after-cost value
 of holding passively at least the value of cashing out into an active
-strategy? Status: **base machinery complete (ADR-0279), skeptic-reviewed,
-no real Schwab pull yet** — every rate in the documents is a placeholder the
-owner sets. The sections after "Scoring a past decision run" are the
-skeleton's generic walkthrough.
+strategy? Status: **base machinery complete (ADR-0279), skeptic-reviewed;
+position summary added (A0002), not yet lens-reviewed; no real Schwab pull
+yet** — every rate in the documents is a placeholder the owner sets. The
+sections after "Scoring a past decision run" are the skeleton's generic
+walkthrough.
 
 ## Hold vs redeploy (ADR-0279)
 
@@ -25,7 +26,7 @@ python -m dskit.onboarding register-source active --root ./ob \
     --catalog-source active-src --connector localfiles \
     --config '{"path": "./inputs/active", "effective_field": "day"}' --activate
 python -m dskit.onboarding acquire --root ./ob --source active --stream returns --mode backfill
-mkdir -p decisions
+mkdir -p decisions summary
 # set snapshot.where[as_of] AND tax.as_of to the pull's UTC day (pinned equal by a test):
 python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <that day>
 ```
@@ -48,6 +49,35 @@ periods it will accept, and returns are fractions (0.01 = 1%), never percent.
 land in `decisions/<run>.jsonl`, one per account x symbol, advisory only.
 Aggregate positions carry no lots, so every holding takes `default_holding`
 until a lot-level export is onboarded.
+
+### The few numbers
+
+The same run writes `summary/<run>.jsonl` (research A0002): one row per holding
+with the numbers below, and the portfolio's own in the `summary` node's
+`metrics` (`carry.json` in the run directory; `python -m dskit.pipeline runs`
+tables them run over run). Rates are a year; shares are of today's value.
+
+| Number | Plain meaning | What you do with it |
+|---|---|---|
+| `weight` | share of the portfolio | above ~10% is a concentrated position |
+| `expected_return` | what holding should earn a year, before tax (market blocks x beta) | compare holdings |
+| `volatility` | how much it swings a year (one standard deviation) | null until daily prices are onboarded |
+| `beta` | how hard it moves with the market | above 1 swings more than the market |
+| `embedded_gain` | how much of the value is untaxed gain | the higher it is, the more selling costs |
+| `tax_cost` | what selling today loses to tax | the price of exiting, paid once |
+| `break_even_return` | the active return at which exiting exactly ties holding, after every tax and cost | exit only if you trust the strategy to beat it |
+| `opportunity_cost` | what holding costs a year, after tax, against the alternative | above zero: you lose that much a year by holding (`decision` is `exit`) |
+
+The portfolio adds `total_value`, the weighted `expected_return` and `beta`,
+`weighted_volatility` (an upper bound: it assumes every pair moves together),
+concentration (`hhi`, `effective_holdings` = 1 / HHI, `top_symbol` /
+`top_weight`, accounts merged), `tax_cost` of selling everything (losses not
+netted across holdings, so it errs high), `break_even_return`,
+`opportunity_cost` and the `exit_positions` / `hold_positions` counts. The
+summary restates `decide`'s tax and cost terms, pinned equal by a test; betas
+are wired from the beta table. When the hurdle is withheld,
+`opportunity_cost` is null and `break_even_return` is still the bar a strategy
+would have to clear.
 
 ### Scoring a past decision run
 
@@ -232,9 +262,10 @@ portfolio_policy/
 │   ├── suite-sample.json  # a validation suite
 │   ├── run-sample.json    # a pipeline document
 │   ├── serve-sample.json  # a serve document — the run, served forward
-│   ├── run-hold-vs-redeploy.json   # ADR-0279: positions -> tax, market -> betas, hurdle -> decide
+│   ├── run-hold-vs-redeploy.json   # ADR-0279: positions -> tax, market -> betas, hurdle -> decide -> summary
 │   └── run-decision-outcomes.json  # ADR-0279: a past decision run scored against a later snapshot
 ├── decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
+├── summary/               # the few numbers per holding, one file per run (gitignored)
 ├── outcomes/              # scored hold forecasts, one file per run (gitignored)
 ├── models/                # fitted ML/optimization artifacts (gitignored)
 │   ├── README.md          # what belongs here vs the run directory
@@ -255,7 +286,8 @@ portfolio_policy/
 │   └── .gitkeep
 ├── docs/research/         # research agent markdown
 │   ├── README.md          # use record-research
-│   └── hold-return/       # A0001: building blocks over trailing means
+│   ├── hold-return/       # A0001: building blocks over trailing means
+│   └── position-summary/  # A0002: the few numbers per position and portfolio
 ├── journal.json           # walk-up marker for dskit.journal
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)

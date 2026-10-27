@@ -79,6 +79,18 @@ def test_market_horizon_is_the_decision_horizon():
     assert market["horizon_years"] <= market["reversion_years"]
 
 
+def test_summary_restates_the_decision_terms_exactly():
+    """The summary's break-even inverts decide's comparison, so every term and field it shares
+    with decide must be decide's own; a mismatch would answer a different question, silently."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    summary = document.pipeline["summary"].params
+    decide = document.pipeline["decide"].params
+    shared = ("redeploy_cost", "risk_premium", "redeploy_tax_rate", "redeploy_tax_timing",
+              "value_field", "net_field", "basis_field", "symbol_field")
+    assert {name: summary[name] for name in shared} == {name: decide[name] for name in shared}
+    assert summary["symbol_field"] in summary["key_fields"]
+
+
 def test_outcomes_income_is_the_market_dividend_yield():
     """The hold forecast's income component is the yield the market node fed it; scoring the
     forecast must remove that same number."""
