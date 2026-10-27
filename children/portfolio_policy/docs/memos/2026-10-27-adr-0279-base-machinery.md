@@ -147,6 +147,23 @@ per-share growth; the active side is scored where it runs.
 
 ## Disclosed backlog (Minor / Nit, not fixed)
 
+Round 4 of the Sonnet loop (reviewer on `75fe315`) returned CLEAN — 0
+Critical, 0 Major — closing the loop; its Minors, left open and disclosed:
+
+- A snapshot date matching no rows runs to "RAN" and writes an empty
+  `decisions/<run>.jsonl`; the scoring document refuses an empty snapshot,
+  so the two disagree. Fix: refuse empty `records` in `LiquidationTax` and
+  `HoldVsRedeploy`.
+- Summary aggregates (`redeploy_net` total, `stage`, `rows`, `min_dsr`,
+  `admissible`, `observed_as_of`) are unasserted; `advantage > 0` survives a
+  mutation to `> 1.0` (no test with a small positive advantage).
+- Live-mode same-day re-pulls: a symbol missing from the second pull persists
+  from the first for that day (docstring overclaims; README uses backfill).
+- Huge ints (`10**400`) for `cape`, `fair_cape`, `betas`, `default_beta` or a
+  row value raise a bare `OverflowError` rather than a named refusal.
+- Shared Schwab transport: default `max_retries`, each `_RETRY_STATUSES`
+  entry, the 2xx range edges and the `secret` flags are unpinned.
+
 - `test_active_hurdle` pins E[max null Sharpe] from one recorded evaluation
   rather than a closed form (the owner formula has its own tests).
 - The hurdle's arithmetic per-period mean is compounded geometrically
