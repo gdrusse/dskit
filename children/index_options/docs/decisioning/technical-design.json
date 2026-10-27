@@ -4,7 +4,7 @@
   "as_of": "2026-10-27",
   "executable": false,
   "purpose": "What do, or did we do, with the time available in our data?",
-  "authority_base_commit": "95096f4c",
+  "authority_base_commit": "027de2b5",
   "date_convention": "All windows [start,end_exclusive). Null endpoints mean no assigned dates; B1 has an empty evidence set.",
   "coverage": {
     "reader_history_start": "2016-01-04",
@@ -16,10 +16,11 @@
   "presentation": {
     "canvas": "/home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-TDD.canvas.tsx",
     "single_registry": "windows drives both the table and the number line; identical active filter; null-date rows remain listed without invented coordinates.",
-    "detail": "Endpoint dots mark exact nominal boundaries; observed support and label purges remain in table details."
+    "detail": "Endpoint dots mark exact nominal boundaries; observed support and label purges remain in table details.",
+    "repository_document": "children/index_options/docs/decisioning/technical-design.html"
   },
   "decisions": [
-    "A0008's current Path recipe is TCN, chain arm, seed 11, one model alone. M51 uses wide_mlp64 in its saved model slot; that recorded dependency does not change Path.",
+    "Owner correction 2026-10-27 / A0008: use the best output from the model zoo. The selected output is not pinned here. The recorded M51 output and its wide_mlp64 component remain dependencies of the already-exposed 2020 MIO run; they are not declared the final zoo winner.",
     "2019 warm-up is never ranked as predictive validation. User-requested 2019 MIO pair selection is a separate, still unspecified operation.",
     "2020 is already exposed for MIO development. Predictive selection used 2020-23, so future MIO-only comparisons there are not untouched full-system tests.",
     "The draft MIO JSON interfaces remain design-only. Their suggested dates and example variants are not decisions in this document.",
@@ -44,7 +45,7 @@
     {
       "id": "groups",
       "symbol": "S_f = {s ∈ S₀ : n_fit(s,f) ≥ 40 ∧ n_cal(s,f) ≥ 1 ∧ n_val(s,f) > 0}",
-      "definition": "Counts use the fold bands before admission. The configured minimum disjoint-label count is zero. Exact retained memberships are stored in each R-model-f run; both current dependency lanes have the same memberships. This is predictive sample admission, not the undecided 2019 MIO gate."
+      "definition": "Counts use the fold bands before admission. The configured minimum disjoint-label count is zero. Exact retained memberships are stored in each R-model-f run; the retained lane is the MLP component of M51. This is predictive sample admission, not the undecided 2019 MIO gate."
     },
     {
       "id": "cal",
@@ -63,8 +64,8 @@
     },
     {
       "id": "models",
-      "symbol": "m ∈ {T, M}; Λ_fᵐ = {λ_fᵐ}",
-      "definition": "T = Path TCN, M = wide_mlp64 dependency of the recorded M51 run. Each λ is the fixed saved settings object, including seed 11, epochs ≤150 and patience 50. These are two roles, not an approved model tournament or HPO grid."
+      "symbol": "m ∈ M_zoo; m₀ = wide_mlp64; Λ_fᴹ = {λ_fᴹ}",
+      "definition": "M_zoo is the candidate set of complete forecast-producing recipes, potentially including calibrated/blended outputs. Its exact membership and selection unit remain unpinned. M denotes only the recorded wide_mlp64 component of M51; its saved settings are seed 11, epochs ≤150 and patience 50. Those settings are not imposed on the future zoo winner."
     },
     {
       "id": "estimate",
@@ -119,7 +120,17 @@
     {
       "id": "mioindex",
       "symbol": "ν ∈ N_MIO; η_ν, x̂_t^ν, L_ν, O_ν",
-      "definition": "ν indexes MIO formulations; the future set N_MIO is undecided. It is separate from m∈{T,M}, which indexes the two predictive-model roles."
+      "definition": "ν indexes MIO formulations; the future set N_MIO is undecided. It is separate from m∈M_zoo, which indexes complete predictive recipes."
+    },
+    {
+      "id": "zooselection",
+      "symbol": "E_zoo(κ) ⊆ M_zoo; m* ∈ argmin_{m∈E_zoo(κ)} J_A0002(m;V_cmp(κ))",
+      "definition": "κ is the not-yet-pinned selection contract: candidate membership, comparison population/unit, promotion and eligibility evidence, and tie handling. E_zoo contains candidates meeting applicable A0005/A0007 requirements. Best means the existing prediction-only A0002 score, not MIO returns. No selection is executable until κ and exact comparable evidence are pinned; if E_zoo is empty there is no winner."
+    },
+    {
+      "id": "preholdout",
+      "symbol": "D_pre2024 = D([2017-01-03,2024-01-01);S*) ∩ E(2024-01-01)",
+      "definition": "Pre-holdout refit envelope for the selected recipe's pinned universe S*. split* is the as-yet-unassigned partition into recipe-specific training and any monitor/tuning bands, preserving label maturity. An asterisk marks intended selection; neither S* nor split* is chosen here."
     }
   ],
   "functions": [
@@ -130,13 +141,13 @@
     },
     {
       "id": "fit",
-      "formula": "θ̂_{f,e}ᵐ = Train_{λ_fᵐ}(T_f, e); ℓ_λ = CRPS + tail_CRPS",
-      "meaning": "Optimization visits epochs using the fixed config. The tail objective integrates the configured intervals [-2.5,-0.5] and [0.5,2.5]; it is distinct from the reporting grid score. Feature scaling/imputation is fitted on T_f only."
+      "formula": "θ̂_{f,e}ᴹ = Train_{λ_fᴹ}(T_f,e); ℓ_λ = CRPS + tail_CRPS",
+      "meaning": "Recorded M51/MLP dependency only: optimization visits epochs using its fixed config. The tail objective integrates [-2.5,-0.5] and [0.5,2.5]; feature scaling/imputation is fitted on T_f only. These settings do not define the unspecified zoo winner."
     },
     {
       "id": "monitor",
       "formula": "e_f* = first argmin_{e ∈ visited epochs} |C_f|⁻¹ Σ_{i∈C_f} ℓ_λ(F̂_{f,e}(·|xᵢ),zᵢ); F̂_f = F_{θ̂_{f,e_f*}}",
-      "meaning": "Monitor the same configured training objective, patience 50, restore the best visited checkpoint. This selects an epoch; no current HPO search window or λ* is recorded."
+      "meaning": "Recorded M51/MLP dependency: monitor its configured training objective, patience 50, restore the best visited checkpoint. This selects an epoch; no future zoo HPO domain/window or λ* is recorded."
     },
     {
       "id": "score",
@@ -161,7 +172,7 @@
     {
       "id": "promotion",
       "formula": "Eligible(m) ⇔ Skill_A0002(m,r;V₂:₅)>0 for both r AND count_y[Skill(m,r;V_y)>0 for both r]≥3",
-      "meaning": "Path A0005 compares horizon_empirical and raw market on paired evidence, with two-way expiry/symbol cluster intervals; never choose the best cell. A0004 promotion seeds are {11,29,47}; A0008's current run is seed 11 alone. Final promotion execution and recipe remain undecided."
+      "meaning": "Path A0005 compares horizon_empirical and raw market on paired evidence, with two-way expiry/symbol cluster intervals; never choose the best cell. A0004 promotion seeds are {11,29,47}. Seed 11 describes the recorded MLP dependency, not the as-yet-unpinned best model-zoo output. Final promotion evidence and recipe remain undecided."
     },
     {
       "id": "cellgate",
@@ -207,6 +218,16 @@
       "id": "mio_study",
       "formula": "O_ν=Report_JSON(Replay_JSON({Solve_{η_ν}(F̂_t,A_t(P),B_t)}_t,quotes,settlements,funding))",
       "meaning": "Compose quote admission, the saved MIO solver, account replay and reporting. For the recorded 2020 execution use its pinned params and bounded script. For future packets, P, η_ν and all history/entry/settlement windows remain to be fixed in executable JSON."
+    },
+    {
+      "id": "select_zoo",
+      "formula": "E_zoo(κ)={m∈M_zoo: eligible under κ}; m*∈argmin_{m∈E_zoo(κ)} J_A0002(m;V_cmp(κ)); Freeze(m*)→(recipe*,run*,output_SHA256*)",
+      "meaning": "Owner decision: consume the best model-zoo output. Apply existing prediction-only score and applicable promotion/cell gates; pin the candidate universe, common comparison population/unit and tie rule in κ before selection. E_zoo=∅ yields no selection. Exact winner, selection JSON and output hashes are undecided; this formula does not declare M51 the winner or authorize a new fit/score."
+    },
+    {
+      "id": "refit_selected",
+      "formula": "F̂_holdout = Refit_JSON(recipe*, D_pre2024; split*)",
+      "meaning": "Refit the selected complete model-zoo recipe on the approved pre-holdout data. Exact training/monitor assignment, recipe-specific training operation, JSON and run pins are undecided. The historical MLP epoch/loss settings are not prescribed for arbitrary zoo recipes."
     }
   ],
   "population": {
@@ -430,20 +451,20 @@
       "start": "2017-01-03",
       "end_exclusive": "2020-01-01",
       "status": "locked",
-      "inputs": "D([2017-01-03,2020-01-01);S₀), Λᵀ",
+      "inputs": "D([2017-01-03,2020-01-01);S₀), Λᴹ",
       "operation": "fit",
       "outputs": "T_f, C_f and warm-up V₁; no ranked 2019 score",
       "configs": [
         "path",
         "folds",
-        "tcn",
-        "resolved-tcn"
+        "mlp",
+        "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f1",
-        "R-tcn-f2"
+        "R-wide_mlp64-f1",
+        "R-wide_mlp64-f2"
       ],
-      "notes": "Outer development envelope; fold rows supply the actual optimization and monitor boundaries.",
+      "notes": "Outer development envelope; fold rows supply the actual optimization and monitor boundaries. Pinned fits are the existing M51/MLP dependency. The best complete model-zoo output remains unselected in this TDD.",
       "authority": [
         "A0003",
         "A0008"
@@ -462,18 +483,12 @@
       "configs": [
         "path",
         "folds",
-        "tcn",
-        "m51",
-        "resolved-tcn"
+        "m51"
       ],
       "runs": [
-        "R-tcn-f2",
-        "R-tcn-f3",
-        "R-tcn-f4",
-        "R-tcn-f5",
         "R-m51"
       ],
-      "notes": "Used for predictive selection, including M51. A later MIO comparison here is not untouched end-to-end testing.",
+      "notes": "Used for predictive selection, including M51. A later MIO comparison here is not untouched end-to-end testing. ZOO records the pending best-output selection.",
       "authority": [
         "A0002",
         "A0003",
@@ -531,7 +546,7 @@
       "start": null,
       "end_exclusive": null,
       "status": "undecided",
-      "inputs": "P₁₉*, frozen F̂, formulation set {η_ν}, packet boundaries",
+      "inputs": "P₁₉*, frozen best-zoo output F̂^{m*} and exact run/hash, formulation set {η_ν}, packet boundaries",
       "operation": "mio_study",
       "outputs": "paired reports → revision decision → next unopened packet",
       "configs": [
@@ -541,7 +556,7 @@
         "mio-compare.template"
       ],
       "runs": [],
-      "notes": "Candidate envelope is the unprotected 2020-23 history. Exact weeks, history/entry/tail boundaries, variants and comparison rule are undecided. Previously proposed dated packets are not adopted by this TDD.",
+      "notes": "Candidate envelope is the unprotected 2020-23 history. Exact weeks, history/entry/tail boundaries, variants and comparison rule are undecided. Previously proposed dated packets are not adopted by this TDD. Future MIO consumes the selected model-zoo output; the prior M51 run does not fix that winner.",
       "authority": [
         "user: staged testing with time to revise"
       ]
@@ -553,8 +568,8 @@
       "start": "2017-01-03",
       "end_exclusive": "2024-01-01",
       "status": "undecided",
-      "inputs": "Promoted recipe m*, training evidence with τ<2024-01-01",
-      "operation": "fit",
+      "inputs": "Selected complete zoo recipe m*, pre-2024 evidence, split*",
+      "operation": "refit_selected",
       "outputs": "F̂_holdout (unexecuted/unpinned here)",
       "configs": [
         "path"
@@ -577,10 +592,8 @@
       "outputs": "∅ under current pre-holdout readers",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "m51",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [],
@@ -655,23 +668,20 @@
       "start": "2017-01-03",
       "end_exclusive": "2018-09-04",
       "status": "recorded",
-      "inputs": "T_1, Λ_1ᵀ, Λ_1ᴹ",
+      "inputs": "T_1, Λ_1ᴹ",
       "operation": "fit",
-      "outputs": "{θ̂_{1,e}ᵀ, θ̂_{1,e}ᴹ}_e",
+      "outputs": "{θ̂_{1,e}ᴹ}_e",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f1",
         "R-wide_mlp64-f1",
         "R-scores"
       ],
-      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -697,19 +707,16 @@
       "status": "recorded",
       "inputs": "C_1, {θ̂_{1,e}}_e",
       "operation": "monitor",
-      "outputs": "e*ᵀ=1; e*ᴹ=23; F̂_1",
+      "outputs": "e*ᴹ=23; F̂_1",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f1",
         "R-wide_mlp64-f1"
       ],
-      "notes": "Last 82 observed training origins before purge; require τ<2019-01-02. This is checkpoint selection, not predictive validation.",
+      "notes": "Last 82 observed training origins before purge; require τ<2019-01-02. This is checkpoint selection, not predictive validation. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -738,20 +745,17 @@
       "outputs": "Timing/learning diagnostics only",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "m51",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f1",
         "R-wide_mlp64-f1",
         "R-m51",
         "R-scores"
       ],
-      "notes": "Never ranked; additionally τ<2020-01-02.",
+      "notes": "Never ranked; additionally τ<2020-01-02. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -826,23 +830,20 @@
       "start": "2017-01-03",
       "end_exclusive": "2019-09-05",
       "status": "recorded",
-      "inputs": "T_2, Λ_2ᵀ, Λ_2ᴹ",
+      "inputs": "T_2, Λ_2ᴹ",
       "operation": "fit",
-      "outputs": "{θ̂_{2,e}ᵀ, θ̂_{2,e}ᴹ}_e",
+      "outputs": "{θ̂_{2,e}ᴹ}_e",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f2",
         "R-wide_mlp64-f2",
         "R-scores"
       ],
-      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -868,19 +869,16 @@
       "status": "recorded",
       "inputs": "C_2, {θ̂_{2,e}}_e",
       "operation": "monitor",
-      "outputs": "e*ᵀ=2; e*ᴹ=2; F̂_2",
+      "outputs": "e*ᴹ=2; F̂_2",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f2",
         "R-wide_mlp64-f2"
       ],
-      "notes": "Last 82 observed training origins before purge; require τ<2020-01-02. This is checkpoint selection, not predictive validation.",
+      "notes": "Last 82 observed training origins before purge; require τ<2020-01-02. This is checkpoint selection, not predictive validation. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -909,20 +907,17 @@
       "outputs": "Y_2",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "m51",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f2",
         "R-wide_mlp64-f2",
         "R-m51",
         "R-scores"
       ],
-      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
+      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -954,10 +949,9 @@
         "m51"
       ],
       "runs": [
-        "R-tcn-f2",
         "R-wide_mlp64-f2"
       ],
-      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled.",
+      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1024,23 +1018,20 @@
       "start": "2017-01-03",
       "end_exclusive": "2020-09-04",
       "status": "recorded",
-      "inputs": "T_3, Λ_3ᵀ, Λ_3ᴹ",
+      "inputs": "T_3, Λ_3ᴹ",
       "operation": "fit",
-      "outputs": "{θ̂_{3,e}ᵀ, θ̂_{3,e}ᴹ}_e",
+      "outputs": "{θ̂_{3,e}ᴹ}_e",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f3",
         "R-wide_mlp64-f3",
         "R-scores"
       ],
-      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1066,19 +1057,16 @@
       "status": "recorded",
       "inputs": "C_3, {θ̂_{3,e}}_e",
       "operation": "monitor",
-      "outputs": "e*ᵀ=1; e*ᴹ=45; F̂_3",
+      "outputs": "e*ᴹ=45; F̂_3",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f3",
         "R-wide_mlp64-f3"
       ],
-      "notes": "Last 82 observed training origins before purge; require τ<2021-01-04. This is checkpoint selection, not predictive validation.",
+      "notes": "Last 82 observed training origins before purge; require τ<2021-01-04. This is checkpoint selection, not predictive validation. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1107,20 +1095,17 @@
       "outputs": "Y_3",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "m51",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f3",
         "R-wide_mlp64-f3",
         "R-m51",
         "R-scores"
       ],
-      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
+      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1152,10 +1137,9 @@
         "m51"
       ],
       "runs": [
-        "R-tcn-f3",
         "R-wide_mlp64-f3"
       ],
-      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled.",
+      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1223,23 +1207,20 @@
       "start": "2017-01-03",
       "end_exclusive": "2021-09-07",
       "status": "recorded",
-      "inputs": "T_4, Λ_4ᵀ, Λ_4ᴹ",
+      "inputs": "T_4, Λ_4ᴹ",
       "operation": "fit",
-      "outputs": "{θ̂_{4,e}ᵀ, θ̂_{4,e}ᴹ}_e",
+      "outputs": "{θ̂_{4,e}ᴹ}_e",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f4",
         "R-wide_mlp64-f4",
         "R-scores"
       ],
-      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1265,19 +1246,16 @@
       "status": "recorded",
       "inputs": "C_4, {θ̂_{4,e}}_e",
       "operation": "monitor",
-      "outputs": "e*ᵀ=2; e*ᴹ=1; F̂_4",
+      "outputs": "e*ᴹ=1; F̂_4",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f4",
         "R-wide_mlp64-f4"
       ],
-      "notes": "Last 82 observed training origins before purge; require τ<2022-01-03. This is checkpoint selection, not predictive validation.",
+      "notes": "Last 82 observed training origins before purge; require τ<2022-01-03. This is checkpoint selection, not predictive validation. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1306,20 +1284,17 @@
       "outputs": "Y_4",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "m51",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f4",
         "R-wide_mlp64-f4",
         "R-m51",
         "R-scores"
       ],
-      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
+      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1351,10 +1326,9 @@
         "m51"
       ],
       "runs": [
-        "R-tcn-f4",
         "R-wide_mlp64-f4"
       ],
-      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled.",
+      "notes": "This line uses settlement dates, not new prediction origins. Labels are unavailable to the next fold's learning until settled. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1423,23 +1397,20 @@
       "start": "2017-01-03",
       "end_exclusive": "2022-09-06",
       "status": "recorded",
-      "inputs": "T_5, Λ_5ᵀ, Λ_5ᴹ",
+      "inputs": "T_5, Λ_5ᴹ",
       "operation": "fit",
-      "outputs": "{θ̂_{5,e}ᵀ, θ̂_{5,e}ᴹ}_e",
+      "outputs": "{θ̂_{5,e}ᴹ}_e",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f5",
         "R-wide_mlp64-f5",
         "R-scores"
       ],
-      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata.",
+      "notes": "Quote interval shown; require τ<c_f. Observed retained quote/label support is in the pinned fit metadata. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1465,19 +1436,16 @@
       "status": "recorded",
       "inputs": "C_5, {θ̂_{5,e}}_e",
       "operation": "monitor",
-      "outputs": "e*ᵀ=2; e*ᴹ=1; F̂_5",
+      "outputs": "e*ᴹ=1; F̂_5",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f5",
         "R-wide_mlp64-f5"
       ],
-      "notes": "Last 82 observed training origins before purge; require τ<2023-01-03. This is checkpoint selection, not predictive validation.",
+      "notes": "Last 82 observed training origins before purge; require τ<2023-01-03. This is checkpoint selection, not predictive validation. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1506,20 +1474,17 @@
       "outputs": "Y_5",
       "configs": [
         "folds",
-        "tcn",
         "mlp",
         "m51",
         "scores",
-        "resolved-tcn",
         "resolved-wide_mlp64"
       ],
       "runs": [
-        "R-tcn-f5",
         "R-wide_mlp64-f5",
         "R-m51",
         "R-scores"
       ],
-      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year.",
+      "notes": "Scored origin year. Settlement tail is shown separately where it crosses into the next year. Recorded fold pins describe the M51/MLP dependency; they do not select the zoo winner.",
       "authority": [
         "A0008",
         "saved fit metadata"
@@ -1715,15 +1680,39 @@
       "status": "undecided",
       "inputs": "Paired validation evidence, candidate recipe, seeds {11,29,47}",
       "operation": "promotion",
-      "outputs": "m* (undecided)",
+      "outputs": "E_zoo: eligible candidate outputs (not the final argmin)",
       "configs": [
         "path"
       ],
       "runs": [],
-      "notes": "The rule is locked; final promoted recipe, full promotion run pins and TCN/M51 reconciliation are not established by this TDD.",
+      "notes": "A0005 promotion rule remains locked; exact candidate set and promotion evidence/run pins remain undecided. Selection of the best eligible zoo output is the separate ZOO row.",
       "authority": [
         "A0004",
         "A0005",
+        "A0008"
+      ]
+    },
+    {
+      "id": "ZOO",
+      "label": "Select best model-zoo output",
+      "group": "Reporting",
+      "start": "2020-01-02",
+      "end_exclusive": "2024-01-01",
+      "status": "undecided",
+      "inputs": "M_zoo, κ, comparable V₂:₅ evidence, A0005/A0007 eligibility",
+      "operation": "select_zoo",
+      "outputs": "m*, recipe*, run*, output_SHA256* (not yet pinned)",
+      "configs": [
+        "path"
+      ],
+      "runs": [],
+      "notes": "Accepted source of future MIO forecasts: the best model-zoo output. This is the validation evidence envelope, not a new unopened test or execution date. Exact candidate set, comparison unit, tie rule, winner and selection JSON/run pins remain undecided.",
+      "authority": [
+        "owner correction 2026-10-27",
+        "A0002",
+        "A0003",
+        "A0005",
+        "A0007",
         "A0008"
       ]
     },
@@ -1738,13 +1727,10 @@
       "operation": "hypersearch",
       "outputs": "λ* (undecided)",
       "configs": [
-        "tcn",
-        "mlp",
-        "resolved-tcn",
-        "resolved-wide_mlp64"
+        "path"
       ],
       "runs": [],
-      "notes": "The recorded fits use fixed settings and early stopping. No additional HPO window or search grid has been adopted.",
+      "notes": "No additional zoo HPO domain, tuning window, scoring contract or execution JSON has been adopted. Recorded MLP fits use fixed settings and early stopping.",
       "authority": []
     },
     {
@@ -1802,8 +1788,8 @@
     {
       "id": "path",
       "path": "children/index_options/docs/decisioning/path.csv",
-      "sha256": "3958c5c8399cae1817bebef3da3ba0e5893294f44144dbeec39f6e40d1e8275b",
-      "role": "Owner decisions; A0008 supersedes A0004's screen rung only."
+      "sha256": "1ea4c8bab3c413d65f4763cadf2532bcc13621809f412f225b6fdd7397fe17c3",
+      "role": "Owner decisions; A0008 retains yearly cadence and now selects the best model-zoo output under the 2026-10-27 owner correction."
     },
     {
       "id": "folds",
@@ -1822,12 +1808,6 @@
       "path": "children/index_options/configs/strike-screen-panel-source.json",
       "sha256": "a4c6cc31c0f0ac32bd7093553865ebdbb2dccad6d833000313a7dcd05dc45d00",
       "role": "Panel stage only. Embedded search candidates are not the training recipe."
-    },
-    {
-      "id": "tcn",
-      "path": "children/index_options/configs/run-strike-screen-fits-walkforward.json",
-      "sha256": "a1469cc1ef893de9fa437e7c76a8e9582a074f6c34f52ba54069efb9f8cb2332",
-      "role": "Repository TCN recipe template with placeholder pins; exact saved resolved invocation is resolved-tcn."
     },
     {
       "id": "mlp",
@@ -1856,7 +1836,7 @@
     {
       "id": "mio-study",
       "path": "children/index_options/docs/plans/mio-json/study.json",
-      "sha256": "e5ba3ed0f7cd14baccf9108573b397385642bafa7f5de021189d0ad15894b4aa",
+      "sha256": "7bab84d8bac5fc999616cf5e9c9e320cf861ac5b9d0c9831496bffb5d6de358a",
       "role": "Proposed interface only; not executable or an accepted dated schedule. Null pins remain unresolved."
     },
     {
@@ -1876,13 +1856,6 @@
       "path": "children/index_options/docs/plans/mio-json/compare.template.json",
       "sha256": "c7e458be7745ff94a06a2d26b1eeba6d9eb9026768ea083f1ee28e377fcb0351",
       "role": "Proposed interface only; not executable or an accepted dated schedule. Null pins remain unresolved."
-    },
-    {
-      "id": "resolved-tcn",
-      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
-      "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
-      "role": "Saved resolved CDFExperiment invocation; config identity plus ordered fold-band identities reproduces all five completed cell identities.",
-      "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f"
     },
     {
       "id": "resolved-wide_mlp64",
@@ -1965,2795 +1938,6 @@
       },
       "verification": "Frame bytes match record.json SHA256; dates only projected to recover the 82-origin boundaries.",
       "limitation": "Cache identity is not a pipeline run_hash. Original invocation/code/environment binding was not recovered."
-    },
-    {
-      "id": "R-tcn-f1",
-      "kind": "cdf_fit",
-      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/1/pooled",
-      "identity": "5bbc533e3ca88dc611ae54a3d71fe6dda8496d8202804fd91b3dc6ea9baa8dc4",
-      "fold": 1,
-      "model": "tcn",
-      "files": {
-        "fit/complete.json": "c0e4039c903a63cb537d772690909171c41074453d3ed0744e61e81c64a1c892",
-        "fit/metadata.json": "7b2517401b85cb49411922e1854091afb73ce5aaacd01d35c0a668467f8c31c2",
-        "fit/model/state.json": "e52bf28df6edf2aa26dec15b81b08e5109c8a845bf78ee79f5c8f6578252247c",
-        "fit/model/weights.pt": "22517db38790949b465d166e5d96e46e54c8124f82bf531e5c585b787f518c21",
-        "completed/summary.json": "c5f71f0fd7cec429a09f680e169bb65d93775ee1ab4a8c3f3f9f0a764fa18f0e",
-        "completed/complete.json": "df9ada7645eeecbf46b0837309866b12eeb6ccb6eab8e09b6e216d30f56dcef5"
-      },
-      "best_epoch": 1,
-      "epochs_visited": 51,
-      "symbols": [
-        "AAPL",
-        "ABBV",
-        "ABT",
-        "ABUS",
-        "ACN",
-        "ADBE",
-        "ADI",
-        "AEO",
-        "AG",
-        "AGNC",
-        "AKAM",
-        "ALB",
-        "ALLY",
-        "AMAT",
-        "AMC",
-        "AMD",
-        "AMGN",
-        "AMKR",
-        "AMZN",
-        "ANET",
-        "APA",
-        "APH",
-        "APO",
-        "AVAV",
-        "AVGO",
-        "AXP",
-        "AXTI",
-        "BA",
-        "BAC",
-        "BBY",
-        "BIDU",
-        "BLK",
-        "BMY",
-        "BP",
-        "BSX",
-        "BX",
-        "C",
-        "CAG",
-        "CAT",
-        "CCJ",
-        "CCL",
-        "CDE",
-        "CHTR",
-        "CIEN",
-        "CLF",
-        "CLS",
-        "CMCSA",
-        "CME",
-        "CMG",
-        "CNC",
-        "COF",
-        "COP",
-        "COST",
-        "CPB",
-        "CRM",
-        "CSCO",
-        "CVE",
-        "CVS",
-        "CVX",
-        "DAL",
-        "DE",
-        "DHR",
-        "DHT",
-        "DIS",
-        "DKS",
-        "DUK",
-        "DVN",
-        "EIX",
-        "ENPH",
-        "EOG",
-        "EPD",
-        "EQT",
-        "EXPE",
-        "F",
-        "FCEL",
-        "FCX",
-        "FDX",
-        "FISV",
-        "FRO",
-        "FSLR",
-        "FTNT",
-        "GE",
-        "GEO",
-        "GILD",
-        "GIS",
-        "GLW",
-        "GM",
-        "GME",
-        "GOOG",
-        "GOOGL",
-        "GPRO",
-        "GS",
-        "HAL",
-        "HD",
-        "HL",
-        "HON",
-        "HPE",
-        "HPQ",
-        "HUM",
-        "IBM",
-        "INTC",
-        "INTU",
-        "ISRG",
-        "JBLU",
-        "JNJ",
-        "JPM",
-        "KGC",
-        "KHC",
-        "KKR",
-        "KLAC",
-        "KMI",
-        "KO",
-        "KR",
-        "KSS",
-        "KTOS",
-        "LLY"
-      ],
-      "band_counts": [
-        260392,
-        44890,
-        160754
-      ],
-      "band_dates": [
-        {
-          "quote_date": [
-            "2017-01-03",
-            "2018-08-30"
-          ],
-          "settlement_date": [
-            "2017-01-06",
-            "2018-08-31"
-          ]
-        },
-        {
-          "quote_date": [
-            "2018-09-04",
-            "2018-12-27"
-          ],
-          "settlement_date": [
-            "2018-09-07",
-            "2018-12-28"
-          ]
-        },
-        {
-          "quote_date": [
-            "2019-01-02",
-            "2019-12-26"
-          ],
-          "settlement_date": [
-            "2019-01-04",
-            "2019-12-27"
-          ]
-        }
-      ],
-      "settings": {
-        "batch_size": 512,
-        "components": 3,
-        "deterministic": true,
-        "device": "cuda",
-        "dropout": 0.1,
-        "encoder": {
-          "adapter": {
-            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
-            "params": {
-              "arch": "tcn",
-              "arch_params": {
-                "dilations": [
-                  1,
-                  2,
-                  4,
-                  8,
-                  16
-                ],
-                "hidden_size": 16,
-                "kernel_size": 2
-              },
-              "width": 16
-            }
-          },
-          "context_indices": [
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-            29,
-            30,
-            31,
-            32,
-            33,
-            34,
-            35,
-            36,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            43,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            50,
-            51,
-            52,
-            53,
-            54,
-            55,
-            56,
-            57,
-            58,
-            59,
-            60,
-            61,
-            62,
-            63,
-            64,
-            65
-          ],
-          "kind": "external",
-          "sequence_indices": [
-            [
-              0
-            ],
-            [
-              1
-            ],
-            [
-              2
-            ],
-            [
-              3
-            ],
-            [
-              4
-            ],
-            [
-              5
-            ],
-            [
-              6
-            ],
-            [
-              7
-            ],
-            [
-              8
-            ],
-            [
-              9
-            ],
-            [
-              10
-            ],
-            [
-              11
-            ],
-            [
-              12
-            ],
-            [
-              13
-            ],
-            [
-              14
-            ],
-            [
-              15
-            ],
-            [
-              16
-            ],
-            [
-              17
-            ],
-            [
-              18
-            ],
-            [
-              19
-            ],
-            [
-              20
-            ],
-            [
-              21
-            ]
-          ]
-        },
-        "epochs": 150,
-        "feature_indices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15,
-          16,
-          17,
-          18,
-          19,
-          20,
-          21,
-          22,
-          23,
-          24,
-          25,
-          26,
-          27,
-          28,
-          29,
-          30,
-          31,
-          32,
-          33,
-          34,
-          35,
-          36,
-          37,
-          38,
-          39,
-          40,
-          41,
-          42,
-          43,
-          44,
-          45,
-          46,
-          47,
-          48,
-          49,
-          50,
-          51,
-          52,
-          53,
-          54,
-          55,
-          56,
-          57,
-          58,
-          59,
-          60,
-          61,
-          62,
-          63,
-          64,
-          65
-        ],
-        "head_features": [
-          66,
-          67,
-          68,
-          69,
-          70,
-          71,
-          72,
-          73,
-          74,
-          75,
-          76,
-          77,
-          78,
-          79,
-          80,
-          81,
-          82,
-          83,
-          84,
-          85,
-          86,
-          87,
-          88,
-          89,
-          90,
-          91,
-          92,
-          93,
-          94,
-          95,
-          96,
-          97,
-          98,
-          99,
-          100,
-          101,
-          102,
-          103,
-          104,
-          105,
-          106,
-          107,
-          108,
-          109,
-          110,
-          111,
-          112,
-          113,
-          114,
-          115,
-          116,
-          117,
-          118,
-          119,
-          120,
-          121,
-          122,
-          123,
-          124,
-          125,
-          126,
-          127,
-          128,
-          129,
-          130,
-          131,
-          132,
-          133,
-          134,
-          135,
-          136,
-          137,
-          138,
-          139,
-          140,
-          141,
-          142,
-          143,
-          144,
-          145,
-          146,
-          147,
-          148,
-          149,
-          150,
-          151,
-          152,
-          153,
-          154,
-          155,
-          156,
-          157,
-          158,
-          159,
-          160,
-          161,
-          162,
-          163,
-          164,
-          165,
-          166,
-          167,
-          168,
-          169,
-          170,
-          171,
-          172,
-          173,
-          174,
-          175,
-          176,
-          177,
-          178,
-          179,
-          180,
-          181
-        ],
-        "hidden": [
-          8
-        ],
-        "learning_rate": 0.0003,
-        "losses": [
-          {
-            "kind": "crps",
-            "weight": 1.0
-          },
-          {
-            "kind": "tail_crps",
-            "weight": 1.0
-          }
-        ],
-        "mask_constant_features": true,
-        "max_parameters": 65098,
-        "patience": 50,
-        "seeds": [
-          11
-        ],
-        "training_telemetry": true,
-        "weight_decay": 0.01
-      },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
-      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
-      "resolved_document": {
-        "id": "resolved-tcn",
-        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
-        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
-        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
-        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
-        "source_hashes": {
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
-        },
-        "dependencies": {
-          "lightgbm": "4.7.0",
-          "numpy": "2.5.2",
-          "pandas": "2.3.3",
-          "pyarrow": "25.0.1",
-          "scikit-learn": "1.9.0",
-          "torch": "2.11.0+cu128",
-          "transformers": "5.16.1"
-        }
-      },
-      "band_identities": [
-        "7c4c8cb0fa8ea26834c8f843fc3bfbe701aa41cd138d77c045f3a1161b205f59",
-        "6207668de6c57a9bcaac7e977165679f42f61611374f7401ecf9761308e6c582",
-        "a2e3a6ce8290d27a33e7f3fb0de690691fbe57e1539095ef41fd8f0895686a7d"
-      ]
-    },
-    {
-      "id": "R-tcn-f2",
-      "kind": "cdf_fit",
-      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/2/pooled",
-      "identity": "264e6ddbf0af87af89ef1816633003593ca5318ddaaaba597f41cab73024099d",
-      "fold": 2,
-      "model": "tcn",
-      "files": {
-        "fit/complete.json": "8f524a995f0042a721033fc22b7c325595931f5f1403448ca723acf95d694852",
-        "fit/metadata.json": "bf162e365ca76f7ea14f25b20d7cf8c554bbaeb7a81cb606c55600a0a7683519",
-        "fit/model/state.json": "872a5fb51f939c1d42a56fa561aad3f66a625fb5d2002430e83931d347c2e9f8",
-        "fit/model/weights.pt": "560eea1690f81be77048e7875baf74a2a5b1e04beb56b3a8669e6462a7f6d9da",
-        "completed/summary.json": "ba44522fe525c17b1a53f91727cff08f89c1032cd182108f937af58fe55f25c7",
-        "completed/complete.json": "b28373550eeda523a755fe35b2a7202ae41a60058c83e1fb8a70ebae3cc33218"
-      },
-      "best_epoch": 2,
-      "epochs_visited": 52,
-      "symbols": [
-        "AAPL",
-        "ABBV",
-        "ABT",
-        "ABUS",
-        "ACN",
-        "ADBE",
-        "ADI",
-        "AEO",
-        "AG",
-        "AGNC",
-        "AKAM",
-        "ALB",
-        "ALLY",
-        "AMAT",
-        "AMC",
-        "AMD",
-        "AMGN",
-        "AMKR",
-        "AMZN",
-        "ANET",
-        "APA",
-        "APH",
-        "APO",
-        "AVAV",
-        "AVGO",
-        "AXP",
-        "AXTI",
-        "BA",
-        "BAC",
-        "BBY",
-        "BIDU",
-        "BLK",
-        "BMY",
-        "BP",
-        "BSX",
-        "BX",
-        "C",
-        "CAG",
-        "CAT",
-        "CCJ",
-        "CCL",
-        "CDE",
-        "CHTR",
-        "CIEN",
-        "CLF",
-        "CLS",
-        "CMCSA",
-        "CME",
-        "CMG",
-        "CNC",
-        "COF",
-        "COP",
-        "COST",
-        "CPB",
-        "CRM",
-        "CSCO",
-        "CVE",
-        "CVS",
-        "CVX",
-        "DAL",
-        "DE",
-        "DHR",
-        "DHT",
-        "DIS",
-        "DKS",
-        "DUK",
-        "DVN",
-        "ECHO",
-        "EIX",
-        "ENPH",
-        "EOG",
-        "EPD",
-        "EQT",
-        "EXPE",
-        "F",
-        "FCEL",
-        "FCX",
-        "FDX",
-        "FISV",
-        "FRO",
-        "FSLR",
-        "FTNT",
-        "GE",
-        "GEO",
-        "GILD",
-        "GIS",
-        "GLW",
-        "GM",
-        "GME",
-        "GOOG",
-        "GOOGL",
-        "GPRO",
-        "GS",
-        "HAL",
-        "HD",
-        "HL",
-        "HON",
-        "HPE",
-        "HPQ",
-        "HUM",
-        "IBM",
-        "INTC",
-        "INTU",
-        "ISRG",
-        "JBLU",
-        "JNJ",
-        "JPM",
-        "KGC",
-        "KHC",
-        "KKR",
-        "KLAC",
-        "KMI",
-        "KO",
-        "KR",
-        "KSS",
-        "KTOS"
-      ],
-      "band_counts": [
-        426603,
-        44334,
-        177194
-      ],
-      "band_dates": [
-        {
-          "quote_date": [
-            "2017-01-03",
-            "2019-08-29"
-          ],
-          "settlement_date": [
-            "2017-01-06",
-            "2019-08-30"
-          ]
-        },
-        {
-          "quote_date": [
-            "2019-09-05",
-            "2019-12-26"
-          ],
-          "settlement_date": [
-            "2019-09-06",
-            "2019-12-27"
-          ]
-        },
-        {
-          "quote_date": [
-            "2020-01-02",
-            "2020-12-31"
-          ],
-          "settlement_date": [
-            "2020-01-03",
-            "2021-02-19"
-          ]
-        }
-      ],
-      "settings": {
-        "batch_size": 512,
-        "components": 3,
-        "deterministic": true,
-        "device": "cuda",
-        "dropout": 0.1,
-        "encoder": {
-          "adapter": {
-            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
-            "params": {
-              "arch": "tcn",
-              "arch_params": {
-                "dilations": [
-                  1,
-                  2,
-                  4,
-                  8,
-                  16
-                ],
-                "hidden_size": 16,
-                "kernel_size": 2
-              },
-              "width": 16
-            }
-          },
-          "context_indices": [
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-            29,
-            30,
-            31,
-            32,
-            33,
-            34,
-            35,
-            36,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            43,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            50,
-            51,
-            52,
-            53,
-            54,
-            55,
-            56,
-            57,
-            58,
-            59,
-            60,
-            61,
-            62,
-            63,
-            64,
-            65
-          ],
-          "kind": "external",
-          "sequence_indices": [
-            [
-              0
-            ],
-            [
-              1
-            ],
-            [
-              2
-            ],
-            [
-              3
-            ],
-            [
-              4
-            ],
-            [
-              5
-            ],
-            [
-              6
-            ],
-            [
-              7
-            ],
-            [
-              8
-            ],
-            [
-              9
-            ],
-            [
-              10
-            ],
-            [
-              11
-            ],
-            [
-              12
-            ],
-            [
-              13
-            ],
-            [
-              14
-            ],
-            [
-              15
-            ],
-            [
-              16
-            ],
-            [
-              17
-            ],
-            [
-              18
-            ],
-            [
-              19
-            ],
-            [
-              20
-            ],
-            [
-              21
-            ]
-          ]
-        },
-        "epochs": 150,
-        "feature_indices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15,
-          16,
-          17,
-          18,
-          19,
-          20,
-          21,
-          22,
-          23,
-          24,
-          25,
-          26,
-          27,
-          28,
-          29,
-          30,
-          31,
-          32,
-          33,
-          34,
-          35,
-          36,
-          37,
-          38,
-          39,
-          40,
-          41,
-          42,
-          43,
-          44,
-          45,
-          46,
-          47,
-          48,
-          49,
-          50,
-          51,
-          52,
-          53,
-          54,
-          55,
-          56,
-          57,
-          58,
-          59,
-          60,
-          61,
-          62,
-          63,
-          64,
-          65
-        ],
-        "head_features": [
-          66,
-          67,
-          68,
-          69,
-          70,
-          71,
-          72,
-          73,
-          74,
-          75,
-          76,
-          77,
-          78,
-          79,
-          80,
-          81,
-          82,
-          83,
-          84,
-          85,
-          86,
-          87,
-          88,
-          89,
-          90,
-          91,
-          92,
-          93,
-          94,
-          95,
-          96,
-          97,
-          98,
-          99,
-          100,
-          101,
-          102,
-          103,
-          104,
-          105,
-          106,
-          107,
-          108,
-          109,
-          110,
-          111,
-          112,
-          113,
-          114,
-          115,
-          116,
-          117,
-          118,
-          119,
-          120,
-          121,
-          122,
-          123,
-          124,
-          125,
-          126,
-          127,
-          128,
-          129,
-          130,
-          131,
-          132,
-          133,
-          134,
-          135,
-          136,
-          137,
-          138,
-          139,
-          140,
-          141,
-          142,
-          143,
-          144,
-          145,
-          146,
-          147,
-          148,
-          149,
-          150,
-          151,
-          152,
-          153,
-          154,
-          155,
-          156,
-          157,
-          158,
-          159,
-          160,
-          161,
-          162,
-          163,
-          164,
-          165,
-          166,
-          167,
-          168,
-          169,
-          170,
-          171,
-          172,
-          173,
-          174,
-          175,
-          176,
-          177,
-          178,
-          179,
-          180,
-          181
-        ],
-        "hidden": [
-          8
-        ],
-        "learning_rate": 0.0003,
-        "losses": [
-          {
-            "kind": "crps",
-            "weight": 1.0
-          },
-          {
-            "kind": "tail_crps",
-            "weight": 1.0
-          }
-        ],
-        "mask_constant_features": true,
-        "max_parameters": 100000,
-        "patience": 50,
-        "seeds": [
-          11
-        ],
-        "training_telemetry": true,
-        "weight_decay": 0.01
-      },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
-      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
-      "resolved_document": {
-        "id": "resolved-tcn",
-        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
-        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
-        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
-        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
-        "source_hashes": {
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
-        },
-        "dependencies": {
-          "lightgbm": "4.7.0",
-          "numpy": "2.5.2",
-          "pandas": "2.3.3",
-          "pyarrow": "25.0.1",
-          "scikit-learn": "1.9.0",
-          "torch": "2.11.0+cu128",
-          "transformers": "5.16.1"
-        }
-      },
-      "band_identities": [
-        "95636d6bfb92e2dcfdf22aa0d468a532fc199b5069f4d61e2c44da0c5f8701c3",
-        "29d6ead4ab88d31522d6a6f0645b9d3b0fb53103703d29adb90363f79ed56aca",
-        "be95cd32387b7d374b4f2215e2bf2c88ee4f7f7e260317c515de505ad5a7d00d"
-      ]
-    },
-    {
-      "id": "R-tcn-f3",
-      "kind": "cdf_fit",
-      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/3/pooled",
-      "identity": "4f6f5cd5287355f3bc9554bc2f468b059ef7c97a9fa111eae745a28093d40cc0",
-      "fold": 3,
-      "model": "tcn",
-      "files": {
-        "fit/complete.json": "37cb64e3a9e409bbc705f48a845b5183341360e281675dac7c94bb5c885e0ce9",
-        "fit/metadata.json": "2439fdea0cc3d8705f419655adb87d24232ebc7f4ef41251c98db4dcc40bce1c",
-        "fit/model/state.json": "8db5931e8290a32b21d839b916e6b746fea9f47ebbe85c88231e5ee4d6c22910",
-        "fit/model/weights.pt": "717cd451e7b1a0c89958f1cf0c54d3389e391613177bdf6ecb2a38c2093ecb57",
-        "completed/summary.json": "fb23f6a221fc92c8851bb5ef9af849b44aece5fe208f3932726c292d11c5fb76",
-        "completed/complete.json": "136179e4be966ae642665bde9101816d61e9cfcd7e85f1ddaa63b2257dd65ae8"
-      },
-      "best_epoch": 1,
-      "epochs_visited": 51,
-      "symbols": [
-        "AAPL",
-        "ABBV",
-        "ABT",
-        "ABUS",
-        "ACN",
-        "ADBE",
-        "ADI",
-        "AEO",
-        "AG",
-        "AGNC",
-        "AKAM",
-        "ALB",
-        "ALLY",
-        "AMAT",
-        "AMC",
-        "AMD",
-        "AMGN",
-        "AMKR",
-        "AMZN",
-        "ANET",
-        "APA",
-        "APH",
-        "APO",
-        "AVAV",
-        "AVGO",
-        "AXP",
-        "AXTI",
-        "BA",
-        "BAC",
-        "BBY",
-        "BIDU",
-        "BLK",
-        "BMY",
-        "BP",
-        "BSX",
-        "BX",
-        "C",
-        "CAG",
-        "CAT",
-        "CCJ",
-        "CCL",
-        "CDE",
-        "CHTR",
-        "CIEN",
-        "CLF",
-        "CLS",
-        "CMCSA",
-        "CME",
-        "CMG",
-        "CNC",
-        "COF",
-        "COP",
-        "COST",
-        "CPB",
-        "CRM",
-        "CSCO",
-        "CVE",
-        "CVS",
-        "CVX",
-        "DAL",
-        "DE",
-        "DHR",
-        "DHT",
-        "DIS",
-        "DKS",
-        "DUK",
-        "DVN",
-        "ECHO",
-        "EIX",
-        "ENPH",
-        "EOG",
-        "EPD",
-        "EQT",
-        "EXPE",
-        "F",
-        "FCEL",
-        "FCX",
-        "FDX",
-        "FISV",
-        "FRO",
-        "FSLR",
-        "FTNT",
-        "GE",
-        "GEO",
-        "GILD",
-        "GIS",
-        "GLW",
-        "GM",
-        "GME",
-        "GOOG",
-        "GOOGL",
-        "GPRO",
-        "GS",
-        "HAL",
-        "HD",
-        "HL",
-        "HON",
-        "HPE",
-        "HPQ",
-        "HUM",
-        "IBM",
-        "INTC",
-        "INTU",
-        "ISRG",
-        "JBLU",
-        "JNJ",
-        "JPM",
-        "KGC",
-        "KHC",
-        "KKR",
-        "KLAC",
-        "KMI",
-        "KO",
-        "KR",
-        "KSS",
-        "KTOS",
-        "LLY"
-      ],
-      "band_counts": [
-        605633,
-        47529,
-        181285
-      ],
-      "band_dates": [
-        {
-          "quote_date": [
-            "2017-01-03",
-            "2020-08-27"
-          ],
-          "settlement_date": [
-            "2017-01-06",
-            "2020-08-28"
-          ]
-        },
-        {
-          "quote_date": [
-            "2020-09-04",
-            "2020-12-30"
-          ],
-          "settlement_date": [
-            "2020-09-11",
-            "2020-12-31"
-          ]
-        },
-        {
-          "quote_date": [
-            "2021-01-04",
-            "2021-12-31"
-          ],
-          "settlement_date": [
-            "2021-01-08",
-            "2022-02-18"
-          ]
-        }
-      ],
-      "settings": {
-        "batch_size": 512,
-        "components": 3,
-        "deterministic": true,
-        "device": "cuda",
-        "dropout": 0.1,
-        "encoder": {
-          "adapter": {
-            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
-            "params": {
-              "arch": "tcn",
-              "arch_params": {
-                "dilations": [
-                  1,
-                  2,
-                  4,
-                  8,
-                  16
-                ],
-                "hidden_size": 16,
-                "kernel_size": 2
-              },
-              "width": 16
-            }
-          },
-          "context_indices": [
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-            29,
-            30,
-            31,
-            32,
-            33,
-            34,
-            35,
-            36,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            43,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            50,
-            51,
-            52,
-            53,
-            54,
-            55,
-            56,
-            57,
-            58,
-            59,
-            60,
-            61,
-            62,
-            63,
-            64,
-            65
-          ],
-          "kind": "external",
-          "sequence_indices": [
-            [
-              0
-            ],
-            [
-              1
-            ],
-            [
-              2
-            ],
-            [
-              3
-            ],
-            [
-              4
-            ],
-            [
-              5
-            ],
-            [
-              6
-            ],
-            [
-              7
-            ],
-            [
-              8
-            ],
-            [
-              9
-            ],
-            [
-              10
-            ],
-            [
-              11
-            ],
-            [
-              12
-            ],
-            [
-              13
-            ],
-            [
-              14
-            ],
-            [
-              15
-            ],
-            [
-              16
-            ],
-            [
-              17
-            ],
-            [
-              18
-            ],
-            [
-              19
-            ],
-            [
-              20
-            ],
-            [
-              21
-            ]
-          ]
-        },
-        "epochs": 150,
-        "feature_indices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15,
-          16,
-          17,
-          18,
-          19,
-          20,
-          21,
-          22,
-          23,
-          24,
-          25,
-          26,
-          27,
-          28,
-          29,
-          30,
-          31,
-          32,
-          33,
-          34,
-          35,
-          36,
-          37,
-          38,
-          39,
-          40,
-          41,
-          42,
-          43,
-          44,
-          45,
-          46,
-          47,
-          48,
-          49,
-          50,
-          51,
-          52,
-          53,
-          54,
-          55,
-          56,
-          57,
-          58,
-          59,
-          60,
-          61,
-          62,
-          63,
-          64,
-          65
-        ],
-        "head_features": [
-          66,
-          67,
-          68,
-          69,
-          70,
-          71,
-          72,
-          73,
-          74,
-          75,
-          76,
-          77,
-          78,
-          79,
-          80,
-          81,
-          82,
-          83,
-          84,
-          85,
-          86,
-          87,
-          88,
-          89,
-          90,
-          91,
-          92,
-          93,
-          94,
-          95,
-          96,
-          97,
-          98,
-          99,
-          100,
-          101,
-          102,
-          103,
-          104,
-          105,
-          106,
-          107,
-          108,
-          109,
-          110,
-          111,
-          112,
-          113,
-          114,
-          115,
-          116,
-          117,
-          118,
-          119,
-          120,
-          121,
-          122,
-          123,
-          124,
-          125,
-          126,
-          127,
-          128,
-          129,
-          130,
-          131,
-          132,
-          133,
-          134,
-          135,
-          136,
-          137,
-          138,
-          139,
-          140,
-          141,
-          142,
-          143,
-          144,
-          145,
-          146,
-          147,
-          148,
-          149,
-          150,
-          151,
-          152,
-          153,
-          154,
-          155,
-          156,
-          157,
-          158,
-          159,
-          160,
-          161,
-          162,
-          163,
-          164,
-          165,
-          166,
-          167,
-          168,
-          169,
-          170,
-          171,
-          172,
-          173,
-          174,
-          175,
-          176,
-          177,
-          178,
-          179,
-          180,
-          181,
-          182
-        ],
-        "hidden": [
-          8
-        ],
-        "learning_rate": 0.0003,
-        "losses": [
-          {
-            "kind": "crps",
-            "weight": 1.0
-          },
-          {
-            "kind": "tail_crps",
-            "weight": 1.0
-          }
-        ],
-        "mask_constant_features": true,
-        "max_parameters": 100000,
-        "patience": 50,
-        "seeds": [
-          11
-        ],
-        "training_telemetry": true,
-        "weight_decay": 0.01
-      },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
-      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
-      "resolved_document": {
-        "id": "resolved-tcn",
-        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
-        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
-        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
-        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
-        "source_hashes": {
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
-        },
-        "dependencies": {
-          "lightgbm": "4.7.0",
-          "numpy": "2.5.2",
-          "pandas": "2.3.3",
-          "pyarrow": "25.0.1",
-          "scikit-learn": "1.9.0",
-          "torch": "2.11.0+cu128",
-          "transformers": "5.16.1"
-        }
-      },
-      "band_identities": [
-        "da1d2c260a257a171138e20b0e9e3427e7980c317b621f78d4767527ff092312",
-        "3cbd5e22ab665d330c3eeaf627ee2edde48936ff9237e23cda1dc85949f1a2d2",
-        "17daf3443fb9ca940454d53f2d54540d956c1a6b1b697c6e5aaefc765864df8b"
-      ]
-    },
-    {
-      "id": "R-tcn-f4",
-      "kind": "cdf_fit",
-      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/4/pooled",
-      "identity": "040de2574e652553a7da077a04553266781cca357272e5f794e1fa80188b1812",
-      "fold": 4,
-      "model": "tcn",
-      "files": {
-        "fit/complete.json": "f4e61fedeb4187324b4f1dc348046e3e2ab666d82e70deb0a75b978d9d42cf7e",
-        "fit/metadata.json": "cc64c909b6ab3d2a125649fdc991790dadfa0567ba186272fd49aa0d32a812a1",
-        "fit/model/state.json": "1c0bf42ce8d03c6541bdd7ba7d95a2d3d384c4f38dfa54f4e92690983ee4170a",
-        "fit/model/weights.pt": "ba7e4452a9deb37d7076b7fecaea9ab11a42bbae0582c4fb5d1a70957fc49d0d",
-        "completed/summary.json": "23b0459d5b8e4e5c2a7221c258d12326b6a73cc7c5bc180f5389689ca594ff62",
-        "completed/complete.json": "ee04b5fa44f2c694fb53e59e174c0b1c33e44082aa3177ef00b30d2c4deedcd5"
-      },
-      "best_epoch": 2,
-      "epochs_visited": 52,
-      "symbols": [
-        "AAPL",
-        "ABBV",
-        "ABT",
-        "ABUS",
-        "ACN",
-        "ADBE",
-        "ADI",
-        "AEO",
-        "AG",
-        "AGNC",
-        "AKAM",
-        "ALB",
-        "ALLY",
-        "AMAT",
-        "AMC",
-        "AMD",
-        "AMGN",
-        "AMKR",
-        "AMZN",
-        "ANET",
-        "APA",
-        "APH",
-        "APO",
-        "AVAV",
-        "AVGO",
-        "AXP",
-        "AXTI",
-        "BA",
-        "BAC",
-        "BBY",
-        "BIDU",
-        "BLK",
-        "BMY",
-        "BP",
-        "BSX",
-        "BX",
-        "C",
-        "CAG",
-        "CAT",
-        "CCJ",
-        "CCL",
-        "CDE",
-        "CHTR",
-        "CIEN",
-        "CLF",
-        "CLS",
-        "CMCSA",
-        "CME",
-        "CMG",
-        "CNC",
-        "COF",
-        "COHR",
-        "COP",
-        "COST",
-        "CPB",
-        "CRM",
-        "CSCO",
-        "CVE",
-        "CVS",
-        "CVX",
-        "DAL",
-        "DE",
-        "DHR",
-        "DHT",
-        "DIS",
-        "DKS",
-        "DUK",
-        "DVN",
-        "EIX",
-        "ENPH",
-        "EOG",
-        "EPD",
-        "EQT",
-        "EXPE",
-        "F",
-        "FCEL",
-        "FCX",
-        "FDX",
-        "FISV",
-        "FRO",
-        "FSLR",
-        "FTNT",
-        "GE",
-        "GEO",
-        "GILD",
-        "GIS",
-        "GLW",
-        "GM",
-        "GME",
-        "GOOG",
-        "GOOGL",
-        "GPRO",
-        "GS",
-        "HAL",
-        "HD",
-        "HL",
-        "HON",
-        "HPE",
-        "HPQ",
-        "HUM",
-        "IBM",
-        "INTC",
-        "INTU",
-        "ISRG",
-        "JBLU",
-        "JNJ",
-        "JPM",
-        "KGC",
-        "KHC",
-        "KKR",
-        "KLAC",
-        "KMI",
-        "KO",
-        "KR",
-        "KSS",
-        "KTOS",
-        "LLY"
-      ],
-      "band_counts": [
-        788405,
-        47810,
-        181588
-      ],
-      "band_dates": [
-        {
-          "quote_date": [
-            "2017-01-03",
-            "2021-09-02"
-          ],
-          "settlement_date": [
-            "2017-01-06",
-            "2021-09-03"
-          ]
-        },
-        {
-          "quote_date": [
-            "2021-09-07",
-            "2021-12-30"
-          ],
-          "settlement_date": [
-            "2021-09-10",
-            "2021-12-31"
-          ]
-        },
-        {
-          "quote_date": [
-            "2022-01-03",
-            "2022-12-30"
-          ],
-          "settlement_date": [
-            "2022-01-07",
-            "2023-02-17"
-          ]
-        }
-      ],
-      "settings": {
-        "batch_size": 512,
-        "components": 3,
-        "deterministic": true,
-        "device": "cuda",
-        "dropout": 0.1,
-        "encoder": {
-          "adapter": {
-            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
-            "params": {
-              "arch": "tcn",
-              "arch_params": {
-                "dilations": [
-                  1,
-                  2,
-                  4,
-                  8,
-                  16
-                ],
-                "hidden_size": 16,
-                "kernel_size": 2
-              },
-              "width": 16
-            }
-          },
-          "context_indices": [
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-            29,
-            30,
-            31,
-            32,
-            33,
-            34,
-            35,
-            36,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            43,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            50,
-            51,
-            52,
-            53,
-            54,
-            55,
-            56,
-            57,
-            58,
-            59,
-            60,
-            61,
-            62,
-            63,
-            64,
-            65
-          ],
-          "kind": "external",
-          "sequence_indices": [
-            [
-              0
-            ],
-            [
-              1
-            ],
-            [
-              2
-            ],
-            [
-              3
-            ],
-            [
-              4
-            ],
-            [
-              5
-            ],
-            [
-              6
-            ],
-            [
-              7
-            ],
-            [
-              8
-            ],
-            [
-              9
-            ],
-            [
-              10
-            ],
-            [
-              11
-            ],
-            [
-              12
-            ],
-            [
-              13
-            ],
-            [
-              14
-            ],
-            [
-              15
-            ],
-            [
-              16
-            ],
-            [
-              17
-            ],
-            [
-              18
-            ],
-            [
-              19
-            ],
-            [
-              20
-            ],
-            [
-              21
-            ]
-          ]
-        },
-        "epochs": 150,
-        "feature_indices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15,
-          16,
-          17,
-          18,
-          19,
-          20,
-          21,
-          22,
-          23,
-          24,
-          25,
-          26,
-          27,
-          28,
-          29,
-          30,
-          31,
-          32,
-          33,
-          34,
-          35,
-          36,
-          37,
-          38,
-          39,
-          40,
-          41,
-          42,
-          43,
-          44,
-          45,
-          46,
-          47,
-          48,
-          49,
-          50,
-          51,
-          52,
-          53,
-          54,
-          55,
-          56,
-          57,
-          58,
-          59,
-          60,
-          61,
-          62,
-          63,
-          64,
-          65
-        ],
-        "head_features": [
-          66,
-          67,
-          68,
-          69,
-          70,
-          71,
-          72,
-          73,
-          74,
-          75,
-          76,
-          77,
-          78,
-          79,
-          80,
-          81,
-          82,
-          83,
-          84,
-          85,
-          86,
-          87,
-          88,
-          89,
-          90,
-          91,
-          92,
-          93,
-          94,
-          95,
-          96,
-          97,
-          98,
-          99,
-          100,
-          101,
-          102,
-          103,
-          104,
-          105,
-          106,
-          107,
-          108,
-          109,
-          110,
-          111,
-          112,
-          113,
-          114,
-          115,
-          116,
-          117,
-          118,
-          119,
-          120,
-          121,
-          122,
-          123,
-          124,
-          125,
-          126,
-          127,
-          128,
-          129,
-          130,
-          131,
-          132,
-          133,
-          134,
-          135,
-          136,
-          137,
-          138,
-          139,
-          140,
-          141,
-          142,
-          143,
-          144,
-          145,
-          146,
-          147,
-          148,
-          149,
-          150,
-          151,
-          152,
-          153,
-          154,
-          155,
-          156,
-          157,
-          158,
-          159,
-          160,
-          161,
-          162,
-          163,
-          164,
-          165,
-          166,
-          167,
-          168,
-          169,
-          170,
-          171,
-          172,
-          173,
-          174,
-          175,
-          176,
-          177,
-          178,
-          179,
-          180,
-          181,
-          182
-        ],
-        "hidden": [
-          8
-        ],
-        "learning_rate": 0.0003,
-        "losses": [
-          {
-            "kind": "crps",
-            "weight": 1.0
-          },
-          {
-            "kind": "tail_crps",
-            "weight": 1.0
-          }
-        ],
-        "mask_constant_features": true,
-        "max_parameters": 100000,
-        "patience": 50,
-        "seeds": [
-          11
-        ],
-        "training_telemetry": true,
-        "weight_decay": 0.01
-      },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
-      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
-      "resolved_document": {
-        "id": "resolved-tcn",
-        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
-        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
-        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
-        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
-        "source_hashes": {
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
-        },
-        "dependencies": {
-          "lightgbm": "4.7.0",
-          "numpy": "2.5.2",
-          "pandas": "2.3.3",
-          "pyarrow": "25.0.1",
-          "scikit-learn": "1.9.0",
-          "torch": "2.11.0+cu128",
-          "transformers": "5.16.1"
-        }
-      },
-      "band_identities": [
-        "6070f65012e9775dcc5f4944c4b5d1d39c9051752e7f84509e0e6d1f787c1338",
-        "46c9662a352cd0cc7cf1707d2a056498beb47073db6c909a8e4bc61fa3bdc0e1",
-        "6d7e6b0fe5743180904e1cd888db73794a03952fcdcaa3da4fb4bb5820f7a52d"
-      ]
-    },
-    {
-      "id": "R-tcn-f5",
-      "kind": "cdf_fit",
-      "path": "/home/russell/data/index_options/theta-strike-screen-20261018/fits/wf-tcn/pooled/context_chain/tcn/5/pooled",
-      "identity": "3d84b77ee9c85fdd327a9d71bb93c20d31359f8f7124c1d31b3d084172b74ec0",
-      "fold": 5,
-      "model": "tcn",
-      "files": {
-        "fit/complete.json": "dd0833a18fd2bef19f36df8c856b668ef7cd489ac7e94a2f2066db38befd46fd",
-        "fit/metadata.json": "70165281d1aa8bf2fef81bc29d16c587c66f780a1634862f07eb8d366d92ada6",
-        "fit/model/state.json": "3d5ddac056daa690b399d081ca690bba36a9ee3f2cc6da30ca1f824fa82eeda6",
-        "fit/model/weights.pt": "0ddceae24763763e5314389729b1c2a97e91b22b31e49702ef2722d3b3543d85",
-        "completed/summary.json": "a780a7b6823961d46f58dff3ad894f5730ef0a780b945ded68a4fd2bc6c84a6f",
-        "completed/complete.json": "d38d5c37cc6a0591816a93b9eef3a6d89c6a419957a8e6f37805b77ffbc8ffca"
-      },
-      "best_epoch": 2,
-      "epochs_visited": 52,
-      "symbols": [
-        "AAPL",
-        "ABBV",
-        "ABT",
-        "ABUS",
-        "ACN",
-        "ADBE",
-        "ADI",
-        "AEO",
-        "AG",
-        "AGNC",
-        "AKAM",
-        "ALB",
-        "ALLY",
-        "AMAT",
-        "AMC",
-        "AMD",
-        "AMGN",
-        "AMKR",
-        "AMZN",
-        "ANET",
-        "APA",
-        "APH",
-        "APO",
-        "AVAV",
-        "AVGO",
-        "AXP",
-        "AXTI",
-        "BA",
-        "BAC",
-        "BBY",
-        "BIDU",
-        "BLK",
-        "BMY",
-        "BP",
-        "BSX",
-        "BX",
-        "C",
-        "CAG",
-        "CAT",
-        "CCJ",
-        "CCL",
-        "CDE",
-        "CHTR",
-        "CIEN",
-        "CLF",
-        "CLS",
-        "CMCSA",
-        "CME",
-        "CMG",
-        "CNC",
-        "COF",
-        "COP",
-        "COST",
-        "CPB",
-        "CRM",
-        "CSCO",
-        "CVE",
-        "CVS",
-        "CVX",
-        "DAL",
-        "DE",
-        "DHR",
-        "DHT",
-        "DIS",
-        "DKS",
-        "DUK",
-        "DVN",
-        "EIX",
-        "ENPH",
-        "EOG",
-        "EPD",
-        "EQT",
-        "EXPE",
-        "F",
-        "FCEL",
-        "FCX",
-        "FDX",
-        "FISV",
-        "FRO",
-        "FSLR",
-        "FTNT",
-        "GE",
-        "GEO",
-        "GILD",
-        "GIS",
-        "GLW",
-        "GM",
-        "GME",
-        "GOOG",
-        "GOOGL",
-        "GPRO",
-        "GS",
-        "HAL",
-        "HD",
-        "HL",
-        "HON",
-        "HPE",
-        "HPQ",
-        "HUM",
-        "IBM",
-        "INTC",
-        "INTU",
-        "ISRG",
-        "JBLU",
-        "JNJ",
-        "JPM",
-        "KGC",
-        "KHC",
-        "KKR",
-        "KLAC",
-        "KMI",
-        "KO",
-        "KR",
-        "KSS",
-        "KTOS",
-        "LLY"
-      ],
-      "band_counts": [
-        970019,
-        48238,
-        171118
-      ],
-      "band_dates": [
-        {
-          "quote_date": [
-            "2017-01-03",
-            "2022-09-01"
-          ],
-          "settlement_date": [
-            "2017-01-06",
-            "2022-09-02"
-          ]
-        },
-        {
-          "quote_date": [
-            "2022-09-06",
-            "2022-12-29"
-          ],
-          "settlement_date": [
-            "2022-09-09",
-            "2022-12-30"
-          ]
-        },
-        {
-          "quote_date": [
-            "2023-01-03",
-            "2023-12-28"
-          ],
-          "settlement_date": [
-            "2023-01-06",
-            "2023-12-29"
-          ]
-        }
-      ],
-      "settings": {
-        "batch_size": 512,
-        "components": 3,
-        "deterministic": true,
-        "device": "cuda",
-        "dropout": 0.1,
-        "encoder": {
-          "adapter": {
-            "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
-            "params": {
-              "arch": "tcn",
-              "arch_params": {
-                "dilations": [
-                  1,
-                  2,
-                  4,
-                  8,
-                  16
-                ],
-                "hidden_size": 16,
-                "kernel_size": 2
-              },
-              "width": 16
-            }
-          },
-          "context_indices": [
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-            29,
-            30,
-            31,
-            32,
-            33,
-            34,
-            35,
-            36,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            43,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            50,
-            51,
-            52,
-            53,
-            54,
-            55,
-            56,
-            57,
-            58,
-            59,
-            60,
-            61,
-            62,
-            63,
-            64,
-            65
-          ],
-          "kind": "external",
-          "sequence_indices": [
-            [
-              0
-            ],
-            [
-              1
-            ],
-            [
-              2
-            ],
-            [
-              3
-            ],
-            [
-              4
-            ],
-            [
-              5
-            ],
-            [
-              6
-            ],
-            [
-              7
-            ],
-            [
-              8
-            ],
-            [
-              9
-            ],
-            [
-              10
-            ],
-            [
-              11
-            ],
-            [
-              12
-            ],
-            [
-              13
-            ],
-            [
-              14
-            ],
-            [
-              15
-            ],
-            [
-              16
-            ],
-            [
-              17
-            ],
-            [
-              18
-            ],
-            [
-              19
-            ],
-            [
-              20
-            ],
-            [
-              21
-            ]
-          ]
-        },
-        "epochs": 150,
-        "feature_indices": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10,
-          11,
-          12,
-          13,
-          14,
-          15,
-          16,
-          17,
-          18,
-          19,
-          20,
-          21,
-          22,
-          23,
-          24,
-          25,
-          26,
-          27,
-          28,
-          29,
-          30,
-          31,
-          32,
-          33,
-          34,
-          35,
-          36,
-          37,
-          38,
-          39,
-          40,
-          41,
-          42,
-          43,
-          44,
-          45,
-          46,
-          47,
-          48,
-          49,
-          50,
-          51,
-          52,
-          53,
-          54,
-          55,
-          56,
-          57,
-          58,
-          59,
-          60,
-          61,
-          62,
-          63,
-          64,
-          65
-        ],
-        "head_features": [
-          66,
-          67,
-          68,
-          69,
-          70,
-          71,
-          72,
-          73,
-          74,
-          75,
-          76,
-          77,
-          78,
-          79,
-          80,
-          81,
-          82,
-          83,
-          84,
-          85,
-          86,
-          87,
-          88,
-          89,
-          90,
-          91,
-          92,
-          93,
-          94,
-          95,
-          96,
-          97,
-          98,
-          99,
-          100,
-          101,
-          102,
-          103,
-          104,
-          105,
-          106,
-          107,
-          108,
-          109,
-          110,
-          111,
-          112,
-          113,
-          114,
-          115,
-          116,
-          117,
-          118,
-          119,
-          120,
-          121,
-          122,
-          123,
-          124,
-          125,
-          126,
-          127,
-          128,
-          129,
-          130,
-          131,
-          132,
-          133,
-          134,
-          135,
-          136,
-          137,
-          138,
-          139,
-          140,
-          141,
-          142,
-          143,
-          144,
-          145,
-          146,
-          147,
-          148,
-          149,
-          150,
-          151,
-          152,
-          153,
-          154,
-          155,
-          156,
-          157,
-          158,
-          159,
-          160,
-          161,
-          162,
-          163,
-          164,
-          165,
-          166,
-          167,
-          168,
-          169,
-          170,
-          171,
-          172,
-          173,
-          174,
-          175,
-          176,
-          177,
-          178,
-          179,
-          180,
-          181
-        ],
-        "hidden": [
-          8
-        ],
-        "learning_rate": 0.0003,
-        "losses": [
-          {
-            "kind": "crps",
-            "weight": 1.0
-          },
-          {
-            "kind": "tail_crps",
-            "weight": 1.0
-          }
-        ],
-        "mask_constant_features": true,
-        "max_parameters": 100000,
-        "patience": 50,
-        "seeds": [
-          11
-        ],
-        "training_telemetry": true,
-        "weight_decay": 0.01
-      },
-      "verification": "Fit identity agrees with completed identity. Every fit/complete.json member and completed summary verified by SHA256. Saved resolved config and bounded ordered identity/date columns reproduce this exact cell identity. Panel bytes match its declared SHA256.",
-      "limitation": "These are local persisted execution records. Source-code hashes and dependency versions are the execution's declared bindings, not an independent attestation of the historical process.",
-      "resolved_document": {
-        "id": "resolved-tcn",
-        "path": "/home/russell/data/index_options/theta-strike-screen-20261018/documents/study/run-strike-screen-fits-wf-tcn.json",
-        "sha256": "86f922c896027dee7d5cafff468963eb9db587cd3ecdeb8d497d3d05281ab12a",
-        "experiment_identity": "42ce71c03ebc4fd1ce38484103db9963eebeabf42594dd51f5b81a8824767f4f",
-        "panel_sha256": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
-        "source_hashes": {
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/__init__.py": "1918df32a222c1ee506746799ce623b37de857bc8f4909ef8995adf7faac9ab0",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/__init__.py": "a1c8877e56255d632d1695eacbd0a91497ba89dce9643ab45e0d928e7e0d30c5",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/__init__.py": "92d167d8935bffc1f833183ef35271d0d9ea18009472b5a124183aa5647f6595",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/cdf_experiment.py": "9849e9cacb5f4d094af440babf26f645227b7d06caec34914167e4aadd7a9194",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/parquet.py": "db21faa0cef127cf110245b9db7756f001352b5c91202aa5b4c9867c38251a92",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/torch_ts.py": "e087b3a045f053ab6940009f3d9871eda60cbb06b51f83a049d940ad29a7123b",
-          "/home/russell/wt/strike-fast-scan-20261018/dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312"
-        },
-        "dependencies": {
-          "lightgbm": "4.7.0",
-          "numpy": "2.5.2",
-          "pandas": "2.3.3",
-          "pyarrow": "25.0.1",
-          "scikit-learn": "1.9.0",
-          "torch": "2.11.0+cu128",
-          "transformers": "5.16.1"
-        }
-      },
-      "band_identities": [
-        "c9496a621bd4830c0169edb3b5dfcf64f55d987752c9cd30d45e720974cbe744",
-        "03cb9f6463640b5c69f535b15e339376b3a3aeafdf5f50745a2b877bc74d50f6",
-        "d7a79dde14afc7b1f9f65f80d16140b8fb2a6da44be8b5311cf3f2eb669eac2f"
-      ]
     },
     {
       "id": "R-wide_mlp64-f1",
@@ -7274,10 +4458,12 @@
     {
       "id": "U2",
       "kind": "undecided",
-      "question": "Final predictive promotion and reconciliation of Path TCN with the recorded M51 dependency",
+      "question": "Model-zoo candidate set, selection unit/common evidence/tie contract κ, promotion evidence, selected complete recipe and exact selection/output JSON/run/hash pins",
       "windows": [
         "PROMOTE",
-        "HREFIT"
+        "ZOO",
+        "HREFIT",
+        "MNEXT"
       ]
     },
     {
@@ -7335,7 +4521,7 @@
     "procedure": "Update current decisions and the canonical JSON first; rederive both visual and chart from windows. Pin exact resolved configs and run artifacts; keep unknown execution evidence distinct from undecided policy. Verify hashes without opening protected data. Never convert a proposal into a decision implicitly."
   },
   "provenance_recovered": {
-    "resolved_fit_invocations": "Both saved resolved documents recovered; all ten fit identities independently reproduced from config identity, groups and ordered bounded fold-band identity columns.",
+    "resolved_fit_invocations": "Saved resolved MLP invocation recovered; its five fit identities independently reproduced from config identity, groups and ordered bounded fold-band identity columns. Retained as the recorded M51 dependency, not as the selected zoo winner.",
     "bounded_columns": [
       "symbol",
       "quote_date",
@@ -7343,5 +4529,11 @@
       "settlement_date"
     ],
     "no_outcomes_decoded": true
+  },
+  "owner_amendment": {
+    "date": "2026-10-27",
+    "decision": "Use the best output from the model zoo, replacing the fixed TCN choice.",
+    "source": "User instruction in this task; recorded in Path A0008.",
+    "selection_completed": false
   }
 }

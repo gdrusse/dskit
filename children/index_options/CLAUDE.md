@@ -215,7 +215,7 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # (gate + sizing studies) and <symbol>-30-45-long-call-spread.json /
                            # -long-put-spread.json (ADR-0197 debit structures)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
-docs/decisioning/           # actions.csv, owner path.csv, generated README.md; technical-design.json (TDD)
+docs/decisioning/           # actions.csv, owner path.csv, generated README.md; technical-design.json + .html (TDD)
 docs/RE-ENTRY.md            # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 docs/explanations/README.md # glossary and worked synthetic payoff
                             # robust-condor-selection.md (+ .svg): robust selection by hand

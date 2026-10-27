@@ -110,7 +110,7 @@
     "fallback_policy": "retain_and_report_fitted_and_fallback_counts_separately",
     "refit": "none_in_these_pipelines_use_saved_forecasts",
     "recipe_changes": "new_study_revision_inherits_all_prior_exposure",
-    "notes": "A0003/A0008 remain unchanged. 2019 is predictive warmup, never a forecast-promotion ranking; M51 in 2019 is a fallback. The requested 2019 selection is external MIO admission, with its criterion left unset. M51 was compared on 2020-2023, so later packets are MIO-only evidence, not untouched full-system tests."
+    "notes": "A0003 and A0008's yearly cadence remain unchanged; the owner correction on 2026-10-27 replaces fixed TCN with the best model-zoo output. The exact winning recipe and forecast run/hash must be pinned before MIO packet execution. 2019 is predictive warmup, never a forecast-promotion ranking; M51 in 2019 is a fallback. The requested 2019 selection is external MIO admission, with its criterion left unset. M51 was compared on 2020-2023, so later packets are MIO-only evidence, not untouched full-system tests."
   },
   "sources": {
     "forecasts": {

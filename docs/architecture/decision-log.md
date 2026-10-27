@@ -32950,3 +32950,57 @@ appended. Canvas opening was requested and returned queued, not confirmed visibl
 Next bounded process action: fresh correctness/authority and integration contexts
 on unchanged candidate content when reviewer allocation is available. Until then
 do not call the required review gate closed or the branch ready to land.
+
+
+2026-10-27 owner correction and publication packet:
+Owner: user explicitly requests testing, writing the TDD in index_options and
+pushing, and corrects the forecast source to the best model-zoo output.
+Base 027de2b5; origin/main 5747f179 still ancestor. Prior local JSON MIO design
+and TDD commits form one publication slice; no runtime adapters are added.
+This owner instruction authorizes the narrow A0008 recipe correction, mirrored
+through the journal renderer. Other Path rows and Current Work stay identical.
+The yearly cadence, scoring, gates and sealed dates remain binding.
+
+Acceptance: future MIO consumes a pinned selected complete zoo output; no fixed
+TCN choice or invented winning recipe. TCN fit records are removed from the
+current TDD; M51/MLP pins remain only as the existing 2020 execution dependency.
+Selection contract/candidate set and exact winner/output pins remain undecided.
+The current document adds ZOO selection, separates promotion eligibility from
+argmin selection and uses a generic final-refit signature. No new data is read.
+
+Owner-authorized artifact manifest addition: one self-contained
+children/index_options/docs/decisioning/technical-design.html, the repository
+presentation of the canonical JSON, with matching number-line/table records.
+The managed canvas remains the chat presentation of the same snapshot.
+Existing README/instruction pointers, exact manifest and personal update-tdd
+maintenance instructions are the remaining bounded files. Wrap also updates
+the existing lane/index/archive records. No runtime, solver or backtest changes.
+
+Review matrix carries all prior TDD invariants and adds:
+(8) owner model-zoo amendment consistently represented across Path/TDD/MIO
+design; fixed historical component settings never constrain arbitrary winner;
+(9) tracked HTML and canvas snapshot equality, all shared filter/selection
+states and exact run/config details; portable repository links and explicitly
+local WSL artifact paths; actual browser visual smoke check;
+(10) publication ancestry, unchanged runtime/protected boundaries, focused
+manifest/docs checks and fresh independent final correctness/integration.
+Previous unresolved process gate requires fresh contexts on this candidate.
+
+Publication candidate checks: 5 focused manifest/docs tests passed; canonical
+structure/hash/purge checks passed; canvas TypeScript zero diagnostics and all
+15 filter states/644 local file actions passed; skill metadata valid.
+Actual browser on WSL-served self-contained HTML: all 15 group/fold states
+preserve chart/timeline IDs; all 49 row selections expose exact details; fold
+control hidden outside fold views; no console errors. Overview and fold 2
+screenshots visually inspected. HTML/canvas embedded JSON equals canonical.
+Narrow A0008-only Path edit and all Current Work values checked against027de2b5.
+No market run, new fit, protected data decoding or full suite.
+Review input SHA256 values:
+- /home/russell/wt/index-options-mio-schedule-20261027/children/index_options/docs/decisioning/technical-design.json
+  4fa312e23c1daf1905dcfe2102f169e6f3202b2ef116c96711111176b387f97a
+- /home/russell/wt/index-options-mio-schedule-20261027/children/index_options/docs/decisioning/technical-design.html
+  ade3ac99c0d8c21ae0f3f550e67f483859ec421db5b70fa517d46b55be609c9f
+- /home/russell/.cursor/projects/home-russell-dskit/canvases/index-options-TDD.canvas.tsx
+  e1d74c0c80f80676b5a6a78d747f4281b9f7e89c729d577cf78676b70bbe29af
+- /mnt/c/Users/russe/.codex/skills/update-tdd/SKILL.md
+  e77d0d9df7496bcf614b21555a68b4bc5f705841d3457b6fe45aef5766ebb0ff
