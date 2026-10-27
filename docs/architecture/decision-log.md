@@ -32797,12 +32797,9 @@ the import transition cannot be bypassed. No market data was read or replayed to
 
 Phase 0 found two design gaps: the chronological shared schedule could not admit
 an earlier development interval, and exact pair equality did not prove complete
-inventory accounting. The implementation adds the atomic development import,
+inventory accounting. Review also reproduced a plan-identity defect on the unchanged base: mutable read bounds could pass claim/verify, and resealed invalid bodies could pass extension. Shared public lifecycle validation now rebuilds plans and binds registry identity before effects. The implementation adds the atomic development import,
 frontier-aware schedule traversal and pinned outcome-blind inventory receipt.
-Focused verification: WSL2 `python -m pytest tests/pipeline/test_study_protocol.py
-children/index_options/tests/test_mio_packets.py -q` — 27 passed;
-`children/index_options/tests/test_configs.py::test_exact_manifest_and_agent_parity`
-— 1 passed. Metadata-only StudyContract preflight is runnable with no missing inputs; 116 pairs and 262 code pins. No study replay or registry mutation was run.
+Focused verification: WSL2 protocol + MIO packet tests + exact config manifest, 29 passed; documentation budgets, 4 passed. Metadata-only StudyContract preflight is runnable with no missing inputs; 116 pairs and 262 code pins. No study replay or registry mutation was run.
 
 #### ADR-0278 amendment: staged MIO JSON design (2026-10-27)
 

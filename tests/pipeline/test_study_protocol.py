@@ -376,3 +376,58 @@ def test_schedule_extension_cannot_rewrite_history(study):
     historical["selected_packet"] = "dev_old"
     with pytest.raises(ValueError, match="prior-exposure import"):
         registry.extend(StudyContract.build(historical), "bypass historical import")
+
+
+def _substitute_read_bounds(plan, *, reseal=False):
+    from dskit.pipeline.study_protocol import _seal
+
+    changed = copy.deepcopy(plan)
+    changed["read_bounds"]["values"]["end_before"] = "2020-12-31"
+    if reseal:
+        changed.pop("sha256")
+        changed = _seal(changed)
+    return changed
+
+
+def test_registry_rebuilds_plan_identity_before_claim_and_verify(study):
+    registry = _initialize(study)
+    plan = StudyContract.build(study)
+    frozen = registry.freeze(plan)
+    revision = registry.snapshot()["revision"]
+    altered = _substitute_read_bounds(plan)
+    with pytest.raises(ValueError, match="plan|bound|changed|digest"):
+        registry.claim(altered, frozen)
+    assert registry.snapshot()["revision"] == revision
+
+    permit = registry.claim(plan, frozen)
+    for altered in (_substitute_read_bounds(plan), _substitute_read_bounds(plan, reseal=True)):
+        revision_after_claim = permit["registry_revision_after"]
+        with pytest.raises(ValueError, match="plan|bound|changed|digest"):
+            registry.verify(altered, permit)
+        with pytest.raises(ValueError, match="plan|bound|changed|digest"):
+            registry.bind(altered, permit, "inputs", {"x": 1})
+        with pytest.raises(ValueError, match="plan|bound|changed|digest"):
+            registry.finish(altered, permit, {"complete": False})
+        with pytest.raises(ValueError, match="plan|bound|changed|digest"):
+            registry.retry(altered, permit, revision_after_claim)
+        assert registry.snapshot()["revision"] == revision_after_claim
+
+
+def test_registry_plan_identity_guard_covers_schedule_mutators(study):
+    registry = _initialize(study)
+    extension = {**study, "packets": study["packets"] + [{
+        "id": "r3", "start": "2023-01-01", "end_before": "2023-02-01",
+        "purpose": "adaptation", "predecessor": "r2"}], "selected_packet": "r3"}
+    extended = StudyContract.build(extension)
+    altered_extension = _substitute_read_bounds(extended, reseal=True)
+    revision = registry.snapshot()["revision"]
+    with pytest.raises(ValueError, match="plan|bound|changed|digest"):
+        registry.extend(altered_extension, "must authenticate extension")
+    assert registry.snapshot()["revision"] == revision
+
+    wrong_registry = copy.deepcopy(study)
+    wrong_registry["registry"]["id"] = "9936212a-8c1f-4d51-bc5c-95966b9d68a2"
+    foreign_plan = StudyContract.build(wrong_registry)
+    with pytest.raises(ValueError, match="registry|identity"):
+        registry.freeze(foreign_plan)
+    assert registry.snapshot()["revision"] == revision

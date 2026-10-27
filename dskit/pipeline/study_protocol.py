@@ -279,10 +279,17 @@ class ExposureRegistry:
         with self._transaction() as (_, state):
             return copy.deepcopy(state)
 
-    @staticmethod
-    def _release(state, plan):
+    def _validate_plan(self, plan):
+        """Rebuild a plan from its study and bind it to this registry."""
+        if (not isinstance(plan, dict) or not isinstance(plan.get("study"), dict)
+                or plan["study"].get("registry") != self.config):
+            raise ValueError("plan registry identity mismatch")
+        return StudyContract.verify_plan(plan["study"], plan)
+
+    def _release(self, state, plan):
         """Apply one release rule for preview, freeze and atomic open."""
-        if not plan["runnable"] or plan["study"]["packets"] != state["packets"]:
+        plan = self._validate_plan(plan)
+        if plan["study"]["packets"] != state["packets"]:
             raise ValueError("unbound plan or changed schedule")
         packet = plan["packet"]
         read_end = max(b["end_before"] for b in plan["read_bounds"].values())
@@ -328,12 +335,7 @@ class ExposureRegistry:
             raise ValueError("development import reason required")
         if not isinstance(prior_exposure, list) or not prior_exposure:
             raise ValueError("explicit prior exposure evidence required")
-        if (not isinstance(plan.get("study"), dict)
-                or plan["study"].get("registry") != self.config):
-            raise ValueError("development plan registry identity mismatch")
-        verified = StudyContract.verify_plan(plan.get("study", {}), plan)
-        if verified != plan:
-            raise ValueError("complete bound development plan required")
+        plan = self._validate_plan(plan)
         with self._transaction() as (connection, state):
             if expected_revision != state["revision"]:
                 raise ValueError("stale registry revision")
@@ -386,6 +388,7 @@ class ExposureRegistry:
 
     def freeze(self, plan):
         """Freeze exactly one complete cohort after predecessor disposition."""
+        plan = self._validate_plan(plan)
         with self._transaction() as (connection, state):
             classification = self._release(state, plan)
             predecessor = state["dispositions"].get(plan["packet"]["predecessor"])
@@ -398,6 +401,7 @@ class ExposureRegistry:
 
     def claim(self, plan, request):
         """Compare-and-swap one frozen claim before a first payload read."""
+        plan = self._validate_plan(plan)
         with self._transaction() as (connection, state):
             if set(request) != {"freeze", "expected_revision"} or request["expected_revision"] != state["revision"]:
                 raise ValueError("stale registry revision")
@@ -427,6 +431,7 @@ class ExposureRegistry:
 
     def verify(self, plan, permit, *, active=True):
         """Verify exact permit, frozen plan and registry identity at any entrypoint."""
+        plan = self._validate_plan(plan)
         _unseal(permit)
         state = self.snapshot()
         claim = state["claims"].get(permit["id"])
@@ -465,6 +470,7 @@ class ExposureRegistry:
 
     def publish(self, plan, permit, receipt):
         """Bind only a persisted, attested close artifact to its exact active claim."""
+        plan = self._validate_plan(plan)
         artifact, manifest = self._attested_result(receipt)
         if artifact["permit"] != permit or artifact["plan"] != plan:
             raise ValueError("attested result does not match plan and permit")
@@ -493,6 +499,7 @@ class ExposureRegistry:
 
     def retry(self, plan, permit, expected_revision):
         """Retry an interrupted or failed active claim with the identical frozen plan."""
+        plan = self._validate_plan(plan)
         _unseal(permit)
         with self._transaction() as (connection, state):
             old = state["claims"].get(permit["id"])
@@ -515,7 +522,8 @@ class ExposureRegistry:
 
     def extend(self, plan, reason):
         """Append future schedule entries without changing any existing packet."""
-        if not reason or not plan["runnable"]:
+        plan = self._validate_plan(plan)
+        if not reason:
             raise ValueError("complete plan and extension reason required")
         with self._transaction() as (connection, state):
             packets = plan["study"]["packets"]
