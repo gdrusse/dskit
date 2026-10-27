@@ -5,20 +5,26 @@ the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
 
-ADR-0279 approved 2026-10-27. Stage 1 landed in dskit: `schwab_positions`
-connector (`dskit/onboarding/libs/schwab.py`, shared OAuth/transport base
-with the bars pack), 5 stub tests green. No real Schwab pull yet.
+ADR-0279 approved 2026-10-27; amendment (autonomous) records Stage 2.
+In dskit: `schwab_positions` connector (5 stub tests) and
+`dskit/pipeline/liquidation.py` — `LiquidationTax` + `HoldVsRedeploy`
+(9 hand-worked tests). Child: `configs/run-hold-vs-redeploy.json`
+positions → tax → decide → `decisions/<run>.jsonl`, e2e test green on a
+localfiles stand-in. No real Schwab pull yet; document rates are
+placeholders.
 
 ## Next
 
-Owner runs the first real pull (`authorize --connector schwab_positions`,
-then `acquire --mode backfill`); then Stage 1b: tax-lot asset model. Schwab's
-Trader API exposes aggregate positions, not lots — lots likely need a
-Schwab CSV export through `localfiles`.
+Owner sets the document's rates/returns and runs the README's command
+sequence for the first real snapshot + decision. Then: per-symbol
+`hold_return` from price history (Stage 2 model) and `redeploy_return`
+from a child's scored backtest (Stage 3 hurdle).
 
 ## Blocked / owner decisions
 
-- Lot-level data source: Schwab CSV export vs aggregate-only (decides Stage 1b).
+- Lot-level data: a Schwab lot CSV through `localfiles` (then declare
+  `acquired_field`) vs aggregate-only; both work, lots are more accurate.
+- Deferred tax on the hold path is ignored in this cut (favours holding).
 - Cap-gains rates and holding-period rules the tax drag uses (config, not code).
 
 ## Read first

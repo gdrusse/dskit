@@ -7,6 +7,26 @@ strategy? Status: **scaffold only (ADR-0279)** — no Schwab pull, no model,
 no decision rule yet. Everything below the next heading is the skeleton's
 generic walkthrough, kept until the first run replaces it.
 
+## Hold vs redeploy (ADR-0279)
+
+From the child root, after `pip install -e .` and a Schwab OAuth session:
+
+```bash
+python -m dskit.onboarding init --root ./ob
+python -m dskit.onboarding register-source schwab --root ./ob \
+    --catalog-source schwab-src --connector schwab_positions --config '{}' --activate
+python -m dskit.onboarding authorize --connector schwab_positions --config '{}'
+python -m dskit.onboarding acquire --root ./ob --source schwab \
+    --stream positions --mode backfill            # one snapshot per UTC day
+mkdir -p decisions
+python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <YYYY-MM-DD>
+```
+
+`configs/run-hold-vs-redeploy.json` holds every rate, return, horizon and
+premium; set them before the first run. Rows land in `decisions/<run>.jsonl`,
+one per account x symbol, advisory only. Aggregate positions carry no lots, so
+every holding takes `default_holding` until a lot-level export is onboarded.
+
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
 (pipeline), its own asset model (assets). The domain lives in `configs/`.

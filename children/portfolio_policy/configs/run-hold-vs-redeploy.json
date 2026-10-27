@@ -1,0 +1,60 @@
+{
+  "name": "portfolio_policy-hold-vs-redeploy",
+  "notes": "ADR-0279 Stages 1-4 on aggregate positions: the latest schwab_positions snapshot -> liquidation tax per holding -> hold vs redeploy decision -> rows written. Every rate, horizon, premium and field name is a value of THIS document; the kinds carry none. The as_of, rates and returns below are placeholders the owner sets before the first real run; they are the experiment's identity, so changing them changes the hash on purpose.",
+  "pipeline": {
+    "positions": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./ob",
+        "source": "schwab",
+        "stream": "positions",
+        "key_fields": ["account", "symbol", "as_of"]
+      },
+      "notes": "Role 'data': the deduplicated positions snapshot acquired through dskit.onboarding (connector schwab_positions). One row per account x symbol x day; latest acquisition wins."
+    },
+    "tax": {
+      "uses": "dskit.pipeline.liquidation:LiquidationTax",
+      "inputs": { "records": "$positions.records" },
+      "params": {
+        "as_of": "2026-10-27",
+        "short_term_rate": 0.408,
+        "long_term_rate": 0.238,
+        "long_term_days": 366,
+        "default_holding": "long",
+        "loss_offset": false,
+        "value_field": "market_value",
+        "basis_field": "cost_basis"
+      },
+      "notes": "Aggregate rows carry no acquisition date, so every holding takes default_holding until a lot-level source adds an 'acquired' field (then declare acquired_field). Rates are the owner's marginal federal + NIIT placeholders; state tax is not included."
+    },
+    "decide": {
+      "uses": "dskit.pipeline.liquidation:HoldVsRedeploy",
+      "inputs": { "records": "$tax.records" },
+      "params": {
+        "horizon_years": 5,
+        "hold_return": 0.07,
+        "redeploy_return": 0.12,
+        "redeploy_cost": 0.02,
+        "risk_premium": 0.03,
+        "value_field": "market_value",
+        "net_field": "liq_net",
+        "symbol_field": "symbol"
+      },
+      "notes": "hold_return may become {symbol: rate} once Stage 2's per-holding expected returns exist; redeploy_return is Stage 3's active hurdle, to be sourced from a child's scored backtest, never a hope."
+    },
+    "decisions": {
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
+      "inputs": { "records": "$decide.records" },
+      "params": {
+        "path": "decisions/{run}.jsonl",
+        "source": "hold-vs-redeploy decisions per account x symbol",
+        "overwrite": false
+      },
+      "notes": "Role 'report': the advisory rows, one per holding, with liq_* and the decision, in ./decisions under the invoking cwd, one file per run so no run shadows another (ADR-0247). Never an order."
+    }
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd. Placement is not identity."
+  }
+}

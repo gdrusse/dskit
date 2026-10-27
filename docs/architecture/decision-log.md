@@ -32479,3 +32479,29 @@ children already answer.
 
 Sweep: tools/sweep/sweep portfolio_policy hold_vs_active exit_policy; no near
 matches. Scaffold copied from `children/_skeleton` in the same commit.
+
+#### ADR-0279 amendment: Stage 2 liquidation math and hold-vs-redeploy kinds (owner 2026-10-27, "work autonomously")
+
+Owner delegated the Stage 1b/2 choices. Decisions taken:
+
+- **Lot source.** Both: the kinds read an optional `acquired` field per row;
+  a row without one takes a declared `default_holding` (`long` | `short`).
+  Aggregate `schwab_positions` rows work today; a lot-level CSV through
+  `localfiles` refines them later with no code change.
+- **Placement.** Tier-1 `dskit/pipeline/liquidation.py` (stdlib), wired by
+  import path like `kinds_compute`, no registry entry:
+  `LiquidationTax` (proceeds, gain, holding class, tax, net per row from a
+  declared rate schedule; losses offset only when `loss_offset` is true) and
+  `HoldVsRedeploy` (terminal value of holding the gross position vs
+  redeploying the after-tax net at `redeploy_return - redeploy_cost -
+  risk_premium` over `horizon_years`; `decision` is `exit` only when the
+  redeploy path wins). First cut ignores the deferred tax on the hold path,
+  which favours holding; a terminal-tax term is a later amendment.
+- **Child.** `children/portfolio_policy/configs/run-hold-vs-redeploy.json`
+  wires `observations` (schwab positions) → both kinds. Rates, returns,
+  horizon and premium are document values, never code.
+
+Files: `dskit/pipeline/liquidation.py`, `tests/pipeline/test_liquidation.py`,
+the child config and `tests/test_hold_vs_redeploy.py`, README notes.
+Sweep: tax_lot tax_drag capital_gains lot_ledger holding_period
+hold_vs_exit; no near matches.

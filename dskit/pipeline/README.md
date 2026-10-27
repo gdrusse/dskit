@@ -825,6 +825,14 @@ they register only into private registries, never the default one.
   all labelled, and the difference). `ChainEventCalibrator` reports precision/recall of a rule grid against labelled dates,
   dropping rows and labels from `fit_end_before` on; it never selects. Every rule value is a required param: the frozen
   values live in the child's run document.
+- `liquidation.py` (`LiquidationTax`, `HoldVsRedeploy`) (ADR-0279, by import path):
+  per-row liquidation of a position from a declared rate schedule (`long` /
+  `short` by an optional acquisition date, else `default_holding`; a loss is a
+  negative tax only when `loss_offset` is true), then the terminal value of
+  holding the gross position at `hold_return` against redeploying the after-tax
+  net at `redeploy_return - redeploy_cost - risk_premium` over `horizon_years`;
+  `decision` is `exit` only when redeploying is strictly ahead. The first cut
+  ignores the tax still owed at the end of the hold path.
 - `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
   `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
   out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one
@@ -1062,6 +1070,8 @@ dskit/pipeline/
 │                      column names (by import path, ADR-0256)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market Brier / log-loss, take-rule profit, a
 │                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
+├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
+│                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon; decision `exit` only when redeploy wins
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its

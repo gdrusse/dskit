@@ -125,6 +125,8 @@ dskit/pipeline/
 ├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0257)
 ├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0256)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
+├── liquidation.py     LiquidationTax + HoldVsRedeploy (by import path, ADR-0279): per-row liquidation tax from a declared rate schedule and
+│                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon; decision `exit` only when redeploy wins
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
