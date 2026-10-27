@@ -658,10 +658,11 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # (gate + sizing studies) and <symbol>-30-45-long-call-spread.json /
                            # -long-put-spread.json (ADR-0197 debit structures)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
-docs/decisioning/           # actions.csv, owner path.csv, generated README.md
+docs/decisioning/           # actions.csv, owner path.csv, generated README.md; technical-design.json + .html (TDD)
 docs/explanations/README.md # glossary and worked synthetic payoff
                             # robust-condor-selection.md (+ .svg): robust selection by hand
 docs/plans/README.md        # gated research stages
+docs/plans/mio-json/       # study.json + plan/run/compare.template.json (proposed; not executable)
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
@@ -731,3 +732,7 @@ CDF quote bridges accept optional same-day basis_factor on bars, requiring posit
 The weekly study uses one profit solve per eligible decision. The current owner-authorized 2019 policy accepts an absolute gap of at most $50, disables relative-gap stopping, and requests a 900-second HiGHS limit with one worker/thread. Unresolved native timeouts record timeout_skipped, place no new orders, and continue deposits, settlements and later weeks. Generic solver errors still stop the run. Earlier count-minimizing results stay archived under their original identities.
 
 Prescription bridge and funded option-portfolio amendments are canonical ADR-0278 after the wrap merge; their historical ADR-0276 references are preserved in earlier evidence. ADR-0276 now identifies the predictive strike-screen study.
+
+Proposed staged MIO JSON interface: [plan and templates](docs/plans/README.md#8-mio-json-pipeline-design-2026-10-27). Externally selected ticker/DTE pairs, chronological packets and fixed variants; design only, runtime adapters pending.
+
+Current data-use TDD: [open the chart and timeline](docs/decisioning/technical-design.html), backed by the [window registry, mathematics and exact run pins](docs/decisioning/technical-design.json). Open the self-contained HTML locally; GitHub displays its source. Future MIO uses the best model-zoo output; exact winner/pins and other undecided choices remain explicit.

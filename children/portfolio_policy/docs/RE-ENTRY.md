@@ -1,53 +1,50 @@
 # RE-ENTRY — portfolio_policy
 
-Updated: 2026-10-27 by Claude Sonnet 5.5. Rewritten whole at every `/wrap`;
+Updated: 2026-10-27 by Claude Sonnet 5.5 (merge). Rewritten whole at every `/wrap`;
 the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
 
-ADR-0279 approved 2026-10-27 with four amendments (owner: "work
-autonomously", "permission to build", "build all the machinery").
-Base machinery complete in dskit, all tier-1 by import path, all `pure`:
-`onboarding/libs/schwab.py` (`schwab_positions`), `pipeline/liquidation.py`
-(`LiquidationTax`, `HoldVsRedeploy`), `pipeline/hold_return.py`
-(`MarketHoldReturn`, `BetaHoldReturns`), `pipeline/active_hurdle.py`
-(`ActiveHurdle`), `pipeline/decision_outcomes.py` (`DecisionOutcomes`).
-Child is JSON only: `run-hold-vs-redeploy.json` (positions → equity longs →
-tax; market → betas; active_returns → hurdle; → decide →
-`decisions/<run>.jsonl`) and `run-decision-outcomes.json` (that file via
-localtables + a later snapshot → `outcomes/<run>.jsonl`). Two skeptic lenses
-passed, then a Sonnet round 1 (5 Major) fixed: short/zero rows refuse and the
-snapshot drops shorts; wired and computed rates held to one `RATE_BOUNDS`;
-`hurdle.min_periods` (52) required; `market.horizon_years` pinned to the
-decision's and capped by `reversion_years`; `outcomes.income_rate` (0.013 =
-the dividend yield) removes income from the projected growth. Record:
-`docs/memos/2026-10-27-adr-0279-base-machinery.md` and the decision log. No
-real Schwab pull yet; every rate in the documents is a placeholder.
+ADR-0279 base machinery is on `main`: tier-1 kinds by import path, all
+`pure` — `liquidation.py` (`LiquidationTax`, `HoldVsRedeploy`),
+`hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`),
+`active_hurdle.py` (`ActiveHurdle`), `decision_outcomes.py`
+(`DecisionOutcomes`); tier-2 `schwab_positions`; the child is JSON:
+`run-hold-vs-redeploy.json` (positions → equity longs → tax; market →
+betas; active_returns → hurdle; → decide → `decisions/<run>.jsonl`) and
+`run-decision-outcomes.json` (→ `outcomes/<run>.jsonl`). Review history:
+two skeptic lenses, then a Sonnet review/fix loop of four rounds (5 → 2 →
+1 → 0 Major; 0 Critical throughout), round 4 CLEAN on `75fe315`: 403
+dskit tests + 63 child tests green; mutation sweeps left no surviving
+refusal or hardcode in the ADR-0279 modules. Record and backlog:
+`docs/memos/2026-10-27-adr-0279-base-machinery.md`. No real Schwab pull
+yet; every rate in the documents is a placeholder, and
+`decide.risk_premium` 0.0 is one to set from the backtest's volatility.
 
-2026-10-27 (Opus 5.5, branch `portfolio-summary`, not merged): research A0002
-and an ADR-0279 amendment chose the few numbers; `pipeline/position_summary.py`
-(`PositionSummary`) gives per holding weight, expected return, beta,
-volatility (port only), embedded gain, tax cost, break-even return and
-opportunity cost, plus portfolio metrics; the document writes
-`summary/<run>.jsonl`. Tested, not yet lens-reviewed.
+In flight: branch `portfolio-summary` (Opus, research A0002 +
+`dskit/pipeline/position_summary.py`, `PositionSummary`: weight, expected
+return, beta, volatility (port only), embedded gain, tax cost, break-even
+return and opportunity cost per holding, one portfolio roll-up in `metrics`;
+the document's `summary` node writes `summary/<run>.jsonl`). `main`'s four
+Sonnet rounds are merged into it and its tests pass; it has not had its own
+Sonnet loop, so it stays off `main` until that closes.
 
 ## Next
 
-Two skeptic lenses on `portfolio-summary`, then merge. Owner: set the
-decision document's blocks (dividend yield, CAPE, fair CAPE;
-`outcomes.income_rate` must follow the yield), betas, tax rates, `trials`,
-`min_dsr`, `min_periods` and the snapshot day; choose which child's backtest
-feeds `active`/`returns`; run the README sequence, then record it with `memo`.
+Merge `portfolio-summary` after its Sonnet loop is clean. Then the owner
+sets the decision document's placeholders (blocks, betas, tax rates — pinned
+pairs are tested — `trials`, `min_dsr`, `min_periods`, `risk_premium`, the
+snapshot day), chooses the backtest that feeds `active`/`returns`, and runs
+the README sequence for the first real snapshot + decision; record it with
+the `memo` skill.
 
 ## Blocked / owner decisions
 
-- Volatility source for the summary: a yahoo chart archive per symbol or
-  Alpaca daily bars; then wire realized_vol -> filter -> ComputeFields -> keyby.
-- `portfolio-policy-sonnet-loop` (rounds 2-3, unmerged) also edits
-  `liquidation.py`; its `require_number` signature matches this branch's.
-
+- Volatility source for the summary: yahoo chart file per symbol vs Alpaca
+  daily bars; 252-day window on adjusted closes proposed (then wire
+  realized_vol -> filter -> ComputeFields -> keyby into `summary`).
 - Lot-level data: a Schwab lot CSV through `localfiles` (then declare
-  `acquired_field`) vs aggregate-only; both work, lots are more accurate.
+  `acquired_field`) vs aggregate-only.
 - Which child's backtest feeds `active` / `returns`, and its honest `trials`.
 - Cadence: a weekly scheduled `pipeline run` vs a `dskit.production` serve
   document (deferred: advisory, no order path).

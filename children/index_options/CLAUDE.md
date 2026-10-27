@@ -215,11 +215,12 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # (gate + sizing studies) and <symbol>-30-45-long-call-spread.json /
                            # -long-put-spread.json (ADR-0197 debit structures)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
-docs/decisioning/           # actions.csv, owner path.csv, generated README.md
+docs/decisioning/           # actions.csv, owner path.csv, generated README.md; technical-design.json + .html (TDD)
 docs/RE-ENTRY.md            # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 docs/explanations/README.md # glossary and worked synthetic payoff
                             # robust-condor-selection.md (+ .svg): robust selection by hand
 docs/plans/README.md        # gated research stages
+docs/plans/mio-json/       # study.json + plan/run/compare.template.json (proposed; not executable)
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,

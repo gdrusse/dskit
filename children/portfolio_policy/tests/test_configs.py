@@ -98,3 +98,25 @@ def test_outcomes_income_is_the_market_dividend_yield():
     outcomes = load_document(_path("run-decision-outcomes.json"))
     assert (outcomes.pipeline["outcomes"].params["income_rate"]
             == decide.pipeline["market"].params["dividend_yield"])
+
+
+def test_tax_rates_are_declared_once_per_path_and_agree():
+    """The hold path's terminal rate and the redeploy path's annual rate restate the tax
+    schedule's long and short rates; a mismatch would tax the two paths on different schedules."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    tax = document.pipeline["tax"].params
+    decide = document.pipeline["decide"].params
+    assert tax["long_term_rate"] == decide["terminal_tax_rate"]
+    assert tax["short_term_rate"] == decide["redeploy_tax_rate"]
+
+
+def test_the_scoring_snapshot_keeps_the_decision_snapshots_universe():
+    """A decided position is scored only if the later snapshot filter can still see it, so
+    its asset and side clauses restate the decision document's; the date is its own."""
+    decide = load_document(_path("run-hold-vs-redeploy.json"))
+    outcomes = load_document(_path("run-decision-outcomes.json"))
+    clauses = decide.pipeline["snapshot"].params["where"]
+    later = outcomes.pipeline["later"].params["where"]
+    assert [c["field"] for c in later] == ["as_of", "asset_type", "long_quantity"]
+    assert later[1:] == [c for c in clauses if c["field"] != "as_of"]
+    assert later[2] == {"field": "long_quantity", "op": ">", "value": 0}

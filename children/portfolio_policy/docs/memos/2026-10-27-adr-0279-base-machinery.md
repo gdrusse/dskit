@@ -24,16 +24,18 @@ Tier 1, `dskit/pipeline`, stdlib + core, all by import path, all
 
 | Module | Kinds | Tests |
 |---|---|---|
-| `liquidation.py` | `LiquidationTax`, `HoldVsRedeploy` | `tests/pipeline/test_liquidation.py` (14) |
-| `hold_return.py` | `MarketHoldReturn`, `BetaHoldReturns` | `test_hold_return.py` (7) |
-| `active_hurdle.py` | `ActiveHurdle` | `test_active_hurdle.py` (7) |
-| `decision_outcomes.py` | `DecisionOutcomes` | `test_decision_outcomes.py` (5) |
-| `node.py` | `check_number_param` | `test_node.py` (11 parametrized) |
+| `liquidation.py` | `LiquidationTax`, `HoldVsRedeploy`, `require_number`, `MAX_COUNT` / `check_count_param` | `tests/pipeline/test_liquidation.py` (37 tests, 108 cases) |
+| `hold_return.py` | `MarketHoldReturn`, `BetaHoldReturns` | `test_hold_return.py` (21 tests, 92 cases) |
+| `active_hurdle.py` | `ActiveHurdle` | `test_active_hurdle.py` (20 tests, 51 cases) |
+| `decision_outcomes.py` | `DecisionOutcomes` | `test_decision_outcomes.py` (17 tests, 48 cases) |
+| `node.py` | `check_number_param` | `test_node.py` (12 parametrized) |
 
 Tier 2, `dskit/onboarding/libs/schwab.py`: `SchwabPositionsConnector`
 (`schwab_positions`) on a shared `_SchwabConnector` base with the bars
-pack; `tests/onboarding/test_schwab_positions.py` (7), bars tests unchanged
-and green (8).
+pack; `tests/onboarding/test_schwab_positions.py` (22 tests, 28 cases, five of
+them over the real transport with `urllib.request.urlopen` scripted),
+`test_schwab.py` (11 tests, 15 cases: the original 8 plus the transport cases
+keeping the "Schwab price history" nouns and the URL-encoding case).
 
 Tier 3, `children/portfolio_policy` (JSON only): `configs/run-hold-vs-redeploy.json`
 (positions → snapshot filter → tax; market → betas; active_returns →
@@ -63,14 +65,21 @@ For each holding on one snapshot day:
 3. **What the active alternative may claim.** From the backtest's per-period
    net returns: `r_active = (mean - E[max null Sharpe over trials] x sd) x
    periods per year`, withheld (`None`) when the deflated Sharpe probability
-   is below `min_dsr`. Then `redeploy_net = net x (1 + (r_active - cost -
-   premium) x (1 - short rate))^H` under `annual` tax timing.
+   is below `min_dsr` (and refused outright for a constant series, which has no
+   Sharpe). Then, under `annual` tax timing and with `t` the short-term rate:
+   `net_rate = r_active - cost`; `taxed = net_rate - max(net_rate, 0) x t` (a
+   negative rate gets no refund); `used = taxed - premium` (the premium is
+   never tax-shielded); `redeploy_net = net x (1 + used)^H`. Under `terminal`
+   timing the rate is `net_rate - premium` and the gain over the after-tax
+   start is taxed once at the horizon.
 4. **Decision.** `exit` only when `redeploy_net > hold_net`; otherwise, and
    whenever the hurdle was withheld, `hold`.
 
 Later, `DecisionOutcomes` scores step 2 against a later snapshot: projected
-growth pro rata `(hold_value / value)^(elapsed / H)` vs realized per-share
-growth; the active side is scored where it runs.
+price growth `((hold_value / value)^(1/H) - income_rate)^elapsed` (the forecast
+is a total return and the snapshot's value is price only, so the income is
+removed first; `income_rate` is the market dividend yield) vs realized
+per-share growth; the active side is scored where it runs.
 
 ## Review evidence
 
@@ -89,6 +98,32 @@ growth; the active side is scored where it runs.
   decision asserted by hand (hold_net 2680.58 vs redeploy_net 3052.07),
   the decision day pinned inside the document, README status and the
   outcomes sequence.
+- **Sonnet loop** (a Sonnet reviewer, fix rounds by Claude Sonnet 5.5, branch
+  `portfolio-policy-sonnet-loop`). Round 1: 5 Major fixed in `2f5cad9` (short and
+  zero rows, wired-rate bounds, `min_periods`, `horizon_years` vs
+  `reversion_years`, `income_rate`). Round 2: 2 Major fixed in the round-2 commit:
+  (1) one undecided short or zero-quantity row in the later snapshot refused the
+  whole scoring run, fixed by `later.where` filtering equity longs AND by
+  `DecisionOutcomes` reading value and quantity only for decision-matched keys
+  (structural one-date and duplicate-key refusals still cover every row); (2)
+  single-value fixtures, now with a second value each for `horizon_years` 3,
+  `periods_per_year` 12, `risk_free` 0.02, `long_term_days` 366 and
+  `default_holding` "short" (each shown to fail when its parameter is hardcoded).
+  With the Minors: `RATE_BOUNDS` (-1, 2), bars/positions error nouns restored,
+  one `require_number`, child e2e expectations read from the documents, Limits
+  disclosed, the `risk_premium` note. Round 3: 1 Major fixed in this commit, the
+  hardcoding family swept to the end (`MarketHoldReturn` yield / growth /
+  inflation, both `LiquidationTax` rates, `HoldVsRedeploy`'s terminal and annual
+  rates, and every field-name param, each shown to fail when hardcoded in a
+  scratch copy), plus Minors: a constant series (`[0.0123] * 52` read as an
+  admissible 64% hurdle) refuses against `stats.NO_VARIANCE_RTOL`; an acquisition
+  date after `as_of` refuses; `DecisionOutcomes` reads `horizon_years` through
+  `require_number`; `MAX_COUNT` (10**6) refuses a huge `reversion_years`, `trials`
+  or `periods_per_year` before an OverflowError; one parametrized bad-declaration
+  test per node pins every `validate_params` refusal line (every refusal statement
+  in the four modules and the positions pack is now killed by a test, checked by
+  neutering each in turn). Details: the "Sonnet round 3 corrections" amendment in
+  the decision log.
 - Lens 2 also executed the README sequence literally from a scratch child
   (exit 0, rows written, execute row journaled) and `pipeline validate` on
   both documents (OK).
@@ -98,9 +133,12 @@ growth; the active side is scored where it runs.
 - `python -m pytest tests/pipeline/test_liquidation.py tests/pipeline/test_hold_return.py
   tests/pipeline/test_active_hurdle.py tests/pipeline/test_decision_outcomes.py
   tests/onboarding/test_schwab_positions.py tests/onboarding/test_schwab.py
-  tests/docs -q` → green (see commit message for the count).
-- `cd children/portfolio_policy && python -m pytest tests -q` → 58 passed, 9 skipped
-  (skips: skeleton conformance for kinds the child does not declare).
+  tests/pipeline/test_node.py tests/docs -q` → 403 passed after round 3 (147 after round 2,
+  126 before it; most of the growth is parametrized bad-declaration cases).
+- `python -m pytest tests/onboarding -q -k schwab` → 44 passed, 4 skipped.
+- `cd children/portfolio_policy && python -m pytest tests -q` → 63 passed, 9 skipped
+  (skips: skeleton conformance for kinds the child does not declare); both documents
+  `validate` clean.
 - Full `tests/pipeline tests/onboarding tests/docs tests/children` run on
   `b7e85fb`: only pre-existing or environmental failures — `alpaca` optional
   dependency absent, a root-user chmod test, a Python 3.13 dataclass case in
@@ -109,14 +147,39 @@ growth; the active side is scored where it runs.
 
 ## Disclosed backlog (Minor / Nit, not fixed)
 
+Round 4 of the Sonnet loop (reviewer on `75fe315`) returned CLEAN — 0
+Critical, 0 Major — closing the loop; its Minors, left open and disclosed:
+
+- A snapshot date matching no rows runs to "RAN" and writes an empty
+  `decisions/<run>.jsonl`; the scoring document refuses an empty snapshot,
+  so the two disagree. Fix: refuse empty `records` in `LiquidationTax` and
+  `HoldVsRedeploy`.
+- Summary aggregates (`redeploy_net` total, `stage`, `rows`, `min_dsr`,
+  `admissible`, `observed_as_of`) are unasserted; `advantage > 0` survives a
+  mutation to `> 1.0` (no test with a small positive advantage).
+- Live-mode same-day re-pulls: a symbol missing from the second pull persists
+  from the first for that day (docstring overclaims; README uses backfill).
+- Huge ints (`10**400`) for `cape`, `fair_cape`, `betas`, `default_beta` or a
+  row value raise a bare `OverflowError` rather than a named refusal.
+- Shared Schwab transport: default `max_retries`, each `_RETRY_STATUSES`
+  entry, the 2xx range edges and the `secret` flags are unpinned.
+
 - `test_active_hurdle` pins E[max null Sharpe] from one recorded evaluation
   rather than a closed form (the owner formula has its own tests).
 - The hurdle's arithmetic per-period mean is compounded geometrically
-  downstream (~sd²/2 per period overstatement, a few bp/yr; left to
-  `risk_premium`).
-- Refusal lines without a dedicated test: several range/name checks in
-  `HoldVsRedeploy` and `MarketHoldReturn`, `_hashes` non-list, positions
-  `read` unknown-stream/mode, base `_request` HTTP-status mapping.
+  downstream (~sd²/2 a year: tens of bp to about a point; left to `risk_premium`,
+  which ships at a 0.0 placeholder the owner sets from the backtest's volatility).
+- Limits, not modelled (also in the child README): every account is taxed as
+  taxable; the hold path's dividends are untaxed; a split or spin-off is read as
+  a return by `DecisionOutcomes`; the `EQUITY` filter's reach for ETFs and mutual
+  funds is unverified until a real pull; filtered-out rows are not counted.
+- Refusal lines without a dedicated test: none in the four ADR-0279 modules or the
+  positions pack (the base `_request` HTTP-status mapping, `_hashes`, positions `read`
+  arguments and every `validate_params` line are covered). The Phase-1
+  `SchwabBarsConnector` (not ADR-0279) still has 11 untested refusals: config and
+  `read` argument guards and candle shape.
+- `ActiveHurdle`'s defensive "deflation undefined" refusal is reached only by a
+  monkeypatched `deflated_sharpe_ratio`; no real series is known to trigger it.
 - `long_term_days` cannot express "more than one year" across a leap day
   exactly; the document declares 366.
 - Stage 4 scoring is `DecisionOutcomes` rows, not a `dskit.evaluation`

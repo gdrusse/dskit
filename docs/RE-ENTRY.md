@@ -7,14 +7,14 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-26: main synced; 37 local/2 remote contained branches purged; unmerged/dirty work retained; sweep receipt below |
-| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-26: Fable MIO/2020 evidence integrated with scenario repricer; candidate254f4ae4 two clean lenses, focused checks pass; shock net +$4,197 vs stock comparison +$7,354; holdout sealed |
+| index_options | `children/index_options/docs/RE-ENTRY.md` | 2026-10-27: 49-window TDD/HTML and arbitrary-pair MIO JSON designs; best model-zoo output; two independent skeptic follow-ups PASS,5 focused tests; owner directed merge/purge |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
 | intraday_equities | `children/intraday_equities/docs/RE-ENTRY.md` | 2026-10-12: fill-window relabel: next-bar-fill IC 0.01-0.02 (5-min rows), 0.002-0.005 (1-min rows); no fill-reachable edge |
 | pmquant | `children/pmquant/docs/RE-ENTRY.md` | 2026-09-04: child landed; waits on PREDEXON_API_KEY and the real-data twin |
-| portfolio_policy | `children/portfolio_policy/docs/RE-ENTRY.md` | 2026-10-27: ADR-0279 base machinery complete, two lenses clean (4 Major fixed), merged to main; no real pull yet — owner sets document placeholders and runs the README sequence |
+| portfolio_policy | `children/portfolio_policy/docs/RE-ENTRY.md` | 2026-10-27: ADR-0279 base machinery merged; Sonnet loop closed CLEAN after 4 rounds (8 Major fixed, 0 Critical); `portfolio-summary` branch (PositionSummary) awaits its Sonnet loop; no real pull yet |
 | intraday_poc | `children/intraday_poc/docs/RE-ENTRY.md` | legacy worked example; no active lane |
 
 ## Core (dskit itself)

@@ -36,10 +36,9 @@ from __future__ import annotations
 import math
 
 from dskit.pipeline.binary_curve import name_ok
-from dskit.pipeline.liquidation import require_rate
+from dskit.pipeline.liquidation import check_count_param, require_number, require_rate
 from dskit.pipeline.node import Node, check_int_param, check_number_param, reject_unknown_params
-from dskit.pipeline.records import number_ok
-from dskit.pipeline.stats import deflated_sharpe_ratio, sharpe_ratio
+from dskit.pipeline.stats import NO_VARIANCE_RTOL, deflated_sharpe_ratio, sharpe_ratio
 
 __all__ = ["ActiveHurdle"]
 
@@ -53,10 +52,10 @@ class ActiveHurdle(Node):
     ----------
     params : dict
         ``return_field`` (field name, REQUIRED): the per-period net return
-        on each row; ``periods_per_year`` (int >= 1, REQUIRED); ``trials``
-        (int >= 1, REQUIRED): how many strategy variants the backtest chose
-        among; ``min_dsr`` (number in ``[0, 1]``, REQUIRED): the deflated
-        Sharpe probability below which the hurdle is withheld;
+        on each row; ``periods_per_year`` (int in ``[1, 10**6]``, REQUIRED);
+        ``trials`` (int in ``[1, 10**6]``, REQUIRED): how many strategy variants
+        the backtest chose among; ``min_dsr`` (number in ``[0, 1]``, REQUIRED):
+        the deflated Sharpe probability below which the hurdle is withheld;
         ``min_periods`` (int >= 2, REQUIRED): the fewest periods a series may
         carry (52 for a year of weekly returns). Integral floats are accepted
         for the three counts and run as ints.
@@ -94,9 +93,11 @@ class ActiveHurdle(Node):
         field = params.get("return_field")
         if "return_field" in params and not name_ok(field):
             problems.append(f"return_field must be a non-empty field name, got {field!r}")
-        for name, floor in (("periods_per_year", 1), ("trials", 1), ("min_periods", 2)):
+        for name in ("periods_per_year", "trials"):
             if name in params:
-                check_int_param(problems, name, params[name], ge=floor)
+                check_count_param(problems, name, params[name], ge=1)
+        if "min_periods" in params:
+            check_int_param(problems, "min_periods", params["min_periods"], ge=2)
         if "min_dsr" in params:
             check_number_param(problems, "min_dsr", params["min_dsr"], lower=0.0, upper=1.0)
         return problems
@@ -115,12 +116,7 @@ class ActiveHurdle(Node):
         for index, row in enumerate(records):
             if not isinstance(row, dict):
                 raise ValueError(f"{self.key}: row {index} must be a mapping, got {type(row).__name__}")
-            value = row.get(field)
-            if not number_ok(value):
-                raise ValueError(
-                    f"{self.key}: row {index} field {field!r} is not a number, got {value!r}"
-                )
-            series.append(float(value))
+            series.append(require_number(self.key, "row", index, row, field))
         floor = int(self.params["min_periods"])
         if len(series) < floor:
             raise ValueError(
@@ -128,19 +124,28 @@ class ActiveHurdle(Node):
             )
         return series
 
+    def _no_sharpe(self, detail):
+        """Return the one refusal for a series that has no Sharpe to deflate."""
+        return ValueError(
+            f"{self.key}: the series has no usable Sharpe ({detail}); "
+            "a hurdle needs a dispersed return series"
+        )
+
     def run(self, ctx, inputs):
         """Return the deflated annual rate (``None`` when inadmissible), the verdict and a summary."""
         series = self._series(inputs.get("records"))
         periods = int(self.params["periods_per_year"])
         trials = int(self.params["trials"])
+        spread, largest = max(series) - min(series), max(abs(v) for v in series)
+        if spread <= NO_VARIANCE_RTOL * largest:
+            # a constant series' float mean carries rounding noise, so its sd is ~1e-17 rather
+            # than 0 and the Sharpe a ~1e15 artifact; stats.NO_VARIANCE_RTOL is the one tolerance
+            raise self._no_sharpe(f"spread {spread!r} against largest magnitude {largest!r}")
         found = sharpe_ratio(series)
         deflated = deflated_sharpe_ratio(series, trials)
         expected_max = deflated["expected_max_sharpe"]
         if deflated["dsr"] is None or expected_max is None:
-            raise ValueError(
-                f"{self.key}: the series has no usable Sharpe (sd {found['sd']!r}); "
-                "a hurdle needs a dispersed return series"
-            )
+            raise self._no_sharpe(f"sd {found['sd']!r}")
         haircut = expected_max * found["sd"] * periods
         deflated_rate = require_rate(self.key, "deflated rate", found["mean"] * periods - haircut)
         dsr = deflated["dsr"]

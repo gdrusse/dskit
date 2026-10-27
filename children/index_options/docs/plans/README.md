@@ -163,3 +163,180 @@ Generated from `configs/workflow.json` (`steps.*.in`): a source starting `$args.
 ## 7. Proposed Theta source extension (not executable)
 
 [ADR-0269](../../../../docs/architecture/decision-log.md#adr-0269--proposed-theta-source-extension-of-the-existing-price-distribution-workflow) preserves the existing underlying-price-distribution pipeline/model and proposes longer Theta option inputs, five years of initial development and ten sequential ten-week checkpoints with outcome-maturity gaps. The inspected2021-2025 years remain retrospective development. Source mapping, a concrete finite fit budget and fresh reviews precede training; H0-H7 remains unchanged and2026 sealed. Owner selected existing option-feature selection; the latest42-feature baseline stays as the control. A reviewed Theta-to-exact-expiry schema mapping is still required.
+
+
+## 8. MIO JSON pipeline design (2026-10-27)
+
+**Design only; the proposed node wrappers do not exist yet.** Start with
+[mio-json/study.json](mio-json/study.json): supply the externally selected 2019
+ticker/DTE rows, source pins, one packet and a fixed variant cohort. Exact DTE
+uses equal bounds; bands are inclusive calendar days at the signal date.
+The selection rule stays external and unset.
+
+- [Plan](mio-json/plan.template.json): metadata and input readiness; no outcomes.
+- [Run](mio-json/run.template.json): freeze and claim one packet, read bounded
+  inputs, run fixed variants, replay and publish.
+- [Compare](mio-json/compare.template.json): verify and compare the complete
+  cohort; no automatic winner or release of the next packet.
+
+Use existing Workflow.expand with study=the study.json object and an output_root.
+The run template additionally takes frozen_plan and claim_request; comparison
+takes result_receipts. These are future content-bound artifacts, not current CLI
+arguments. Templates follow PipelineDocument shape, but plan/run cannot resolve
+their proposed uses. Do not invoke them as executable pipelines.
+
+The proposed sequence is exposed 2020 COVID development, two ten-week packets in
+2021, two in 2022, then frozen 2023 confirmation. Only one packet opens per
+invocation. Brainstorm between packets and freeze changes before opening the
+next. DTE-dependent settlement tails finish before the next entry window; longer
+DTEs require a valid replan, never silent truncation. Dates are proposals, not
+new authorization to read data. Unscheduled weeks stay closed unless separately
+recorded as history/tail exposure. All 2020 was already inspected.
+
+History supplies earlier prices only. Each method/packet starts an independent
+account; entries, fills and deposits stop at the entry-window end, and the tail
+only marks/settles existing positions. Do not concatenate reset account equity
+curves. Pair rows apply before projection/optimization and again at replay;
+no cross-product of tickers and DTEs.
+
+Owner correction 2026-10-27: A0008 uses the best complete model-zoo output.
+The structured predictive selection and producer pins must be bound and agree
+with the forecast source before execution; the historical M51 recipe and its
+82-origin monitor are not defaults. A0003 and the yearly cadence remain binding.
+2019 is predictive warmup, used here only for external MIO eligibility.
+The recorded M51 dependency used fallback in 2019 and selection on 2020-23.
+Thus later packets support MIO-only comparisons. 2024-25 needs the separate
+single-opening holdout protocol; 2026 remains permanently closed.
+
+Current selection binding is specified in study.json's protocol.predictive_binding.
+It is a proposed contract: the wrapper implementation and runtime refusal tests
+remain future work. The records below retain the original design review; the
+publication amendment and current review locks are in ADR-0278.
+
+### Scope and verification record
+
+Base 5747f179; ADR-0278 amendment 'staged MIO JSON design'. Owner narrowed the
+current task to JSON design. Four new JSON files, existing documentation
+pointers and manifest only; no runtime changes or market reads. Proposed generic
+protocol work belongs in dskit; the option adapter reuses the existing weekly
+study, portfolio solver and funded ledger. study.json lists every missing seam.
+
+Matrix: sparse/exact/band pairs; pinned source/forecast identity; chronological
+history/entry/tail bounds; fill/deposit cutoffs; failed-run exposure and retry;
+independent accounts; complete-cohort reporting; protected years; template
+expansion/ref wiring; declared runtime gaps. JSON-only checks cover syntax,
+substitution, reference wiring, default-date arithmetic, existing solver params
+and the child manifest/instruction parity. Future runtime cases are enumerated
+in study.json and are not claimed tested by this design packet.
+
+Static checks (WSL2; /home/russell/dskit/.venv/bin/python -B): all four JSON
+documents parse without duplicate keys or nonfinite numbers; three templates
+expand and pass PipelineDocument grammar with upstream references intact.
+Predictive folds equal the existing JSONL; solver/projection params validate.
+For max DTE 60, tail ends are 2020-08-07, 2021-05-21, 2021-11-19,
+2022-05-20, 2022-11-18 and 2023-12-29 (exclusive), with no packet overlap.
+The four-file manifest addition required updating its pinned count 773 -> 777.
+
+Focused manifest/parity and documentation-budget checks: 5 passed.
+
+### Independent design review
+
+Candidate 6ceb2516c6828fb6e9e2aaeede68cb16cb6dccc5; reviewer
+/root/mio_design_correctness (GPT-6), correctness/authority lens.
+Verdict: 0 Critical, 1 Major, 0 Minor, 0 Nit. MIO-C1: the written checks allowed
+2022 to be opened, followed by new variants on unopened 2021, because predecessor
+IDs did not define a state transition. This invalidated the temporal boundary;
+that candidate stopped before a second lens. Reviewer inspected all four
+documents, Path and current study/fill/replay/account seams; independently
+confirmed folds and all tail dates; no market reads or runtime tests.
+
+Correction: protocol.release now defines next-frontier-only fresh claims,
+predecessor review/retirement, imported-2020 handling, failed-run retry or
+abandonment, explicit skip forfeiture, inheritance across revisions/source
+aliases, and atomic registry-revision checks. New-cohort freeze follows prior
+review; plan/open/compare apply the same rule and receipts. This is a contract
+correction, so both independent lenses restart on the next candidate.
+
+### Closed design candidate
+
+Candidate 8c6fc522e23811dd959e17c7dce3dfa62ca54e84; base 5747f179.
+Both fresh independent lenses below reviewed that same immutable candidate.
+Zero unresolved Critical/Major/Minor/Nit; MIO-C1 closed. Final additions are
+evidence only: all four JSON SHA-256 digests remain unchanged. No runtime
+implementation, market access, backtest, merge or push was performed.
+
+Retained final report, /root/mio_design_correctness_v2 (GPT-6):
+
+> PASS - design correctness/authority review. Candidate
+> 8c6fc522e23811dd959e17c7dce3dfa62ca54e84; unresolved:
+> Critical 0, Major 0, Minor 0, Nit 0.
+>
+> MIO-C1 resolved: shared chronological frontier, predecessor review/retirement,
+> imported 2020 handling, failed-run disposition, revision/alias inheritance,
+> and atomic claims now agree across plan/open/compare.
+>
+> Reviewed sparse ticker/DTE admission, external 2019 evidence, predictive
+> folds/pins, history/entry/tail boundaries, funding/fills, frozen cohorts,
+> reporting, protected dates and declared runtime gaps. No additional proven
+> design defect.
+>
+> Independently checked all four JSONs for duplicate keys/nonfinite values;
+> expanded all three templates through Workflow.expand and
+> PipelineDocument.from_obj; checked upstream references, exact fold agreement
+> and all six default tail dates.
+>
+> Inspected current study, solver, fill and funded-ledger seams. Their
+> limitations are disclosed; proposed wrappers are explicitly non-executable.
+>
+> Limits: no market data/results reads, runtime enforcement tests, solves or
+> implementation-readiness claim. No edits; HEAD and working tree remained
+> unchanged.
+
+Retained final report, /root/mio_design_integration (GPT-6):
+
+> PASS - zero unresolved Critical/Major findings.
+>
+> Reviewer: /root/mio_design_integration (GPT-6), independent
+> test-quality/integration lens. Candidate:
+> 8c6fc522e23811dd959e17c7dce3dfa62ca54e84; base: 5747f179.
+> Final checkout identity matched; worktree clean.
+>
+> Findings: Critical 0, Major 0, Minor 0, Nit 0.
+>
+> Reviewed all four JSON documents, README section 8, ADR amendment, locked
+> Path, changed-file manifest, and relevant workflow/library interfaces.
+> Checked:
+>
+> - Sparse exact/band ticker-DTE rows; external 2019 selection; empty inputs
+>   cannot imply unrestricted eligibility.
+> - Exact predictive folds, fallback disclosures, chronological
+>   history/entry/tail boundaries, account resets, deposit/fill cutoffs, and
+>   protected dates.
+> - Fixed method cohorts, complete reporting, shared solver policy, and
+>   group_screen: none.
+> - Template bindings, upstream references, proposed class ownership,
+>   unresolved pins, and explicit runtime gaps.
+> - Release correction covering predecessors, review receipts, retirement,
+>   failure, retry, revisions, aliases, and inherited read frontier.
+>
+> Executed in WSL2:
+>
+> - Focused manifest/parity plus documentation-budget checks: 5 passed.
+> - Strict parsing of four JSON files: no duplicate keys/nonfinite values.
+> - Three template expansions and PipelineDocument grammar/reference checks:
+>   passed.
+> - Fold equality and existing solver/projection parameter validation: passed.
+> - Default 60-DTE tail calculations: matched all six documented dates; no
+>   packet overlap or protected-boundary violation.
+>
+> Limits: These checks establish design consistency and JSON grammar only.
+> Proposed wrappers, atomic claims, bounded readers, replay, holiday sessions,
+> failure recovery, and reporting remain unimplemented and untested at runtime.
+> No market results were inspected; no solve, backtest, or full suite ran.
+
+Verified JSON file SHA-256 values:
+
+- compare.template.json: c7e458be7745ff94a06a2d26b1eeba6d9eb9026768ea083f1ee28e377fcb0351
+- plan.template.json: 805f7c6982cae062ace0cb674debdbc54256ed8f4e10fb1efa75d3a15aed3404
+- run.template.json: 97d2686b4913975b7e87ed7ff530611bc0f750893f17160d6450cb1149c732e7
+- study.json: e5ba3ed0f7cd14baccf9108573b397385642bafa7f5de021189d0ad15894b4aa

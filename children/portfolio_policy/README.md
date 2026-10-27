@@ -17,7 +17,12 @@ From the child root, after `pip install -e .` and a Schwab OAuth session:
 python -m dskit.onboarding init --root ./ob
 python -m dskit.onboarding register-source schwab --root ./ob \
     --catalog-source schwab-src --connector schwab_positions --config '{}' --activate
-python -m dskit.onboarding authorize --connector schwab_positions --config '{}'
+# the OAuth values are read from the environment (never from the config): the Schwab app key
+# and secret, the callback URL registered for the app, and where the token file will be saved
+export SCHWAB_APP_KEY=... SCHWAB_APP_SECRET=... SCHWAB_CALLBACK_URL=... SCHWAB_TOKEN_PATH=./schwab-token.json
+python -m dskit.onboarding authorize --connector schwab_positions --config '{}'    # prints the login URL
+# approve it in the browser, then pass the code (or the whole callback URL it redirected to):
+python -m dskit.onboarding authorize --connector schwab_positions --config '{}' --code '<code or callback URL>'
 python -m dskit.onboarding acquire --root ./ob --source schwab \
     --stream positions --mode backfill            # one snapshot per UTC day
 # the active strategy's backtest: ./inputs/active/returns.jsonl (the file stem is the
@@ -48,7 +53,23 @@ periods it will accept, and returns are fractions (0.01 = 1%), never percent.
 `decide.horizon_years` by a test) and may not exceed `reversion_years`. Rows
 land in `decisions/<run>.jsonl`, one per account x symbol, advisory only.
 Aggregate positions carry no lots, so every holding takes `default_holding`
-until a lot-level export is onboarded.
+until a lot-level export is onboarded. `decide.risk_premium` ships at 0.0 as a
+placeholder, not as a claim that zero is safe: the hurdle's arithmetic mean
+compounds geometrically, a gap of about sd^2 / 2 a year, so set it from the
+backtest's annual volatility (`hurdle` summary `annual_sd`) before a real run.
+
+**Limits** (disclosed, not modelled):
+
+- Every linked account is treated as taxable; the account type is discarded, so
+  an IRA or 401(k) position is taxed as if sold in a brokerage account.
+- The hold path's dividends are untaxed (only its terminal gain is), which
+  favours holding.
+- A split or spin-off between a decision and its scoring corrupts the
+  per-share growth `DecisionOutcomes` reads; it is taken for a return.
+- The `EQUITY` filter's reach for ETFs and mutual funds is unverified until a
+  real pull: if Schwab labels them otherwise they are dropped silently.
+- Rows the filters drop (options, shorts, other asset types) are not counted or
+  reported yet.
 
 ### The few numbers
 
@@ -94,6 +115,11 @@ mkdir -p outcomes
 # set decisions.stream to <run-name> and later.where[as_of] to the new pull's UTC day, then:
 python -m dskit.pipeline run configs/run-decision-outcomes.json --asof <that day>
 ```
+
+`later` keeps the same equity longs the decision did (a test pins the clauses
+equal), but only decided positions are read: an undecided short or option row
+in the snapshot is never scored and cannot stop the run, and a decided position
+the filter no longer sees is listed `unmatched`.
 
 `<run-name>` is the decision run's directory name (the stem of its
 `decisions/<run>.jsonl`). `outcomes/<run>.jsonl` holds, per account and

@@ -82,7 +82,7 @@
         "min_dsr": 0.5,
         "min_periods": 52
       },
-      "notes": "Stage 3: (mean - E[max null Sharpe] x sd) x periods, the return left once what selection alone would have found is removed. trials is the owner's honest count of strategy variants tried; min_dsr is the pre-registered admissibility bar — below it the hurdle is withheld and every holding holds. min_periods is the fewest weekly returns the backtest may carry: 52 is one year; a shorter series refuses by name. Returns are fractions (0.01 = 1%): a percent series annualizes outside [-1, 10] and refuses."
+      "notes": "Stage 3: (mean - E[max null Sharpe] x sd) x periods, the return left once what selection alone would have found is removed. trials is the owner's honest count of strategy variants tried; min_dsr is the pre-registered admissibility bar — below it the hurdle is withheld and every holding holds. min_periods is the fewest weekly returns the backtest may carry: 52 is one year; a shorter series refuses by name. Returns are fractions (0.01 = 1%): a percent series annualizes outside [-1, 2] and refuses."
     },
     "decide": {
       "uses": "dskit.pipeline.liquidation:HoldVsRedeploy",
@@ -103,7 +103,7 @@
         "redeploy_tax_rate": 0.408,
         "redeploy_tax_timing": "annual"
       },
-      "notes": "Both returns come wired: hold from $betas.rates, redeploy from $hurdle.rate (None when inadmissible -> hold). No return literal exists in this node. risk_premium is 0 because the hurdle is already deflated; raise it only for a cost the hurdle cannot see. Taxes differ by path on purpose: the hold path realizes its gain once at the horizon at the long-term rate over the original basis; the active path turns over, so it pays the short-term rate every year (annual timing) and owes nothing at the end. Net to net."
+      "notes": "Both returns come wired: hold from $betas.rates, redeploy from $hurdle.rate (None when inadmissible -> hold). No return literal exists in this node. redeploy_cost is a cost charged on top of the backtest's returns, which are already net of whatever costs the backtest itself charged: set it to 0 if the backtest netted its costs, or the active path is charged twice. risk_premium 0.0 is a placeholder, NOT a claim that zero is safe: the hurdle is deflated for selection, but its arithmetic mean compounds geometrically here, so the simple-vs-geometric gap (about sd^2/2 per year) is left to risk_premium. The owner should set it from the backtest's annual volatility (hurdle summary annual_sd) before a real run. Taxes differ by path on purpose: the hold path realizes its gain once at the horizon at the long-term rate over the original basis; the active path turns over, so it pays the short-term rate every year (annual timing) and owes nothing at the end. Net to net."
     },
     "decisions": {
       "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
