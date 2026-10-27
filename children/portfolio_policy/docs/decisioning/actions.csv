@@ -1,1 +1,2 @@
 id,category,step,executed_at,inputs,outputs,db_location,notes
+A0001,research,hold-return/2026-10-27-synthesis,2026-10-27T15:13:38+00:00,Estimating hold_return: building blocks over trailing means,docs/research/hold-return/2026-10-27-synthesis.md,docs/research/hold-return/2026-10-27-synthesis.md,

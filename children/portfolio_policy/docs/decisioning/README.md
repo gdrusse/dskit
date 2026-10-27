@@ -43,7 +43,7 @@ Display only: `actions.csv` remains the complete, append-only journal.
 
 | ID | Category | Step | Execution Date | Relevant Inputs | Relevant Outputs | Database Location | Notes |
 |---|---|---|---|---|---|---|---|
-| — | — | — | — | — | — | — | — |
+| A0001 | research | hold-return/2026-10-27-synthesis | 2026-10-27T15:13:38+00:00 | Estimating hold_return: building blocks over trailing means | docs/research/hold-return/2026-10-27-synthesis.md | docs/research/hold-return/2026-10-27-synthesis.md |  |
 
 ## Path to Production
 

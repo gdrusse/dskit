@@ -13,9 +13,15 @@ positions → tax → decide → `decisions/<run>.jsonl`, e2e test green on a
 localfiles stand-in. No real Schwab pull yet; document rates are
 placeholders.
 
+Research A0001 (`docs/research/hold-return/2026-10-27-synthesis.md`):
+`hold_return` should be yield + growth + CAPE reversion for the market,
+scaled by beta per stock; never a trailing mean.
+
 ## Next
 
-Owner sets the document's rates/returns and runs the README's command
+Owner picks the hold_return implementation (research proposes
+`MarketHoldReturn` + `BetaHoldReturns` nodes and a `hold_returns` input
+port on `HoldVsRedeploy`). Then the owner sets the document's rates/returns and runs the README's command
 sequence for the first real snapshot + decision. Then: per-symbol
 `hold_return` from price history (Stage 2 model) and `redeploy_return`
 from a child's scored backtest (Stage 3 hurdle).
