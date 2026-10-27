@@ -590,12 +590,13 @@ class SchwabPositionsConnector(_SchwabConnector):
     """Point-in-time positions of every linked Schwab account (ADR-0279).
 
     Each pull emits one row per account and symbol dated ``as_of`` = the UTC
-    calendar day it was taken (a pull after 20:00 New York time is dated the
-    next day); account numbers never leave the connector — ``account`` is
-    Schwab's own ``hashValue`` from the accountNumbers endpoint. The four
-    position numbers are required on every row and must be finite; a symbol
-    must already be a non-empty string; an account response without a
-    ``positions`` list refuses. Nothing is defaulted or coerced.
+    calendar day it was taken (a pull after 20:00 New York time, 19:00 in
+    standard time, is dated the next day); account numbers never leave the
+    connector — ``account`` is Schwab's own ``hashValue`` from the
+    accountNumbers endpoint. The four position numbers are required on every
+    row and must be finite; a symbol must already be a non-empty string; an
+    account response without a ``positions`` list refuses. Nothing is
+    defaulted or coerced.
     ``cost_basis`` is ``averagePrice x net quantity`` and so is a per-share
     basis only for shares: option rows carry no contract multiplier here,
     and a consumer that values them filters ``asset_type`` first. A backfill

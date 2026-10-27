@@ -44,7 +44,8 @@ Rows that cannot be valued refuse by index and field name; nothing is filled.
 That includes a short position or a negative balance: a hold-vs-exit decision
 is about a long holding, so a value at or below zero (and, for the tax, a
 negative basis) refuses and the document filters such rows before this
-module sees them. Wired rates are checked where they arrive: a ``hold_returns``
+module sees them. So does an acquisition date after ``as_of`` (negative days
+held). Wired rates are checked where they arrive: a ``hold_returns``
 entry or a ``redeploy_return`` outside :data:`RATE_BOUNDS` (-100% to +200%)
 refuses, because the usual cause is a percent where a fraction belongs (7 for
 7% is +700%). Every rate, horizon and field name is a param: the module carries
@@ -76,9 +77,9 @@ from dskit.pipeline.node import Node, check_int_param, check_number_param, rejec
 from dskit.pipeline.records import number_ok
 
 __all__ = [
-    "HOLDINGS", "MAX_HORIZON_YEARS", "RATE_BOUNDS", "REDEPLOY_TAX_TIMINGS", "HoldVsRedeploy",
-    "LiquidationTax", "check_horizon_param", "check_rate_param", "require_number",
-    "require_rate",
+    "HOLDINGS", "MAX_COUNT", "MAX_HORIZON_YEARS", "RATE_BOUNDS", "REDEPLOY_TAX_TIMINGS",
+    "HoldVsRedeploy", "LiquidationTax", "check_count_param", "check_horizon_param",
+    "check_rate_param", "require_number", "require_rate",
 ]
 
 #: The two holding classes a tax schedule distinguishes.
@@ -101,6 +102,9 @@ _DECISION_OPTIONAL = (
 RATE_BOUNDS = (-1.0, 2.0)
 #: The longest horizon, in years, any ADR-0279 kind accepts.
 MAX_HORIZON_YEARS = 100
+#: The largest count (reversion years, trials, periods a year) any ADR-0279 kind accepts. Far
+#: above any real one; an int past ~1e308 cannot even become the float the arithmetic needs.
+MAX_COUNT = 10 ** 6
 
 _OUT_OF_SCOPE = "short positions and negative balances are out of scope for a hold-vs-exit decision"
 
@@ -116,6 +120,14 @@ def check_horizon_param(problems, name, value):
     check_int_param(problems, name, value, ge=1)
     if len(problems) == before and value > MAX_HORIZON_YEARS:
         problems.append(f"{name} must be at most {MAX_HORIZON_YEARS} years, got {value!r}")
+
+
+def check_count_param(problems, name, value, *, ge):
+    """Append a problem unless ``value`` is an int in ``[ge, MAX_COUNT]``."""
+    before = len(problems)
+    check_int_param(problems, name, value, ge=ge)
+    if len(problems) == before and value > MAX_COUNT:
+        problems.append(f"{name} must be at most {MAX_COUNT}, got {value!r}")
 
 
 def require_rate(key, what, value):
@@ -188,7 +200,8 @@ class LiquidationTax(Node):
 
     Role ``transform``. See the module docstring for the rule. A row whose
     ``value_field`` is at or below zero, or whose ``basis_field`` is negative
-    (a short position, a negative balance), refuses by index and field.
+    (a short position, a negative balance), refuses by index and field, as does
+    an ``acquired_field`` date after ``as_of``.
 
     Parameters
     ----------
@@ -278,6 +291,11 @@ class LiquidationTax(Node):
                 f"{self.key}: row {index} field {field!r} is not an ISO date, got {acquired!r}"
             )
         held = (as_of - date.fromisoformat(acquired)).days
+        if held < 0:
+            raise ValueError(
+                f"{self.key}: row {index} field {field!r} is dated {acquired}, after the "
+                f"as_of {as_of.isoformat()}; a position cannot be acquired after its liquidation"
+            )
         return "long" if held >= self.params["long_term_days"] else "short"
 
     def run(self, ctx, inputs):

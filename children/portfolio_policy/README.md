@@ -16,7 +16,12 @@ From the child root, after `pip install -e .` and a Schwab OAuth session:
 python -m dskit.onboarding init --root ./ob
 python -m dskit.onboarding register-source schwab --root ./ob \
     --catalog-source schwab-src --connector schwab_positions --config '{}' --activate
-python -m dskit.onboarding authorize --connector schwab_positions --config '{}'
+# the OAuth values are read from the environment (never from the config): the Schwab app key
+# and secret, the callback URL registered for the app, and where the token file will be saved
+export SCHWAB_APP_KEY=... SCHWAB_APP_SECRET=... SCHWAB_CALLBACK_URL=... SCHWAB_TOKEN_PATH=./schwab-token.json
+python -m dskit.onboarding authorize --connector schwab_positions --config '{}'    # prints the login URL
+# approve it in the browser, then pass the code (or the whole callback URL it redirected to):
+python -m dskit.onboarding authorize --connector schwab_positions --config '{}' --code '<code or callback URL>'
 python -m dskit.onboarding acquire --root ./ob --source schwab \
     --stream positions --mode backfill            # one snapshot per UTC day
 # the active strategy's backtest: ./inputs/active/returns.jsonl (the file stem is the

@@ -235,3 +235,17 @@ def test_bars_transport_puts_the_symbol_first_and_sends_the_bearer_token(monkeyp
     ((url, headers, timeout),) = fake.requests
     assert url == PRICE_URL + "?symbol=AAPL&frequency=1"
     assert headers == {"Authorization": "Bearer tok"} and timeout == 5
+
+
+def test_bars_transport_url_encodes_the_symbol_and_every_param_value(monkeypatch):
+    # "/" is part of a share-class symbol (BRK/B); a space, "&" and "=" in a value must not
+    # split or add a parameter. Encoded by urlencode: "/" -> %2F, " " -> "+", "&" -> %26, "=" -> %3D
+    fake = ScriptedUrlopen((200, json.dumps({"candles": []}).encode()))
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    SchwabBarsConnector()._get_json("tok", "BRK/B", {"note": "a b&c=d"}, KNOBS)
+    ((url, _headers, _timeout),) = fake.requests
+    assert url == PRICE_URL + "?symbol=BRK%2FB&note=a+b%26c%3Dd"
+    # and the refusal still names the symbol as given, not as encoded
+    monkeypatch.setattr(urllib.request, "urlopen", ScriptedUrlopen(_http(404)))
+    with pytest.raises(AssetError, match=r"Schwab price history failed for 'BRK/B' \(HTTP 404\)"):
+        SchwabBarsConnector()._get_json("tok", "BRK/B", {}, KNOBS)

@@ -55,7 +55,6 @@ from dskit.pipeline.binary_curve import name_ok
 from dskit.pipeline.document import date_problem
 from dskit.pipeline.liquidation import require_number
 from dskit.pipeline.node import Node, check_number_param, reject_unknown_params
-from dskit.pipeline.records import number_ok
 
 __all__ = ["DecisionOutcomes"]
 
@@ -183,8 +182,9 @@ class DecisionOutcomes(Node):
             rows[key] = (index, row)
         if len(dates) != 1:
             raise ValueError(
-                f"{self.key}: positions must carry one as_of, got several: "
-                f"{sorted(d.isoformat() for d in dates)}"
+                f"{self.key}: positions must carry exactly one as_of, got "
+                + ("none" if not dates else
+                   f"several: {sorted(d.isoformat() for d in dates)}")
             )
         return dates.pop(), rows
 
@@ -214,12 +214,10 @@ class DecisionOutcomes(Node):
             if key not in later:
                 unmatched.append(key)
                 continue
-            horizon = row.get("horizon_years")
-            if not number_ok(horizon) or horizon <= 0:
-                raise ValueError(
-                    f"{self.key}: decision {index} field 'horizon_years' is not a positive "
-                    f"number, got {horizon!r}"
-                )
+            horizon = self._positive(
+                "decision", index,
+                require_number(self.key, "decision", index, row, "horizon_years"),
+                "horizon_years")
             then = self._positive("decision", index, self._per_unit("decision", index, row),
                                   "measure")
             value = self._positive(
@@ -231,7 +229,7 @@ class DecisionOutcomes(Node):
                 require_number(self.key, "decision", index, row, "hold_value"), "hold_value")
             elapsed = (later_day - decided).days / _DAYS_PER_YEAR
             income = float(self.params["income_rate"])
-            total_growth = (hold_value / value) ** (1.0 / float(horizon))
+            total_growth = (hold_value / value) ** (1.0 / horizon)
             price_growth = total_growth - income
             if price_growth <= 0.0:
                 raise ValueError(

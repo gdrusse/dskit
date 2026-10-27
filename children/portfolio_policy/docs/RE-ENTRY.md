@@ -23,7 +23,10 @@ decision's and capped by `reversion_years`; `outcomes.income_rate` (0.013 =
 the dividend yield) removes income from the projected growth. Round 2 (2
 Major): the scoring run reads only decision-matched later rows (and `later`
 filters equity longs), so an undecided short cannot refuse it; second-value
-tests for every hardcodable param. Also: `RATE_BOUNDS` is -100%..+200%, bars/
+tests for the first hardcodable params. Round 3 (1 Major): that sweep finished
+(every block, rate and field-name param, each shown to fail when hardcoded);
+a constant return series and an acquisition date after `as_of` now refuse;
+counts are capped at `MAX_COUNT` (10**6). Also: `RATE_BOUNDS` is -100%..+200%, bars/
 positions errors keep their nouns, one `require_number`, the child e2e reads
 rates from the documents, and the README lists Limits (taxable-only accounts,
 untaxed hold dividends, splits, ETF `asset_type`, uncounted exclusions).

@@ -195,6 +195,72 @@ def test_position_numbers_must_be_finite():
     assert _read()[0][0]["data"]["market_value"] == -180.0
 
 
+def test_a_bool_position_number_is_malformed_never_read_as_one_or_zero():
+    # True / False are ints to Python: without the explicit refusal they would be 1.0 / 0.0
+    for name in ("longQuantity", "shortQuantity", "averagePrice", "marketValue"):
+        for value in (True, False):
+            Stub.bodies[ACCOUNTS_URL] = _one(**{name: value})
+            with pytest.raises(AssetError) as caught:
+                _read()
+            assert caught.value.errors == [
+                "Schwab position 0 in account 0 is malformed (symbol 'X')"]
+    Stub.bodies[ACCOUNTS_URL] = _one(longQuantity=1, shortQuantity=0, averagePrice=2, marketValue=3)
+    row = _read()[0][0]["data"]
+    assert (row["long_quantity"], row["average_price"], row["market_value"]) == (1.0, 2.0, 3.0)
+
+
+@pytest.mark.parametrize("entry", [
+    {"accountNumber": "12345678", "hashValue": ""},         # an empty digest names no account
+    {"accountNumber": "12345678", "hashValue": 5},
+    {"accountNumber": "12345678", "hashValue": None},
+    {"accountNumber": "12345678"},
+    {"accountNumber": 12345678, "hashValue": "F00DBEEFCAFE4C0DE"},
+    {"hashValue": "F00DBEEFCAFE4C0DE"},
+    "12345678",
+])
+def test_a_malformed_account_numbers_entry_refuses_by_index(entry):
+    Stub.bodies[NUMBERS_URL] = [{**HASHES[0], "accountNumber": "99999999"}, entry]
+    with pytest.raises(AssetError) as caught:
+        _read()
+    assert caught.value.errors == ["Schwab accountNumbers entry 1 is malformed"]
+
+
+def test_account_numbers_must_be_a_list():
+    for bad in ({"accountNumber": "12345678", "hashValue": "F00D"}, "12345678", None):
+        Stub.bodies[NUMBERS_URL] = bad
+        with pytest.raises(AssetError) as caught:
+            _read()
+        assert caught.value.errors == ["Schwab accountNumbers response is not a list"]
+
+
+def test_a_malformed_account_entry_refuses_by_index():
+    for bad in ([5], [{"securitiesAccount": "x"}], [{"securitiesAccount": {"positions": []}}],
+                [{"nothing": 1}]):
+        Stub.bodies[ACCOUNTS_URL] = bad
+        with pytest.raises(AssetError) as caught:
+            _read()
+        assert caught.value.errors == ["Schwab account 0 is malformed"]
+
+
+def test_config_and_read_arguments_are_refused_by_name():
+    connector = SchwabPositionsConnector()
+    with pytest.raises(AssetError, match="config must be a dict, got list"):
+        connector.resolve_knobs([])
+    with pytest.raises(AssetError) as caught:
+        connector.resolve_knobs({"timeout": 0, "max_retries": -1, "client_id_env": ""})
+    assert len(caught.value.errors) == 3        # every problem at once, not the first
+    for state, streams, mode, match in (
+        ([], ["positions"], "backfill", "state must be a dict"),
+        ({}, [], "backfill", "streams must be a non-empty list"),
+        ({}, "positions", "backfill", "streams must be a non-empty list"),
+        ({}, ["positions"], "weekly", "mode must be one of"),
+        ({}, ["bars"], "backfill", r"unknown stream 'bars'; discovered: \['positions'\]"),
+    ):
+        with pytest.raises(AssetError, match=match):
+            list(Stub().read(CONFIG, streams, state, mode))
+    assert Stub.calls == []                     # nothing was requested for a refused call
+
+
 def test_an_account_without_a_positions_key_refuses_never_defaults_to_empty():
     Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678"}}]
     with pytest.raises(AssetError, match="account 0 has no positions"):

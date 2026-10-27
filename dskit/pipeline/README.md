@@ -844,19 +844,25 @@ they register only into private registries, never the default one.
   negative basis) refuses by row and field, as does any wired rate outside
   `RATE_BOUNDS = (-1, 2)` (-100% to +200%; a percent typed for a fraction, 7
   for 7%, is +700%) and a rate below -1 after costs. `LiquidationTax.as_of`
-  defaults to the run's `--asof`. `require_number(key, what, index, row, field)`
-  is the one numeric row-field reader (`active_hurdle` and `decision_outcomes`
-  import it). Limits, not modelled: every row is taxed as a taxable holding (no
-  account type), and the hold path's dividends are untaxed, which favours holding.
+  defaults to the run's `--asof`; an acquisition date after it refuses by row and
+  field. `require_number(key, what, index, row, field)` is the one numeric
+  row-field reader (`active_hurdle` and `decision_outcomes` import it), and
+  `MAX_COUNT = 10**6` with `check_count_param` is the one ceiling of a count
+  param (`reversion_years`, `trials`, `periods_per_year`: a larger int is a
+  named refusal, not an OverflowError at run). Limits, not modelled: every row is
+  taxed as a taxable holding (no account type), and the hold path's dividends are
+  untaxed, which favours holding.
 - `active_hurdle.py` (`ActiveHurdle`) (ADR-0279, by import path): a backtest's
   per-period net returns into the deflated annual return an active strategy may
   claim, `(mean - E[max null Sharpe over trials] x sd) x periods_per_year`
   (`stats.deflated_sharpe_ratio`); below `min_dsr` the hurdle is withheld
   (`rate` is `None`, `admissible` false). `min_periods` (>= 2, required) is the
   fewest periods a series may carry; a deflated rate outside `RATE_BOUNDS`
-  refuses (returns are fractions, not percent). The arithmetic-vs-geometric gap
-  (about half the annual variance, tens of bp to ~1 point a year) is left to
-  `risk_premium`.
+  refuses (returns are fractions, not percent). A constant series (spread within
+  `stats.NO_VARIANCE_RTOL` of its largest magnitude: its float mean carries noise, so
+  its Sharpe would be a ~1e15 artifact) refuses before any Sharpe is computed. The
+  arithmetic-vs-geometric gap (about half the annual variance, tens of bp to ~1
+  point a year) is left to `risk_premium`.
 - `decision_outcomes.py` (`DecisionOutcomes`) (ADR-0279, by import path): the
   feedback loop — each decision row's projected price growth,
   `(g - income_rate) ** elapsed` with `g = (hold_value / value) ** (1 /
@@ -1119,11 +1125,13 @@ dskit/pipeline/
 │                      holding class, then hold-the-gross vs redeploy-the-net terminal values over a horizon, both liquidated and taxed at the
 │                      horizon when `terminal_tax_rate` is declared; `hold_returns` / `redeploy_return` input ports (wired rates held to `RATE_BOUNDS`, -100%..+200%);
 │                      short / non-positive rows refuse; annual redeploy tax on a positive net rate only; decision `exit` only when redeploy wins;
-│                      `require_number`: the one numeric row-field reader of the three row-reading ADR-0279 kinds
+│                      `require_number`: the one numeric row-field reader of the three row-reading ADR-0279 kinds; `MAX_COUNT` (10**6) +
+│                      `check_count_param`: the one ceiling of a count param; an acquisition date after `as_of` refuses
 ├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, `horizon_years` <= `reversion_years`, role data) + BetaHoldReturns
 │                      (risk_free + beta x (market - risk_free) per symbol) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
-│                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr), declared `min_periods` floor -> HoldVsRedeploy's `redeploy_return` port
+│                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr), declared `min_periods` floor -> HoldVsRedeploy's `redeploy_return` port;
+│                      a constant series (spread within `stats.NO_VARIANCE_RTOL`) has no Sharpe and refuses
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
 │                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score;
 │                      only decision-matched later rows are value-checked (structural refusals cover all)

@@ -8,6 +8,8 @@ is compounded: projected = (g - income_rate) ** elapsed, g = (hold / value) **
 (1 / horizon). Every number here is worked by hand.
 """
 
+import re
+
 import pytest
 
 from dskit.pipeline.active_hurdle import ActiveHurdle
@@ -267,3 +269,102 @@ def test_every_adr_0279_kind_serves_pure():
     for cls in (LiquidationTax, HoldVsRedeploy, MarketHoldReturn, BetaHoldReturns,
                 ActiveHurdle, DecisionOutcomes):
         assert cls.serving_effect({}, None) == "pure", cls.__name__
+
+
+@pytest.mark.parametrize("bad", [0, -1, 0.0, -0.5])
+def test_a_non_positive_horizon_refuses_by_decision(ctx, bad):
+    # a zero horizon would divide by zero and a negative one invert the forecast
+    with pytest.raises(ValueError, match="decision 0 has non-positive horizon_years"):
+        DecisionOutcomes("o", PARAMS).run(
+            ctx, {"decisions": [{**DECISIONS[0], "horizon_years": bad}], "positions": LATER})
+
+
+@pytest.mark.parametrize("bad", ["five", True, None, float("nan"), float("inf"), [5]])
+def test_a_non_numeric_horizon_is_refused_through_the_one_number_reader(ctx, bad):
+    with pytest.raises(ValueError) as caught:
+        DecisionOutcomes("o", PARAMS).run(
+            ctx, {"decisions": [{**DECISIONS[0], "horizon_years": bad}], "positions": LATER})
+    assert str(caught.value) == f"o: decision 0 field 'horizon_years' is not a number, got {bad!r}"
+    # a decision with no horizon at all is the same refusal
+    row = {k: v for k, v in DECISIONS[0].items() if k != "horizon_years"}
+    with pytest.raises(ValueError, match="decision 0 field 'horizon_years' is not a number, got None"):
+        DecisionOutcomes("o", PARAMS).run(ctx, {"decisions": [row], "positions": LATER})
+
+
+def test_an_empty_later_snapshot_says_none_not_several(ctx):
+    with pytest.raises(ValueError) as caught:
+        DecisionOutcomes("o", PARAMS).run(ctx, {"decisions": DECISIONS, "positions": []})
+    assert "exactly one as_of" in str(caught.value) and "got none" in str(caught.value)
+    assert "several" not in str(caught.value)
+
+
+RENAME = {"account": "acct", "symbol": "tkr", "as_of": "day", "market_value": "mv",
+          "long_quantity": "q"}
+
+
+def _renamed(rows):
+    return [{RENAME.get(key, key): value for key, value in row.items()} for row in rows]
+
+
+def test_renamed_fields_give_the_same_outcomes_by_hand(ctx):
+    # test_outcomes_by_hand with account / symbol / as_of / market_value / long_quantity renamed;
+    # hold_value, horizon_years and decision are the HoldVsRedeploy output names and stay
+    params = {"key_fields": ["acct", "tkr"], "as_of_field": "day", "value_field": "mv",
+              "quantity_field": "q", "income_rate": 0.013}
+    out = DecisionOutcomes("o", params).run(
+        ctx, {"decisions": _renamed(DECISIONS), "positions": _renamed(LATER)})
+    vti, aapl = out["records"]
+    assert (vti["acct"], vti["tkr"], aapl["tkr"]) == ("A1", "VTI", "AAPL")
+    assert "account" not in vti and "symbol" not in vti
+    # VTI: (1.2^0.2 - .013)^(365/365.25) = 1.024121; (5500 / 20) / (2500 / 10) = 1.1
+    assert vti["projected_growth"] == pytest.approx(1.024121, abs=1e-6)
+    assert vti["realized_growth"] == pytest.approx(1.1)
+    assert vti["surprise"] == pytest.approx(1.1 - 1.024121, abs=1e-6)
+    # AAPL: (1.5^0.2 - .013)^(365/365.25) = 1.071421; 540 / 3 over 600 / 3 = 0.9
+    assert aapl["projected_growth"] == pytest.approx(1.071421, abs=1e-6)
+    assert aapl["realized_growth"] == pytest.approx(0.9)
+    assert (vti["decided_as_of"], vti["observed_as_of"]) == ("2026-10-27", "2027-10-27")
+    assert out["summary"]["scored"] == 2 and out["summary"]["unmatched"] == []
+    # a decided key the later snapshot lacks is reported under the declared key names
+    out = DecisionOutcomes("o", params).run(
+        ctx, {"decisions": _renamed(DECISIONS), "positions": _renamed(LATER[1:])})
+    assert out["summary"]["unmatched"] == [{"acct": "A1", "tkr": "VTI"}]
+
+
+OUTCOMES_REQUIRED = ("key_fields", "as_of_field", "value_field", "income_rate")
+BAD_OUTCOMES = [
+    ({"extra": 1}, "unknown"),
+    *[({"key_fields": bad}, "key_fields must be a non-empty list of distinct field names")
+      for bad in ("symbol", [], [""], ["a", "a"], [5], None)],
+    *[({name: bad}, f"{name} must be a non-empty field name")
+      for name in ("as_of_field", "value_field", "quantity_field") for bad in ("", 5, None)],
+    *[({"income_rate": bad}, "income_rate must be a number in")
+      for bad in (-0.01, 1.01, True, "0.01", float("nan"))],
+]
+
+
+@pytest.mark.parametrize("over, match", BAD_OUTCOMES)
+def test_each_bad_outcomes_declaration_is_one_named_problem(over, match):
+    problems = DecisionOutcomes.validate_params({**PARAMS, **over})
+    assert len(problems) == 1 and re.search(match, problems[0]), problems
+
+
+@pytest.mark.parametrize("name", OUTCOMES_REQUIRED)
+def test_each_outcomes_param_is_named_when_missing(name):
+    problems = DecisionOutcomes.validate_params({k: v for k, v in PARAMS.items() if k != name})
+    assert problems == [f"missing required params ['{name}']"]
+
+
+def test_inputs_must_be_lists_of_mappings_and_a_decision_must_be_dated(ctx):
+    node = DecisionOutcomes("o", PARAMS)
+    with pytest.raises(ValueError, match="decisions must be a list"):
+        node.run(ctx, {"decisions": None, "positions": LATER})
+    with pytest.raises(ValueError, match="positions must be a list"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": None})
+    with pytest.raises(ValueError, match="decision 1 must be a mapping, got list"):
+        node.run(ctx, {"decisions": [DECISIONS[0], [1, 2]], "positions": LATER})
+    with pytest.raises(ValueError, match="position 3 must be a mapping, got str"):
+        node.run(ctx, {"decisions": DECISIONS, "positions": LATER + ["VTI"]})
+    for bad in ("soon", None, 20261027):
+        with pytest.raises(ValueError, match="decision 0 field 'as_of' is not an ISO date"):
+            node.run(ctx, {"decisions": [{**DECISIONS[0], "as_of": bad}], "positions": LATER})

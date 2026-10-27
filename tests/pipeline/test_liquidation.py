@@ -4,6 +4,8 @@ Both kinds are wired by import path and are not registered. A row that cannot be
 valued refuses by name; nothing is filled or guessed.
 """
 
+import re
+
 import pytest
 
 from dskit.pipeline import active_hurdle, decision_outcomes, liquidation
@@ -406,3 +408,263 @@ def test_an_integral_float_horizon_runs_as_the_same_int(ctx):
     out = _decide(ctx, rows, horizon_years=2.0)
     assert out["summary"]["horizon_years"] == 2 and isinstance(out["summary"]["horizon_years"], int)
     assert out["records"][0]["horizon_years"] == 2
+
+
+def test_the_two_tax_rates_are_each_read_from_their_own_param(ctx):
+    # the shipped rates are .4 / .2; here .3 / .15 on a short-dated and a long-dated row,
+    # each with a 400 gain: short 400 x .3 = 120 (not 160), long 400 x .15 = 60 (not 80)
+    rows = [
+        {"market_value": 1000.0, "cost_basis": 600.0, "acquired": "2026-06-01"},   # short
+        {"market_value": 1000.0, "cost_basis": 600.0, "acquired": "2020-01-01"},   # long
+    ]
+    out = _tax(ctx, rows, short_term_rate=0.3, long_term_rate=0.15)
+    short, long = out["records"]
+    assert (short["liq_holding"], short["liq_rate"]) == ("short", 0.3)
+    assert (long["liq_holding"], long["liq_rate"]) == ("long", 0.15)
+    assert short["liq_tax"] == pytest.approx(120.0) and short["liq_net"] == pytest.approx(880.0)
+    assert long["liq_tax"] == pytest.approx(60.0) and long["liq_net"] == pytest.approx(940.0)
+    assert out["summary"]["tax"] == pytest.approx(180.0)
+    assert out["summary"]["net"] == pytest.approx(1820.0)
+    # changing ONE rate moves only its own class: long .15 -> .25 leaves the short row at 120
+    out = _tax(ctx, rows, short_term_rate=0.3, long_term_rate=0.25)
+    assert [r["liq_tax"] for r in out["records"]] == [pytest.approx(120.0), pytest.approx(100.0)]
+
+
+def test_a_renamed_field_set_gives_the_same_liquidation_numbers(ctx):
+    # test_long_short_and_defaulted_holdings_by_hand with every field renamed: nothing may
+    # read market_value / cost_basis / acquired by its default spelling
+    rows = [
+        {"tkr": "A", "mv": 2500.0, "cb": 2000.0, "acq": "2024-01-01"},    # long: 500 x .2
+        {"tkr": "B", "mv": 600.0, "cb": 450.0, "acq": "2026-06-01"},      # short: 150 x .4
+        {"tkr": "C", "mv": 100.0, "cb": 50.0},                            # defaulted long
+    ]
+    node = LiquidationTax("tax", {**TAX, "value_field": "mv", "basis_field": "cb",
+                                  "acquired_field": "acq"})
+    out = node.run(ctx, {"records": rows})
+    a, b, c = out["records"]
+    assert (a["liq_holding"], a["liq_gain"], a["liq_tax"], a["liq_net"]) == (
+        "long", 500.0, 100.0, 2400.0)
+    assert (b["liq_holding"], b["liq_tax"], b["liq_net"]) == ("short", 60.0, 540.0)
+    assert (c["liq_holding"], c["liq_tax"], c["liq_net"]) == ("long", 10.0, 90.0)
+    assert out["summary"]["tax"] == 170.0 and out["summary"]["net"] == 3030.0
+    assert a["tkr"] == "A" and a["mv"] == 2500.0          # the row's own fields ride along
+
+
+def test_a_renamed_field_set_gives_the_same_decision_numbers(ctx):
+    # test_terminal_tax_on_both_paths_by_hand with value / net / symbol / basis renamed; the
+    # symbol field is read through a per-symbol hold_return mapping
+    rows = [{"tkr": "A", "mv": 2500.0, "nt": 2400.0, "cb": 2000.0}]
+    out = _decide(ctx, rows, value_field="mv", net_field="nt", symbol_field="tkr",
+                  basis_field="cb", hold_return={"A": 0.07}, terminal_tax_rate=0.2,
+                  redeploy_tax_rate=0.2, redeploy_tax_timing="terminal")
+    row = out["records"][0]
+    assert row["hold_value"] == pytest.approx(2862.25)
+    assert row["hold_terminal_tax"] == pytest.approx(172.45)
+    assert row["redeploy_terminal_tax"] == pytest.approx(100.8)
+    assert row["hold_net"] == pytest.approx(2689.80)
+    assert row["redeploy_net"] == pytest.approx(2803.20)
+    assert row["decision"] == "exit"
+
+
+def test_the_terminal_and_annual_redeploy_tax_rates_are_each_their_own_param(ctx):
+    # DECIDE: hold .07, redeploy .15, cost .02, premium .03, 2 years; 2500 held (basis 2000),
+    # 2400 net. The hold's terminal rate is .3 and the redeploy's is .25: they differ from each
+    # other and from the .2 / .4 pairs used elsewhere.
+    # hold: 2500 x 1.07^2 = 2862.25, gain 862.25 x .3 = 258.675 -> 2603.575
+    rows = [{"symbol": "A", "market_value": 2500.0, "liq_net": 2400.0, "cost_basis": 2000.0}]
+    # annual: net rate .15 - .02 = .13, tax .13 x .25 = .0325 -> .0975, less the premium .03
+    # untaxed = .0675; 2400 x 1.0675^2 = 2400 x 1.13955625 = 2734.935; advantage 131.36
+    out = _decide(ctx, rows, terminal_tax_rate=0.3, basis_field="cost_basis",
+                  redeploy_tax_rate=0.25, redeploy_tax_timing="annual")
+    row = out["records"][0]
+    assert row["hold_terminal_tax"] == pytest.approx(258.675)
+    assert row["hold_net"] == pytest.approx(2603.575)
+    assert row["redeploy_value"] == pytest.approx(2734.935)
+    assert row["redeploy_terminal_tax"] == 0.0
+    assert row["advantage"] == pytest.approx(131.36)
+    assert row["decision"] == "exit"
+    assert out["summary"]["redeploy_rate"] == pytest.approx(0.0675)
+    assert (out["summary"]["terminal_tax_rate"], out["summary"]["redeploy_tax_rate"]) == (0.3, 0.25)
+    # terminal timing, same rates: rate .13 - .03 = .10, 2400 x 1.21 = 2904, gain over the new
+    # basis 2400 is 504 x .25 = 126 -> 2778; against the hold's 2603.575 that is +174.425
+    out = _decide(ctx, rows, terminal_tax_rate=0.3, basis_field="cost_basis",
+                  redeploy_tax_rate=0.25, redeploy_tax_timing="terminal")
+    row = out["records"][0]
+    assert row["hold_terminal_tax"] == pytest.approx(258.675)
+    assert row["redeploy_terminal_tax"] == pytest.approx(126.0)
+    assert row["redeploy_net"] == pytest.approx(2778.0)
+    assert row["advantage"] == pytest.approx(174.425)
+
+
+def test_a_negative_net_rate_under_terminal_timing_pays_no_terminal_tax(ctx):
+    # return 0 less cost .02 is a -2% net rate: 1000 x .98^2 = 960.4 is BELOW the 1000 put in,
+    # so there is no gain to tax (and no refund): redeploy_net is redeploy_value, under net
+    rows = [{"symbol": "A", "market_value": 1000.0, "liq_net": 1000.0}]
+    row = _decide(ctx, rows, hold_return=0.0, redeploy_return=0.0, redeploy_cost=0.02,
+                  risk_premium=0.0, redeploy_tax_rate=0.4,
+                  redeploy_tax_timing="terminal")["records"][0]
+    assert row["redeploy_value"] == pytest.approx(960.4)
+    assert row["redeploy_terminal_tax"] == 0.0
+    assert row["redeploy_net"] == row["redeploy_value"] < row["liq_net"]
+    assert row["decision"] == "hold"
+
+
+def test_an_acquisition_date_after_as_of_refuses_by_row_and_field(ctx):
+    # negative held days are no holding period: the date is refused, never read as "short"
+    today = {"market_value": 10.0, "cost_basis": 0.0, "acquired": "2026-10-27"}
+    tomorrow = {"market_value": 10.0, "cost_basis": 0.0, "acquired": "2026-10-28"}
+    with pytest.raises(ValueError, match=r"row 1 field 'acquired'.*2026-10-28.*after.*2026-10-27"):
+        _tax(ctx, [today, tomorrow])
+    # the same day is zero days held: a legitimate short-term holding
+    row = _tax(ctx, [today])["records"][0]
+    assert (row["liq_holding"], row["liq_rate"]) == ("short", 0.4)
+    # a declared as_of is the date the check is made against
+    dated = {"market_value": 10.0, "cost_basis": 0.0, "acquired": "2026-06-01"}
+    with pytest.raises(ValueError, match=r"row 0 field 'acquired'.*2026-06-01.*after.*2026-01-01"):
+        _tax(ctx, [dated], as_of="2026-01-01")
+
+
+def test_records_must_be_a_list_of_mappings_and_not_carry_outputs(ctx):
+    decide_row = {"symbol": "A", "market_value": 1.0, "liq_net": 1.0}
+    for node, rows in ((LiquidationTax("t", TAX), None), (HoldVsRedeploy("d", DECIDE), None)):
+        with pytest.raises(ValueError, match="records must be a list, got NoneType"):
+            node.run(ctx, {"records": rows})
+    with pytest.raises(ValueError, match="row 0 must be a mapping, got list"):
+        HoldVsRedeploy("d", DECIDE).run(ctx, {"records": [[1, 2]]})
+    with pytest.raises(ValueError, match=r"row 0 already carries \['decision'\]"):
+        _decide(ctx, [{**decide_row, "decision": "hold"}])
+
+
+BAD_TAX = [
+    ({"surprise": 1}, "unknown"),
+    ({"as_of": "yesterday"}, "as_of must be an ISO date"),
+    ({"as_of": 20261027}, "as_of must be an ISO date"),
+    ({"short_term_rate": -0.01}, "short_term_rate must be a number in"),
+    ({"short_term_rate": 1.01}, "short_term_rate must be a number in"),
+    ({"short_term_rate": True}, "short_term_rate must be a number in"),
+    ({"short_term_rate": "0.4"}, "short_term_rate must be a number in"),
+    ({"short_term_rate": float("nan")}, "short_term_rate must be a number in"),
+    ({"long_term_rate": -0.01}, "long_term_rate must be a number in"),
+    ({"long_term_rate": 1.01}, "long_term_rate must be a number in"),
+    ({"long_term_rate": True}, "long_term_rate must be a number in"),
+    ({"long_term_rate": None}, "long_term_rate must be a number in"),
+    ({"long_term_days": 0}, "long_term_days must be an int >= 1"),
+    ({"long_term_days": 365.5}, "long_term_days must be an int >= 1"),
+    ({"long_term_days": True}, "long_term_days must be an int >= 1"),
+    ({"default_holding": "medium"}, "default_holding must be one of"),
+    ({"default_holding": None}, "default_holding must be one of"),
+    ({"loss_offset": "false"}, "loss_offset must be a bool"),
+    ({"loss_offset": 0}, "loss_offset must be a bool"),
+    ({"value_field": ""}, "value_field must be a non-empty field name"),
+    ({"value_field": 5}, "value_field must be a non-empty field name"),
+    ({"basis_field": None}, "basis_field must be a non-empty field name"),
+    ({"acquired_field": 5}, "acquired_field must be a non-empty field name"),
+    ({"acquired_field": ""}, "acquired_field must be a non-empty field name"),
+]
+
+
+@pytest.mark.parametrize("over, match", BAD_TAX)
+def test_each_bad_tax_declaration_is_one_named_problem(over, match):
+    problems = LiquidationTax.validate_params({**TAX, **over})
+    assert len(problems) == 1 and re.search(match, problems[0]), problems
+
+
+@pytest.mark.parametrize("name", [k for k in TAX if k not in ("as_of", "acquired_field")])
+def test_each_required_tax_param_is_named_when_missing(name):
+    problems = LiquidationTax.validate_params({k: v for k, v in TAX.items() if k != name})
+    assert problems == [f"missing required params ['{name}']"]
+
+
+def test_tax_declarations_accumulate_and_the_optional_ones_may_be_absent_or_null():
+    with pytest.raises(ConfigError) as caught:
+        LiquidationTax("t", {**TAX, "short_term_rate": 9, "loss_offset": "no", "surprise": 1})
+    assert len(caught.value.errors) == 3
+    # as_of and acquired_field are optional; a null acquired_field means "no date column"
+    LiquidationTax("t", {k: v for k, v in TAX.items() if k != "acquired_field"})
+    LiquidationTax("t", {**TAX, "acquired_field": None})
+    LiquidationTax("t", {**TAX, "short_term_rate": 0, "long_term_rate": 1})   # inclusive bounds
+
+
+BAD_DECIDE = [
+    ({"extra": 1}, "unknown"),
+    ({"horizon_years": 0}, "horizon_years must be an int >= 1"),
+    ({"horizon_years": 101}, "horizon_years must be at most 100"),
+    ({"horizon_years": 2.5}, "horizon_years must be an int >= 1"),
+    ({"horizon_years": True}, "horizon_years must be an int >= 1"),
+    ({"hold_return": "high"}, "hold_return must be a number in"),
+    ({"hold_return": 7}, "hold_return must be a number in"),
+    ({"hold_return": -1.01}, "hold_return must be a number in"),
+    ({"hold_return": True}, "hold_return must be a number in"),
+    ({"hold_return": {}}, "hold_return mapping must be"),
+    ({"hold_return": {"": 0.1}}, "hold_return mapping must be"),
+    ({"hold_return": {5: 0.1}}, "hold_return mapping must be"),
+    ({"hold_return": {"A": 7}}, r"hold_return\['A'\] must be a number in"),
+    ({"hold_return": {"A": True}}, r"hold_return\['A'\] must be a number in"),
+    ({"hold_return": {"A": "x"}}, r"hold_return\['A'\] must be a number in"),
+    ({"redeploy_return": 7}, "redeploy_return must be a number in"),
+    ({"redeploy_return": -1.01}, "redeploy_return must be a number in"),
+    ({"redeploy_return": True}, "redeploy_return must be a number in"),
+    ({"redeploy_return": "x"}, "redeploy_return must be a number in"),
+    ({"redeploy_cost": -0.01}, "redeploy_cost must be a number in"),
+    ({"redeploy_cost": 2.01}, "redeploy_cost must be a number in"),
+    ({"redeploy_cost": True}, "redeploy_cost must be a number in"),
+    ({"risk_premium": -0.01}, "risk_premium must be a number in"),
+    ({"risk_premium": 2.01}, "risk_premium must be a number in"),
+    ({"risk_premium": "x"}, "risk_premium must be a number in"),
+    ({"value_field": ""}, "value_field must be a non-empty field name"),
+    ({"net_field": 5}, "net_field must be a non-empty field name"),
+    ({"symbol_field": None}, "symbol_field must be a non-empty field name"),
+    ({"terminal_tax_rate": 0.2}, "terminal_tax_rate and basis_field are declared together"),
+    ({"basis_field": "cb"}, "terminal_tax_rate and basis_field are declared together"),
+    ({"terminal_tax_rate": 1.5, "basis_field": "cb"}, "terminal_tax_rate must be a number in"),
+    ({"terminal_tax_rate": -0.1, "basis_field": "cb"}, "terminal_tax_rate must be a number in"),
+    ({"terminal_tax_rate": 0.2, "basis_field": ""}, "basis_field must be a non-empty field name"),
+    ({"redeploy_tax_rate": 0.4}, "redeploy_tax_rate and redeploy_tax_timing are declared together"),
+    ({"redeploy_tax_timing": "annual"},
+     "redeploy_tax_rate and redeploy_tax_timing are declared together"),
+    ({"redeploy_tax_rate": 1.5, "redeploy_tax_timing": "annual"},
+     "redeploy_tax_rate must be a number in"),
+    ({"redeploy_tax_rate": -0.1, "redeploy_tax_timing": "terminal"},
+     "redeploy_tax_rate must be a number in"),
+    ({"redeploy_tax_rate": 0.4, "redeploy_tax_timing": "monthly"},
+     "redeploy_tax_timing must be one of"),
+]
+
+
+@pytest.mark.parametrize("over, match", BAD_DECIDE)
+def test_each_bad_decision_declaration_is_one_named_problem(over, match):
+    problems = HoldVsRedeploy.validate_params({**DECIDE, **over})
+    assert len(problems) == 1 and re.search(match, problems[0]), problems
+
+
+@pytest.mark.parametrize("name", ["horizon_years", "redeploy_cost", "risk_premium",
+                                  "value_field", "net_field", "symbol_field"])
+def test_each_required_decision_param_is_named_when_missing(name):
+    problems = HoldVsRedeploy.validate_params({k: v for k, v in DECIDE.items() if k != name})
+    assert problems == [f"missing required params ['{name}']"]
+
+
+def test_the_two_returns_may_be_absent_from_the_declaration_because_a_wire_can_supply_them():
+    bare = {k: v for k, v in DECIDE.items() if k not in ("hold_return", "redeploy_return")}
+    assert HoldVsRedeploy.validate_params(bare) == []
+    HoldVsRedeploy("d", {**DECIDE, "hold_return": {"A": 0.0, "B": -1.0}})   # a mapping is valid
+
+
+def test_wired_hold_returns_and_redeploy_return_are_type_checked_at_run(ctx):
+    rows = [{"symbol": "A", "market_value": 100.0, "liq_net": 90.0}]
+    node = HoldVsRedeploy("d", DECIDE)
+    # hold_returns: a mapping of str -> finite non-bool number, or a refusal naming the input
+    for bad in ([0.5], None, "A", {"A": "x"}, {"A": True}, {"A": float("nan")},
+                {"A": None}, {1: 0.1}):
+        with pytest.raises(ValueError, match="hold_returns must be a {symbol: number} mapping"):
+            node.run(ctx, {"records": rows, "hold_returns": bad})
+    # redeploy_return: a finite non-bool number, or None (inadmissible); nothing else
+    for bad in ("high", True, float("nan"), float("inf"), [0.1]):
+        with pytest.raises(ValueError, match="redeploy_return input must be a number or None"):
+            node.run(ctx, {"records": rows, "redeploy_return": bad})
+    # an int rate is a number, and a bare empty mapping is a valid (symbol-less) wire that
+    # then refuses the row's symbol by name instead
+    assert node.run(ctx, {"records": rows, "redeploy_return": 0})["summary"][
+        "redeploy_return_source"] == "wired"
+    with pytest.raises(ValueError, match="row 0 has no hold_return entry for symbol 'A'"):
+        node.run(ctx, {"records": rows, "hold_returns": {}})

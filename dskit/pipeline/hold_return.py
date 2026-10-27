@@ -32,8 +32,10 @@ Import cost: stdlib + the pipeline core.
 from __future__ import annotations
 
 from dskit.pipeline.binary_curve import name_ok
-from dskit.pipeline.liquidation import check_horizon_param, check_rate_param, require_rate
-from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.liquidation import (
+    check_count_param, check_horizon_param, check_rate_param, require_rate,
+)
+from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 __all__ = ["BetaHoldReturns", "MarketHoldReturn"]
@@ -50,8 +52,8 @@ class MarketHoldReturn(Node):
         ``dividend_yield``, ``real_growth``, ``inflation`` (numbers in
         ``[-1, 2]``, REQUIRED); ``cape``, ``fair_cape`` (positive numbers,
         REQUIRED): the current and the fair cyclically adjusted P/E;
-        ``reversion_years`` (int >= 1, REQUIRED): the years over which the
-        valuation is assumed to drift to fair; ``horizon_years`` (int in
+        ``reversion_years`` (int in ``[1, 10**6]``, REQUIRED): the years over
+        which the valuation is assumed to drift to fair; ``horizon_years`` (int in
         ``[1, 100]``, REQUIRED): the decision horizon this rate serves, at most
         ``reversion_years``. The computed rate must lie in ``[-1, 2]``.
 
@@ -88,7 +90,7 @@ class MarketHoldReturn(Node):
                 problems.append(f"{name} must be a positive number, got {params[name]!r}")
         reversion_problems = len(problems)
         if "reversion_years" in params:
-            check_int_param(problems, "reversion_years", params["reversion_years"], ge=1)
+            check_count_param(problems, "reversion_years", params["reversion_years"], ge=1)
         reversion_ok = "reversion_years" in params and len(problems) == reversion_problems
         horizon_problems = len(problems)
         if "horizon_years" in params:
