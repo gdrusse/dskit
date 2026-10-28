@@ -1,6 +1,6 @@
 {
   "name": "portfolio_policy-hold-vs-redeploy",
-  "notes": "ADR-0279 Stages 1-4 on aggregate positions: the latest schwab_positions snapshot -> liquidation tax per holding; market blocks -> beta hold returns; an onboarded backtest series -> deflated active hurdle; hold vs redeploy decision -> rows written. Every rate, horizon, premium and field name is a value of THIS document; the kinds carry none. The as_of, rates and returns below are placeholders the owner sets before the first real run; they are the experiment's identity, so changing them changes the hash on purpose.",
+  "notes": "ADR-0279 Stages 1-4 per tax lot: the latest schwab_positions snapshot, and every schwab_transactions trade replayed into open FIFO lots (research A0004), reconciled share for share against it -> liquidation tax per lot by its own holding period; market blocks -> beta hold returns; an onboarded backtest series -> deflated active hurdle; hold vs redeploy decision per lot -> rows written. Every rate, horizon, premium and field name is a value of THIS document; the kinds carry none. The as_of, rates and returns below are placeholders the owner sets before the first real run; they are the experiment's identity, so changing them changes the hash on purpose. To fall back to aggregate positions (no lots), point tax.inputs.records at $snapshot.records and drop tax.acquired_field (and the lots nodes).",
   "pipeline": {
     "positions": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
@@ -22,11 +22,51 @@
           { "field": "long_quantity", "op": ">", "value": 0 }
         ]
       },
-      "notes": "The decision date, declared: one snapshot, so a holding appears once; tax.as_of below is pinned to the same day. Set both to the day of the pull. EQUITY only: cost_basis is average price x shares, and an option contract's multiplier is not applied, so option rows would get nonsense gains. long_quantity > 0 drops short positions: a short row has a negative market value and basis, and LiquidationTax and HoldVsRedeploy REFUSE such a row by index rather than decide on it, so the owner filters here (a hold-vs-exit decision is about a long holding)."
+      "notes": "The decision date, declared: one snapshot, so a holding appears once; lots.as_of and tax.as_of below are pinned to the same day. Set all three to the day of the pull. EQUITY only: cost_basis is average price x shares, and an option contract's multiplier is not applied, so option rows would get nonsense gains. long_quantity > 0 drops short positions: a short row has a negative market value and basis, and LiquidationTax and HoldVsRedeploy REFUSE such a row by index rather than decide on it, so the owner filters here (a hold-vs-exit decision is about a long holding)."
+    },
+    "trades": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./ob",
+        "source": "schwab_trades",
+        "stream": "trades",
+        "key_fields": ["account", "transaction_id", "symbol"]
+      },
+      "notes": "Role 'data': every trade acquired through dskit.onboarding (connector schwab_transactions, source alias schwab_trades: one alias is one connector), one row per account x transaction x symbol: signed quantity, price, signed net cash. The pull's start must reach back to the earliest purchase still held, or the reconciliation in lot_positions refuses."
+    },
+    "lots": {
+      "uses": "dskit.pipeline.tax_lots:TaxLots",
+      "inputs": { "records": "$trades.records" },
+      "params": {
+        "as_of": "2026-10-27",
+        "method": "fifo",
+        "key_fields": ["account", "symbol"],
+        "date_field": "trade_date",
+        "quantity_field": "quantity",
+        "price_field": "price",
+        "amount_field": "amount",
+        "order_field": "transaction_id",
+        "allow_incomplete": false
+      },
+      "notes": "Open lots per account x symbol as of the snapshot day (pinned equal to snapshot.where[as_of] and tax.as_of by tests/test_configs.py): every trade up to it replayed, a sell taking the earliest lots first (fifo, the rule when no lot is identified; Schwab's default for stocks, while funds and some ETFs in accounts opened before October 2024 default to average cost: confirm the account's election). A buy's basis is the cash it paid (amount, fees included) or quantity x price when the amount is null. allow_incomplete false: a sell of shares the history never bought (bought before the pull's start, transferred in, sold short) refuses by name; true withholds that holding's lots and lot_positions falls back to its aggregate row. Pinned equal to lot_positions.allow_incomplete."
+    },
+    "lot_positions": {
+      "uses": "dskit.pipeline.tax_lots:LotPositions",
+      "inputs": { "lots": "$lots.records", "positions": "$snapshot.records" },
+      "params": {
+        "key_fields": ["account", "symbol"],
+        "quantity_field": "long_quantity",
+        "value_field": "market_value",
+        "basis_field": "cost_basis",
+        "carry_fields": ["as_of", "asset_type"],
+        "tolerance": 0.0,
+        "allow_incomplete": false
+      },
+      "notes": "Each lot becomes a position row: long_quantity = the lot's shares, market_value = its share of the position's value at the snapshot's price, cost_basis = the lot's basis, plus lot_id and acquired. Every snapshot holding must reconcile: its lots' shares equal its long_quantity within tolerance (0.0 shares; raise it to a few thousandths only if dividend reinvestment rounding differs between the two endpoints). A holding that does not reconcile, or has no lots, refuses unless allow_incomplete, when it passes through as its aggregate row with a null acquired date (default_holding applies). The summary's basis_gap per holding is lot basis - Schwab's cost basis: zero when fifo matches the account's books."
     },
     "tax": {
       "uses": "dskit.pipeline.liquidation:LiquidationTax",
-      "inputs": { "records": "$snapshot.records" },
+      "inputs": { "records": "$lot_positions.records" },
       "params": {
         "as_of": "2026-10-27",
         "short_term_rate": 0.408,
@@ -35,9 +75,10 @@
         "default_holding": "long",
         "loss_offset": false,
         "value_field": "market_value",
-        "basis_field": "cost_basis"
+        "basis_field": "cost_basis",
+        "acquired_field": "acquired"
       },
-      "notes": "as_of equals the snapshot day above (tests/test_configs.py pins the two), so the holding period is measured to the day the positions were taken whatever --asof labels the run. Aggregate rows carry no acquisition date, so every holding takes default_holding until a lot-level source adds an 'acquired' field (then declare acquired_field). Rates are the owner's marginal federal + NIIT placeholders; state tax is not included."
+      "notes": "One row per lot. as_of equals the snapshot day above (tests/test_configs.py pins the three), so the holding period is measured to the day the positions were taken whatever --asof labels the run. Each lot is long when held at least long_term_days (366: more than a year, exact except when the year spans 29 February) and short otherwise; an aggregate fallback row (null acquired) takes default_holding. Rates are the owner's marginal federal + NIIT placeholders; state tax is not included."
     },
     "market": {
       "uses": "dskit.pipeline.hold_return:MarketHoldReturn",
@@ -110,10 +151,10 @@
       "inputs": { "records": "$decide.records" },
       "params": {
         "path": "decisions/{run}.jsonl",
-        "source": "hold-vs-redeploy decisions per account x symbol",
+        "source": "hold-vs-redeploy decisions per account x symbol x lot",
         "overwrite": false
       },
-      "notes": "Role 'report': the advisory rows, one per holding, with liq_* and the decision, in ./decisions under the invoking cwd, one file per run so no run shadows another (ADR-0247). Never an order."
+      "notes": "Role 'report': the advisory rows, one per lot (lot_id, acquired), with liq_* and the decision, in ./decisions under the invoking cwd, one file per run so no run shadows another (ADR-0247). Never an order. Lots of one holding may decide differently: a young lot pays the short-term rate to sell, an old one the long-term rate."
     },
     "summary": {
       "uses": "dskit.pipeline.position_summary:PositionSummary",
@@ -122,7 +163,7 @@
         "betas": "$betas.betas"
       },
       "params": {
-        "key_fields": ["account", "symbol"],
+        "key_fields": ["account", "symbol", "lot_id"],
         "symbol_field": "symbol",
         "value_field": "market_value",
         "net_field": "liq_net",
@@ -132,17 +173,17 @@
         "redeploy_tax_rate": 0.408,
         "redeploy_tax_timing": "annual"
       },
-      "notes": "The few numbers (research A0002): per holding its weight, expected return a year, beta, embedded gain and tax cost of selling as shares of value, the break-even active return at which exiting ties holding, and the after-tax opportunity cost of holding a year (above zero: exit wins); the portfolio's totals, weighted return and beta, concentration by symbol (HHI, top weight) and aggregate opportunity cost in its metrics output. The portfolio's embedded gain nets losses across holdings, but its tax cost nets them only when tax.loss_offset is true; while it is false a loss offsets no gain and the tax cost errs high. The field names and the four redeploy terms restate decide's, pinned equal by tests/test_configs.py, so the break-even inverts exactly the comparison decide made. betas is wired from the beta table that priced the hold return. volatilities is not wired yet: it needs daily closes onboarded (a yahoo chart archive or Alpaca daily bars) -> DailyBarFeatures realized_vol -> filter to the snapshot day -> ComputeFields x sqrt(252) -> keyby symbol; until then volatility is null."
+      "notes": "The few numbers (research A0002), one row per lot (key_fields carry lot_id; concentration still merges by symbol): per lot its weight, expected return a year, beta, embedded gain and tax cost of selling as shares of value, the break-even active return at which exiting ties holding, and the after-tax opportunity cost of holding a year (above zero: exit wins); the portfolio's totals, weighted return and beta, concentration by symbol (HHI, top weight) and aggregate opportunity cost in its metrics output. The portfolio's embedded gain nets losses across holdings, but its tax cost nets them only when tax.loss_offset is true; while it is false a loss offsets no gain and the tax cost errs high. The field names and the four redeploy terms restate decide's, pinned equal by tests/test_configs.py, so the break-even inverts exactly the comparison decide made. betas is wired from the beta table that priced the hold return. volatilities is not wired yet: it needs daily closes onboarded (a yahoo chart archive or Alpaca daily bars) -> DailyBarFeatures realized_vol -> filter to the snapshot day -> ComputeFields x sqrt(252) -> keyby symbol; until then volatility is null."
     },
     "summaries": {
       "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
       "inputs": { "records": "$summary.records" },
       "params": {
         "path": "summary/{run}.jsonl",
-        "source": "position summary per account x symbol",
+        "source": "position summary per account x symbol x lot",
         "overwrite": false
       },
-      "notes": "Role 'report': one summary row per holding in ./summary under the invoking cwd, one file per run (ADR-0247). The portfolio numbers are the summary node's metrics: carry.json in the run directory holds them and `python -m dskit.pipeline runs` tabulates them run over run."
+      "notes": "Role 'report': one summary row per lot in ./summary under the invoking cwd, one file per run (ADR-0247). The portfolio numbers are the summary node's metrics: carry.json in the run directory holds them and `python -m dskit.pipeline runs` tabulates them run over run."
     }
   },
   "outputs": {

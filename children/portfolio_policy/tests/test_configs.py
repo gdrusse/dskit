@@ -62,12 +62,56 @@ def test_source_sample_validates_against_the_connectors_spec():
 
 
 def test_decision_day_is_declared_once_per_document():
-    """The snapshot filter and the tax date name the same day: a mismatch would
-    tax one day's positions as of another, silently, once lots carry dates."""
+    """The snapshot filter, the lots' replay date and the tax date name the same day: a
+    mismatch would tax one day's positions (or lots) as of another, silently."""
     document = load_document(_path("run-hold-vs-redeploy.json"))
     where = {c["field"]: c["value"] for c in document.pipeline["snapshot"].params["where"]}
     assert document.pipeline["tax"].params["as_of"] == where["as_of"]
+    assert document.pipeline["lots"].params["as_of"] == where["as_of"]
     assert where["asset_type"] == "EQUITY"
+
+
+def test_the_tax_reads_lots_and_the_lot_policy_is_declared_once():
+    """The tax runs per lot with each lot's own date; the two lot kinds restate the holding key
+    and the incomplete-history policy, so a mismatch must fail here, not in a quiet fallback."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    nodes = document.pipeline
+    lots, join, tax = nodes["lots"].params, nodes["lot_positions"].params, nodes["tax"].params
+    assert nodes["lots"].inputs == {"records": "$trades.records"}
+    assert nodes["lot_positions"].inputs == {"lots": "$lots.records",
+                                             "positions": "$snapshot.records"}
+    assert nodes["tax"].inputs == {"records": "$lot_positions.records"}
+    assert tax["acquired_field"] == "acquired", "each lot is taxed by its own holding period"
+    assert lots["method"] == "fifo"
+    assert lots["key_fields"] == join["key_fields"]
+    assert lots["allow_incomplete"] == join["allow_incomplete"]
+    assert (join["value_field"], join["basis_field"]) == (tax["value_field"], tax["basis_field"])
+    assert set(lots["key_fields"]) < set(nodes["trades"].params["key_fields"])
+    assert lots["order_field"] in nodes["trades"].params["key_fields"]
+
+
+def test_the_trades_key_is_the_transactions_connectors_key():
+    """ObservationRows deduplicates on the document's key: anything coarser than the
+    connector's own key would collapse two fills of one transaction into one."""
+    from dskit.onboarding.libs.schwab import TRANSACTION_KEY_FIELDS, TRANSACTION_STREAM
+
+    trades = load_document(_path("run-hold-vs-redeploy.json")).pipeline["trades"].params
+    assert trades["key_fields"] == list(TRANSACTION_KEY_FIELDS)
+    assert trades["stream"] == TRANSACTION_STREAM
+
+
+def test_every_reader_of_lot_rows_keys_on_the_lot():
+    """Decisions are per lot: the summary, the decisions read back for scoring and the
+    outcomes all key on lot_id, and the outcomes match the later snapshot per holding."""
+    decide = load_document(_path("run-hold-vs-redeploy.json"))
+    outcomes = load_document(_path("run-decision-outcomes.json"))
+    summary = decide.pipeline["summary"].params
+    scored = outcomes.pipeline["outcomes"].params
+    holding = decide.pipeline["lot_positions"].params["key_fields"]
+    assert summary["key_fields"] == [*holding, "lot_id"]
+    assert scored["key_fields"] == summary["key_fields"]
+    assert scored["match_fields"] == holding
+    assert outcomes.pipeline["decisions"].params["key_fields"] == [*summary["key_fields"], "as_of"]
 
 
 def test_market_horizon_is_the_decision_horizon():

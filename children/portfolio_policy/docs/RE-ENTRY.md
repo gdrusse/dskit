@@ -1,6 +1,6 @@
 # RE-ENTRY — portfolio_policy
 
-Updated: 2026-10-27 by Claude Sonnet 5.5 (position-summary round 1). Rewritten whole at every `/wrap`;
+Updated: 2026-10-28 by Claude Opus 5.5 (tax lots, branch `schwab-tax-lots`). Rewritten whole at every `/wrap`;
 the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
@@ -21,31 +21,38 @@ refusal or hardcode in the ADR-0279 modules. Record and backlog:
 yet; every rate in the documents is a placeholder, and
 `decide.risk_premium` 0.0 is one to set from the backtest's volatility.
 
-In flight: branch `portfolio-summary` (Opus, research A0002 +
-`dskit/pipeline/position_summary.py`, `PositionSummary`: weight, expected
-return, beta, volatility (port only), embedded gain, tax cost, break-even
-return and opportunity cost per holding, one portfolio roll-up in `metrics`;
-the document's `summary` node writes `summary/<run>.jsonl`). `main`'s four
-Sonnet rounds are merged into it. Its own Sonnet loop: round 1 fixed 2 Major
-(loss and zero-basis rows, the break-even kinks; 304 dskit + 67 child tests
-green); round 2 review is next, and it stays off `main` until the loop is clean.
+`PositionSummary` (research A0002, `summary/<run>.jsonl`) is on `main`; its
+Sonnet loop closed CLEAN (memo).
+
+In flight: branch `schwab-tax-lots` (Opus, research A0004, A0003 on the branch):
+`schwab_transactions` (tier 2, `trades` stream), `dskit/pipeline/tax_lots.py`
+(`TaxLots` FIFO lots, `LotPositions` reconciled per holding),
+`DecisionOutcomes.match_fields`; the decision document runs per lot
+(`trades -> lots -> lot_positions -> tax` with `acquired_field`), outcomes per
+lot matched per holding. Not lens-reviewed; to merge after `schwab-risk-inputs`
+(renumber the research row to A0004 at that merge).
 
 ## Next
 
-Merge `portfolio-summary` after its Sonnet loop is clean. Then the owner
-sets the decision document's placeholders (blocks, betas, tax rates — pinned
-pairs are tested — `trials`, `min_dsr`, `min_periods`, `risk_premium`, the
-snapshot day), chooses the backtest that feeds `active`/`returns`, and runs
+Lens-review `schwab-tax-lots`, then merge it. The owner sets the decision
+document's placeholders (blocks, betas, tax rates — pinned pairs are tested —
+`trials`, `min_dsr`, `min_periods`, `risk_premium`, the snapshot day, the
+trades `start`), chooses the backtest that feeds `active`/`returns`, and runs
 the README sequence for the first real snapshot + decision; record it with
 the `memo` skill.
 
 ## Blocked / owner decisions
 
+- Lot method per account: FIFO ships; Schwab's default for funds and some ETFs in
+  accounts opened before October 2024 is average cost (not built). `basis_gap`
+  in `lot_positions` shows a mismatch on the first real run.
+- `allow_incomplete` (ships false): how far back Schwab serves transactions is
+  unverified; holdings older than it refuse until the owner allows the aggregate
+  fallback or onboards Schwab's lot export.
+- `lot_positions.tolerance` (ships 0.0 shares) for reinvestment rounding.
 - Volatility source for the summary: yahoo chart file per symbol vs Alpaca
   daily bars; 252-day window on adjusted closes proposed (then wire
   realized_vol -> filter -> ComputeFields -> keyby into `summary`).
-- Lot-level data: a Schwab lot CSV through `localfiles` (then declare
-  `acquired_field`) vs aggregate-only.
 - Which child's backtest feeds `active` / `returns`, and its honest `trials`.
 - Cadence: a weekly scheduled `pipeline run` vs a `dskit.production` serve
   document (deferred: advisory, no order path).
@@ -57,6 +64,7 @@ the `memo` skill.
 - `docs/architecture/decision-log.md` § ADR-0279 and amendments
 - `docs/research/hold-return/2026-10-27-synthesis.md`
 - `docs/research/position-summary/2026-10-27-synthesis.md`
+- `docs/research/tax-lots/2026-10-28-synthesis.md`
 
 ## Do not
 
