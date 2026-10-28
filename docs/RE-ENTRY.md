@@ -14,7 +14,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
 | intraday_equities | `children/intraday_equities/docs/RE-ENTRY.md` | 2026-10-12: fill-window relabel: next-bar-fill IC 0.01-0.02 (5-min rows), 0.002-0.005 (1-min rows); no fill-reachable edge |
 | pmquant | `children/pmquant/docs/RE-ENTRY.md` | 2026-09-04: child landed; waits on PREDEXON_API_KEY and the real-data twin |
-| portfolio_policy | `children/portfolio_policy/docs/RE-ENTRY.md` | 2026-10-28: branch `hold-report` = `main` (risk inputs from Schwab daily bars A0003 + tax lots from Schwab transactions A0004, one decision document, decisions per lot) plus the hold verdict page (`HoldVerdict`, `run-hold-report.json`, `weekly.sh <day>`, one line per lot); not lens-reviewed since the merge or merged to `main`; no real pull yet |
+| portfolio_policy | `children/portfolio_policy/docs/RE-ENTRY.md` | 2026-10-28: Schwab positions + daily bars + transactions → per-lot tax, vol/beta, hurdle, decision, summary, verdict page (`weekly.sh`); every slice Sonnet-loop CLEAN + final join lens CLEAN; merged; no real pull yet |
 | intraday_poc | `children/intraday_poc/docs/RE-ENTRY.md` | legacy worked example; no active lane |
 
 ## Core (dskit itself)

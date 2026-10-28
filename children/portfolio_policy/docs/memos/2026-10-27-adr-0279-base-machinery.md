@@ -188,6 +188,19 @@ Schwab serves transactions, and the ETF `asset_type` (`COLLECTIVE_INVESTMENT`).
   `test_uncertainty_set`, the `parquet.py` purity gate, and `crypto_trading`'s
   own suite (182 failures on `main` before this branch).
 
+## Schwab slices and the final lens (2026-10-28)
+
+Three Opus-built slices, each Sonnet-reviewed to CLEAN on its branch, then
+integrated by Sonnet merge agents and checked by one final Sonnet lens on the
+join (commit `6688f7a`): risk inputs (`schwab_daily`, 252-day vol, Blume beta
+vs SPY; 2 rounds, 1 Major fixed), tax lots (`schwab_transactions`, FIFO
+`TaxLots`, `LotPositions`; 2 rounds, 1 Major fixed), hold verdict
+(`HoldVerdict`, `run-hold-report.json`, `weekly.sh`; 3 rounds, 3 Major
+fixed). Final lens: 0 Critical, 0 Major; 1006 dskit + 118 child tests; one
+lot hand-verified from trades to verdict (value 1646.10, long-term tax
+134.73, hold_net 1712.74, break-even 6.28%, opportunity cost 11.74% on the
+placeholders). Open Minors are in the lane note.
+
 ## Disclosed backlog (Minor / Nit, not fixed)
 
 Position-summary loop round 2 (reviewer on `85c4bf1`) returned CLEAN — 0
