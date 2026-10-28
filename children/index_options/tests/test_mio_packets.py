@@ -329,3 +329,50 @@ def test_metadata_plan_never_reads_payload_and_byte_drift_refuses(study, monkeyp
     with pytest.raises(ValueError, match="drift"):
         MIOPacketInputs("intake", {"study": study}).run(None, {"permit": permit})
     assert registry.snapshot()["claims"][permit["id"]]["status"] == "claimed_exposed"
+
+
+def test_sqlite_quote_index_matches_legacy_weekly_account(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from dskit.pipeline.libs.parquet import SQLiteParquetIndex
+    from index_options.ledger_studies import _AllQuotedOptionContext
+
+    params, original = _packet_clock_fixture()
+    baseline = WeeklyOptionPortfolioStudy(params, original).run()["methods"][0]
+    archive = tmp_path / "chain.parquet"
+    pq.write_table(pa.Table.from_pylist(original["X"]["chain"]), archive, row_group_size=2)
+    node = _AllQuotedOptionContext("prepare", {**params["bridge"], "symbol": "X"})
+    factors = {}
+    expiries = sorted({row["expiry"] for row in original["X"]["forecasts"]})
+    descriptor = SQLiteParquetIndex.build(str(archive), str(tmp_path / "quotes.sqlite"),
+        ["symbol", "date", "expiration", "type", "strike_raw", "strike", "bid", "ask",
+         "bid_size", "ask_size", "basis_factor", "underlying_price"],
+        {"date": {"start": params["clocks"]["history_start"],
+                   "end_before": params["clocks"]["tail_end_before"]},
+         "expiration": {"end_before": params["clocks"]["tail_end_before"]}},
+        where=__import__("pyarrow.dataset", fromlist=["field"]).field("symbol") == "X",
+        unique_by=("symbol", "date", "expiration", "type", "strike_raw"),
+        partition_by=("date", "expiration"), float_keys=("strike_raw",),
+        validator=lambda row: node._validate_quote_row(row, factors))
+    from dskit.pipeline.libs.parquet import SQLiteParquetIndex as _Index
+    debug_index = _Index(descriptor)
+    debug_index.close()
+    indexed_inputs = copy.deepcopy(original)
+    indexed_inputs["X"].pop("chain")
+    indexed_inputs["X"]["chain_index"] = {"index": descriptor, "basis_factors": factors}
+    indexed = WeeklyOptionPortfolioStudy(params, indexed_inputs)
+    events = []
+    actual = indexed._method(params["methods"][0], None, events=events.append)
+    def without_timing(result):
+        result = copy.deepcopy(result)
+        for decision in result["decisions"]:
+            for certificate in decision.get("certificates", []):
+                certificate.pop("seconds", None)
+        return result
+    assert without_timing(actual) == without_timing(baseline)
+    assert sum(e["type"] == "weekly_decision" for e in events) == len(indexed.weeks)
+    daily = [e for e in events if e["type"] == "daily_account_snapshot"]
+    assert len(daily) == len(indexed.calendar)
+    assert all("realized_pnl_usd" in e and "twr" not in e for e in daily)
+    assert sum(e["type"] == "marked_equity_point" for e in events) == len(indexed.calendar)
+    indexed.close_quote_indexes(verify=True)

@@ -758,3 +758,69 @@ def test_row_groups_with_equal_minima_rank_by_their_maxima(tmp_path):
     reader = pack.DateBoundedParquet(str(path), ["when", "px"], {"when": {"end_before": "2024-02-01"}})
     got = [v for b in reader.batches(order_by="when") for v in b.column("when").to_pylist()]
     assert got == ["2024-01-01", "2024-01-01", "2024-01-01", "2024-01-02"]
+
+
+def test_sqlite_parquet_index_preserves_source_order_and_normalizes_numeric_keys(tmp_path):
+    source = tmp_path / "quotes.parquet"
+    target = tmp_path / "quotes.sqlite"
+    table = pa.table({"symbol": ["X", "X", "X"], "date": ["2019-01-03"]*3,
+                      "expiration": ["2019-02-01"]*3, "type": ["put"]*3,
+                      "strike_raw": [10, 10.0, 11], "price": [1.0, 2.0, 3.0]})
+    pq.write_table(table, source, row_group_size=1)
+    # The first two strike representations are the same Python tuple identity.
+    with pytest.raises(Exception, match="UNIQUE|unique|duplicate"):
+        pack.SQLiteParquetIndex.build(str(source), str(target),
+            ["symbol", "date", "expiration", "type", "strike_raw", "price"],
+            {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}},
+            unique_by=("symbol", "date", "expiration", "type", "strike_raw"),
+            partition_by=("date", "expiration"), float_keys=("strike_raw",), batch_size=1)
+
+
+def test_sqlite_parquet_index_lookup_partition_and_digest_boundaries(tmp_path):
+    source = tmp_path / "quotes.parquet"
+    target = tmp_path / "quotes.sqlite"
+    pq.write_table(pa.table({"symbol": ["X", "X", "X"],
+        "date": ["2019-01-03", "2019-01-02", "2019-01-02"],
+        "expiration": ["2019-02-01"]*3, "type": ["put", "put", "call"],
+        "strike_raw": [10.0, 9.0, 11.0], "price": [1.0, 2.0, 3.0]}), source,
+        row_group_size=1)
+    descriptor = pack.SQLiteParquetIndex.build(str(source), str(target),
+        ["symbol", "date", "expiration", "type", "strike_raw", "price"],
+        {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}},
+        unique_by=("symbol", "date", "expiration", "type", "strike_raw"),
+        partition_by=("date", "expiration"), float_keys=("strike_raw",), batch_size=1)
+    index = pack.SQLiteParquetIndex(descriptor, fetch_size=1)
+    assert [r["type"] for r in index.iter_partition(date="2019-01-02", expiration="2019-02-01")] == ["put", "call"]
+    assert index.get({"symbol": "X", "date": "2019-01-03", "expiration": "2019-02-01",
+                      "type": "put", "strike_raw": 10})["price"] == 1.0
+    with pytest.raises(Exception):
+        index.connection.execute("DELETE FROM rows")
+    index.verify_digest()
+    index.close(verify=True)
+    target.write_bytes(target.read_bytes()+b"drift")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        pack.SQLiteParquetIndex(descriptor)
+
+
+def test_sqlite_parquet_index_cleans_partial_build_and_reads_without_rescanning(tmp_path, monkeypatch):
+    source = tmp_path / "quotes.parquet"
+    target = tmp_path / "quotes.sqlite"
+    pq.write_table(pa.table({"symbol": ["X", "X"], "date": ["2019-01-02"]*2,
+        "expiration": ["2019-02-01"]*2, "type": ["put", "call"],
+        "strike_raw": [10.0, 11.0], "price": [1.0, 2.0]}), source, row_group_size=1)
+    args = (str(source), str(target), ["symbol", "date", "expiration", "type", "strike_raw", "price"],
+            {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}})
+    with pytest.raises(ValueError, match="injected"):
+        pack.SQLiteParquetIndex.build(*args, unique_by=("symbol", "date", "expiration", "type", "strike_raw"),
+            partition_by=("date", "expiration"), float_keys=("strike_raw",),
+            batch_size=1, validator=lambda row: (_ for _ in ()).throw(ValueError("injected")))
+    assert not target.exists() and not Path(str(target)+".building").exists()
+    descriptor = pack.SQLiteParquetIndex.build(*args, unique_by=("symbol", "date", "expiration", "type", "strike_raw"),
+        partition_by=("date", "expiration"), float_keys=("strike_raw",), batch_size=1)
+    index = pack.SQLiteParquetIndex(descriptor)
+    monkeypatch.setattr(pack.DateBoundedParquet, "batches",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("source rescanned")))
+    assert len(list(index.iter_partition(date="2019-01-02", expiration="2019-02-01"))) == 2
+    assert index.get({"symbol": "X", "date": "2019-01-02", "expiration": "2019-02-01",
+                      "type": "put", "strike_raw": 10})["price"] == 1.0
+    index.close(verify=True)

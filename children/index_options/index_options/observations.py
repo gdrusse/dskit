@@ -691,7 +691,7 @@ class MIOPacketInputs(StudyNode):
 
     def run(self, ctx, inputs):
         from dskit.pipeline.base import value_hash
-        from dskit.pipeline.libs.parquet import DateBoundedParquet
+        from dskit.pipeline.libs.parquet import DateBoundedParquet, SQLiteParquetIndex
         from dskit.onboarding.artifacts import PinnedPayloadSource
         from .mio_contract import MIOStudyContract
         import pyarrow as pa
@@ -742,24 +742,54 @@ class MIOPacketInputs(StudyNode):
             fs = [r for r in forecasts if r["symbol"] == symbol]
             cs = [r for r in contexts if r["symbol"] == symbol]
             expiries = sorted({r["expiry"] for r in fs})
-            chain = read("chain", symbol,
-                         ["symbol", "date", "expiration", "type", "strike_raw", "strike", "bid", "ask",
-                          "bid_size", "ask_size", "basis_factor", "underlying_price"],
-                         {"date": bounds["chain"], "expiration": {"end_before": tail}},
-                         (ds.field("symbol") == symbol) & ds.field("expiration").isin(expiries))
             bars = read("bars", symbol, ["symbol", "date", "close"],
                         {"date": bounds["bars"]}, ds.field("symbol") == symbol)
-            basis = read("chain", symbol, ["symbol", "date", "basis_factor"],
-                         {"date": bounds["chain"]}, ds.field("symbol") == symbol)
-            factors = {}
-            for row in basis:
-                if row["date"] in factors and factors[row["date"]] != row["basis_factor"]:
-                    raise ValueError("inconsistent daily basis metadata")
-                factors[row["date"]] = row["basis_factor"]
+            binding = d["sources"]["chain"]
+            source = PinnedPayloadSource(binding["pin"])
+            relative = binding["files"][symbol]
+            path = source.file(relative, verify=True)
+            checked[path] = (source, relative)
+            from .nodes import price_ok
+            basis_factors = {}
+            for batch in DateBoundedParquet(path, ["date", "basis_factor"],
+                    {"date": bounds["chain"]}).batches(where=ds.field("symbol") == symbol):
+                for row in batch.to_pylist():
+                    day = row["date"].isoformat() if isinstance(row["date"], date) else row["date"]
+                    factor = row["basis_factor"]
+                    if not price_ok(factor):
+                        raise ValueError("invalid daily basis metadata")
+                    if day in basis_factors and basis_factors[day] != factor:
+                        raise ValueError("inconsistent daily basis metadata")
+                    basis_factors[day] = factor
+            if ctx is not None and getattr(ctx, "run_dir", None):
+                quote_root = __import__("pathlib").Path(ctx.run_dir) / "artifacts" / "mio-quotes"
+            else:
+                import tempfile
+                quote_root = __import__("pathlib").Path(tempfile.mkdtemp(prefix="mio-quote-index-")) / "artifacts" / "mio-quotes"
+            quote_path = str(quote_root / (symbol + ".sqlite"))
+            from .ledger_studies import _AllQuotedOptionContext
+            quote_node = _AllQuotedOptionContext("prepare", {**d["params"]["bridge"], "symbol": symbol})
+            quote_factors = {}
+            quote_columns = ["symbol", "date", "expiration", "type", "strike_raw", "strike", "bid", "ask",
+                             "bid_size", "ask_size", "basis_factor", "underlying_price"]
+            quote_index = SQLiteParquetIndex.build(path, quote_path, quote_columns,
+                {"date": bounds["chain"], "expiration": {"end_before": tail}},
+                where=(ds.field("symbol") == symbol) & ds.field("expiration").isin(expiries),
+                unique_by=("symbol", "date", "expiration", "type", "strike_raw"),
+                partition_by=("date", "expiration"), float_keys=("strike_raw",),
+                validator=lambda row: quote_node._validate_quote_row(row, quote_factors))
             for row in bars:
-                if row["date"] in factors:
-                    row["basis_factor"] = factors[row["date"]]
-            data[symbol] = {"forecasts": fs, "contexts": cs, "chain": chain, "bars": bars}
+                if row["date"] in basis_factors:
+                    row["basis_factor"] = basis_factors[row["date"]]
+            data[symbol] = {"forecasts": fs, "contexts": cs,
+                            "chain_index": {"index": quote_index, "symbol": symbol,
+                                "relative": relative, "source_pin": binding["pin"],
+                                "bounds": {"date": bounds["chain"], "expiration": {"end_before": tail}},
+                                "expiry_inventory_sha256": value_hash(expiries),
+                                "forecast_expiries": expiries, "selected_rows": quote_index["rows"],
+                                "basis_factors": basis_factors},
+                            "bars": bars}
+            self.log.info("MIO quote intake complete for %s: %d indexed rows", symbol, quote_index["rows"])
         # Detect drift during the bounded scan as well as before it.
         for source, relative in checked.values():
             source.file(relative, verify=True)

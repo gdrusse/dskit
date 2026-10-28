@@ -1259,6 +1259,36 @@ class _AllQuotedOptionContext(_CDFQuoteOptionSelect):
         return True
 
 
+class QuoteIndexIntegrityError(ValueError):
+    """An immutable market quote index failed its run-bound verification."""
+
+
+class _SQLiteQuoteView:
+    """Read-only quote mapping backed by the run-local source-ordered SQLite index."""
+
+    def __init__(self, descriptor):
+        from dskit.pipeline.libs.parquet import SQLiteParquetIndex
+        self.index = SQLiteParquetIndex(descriptor)
+
+    def get(self, key, default=None):
+        day, expiry, right, strike = key
+        row = self.index.get({"symbol": self.symbol, "date": day, "expiration": expiry,
+                              "type": right, "strike_raw": strike})
+        return default if row is None else row
+
+    def iter_for(self, day, expiry):
+        yield from self.index.iter_partition(date=day, expiration=expiry)
+
+    def verify_digest(self):
+        self.index.verify_digest()
+
+    def close(self, verify=False):
+        try:
+            self.index.close(verify=verify)
+        except Exception as exc:
+            raise QuoteIndexIntegrityError(str(exc)) from exc
+
+
 class WeeklyOptionPortfolioStudy:
     """Replay fixed portfolio methods on a bounded archive and weekly clock.
 
@@ -1348,7 +1378,14 @@ class WeeklyOptionPortfolioStudy:
             data = inputs[symbol]
             # The old bridge owns upper-bound validation; this stricter study
             # also refuses observations before its requested development year.
+            chain_index = data.get("chain_index")
+            quote_view = None
+            if chain_index is not None:
+                quote_view = _SQLiteQuoteView(chain_index["index"])
+                quote_view.symbol = symbol
             for name, rows in data.items():
+                if name == "chain_index":
+                    continue
                 field = "date" if name in ("chain", "bars") else "quote_date"
                 lower = self.clocks["history_start"] if self.clocks and name == "bars" else local["start"]
                 upper = (self.clocks["entry_end_before"] if name in ("forecasts", "contexts")
@@ -1356,11 +1393,21 @@ class WeeklyOptionPortfolioStudy:
                 if any(row.get("symbol") != symbol
                        or not lower <= row.get(field, "") < upper for row in rows):
                     raise ValueError("study intake contains another symbol or pre-window row")
-            forecasts, contexts = node._bounded(data)
-            quotes, factors, bars = node._market(data)
+            market_data = {"forecasts": data["forecasts"], "contexts": data["contexts"],
+                           "chain": data.get("chain", []), "bars": data["bars"]}
+            forecasts, contexts = node._bounded(market_data)
+            quotes, factors, bars = node._market({"chain": data.get("chain", []), "bars": data["bars"]})
+            if quote_view is not None:
+                quotes = quote_view
+                for day, factor in chain_index.get("basis_factors", {}).items():
+                    factors[day] = float(factor)
+                for row in data["bars"]:
+                    if "basis_factor" in row:
+                        factors.setdefault(row["date"], float(row["basis_factor"]))
             by_day = {}
-            for key, row in quotes.items():
-                by_day.setdefault(key[0], {})[key] = row
+            if quote_view is None:
+                for key, row in quotes.items():
+                    by_day.setdefault(key[0], {})[key] = row
             self._nodes[symbol], self._forecasts[symbol], self._contexts[symbol] = node, forecasts, contexts
             self._quotes[symbol], self._factors[symbol], self._bars[symbol] = quotes, factors, bars
             self._by_day[symbol] = by_day
@@ -1644,8 +1691,12 @@ class WeeklyOptionPortfolioStudy:
             for expiry, context in sorted(available):
                 forecast = self._forecasts[symbol][day, expiry]
                 try:
+                    quote_view = self._quotes[symbol]
+                    day_quotes = (quote_view.iter_for(day, expiry)
+                                  if isinstance(quote_view, _SQLiteQuoteView)
+                                  else self._by_day[symbol].get(day, {}))
                     prepared, projection = node._prepare(
-                        forecast, context, day, expiry, self._by_day[symbol].get(day, {}),
+                        forecast, context, day, expiry, day_quotes,
                         {day: self._factors[symbol].get(day)})
                 except ValueError as exc:
                     if str(exc) not in {"insufficient_eligible_legs", "missing spot, scale or basis"}:
@@ -1885,7 +1936,26 @@ class WeeklyOptionPortfolioStudy:
                 "unbounded_books": sum(not math.isfinite(t["max_loss"]) for t in trades),
                 "fees": sum(t["fees"] for t in trades), "ledger_summary": ledger["summary"]}
 
-    def _method(self, method, progress, *, recorded=None):
+    def _verify_quote_indexes(self):
+        for quotes in self._quotes.values():
+            if isinstance(quotes, _SQLiteQuoteView):
+                try:
+                    quotes.verify_digest()
+                except Exception as exc:
+                    raise QuoteIndexIntegrityError(str(exc)) from exc
+
+    def close_quote_indexes(self, *, verify=False):
+        for quotes in self._quotes.values():
+            if isinstance(quotes, _SQLiteQuoteView):
+                quotes.close(verify=verify)
+
+    def _method(self, method, progress, *, recorded=None, events=None):
+        self._verify_quote_indexes()
+        result = self._method_impl(method, progress, recorded=recorded, events=events)
+        self._verify_quote_indexes()
+        return result
+
+    def _method_impl(self, method, progress, *, recorded=None, events=None):
         """Advance one account without exposing future rows to portfolio selection."""
         import copy
         from dskit.pipeline.libs.option_ledger import FundedOptionAccount
@@ -1981,15 +2051,46 @@ class WeeklyOptionPortfolioStudy:
                     if books:
                         pending = {"books": books, "components": components}
                 decisions.append(record)
+                if events is not None and day in self.weeks:
+                    selection = record.get("selection", {})
+                    certs = record.get("certificates", [])
+                    events({"type": "weekly_decision", "method": method["id"], "date": day,
+                            "status": record["status"], "candidate_books": record["candidate_books"],
+                            "candidate_contracts": record["candidate_contracts"],
+                            "selected_books": [{k: book.get(k) for k in
+                                ("id", "symbol", "expiry", "credit", "reserve", "contracts")}
+                                for book in record.get("books", [])],
+                            "timeout": record["status"] == "timeout_skipped",
+                            "solves": [{k: cert.get(k) for k in ("objective", "bound", "gap", "seconds")}
+                                       for cert in certs],
+                            "provisional": True})
                 if progress is not None:
                     progress(method["id"], len(decisions), len(self.weeks), record["status"])
-            snapshots.append({"date": day, "deposit": deposited, "contributions": account.contributions,
-                              "realized": account.realized, "funding": account.funding,
-                              "cash": account.cash, "open_ids": sorted(account.open),
-                              "reserve": sum(b["reserve"] for b in account.open.values())})
+            snapshot = {"date": day, "deposit": deposited, "contributions": account.contributions,
+                        "realized": account.realized, "funding": account.funding,
+                        "cash": account.cash, "open_ids": sorted(account.open),
+                        "reserve": sum(b["reserve"] for b in account.open.values())}
+            snapshots.append(snapshot)
+            if events is not None:
+                events({"type": "daily_account_snapshot", "method": method["id"], "date": day,
+                        "realized_pnl_usd": account.realized, "contributions_usd": account.contributions,
+                        "funding_cash_usd": account.funding, "cash_usd": account.cash,
+                        "open_books": len(account.open), "open_reserve_usd": snapshot["reserve"],
+                        "provisional": True})
         if pending is not None:
             raise ValueError("unprocessed order at study end")
         result = self._finish(method, account, decisions, rejected, snapshots)
+        if events is not None:
+            for point in result["curve"]:
+                events({"type": "marked_equity_point", "method": method["id"], "date": point["date"],
+                        "equity_usd": point["equity"], "nav": point["nav"],
+                        "twr": point["nav"]-1., "drawdown": point["drawdown"],
+                        "provisional": True})
+            events({"type": "method_metrics", "method": method["id"], "pnl_usd": result["pnl"],
+                    "stress_pnl_usd": result["stress_pnl"], "twr": result["twr"],
+                    "max_drawdown": result["max_drawdown"], "final_equity_usd": result["final_equity"],
+                    "contracts": result["contracts"], "unfilled": result["unfilled"],
+                    "provisional": True})
         if recorded is not None:
             for key, value in result.items():
                 if key not in recorded or recorded[key] != value:
@@ -2046,6 +2147,7 @@ class MIOPacketStudy(StudyNode):
 
     def run(self, ctx, inputs):
         from dskit.pipeline.base import value_hash
+        import json
 
         plan, registry = self.plan(), self.registry()
         permit, bounded, provenance = inputs["permit"], inputs["bounded_inputs"], inputs["provenance"]
@@ -2057,20 +2159,71 @@ class MIOPacketStudy(StudyNode):
                 or provenance["read_bounds"] != plan["read_bounds"]):
             raise ValueError("unverified bounded intake")
         d = self.params["study"]["domain"]
+        import os
+        from dskit.pipeline.base import value_hash as _value_hash
+        artifact_root = (os.path.realpath(os.path.join(ctx.run_dir, "artifacts", "mio-quotes"))
+                         if ctx is not None and getattr(ctx, "run_dir", None) else None)
+        for symbol in d["params"]["symbols"]:
+            entry = bounded["inputs"][symbol].get("chain_index")
+            if not isinstance(entry, dict) or set(entry) != {
+                    "index", "symbol", "relative", "source_pin", "bounds",
+                    "expiry_inventory_sha256", "forecast_expiries", "selected_rows", "basis_factors"}:
+                raise ValueError("invalid indexed quote descriptor")
+            source = d["sources"]["chain"]
+            expiries = sorted({r["expiry"] for r in bounded["inputs"][symbol]["forecasts"]})
+            descriptor = entry["index"]
+            index_path = os.path.realpath(descriptor.get("path", ""))
+            expected_root = artifact_root or os.path.dirname(index_path)
+            if (entry["symbol"] != symbol or entry["relative"] != source["files"][symbol]
+                    or entry["source_pin"] != source["pin"] or entry["bounds"] != {
+                        "date": plan["read_bounds"]["chain"],
+                        "expiration": {"end_before": plan["read_bounds"]["chain"]["end_before"]}}
+                    or entry["forecast_expiries"] != expiries
+                    or entry["expiry_inventory_sha256"] != _value_hash(expiries)
+                    or descriptor.get("rows") != entry["selected_rows"]
+                    or os.path.commonpath([expected_root, index_path]) != expected_root):
+                raise ValueError("indexed quote descriptor disagrees with canonical plan")
         params = {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}
         study = WeeklyOptionPortfolioStudy(params, bounded["inputs"])
         results = []
+        packet_id = permit.get("packet_id", permit.get("id"))
+        def event(payload):
+            phase = "verified" if payload.get("type") == "replay_verified" else "provisional"
+            self.log.info("MIO_EVENT %s", json.dumps(
+                {"packet_id": packet_id, "phase": phase, **payload},
+                separators=(",", ":"), sort_keys=True))
         for method in params["methods"]:
+            event({"type": "method_start", "method": method["id"]})
             try:
-                result = study._method(method, None)
-                replay = WeeklyOptionPortfolioStudy(params, bounded["inputs"])._method(method, None, recorded=result)
+                progress = lambda mid, done, total, status: self.log.info(
+                    "MIO method %s week %d/%d: %s", mid, done, total, status)
+                result = study._method(method, progress, events=event)
+                replay_study = WeeklyOptionPortfolioStudy(params, bounded["inputs"])
+                try:
+                    replay = replay_study._method(method, None, recorded=result)
+                    replay_study.close_quote_indexes(verify=True)
+                finally:
+                    if any(type(q).__name__ == "_SQLiteQuoteView" for q in replay_study._quotes.values()):
+                        try:
+                            replay_study.close_quote_indexes()
+                        except Exception:
+                            pass
                 if replay != result:
                     raise ValueError("recorded decision replay mismatch")
+                event({"type": "replay_verified", "method": method["id"]})
                 results.append({"id": method["id"], "status": "completed",
                                 "result": result, "replay_parity": True})
             except Exception as exc:
+                if isinstance(exc, QuoteIndexIntegrityError):
+                    study.close_quote_indexes()
+                    raise
+                event({"type": "method_failed", "method": method["id"],
+                       "error": type(exc).__name__+": "+str(exc)})
                 results.append({"id": method["id"], "status": "failed",
                                 "error": type(exc).__name__+": "+str(exc), "replay_parity": False})
+        study._verify_quote_indexes()
+        study.close_quote_indexes(verify=True)
+        registry.verify(plan, permit)
         audit = {"method_ids": [m["id"] for m in params["methods"]],
                  "inputs_sha256": provenance["inputs_sha256"],
                  "calendar": study.calendar, "decision_dates": study.weeks,

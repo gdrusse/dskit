@@ -27,7 +27,7 @@ from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.kinds_flow import clause_holds, clause_problems
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, reject_unknown_params
 
-__all__ = ["DateBoundedParquet", "NODE_KINDS", "ParquetFrameCache", "ParquetRows", "ParquetStreamRows", "register"]
+__all__ = ["DateBoundedParquet", "SQLiteParquetIndex", "NODE_KINDS", "ParquetFrameCache", "ParquetRows", "ParquetStreamRows", "register"]
 
 
 def _sha256(path):
@@ -196,6 +196,186 @@ class DateBoundedParquet:
                 raise ValueError(f"{self.path}: row groups interleave in {name!r} ({high} after {low}); "
                                  "a file sorted neither way cannot be streamed in order")
         return ranked
+
+
+class SQLiteParquetIndex:
+    """Run-local source-ordered index over a bounded Parquet row stream."""
+
+    @staticmethod
+    def _ident(name):
+        import re
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError("unsafe row-index column")
+        return '"' + name + '"'
+
+    @classmethod
+    def build(cls, source_path, index_path, columns, bounds, *, where=None,
+              unique_by=(), partition_by=(), float_keys=(), validator=None,
+              batch_size=8192, cache_kib=16384):
+        """Stream bounded Arrow batches to an atomic SQLite index.
+
+        validator(row) runs in source order before unique-key insertion. Numeric
+        identity fields in float_keys are converted to float before key encoding,
+        matching Python tuple-key equality in the legacy quote map.
+        """
+        import datetime
+        import json
+        import math
+        import os
+        import sqlite3
+        from pathlib import Path
+        from dskit.pipeline.workflow import path_hash
+
+        if (type(batch_size) is not int or not 1 <= batch_size <= 65536
+                or type(cache_kib) is not int or not 1 <= cache_kib <= 65536
+                or not columns or len(set(columns)) != len(columns)
+                or not set(unique_by) <= set(columns)
+                or not set(partition_by) <= set(columns)
+                or not set(float_keys) <= set(unique_by)
+                or not unique_by or not partition_by):
+            raise ValueError("invalid row-index schema")
+        for name in (*columns, *unique_by, *partition_by):
+            cls._ident(name)
+        destination = Path(index_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temp = destination.with_name(destination.name + ".building")
+        for candidate in (temp, Path(str(temp)+"-journal"), Path(str(temp)+"-wal"), Path(str(temp)+"-shm")):
+            if candidate.exists():
+                candidate.unlink()
+        conn = sqlite3.connect(str(temp))
+        count = 0
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("PRAGMA temp_store=FILE")
+            conn.execute(f"PRAGMA cache_size=-{int(cache_kib)}")
+            conn.execute("CREATE TABLE metadata(name TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            part_cols = ",".join(f"{cls._ident(k)} TEXT NOT NULL" for k in partition_by)
+            conn.execute("CREATE TABLE rows(ordinal INTEGER PRIMARY KEY,unique_key TEXT UNIQUE,payload TEXT NOT NULL,"
+                         + part_cols + ")")
+            insert_cols = ["ordinal", "unique_key", "payload", *partition_by]
+            insert = ("INSERT INTO rows(" + ",".join(cls._ident(k) for k in insert_cols)
+                      + ") VALUES(" + ",".join("?" for _ in insert_cols) + ")")
+            ordinal = 0
+            from dskit.pipeline.libs.parquet import DateBoundedParquet
+            for batch in DateBoundedParquet(source_path, columns, bounds).batches(
+                    where=where, batch_size=batch_size):
+                values = []
+                for row in batch.to_pylist():
+                    for name, value in tuple(row.items()):
+                        if isinstance(value, (datetime.date, datetime.datetime)):
+                            row[name] = value.isoformat()
+                    if validator is not None:
+                        validator(row)
+                    identity = []
+                    for name in unique_by:
+                        value = row[name]
+                        if name in float_keys:
+                            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                                raise ValueError(f"invalid numeric index key: {name}")
+                            value = float(value)
+                            if not math.isfinite(value):
+                                raise ValueError(f"invalid numeric index key: {name}")
+                        identity.append(value)
+                    unique_key = json.dumps(identity, separators=(",", ":"), allow_nan=False)
+                    payload = json.dumps(row, separators=(",", ":"), allow_nan=True)
+                    values.append((ordinal, unique_key, payload, *(str(row[k]) for k in partition_by)))
+                    ordinal += 1
+                if values:
+                    conn.executemany(insert, values)
+                    conn.commit()
+                count += len(values)
+            conn.execute("CREATE INDEX rows_partition_order ON rows("
+                         + ",".join(cls._ident(k) for k in (*partition_by, "ordinal")) + ")")
+            metadata = {"version": 1, "columns": list(columns), "unique_by": list(unique_by),
+                        "partition_by": list(partition_by), "float_keys": list(float_keys),
+                        "rows": count, "batch_size": int(batch_size), "cache_kib": int(cache_kib)}
+            conn.execute("INSERT INTO metadata VALUES('descriptor',?)",
+                         (json.dumps(metadata, sort_keys=True, separators=(",", ":")),))
+            conn.commit()
+        except BaseException:
+            conn.close()
+            for candidate in (temp, Path(str(temp)+"-journal"), Path(str(temp)+"-wal"), Path(str(temp)+"-shm")):
+                if candidate.exists():
+                    candidate.unlink()
+            raise
+        conn.close()
+        os.replace(temp, destination)
+        return {**metadata, "path": str(destination), "sha256": path_hash(str(destination))}
+
+    def __init__(self, descriptor, *, cache_kib=16384, fetch_size=2048):
+        import json
+        import sqlite3
+        from pathlib import Path
+        from dskit.pipeline.workflow import path_hash
+
+        if (type(cache_kib) is not int or not 1 <= cache_kib <= 65536
+                or type(fetch_size) is not int or not 1 <= fetch_size <= 8192):
+            raise ValueError("bounded SQLite row-index reader settings required")
+        self.descriptor = dict(descriptor)
+        self.path = str(Path(descriptor["path"]).resolve())
+        self.digest = descriptor["sha256"]
+        if path_hash(self.path) != self.digest:
+            raise ValueError("SQLite row index digest mismatch")
+        uri = Path(self.path).as_uri() + "?mode=ro&immutable=1"
+        self.connection = sqlite3.connect(uri, uri=True)
+        self.connection.execute("PRAGMA query_only=ON")
+        self.connection.execute(f"PRAGMA cache_size=-{int(cache_kib)}")
+        row = self.connection.execute("SELECT value FROM metadata WHERE name='descriptor'").fetchone()
+        if row is None or json.loads(row[0]) != {k: descriptor[k] for k in (
+                "version", "columns", "unique_by", "partition_by", "float_keys",
+                "rows", "batch_size", "cache_kib")}:
+            self.connection.close()
+            raise ValueError("SQLite row index descriptor mismatch")
+        self.fetch_size = int(fetch_size)
+
+    def items(self, partition):
+        """Yield source-ordered rows for one exact partition using bounded fetches."""
+        import json
+        fields = self.descriptor["partition_by"]
+        if not isinstance(partition, dict) or set(partition) != set(fields):
+            raise ValueError("exact row-index partition required")
+        clause = " AND ".join(self._ident(k) + "=?" for k in fields)
+        cursor = self.connection.execute(
+            "SELECT payload FROM rows WHERE " + clause + " ORDER BY ordinal",
+            tuple(str(partition[k]) for k in fields))
+        while True:
+            chunk = cursor.fetchmany(self.fetch_size)
+            if not chunk:
+                break
+            for (payload,) in chunk:
+                yield json.loads(payload)
+
+    def iter_partition(self, **partition):
+        """Yield rows for a named exact partition in physical source order."""
+        return self.items(partition)
+
+    def get(self, key):
+        """Get one exact row by its normalized identity."""
+        import json
+        fields = self.descriptor["unique_by"]
+        if not isinstance(key, dict) or set(key) != set(fields):
+            raise ValueError("exact row-index identity required")
+        values = []
+        float_keys = set(self.descriptor["float_keys"])
+        for name in fields:
+            value = float(key[name]) if name in float_keys else key[name]
+            values.append(value)
+        token = json.dumps(values, separators=(",", ":"), allow_nan=False)
+        found = self.connection.execute(
+            "SELECT payload FROM rows WHERE unique_key=?", (token,)).fetchone()
+        return None if found is None else json.loads(found[0])
+
+    def verify_digest(self):
+        """Recheck the immutable index file at a study/replay boundary."""
+        from dskit.pipeline.workflow import path_hash
+        if path_hash(self.path) != self.digest:
+            raise ValueError("SQLite row index drift")
+
+    def close(self, *, verify=False):
+        self.connection.close()
+        if verify:
+            self.verify_digest()
 
 
 class ParquetRows(Node):

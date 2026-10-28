@@ -4685,20 +4685,7 @@ class CDFQuoteCondorSelect(Node):
         for row in inputs["chain"]:
             if row.get("symbol") != p["symbol"]:
                 continue
-            day, expiry, right, strike = (row.get(k) for k in
-                                          ("date", "expiration", "type", "strike_raw"))
-            factor = row.get("basis_factor")
-            if (not _iso_day(expiry) or expiry >= p["protected_end_before"]
-                    or right not in ("put", "call") or not price_ok(strike)
-                    or not price_ok(factor) or not price_ok(row.get("strike"))
-                    or not math.isclose(float(row["strike"]), float(strike)*float(factor),
-                                        rel_tol=1e-8)):
-                raise ValueError("invalid or unprotected Theta archive row")
-            factor = float(factor)
-            if day in factors and not math.isclose(factors[day], factor, rel_tol=1e-9):
-                raise ValueError("inconsistent basis factor on one quote date")
-            factors[day] = factor
-            key = day, expiry, right, float(strike)
+            key, factor = self._validate_quote_row(row, factors)
             if key in quotes:
                 raise ValueError("duplicate Theta contract-day")
             quotes[key] = row
@@ -4717,6 +4704,24 @@ class CDFQuoteCondorSelect(Node):
                 factors.setdefault(day, float(factor))
             bars[day] = float(close)
         return quotes, factors, bars
+
+    def _validate_quote_row(self, row, factors):
+        """Apply the legacy archive row checks and update its daily factor census."""
+        p = self.params
+        day, expiry, right, strike = (row.get(k) for k in
+                                      ("date", "expiration", "type", "strike_raw"))
+        factor = row.get("basis_factor")
+        if (not _iso_day(expiry) or expiry >= p["protected_end_before"]
+                or right not in ("put", "call") or not price_ok(strike)
+                or not price_ok(factor) or not price_ok(row.get("strike"))
+                or not math.isclose(float(row["strike"]), float(strike)*float(factor),
+                                    rel_tol=1e-8)):
+            raise ValueError("invalid or unprotected Theta archive row")
+        factor = float(factor)
+        if day in factors and not math.isclose(factors[day], factor, rel_tol=1e-9):
+            raise ValueError("inconsistent basis factor on one quote date")
+        factors[day] = factor
+        return (day, expiry, right, float(strike)), factor
 
     def _usable_quote(self, row, factor):
         """Return raw (bid, ask) only for a one-lot, two-sided quoted contract."""
@@ -4794,8 +4799,10 @@ class CDFQuoteCondorSelect(Node):
                 or (np.diff(cdf) < 0).any()):
             raise ValueError("incoherent method CDF")
         spot_raw = float(spot)/factor
-        eligible = {}
-        for (quote_day, quote_expiry, right, strike), row in quotes.items():
+        eligible, quote_rows = {}, {}
+        rows = quotes.items() if hasattr(quotes, "items") else (
+            ((day, expiry, row["type"], float(row["strike_raw"])), row) for row in quotes)
+        for (quote_day, quote_expiry, right, strike), row in rows:
             if quote_day != day or quote_expiry != expiry:
                 continue
             z = math.log(strike/spot_raw)/float(scale)
@@ -4804,6 +4811,7 @@ class CDFQuoteCondorSelect(Node):
             market = self._usable_quote(row, factor)
             if market is not None:
                 eligible[right, strike] = market
+                quote_rows[right, strike] = row
         strikes = sorted({strike for _, strike in eligible})
         self._check_eligible(eligible)
         support = sorted({*strikes, spot_raw*math.exp(float(scale)*p["z_grid"][0]),
@@ -4822,7 +4830,7 @@ class CDFQuoteCondorSelect(Node):
             for role in roles:
                 legs[role].append(self._eligible_contract(
                     role, index[strike], f"{p['symbol']}:{expiry}:{right}:{strike:g}",
-                    market, quotes[day, expiry, right, strike]))
+                    market, quote_rows[right, strike]))
         rho = float(p.get("rho", 0.))
         decision_id, arm_id = self._decision_identity(day, expiry, cdf, rho)
         solver_context = {"decision_id": decision_id, "arm_id": arm_id,

@@ -7,18 +7,18 @@
     },
     "mio-warmup-import.json": {
       "path": "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/configs/mio-warmup-import.json",
-      "sha256": "bcc4d53bb237fd711e4be2c801b0c17c92ed6c4019289f9199490430b8329418",
-      "document_hash": "2704bd646a69c71328842b3ab225d9276d2910f346a56cf62681da59261c4658"
+      "sha256": "f4d713dbef71c57066453ac200970ec46fc203d7f0f8840e7654c4f3e16b50d3",
+      "document_hash": "369128341eacb33d99738fa3ae84bfb52fada1f100965fb2ff2772e93a0ed05f"
     },
     "mio-warmup.json": {
       "path": "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/configs/mio-warmup.json",
-      "sha256": "48c471be9823b8785bea7bad42803ddb2e663104fb83fc5662cbad4bae3e5a6d",
-      "document_hash": "4f51b467942b0b2df47d8369312865a22d496ce90ed16e29bae98a9831095f07"
+      "sha256": "a44a067aa2db2d9110a93aa8b67f30a3d7c1f0e695b7911a156962580400c15e",
+      "document_hash": "8e3f0a5c46056b8592239d3432fd56fb88715c05f2896fbc70c44ac76f7ff27e"
     },
     "mio-warmup-compare.json": {
       "path": "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/configs/mio-warmup-compare.json",
-      "sha256": "1a212840889e3543090199efda21abb0ff82bdbcfa1f3fd4ed2f50fc28992a8c",
-      "document_hash": "95cc012b02d2b277d0593e5f20ea62685bf45346830401735bccee314a148f6f"
+      "sha256": "e5f378c58b390e583c9648d2a8bb88eafd373491b5d7a8077b96c9ce4c81c35c",
+      "document_hash": "76d5e1dee338d1a265f528819c18b0d9db797fd3c01a55121b07346170b0f399"
     }
   },
   "sources": {
@@ -1668,18 +1668,7 @@
     "forecast_compressed_mb": 146.6,
     "context_rows": 1326130,
     "context_compressed_mb": 1512.0,
-    "basis": "metadata inventory only; no runtime peak measured; execution remains pending fresh reviews",
-    "filtered_chain_rows": 11806454,
-    "forecast_context_identity_rows": 160754,
-    "last_forecast_expiry": "2019-12-27",
-    "eligible_forecast_identity_on_2019_12_30": false,
-    "runtime_memory_limit_gib": {
-      "ram": 14,
-      "swap": 5
-    },
-    "peak_runtime_measured": false,
-    "do_not_reduce_universe_or_window": true,
-    "note": "Canonical value_hash copies row dictionaries before JSON serialization; approximate 5.1 GiB each for original and cloned 12-key dict containers alone at 11,806,454 filtered rows, before values, JSON strings/bytes, forecasts and study caches. No payload run attempted."
+    "basis": "metadata inventory only; no runtime peak measured; execution remains pending fresh reviews"
   },
   "runs": {
     "import": null,
@@ -1687,27 +1676,5 @@
     "comparison": null
   },
   "tdd_update": "deferred_for_joint_owner_update",
-  "owner_window_decision": "all of calendar 2019; 2019-01-02 through 2020-01-01 exclusive",
-  "metadata_census": {
-    "forecast_context_identity_rows_fold1_val_dte1_60": 160754,
-    "identity_symbols": 116,
-    "last_forecast_expiry": "2019-12-27",
-    "eligible_forecast_identity_on": "2019-12-30",
-    "eligible_forecast_identity_on_2019_12_30": false,
-    "filtered_chain_rows": 11806454,
-    "method": "metadata-only row counts and date/symbol/fold/band/expiry identities; no prices, outcomes or PnL fields read",
-    "resource_estimate": {
-      "chain_archive_rows": 12695312,
-      "compressed_mb": 252.6,
-      "forecast_rows": 1326130,
-      "forecast_compressed_mb": 146.6,
-      "context_rows": 1326130,
-      "context_compressed_mb": 1512.0,
-      "canonicalization_risk": "value_hash clones each row dictionary before JSON serialization; a 12-key dict is about 464 bytes, implying about 5.1 GiB each for original and cloned dictionary containers alone across 11,806,454 filtered chain rows, before row values, serialized strings/bytes, forecasts, contexts and study caches",
-      "available_memory_gib": 14,
-      "available_swap_gib": 5,
-      "runtime_peak_measured": false,
-      "execution_status": "not executed pending fresh review; no universe or calendar reduction applied"
-    }
-  }
+  "owner_window_decision": "all of calendar 2019; 2019-01-02 through 2020-01-01 exclusive"
 }

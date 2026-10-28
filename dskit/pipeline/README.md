@@ -383,7 +383,10 @@ Bounds combine with AND; date/string schema and zero-null metadata are required.
 The legacy window remains a post-read selection. PriceCalendarCDFPanel forwards
 price_source.read_bounds; auxiliary sources require their own explicit bounds.
 CDFExperiment uses the same DateBoundedParquet owner and requires its source pin
-when provenance pins are declared. No historical config is silently upgraded.
+when provenance pins are declared. SQLiteParquetIndex streams a bounded Arrow
+projection into an atomic run-local SQLite row index, with unique normalized
+keys, ordered partition iteration, read-only lookup, and digest checks at open
+and study boundaries. No historical config is silently upgraded.
 
 
 `libs/predictive_cdf.py` (ADR-0189/0191) supplies offline conditional CDF
