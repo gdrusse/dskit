@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "index_options_2019_mio_results",
-  "status": "evidence_candidate",
+  "status": "completed_development_evidence",
   "runtime_candidate": "64cb99b5aacecab8f2b579b3dc3dd09b17087b73",
   "integrated_upstream": "ec5028184c976fac3a403e497537d336a6f0add3",
   "scope": "All 2019 weekly development comparisons: four fixed MIO methods each in broad212 and limited36. No Path/TDD changes, training, provider pulls, new years or promotion. Optional broad portfolio hindsight stopped by owner; known-answer output is per contract.",
@@ -228,6 +228,11 @@
       "path": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/hindsight-receipt.json",
       "sha256": "f09854ddb30b704a5b3bb14fd735262bcae41b897d00f68999fc53489e48cac5",
       "bytes": 117287
+    },
+    "final-review-candidate.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-review-candidate.json",
+      "sha256": "747c96d8cb6b41ac2d06b3818d42d30ca662099de4eb6a5d9eb0d4890e8aa009",
+      "bytes": 6212
     }
   },
   "helpers": {
@@ -762,9 +767,49 @@
     }
   },
   "final_gate": {
-    "status": "awaiting_two_fresh_evidence_reviews",
-    "runtime_gate": "closed_on_64cb99b5; unchanged runtime code/contracts; final evidence/integration review required",
-    "scope": "Result accounting, provenance, scope correction, actual stress coverage, package/download integrity and documentation integration. No runtime rerun."
+    "status": "closed",
+    "candidate": "782f1751e51c212f3fa500a1f983c1a826ed1a4a",
+    "tree": "6fa816b652567c6a47bcfdcc083ef7ba4ea4671a",
+    "runtime_gate": "closed_on_64cb99b5; no runtime code/contracts changed by evidence closure",
+    "reviews": {
+      "correctness": {
+        "model": "GPT-6 Luna",
+        "candidate": "782f1751e51c212f3fa500a1f983c1a826ed1a4a",
+        "report": {
+          "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/final-correctness-782f1751.txt",
+          "sha256": "bae838866328dd0b7336ab59cfe6af5abc9be0837a5f26602f4bada5b44264f0",
+          "bytes": 4571
+        },
+        "unresolved": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 0,
+          "Nit": 0
+        }
+      },
+      "integration": {
+        "model": "GPT-6 Luna",
+        "candidate": "782f1751e51c212f3fa500a1f983c1a826ed1a4a",
+        "report": {
+          "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/final-integration-782f1751.txt",
+          "sha256": "45bf0892f8130d949ff13e64a30c908e3ab091c57e09ffff623957d3a9da5540",
+          "bytes": 5179
+        },
+        "unresolved": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 0,
+          "Nit": 0
+        }
+      }
+    },
+    "identity_check": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-review-closure.json",
+      "sha256": "0149fade418c5ddd4d858cdc1992cf3da7ad5b0bdabba4c26108e27c624dd63d",
+      "bytes": 1474
+    },
+    "scope": "Result accounting, provenance, scope correction, actual stress coverage, package/download integrity and documentation integration. No runtime rerun.",
+    "unresolved_backlog": []
   },
   "viewer": "http://gibson-deskop.tail27a0c8.ts.net/",
   "limits": [
@@ -781,8 +826,8 @@
   ],
   "memo": {
     "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/docs/memos/2026-10-28-mio-2019-comparison.md",
-    "sha256": "308e7bb5ca653f90bfb634e352d42bc9d1f1fcd73a9e61f52dc442c61eae8035",
-    "bytes": 23564
+    "sha256": "a3bd19c05106023b6208046c5ca6e44b8c86ea62e42f8da2b80c9f94b610b1c3",
+    "bytes": 24102
   },
   "verification": {
     "docs_tests": {
@@ -797,6 +842,23 @@
       "sha256": "53ea4264e0553170361a32e7a3305384e94adf4ebb65d45ced5c46e683eb58b5",
       "bytes": 1068
     },
-    "full_suite_run": false
-  }
+    "full_suite_run": false,
+    "tailnet_viewer": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/tailnet-viewer-verification.json",
+      "sha256": "d1bbb3b9463e487e635bfb4393a5a98546661c7785fe57a4db6d76622399d0c3",
+      "bytes": 558
+    },
+    "closure_docs_tests": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-doc-tests-closure.log",
+      "sha256": "0f63423895c9108b8bf58f88f05a659cb23e96f01d3361b2261d57bc520de099",
+      "bytes": 98
+    },
+    "closure_docs_result": "5 passed",
+    "final_memo_download": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-memo-download-verification.json",
+      "sha256": "ec9ba8d98e901c36251af733426e593ea8b931ed1f02716606a3e916650ec86f",
+      "bytes": 360
+    }
+  },
+  "windows_delivery": "C:\\Users\\russe\\DSKit-MIO-2019-20261028"
 }

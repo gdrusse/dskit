@@ -134,6 +134,8 @@ Forward comparisons and independent replay finished at approximately 14:18 UTC o
 
 The packaging guard verified completed forward and stress receipts, exact run identities, candidate/stress CSV hashes and all eight independently replayed results. It reconciled individual-leg realized PnL with account totals before building both archives, then checked every ZIP CRC. The final delivery gate and its review/test evidence are recorded in the result pins; the bundles preserve their earlier review snapshot and are not silently rewritten after final review.
 
+Final evidence candidate 782f1751e51c212f3fa500a1f983c1a826ed1a4a received two fresh independent GPT-6 Luna reviews: correctness/authority and tests/integration, each with zero unresolved Critical, Major, Minor or Nit findings. Both reviewed the same immutable candidate. The exact-manifest check and four documentation checks passed (5 tests); no full suite was run. Before these closure-only evidence updates, all reviewed file identities were checked unchanged. Final reports are pinned separately from the earlier immutable bundles.
+
 No 2018 eligibility verification, fresh-year MIO test, new hyperparameter tuning, TDD edit, production promotion or live trading was performed. The 2019 comparisons are exposed development evidence. Next: review concentration, filled-subset shock semantics and stress gaps together, then decide the next frozen cohort/formulation and authorized window before opening more data.
 
 ## Reproducibility and handoff

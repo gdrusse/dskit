@@ -9,13 +9,13 @@ Updated: 2026-10-28 by GPT-6. Prior note archived in docs/archive/re-entry/index
 - Broad W1 + shock has the highest observed PnL, $89,497.05, with 61.89% marked drawdown. This is descriptive development evidence, not a winner/promotion or a verified market-beating cohort.
 - Candidate menus, selected orders, fills, PnL and per-contract known outcomes are complete. Stress processing completed: 4,496 priced / 5,645 cases; 1,149 explicit refusals and incomplete active-book weekly coverage.
 - Optional broad portfolio hindsight was stopped at owner direction after 32 diagnostic solves; partial evidence is preserved. Limited diagnostic is complete. No annual hindsight-profit sum.
-- Both ZIPs passed CRC checks. Final evidence reviews and narrow documentation checks are the remaining delivery gate; runtime reviews remain closed.
+- Both ZIPs passed CRC checks. Final evidence candidate 782f1751 passed fresh independent Luna correctness and integration reviews, C0/M0/m0/N0 each; exact manifest plus four docs checks passed. Runtime reviews remain closed.
 - Private viewer: http://gibson-deskop.tail27a0c8.ts.net/ . Retain its service, checkout and external data; receipt paths are absolute.
 
 ## Next
 
-1. Finish the two fresh Luna final-evidence lenses, required documentation checks and authorized push/wrap.
-2. Review results, concentration, fill-subset shock behavior and stress missingness with the owner. Update TDD together using final pins before deciding a new window or formulation.
+1. Review results, concentration, fill-subset shock behavior and stress missingness with the owner.
+2. Update TDD together using final pins before deciding a new window or formulation. Final Windows delivery is C:\Users\russe\DSKit-MIO-2019-20261028.
 
 ## Blocked / owner decisions
 
