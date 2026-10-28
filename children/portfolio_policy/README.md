@@ -5,7 +5,7 @@ portfolio**: for each position, is the expected after-tax, after-cost value
 of holding passively at least the value of cashing out into an active
 strategy? Status: **base machinery complete (ADR-0279), skeptic-reviewed;
 position summary added (A0002); tax lots from Schwab transactions added (A0004),
-neither yet lens-reviewed; no real Schwab pull yet** — every rate in the
+round-1 review corrections applied, not yet re-reviewed; no real Schwab pull yet** — every rate in the
 documents is a placeholder the owner sets. The
 sections after "Scoring a past decision run" are the skeleton's generic
 walkthrough.
@@ -27,7 +27,8 @@ python -m dskit.onboarding authorize --connector schwab_positions --config '{}' 
 python -m dskit.onboarding acquire --root ./ob --source schwab \
     --stream positions --mode backfill            # one snapshot per UTC day
 # the purchases the tax lots are rebuilt from: a second alias (one alias is one connector) over
-# the same OAuth environment; start = on or before your EARLIEST purchase still held
+# the same OAuth environment; start = on or before your EARLIEST purchase still held (lower it
+# later and the next acquire re-pulls from the new start)
 python -m dskit.onboarding register-source schwab_trades --root ./ob \
     --catalog-source schwab-trades-src --connector schwab_transactions \
     --config '{"start": "2015-01-01"}' --activate
@@ -83,8 +84,17 @@ never bought, refuses by name. Set `allow_incomplete: true` on BOTH `lots` and
 aggregate row instead (null `acquired`, so `default_holding` applies, listed in
 the `lot_positions` summary `fallback`). That summary's `basis_gap` per holding
 (lot basis minus Schwab's cost basis) is zero when FIFO matches Schwab's books.
-To go back to the aggregate path, point `tax.inputs.records` at
-`$snapshot.records`, drop `tax.acquired_field` and the three lot nodes.
+A day's trades replay in execution-time order (then transaction id), so a buy and
+the sale that closes it the same day work whatever the ids; a trade dated ON the
+decision day counts. A buy whose cash is null (a transaction with several kept items)
+is basis = quantity x price; the `lots` summary's `amount_fallbacks` counts them.
+
+To go back to the aggregate path (no lots), edit `run-hold-vs-redeploy.json`: delete
+`trades`, `lots` and `lot_positions`, point `tax.inputs.records` at `$snapshot.records`,
+drop `tax.acquired_field`, and set `summary.key_fields` to `["account", "symbol"]`
+(there is no `lot_id`). In `run-decision-outcomes.json` set `decisions.key_fields` to
+`["account", "symbol", "as_of"]`, `outcomes.key_fields` to `["account", "symbol"]` and
+delete `outcomes.match_fields`. `tests/test_hold_vs_redeploy.py` runs this recipe.
 
 **Limits** (disclosed, not modelled):
 
@@ -101,7 +111,18 @@ To go back to the aggregate path, point `tax.inputs.records` at
 - Lots assume FIFO. Schwab's default is FIFO for stocks, but funds and some ETFs
   in accounts opened before October 2024 default to average cost, and any
   account may have elected another method or identified lots at sale: confirm
-  the election; a non-zero `basis_gap` is the symptom.
+  the election; a non-zero `basis_gap` is the symptom (`lot_positions` logs a
+  warning with the largest, and `basis_gap_max` in its summary is the number to read).
+- Wash sales are not modelled: a loss disallowed by a repurchase within 30 days
+  would raise the new lot's basis and tack the old holding period onto it, so
+  that lot's basis and short-term class here are wrong, and the account shows a
+  `basis_gap`.
+- Only `VALID` transactions are trades. A PENDING or INVALID one in the pull
+  refuses by index (a pending trade must not become a lot). A pending one clears
+  when it settles; an INVALID (cancelled) one stays in Schwab's history and stops
+  every pull whose window reaches it. Raising `start` past it is the only way round
+  today (lots bought before it then fail the reconciliation); a skip is an owner
+  decision (lane note).
 - How far back Schwab's transactions endpoint serves history is unverified (one
   client documents one year). A holding older than the history refuses until
   `allow_incomplete` (aggregate fallback) or a lot export is onboarded.
@@ -140,6 +161,8 @@ across accounts, is a concentrated position, not a row's `weight`),
 document's `tax.loss_offset` is false, so it errs high), `break_even_return`,
 `opportunity_cost` (selling everything against holding everything; negative
 means holding wins) and the `exit_positions` / `hold_positions` counts. The
+`positions`, `exit_positions` and `hold_positions` counts are LOTS (one per row), not
+holdings: a holding of three lots is three positions. The
 summary restates `decide`'s tax and cost terms, pinned equal by a test; betas
 are wired from the beta table. When the hurdle is withheld,
 `opportunity_cost` is null and `break_even_return` is still the bar a strategy
@@ -169,7 +192,10 @@ the filter no longer sees is listed `unmatched`.
 `<run-name>` is the decision run's directory name (the stem of its
 `decisions/<run>.jsonl`). `outcomes/<run>.jsonl` holds, per decided lot
 (matched to its holding by account and symbol), the price growth the decision
-assumed, the realized per-share growth, and the surprise. The forecast is a
+assumed, the realized per-share growth, and the surprise. The run's summary counts
+twice: `scored` / `mean_surprise` per lot (row), `holdings` / `holding_mean_surprise`
+per holding (a holding of ten lots counts once, with the mean surprise of its lots),
+each also split `by_decision`. The forecast is a
 total return and the snapshot's market
 value is price only, so `outcomes.income_rate` (0.013, pinned equal to the
 decision document's `market.dividend_yield`) is removed from each year's

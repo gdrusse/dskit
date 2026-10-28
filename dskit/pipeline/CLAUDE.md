@@ -140,11 +140,12 @@ dskit/pipeline/
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
 │                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score;
 │                      only decision-matched later rows are value-checked (structural refusals cover all)
-│                      owns `annualized_growth` (ratio -> annual rate) + `check_key_fields_param` (the key_fields rule); position_summary imports both;
-│                      `match_fields` keys the later snapshot by holding when decisions are per lot
+│                      owns `annualized_growth` (ratio -> annual rate) + `check_field_list_param` / `check_key_fields_param` (the field-list rule); position_summary and tax_lots import them;
+│                      `match_fields` keys the later snapshot by holding when decisions are per lot; the summary counts rows (lots) and holdings apart
 ├── tax_lots.py        TaxLots + LotPositions (by import path, ADR-0279, research A0004): trade rows -> open lots per key by a declared method
 │                      (`fifo`; a `LotOrder` per method), an oversell refuses or withholds the key (`allow_incomplete`); lots joined to a positions
-│                      snapshot, each a position row valued pro rata, reconciled share for share (else refuse or the aggregate row), `basis_gap`
+│                      snapshot, each a position row valued pro rata, reconciled share for share (else refuse or the aggregate row), `basis_gap` (+ `basis_gap_max`,
+│                      a warning beyond `BASIS_RTOL`); a day replays by `order_fields` (time, id); a null buy amount falls back to quantity x price, counted
 ├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS

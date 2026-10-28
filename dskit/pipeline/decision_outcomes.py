@@ -13,7 +13,11 @@ the value itself is the measure. ``surprise`` is realized minus projected.
 When decisions are finer than the snapshot (one per tax lot, keyed by account,
 symbol and lot id), ``match_fields`` names the subset of ``key_fields`` the later
 snapshot is keyed on: every lot of a position is scored against that position's
-later row, per share, and the outcome rows keep the full decision key.
+later row, per share, and the outcome rows keep the full decision key. One row is one
+DECISION (a lot, when decisions are per lot), so the summary counts both ways: ``scored`` and
+``mean_surprise`` per row, ``holdings`` and ``holding_mean_surprise`` per holding (the
+``match_fields`` key, each holding once with the mean surprise of its lots), each also
+split ``by_decision``.
 
 The two sides are not the same kind of return. ``hold_value`` is a TOTAL
 return forecast (price plus income), while a position's market value moves with
@@ -50,7 +54,9 @@ yield for every holding, and no tax is applied to either side.
 
 :func:`annualized_growth` and :func:`check_key_fields_param` are public because
 :mod:`~dskit.pipeline.position_summary` reads the same forecasts under the same rules;
-this module is their one owner.
+:func:`check_field_list_param` (the rule behind the key one) because
+:mod:`~dskit.pipeline.tax_lots` names its ``order_fields`` the same way; this module is
+their one owner.
 
 Import cost: stdlib + the pipeline core.
 """
@@ -64,7 +70,8 @@ from dskit.pipeline.document import date_problem
 from dskit.pipeline.liquidation import require_number
 from dskit.pipeline.node import Node, check_number_param, reject_unknown_params
 
-__all__ = ["DecisionOutcomes", "annualized_growth", "check_key_fields_param"]
+__all__ = ["DecisionOutcomes", "annualized_growth", "check_field_list_param",
+           "check_key_fields_param"]
 
 _DAYS_PER_YEAR = 365.25
 
@@ -79,21 +86,31 @@ def annualized_growth(ratio, years):
     return ratio ** (1.0 / years) - 1.0
 
 
+def check_field_list_param(problems, params, name):
+    """Append a problem unless ``params[name]``, when present, is a non-empty list of distinct field names.
+
+    The one owner of the field-list rule, shared by every kind that names fields in a list
+    (``key_fields``, a lot method's ``order_fields``). Returns True when the param
+    is present and valid, so a caller can add its own rules on top; presence is the caller's rule.
+    """
+    if name not in params:
+        return False
+    fields = params[name]
+    if (not isinstance(fields, list) or not fields or not all(name_ok(f) for f in fields)
+            or len(set(fields)) != len(fields)):
+        problems.append(f"{name} must be a non-empty list of distinct field names, got {fields!r}")
+        return False
+    return True
+
+
 def check_key_fields_param(problems, params):
     """Append a problem unless ``params["key_fields"]``, when present, is a usable key.
 
-    The one owner of the key rule, shared by every kind that identifies a position by
-    declared fields: a non-empty list of distinct field names. Returns True when the param is
-    present and valid, so a caller can add its own rules on top; presence is the caller's rule.
+    The key rule shared by every kind that identifies a position by declared fields: a
+    non-empty list of distinct field names (:func:`check_field_list_param`). Returns True when
+    the param is present and valid; presence is the caller's rule.
     """
-    if "key_fields" not in params:
-        return False
-    keys = params["key_fields"]
-    if (not isinstance(keys, list) or not keys or not all(name_ok(k) for k in keys)
-            or len(set(keys)) != len(keys)):
-        problems.append(f"key_fields must be a non-empty list of distinct field names, got {keys!r}")
-        return False
-    return True
+    return check_field_list_param(problems, params, "key_fields")
 
 
 class DecisionOutcomes(Node):
@@ -232,14 +249,34 @@ class DecisionOutcomes(Node):
             )
         return dates.pop(), rows
 
+    @staticmethod
+    def _holding_mean(holdings):
+        """Return the mean over holdings of each one's mean surprise, or None when there are none.
+
+        ``holdings`` maps a holding (its ``match_fields`` key) to ``[rows, surprise sum]``: a
+        holding of ten lots weighs the same as a holding of one.
+        """
+        if not holdings:
+            return None
+        return sum(total / rows for rows, total in holdings.values()) / len(holdings)
+
     def run(self, ctx, inputs):
-        """Return one scored row per matched symbol, and a summary with the unmatched."""
+        """Return one scored row per decision matched to a later position, and a summary.
+
+        The summary counts twice. ``scored``, ``mean_surprise`` and each ``by_decision``
+        ``count`` / ``mean_surprise`` are per ROW (one per lot when decisions are per lot, so
+        a holding of many lots weighs by its lots); ``holdings``, ``holding_mean_surprise`` and
+        each ``by_decision`` ``holdings`` / ``holding_mean_surprise`` are per HOLDING (the
+        ``match_fields`` key): a holding counts once, with the mean surprise of its lots. Without
+        ``match_fields`` a holding is a row and the two agree. ``unmatched`` lists decisions.
+        """
         decisions = inputs.get("decisions")
         if not isinstance(decisions, list):
             raise ValueError(f"{self.key}: decisions must be a list")
         later_day, later = self._later(inputs.get("positions"))
         as_of_field, key_fields = self.params["as_of_field"], self.params["key_fields"]
         out, unmatched, by_decision, seen = [], [], {}, set()
+        holdings = {}
         for index, row in enumerate(decisions):
             key = self._key("decision", index, row)
             if key in seen:
@@ -298,11 +335,17 @@ class DecisionOutcomes(Node):
                 "projected_growth": projected, "realized_growth": realized,
                 "surprise": surprise, "decision": decision,
             })
-            bucket = by_decision.setdefault(decision, {"count": 0, "sum": 0.0})
+            bucket = by_decision.setdefault(decision, {"count": 0, "sum": 0.0, "holdings": {}})
             bucket["count"] += 1
             bucket["sum"] += surprise
+            for group in (holdings, bucket["holdings"]):
+                counted = group.setdefault(match, [0, 0.0])
+                counted[0] += 1
+                counted[1] += surprise
         summary_by = {
-            key: {"count": b["count"], "mean_surprise": b["sum"] / b["count"]}
+            key: {"count": b["count"], "mean_surprise": b["sum"] / b["count"],
+                  "holdings": len(b["holdings"]),
+                  "holding_mean_surprise": self._holding_mean(b["holdings"])}
             for key, b in sorted(by_decision.items())
         }
         mean = sum(r["surprise"] for r in out) / len(out) if out else None
@@ -312,4 +355,5 @@ class DecisionOutcomes(Node):
             "stage": "decision outcomes", "scored": len(out),
             "observed_as_of": later_day.isoformat(),
             "unmatched": [dict(zip(key_fields, key)) for key in sorted(unmatched, key=repr)],
-            "mean_surprise": mean, "by_decision": summary_by}}
+            "mean_surprise": mean, "holdings": len(holdings),
+            "holding_mean_surprise": self._holding_mean(holdings), "by_decision": summary_by}}

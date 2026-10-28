@@ -100,7 +100,14 @@ document now runs per lot: each lot's own date picks its rate, so shares bought
 within the year pay the short-term rate on their own gain (e2e: VTI 119 aggregate
 becomes 99.96 + 32.64 = 132.60). A holding whose lots do not reconcile refuses
 unless `allow_incomplete` (aggregate fallback). Child: 72 passed, 9 skipped (5
-new). Not yet lens-reviewed. Open: the lot method election (Schwab's average-cost
+new). Sonnet round 1 (Claude Sonnet 5.5; ADR amendment "tax lots, Sonnet round 1
+corrections"): 1 Major (no two-account coverage: A1/A2 unit tests, an A2 holding in the
+child e2e with a commissioned buy, pooling by symbol shown red in a scratch copy, 8 + 7
+unit and 6 + 5 child tests) and 8 Minors fixed (`amount_field` refusal + fallback count,
+`status` VALID, `time` and `order_fields`, `start` in STATE, `basis_gap_max` + warning,
+per-holding scoring counts, boundary and 365/366-day pins, the aggregate recipe, which
+now runs); tests 411 -> 448 in the required dskit run, child 72 -> 76 passed, 9 skipped.
+Awaiting round 2. Open: the lot method election (Schwab's average-cost
 default for some funds/ETFs), `allow_incomplete`, `tolerance`, how far back
 Schwab serves transactions, and the ETF `asset_type` (`COLLECTIVE_INVESTMENT`).
 

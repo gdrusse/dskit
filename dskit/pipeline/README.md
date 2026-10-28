@@ -878,17 +878,22 @@ they register only into private registries, never the default one.
   row's value and quantity are read only when a decision matches its key, so
   an undecided short or zero-quantity row never stops the run. Per-share growth
   reads a split or spin-off as a return (not detected). It owns the public
-  `annualized_growth` (a ratio's annual rate) and `check_key_fields_param`
-  (the `key_fields` rule) that `PositionSummary` imports. Optional `match_fields`
+  `annualized_growth` (a ratio's annual rate), `check_key_fields_param` (the
+  `key_fields` rule) and `check_field_list_param` (the rule under it) that
+  `PositionSummary` and `TaxLots` import. Optional `match_fields`
   (a subset of `key_fields`) keys the later snapshot more coarsely than the
   decisions: per-lot decisions (account, symbol, lot id) each score against their
-  holding's later row, per share. Every ADR-0279 kind answers `serving_effect` "pure".
+  holding's later row, per share. The summary counts rows (`scored`, `mean_surprise`:
+  one per lot) and holdings (`holdings`, `holding_mean_surprise`: one per `match_fields`
+  key, a holding of many lots counting once), each also split `by_decision`. Every ADR-0279 kind answers `serving_effect` "pure".
 - `tax_lots.py` (`TaxLots`, `LotPositions`) (ADR-0279, research A0004, by import
   path): trade rows (date, signed shares, price, optional signed cash) replayed per
   `key_fields` up to `as_of` into open lots by a declared `method` (`LOT_METHODS`:
   `fifo`; one `LotOrder` subclass per method orders the lots a sell consumes); a
-  buy's basis is its cash (`-amount`, fees in) or `quantity x price`; the last lot a
-  sell touches splits pro rata. A sell beyond the open shares (history before the
+  buy's basis is its cash (`-amount`, fees in) or `quantity x price` (a null amount:
+  counted under `amount_fallbacks`; an absent key refuses); the last lot a
+  sell touches splits pro rata. A day's trades replay by `order_fields` (an execution
+  time, then a transaction id); a trade ON `as_of` is replayed, a later one counted. A sell beyond the open shares (history before the
   trades, a transfer in, a short) refuses, or with `allow_incomplete` withholds the
   key's lots and lists it. `LotPositions` joins lots to a positions snapshot: each
   lot a position row (`quantity_field` = its shares, `value_field` = its share of
@@ -897,8 +902,10 @@ they register only into private registries, never the default one.
   whose lots do not sum to its shares within `tolerance` (float noise below
   `QUANTITY_RTOL` is equality), or has no lots, refuses, or with `allow_incomplete`
   passes as its aggregate row (`lot_id` `<key>:aggregate`, null `acquired`); lots of
-  an unpositioned key are counted; `basis_gap` per position checks the method
-  against the broker's books. `format_lot_id` is the one lot-id spelling.
+  an unpositioned key are counted; `basis_gap` per position (and `basis_gap_max`, with
+  a logged warning beyond `BASIS_RTOL` float noise) checks the method against the
+  broker's books: an average-cost account or a wash sale (not modelled) shows there.
+  `format_lot_id` is the one lot-id spelling.
 - `hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`) (ADR-0279, research
   A0001, by import path): the market's expected nominal return as named blocks
   (dividend yield + real growth + inflation + `(fair_cape / cape) **
@@ -1180,11 +1187,12 @@ dskit/pipeline/
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
 │                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score;
 │                      only decision-matched later rows are value-checked (structural refusals cover all)
-│                      owns `annualized_growth` (ratio -> annual rate) + `check_key_fields_param` (the key_fields rule); position_summary imports both;
-│                      `match_fields` keys the later snapshot by holding when decisions are per lot
+│                      owns `annualized_growth` (ratio -> annual rate) + `check_field_list_param` / `check_key_fields_param` (the field-list rule); position_summary and tax_lots import them;
+│                      `match_fields` keys the later snapshot by holding when decisions are per lot; the summary counts rows (lots) and holdings apart
 ├── tax_lots.py        TaxLots + LotPositions (by import path, ADR-0279, research A0004): trade rows -> open lots per key by a declared method
 │                      (`fifo`; a `LotOrder` per method), an oversell refuses or withholds the key (`allow_incomplete`); lots joined to a positions
-│                      snapshot, each a position row valued pro rata, reconciled share for share (else refuse or the aggregate row), `basis_gap`
+│                      snapshot, each a position row valued pro rata, reconciled share for share (else refuse or the aggregate row), `basis_gap` (+ `basis_gap_max`,
+│                      a warning beyond `BASIS_RTOL`); a day replays by `order_fields` (time, id); a null buy amount falls back to quantity x price, counted
 ├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS

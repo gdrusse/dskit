@@ -13,8 +13,9 @@ the rates the loaded documents declare, never from literals, so an owner replaci
 a placeholder keeps the suite green. With the placeholders shipped on 2026-10-27
 the same arithmetic gives, per lot: the old VTI lot 1500 over a basis of 1080, long,
 tax 420 x .238 = 99.96; the young VTI lot 1000 over 920, short, tax 80 x .408 =
-32.64; AAPL 600 over 450, long, 35.70. VTI pays 132.60 in all, where the aggregate
-row (all long by default) paid 119.
+32.64; AAPL 600 over 450, long, 35.70; the second account's VTI lot 1250 over 952.5
+(1524 paid x 5/8 left), long, 297.5 x .238 = 70.805. The first account's VTI pays
+132.60 in all, where the aggregate row (all long by default) paid 119.
 """
 
 import json
@@ -22,11 +23,15 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from datetime import date, timedelta
 
 import pytest
 
 from dskit.pipeline import OutputsConfig, run_document
 from dskit.pipeline.document import load_document
+from dskit.pipeline.liquidation import LiquidationTax
+from dskit.pipeline.node import NodeContext
+from dskit.pipeline.tax_lots import LotPositions, TaxLots
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_DOC = os.path.join(CHILD_ROOT, "configs", "run-hold-vs-redeploy.json")
@@ -34,6 +39,7 @@ OUTCOMES_DOC = os.path.join(CHILD_ROOT, "configs", "run-decision-outcomes.json")
 
 DECIDED, LATER_DAY = "2025-10-27", "2026-10-27"
 ACCOUNT = "F00DBEEFCAFE4C0DE"
+ACCOUNT2 = "C0FFEE0DDBA11A2"           # a second account holding the same symbol
 
 THEN = [
     {"account": ACCOUNT, "symbol": "VTI", "asset_type": "EQUITY", "as_of": DECIDED,
@@ -48,31 +54,54 @@ THEN = [
     {"account": ACCOUNT, "symbol": "SPY   261218C00500000", "asset_type": "OPTION",
      "as_of": DECIDED, "long_quantity": 1.0, "short_quantity": 0.0, "average_price": 12.0,
      "cost_basis": 12.0, "market_value": 1500.0},
+    # the second account: 5 VTI at the same 250 a share, average price 952.5 / 5
+    {"account": ACCOUNT2, "symbol": "VTI", "asset_type": "EQUITY", "as_of": DECIDED,
+     "long_quantity": 5.0, "short_quantity": 0.0, "average_price": 190.5,
+     "cost_basis": 952.5, "market_value": 1250.0},
 ]
 # the purchases: VTI 6 sh in 2023 (basis 1080) and 4 sh in July 2025 (920) are the 10 shares and
-# 2000 of basis the decision snapshot holds; AAPL 3 sh (450); the 10 VTI shares bought in 2026 are
-# the later snapshot's (4500 of basis), after the decision day, so its lots never see them
+# 2000 of basis the decision snapshot holds; AAPL 3 sh (450, a null amount: the transaction
+# carried several items, so the basis is quantity x price); the 10 VTI shares bought in 2026 are
+# the later snapshot's (4500 of basis), after the decision day, so its lots never see them.
+# The second account bought 8 VTI for 1524 (8 x 190 = 1520 plus a 4.00 commission) and sold 3:
+# FIFO leaves 5 sh with basis 1524 x 5/8 = 952.5, where quantity x price would say 950.
+# Every trade carries the `time` the connector emits, which orders a day beside the id.
 TRADES = [
-    {"account": ACCOUNT, "transaction_id": 1001, "trade_date": "2023-06-15", "symbol": "VTI",
+    {"account": ACCOUNT, "transaction_id": 1001, "trade_date": "2023-06-15",
+     "time": "2023-06-15T13:31:00+0000", "symbol": "VTI",
      "asset_type": "EQUITY", "quantity": 6.0, "price": 180.0, "amount": -1080.0,
      "position_effect": "OPENING"},
-    {"account": ACCOUNT, "transaction_id": 1002, "trade_date": "2025-07-28", "symbol": "VTI",
+    {"account": ACCOUNT, "transaction_id": 1002, "trade_date": "2025-07-28",
+     "time": "2025-07-28T14:02:00+0000", "symbol": "VTI",
      "asset_type": "EQUITY", "quantity": 4.0, "price": 230.0, "amount": -920.0,
      "position_effect": "OPENING"},
-    {"account": ACCOUNT, "transaction_id": 1003, "trade_date": "2024-03-01", "symbol": "AAPL",
-     "asset_type": "EQUITY", "quantity": 3.0, "price": 150.0, "amount": -450.0,
+    {"account": ACCOUNT, "transaction_id": 1003, "trade_date": "2024-03-01",
+     "time": "2024-03-01T15:45:00+0000", "symbol": "AAPL",
+     "asset_type": "EQUITY", "quantity": 3.0, "price": 150.0, "amount": None,
      "position_effect": "OPENING"},
-    {"account": ACCOUNT, "transaction_id": 1004, "trade_date": "2026-03-02", "symbol": "VTI",
+    {"account": ACCOUNT, "transaction_id": 1004, "trade_date": "2026-03-02",
+     "time": "2026-03-02T14:10:00+0000", "symbol": "VTI",
      "asset_type": "EQUITY", "quantity": 10.0, "price": 250.0, "amount": -2500.0,
      "position_effect": "OPENING"},
+    {"account": ACCOUNT2, "transaction_id": 1005, "trade_date": "2024-02-01",
+     "time": "2024-02-01T15:10:00+0000", "symbol": "VTI",
+     "asset_type": "EQUITY", "quantity": 8.0, "price": 190.0, "amount": -1524.0,
+     "position_effect": "OPENING"},
+    {"account": ACCOUNT2, "transaction_id": 1006, "trade_date": "2025-03-03",
+     "time": "2025-03-03T16:20:00+0000", "symbol": "VTI",
+     "asset_type": "EQUITY", "quantity": -3.0, "price": 215.0, "amount": 645.0,
+     "position_effect": "CLOSING"},
 ]
 OLD_VTI = f"{ACCOUNT}:VTI:2023-06-15:1"
 YOUNG_VTI = f"{ACCOUNT}:VTI:2025-07-28:1"
 AAPL_LOT = f"{ACCOUNT}:AAPL:2024-03-01:1"
-# per lot on the decision day: (symbol, value at the snapshot's 250 / 200 a share, basis, class)
+A2_VTI = f"{ACCOUNT2}:VTI:2024-02-01:1"
+# per lot on the decision day: (symbol, value at the snapshot's 250 / 200 a share, basis, class);
+# the second account's lot is 5 x 250 over 952.5, acquired 633 days before the decision
 WORKED_LOTS = {OLD_VTI: ("VTI", 1500.0, 1080.0, "long"),
                YOUNG_VTI: ("VTI", 1000.0, 920.0, "short"),
-               AAPL_LOT: ("AAPL", 600.0, 450.0, "long")}
+               AAPL_LOT: ("AAPL", 600.0, 450.0, "long"),
+               A2_VTI: ("VTI", 1250.0, 952.5, "long")}
 
 # a year later (today, so the snapshot is not a forecast): VTI doubled its share count and its
 # price rose 10%; AAPL fell 10%; the short XYZ (zero long quantity) and the option are still
@@ -83,6 +112,8 @@ LATER = [
     {**THEN[1], "as_of": LATER_DAY, "market_value": 540.0},
     {**THEN[2], "as_of": LATER_DAY},
     {**THEN[3], "as_of": LATER_DAY},
+    # the second account's VTI rose 4% (1300 / 5 = 260 against 250), the first account's 10%
+    {**THEN[4], "as_of": LATER_DAY, "market_value": 1300.0},
 ]
 
 # Twelve weekly net returns with mean 0.0055 and sd 0.0087; among FIVE trials the expected max
@@ -147,10 +178,13 @@ def root(tmp_path):
     return _build(tmp_path, TRADES)
 
 
-def _load(path, run_root, **overrides):
-    """Load a document, override run_root, and set the dated/named values a run needs."""
+def _load(path, run_root, _edit=None, **overrides):
+    """Load a document, override run_root, and set the dated/named values a run needs.
+    ``_edit`` is applied to the raw document first (a README recipe's own edits)."""
     with open(path) as fh:
         raw = json.load(fh)
+    if _edit is not None:
+        _edit(raw)
     for node, params in overrides.items():
         raw["pipeline"][node]["params"].update(params)
     out = os.path.join(run_root, os.path.basename(path))
@@ -223,12 +257,15 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
     result = _decide(root)
     tax, decide = _shipped(RUN_DOC, "tax"), _shipped(RUN_DOC, "decide")
     hurdle_periods = _shipped(RUN_DOC, "hurdle")["periods_per_year"]
-    # the lots: the 2026 buy is after the decision day; both holdings reconcile share for share
+    # the lots: the 2026 buy is after the decision day; all three holdings (two accounts' VTI
+    # and one AAPL) reconcile share for share; AAPL's null amount fell back to quantity x price
     lots = result.outputs["lots"]["summary"]
-    assert (lots["lots"], lots["after_as_of"], lots["incomplete"]) == (3, 1, [])
+    assert (lots["lots"], lots["keys"], lots["after_as_of"], lots["incomplete"]) == (4, 3, 1, [])
+    assert lots["amount_fallbacks"] == 1
     joined = result.outputs["lot_positions"]["summary"]
     assert joined["fallback"] == [] and joined["unpositioned"] == []
-    assert [r["basis_gap"] for r in joined["reconciled"]] == [0.0, 0.0]
+    assert [r["basis_gap"] for r in joined["reconciled"]] == [0.0, 0.0, 0.0]
+    assert joined["basis_gap_max"] == 0.0
     rows = {row["lot_id"]: row for row in result.outputs["decide"]["records"]}
     assert set(rows) == set(WORKED_LOTS), "one row per lot, equities only, no short XYZ"
     # each lot by its own holding period, measured to the snapshot day: the 2023 VTI lot and
@@ -241,6 +278,12 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
         assert row["liq_tax"] == pytest.approx((value - basis) * tax[f"{holding}_term_rate"])
         assert row["liq_net"] == pytest.approx(value - row["liq_tax"])
     assert rows[OLD_VTI]["acquired"] == "2023-06-15" and rows[YOUNG_VTI]["acquired"] == "2025-07-28"
+    # the second account's lot is its own: FIFO took the 3 sold from ITS 8 shares, and the 4.00
+    # commission is in the basis (1524 x 5/8 = 952.5, where 5 x 190 = 950 would leave it out)
+    assert rows[A2_VTI]["account"] == ACCOUNT2 and rows[A2_VTI]["acquired"] == "2024-02-01"
+    assert (rows[A2_VTI]["long_quantity"], rows[A2_VTI]["cost_basis"]) == (5.0, 952.5)
+    assert rows[A2_VTI]["liq_tax"] == pytest.approx(
+        (1250.0 - 952.5) * tax["long_term_rate"])                 # 297.5 x .238 = 70.805 shipped
     market, expected = _expected_rates()
     assert result.outputs["market"]["rate"] == pytest.approx(market)
     rates = result.outputs["betas"]["rates"]
@@ -296,7 +339,7 @@ def test_a_holding_bought_before_the_history_refuses_unless_allowed(tmp_path, mo
     allowed = _decide(root, lots={"allow_incomplete": True},
                       lot_positions={"allow_incomplete": True})
     rows = {row["lot_id"]: row for row in allowed.outputs["decide"]["records"]}
-    assert set(rows) == {OLD_VTI, YOUNG_VTI, f"{ACCOUNT}:AAPL:aggregate"}
+    assert set(rows) == {OLD_VTI, YOUNG_VTI, f"{ACCOUNT}:AAPL:aggregate", A2_VTI}
     aapl = rows[f"{ACCOUNT}:AAPL:aggregate"]
     tax = _shipped(RUN_DOC, "tax")
     assert aapl["acquired"] is None and aapl["liq_holding"] == tax["default_holding"]
@@ -308,8 +351,9 @@ def test_a_holding_bought_before_the_history_refuses_unless_allowed(tmp_path, mo
 
 
 def test_a_sale_the_history_never_bought_refuses_at_the_lots(tmp_path, monkeypatch):
-    sale = {**TRADES[2], "transaction_id": 999, "trade_date": "2024-01-02", "quantity": -1.0,
-            "amount": 150.0, "position_effect": "CLOSING"}
+    sale = {**TRADES[2], "transaction_id": 999, "trade_date": "2024-01-02",
+            "time": "2024-01-02T14:00:00+0000", "quantity": -1.0, "amount": 150.0,
+            "position_effect": "CLOSING"}
     root = _build(tmp_path, TRADES + [sale])
     monkeypatch.chdir(root)
     refused = _decide(root, expect="error")
@@ -350,7 +394,8 @@ def _worked(value, basis, holding, hold_rate, hurdle):
 def test_position_summary_end_to_end(root, monkeypatch):
     """The few numbers per lot, worked by hand from the same rows and the shipped declarations.
     With the placeholders of 2026-10-27: the old VTI lot 1500 (basis 1080, long, tax 99.96), the
-    young VTI lot 1000 (basis 920, short, tax 32.64), AAPL 600 (basis 450, long, tax 35.70)."""
+    young VTI lot 1000 (basis 920, short, tax 32.64), AAPL 600 (basis 450, long, tax 35.70) and
+    the second account's VTI lot 1250 (basis 952.5, long, tax 70.805): 4350 of value."""
     monkeypatch.chdir(root)
     result = _decide(root)
     decide = _shipped(RUN_DOC, "decide")
@@ -366,8 +411,10 @@ def test_position_summary_end_to_end(root, monkeypatch):
               for lot_id, (symbol, value, basis, holding) in WORKED_LOTS.items()}
     old = rows[OLD_VTI]
     assert list(old)[:3] == ["account", "symbol", "lot_id"] and old["account"] == ACCOUNT
-    assert [rows[lot]["value"] for lot in (OLD_VTI, YOUNG_VTI, AAPL_LOT)] == [1500.0, 1000.0, 600.0]
-    assert old["weight"] == pytest.approx(1500.0 / 3100.0)
+    assert [rows[lot]["value"] for lot in (OLD_VTI, YOUNG_VTI, AAPL_LOT, A2_VTI)] == [
+        1500.0, 1000.0, 600.0, 1250.0]
+    total_value = 1500.0 + 1000.0 + 600.0 + 1250.0
+    assert old["weight"] == pytest.approx(1500.0 / total_value)
     assert old["horizon_years"] == years
     for lot_id, (symbol, value, basis, _) in WORKED_LOTS.items():
         row = rows[lot_id]
@@ -389,18 +436,19 @@ def test_position_summary_end_to_end(root, monkeypatch):
             - decide["risk_premium"])
     assert worked[OLD_VTI]["net"] * (1.0 + tied) ** years == pytest.approx(
         worked[OLD_VTI]["hold_net"])
-    # portfolio: weights over 3100; concentration merges the two VTI lots by symbol; totals'
-    # break-even and opportunity cost are exact because every row shares one redeploy rate
+    # portfolio: weights over 4350; concentration merges the three VTI lots (two accounts) by
+    # symbol; totals' break-even and opportunity cost are exact because every row shares one
+    # redeploy rate. `positions` and the exit / hold counts count LOTS, not holdings.
     m = result.outputs["summary"]["metrics"]
-    weights = {"VTI": 2500.0 / 3100.0, "AAPL": 600.0 / 3100.0}
-    assert (m["positions"], m["total_value"]) == (3, 3100.0)
+    weights = {"VTI": 3750.0 / total_value, "AAPL": 600.0 / total_value}
+    assert (m["positions"], m["total_value"]) == (4, total_value)
     assert m["expected_return"] == pytest.approx(sum(weights[s] * rates[s] for s in weights))
     assert m["beta"] == pytest.approx(sum(weights[s] * betas[s] for s in weights))
     assert m["hhi"] == pytest.approx(sum(w ** 2 for w in weights.values()))
     assert m["effective_holdings"] == pytest.approx(1.0 / m["hhi"])
     assert (m["top_symbol"], m["top_weight"]) == ("VTI", pytest.approx(weights["VTI"]))
     assert m["tax_cost"] == pytest.approx(
-        sum(w["liq_tax"] for w in worked.values()) / 3100.0)   # (99.96 + 32.64 + 35.70) / 3100
+        sum(w["liq_tax"] for w in worked.values()) / total_value)   # (99.96 + 32.64 + 35.70 + 70.805) / 4350
     total = {k: sum(w[k] for w in worked.values()) for k in ("net", "hold_net", "redeploy_net")}
     assert m["opportunity_cost"] == pytest.approx(
         (total["redeploy_net"] / total["hold_net"]) ** (1.0 / years) - 1.0)
@@ -444,10 +492,12 @@ def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):
     assert {row["symbol"] for row in result.outputs["later"]["records"]} == {"VTI", "AAPL"}
     rows = {row["lot_id"]: row for row in result.outputs["outcomes"]["records"]}
     assert set(rows) == set(WORKED_LOTS), "every decided lot is scored against its holding"
-    assert rows[OLD_VTI]["account"] == ACCOUNT
-    # per share: both VTI lots see 275 / 250 (the 2026 buy doubled the count, not the price)
+    assert rows[OLD_VTI]["account"] == ACCOUNT and rows[A2_VTI]["account"] == ACCOUNT2
+    # per share: both first-account VTI lots see 275 / 250 (the 2026 buy doubled the count, not
+    # the price); the second account's lot is matched to ITS later row, 260 / 250
     assert rows[OLD_VTI]["realized_growth"] == pytest.approx(1.1)
     assert rows[YOUNG_VTI]["realized_growth"] == pytest.approx(1.1)
+    assert rows[A2_VTI]["realized_growth"] == pytest.approx(1.04)
     assert rows[AAPL_LOT]["realized_growth"] == pytest.approx(0.9)
     # total growth a year is 1 + the VTI hold rate; the forecast's income component (the
     # outcomes document's income_rate) is removed -> price growth a year, compounded for the
@@ -457,14 +507,25 @@ def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):
     horizon = _shipped(RUN_DOC, "decide")["horizon_years"]
     _, expected = _expected_rates()
     elapsed = 365 / 365.25
-    for lot_id in (OLD_VTI, YOUNG_VTI):
+    for lot_id in (OLD_VTI, YOUNG_VTI, A2_VTI):
         total = (decided_rows[lot_id]["hold_value"] / decided_rows[lot_id]["market_value"]) ** (
             1 / horizon)
         assert total == pytest.approx(1.0 + expected["VTI"])
         assert rows[lot_id]["projected_growth"] == pytest.approx(
             (1.0 + expected["VTI"] - income) ** elapsed)
         assert rows[lot_id]["decision"] == decided_rows[lot_id]["decision"]
-    assert result.outputs["outcomes"]["summary"]["unmatched"] == []
+    summary = result.outputs["outcomes"]["summary"]
+    assert summary["unmatched"] == []
+    # four lots over three holdings: the two first-account VTI lots share one holding. Surprise =
+    # realized - projected; every VTI lot projects the same growth
+    vti_projected = (1.0 + expected["VTI"] - income) ** elapsed
+    aapl_projected = (1.0 + expected["AAPL"] - income) ** elapsed
+    surprise = {"a1_vti": 1.1 - vti_projected, "aapl": 0.9 - aapl_projected,
+                "a2_vti": 1.04 - vti_projected}
+    assert (summary["scored"], summary["holdings"]) == (4, 3)
+    assert summary["mean_surprise"] == pytest.approx(
+        (2 * surprise["a1_vti"] + surprise["aapl"] + surprise["a2_vti"]) / 4)
+    assert summary["holding_mean_surprise"] == pytest.approx(sum(surprise.values()) / 3)
     assert os.path.isfile(result.outputs["scored"]["path"])
 
 
@@ -479,5 +540,110 @@ def test_an_undecided_zero_quantity_row_never_refuses_the_scoring_run(root, monk
                      later={"where": [{"field": "as_of", "op": "==", "value": LATER_DAY}]})
     result = run_document(document, asof=LATER_DAY, journal=False)
     assert result.state == "ran", (result.state, result.error)
-    assert len(result.outputs["later"]["records"]) == 4
+    assert len(result.outputs["later"]["records"]) == 5
     assert {row["symbol"] for row in result.outputs["outcomes"]["records"]} == {"VTI", "AAPL"}
+
+
+def test_a_sale_the_other_accounts_shares_could_cover_refuses_at_the_lots(tmp_path, monkeypatch):
+    """The second account sells 9 VTI in February 2025 with 8 open in it; the first account's 6
+    shares would cover the 1 short if lots were pooled by symbol. They are not: the sale refuses
+    by account, at the lots."""
+    sale = {**TRADES[4], "transaction_id": 1007, "trade_date": "2025-02-01",
+            "time": "2025-02-01T16:00:00+0000", "quantity": -9.0, "price": 200.0,
+            "amount": 1800.0, "position_effect": "CLOSING"}
+    root = _build(tmp_path, TRADES + [sale])
+    monkeypatch.chdir(root)
+    refused = _decide(root, expect="error")
+    assert refused.halted_at == "lots"
+    assert (f"sells 9.0 of '{ACCOUNT2}:VTI' on 2025-02-01 but 8.0 share(s) are open "
+            "(oversold by 1.0)") in refused.error
+
+
+def test_lots_a_day_either_side_of_the_long_term_threshold_by_the_documents_days():
+    """The shipped lots, join and tax nodes on two purchases of one holding: one 365 days before
+    the decision day, one 366. The document's long_term_days (366: MORE than a year) makes the
+    first short and the second long, each taxed at its class's rate on its own gain."""
+    ctx = NodeContext(name="lots", asof=DECIDED, run_dir=".")
+    # the shipped nodes, the decision day set the way _decide sets it (lots.as_of and tax.as_of)
+    lots_p, join_p, tax_p = ({**_shipped(RUN_DOC, name), **extra} for name, extra in (
+        ("lots", {"as_of": DECIDED}), ("lot_positions", {}), ("tax", {"as_of": DECIDED})))
+    day = date.fromisoformat(DECIDED)
+    held = {365: day - timedelta(days=365), 366: day - timedelta(days=366)}
+    assert (held[365].isoformat(), held[366].isoformat()) == ("2024-10-27", "2024-10-26"), (
+        "no 29 February falls inside either span")
+    assert tax_p["long_term_days"] == 366, "a lot is long-term when held MORE than a year"
+    trades = [{"account": ACCOUNT, "transaction_id": 1 + i, "trade_date": acquired.isoformat(),
+               "time": f"{acquired.isoformat()}T14:30:00+0000", "symbol": "VTI",
+               "asset_type": "EQUITY", "quantity": 1.0, "price": 100.0, "amount": -100.0,
+               "position_effect": "OPENING"} for i, acquired in enumerate(held.values())]
+    snapshot = [{**THEN[0], "long_quantity": 2.0, "cost_basis": 200.0, "market_value": 500.0}]
+    lots = TaxLots("lots", lots_p).run(ctx, {"records": trades})["records"]
+    joined = LotPositions("lot_positions", join_p).run(
+        ctx, {"lots": lots, "positions": snapshot})["records"]
+    taxed = LiquidationTax("tax", tax_p).run(ctx, {"records": joined})["records"]
+    # 250 a share (500 / 2) over a 100 basis: a 150 gain on each lot
+    assert {r["acquired"]: (r["liq_holding"], r["liq_gain"]) for r in taxed} == {
+        held[365].isoformat(): ("short", 150.0), held[366].isoformat(): ("long", 150.0)}
+    by_class = {r["liq_holding"]: r for r in taxed}
+    assert by_class["short"]["liq_tax"] == pytest.approx(150.0 * tax_p["short_term_rate"])
+    assert by_class["long"]["liq_tax"] == pytest.approx(150.0 * tax_p["long_term_rate"])
+
+
+def _aggregate_decisions(raw):
+    """README "To go back to the aggregate path", decision document: delete the trades, lots and
+    lot_positions nodes, point tax.inputs.records at $snapshot.records, drop tax.acquired_field,
+    and key the summary on account + symbol (there is no lot_id to key on)."""
+    nodes = raw["pipeline"]
+    for name in ("trades", "lots", "lot_positions"):
+        del nodes[name]
+    nodes["tax"]["inputs"]["records"] = "$snapshot.records"
+    del nodes["tax"]["params"]["acquired_field"]
+    nodes["summary"]["params"]["key_fields"] = ["account", "symbol"]
+
+
+def _aggregate_outcomes(raw):
+    """The same recipe, scoring document: decisions and outcomes keyed on account + symbol,
+    match_fields dropped (it would equal key_fields)."""
+    nodes = raw["pipeline"]
+    nodes["decisions"]["params"]["key_fields"] = ["account", "symbol", "as_of"]
+    nodes["outcomes"]["params"]["key_fields"] = ["account", "symbol"]
+    del nodes["outcomes"]["params"]["match_fields"]
+
+
+def test_the_readmes_aggregate_path_recipe_runs_both_documents(root, monkeypatch):
+    """The recipe as the README states it, applied to the shipped documents: no lots, one row
+    per account x symbol, each taxed as default_holding (the first account's VTI at the long rate
+    on 2500 over 2000: 119), and the same decisions scored a year later per holding."""
+    monkeypatch.chdir(root)
+    tax = _shipped(RUN_DOC, "tax")
+    document = _load(RUN_DOC, str(root), _edit=_aggregate_decisions,
+                     snapshot={"where": _shipped_where(RUN_DOC, "snapshot", DECIDED)},
+                     tax={"as_of": DECIDED}, hurdle=HURDLE_PINS)
+    decided = run_document(document, asof=DECIDED, journal=False)
+    assert decided.state == "ran", (decided.state, decided.error)
+    rows = {(r["account"], r["symbol"]): r for r in decided.outputs["decide"]["records"]}
+    assert set(rows) == {(ACCOUNT, "VTI"), (ACCOUNT, "AAPL"), (ACCOUNT2, "VTI")}
+    assert all("lot_id" not in r and "acquired" not in r for r in rows.values())
+    rate = tax[f"{tax['default_holding']}_term_rate"]
+    assert {key: r["liq_holding"] for key, r in rows.items()} == {
+        key: tax["default_holding"] for key in rows}
+    assert rows[(ACCOUNT, "VTI")]["liq_tax"] == pytest.approx((2500.0 - 2000.0) * rate)
+    assert rows[(ACCOUNT2, "VTI")]["liq_tax"] == pytest.approx((1250.0 - 952.5) * rate)
+    summary = {(r["account"], r["symbol"]): r for r in decided.outputs["summary"]["records"]}
+    assert set(summary) == set(rows) and "lot_id" not in next(iter(summary.values()))
+    # the scoring run, keyed per holding
+    run_name = os.path.basename(decided.run_dir)
+    _acquire_decisions(root, run_name)
+    scoring = _load(OUTCOMES_DOC, str(root), _edit=_aggregate_outcomes,
+                    decisions={"stream": run_name},
+                    later={"where": _shipped_where(OUTCOMES_DOC, "later", LATER_DAY)})
+    scored = run_document(scoring, asof=LATER_DAY, journal=False)
+    assert scored.state == "ran", (scored.state, scored.error)
+    out = {(r["account"], r["symbol"]): r for r in scored.outputs["outcomes"]["records"]}
+    assert set(out) == set(rows)
+    assert out[(ACCOUNT, "VTI")]["realized_growth"] == pytest.approx(1.1)
+    assert out[(ACCOUNT2, "VTI")]["realized_growth"] == pytest.approx(1.04)
+    assert out[(ACCOUNT, "AAPL")]["realized_growth"] == pytest.approx(0.9)
+    # one row per holding, so the per-holding and per-row counts agree
+    assert (scored.outputs["outcomes"]["summary"]["scored"],
+            scored.outputs["outcomes"]["summary"]["holdings"]) == (3, 3)

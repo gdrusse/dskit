@@ -10,13 +10,15 @@ document.
 signed share quantity, a price and optionally the signed cash) per declared
 ``key_fields`` (an account and a symbol, say) up to ``as_of``. A buy opens a lot
 whose basis is the cash it paid (``-amount``, fees included) when ``amount_field``
-is declared and the row's amount is not null, else ``quantity x price``. A sell
+is declared and the row's amount is not null, else ``quantity x price`` (a fallback the
+summary counts under ``amount_fallbacks``; a row without the declared key refuses). A sell
 consumes open lots in the order the declared ``method`` gives (:data:`LOT_METHODS`:
 ``fifo``, the rule of 26 CFR 1.1012-1(c)(1) when no lot is identified); the last
 lot it touches is split pro rata, keeping its basis per share. Trades are replayed
-by date, then by ``order_field`` (a transaction id, so a same-day buy precedes the
-sell that closes it) or else in input order. Trades dated after ``as_of`` are
-counted, not replayed.
+by date, then by the ``order_fields`` in turn (an execution time, then a transaction
+id, so a same-day buy precedes the sell that closes it however the ids run) or else in
+input order. A trade dated ON ``as_of`` is replayed (the snapshot of that day holds that
+day's fills); only a later one is counted, not replayed.
 
 A sell beyond the open quantity means the history is incomplete (a purchase before
 the trades begin, a transfer in) or a short sale, which is out of scope: the node
@@ -43,13 +45,18 @@ liquidation's ``default_holding`` applies, as before lots existed) and is listed
 under ``fallback``. Lots of a key the snapshot does not carry (a holding the
 document filtered out) are counted under ``unpositioned`` and not emitted. The
 summary reports, per reconciled position, ``basis_gap`` = lot basis - position
-basis: zero when the declared method matches the broker's books.
+basis: zero when the declared method matches the broker's books, and ``basis_gap_max``,
+the largest |gap|; a gap beyond float noise (:data:`BASIS_RTOL` of the position's basis)
+logs one warning naming the largest.
 
 Limits, disclosed rather than modelled. Only long lots exist: a short sale and its
 cover are an oversell and a buy. Splits, spin-offs, transfers and reinvestments the
 trade rows do not carry are not modelled; each shows as a reconciliation failure,
 never as a silent number. Average-cost basis (a broker default for some funds) is
-not a method here yet.
+not a method here yet: such an account shows as a basis gap. Wash sales are not
+modelled either (a loss disallowed by a repurchase within 30 days raises the new lot's
+basis and tacks the old holding period onto it), so a wash-sale account also shows as a
+basis gap, and the lot's holding period here starts at its purchase.
 
 Import cost: stdlib + the pipeline core.
 """
@@ -58,17 +65,18 @@ from __future__ import annotations
 
 import abc
 import math
+from collections import namedtuple
 from datetime import date
 
 from dskit.pipeline.binary_curve import fields_key, name_ok, row_key
-from dskit.pipeline.decision_outcomes import check_key_fields_param
+from dskit.pipeline.decision_outcomes import check_field_list_param, check_key_fields_param
 from dskit.pipeline.document import date_problem
 from dskit.pipeline.liquidation import check_name_params, require_number, require_rows
 from dskit.pipeline.node import Node, check_number_param, reject_unknown_params
 
 __all__ = [
-    "AGGREGATE_LOT", "LOT_FIELDS", "LOT_METHODS", "QUANTITY_RTOL", "FifoOrder", "LotOrder",
-    "LotPositions", "TaxLots", "format_lot_id",
+    "AGGREGATE_LOT", "BASIS_RTOL", "LOT_FIELDS", "LOT_METHODS", "QUANTITY_RTOL", "FifoOrder",
+    "LotOrder", "LotPositions", "TaxLots", "format_lot_id",
 ]
 
 #: The fields :class:`TaxLots` writes on every lot row, beside the key fields.
@@ -78,6 +86,13 @@ AGGREGATE_LOT = "aggregate"
 #: Share quantities closer than this fraction of the trade or position are float noise, not
 #: shares: 0.1 + 0.2 fractional shares sold as 0.3 close both lots and oversell nothing.
 QUANTITY_RTOL = 1e-9
+#: A basis gap smaller than this fraction of the position's basis is float noise, not a lot
+#: method that differs from the broker's: it raises no warning.
+BASIS_RTOL = 1e-9
+
+#: One parsed trade row: the replay order is ``(day, order, index)``, ``estimated`` marks a buy
+#: whose cash was declared but null, so its basis is quantity x price.
+_Trade = namedtuple("_Trade", "day order index key quantity basis estimated")
 
 _JOIN_FIELDS = ("lot_id", "acquired")
 _TOLERANCE_BOUNDS = (0.0, 1.0)
@@ -161,8 +176,10 @@ class TaxLots(Node):
         ``date_field`` / ``quantity_field`` / ``price_field`` (field names,
         REQUIRED): the trade date (ISO), the signed shares (+ bought, - sold) and
         the price a share; ``amount_field`` (field name, optional): the signed cash
-        (negative = paid), a buy's basis when present on its row; ``order_field``
-        (field name, optional): orders trades within a day (a str or int id);
+        (negative = paid), a buy's basis when its value is not null (the key must be on
+        EVERY row); ``order_fields`` (non-empty list of distinct field names, optional):
+        orders the trades of a day, in turn (each a str or int on every trade, one type per
+        field: an execution time, then a transaction id);
         ``allow_incomplete`` (bool, REQUIRED): withhold an oversold key's lots
         instead of refusing; ``as_of`` (ISO date, optional): the last trade date
         replayed, absent means the run's as-of date.
@@ -188,7 +205,7 @@ class TaxLots(Node):
 
     _PARAMS = (
         "as_of", "method", "key_fields", "date_field", "quantity_field", "price_field",
-        "amount_field", "order_field", "allow_incomplete",
+        "amount_field", "order_fields", "allow_incomplete",
     )
     _REQUIRED = (
         "method", "key_fields", "date_field", "quantity_field", "price_field", "allow_incomplete",
@@ -210,7 +227,8 @@ class TaxLots(Node):
             if taken:
                 problems.append(f"key_fields may not name an output field: {taken}")
         check_name_params(problems, params, (
-            "date_field", "quantity_field", "price_field", "amount_field", "order_field"))
+            "date_field", "quantity_field", "price_field", "amount_field"))
+        check_field_list_param(problems, params, "order_fields")
         _bool_param(problems, params, "allow_incomplete")
         return problems
 
@@ -226,8 +244,31 @@ class TaxLots(Node):
             raise ValueError(f"{self.key}: no usable as_of date (param or run), got {value!r}")
         return date.fromisoformat(value)
 
+    def _order(self, index, row):
+        """Return the row's values of the declared ``order_fields``, each refused by name."""
+        values = []
+        for field in self.params.get("order_fields", ()):
+            value, problem = row_key(row.get(field))
+            if problem is not None:
+                raise ValueError(
+                    f"{self.key}: trade {index} field {field!r} is unusable: {problem}")
+            values.append(value)
+        return tuple(values)
+
+    def _basis(self, index, row, key, quantity, price):
+        """Return ``(basis, estimated)`` of a buy: its cash, else quantity x price (estimated)."""
+        field = self.params.get("amount_field")
+        if field is None or row[field] is None:
+            return quantity * price, field is not None
+        amount = require_number(self.key, "trade", index, row, field)
+        if amount >= 0.0:
+            raise ValueError(
+                f"{self.key}: trade {index} buys {quantity!r} {_label(key)!r} but its "
+                f"{field!r} is {amount!r}; a buy pays cash, so its amount is negative")
+        return -amount, False
+
     def _trade(self, index, row):
-        """Return one trade as ``(key, day, order, quantity, basis)``, every field refused by name."""
+        """Return one parsed :class:`_Trade`, every field refused by name."""
         p = self.params
         key, problem = fields_key(row, p["key_fields"])
         if problem is not None:
@@ -244,40 +285,33 @@ class TaxLots(Node):
         if price < 0.0:
             raise ValueError(
                 f"{self.key}: trade {index} field {p['price_field']!r} is negative, got {price!r}")
-        order = index
-        if "order_field" in p:
-            order, problem = row_key(row.get(p["order_field"]))
-            if problem is not None:
-                raise ValueError(
-                    f"{self.key}: trade {index} field {p['order_field']!r} is unusable: {problem}")
-        basis = None
-        if quantity > 0.0:
-            basis = quantity * price
-            field = p.get("amount_field")
-            if field is not None and row.get(field) is not None:
-                amount = require_number(self.key, "trade", index, row, field)
-                if amount >= 0.0:
-                    raise ValueError(
-                        f"{self.key}: trade {index} buys {quantity!r} {_label(key)!r} but its "
-                        f"{field!r} is {amount!r}; a buy pays cash, so its amount is negative")
-                basis = -amount
-        return key, date.fromisoformat(day), order, quantity, basis
+        field = p.get("amount_field")
+        if field is not None and field not in row:
+            raise ValueError(
+                f"{self.key}: trade {index} has no {field!r} key; amount_field declares it on "
+                "every trade (a null amount falls back to quantity x price, an absent key is "
+                "a misspelt field)")
+        basis, estimated = (self._basis(index, row, key, quantity, price)
+                            if quantity > 0.0 else (None, False))
+        return _Trade(date.fromisoformat(day), self._order(index, row), index, key, quantity,
+                      basis, estimated)
 
     def _ordered(self, records, as_of):
         """Return ``(trades, after)``: the trades up to ``as_of`` in replay order, and the rest's count."""
         trades, after = [], 0
         for index, row in enumerate(records):
-            key, day, order, quantity, basis = self._trade(index, row)
-            if day > as_of:
+            trade = self._trade(index, row)
+            if trade.day > as_of:
                 after += 1
                 continue
-            trades.append((day, order, index, key, quantity, basis))
-        kinds = sorted({type(trade[1]).__name__ for trade in trades})
-        if "order_field" in self.params and len(kinds) > 1:
-            raise ValueError(
-                f"{self.key}: field {self.params['order_field']!r} values mix types {kinds}; "
-                "one order field orders every trade of a day")
-        trades.sort(key=lambda trade: (trade[0], trade[1], trade[2]))
+            trades.append(trade)
+        for position, field in enumerate(self.params.get("order_fields", ())):
+            kinds = sorted({type(trade.order[position]).__name__ for trade in trades})
+            if len(kinds) > 1:
+                raise ValueError(
+                    f"{self.key}: field {field!r} values mix types {kinds}; "
+                    "one order field orders every trade of a day")
+        trades.sort(key=lambda trade: (trade.day, trade.order, trade.index))
         return trades, after
 
     @staticmethod
@@ -303,7 +337,8 @@ class TaxLots(Node):
         order = LOT_METHODS[self.params["method"]]()
         trades, after = self._ordered(records, as_of)
         books, ignored = {}, 0
-        for day, _, index, key, quantity, basis in trades:
+        for trade in trades:
+            day, index, key, quantity = trade.day, trade.index, trade.key, trade.quantity
             book = books.setdefault(key, {"lots": [], "days": {}, "incomplete": None})
             if book["incomplete"] is not None:
                 ignored += 1
@@ -311,7 +346,7 @@ class TaxLots(Node):
             if quantity > 0.0:
                 n = book["days"][day] = book["days"].get(day, 0) + 1
                 lot_id = format_lot_id(key, f"{day.isoformat()}:{n}")
-                book["lots"].append(_Lot(lot_id, day.isoformat(), quantity, basis))
+                book["lots"].append(_Lot(lot_id, day.isoformat(), quantity, trade.basis))
                 continue
             held = math.fsum(lot.quantity for lot in book["lots"])
             short = self._sell(-quantity, book, order)
@@ -341,12 +376,15 @@ class TaxLots(Node):
                             "quantity": lot.quantity, "basis": lot.basis,
                             "basis_per_share": lot.basis / lot.quantity})
         keys = sum(1 for book in books.values() if book["incomplete"] is None and book["lots"])
-        self.log.info("%s: %d lot(s) over %d key(s), %d incomplete", self.key, len(out), keys,
-                      len(incomplete))
+        fallbacks = (sum(trade.estimated for trade in trades)
+                     if "amount_field" in self.params else None)
+        self.log.info("%s: %d lot(s) over %d key(s), %d incomplete, %s buy(s) on quantity x price",
+                      self.key, len(out), keys, len(incomplete), fallbacks)
         return {"records": out, "summary": {
             "stage": "tax lots", "method": self.params["method"], "as_of": as_of.isoformat(),
             "trades": len(trades), "after_as_of": after, "lots": len(out), "keys": keys,
-            "closed": closed, "incomplete": incomplete, "ignored": ignored}}
+            "closed": closed, "incomplete": incomplete, "ignored": ignored,
+            "amount_fallbacks": fallbacks}}
 
 
 class LotPositions(Node):
@@ -511,12 +549,23 @@ class LotPositions(Node):
                 f"{round(total, 9)!r} (difference {round(difference, 9)!r}, tolerance "
                 f"{tolerance!r})")
 
+    def _warn_basis_gaps(self, gapped, reconciled):
+        """Log one warning naming the largest of the ``gapped`` ``(|gap|, key)`` pairs, if any."""
+        if not gapped:
+            return
+        size, key = max(gapped, key=lambda pair: pair[0])
+        self.log.warning(
+            "%s: %d of %d reconciled position(s) differ from the broker's cost basis; max "
+            "|basis_gap| %s on %r: the account may use another lot method (average cost, "
+            "specific lots) or a wash sale adjusted the basis",
+            self.key, len(gapped), reconciled, size, key)
+
     def run(self, ctx, inputs):
         """Return one row per lot (or per unreconciled position, when allowed) and a summary."""
         p = self.params
         grouped = self._lots(inputs.get("lots"))
         positions = self._positions(inputs.get("positions"))
-        out, fallback, reconciled = [], [], []
+        out, fallback, reconciled, gapped = [], [], [], []
         for index, key, quantity, value, basis, carried in positions:
             named = dict(zip(p["key_fields"], key))
             lots = grouped.get(key, [])
@@ -536,9 +585,12 @@ class LotPositions(Node):
                 continue
             price = value / quantity
             lot_basis = math.fsum(lot["basis"] for lot in lots)
+            gap = lot_basis - basis
             reconciled.append({**named, "lots": len(lots), "quantity": quantity,
                                "lot_basis": lot_basis, "position_basis": basis,
-                               "basis_gap": lot_basis - basis})
+                               "basis_gap": gap})
+            if abs(gap) > BASIS_RTOL * abs(basis):
+                gapped.append((abs(gap), key))
             for lot in lots:
                 out.append({**named, **carried, "lot_id": lot["lot_id"],
                             "acquired": lot["acquired"], p["quantity_field"]: lot["quantity"],
@@ -549,6 +601,8 @@ class LotPositions(Node):
                         for key in sorted(set(grouped) - positioned, key=repr)]
         self.log.info("%s: %d row(s) from %d position(s), %d fallback, %d unpositioned",
                       self.key, len(out), len(positions), len(fallback), len(unpositioned))
+        self._warn_basis_gaps(gapped, len(reconciled))
         return {"records": out, "summary": {
             "stage": "lot positions", "positions": len(positions), "lots": len(out),
-            "fallback": fallback, "unpositioned": unpositioned, "reconciled": reconciled}}
+            "fallback": fallback, "unpositioned": unpositioned, "reconciled": reconciled,
+            "basis_gap_max": max((abs(r["basis_gap"]) for r in reconciled), default=None)}}

@@ -178,10 +178,13 @@ at most `window_days` (365, Schwab's one-year limit) as `trades` keyed by
 `(account, transaction_id, symbol)`: one row per transfer item of a kept
 `asset_types` (default `EQUITY`; ETFs may arrive as `COLLECTIVE_INVESTMENT`),
 signed `quantity`, `price`, `amount` (the transaction's net cash, null when it
-holds several kept items), dated by `trade_date`. `types` defaults to `TRADE`.
-Fee lines and skipped asset types are counted in a LOG and the STATE's
-`last_pull`; a window at the 3,000-transaction cap refuses as truncated; the
-cursor day is re-requested in both modes. Transport refusals name the pack's
+holds several kept items), dated by `trade_date` with Schwab's own `time` string
+beside it (it orders a day's fills). `types` defaults to `TRADE`. Only `VALID`
+transactions are trades: a PENDING or INVALID one refuses by index. Fee lines and
+skipped asset types are counted in a LOG and the STATE's `last_pull`; a window at
+the 3,000-transaction cap refuses as truncated; the cursor day is re-requested in
+both modes, and a LOWER `start` than the last pull's (stored in the STATE) clears the
+cursor and re-pulls from it. Transport refusals name the pack's
 request ("Schwab price history failed for 'AAPL' (HTTP 404)", "Schwab accounts
 ...", "Schwab transactions ...").
 

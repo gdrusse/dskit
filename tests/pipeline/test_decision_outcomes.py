@@ -17,6 +17,7 @@ from dskit.pipeline import decision_outcomes
 from dskit.pipeline.decision_outcomes import (
     DecisionOutcomes,
     annualized_growth,
+    check_field_list_param,
     check_key_fields_param,
 )
 from dskit.pipeline.hold_return import BetaHoldReturns, MarketHoldReturn
@@ -114,7 +115,13 @@ def test_income_is_removed_before_compounding_by_hand(ctx):
     # two holds with DIFFERENT surprises: mean (.13014144 - .06985856) / 2 = .03014144
     assert by["hold"]["count"] == 2
     assert by["hold"]["mean_surprise"] == pytest.approx(0.03014144)
-    assert by["exit"] == {"count": 1, "mean_surprise": pytest.approx(-0.06059601)}
+    # one row per holding here (no match_fields), so the per-holding numbers are the per-row ones
+    assert by["exit"] == {"count": 1, "mean_surprise": pytest.approx(-0.06059601),
+                          "holdings": 1, "holding_mean_surprise": pytest.approx(-0.06059601)}
+    assert by["hold"]["holdings"] == 2
+    assert by["hold"]["holding_mean_surprise"] == pytest.approx(0.03014144)
+    assert out["summary"]["holdings"] == 3
+    assert out["summary"]["holding_mean_surprise"] == pytest.approx(-0.00031313 / 3)
     # all three: (.06028288 - .06059601) / 3 = -.00031313 / 3
     assert out["summary"]["mean_surprise"] == pytest.approx(-0.00031313 / 3)
     # no income to remove: projected is the plain pro-rata total growth, 1.05^4 = 1.21550625
@@ -385,6 +392,19 @@ def test_annualized_growth_is_the_annual_rate_that_compounds_to_a_ratio():
     assert annualized_growth(0.0, 4) == -1.0                      # worth nothing: lost it all
 
 
+def test_check_field_list_param_is_the_one_field_list_rule():
+    # key_fields, a lot method's order_fields: one rule, the param's name in the message
+    assert "check_field_list_param" in decision_outcomes.__all__
+    problems = []
+    assert check_field_list_param(problems, {"order_fields": ["time", "id"]}, "order_fields") is True
+    assert check_field_list_param(problems, {}, "order_fields") is False and problems == []
+    for bad in ("time", [], [""], ["a", "a"], [5], None):
+        problems = []
+        assert check_field_list_param(problems, {"order_fields": bad}, "order_fields") is False
+        assert problems == [
+            f"order_fields must be a non-empty list of distinct field names, got {bad!r}"]
+
+
 def test_check_key_fields_param_is_the_one_key_fields_rule():
     assert "check_key_fields_param" in decision_outcomes.__all__
     for good in (["a"], ["a", "b"]):
@@ -461,3 +481,81 @@ def test_match_fields_must_be_distinct_key_fields(bad):
     assert problems == [
         f"match_fields must be a non-empty list of distinct key_fields {LOT_PARAMS['key_fields']!r}, "
         f"got {bad!r}"]
+
+
+# ---- the summary counts lots and holdings apart --------------------------------------------
+
+HOLDING_PARAMS = {**LOT_PARAMS, "income_rate": 0.0}
+HOLDING_DECIDED = "2026-10-27"
+
+
+def _lot_row(account, symbol, lot, value, quantity, growth, decision):
+    # hold_value = value x growth ** 5: a total growth `growth` a year over the 5-year horizon
+    return {"account": account, "symbol": symbol, "lot_id": f"{account}:{symbol}:{lot}",
+            "as_of": HOLDING_DECIDED, "market_value": value, "long_quantity": quantity,
+            "hold_value": value * growth ** 5, "horizon_years": 5, "decision": decision}
+
+
+# 2026-10-27 -> 2030-10-27 is 1461 days = exactly 4 x 365.25: elapsed 4.0 years; income 0, so
+# projected = growth ** 4 (1.05^4 = 1.21550625, 1.1^4 = 1.4641, 1^4 = 1).
+HOLDING_DECISIONS = [
+    _lot_row("A1", "VTI", "L1", 1000.0, 4.0, 1.05, "hold"),     # 250 a share
+    _lot_row("A1", "VTI", "L2", 500.0, 2.0, 1.10, "hold"),      # 250 a share
+    _lot_row("A1", "AAPL", "L1", 300.0, 1.0, 1.00, "exit"),
+    _lot_row("A2", "VTI", "L1", 250.0, 1.0, 1.05, "hold"),
+]
+HOLDING_LATER = [
+    {"account": "A1", "symbol": "VTI", "as_of": "2030-10-27", "market_value": 1500.0,
+     "long_quantity": 6.0},                                      # 250 a share: realized 1.0 twice
+    {"account": "A1", "symbol": "AAPL", "as_of": "2030-10-27", "market_value": 330.0,
+     "long_quantity": 1.0},                                      # realized 1.1
+    {"account": "A2", "symbol": "VTI", "as_of": "2030-10-27", "market_value": 300.0,
+     "long_quantity": 1.0},                                      # 300 / 250: realized 1.2
+]
+
+
+def test_the_summary_counts_rows_and_holdings_apart(ctx):
+    """Four lot rows over three holdings. Surprise = realized - projected:
+    A1 VTI L1 1 - 1.21550625 = -.21550625, L2 1 - 1.4641 = -.4641 (one holding, mean
+    -.339803125); A1 AAPL 1.1 - 1 = .1; A2 VTI 1.2 - 1.21550625 = -.01550625.
+    Per row the mean is -.5951125 / 4; per holding the three means average to -.255309375 / 3."""
+    out = DecisionOutcomes("o", HOLDING_PARAMS).run(
+        ctx, {"decisions": HOLDING_DECISIONS, "positions": HOLDING_LATER})
+    assert [round(r["surprise"], 9) for r in out["records"]] == [
+        -0.21550625, -0.4641, 0.1, -0.01550625]
+    summary = out["summary"]
+    assert summary["scored"] == 4, "rows: one per lot"
+    assert summary["holdings"] == 3, "holdings: A1 VTI, A1 AAPL, A2 VTI"
+    assert summary["mean_surprise"] == pytest.approx(-0.5951125 / 4)
+    assert summary["holding_mean_surprise"] == pytest.approx(-0.255309375 / 3)
+    # hold: three lots in two holdings; exit: one lot of one holding
+    hold, exit_ = summary["by_decision"]["hold"], summary["by_decision"]["exit"]
+    assert hold["count"] == 3 and hold["holdings"] == 2
+    assert hold["mean_surprise"] == pytest.approx(-0.6951125 / 3)
+    # A1 VTI's two hold lots count once: (-.339803125 + -.01550625) / 2
+    assert hold["holding_mean_surprise"] == pytest.approx(-0.355309375 / 2)
+    assert (exit_["count"], exit_["holdings"]) == (1, 1)
+    assert exit_["mean_surprise"] == pytest.approx(0.1)
+    assert exit_["holding_mean_surprise"] == pytest.approx(0.1)
+
+
+def test_a_holding_with_lots_decided_apart_is_counted_under_each_decision(ctx):
+    # A1 VTI's L2 exits while L1 holds: the holding appears once under hold, once under exit,
+    # and once overall
+    decisions = [HOLDING_DECISIONS[0], {**HOLDING_DECISIONS[1], "decision": "exit"}]
+    out = DecisionOutcomes("o", HOLDING_PARAMS).run(
+        ctx, {"decisions": decisions, "positions": HOLDING_LATER})
+    summary = out["summary"]
+    assert (summary["scored"], summary["holdings"]) == (2, 1)
+    by = summary["by_decision"]
+    assert (by["hold"]["holdings"], by["exit"]["holdings"]) == (1, 1)
+    assert by["hold"]["holding_mean_surprise"] == pytest.approx(-0.21550625)
+    assert by["exit"]["holding_mean_surprise"] == pytest.approx(-0.4641)
+    assert summary["holding_mean_surprise"] == pytest.approx(-0.339803125)
+
+
+def test_nothing_scored_has_no_holding_mean(ctx):
+    out = DecisionOutcomes("o", HOLDING_PARAMS).run(
+        ctx, {"decisions": HOLDING_DECISIONS[:1], "positions": HOLDING_LATER[1:]})
+    assert out["summary"]["scored"] == 0 and out["summary"]["holdings"] == 0
+    assert out["summary"]["holding_mean_surprise"] is None and out["summary"]["by_decision"] == {}

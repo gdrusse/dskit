@@ -3,6 +3,7 @@
 import json
 import re
 import urllib.request
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import pytest
@@ -41,8 +42,8 @@ def _item(symbol, amount, price, asset="EQUITY", effect="OPENING"):
     return item
 
 
-def _tx(activity, trade_date, net, *items, kind="TRADE"):
-    return {"activityId": activity, "time": trade_date, "accountNumber": "12345678",
+def _tx(activity, trade_date, net, *items, kind="TRADE", time=None):
+    return {"activityId": activity, "time": time or trade_date, "accountNumber": "12345678",
             "type": kind, "status": "VALID", "tradeDate": trade_date,
             "settlementDate": trade_date, "netAmount": net, "activityType": "EXECUTION",
             "transferItems": list(items)}
@@ -116,7 +117,7 @@ def test_discover_declares_the_trades_stream():
     assert stream["stream"] == "trades"
     assert stream["primary_key"] == ["account", "transaction_id", "symbol"]
     assert stream["schema"]["fields"] == [
-        "account", "transaction_id", "trade_date", "symbol", "asset_type", "quantity",
+        "account", "transaction_id", "trade_date", "time", "symbol", "asset_type", "quantity",
         "price", "amount", "position_effect"]
     assert Stub.calls == [], "discover is offline"
 
@@ -138,8 +139,9 @@ def test_one_row_per_kept_item_signed_quantity_and_net_cash():
         (HASH_A, 101, "VTI"), (HASH_B, 201, "AAPL"), (HASH_A, 104, "VTI")]
     buy, aapl, sell = rows
     assert buy == {"account": HASH_A, "transaction_id": 101, "trade_date": "2024-07-15",
-                   "symbol": "VTI", "asset_type": "EQUITY", "quantity": 10.0, "price": 180.0,
-                   "amount": -1801.0, "position_effect": "OPENING"}
+                   "time": "2024-07-15T13:31:00+0000", "symbol": "VTI", "asset_type": "EQUITY",
+                   "quantity": 10.0, "price": 180.0, "amount": -1801.0,
+                   "position_effect": "OPENING"}
     assert (sell["quantity"], sell["amount"], sell["position_effect"]) == (-7.0, 2099.97, "CLOSING")
     assert sell["trade_date"] == "2026-10-26"
     records = [m for m in messages if m["type"] == "RECORD"]
@@ -151,7 +153,8 @@ def test_skipped_items_and_fee_lines_are_counted_in_a_log_and_the_state():
     _, messages = _read()
     state = messages[-1]
     assert state["type"] == "STATE"
-    assert state["state"]["trades"] == {"cursor": "2026-10-26", "last_pull": {
+    assert state["state"]["trades"] == {"cursor": "2026-10-26", "start": "2024-06-01",
+                                        "last_pull": {
         "transactions": 5, "rows": 3, "fee_items": 3,
         "skipped": {"COLLECTIVE_INVESTMENT": 1, "OPTION": 1}, "unattributed": 0}}
     (log,) = [m for m in messages if m["type"] == "LOG"]
@@ -233,6 +236,11 @@ def test_a_key_repeated_across_windows_is_one_row_unless_it_differs():
 
 
 MALFORMED = [
+    ({"time": None}, "transaction 0 .* is malformed"),
+    ({"time": 1721050260}, "transaction 0 .* is malformed"),
+    ({"time": "yesterday"}, "transaction 0 .* is malformed"),
+    ({"status": None}, "transaction 0 .* is malformed"),
+    ({"status": 1}, "transaction 0 .* is malformed"),
     ({"activityId": None}, "transaction 0 .* is malformed"),
     ({"activityId": True}, "transaction 0 .* is malformed"),
     ({"activityId": "101"}, "transaction 0 .* is malformed"),
@@ -382,3 +390,86 @@ def test_a_late_posting_dated_before_the_cursor_never_moves_it_back():
     rows, messages = _read({"trades": {"cursor": "2026-10-20"}})
     assert [r["trade_date"] for r in rows] == ["2026-10-19"], "emitted, never dropped"
     assert messages[-1]["state"]["trades"]["cursor"] == "2026-10-20"
+
+
+def test_the_time_is_emitted_as_given_and_orders_a_day_the_trade_date_cannot():
+    """Two fills of one day: ids 7 (15:00) and 9 (10:00). The row carries Schwab's `time` string
+    untouched (its own offset, no conversion), beside the calendar date of `tradeDate`."""
+    Stub.bodies[TX_A]["2024-06-01"] = [
+        _tx(7, "2024-07-15T00:00:00+0000", 900.0, _item("VTI", -5.0, 180.0, effect="CLOSING"),
+            time="2024-07-15T11:00:00-0400"),
+        _tx(9, "2024-07-15T00:00:00+0000", -1800.0, _item("VTI", 10.0, 180.0),
+            time="2024-07-15T10:00:00-0400")]
+    rows, _ = _read()
+    by_id = {r["transaction_id"]: r for r in rows}
+    assert (by_id[7]["time"], by_id[9]["time"]) == ("2024-07-15T11:00:00-0400",
+                                                    "2024-07-15T10:00:00-0400")
+    assert by_id[7]["trade_date"] == by_id[9]["trade_date"] == "2024-07-15"
+
+
+STATUS_REFUSALS = ["PENDING", "INVALID", "UNKNOWN", "valid", ""]
+
+
+@pytest.mark.parametrize("status", STATUS_REFUSALS)
+def test_a_transaction_that_is_not_valid_refuses_by_index_and_status(status):
+    """A PENDING trade has not settled into the account and an INVALID one was cancelled: either
+    would become a lot that never existed (or never will), so the pull stops rather than skips."""
+    Stub.bodies[TX_A]["2024-06-01"] = [
+        A_WINDOWS["2024-06-01"][0], {**A_WINDOWS["2024-06-01"][0], "activityId": 102,
+                                     "status": status}]
+    with pytest.raises(AssetError) as caught:
+        _read()
+    assert caught.value.errors == [
+        f"Schwab transaction 1 for account 0 2024-06-01..2025-06-01 has status {status!r}, "
+        "not VALID: only a valid transaction is a trade"]
+    assert "12345678" not in str(caught.value)
+
+
+def _lowered_bodies():
+    """Every account's windows from 2024-01-01: one year at a time, today 2026-10-27."""
+    first = defaultdict(list, {
+        "2024-01-01": [A_WINDOWS["2024-06-01"][0]],              # VTI buy, trade date 2024-07-15
+        "2025-12-31": A_WINDOWS["2026-06-01"]})                  # VTI sale, trade date 2026-10-26
+    Stub.bodies[TX_A], Stub.bodies[TX_B] = first, defaultdict(list)
+
+
+def test_lowering_start_after_a_pull_repulls_from_the_new_start():
+    """The cursor says everything before 2026-10-26 was pulled, true only for trades on or after
+    the OLD start: a lowered start must reach back, so the stored start is compared and the
+    cursor cleared for that stream. Without the stored start the pull would begin at the cursor."""
+    _, messages = _read()
+    state = messages[-1]["state"]
+    assert state["trades"]["start"] == "2024-06-01" and state["trades"]["cursor"] == "2026-10-26"
+    Stub.calls = []
+    _lowered_bodies()
+    rows, messages = _read(state, config={"start": "2024-01-01"})
+    pulls = [params["startDate"] for url, params in Stub.calls if url == TX_A]
+    assert pulls == ["2024-01-01T00:00:00.000Z", "2024-12-31T00:00:00.000Z",
+                     "2025-12-31T00:00:00.000Z"]
+    assert [r["transaction_id"] for r in rows] == [101, 104], "the whole history, again"
+    assert messages[-1]["state"]["trades"]["start"] == "2024-01-01"
+    assert messages[-1]["state"]["trades"]["cursor"] == "2026-10-26"
+    # the old cursor is cleared, not kept: a re-pull that finds nothing leaves none
+    Stub.bodies[TX_A], Stub.bodies[TX_B] = defaultdict(list), defaultdict(list)
+    rows, messages = _read(state, config={"start": "2024-01-01"})
+    assert rows == [] and messages[-1]["state"]["trades"]["cursor"] == ""
+
+
+def test_an_unchanged_or_raised_start_resumes_from_the_cursor():
+    state = {"trades": {"cursor": "2026-10-20", "start": "2024-06-01"}}
+    for start in ("2024-06-01", "2025-01-01"):
+        Stub.calls = []
+        Stub.bodies[TX_A] = defaultdict(list, {"2026-10-20": A_WINDOWS["2026-06-01"]})
+        Stub.bodies[TX_B] = defaultdict(list)
+        rows, messages = _read(state, config={"start": start})
+        assert [params["startDate"] for url, params in Stub.calls if url == TX_A] == [
+            "2026-10-20T00:00:00.000Z"]
+        assert [r["transaction_id"] for r in rows] == [104]
+        assert messages[-1]["state"]["trades"]["start"] == start
+        assert messages[-1]["state"]["trades"]["cursor"] == "2026-10-26"
+
+
+def test_a_stored_start_that_is_not_a_date_refuses():
+    for bad in ("soon", 20240601, None):
+        with pytest.raises(AssetError, match="state start is not an ISO date"):
+            _read({"trades": {"cursor": "2026-10-20", "start": bad}})

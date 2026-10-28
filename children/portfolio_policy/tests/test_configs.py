@@ -87,7 +87,21 @@ def test_the_tax_reads_lots_and_the_lot_policy_is_declared_once():
     assert lots["allow_incomplete"] == join["allow_incomplete"]
     assert (join["value_field"], join["basis_field"]) == (tax["value_field"], tax["basis_field"])
     assert set(lots["key_fields"]) < set(nodes["trades"].params["key_fields"])
-    assert lots["order_field"] in nodes["trades"].params["key_fields"]
+    assert join["tolerance"] == 0.0, "any slack hides a missing lot: raise it only on purpose"
+
+
+def test_every_lot_field_is_a_column_of_the_transactions_connector():
+    """TaxLots reads its date, quantity, price, amount and order columns by the names the document
+    declares; the connector writes exactly TRANSACTION_FIELDS. A misspelt name must fail HERE (a
+    misspelt amount_field once read as all-null and quietly turned every buy's cash into
+    quantity x price). A day is ordered by the execution time, then the unique id."""
+    from dskit.onboarding.libs.schwab import TRANSACTION_FIELDS
+
+    lots = load_document(_path("run-hold-vs-redeploy.json")).pipeline["lots"].params
+    assert lots["amount_field"] in TRANSACTION_FIELDS
+    named = [lots[n] for n in ("date_field", "quantity_field", "price_field", "amount_field")]
+    assert set([*named, *lots["order_fields"], *lots["key_fields"]]) <= set(TRANSACTION_FIELDS)
+    assert lots["order_fields"] == ["time", "transaction_id"]
 
 
 def test_the_trades_key_is_the_transactions_connectors_key():

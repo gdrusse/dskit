@@ -78,7 +78,7 @@ POSITION_KEY_FIELDS = ("account", "symbol", "as_of")
 _POSITION_NUMBERS = ("longQuantity", "shortQuantity", "averagePrice", "marketValue")
 TRANSACTION_STREAM = "trades"
 TRANSACTION_FIELDS = (
-    "account", "transaction_id", "trade_date", "symbol", "asset_type", "quantity",
+    "account", "transaction_id", "trade_date", "time", "symbol", "asset_type", "quantity",
     "price", "amount", "position_effect",
 )
 TRANSACTION_KEY_FIELDS = ("account", "transaction_id", "symbol")
@@ -902,13 +902,16 @@ class SchwabTransactionsConnector(_SchwabConnector):
     booked after an earlier same-day pull, and bitemporal dedup on the key keeps one
     copy of every trade seen twice. A window that returns ``MAX_TRANSACTIONS`` (Schwab's
     per-response cap) refuses: the window may be truncated, so lower ``window_days``.
-    A ``start`` earlier than the cursor never re-reaches back; lowering ``start``
-    after a pull needs a fresh source (cursors are per source).
+    The stream's STATE stores the ``start`` of the last pull: a LOWER ``start`` later
+    clears the cursor (it vouches only for trades from the old start on) and re-pulls
+    from the new ``start``; an equal or higher one resumes from the cursor.
 
     One row per KEPT transfer item: an item whose instrument ``assetType`` is in
     ``asset_types``. ``account`` is the hashValue (no account number leaves the
     connector), ``transaction_id`` the ``activityId``, ``trade_date`` the calendar
-    date of ``tradeDate`` in the offset Schwab writes it, ``quantity`` the item's
+    date of ``tradeDate`` in the offset Schwab writes it, ``time`` the transaction's
+    ``time`` exactly as Schwab writes it (an ISO-8601 instant, no conversion: it orders
+    the fills of one day downstream), ``quantity`` the item's
     ``amount`` (signed shares: + bought, - sold), ``price`` the item's ``price``,
     ``amount`` the transaction's ``netAmount`` (signed net cash, fees included:
     negative is cash paid) when the transaction carries exactly one kept item, and
@@ -923,18 +926,29 @@ class SchwabTransactionsConnector(_SchwabConnector):
     transactions whose amount is null, in a LOG message (printed by ``acquire``)
     and in the stream's STATE entry under ``last_pull``.
 
-    Assumptions, from Schwab's public SDKs rather than its (login-only) spec, each
-    checked by a refusal instead of trusted: an item's ``amount`` is the signed
-    share count; ``tradeDate`` is an ISO-8601 instant whose own date is the trade
-    date (an execution after 20:00 New York written in UTC would be dated the next
-    day); ``types`` with several values is sent comma-separated; how far back
-    Schwab serves history is unverified (one client documents a one-year lookback),
-    so a purchase older than the API reaches leaves its lots incomplete, which the
-    downstream reconciliation refuses rather than guesses. A transaction or item
-    of unrecognised shape refuses by index. ETFs are typed
-    ``COLLECTIVE_INVESTMENT`` in Schwab's transaction schema; the default
-    ``asset_types`` keeps ``EQUITY`` only, and the skipped census of the first real
-    pull says whether to widen it.
+    REFUSED, by transaction and item index, nothing guessed: a body that is not a list; a
+    transaction without an int ``activityId``, ISO-8601 string ``tradeDate`` and ``time``, a
+    string ``status``, a finite ``netAmount`` and a ``transferItems`` list; a ``type`` outside
+    the requested ``types``; a ``status`` other than ``VALID`` (a PENDING trade has not settled
+    and an INVALID one never will: neither may become a lot, so the pull stops until the
+    transaction resolves or ``start`` moves past it); an item without a string ``assetType``,
+    a non-string ``feeType``, and for a kept item an empty symbol, a zero or non-finite share
+    amount, a negative or non-finite price or a ``positionEffect`` outside Schwab's
+    vocabulary; a key seen twice with different content; a window at the response cap.
+
+    ASSUMED, from Schwab's public SDKs rather than its (login-only) spec, and not checkable
+    here, so each rests on the downstream reconciliation (a wrong one shows as an oversell or
+    a share-count mismatch, never as a quiet number): an item's ``amount`` is the signed
+    share count; the date of ``tradeDate`` in its own offset is the trade date (an execution
+    after 20:00 New York written in UTC would be dated the next day); ``time`` orders a day's
+    fills (compared as the string Schwab wrote, exact while one offset is used); ``types``
+    with several values is sent comma-separated (a response of another type refuses above);
+    how far back Schwab serves history is unverified (one client documents a one-year
+    lookback), so a purchase older than the API reaches leaves its lots incomplete; shares
+    that move outside the requested ``types`` (a transfer in, a split, a spin-off, a
+    reinvestment) are not seen; and ETFs are typed ``COLLECTIVE_INVESTMENT`` in Schwab's
+    transaction schema while the default ``asset_types`` keeps ``EQUITY`` only, so the skipped
+    census of the first real pull says whether to widen it.
 
     Parameters
     ----------
@@ -1086,6 +1100,13 @@ class SchwabTransactionsConnector(_SchwabConnector):
                 if not isinstance(stamp, str):
                     raise ValueError("a tradeDate is not a string")
                 trade_date = datetime.fromisoformat(stamp).date().isoformat()
+                time_ = transaction["time"]
+                if not isinstance(time_, str):
+                    raise ValueError("a time is not a string")
+                datetime.fromisoformat(time_)
+                status = transaction["status"]
+                if not isinstance(status, str):
+                    raise ValueError("a status is not a string")
                 net = _finite(transaction["netAmount"])
                 items = transaction["transferItems"]
                 if not isinstance(items, list):
@@ -1095,6 +1116,11 @@ class SchwabTransactionsConnector(_SchwabConnector):
             if kind not in knobs["types"]:
                 raise AssetError(
                     [f"Schwab {where} has type {kind!r}, not one requested {knobs['types']}"]
+                )
+            if status != "VALID":
+                raise AssetError(
+                    [f"Schwab {where} has status {status!r}, not VALID: only a valid "
+                     "transaction is a trade"]
                 )
             census["transactions"] += 1
             kept = []
@@ -1111,7 +1137,7 @@ class SchwabTransactionsConnector(_SchwabConnector):
             for fields in kept:
                 rows.append({
                     "account": account, "transaction_id": activity, "trade_date": trade_date,
-                    "symbol": fields["symbol"], "asset_type": fields["asset_type"],
+                    "time": time_, "symbol": fields["symbol"], "asset_type": fields["asset_type"],
                     "quantity": fields["quantity"], "price": fields["price"],
                     "amount": amount, "position_effect": fields["position_effect"],
                 })
@@ -1130,6 +1156,26 @@ class SchwabTransactionsConnector(_SchwabConnector):
             "schema": {"fields": list(TRANSACTION_FIELDS)},
             "primary_key": list(TRANSACTION_KEY_FIELDS),
         }]
+
+    @staticmethod
+    def _resume(knobs, entry):
+        """Return ``(begin, cursor)``: the day to pull from and the cursor that still stands.
+
+        The cursor day (never before ``start``), unless ``start`` is LOWER than the one the last
+        pull stored: its cursor then vouches only for trades from the old start on, so it is
+        cleared and the pull begins at the new ``start``.
+        """
+        cursor, begin = entry.get("cursor", ""), knobs["start"]
+        if "start" in entry:
+            stored = entry["start"]
+            try:
+                if begin < date.fromisoformat(stored):
+                    return begin, ""
+            except (TypeError, ValueError) as exc:
+                raise AssetError([f"state start is not an ISO date, got {stored!r}"]) from exc
+        if cursor and parse_utc(cursor).date() > begin:
+            begin = parse_utc(cursor).date()
+        return begin, cursor
 
     def _pull(self, knobs, begin):
         """Return ``(rows, census)``: every account's kept items from ``begin`` to now, deduplicated."""
@@ -1203,10 +1249,7 @@ class SchwabTransactionsConnector(_SchwabConnector):
                 "stream": stream,
                 "schema": {"fields": list(TRANSACTION_FIELDS)},
             }
-            cursor = state.get(stream, {}).get("cursor", "")
-            begin = knobs["start"]
-            if cursor and parse_utc(cursor).date() > begin:
-                begin = parse_utc(cursor).date()
+            begin, cursor = self._resume(knobs, state.get(stream, {}))
             rows, census = self._pull(knobs, begin)
             for row in rows:
                 yield {
@@ -1232,5 +1275,6 @@ class SchwabTransactionsConnector(_SchwabConnector):
             # the latest trade date seen, never earlier than the cursor (a late posting can
             # carry an older trade date than the window it arrived in)
             entry["cursor"] = max([cursor, *(row["trade_date"] for row in rows[-1:])])
+            entry["start"] = knobs["start"].isoformat()
             entry["last_pull"] = census
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}

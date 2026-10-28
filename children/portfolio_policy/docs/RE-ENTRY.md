@@ -1,6 +1,6 @@
 # RE-ENTRY — portfolio_policy
 
-Updated: 2026-10-28 by Claude Opus 5.5 (tax lots, branch `schwab-tax-lots`). Rewritten whole at every `/wrap`;
+Updated: 2026-10-28 by Claude Sonnet 5.5 (tax lots round 1 fixes, branch `schwab-tax-lots`). Rewritten whole at every `/wrap`;
 the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
@@ -29,12 +29,14 @@ In flight: branch `schwab-tax-lots` (Opus, research A0004, A0003 on the branch):
 (`TaxLots` FIFO lots, `LotPositions` reconciled per holding),
 `DecisionOutcomes.match_fields`; the decision document runs per lot
 (`trades -> lots -> lot_positions -> tax` with `acquired_field`), outcomes per
-lot matched per holding. Not lens-reviewed; to merge after `schwab-risk-inputs`
-(renumber the research row to A0004 at that merge).
+lot matched per holding. Sonnet round 1 corrected (two-account tests, `order_fields`
+time order, `status` VALID, `start` in STATE, basis-gap warning, holding counts in the
+scoring summary; ADR amendment "Sonnet round 1 corrections"); awaiting round 2 review;
+to merge after `schwab-risk-inputs` (renumber the research row to A0004 at that merge).
 
 ## Next
 
-Lens-review `schwab-tax-lots`, then merge it. The owner sets the decision
+Round-2 review of `schwab-tax-lots`, then merge it. The owner sets the decision
 document's placeholders (blocks, betas, tax rates — pinned pairs are tested —
 `trials`, `min_dsr`, `min_periods`, `risk_premium`, the snapshot day, the
 trades `start`), chooses the backtest that feeds `active`/`returns`, and runs
@@ -49,7 +51,9 @@ the `memo` skill.
 - `allow_incomplete` (ships false): how far back Schwab serves transactions is
   unverified; holdings older than it refuse until the owner allows the aggregate
   fallback or onboards Schwab's lot export.
-- `lot_positions.tolerance` (ships 0.0 shares) for reinvestment rounding.
+- `lot_positions.tolerance` (ships 0.0 shares, pinned) for reinvestment rounding.
+- An INVALID (cancelled) transaction refuses the pull for good; skip it, or move
+  `start` past it? Wash sales are not modelled (they show as a `basis_gap`).
 - Volatility source for the summary: yahoo chart file per symbol vs Alpaca
   daily bars; 252-day window on adjusted closes proposed (then wire
   realized_vol -> filter -> ComputeFields -> keyby into `summary`).
