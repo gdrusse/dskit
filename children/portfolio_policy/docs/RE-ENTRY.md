@@ -30,6 +30,8 @@ Sonnet rounds are merged into it. Its own Sonnet loop: round 1 fixed 2 Major
 (loss and zero-basis rows, the break-even kinks; 304 dskit + 67 child tests
 green); round 2 review is next, and it stays off `main` until the loop is clean.
 
+Branch `hold-report` (Opus, 2026-10-28): `HoldVerdict` markdown page, `run-hold-report.json`, `weekly.sh <day>`; unmerged.
+
 ## Next
 
 Merge `portfolio-summary` after its Sonnet loop is clean. Then the owner
@@ -38,6 +40,8 @@ pairs are tested — `trials`, `min_dsr`, `min_periods`, `risk_premium`, the
 snapshot day), chooses the backtest that feeds `active`/`returns`, and runs
 the README sequence for the first real snapshot + decision; record it with
 the `memo` skill.
+
+Review + merge `hold-report`; then wire `HoldVerdict` into the decision document so beta/vol show.
 
 ## Blocked / owner decisions
 

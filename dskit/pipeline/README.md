@@ -910,6 +910,15 @@ they register only into private registries, never the default one.
   `require_rows` / `require_number` / `require_amount`; the annual rate and the
   `key_fields` rule are `decision_outcomes`' `annualized_growth` /
   `check_key_fields_param`.
+- `hold_verdict.py` (`HoldVerdict`) (ADR-0279 amendment 2026-10-28, by import
+  path, role report, `pure`): `PositionSummary` rows (+ its `metrics` on the optional
+  `portfolio` port) -> ONE markdown page: title with the as-of day, a table per holding
+  sorted by opportunity cost descending (nulls last; percentages to one decimal, beta to
+  two, null as an em dash; verdict HOLD / EXIT, `n/a — no admissible alternative` when the
+  opportunity cost is null), the portfolio block, a three-line key. Every field name is a
+  required param. The write is `RecordsWrite`'s (no clobber, atomic, `provenance` +
+  `metrics` digest); `{run}` in the stem follows `RecordsWriteRun.path_problems` /
+  `run_name`. An absent portfolio is stated, never recomputed.
 - `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
   `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
   out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one
@@ -1166,6 +1175,7 @@ dskit/pipeline/
 ├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS
+├── hold_verdict.py    HoldVerdict (by import path, ADR-0279 amendment 2026-10-28): summary rows + portfolio metrics -> one markdown verdict page per run
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its

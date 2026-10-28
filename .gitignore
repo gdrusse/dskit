@@ -51,6 +51,7 @@ children/*/decisions.jsonl
 children/*/decisions/
 children/*/outcomes/
 children/*/summary/
+children/*/report/
 
 # The journal's writer lock (dskit/journal/base.py). Runtime state, one
 # per child; the ledger it guards is what belongs in git.

@@ -33969,3 +33969,21 @@ Actual full-year peak resource use, solves, returns and replay remain
 unmeasured. Do not compare or review until all methods complete and retained
 outputs are inspected. No result, outperformance, promotion or predictive
 selection claim is made.
+
+#### ADR-0279 amendment: hold verdict report and weekly run (approved by owner 2026-10-28)
+
+Owner's ask: "sign into Schwab and answer what it is worth to hold something".
+Tier 1 `dskit/pipeline/hold_verdict.py`, `HoldVerdict` (by import path, role
+report, `pure`): `PositionSummary` rows plus, on an optional `portfolio` port,
+its `metrics` -> one markdown page per run (holdings by opportunity cost
+descending; HOLD / EXIT, `n/a — no admissible alternative` when the hurdle was
+withheld; portfolio block; three-line key). A `RecordsWrite` member, `{run}` per
+`RecordsWriteRun`; every field name a required param. An absent portfolio is
+stated, not recomputed (a second owner of `PositionSummary`'s concentration rule).
+Child: `configs/run-hold-report.json` reads the published `decisions` stream and
+recomputes the summary (terms pinned equal to the decision document's): the
+summary jsonl carries no instant, so `localtables` cannot acquire it. Beta and
+volatility read an em dash there until the verdict node is wired into the
+decision document itself. `weekly.sh <day>` chains pull -> decide -> publish ->
+report; an ADR-0227 manifest is deferred (the report's stream is the decision
+run's name, known only after it runs).

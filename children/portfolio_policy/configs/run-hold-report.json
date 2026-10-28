@@ -1,0 +1,57 @@
+{
+  "name": "portfolio_policy-hold-report",
+  "notes": "ADR-0279 amendment 2026-10-28: the answer to 'what is it worth to hold this' as one markdown page. An earlier decision run's rows (published back through onboarding, one stream per run file) -> the few numbers per holding and for the portfolio -> report/<run>.md. weekly.sh runs the whole sequence for a snapshot day. The decision run name is a value of THIS document: reporting a different run is a different report.",
+  "pipeline": {
+    "decisions": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./ob",
+        "source": "decisions",
+        "stream": "REPLACE-with-the-decision-run-name",
+        "key_fields": ["account", "symbol", "as_of"]
+      },
+      "notes": "Role 'data': the decisions/<run>.jsonl the decision run wrote, acquired through localtables (layout file: the stream is the file stem = the run name), exactly as run-decision-outcomes.json reads it. The decision run's summary/<run>.jsonl is not read: its rows carry no instant, and localtables needs an effective_field on every row, so the summary is recomputed below from the decided rows, which carry as_of."
+    },
+    "summary": {
+      "uses": "dskit.pipeline.position_summary:PositionSummary",
+      "inputs": { "records": "$decisions.records" },
+      "params": {
+        "key_fields": ["account", "symbol"],
+        "symbol_field": "symbol",
+        "value_field": "market_value",
+        "net_field": "liq_net",
+        "basis_field": "cost_basis",
+        "redeploy_cost": 0.02,
+        "risk_premium": 0.0,
+        "redeploy_tax_rate": 0.408,
+        "redeploy_tax_timing": "annual"
+      },
+      "notes": "Restates run-hold-vs-redeploy.json summary's params (tests/test_hold_report.py pins them equal), so every number matches the decision run's own summary. betas and volatilities are not wired here: the decision rows carry neither, so the Beta and Vol columns read an em dash. Wiring the verdict node into the decision document itself (once the risk and lots lanes merge) gives them back."
+    },
+    "verdict": {
+      "uses": "dskit.pipeline.hold_verdict:HoldVerdict",
+      "inputs": { "records": "$summary.records", "portfolio": "$summary.metrics" },
+      "params": {
+        "path": "report/{run}.md",
+        "source": "hold verdict per account x symbol, with the portfolio block",
+        "overwrite": false,
+        "title": "What holding is worth",
+        "key_fields": ["account", "symbol"],
+        "weight_field": "weight",
+        "expected_return_field": "expected_return",
+        "volatility_field": "volatility",
+        "beta_field": "beta",
+        "embedded_gain_field": "embedded_gain",
+        "tax_cost_field": "tax_cost",
+        "break_even_field": "break_even_return",
+        "opportunity_cost_field": "opportunity_cost",
+        "decision_field": "decision"
+      },
+      "notes": "Role 'report': one markdown page per run in ./report under the invoking cwd (gitignored). Holdings sorted by opportunity cost a year, highest first: above zero the after-tax alternative beats holding. The portfolio block is the summary's metrics, wired, never recomputed."
+    }
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd. Placement is not identity."
+  }
+}

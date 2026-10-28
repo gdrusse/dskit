@@ -109,6 +109,8 @@ configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample / run-hold-vs-redeploy
 decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
 summary/               # the few numbers per holding, one file per run (gitignored)
+report/                # the hold verdict page, one markdown file per run (gitignored)
+weekly.sh              # bash weekly.sh <day>: pull -> decide -> publish -> report
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated

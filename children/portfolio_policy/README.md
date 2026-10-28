@@ -331,3 +331,22 @@ portfolio_policy/
 
 Graduation is a directory move — nothing here references its incubation
 position (ADR-0021; see `children/README.md` in the dskit repo).
+
+## Reading the verdict
+
+Once a week, after the one-time setup above (Schwab OAuth included), from the child root:
+
+```bash
+bash weekly.sh <snapshot day YYYY-MM-DD>    # prints report/<run>.md
+```
+
+It pulls positions, runs `run-hold-vs-redeploy.json` on that day (in a temporary copy),
+publishes the decisions and runs `configs/run-hold-report.json`. The page lists every
+holding, highest opportunity cost first: weight, expected return, volatility, beta,
+embedded gain, tax to sell, break-even and opportunity cost a year, then HOLD or EXIT
+(`n/a — no admissible alternative` when the hurdle was withheld). Opportunity cost above
+zero: the after-tax alternative beats holding by that much a year. Break-even: the return
+an alternative must clear to tie. Tax to sell: what leaving costs today. The portfolio block
+gives the total, weighted return, concentration (HHI, top holding), tax to sell everything
+and selling all against holding all. Beta and volatility read `—` until the verdict is
+wired into the decision document.
