@@ -2054,15 +2054,21 @@ class WeeklyOptionPortfolioStudy:
                 if events is not None and day in self.weeks:
                     selection = record.get("selection", {})
                     certs = record.get("certificates", [])
+                    audited = {k: selection.get(k) for k in ("value", "bound", "gap")
+                               if k in selection}
                     events({"type": "weekly_decision", "method": method["id"], "date": day,
                             "status": record["status"], "candidate_books": record["candidate_books"],
                             "candidate_contracts": record["candidate_contracts"],
-                            "selected_books": [{k: book.get(k) for k in
-                                ("id", "symbol", "expiry", "credit", "reserve", "contracts")}
-                                for book in record.get("books", [])],
+                            "audited_selection": audited,
                             "timeout": record["status"] == "timeout_skipped",
-                            "solves": [{k: cert.get(k) for k in ("objective", "bound", "gap", "seconds")}
-                                       for cert in certs],
+                            "timeout_reason": selection.get("timeout"),
+                            "selected_books": [{**{k: book.get(k) for k in
+                                ("id", "symbol", "expiry", "credit", "reserve", "contracts")},
+                                "legs": [{k: leg.get(k) for k in ("right", "strike", "sign", "quantity")}
+                                         for leg in book.get("legs", [])]}
+                                for book in record.get("books", [])],
+                            "solver_certificates": [{k: cert.get(k)
+                                for k in ("objective", "bound", "gap", "seconds")} for cert in certs],
                             "provisional": True})
                 if progress is not None:
                     progress(method["id"], len(decisions), len(self.weeks), record["status"])
@@ -2074,7 +2080,7 @@ class WeeklyOptionPortfolioStudy:
             if events is not None:
                 events({"type": "daily_account_snapshot", "method": method["id"], "date": day,
                         "realized_pnl_usd": account.realized, "contributions_usd": account.contributions,
-                        "funding_cash_usd": account.funding, "cash_usd": account.cash,
+                        "funding_usd": account.funding, "cash_usd": account.cash,
                         "open_books": len(account.open), "open_reserve_usd": snapshot["reserve"],
                         "provisional": True})
         if pending is not None:
@@ -2188,9 +2194,9 @@ class MIOPacketStudy(StudyNode):
         results = []
         packet_id = permit.get("packet_id", permit.get("id"))
         def event(payload):
-            phase = "verified" if payload.get("type") == "replay_verified" else "provisional"
             self.log.info("MIO_EVENT %s", json.dumps(
-                {"packet_id": packet_id, "phase": phase, **payload},
+                {"packet_id": packet_id, "phase": "provisional", "publication": "pending",
+                 "provisional": True, **payload},
                 separators=(",", ":"), sort_keys=True))
         for method in params["methods"]:
             event({"type": "method_start", "method": method["id"]})

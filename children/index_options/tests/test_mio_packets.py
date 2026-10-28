@@ -108,7 +108,7 @@ def _document(tmp_path, name, pipeline):
 
 
 @pytest.mark.parametrize("study", [None, "expiry_basis"], indirect=True)
-def test_real_json_spine_and_attested_comparison(study, tmp_path):
+def test_real_json_spine_and_attested_comparison(study, tmp_path, caplog):
     registry = ExposureRegistry(study["registry"])
     registry.initialize(study["packets"], [{"start": "2019-01-01", "end_before": "2020-01-01",
                                            "evidence": "synthetic prior use"}], "2020-01-01")
@@ -127,6 +127,14 @@ def test_real_json_spine_and_attested_comparison(study, tmp_path):
                              "provenance": "$intake.provenance"}}})
     ran = run_document(close, asof="2019-02-09", journal=False)
     assert ran.state == "ran", ran
+    import json
+    replay_events = [json.loads(record.getMessage()[len("MIO_EVENT "):])
+                     for record in caplog.records
+                     if record.getMessage().startswith("MIO_EVENT ")
+                     and '"type":"replay_verified"' in record.getMessage()]
+    assert replay_events and all(e["phase"] == "provisional"
+                                 and e["publication"] == "pending"
+                                 and e["provisional"] for e in replay_events)
     receipt = {"run_dir": str(ran.run_dir), "document_hash": close.hash, "node": "close", "port": "receipt"}
     compare = _document(tmp_path, "compare", {
         "results": {"uses": "dskit.pipeline.study_protocol:StudyPacketResults",
@@ -370,9 +378,22 @@ def test_sqlite_quote_index_matches_legacy_weekly_account(tmp_path):
                 certificate.pop("seconds", None)
         return result
     assert without_timing(actual) == without_timing(baseline)
-    assert sum(e["type"] == "weekly_decision" for e in events) == len(indexed.weeks)
+    emitted = [e for e in events if e["type"] == "weekly_decision"]
+    assert len(emitted) == len(indexed.weeks)
+    for event, decision in zip(emitted, actual["decisions"]):
+        expected = {k: decision["selection"][k] for k in ("value", "bound", "gap")
+                    if k in decision.get("selection", {})}
+        assert event["audited_selection"] == expected
+        assert event["timeout_reason"] == decision.get("selection", {}).get("timeout")
+        expected_books = [{**{k: book.get(k) for k in
+                            ("id", "symbol", "expiry", "credit", "reserve", "contracts")},
+                           "legs": [{k: leg.get(k) for k in ("right", "strike", "sign", "quantity")}
+                                    for leg in book.get("legs", [])]}
+                          for book in decision.get("books", [])]
+        assert event["selected_books"] == expected_books
     daily = [e for e in events if e["type"] == "daily_account_snapshot"]
     assert len(daily) == len(indexed.calendar)
-    assert all("realized_pnl_usd" in e and "twr" not in e for e in daily)
+    assert all("realized_pnl_usd" in e and "funding_usd" in e
+               and "funding_cash_usd" not in e and "twr" not in e for e in daily)
     assert sum(e["type"] == "marked_equity_point" for e in events) == len(indexed.calendar)
     indexed.close_quote_indexes(verify=True)
