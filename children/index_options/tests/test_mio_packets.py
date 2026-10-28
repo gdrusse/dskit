@@ -286,6 +286,182 @@ def test_model_zoo_selection_uses_complete_imported_code_pins():
         MIOModelZooSelection("selection", changed).run(None, {})
 
 
+def _owner_selected_study(tmp_path, monkeypatch, *, invalid=None):
+    import hashlib
+    import index_options.mio_contract as contract
+
+    payloads = {}
+    pin = {"root": "fixture", "source": "saved-halves", "snapshot": "snapshot",
+           "stream": "files", "manifest_sha256": "a"*64, "files": {}}
+
+    def add_file(relative, content):
+        path = tmp_path/relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw = content if isinstance(content, str) else json.dumps(content, sort_keys=True)
+        path.write_text(raw)
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        pin["files"][relative] = digest
+        payloads[relative] = path
+        return digest
+
+    common_method = {"by": "disp", "components": ["model", "market_cal", "pooled", "baseline"],
+                     "kind": "quantile_average", "learn": "rolling", "levels": 199,
+                     "max_learning_rows": 100000, "min_rows": 5000, "refit_days": 21}
+    sources = []
+    for name, start, end in (("H1", "2019-01-02", "2019-07-01"),
+                             ("H2", "2019-07-01", "2020-01-01")):
+        forecast = f"original/{name}/forecast.parquet"
+        context = f"original/{name}/context.parquet"
+        forecast_sha = add_file(forecast, name+" forecast bytes")
+        context_sha = add_file(context, name+" context bytes")
+        recipe = {"source": f"/original/{name}/rows.parquet", "source_sha256": context_sha,
+                  "output": f"/original/{name}/output", "end_before": end, "tables": [],
+                  "periods": {name: [start, end]}, "ranked_folds": [2], "method": common_method}
+        if invalid == "method_drift" and name == "H2":
+            recipe["method"] = {**common_method, "refit_days": 22}
+        run_dir = tmp_path/"runs"/name
+        run_dir.mkdir(parents=True)
+        document_hash = "hash-"+name
+        config = {"pipeline": {"method": {"uses": "dskit.pipeline.libs.cdf_grid_methods:GridCDFMethod",
+                                            "params": recipe}}}
+        (run_dir/"config.json").write_text(json.dumps(config))
+        (run_dir/"resolved.json").write_text(json.dumps({"document_hash": document_hash}))
+        sources.append({"id": name, "quote_start": start, "quote_end_before": end,
+                        "source_fold": 2 if invalid != "source_fold" or name != "H1" else 1,
+                        "ranked_folds": [2], "forecast": {"relpath": forecast, "sha256": forecast_sha},
+                        "context": {"relpath": context, "sha256": context_sha},
+                        "producer": {"run": str(run_dir), "resolved": {"document_hash":
+                                    "mismatch" if invalid == "resolved_drift" and name == "H1" else document_hash}},
+                        "recipe_params": recipe})
+    stitched_forecast = "stitched/forecast.parquet"
+    stitched_context = "stitched/context.parquet"
+    forecast_sha = add_file(stitched_forecast, "stitched forecast")
+    context_sha = add_file(stitched_context, "stitched context")
+    prep = {"checks": {key: key != "unique_forecast_keys" or invalid != "failed_check"
+                        for key in ("exact_source_row_equality", "unique_forecast_keys", "unique_context_keys",
+                                    "matching_forecast_context_keys", "half_bounds", "label_maturity",
+                                    "declared_universe_inventory")},
+            "declared_cohort": ["A", "B"],
+            "halves": {"H1": {"row_count": 10, "expected_names": ["A"], "missing_names": ["B"]},
+                       "H2": {"row_count": 11, "expected_names": ["B"], "missing_names": ["A"]}}}
+    prep_file = "receipt/preparation.json"
+    prep_sha = add_file(prep_file, prep)
+    receipt = {"policy": "owner_selected_saved_zoo_outputs",
+               "selection_basis": "owner_selected_no_score_ranking",
+               "development_window": {"start": "2019-01-02", "end_before": "2020-01-01"},
+               "bridge_fold": 2,
+               "stitched": {"forecast": {"relpath": stitched_forecast, "sha256": forecast_sha},
+                            "context": {"relpath": stitched_context, "sha256": context_sha}},
+               "sources": sources, "preparation": {"file": prep_file, "sha256": prep_sha}}
+    if invalid == "interval_gap":
+        receipt["sources"][0]["quote_end_before"] = "2019-06-30"
+    receipt_file = "receipt/selection.json"
+    receipt_sha = add_file(receipt_file, receipt)
+
+    class Source:
+        def __init__(self, source_pin):
+            self.pin = source_pin
+
+        def file(self, relative, *, verify=False):
+            path = payloads[relative]
+            if verify:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                assert digest == self.pin["files"][relative]
+            return path
+
+    class Attestation:
+        def __init__(self, run_dir):
+            self.run_dir = run_dir
+
+        def node_output_for_document(self, node, document_hash):
+            return (invalid != "producer_unattested" and node == "method"
+                    and document_hash.startswith("hash-"))
+
+        def attested_output(self, node, port, document_hash):
+            return {"sha256": "b"*64} if (node, port) == ("method", "summary") else None
+
+    monkeypatch.setattr(contract, "PinnedPayloadSource", Source)
+    monkeypatch.setattr(contract, "RunAttestation", Attestation)
+    study = {"selected_packet": "dev", "packets": [{"id": "dev", "purpose": "development",
+              "start": "2019-01-02", "end_before": "2020-01-01"}],
+             "domain": {"params": {"bridge": {"fold": 2}}, "sources": {
+                 "forecasts": {"pin": pin, "files": {"shared": stitched_forecast}},
+                 "contexts": {"pin": pin, "files": {"shared": stitched_context}}},
+                 "synthetic": False,
+                 "predictive": {"policy": "owner_selected_saved_zoo_outputs",
+                                "receipt": {"source": pin, "file": receipt_file, "sha256": receipt_sha}}}}
+    return study
+
+
+def test_owner_selected_saved_halves_receipt_binds_producers_and_preparation(tmp_path, monkeypatch):
+    from index_options.mio_contract import MIOStudyContract
+    study = _owner_selected_study(tmp_path, monkeypatch)
+    receipt = MIOStudyContract.selection(study)
+    assert receipt["selection_basis"] == "owner_selected_no_score_ranking"
+    assert [item["id"] for item in receipt["sources"]] == ["H1", "H2"]
+
+
+def test_legacy_best_zoo_selection_path_remains_accepted(monkeypatch):
+    import index_options.mio_contract as contract
+    from index_options.mio_contract import MIOStudyContract
+
+    pin = {"root": "fixture", "source": "legacy", "snapshot": "snap", "stream": "files",
+           "manifest_sha256": "a"*64,
+           "files": {"forecast.parquet": "b"*64, "context.parquet": "c"*64}}
+    training = {"components": [], "folds": [{"fold": 2, "val_start": "2019-01-02",
+                "val_end": "2019-01-07"}], "artifacts": {}, "label_maturity": {}, "seed": 1, "monitor": {}}
+    producer = {"run": "producer", "resolved": {"document_hash": "doc"}}
+    receipt = {"policy": "best_model_zoo_output", "forecast_relpath": "forecast.parquet",
+               "forecast_sha256": "b"*64, "forecast_source_manifest_sha256": pin["manifest_sha256"],
+               "recipe_sha256": value_hash({}), "recipe_params": {},
+               "training_protocol_sha256": value_hash(training), "training_protocol": training,
+               "context_sha256": "c"*64, "producer": producer}
+
+    class Source:
+        def __init__(self, source_pin):
+            self.pin = source_pin
+
+    class Attestation:
+        def __init__(self, run_dir):
+            self.run_dir = run_dir
+
+        def attested_output(self, node, port, document_hash):
+            return {"sha256": "d"*64}
+
+        def node_output_for_document(self, node, document_hash):
+            return True
+
+    monkeypatch.setattr(contract, "PinnedPayloadSource", Source)
+    monkeypatch.setattr(contract, "RunAttestation", Attestation)
+    monkeypatch.setattr(contract, "resolve_json_artifact", lambda *args: receipt)
+    study = {"selected_packet": "dev", "packets": [{"id": "dev", "purpose": "development",
+              "start": "2019-01-02", "end_before": "2019-01-08"}],
+             "domain": {"synthetic": False, "sources": {
+                 "forecasts": {"pin": pin, "files": {"shared": "forecast.parquet"}},
+                 "contexts": {"pin": pin, "files": {"shared": "context.parquet"}}},
+                 "params": {"bridge": {"fold": 2}},
+                 "predictive": {"run_dir": "selection", "document_hash": "selection-doc",
+                                "node": "selection", "port": "selection", "sha256": "d"*64}}}
+    assert MIOStudyContract.selection(study) == receipt
+
+
+@pytest.mark.parametrize("invalid", ["source_fold", "interval_gap", "method_drift", "failed_check",
+                                      "producer_unattested", "resolved_drift"])
+def test_owner_selected_saved_halves_refuse_provenance_or_preparation_drift(tmp_path, monkeypatch, invalid):
+    from index_options.mio_contract import MIOStudyContract
+    study = _owner_selected_study(tmp_path, monkeypatch, invalid=invalid)
+    with pytest.raises(ValueError):
+        MIOStudyContract.selection(study)
+
+
+def test_owner_selected_receipt_digest_must_match_pinned_manifest(tmp_path, monkeypatch):
+    from index_options.mio_contract import MIOStudyContract
+    study = _owner_selected_study(tmp_path, monkeypatch)
+    study["domain"]["predictive"]["receipt"]["sha256"] = "0"*64
+    with pytest.raises(ValueError, match="receipt digest"):
+        MIOStudyContract.selection(study)
+
+
 def test_direct_node_mutated_inputs_and_missing_pins_refuse(study):
     reader = MIOPacketInputs("intake", {"study": study})
     with pytest.raises((ValueError, KeyError)):
