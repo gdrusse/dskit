@@ -32762,44 +32762,77 @@ which the new helper wraps.
 
 #### ADR-0278 amendment: outcome-blind 2019 warm-up admission and prior development import (2026-10-27)
 
-Owner-authorized bounded implementation on base f20df030. The 2019 weekly MIO
-warm-up admits the source-supported liquid ticker-DTE cohort from an explicitly
-pinned archived-source inventory; no claim of global archive completeness is
-made. The 118-name inventory includes 116 supported pairs; COHR and ECHO lack
-first-session forecast/context identities and are excluded with that reason.
-Existing per-decision quote filters remain in force; no predictive-winner or
-performance gate applies. Its purpose is development diagnostics and timing/learning curves
-under locked Path A0003/A0008. It does not rank candidate pairs or select a
-predictive recipe. Existing best saved M53 remains in use; 2024+ stays protected
-and closed. No daily cadence, rebalancing, solver or economic claim changes.
+Owner-authorized bounded implementation on base f20df030. The owner selected
+all of calendar 2019: one development packet [2019-01-02, 2020-01-01), 252
+XNYS entry sessions and 53 first-session-of-ISO-week decisions, ending
+2019-12-30. The session calendar is pinned to exchange_calendars 4.13.2.
+History starts 2018-10-03 (61 prior closes); the DTE-60 plus seven-day
+settlement tail ends 2020-03-08 exclusive. This local read cutoff does not change
+the global 2024+ protection or open a fresh 2020 packet.
 
-The generic ExposureRegistry gains an atomic import_development transition for
-one complete development packet whose outcomes were already exposed. It requires
-an inactive matching registry/revision, unchanged exact packet prefix, unique
-new packet identity and predecessor, complete plan, explicit canonical prior-
-exposure evidence covering every new read bound and wholly before the protected
-cutoff. It appends to the existing hash chain without editing history, resetting
-or creating a registry, duplicating a retry, changing old claims/dispositions,
-or moving the fresh frontier. Projected non-development packets retain strict
-chronological non-overlap; all packet intervals remain pairwise disjoint. Fresh
-entry boundaries continue to account for the maximum end boundary of every
-prior exposure and every prior claim. Settlement-tail checks use the next
-chronological non-development entry, regardless of storage order.
+The pinned inventory contains 118 archived names. 116 have forecast/context
+identity on the first decision date; COHR and ECHO do not and remain excluded.
+Date-only checks found complete required bars for all 118 names across 358
+history, entry and tail sessions. Forecast/context source pins are unchanged:
+metadata identity checks show 277 absent symbol/week identities per role over
+the 53 decision dates. Those absent late forecast/context rows remain absent;
+nothing is refreshed, refit or synthesized. Existing per-decision quote filters,
+four methods, capital/costs and solver policy remain fixed ($50 absolute gap,
+zero relative gap, 0.001 parity tolerance, 900-second cap). Existing best saved
+M53 remains in use, so the full-year exercise is retrospective development
+diagnostics only, with no predictive-winner or performance gate.
 
-The MIO admission receipt binds the complete candidate inventory for the pinned
-source profile and resulting pair set to onboarding evidence. Its deterministic
-inclusion policy uses only archive/forecast identity support and the study's
-existing quote filters, never outcomes, model scores, or predictive performance.
-Arbitrary sparse pairs remain valid for other development uses. Existing
-admission modes remain compatible; research-universe admission is forbidden for
-fresh packets, and ordinary schedule extension rejects development suffixes so
-the import transition cannot be bypassed. No market data was read or replayed to build this implementation.
+The metadata-only import supplies one prior-exposure interval
+[2017-01-03, 2020-04-24] to cover every new read bound. Its evidence explicitly
+concatenates locked Path A0003 2017-2019 development history, the existing
+registry prior interval [2020-01-01, 2021-01-01), and the already-exposed 2020
+packet claims whose bars/chain/sessions bounds end 2020-04-24 and forecast/
+context bounds end 2020-03-09. The interval does not edit claims, dispositions,
+or registry history. The existing 2020 development packet stays in place; the
+2024+ global boundary is unchanged.
+
+The original immutable archive-input snapshot is reused (241 pinned files).
+New localblobs snapshots contain only refreshed metadata: one inventory file
+and five calendar/admission/session/provenance files. The 2019 weekly dates
+derive from XNYS sessions and include 2019-12-30. No provider or new market
+data was introduced.
 
 Phase 0 found two design gaps: the chronological shared schedule could not admit
 an earlier development interval, and exact pair equality did not prove complete
-inventory accounting. Review also reproduced a plan-identity defect on the unchanged base: mutable read bounds could pass claim/verify, and resealed invalid bodies could pass extension. Shared public lifecycle validation now rebuilds plans and binds registry identity before effects. The implementation adds the atomic development import,
-frontier-aware schedule traversal and pinned outcome-blind inventory receipt.
-Focused verification: WSL2 protocol + MIO packet tests + exact config manifest, 29 passed; documentation budgets, 4 passed. Metadata-only StudyContract preflight is runnable with no missing inputs; 116 pairs and 262 code pins. No study replay or registry mutation was run.
+inventory accounting. Final reviews also reproduced a plan-identity defect on
+the unchanged base: mutable read bounds could pass claim/verify, and resealed
+invalid bodies could pass extension. Shared lifecycle validation now rebuilds
+plans and binds registry identity before effects. The plan-identity correction
+was committed at 0ee9e921; both correctness and integration review reports are
+retained at /root/warmup_luna_correctness_final and
+/root/warmup_luna_integration_final (C0/M0). Those reviews predate this
+full-year window revision and are stale for its config/calendar.
+
+Metadata-only StudyContract preflight is runnable with no missing inputs:
+116 pairs, 262 code pins, forecast/context bounds through 2020-01-01 and bars/
+chain/session bounds through 2020-03-08. Calendar and per-config raw/document
+pins were verified. Source metadata estimates 12,695,312 option-chain rows
+(252.6 MB compressed), 1,326,130 forecast rows (146.6 MB), and 1,326,130
+context rows (1.512 GB). With about 14 GiB RAM and 5 GiB swap available, peak
+runtime memory remains unmeasured; no pair or date restriction was added.
+The full-year identity census is 160,754 fold-1/validation forecast-context
+identities over 116 symbols; the last forecast expiry is 2019-12-27 and there is
+no eligible forecast identity on the 2019-12-30 decision date. The expiry/date
+filtered chain contains 11,806,454 rows. This was metadata-only: no prices,
+outcomes or PnL fields were read. value_hash canonicalization copies row
+dictionaries before JSON serialization; at roughly 464 bytes per 12-key dict,
+the original and cloned container sets alone are each about 5.1 GiB, before
+values, serialized text/bytes, forecasts and study caches. With roughly 14 GiB
+RAM plus 5 GiB swap available, runtime peak is unknown and could exceed capacity.
+No performance gate, data refresh, pair reduction, or calendar truncation was
+introduced. The execution helper records each attempt and solve coverage,
+including accepted counts, maximum absolute/relative gaps, zero-value undefined
+relative gaps, and timeout-skipped counts/reasons; relative percentages are
+descriptive, with no additional threshold.
+
+Focused protocol + MIO packet tests + exact config manifest: 29 passed;
+documentation budgets: 4 passed. No study/import execution, registry mutation,
+market payload field or PnL read was performed.
 
 #### ADR-0278 amendment: staged MIO JSON design (2026-10-27)
 
