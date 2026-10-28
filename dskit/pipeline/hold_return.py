@@ -16,9 +16,11 @@ of alpha, which is the active side's claim, not the hold side's.
 :class:`MarketHoldReturn` (role ``data``: no inputs, literal params, the
 params ARE its fingerprint) emits the market rate and its blocks.
 :class:`BetaHoldReturns` (role ``transform``) reads the symbols on a record
-stream and a declared beta table and emits ``{symbol: rate}``, which
+stream and a beta table (wired on its ``betas`` input from daily bars, or the
+declared ``betas`` param by hand) and emits ``{symbol: rate}``, which
 :class:`~dskit.pipeline.liquidation.HoldVsRedeploy` takes on its optional
-``hold_returns`` input port. Every number is a param of the document.
+``hold_returns`` input port. Every number is a param of the document or wired
+from a node of it.
 
 The valuation drift is spread over ``reversion_years``, so the market rate is an
 average for a horizon no longer than that: ``horizon_years`` (the decision's
@@ -137,9 +139,10 @@ class BetaHoldReturns(Node):
     ----------
     params : dict
         ``risk_free`` (number in ``[-1, 2]``, REQUIRED); ``betas``
-        (non-empty ``{symbol: number}``, REQUIRED); ``symbol_field`` (field
-        name, REQUIRED); ``default_beta`` (number, optional): the beta of a
-        symbol absent from ``betas``; without it such a symbol refuses.
+        (non-empty ``{symbol: number}``): the hand table, required unless the
+        ``betas`` input is wired; ``symbol_field`` (field name, REQUIRED);
+        ``default_beta`` (number, optional): the beta of a symbol absent from
+        the table in use; without it such a symbol refuses.
 
     Inputs
     ------
@@ -147,16 +150,25 @@ class BetaHoldReturns(Node):
         Mapping rows carrying ``symbol_field``.
     ``market`` (REQUIRED)
         The market's expected annual return, a number.
+    ``betas`` (optional)
+        ``{symbol: number}`` estimated upstream (daily bars, say); when wired it
+        replaces the ``betas`` param for every row. Wired but not a mapping
+        (``None`` included), a key that is not a symbol or an entry that is not a
+        finite number refuses, whether or not that symbol is held.
 
     Outputs
     -------
     ``rates``
         ``{symbol: rate}`` for every symbol seen on the rows.
     ``betas``
-        ``{symbol: beta}``, the beta each rate was priced with (the declared one, or
-        ``default_beta``), so a reader of the betas is wired, never restated.
+        ``{symbol: beta}``, the beta each rate was priced with (the table's, wired or
+        declared, or ``default_beta``), so a reader of the betas is wired, never restated.
     ``summary``
-        Counts, the market, the risk-free rate and the defaulted symbols.
+        Counts, the market, the risk-free rate, the defaulted symbols,
+        ``betas_source``: ``wired`` (the input) or ``param`` (the hand table), and
+        ``betas_param_ignored``: true when a ``betas`` param is declared but the wired
+        input replaced it (also logged as a warning), so a stale hand table is never
+        mistaken for the one used.
 
     Examples
     --------
@@ -172,7 +184,7 @@ class BetaHoldReturns(Node):
     outputs = ("rates", "betas", "summary")
 
     _PARAMS = ("risk_free", "betas", "symbol_field", "default_beta")
-    _REQUIRED = ("risk_free", "betas", "symbol_field")
+    _REQUIRED = ("risk_free", "symbol_field")
 
     @classmethod
     def validate_params(cls, params):
@@ -205,6 +217,32 @@ class BetaHoldReturns(Node):
         """Answer ``pure``: the node reads nothing but its inputs and params."""
         return "pure"
 
+    def _beta_source(self, inputs):
+        """Return ``(table, source)``: the wired ``betas`` input when present, else the param.
+
+        Neither present refuses here, at run: the input is not known at validate, so the node
+        cannot say earlier that nothing will price a symbol.
+        """
+        if "betas" not in inputs:
+            if "betas" not in self.params:
+                raise ValueError(f"{self.key}: no betas param and no betas input")
+            return self.params["betas"], "param"
+        wired = inputs["betas"]
+        if not isinstance(wired, dict):
+            raise ValueError(
+                f"{self.key}: betas input must be a {{symbol: number}} mapping, got {wired!r}"
+            )
+        for symbol, beta in wired.items():
+            if not name_ok(symbol):
+                raise ValueError(
+                    f"{self.key}: betas input keys must be non-empty symbols, got {symbol!r}"
+                )
+            if not number_ok(beta):
+                raise ValueError(
+                    f"{self.key}: betas input[{symbol!r}] must be a number, got {beta!r}"
+                )
+        return wired, "wired"
+
     def run(self, ctx, inputs):
         """Return ``{symbol: rate}`` and ``{symbol: beta}`` for every symbol seen on the rows, and a summary."""
         records = inputs.get("records")
@@ -214,7 +252,12 @@ class BetaHoldReturns(Node):
         if not number_ok(market):
             raise ValueError(f"{self.key}: market must be a number, got {market!r}")
         field = self.params["symbol_field"]
-        betas = self.params["betas"]
+        betas, source = self._beta_source(inputs)
+        ignored = source == "wired" and "betas" in self.params
+        if ignored:
+            self.log.warning(
+                "%s: the betas input is wired, so the betas param (%d symbol(s)) is ignored",
+                self.key, len(self.params["betas"]))
         rates, used, defaulted = {}, {}, []
         for index, row in enumerate(records):
             if not isinstance(row, dict) or not name_ok(row.get(field)):
@@ -238,4 +281,5 @@ class BetaHoldReturns(Node):
         self.log.info("%s: %d symbol(s), market %.4f", self.key, len(rates), market)
         return {"rates": rates, "betas": used, "summary": {
             "stage": "beta hold returns", "symbols": len(rates), "market": market,
-            "risk_free": self.params["risk_free"], "defaulted": sorted(defaulted)}}
+            "risk_free": self.params["risk_free"], "defaulted": sorted(defaulted),
+            "betas_source": source, "betas_param_ignored": ignored}}

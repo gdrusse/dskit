@@ -1,5 +1,9 @@
 """The record-flow kinds: filter, event-grid, concat, join, derive, groupby, keyby, weekday-onehot, attach-by-identity.
 
+:class:`DateOrderedGroupBy` (by import path, not registered) is ``groupby`` ordered by
+an ISO date instead of a number: the latest row per entity of a daily stream, refused
+when stale against a reference day (``max_lag_days``).
+
 Two verbs read a single stream; the RELATIONAL four combine, project or
 reduce streams instead of reading one. ``weekday-onehot`` (ADR-0214) is
 a pure per-row projection beside ``derive``: it adds the 0/1 weekday
@@ -80,13 +84,14 @@ from datetime import date
 
 from dskit.pipeline.document import date_problem, is_node_ref
 from dskit.pipeline.kinds_stats import _reject_unknown
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, check_int_param
 from dskit.pipeline.records import WEEKDAY_TAGS, number_ok, weekday_flags
 
 __all__ = [
     "CLAUSE_OPS",
     "AttachByIdentity",
     "Concat",
+    "DateOrderedGroupBy",
     "Derive",
     "EventGrid",
     "Filter",
@@ -2013,7 +2018,7 @@ class GroupBy(Node):
             problems.append(
                 f"order_field must be a non-empty field name, got {order_field!r}"
             )
-        cls._order_problems(problems, aggregates, order_field)
+        cls._order_problems(problems, aggregates, order_field, cls._reads_order(params))
         return problems
 
     @classmethod
@@ -2043,8 +2048,17 @@ class GroupBy(Node):
         return names
 
     @classmethod
-    def _order_problems(cls, problems, aggregates, order_field) -> None:
-        """Append the ``order_field``-vs-``aggregates`` agreement problems."""
+    def _reads_order(cls, params) -> bool:
+        """Whether something besides a ``first`` / ``last`` aggregate reads ``order_field``: nothing here."""
+        return False
+
+    @classmethod
+    def _order_problems(cls, problems, aggregates, order_field, read_elsewhere) -> None:
+        """Append the ``order_field``-vs-``aggregates`` agreement problems.
+
+        ``read_elsewhere`` is :meth:`_reads_order`: a subclass whose own knob reads the order
+        (a staleness gate) makes the field meaningful without an ordered aggregate.
+        """
         if not isinstance(aggregates, dict):
             return  # unmaterialized or already refused above
         ordered = sorted(
@@ -2058,7 +2072,7 @@ class GroupBy(Node):
                 "FIRST or LAST row of a group, and which row that is depends "
                 "on an order the document has not named"
             )
-        elif not ordered and order_field is not None:
+        elif not ordered and order_field is not None and not read_elsewhere:
             problems.append(
                 "order_field is meaningless here — no aggregate reads an "
                 "order, so nothing would use it, and a knob nothing reads is "
@@ -2197,6 +2211,13 @@ class GroupBy(Node):
                 "the cells are not what it takes"
             ) from exc
 
+    def _vet_groups(self, groups) -> None:
+        """Refuse, before any reduction, groups the node cannot stand behind; the base accepts all.
+
+        ``groups`` maps each group identity to ``(raw key values, [(index, row), ...])``. A
+        subclass overrides this to refuse EVERY offending group in one message.
+        """
+
     def _group_row(self, keys, identity, members):
         """One output record: the group's key fields, then its aggregates."""
         members = self._ordered(members)
@@ -2235,6 +2256,7 @@ class GroupBy(Node):
         for index, row in enumerate(records):
             identity, raw = self._identity(index, row, keys)
             groups.setdefault(identity, (raw, []))[1].append((index, row))
+        self._vet_groups(groups)
         out = [
             self._group_row(keys, groups[identity][0], groups[identity][1])
             for identity in self._sorted(groups)
@@ -2246,6 +2268,117 @@ class GroupBy(Node):
             list(keys),
         )
         return {"records": out, "metrics": {"rows_in": len(records), "groups": len(out)}}
+
+
+class DateOrderedGroupBy(GroupBy):
+    """:class:`GroupBy` whose ``order_field`` holds ISO ``YYYY-MM-DD`` dates — by import path.
+
+    The registered ``groupby`` orders a group by NUMBERS and refuses date text on
+    purpose (a number is the one order every JSON row can carry unambiguously). A
+    daily stream is keyed by its session DATE, though, and "the latest row per entity
+    on or before a day" — a ``filter`` (``date <= day``) then ``last`` here — is the
+    as-of read a decision makes of it (ADR-0279 amendment, risk inputs). Everything
+    but the order rule and the staleness gate is :class:`GroupBy`'s: params, the
+    refusals, ``first`` / ``last`` with ties resolved by input order, output sorted by
+    key values. An order value must be a real calendar date in the extended form
+    (:func:`~dskit.pipeline.document.date_problem`, the one date rule): a datetime,
+    ``20261022``, ``2026-02-30``, a number or ``None`` refuses by node, row and field.
+
+    **Staleness gate.** The latest row of a group may be old: a symbol dropped from a
+    pull, a feed that stopped. ``max_lag_days`` with ``reference_date`` refuses it
+    instead of reading it silently. A group's lag is the calendar days from its
+    LATEST order date (over all its rows, whatever the aggregates) to
+    ``reference_date``; a lag above ``max_lag_days`` refuses, and so does a latest
+    date AFTER ``reference_date`` (the as-of read was meant to see nothing later: a
+    negative lag is a look-ahead, not freshness). Every offending group is named in
+    ONE error, sorted by key, with its latest date and its lag. Calendar days, not
+    sessions: the node holds no trading calendar, so the bound must cover the longest
+    closure a healthy feed shows (a long weekend is 4 days from Friday to Tuesday).
+
+    Not registered; wired as ``dskit.pipeline.kinds_flow:DateOrderedGroupBy``.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`GroupBy`'s, plus ``max_lag_days`` (int >= 0) and ``reference_date`` (ISO
+        ``YYYY-MM-DD``), declared TOGETHER or not at all; the gate needs ``order_field``.
+
+    Examples
+    --------
+    Each symbol's latest feature row, none older than 5 days before 2026-10-27::
+
+        node = DateOrderedGroupBy("latest", {
+            "keys": "symbol", "order_field": "ts",
+            "reference_date": "2026-10-27", "max_lag_days": 5,
+            "aggregates": {"as_of": {"op": "last", "field": "ts"},
+                           "vol": {"op": "last", "field": "vol_252"}}})
+        node.run(ctx, {"records": rows})["records"]
+        # -> [{"symbol": "AAPL", "as_of": "2026-10-22", "vol": 0.0171}, ...]
+    """
+
+    _PARAMS = GroupBy._PARAMS + ("max_lag_days", "reference_date")
+
+    @classmethod
+    def _reads_order(cls, params) -> bool:
+        """Say whether the staleness gate reads the order: ``max_lag_days`` makes ``order_field`` meaningful."""
+        return "max_lag_days" in params
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with the declared knobs: :class:`GroupBy`'s plus the staleness gate's."""
+        problems = super().validate_params(params)
+        lag, reference = params.get("max_lag_days"), params.get("reference_date")
+        if "max_lag_days" in params and not is_node_ref(lag):
+            check_int_param(problems, "max_lag_days", lag, ge=0)
+        if "reference_date" in params and not is_node_ref(reference) and date_problem(reference):
+            problems.append(f"reference_date must be an ISO YYYY-MM-DD date, got {reference!r}")
+        if ("max_lag_days" in params) != ("reference_date" in params):
+            problems.append(
+                "max_lag_days and reference_date go together — a bound with no day to count "
+                "from, or a day with no bound, checks nothing"
+            )
+        if "max_lag_days" in params and params.get("order_field") is None:
+            problems.append(
+                "order_field is required — max_lag_days counts the lag of each group's "
+                "latest order date, and the document has not named the order"
+            )
+        return problems
+
+    def _instant(self, field, index, row):
+        """One row's order value as a date, refusing anything that is not an ISO calendar date."""
+        value = self._cell(index, row, field)
+        if date_problem(value):
+            raise ValueError(
+                f"{self.key}: order_field {field!r} orders each group's rows by date, "
+                f"and row {index} holds {value!r} — that is not an ISO YYYY-MM-DD date "
+                "(document.date_problem), so which row is FIRST and which is LAST "
+                "cannot be answered"
+            )
+        return date.fromisoformat(value)
+
+    def _vet_groups(self, groups) -> None:
+        """Refuse every group whose latest date is stale against, or after, ``reference_date``."""
+        if "max_lag_days" not in self.params:
+            return
+        field = self.params["order_field"]
+        limit = int(self.params["max_lag_days"])
+        reference = date.fromisoformat(self.params["reference_date"])
+        offenders = []
+        for identity in self._sorted(groups):
+            raw, members = groups[identity]
+            latest = max(self._instant(field, index, row) for index, row in members)
+            lag = (reference - latest).days
+            who = raw[0] if len(raw) == 1 else raw
+            if lag > limit:
+                offenders.append(f"{who!r} latest {latest.isoformat()} is {lag} day(s) before "
+                                 f"it (max_lag_days {limit})")
+            elif lag < 0:
+                offenders.append(f"{who!r} latest {latest.isoformat()} is {-lag} day(s) after it")
+        if offenders:
+            raise ValueError(
+                f"{self.key}: {len(offenders)} group(s) out of date against reference_date "
+                f"{reference.isoformat()}: " + "; ".join(offenders)
+            )
 
 
 class KeyBy(Node):

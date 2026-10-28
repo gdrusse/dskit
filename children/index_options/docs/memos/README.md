@@ -16,3 +16,5 @@ with its approved scaffold proposal in the incubating repository.
 - [Prescription session results and next steps](2026-10-25-prescription-session-results.md): condors, free integer books, funded 2019 variants, full-DTE attempts and the 15-minute weekly-skip policy.
 
 - [MIO high-level status and best-run trade history](2026-10-26-mio-high-level-status.md): project position, completed funded leader, every traded ticker/DTE and results, contrasted with the audited full-DTE loss.
+
+- [2019 broad and limited MIO comparison](2026-10-28-mio-2019-comparison.md): all eight weekly runs, candidate/trade/PnL CSVs, known-contract outcomes, actual stress coverage and exact run/delivery pins. [Eight-row summary](2026-10-28-mio-2019-comparison.csv).

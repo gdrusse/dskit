@@ -4,42 +4,90 @@ Research child for **hold-vs-exit decisions on a long-term Schwab
 portfolio**: for each position, is the expected after-tax, after-cost value
 of holding passively at least the value of cashing out into an active
 strategy? Status: **base machinery complete (ADR-0279), skeptic-reviewed;
-position summary added (A0002), not yet lens-reviewed; no real Schwab pull
-yet** — every rate in the documents is a placeholder the owner sets. The
-sections after "Scoring a past decision run" are the skeleton's generic
-walkthrough.
+position summary (A0002) reviewed; risk inputs from Schwab daily bars (A0003)
+built, not yet lens-reviewed; tax lots from Schwab transactions (A0004) built,
+round-1 review corrections applied, not yet re-reviewed; no real Schwab pull yet** —
+every rate in the documents is a placeholder the owner sets. The sections after
+"Scoring a past decision run" are the skeleton's generic walkthrough.
 
 ## Hold vs redeploy (ADR-0279)
 
-From the child root, after `pip install -e .` and a Schwab OAuth session:
+### First real run from Schwab
+
+From the child root, after `pip install -e .`. Nothing here places an order.
 
 ```bash
-python -m dskit.onboarding init --root ./ob
-python -m dskit.onboarding register-source schwab --root ./ob \
-    --catalog-source schwab-src --connector schwab_positions --config '{}' --activate
-# the OAuth values are read from the environment (never from the config): the Schwab app key
-# and secret, the callback URL registered for the app, and where the token file will be saved
+# 1. Authorize once. The OAuth values come from the environment, never a config; one token
+#    file serves schwab_positions, schwab_transactions and schwab_daily alike.
 export SCHWAB_APP_KEY=... SCHWAB_APP_SECRET=... SCHWAB_CALLBACK_URL=... SCHWAB_TOKEN_PATH=./schwab-token.json
 python -m dskit.onboarding authorize --connector schwab_positions --config '{}'    # prints the login URL
 # approve it in the browser, then pass the code (or the whole callback URL it redirected to):
 python -m dskit.onboarding authorize --connector schwab_positions --config '{}' --code '<code or callback URL>'
-python -m dskit.onboarding acquire --root ./ob --source schwab \
-    --stream positions --mode backfill            # one snapshot per UTC day
+
+# 2. Register the sources, once. A source has one active config: when the holdings change,
+#    register the new symbol list under a NEW name (schwab_daily_2, say), point the
+#    document's bars.source at it, and acquire it (it re-pulls from start).
+python -m dskit.onboarding init --root ./ob
+python -m dskit.onboarding register-source schwab --root ./ob \
+    --catalog-source schwab-src --connector schwab_positions --config '{}' --activate
+# the purchases the tax lots are rebuilt from: one source per connector (one alias is one
+# connector) over the same OAuth environment; start = on or before your EARLIEST purchase
+# still held (lower it later and the next acquire re-pulls from the new start)
+python -m dskit.onboarding register-source schwab_trades --root ./ob \
+    --catalog-source schwab-trades-src --connector schwab_transactions \
+    --config '{"start": "2015-01-01"}' --activate
+# symbols = every held symbol plus SPY (the benchmark); start >= 400 calendar days before
+# today (a year of returns needs 253 closes, with holidays to spare)
+python -m dskit.onboarding register-source schwab_daily --root ./ob \
+    --catalog-source schwab-daily-src --connector schwab_daily \
+    --config '{"symbols": ["VTI", "AAPL", "SPY"], "start": "2025-09-01"}' --activate
 # the active strategy's backtest: ./inputs/active/returns.jsonl (the file stem is the
 # stream name), one row per period: {"period": ..., "day": "YYYY-MM-DD", "net_return": ...}
 python -m dskit.onboarding register-source active --root ./ob \
     --catalog-source active-src --connector localfiles \
     --config '{"path": "./inputs/active", "effective_field": "day"}' --activate
+
+# 3. Acquire, before every run. Positions: one snapshot per UTC day. Trades: every trade from
+#    start (the cursor day is requested again, so a late posting lands; the census of fee
+#    lines and skipped types prints). Daily bars: closed sessions only (today's never); live
+#    re-requests the last 5 days, so corrections land.
+python -m dskit.onboarding acquire --root ./ob --source schwab --stream positions --mode backfill
+python -m dskit.onboarding acquire --root ./ob --source schwab_trades --stream trades --mode backfill
+python -m dskit.onboarding acquire --root ./ob --source schwab_daily --stream bars --mode live
 python -m dskit.onboarding acquire --root ./ob --source active --stream returns --mode backfill
-mkdir -p decisions summary
-# set snapshot.where[as_of] AND tax.as_of to the pull's UTC day (pinned equal by a test):
+
+# 4. Set the document: the decision day in FIVE places, all the positions pull's UTC day
+#    (the rows' as_of; a pull after 20:00 New York, 19:00 in standard time, is dated the next
+#    day), pinned equal by a test: snapshot.where[as_of], lots.as_of, tax.as_of,
+#    risk_day.where[ts] and risk_latest.reference_date. Then the placeholders below.
+
+# 5. Run.
+mkdir -p decisions summary risk
 python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <that day>
 ```
+
+Then read `summary/<run>.jsonl` (one row per lot, "The few numbers" below) and
+`risk/<run>.jsonl` (one row per symbol: `as_of` is the session the risk was read at,
+the last one before the decision day; `annual_vol`; `beta_raw` and the adjusted
+`beta` that priced the hold return). For "should I keep holding this?":
+
+- `decision` is the answer under the document's terms: `exit` only when selling,
+  paying the tax and redeploying ends ahead of holding after tax at the horizon.
+- `opportunity_cost` is by how much a year: above zero holding costs you that much,
+  below zero holding wins. `break_even_return` is the return the active strategy
+  must clear for exiting to tie; trust an `exit` only as far as you trust the
+  strategy to beat it.
+- `tax_cost` (and `embedded_gain`) is the one-off price of exiting.
+- `volatility` and `beta` are the risk you keep by holding; a holding the decision
+  keeps can still be too large: check the portfolio's `top_weight` (above ~10% is a
+  concentrated position) alongside its volatility.
 
 `configs/run-hold-vs-redeploy.json` holds every rate, horizon and field name;
 set them before the first run. Neither return is a literal: `market` builds
 the hold return from dividend yield + real growth + inflation + CAPE drift and
-`betas` scales it per symbol (research A0001); `hurdle` deflates the active
+`betas` scales it per symbol (research A0001) by each holding's beta, wired from
+the `schwab_daily` bars (`bars` -> `risk_features` -> `risk_day` -> `risk_latest`
+-> `risk`, research A0003; no beta is typed; a bars pull more than 5 days stale is refused); `hurdle` deflates the active
 backtest's mean by what `trials` variants of nothing would have found and
 withholds it below `min_dsr`, in which case every holding holds. The hold
 path is taxed once at the horizon (`terminal_tax_rate`); the active path pays
@@ -51,12 +99,41 @@ kinds refuse a short or zero-value row by index rather than decide on it.
 periods it will accept, and returns are fractions (0.01 = 1%), never percent.
 `market.horizon_years` is the decision horizon (pinned equal to
 `decide.horizon_years` by a test) and may not exceed `reversion_years`. Rows
-land in `decisions/<run>.jsonl`, one per account x symbol, advisory only.
-Aggregate positions carry no lots, so every holding takes `default_holding`
-until a lot-level export is onboarded. `decide.risk_premium` ships at 0.0 as a
+land in `decisions/<run>.jsonl`, one per lot (account x symbol x `lot_id`),
+advisory only. `decide.risk_premium` ships at 0.0 as a
 placeholder, not as a claim that zero is safe: the hurdle's arithmetic mean
 compounds geometrically, a gap of about sd^2 / 2 a year, so set it from the
 backtest's annual volatility (`hurdle` summary `annual_sd`) before a real run.
+
+**Tax lots (research A0004).** Schwab's positions carry no lots, so the
+`trades` stream is replayed into open lots (`lots`, FIFO: a sale takes the
+earliest shares first) and each lot is valued at the snapshot's price
+(`lot_positions`). What changes in the numbers: every lot is taxed by its own
+date and basis, so shares bought within the year pay the short-term rate on
+their own gain instead of the whole holding taking `default_holding`; a
+holding's tax is the sum of its lots', and the decision, summary and outcomes
+are per lot (a young lot may hold while an old one exits). In the e2e example
+VTI's tax rises from 119 (aggregate, all long) to 132.60 (99.96 on the 2023 lot,
+32.64 on the lot bought three months earlier). Every holding must reconcile
+share for share: its lots' shares equal the snapshot's `long_quantity`. One that
+does not (bought before `start` or before the history Schwab serves,
+transferred in, split, a reinvestment outside `TRADE`), or a sale the history
+never bought, refuses by name. Set `allow_incomplete: true` on BOTH `lots` and
+`lot_positions` (a test pins them equal) to let such a holding pass as its
+aggregate row instead (null `acquired`, so `default_holding` applies, listed in
+the `lot_positions` summary `fallback`). That summary's `basis_gap` per holding
+(lot basis minus Schwab's cost basis) is zero when FIFO matches Schwab's books.
+A day's trades replay in execution-time order (then transaction id), so a buy and
+the sale that closes it the same day work whatever the ids; a trade dated ON the
+decision day counts. A buy whose cash is null (a transaction with several kept items)
+is basis = quantity x price; the `lots` summary's `amount_fallbacks` counts them.
+
+To go back to the aggregate path (no lots), edit `run-hold-vs-redeploy.json`: delete
+`trades`, `lots` and `lot_positions`, point `tax.inputs.records` at `$snapshot.records`,
+drop `tax.acquired_field`, and set `summary.key_fields` to `["account", "symbol"]`
+(there is no `lot_id`). In `run-decision-outcomes.json` set `decisions.key_fields` to
+`["account", "symbol", "as_of"]`, `outcomes.key_fields` to `["account", "symbol"]` and
+delete `outcomes.match_fields`. `tests/test_hold_vs_redeploy.py` runs this recipe.
 
 **Limits** (disclosed, not modelled):
 
@@ -69,21 +146,62 @@ backtest's annual volatility (`hurdle` summary `annual_sd`) before a real run.
 - The `EQUITY` filter's reach for ETFs and mutual funds is unverified until a
   real pull: if Schwab labels them otherwise they are dropped silently.
 - Rows the filters drop (options, shorts, other asset types) are not counted or
-  reported yet.
+  reported yet (the transactions pull does count the items it skips).
+- Lots assume FIFO. Schwab's default is FIFO for stocks, but funds and some ETFs
+  in accounts opened before October 2024 default to average cost, and any
+  account may have elected another method or identified lots at sale: confirm
+  the election; a non-zero `basis_gap` is the symptom (`lot_positions` logs a
+  warning with the largest, and `basis_gap_max` in its summary is the number to read).
+- Wash sales are not modelled: a loss disallowed by a repurchase within 30 days
+  would raise the new lot's basis and tack the old holding period onto it, so
+  that lot's basis and short-term class here are wrong, and the account shows a
+  `basis_gap`.
+- Only `VALID` transactions are trades. A PENDING or INVALID one in the pull
+  refuses by index (a pending trade must not become a lot). A pending one clears
+  when it settles; an INVALID (cancelled) one stays in Schwab's history and stops
+  every pull whose window reaches it. Raising `start` past it is the only way round
+  today (lots bought before it then fail the reconciliation); a skip is an owner
+  decision (lane note).
+- How far back Schwab's transactions endpoint serves history is unverified (one
+  client documents one year). A holding older than the history refuses until
+  `allow_incomplete` (aggregate fallback) or a lot export is onboarded.
+- The trades pull keeps `EQUITY` items; ETFs may arrive as
+  `COLLECTIVE_INVESTMENT` (the first pull's skipped census says so): widen the
+  connector's `asset_types` and the snapshot filter together.
+- `long_term_days` 366 is "more than one year" except when the year spans 29
+  February (then the lot's 366th day is still short-term); short sales and
+  splits are not modelled (each refuses at the reconciliation).
+- Whether Schwab's daily closes are split- or dividend-adjusted is undocumented: an
+  unadjusted split would read as one huge daily return and inflate that holding's
+  volatility and beta for a year. Check a holding with a recent split on the first pull.
+- A stale bars pull is refused, not read silently: risk is read at each symbol's latest
+  session on or before the decision day, and a symbol (SPY too) whose latest session is more
+  than `risk_latest.max_lag_days` (5 calendar days; a long weekend is 4) before it stops the
+  run by name with its last session and lag. Inside the bound `risk/<run>.jsonl` `as_of`
+  shows the session each number was read at. The bound counts calendar days, not sessions
+  (no trading calendar), and a session missing mid-window stretches the year by that session.
+- A holding without a year of Schwab daily bars (253 closes), or left out of the
+  `schwab_daily` symbols, stops the run by name: there is no default beta or
+  volatility. A pull without SPY leaves every beta null, which stops it the same
+  way (`betas input[...] must be a number, got None`). Whether mutual funds have
+  Schwab daily history is unverified.
+- The beta is one year of daily returns against SPY, Blume-adjusted (research
+  A0003): noisier than a longer window and not the 5-year monthly figure a quote
+  page shows. The volatility is the last year's, annualized; not a forecast.
 
 ### The few numbers
 
-The same run writes `summary/<run>.jsonl` (research A0002): one row per holding
+The same run writes `summary/<run>.jsonl` (research A0002): one row per lot
 with the numbers below, and the portfolio's own in the `summary` node's
 `metrics` (`carry.json` in the run directory; `python -m dskit.pipeline runs`
 tables them run over run). Rates are a year; shares are of today's value.
 
 | Number | Plain meaning | What you do with it |
 |---|---|---|
-| `weight` | this row's share of the portfolio (one account's slice of a symbol) | the ~10% concentration rule is for the portfolio's `top_weight` (below), not for this |
+| `weight` | this row's share of the portfolio (one lot of one account's holding) | the ~10% concentration rule is for the portfolio's `top_weight` (below), not for this |
 | `expected_return` | what holding should earn a year, before tax (market blocks x beta) | compare holdings |
-| `volatility` | how much it swings a year (one standard deviation) | null until daily prices are onboarded |
-| `beta` | how hard it moves with the market | above 1 swings more than the market |
+| `volatility` | how much it swings a year (one standard deviation of the last 252 daily returns) | about 0.15-0.2 is a broad index fund; a single stock is often 0.25-0.4 |
+| `beta` | how hard it moves with SPY (one year of daily returns, adjusted a third of the way to 1) | above 1 swings more than the market; it sets the expected return |
 | `embedded_gain` | how much of the value is untaxed gain | the higher it is, the more selling costs |
 | `tax_cost` | what selling today loses to tax | the price of exiting, paid once |
 | `break_even_return` | the active return at which exiting exactly ties holding, after every tax and cost | exit only if you trust the strategy to beat it |
@@ -99,8 +217,10 @@ across accounts, is a concentrated position, not a row's `weight`),
 document's `tax.loss_offset` is false, so it errs high), `break_even_return`,
 `opportunity_cost` (selling everything against holding everything; negative
 means holding wins) and the `exit_positions` / `hold_positions` counts. The
+`positions`, `exit_positions` and `hold_positions` counts are LOTS (one per row), not
+holdings: a holding of three lots is three positions. The
 summary restates `decide`'s tax and cost terms, pinned equal by a test; betas
-are wired from the beta table. When the hurdle is withheld,
+and volatilities are wired from the daily bars. When the hurdle is withheld,
 `opportunity_cost` is null and `break_even_return` is still the bar a strategy
 would have to clear.
 
@@ -126,9 +246,13 @@ in the snapshot is never scored and cannot stop the run, and a decided position
 the filter no longer sees is listed `unmatched`.
 
 `<run-name>` is the decision run's directory name (the stem of its
-`decisions/<run>.jsonl`). `outcomes/<run>.jsonl` holds, per account and
-symbol, the price growth the decision assumed, the realized per-share growth,
-and the surprise. The forecast is a total return and the snapshot's market
+`decisions/<run>.jsonl`). `outcomes/<run>.jsonl` holds, per decided lot
+(matched to its holding by account and symbol), the price growth the decision
+assumed, the realized per-share growth, and the surprise. The run's summary counts
+twice: `scored` / `mean_surprise` per lot (row), `holdings` / `holding_mean_surprise`
+per holding (a holding of ten lots counts once, with the mean surprise of its lots),
+each also split `by_decision`. The forecast is a
+total return and the snapshot's market
 value is price only, so `outcomes.income_rate` (0.013, pinned equal to the
 decision document's `market.dividend_yield`) is removed from each year's
 growth before it is compounded for the time elapsed. It scores the hold
@@ -292,10 +416,11 @@ portfolio_policy/
 │   ├── suite-sample.json  # a validation suite
 │   ├── run-sample.json    # a pipeline document
 │   ├── serve-sample.json  # a serve document — the run, served forward
-│   ├── run-hold-vs-redeploy.json   # ADR-0279: positions -> tax, market -> betas, hurdle -> decide -> summary
+│   ├── run-hold-vs-redeploy.json   # ADR-0279: positions + trades -> lots -> tax; daily bars -> risk; market x betas, hurdle -> decide -> summary
 │   └── run-decision-outcomes.json  # ADR-0279: a past decision run scored against a later snapshot
 ├── decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
 ├── summary/               # the few numbers per holding, one file per run (gitignored)
+├── risk/                  # volatility and beta per symbol from daily bars, one file per run (gitignored)
 ├── outcomes/              # scored hold forecasts, one file per run (gitignored)
 ├── models/                # fitted ML/optimization artifacts (gitignored)
 │   ├── README.md          # what belongs here vs the run directory
@@ -317,7 +442,9 @@ portfolio_policy/
 ├── docs/research/         # research agent markdown
 │   ├── README.md          # use record-research
 │   ├── hold-return/       # A0001: building blocks over trailing means
-│   └── position-summary/  # A0002: the few numbers per position and portfolio
+│   ├── position-summary/  # A0002: the few numbers per position and portfolio
+│   ├── risk-inputs/       # A0003: beta and volatility from Schwab daily bars
+│   └── tax-lots/          # A0004: Schwab transactions, FIFO lots, holding periods
 ├── journal.json           # walk-up marker for dskit.journal
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)

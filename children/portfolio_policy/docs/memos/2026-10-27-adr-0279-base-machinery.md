@@ -86,6 +86,31 @@ is a total return and the snapshot's value is price only, so the income is
 removed first; `income_rate` is the market dividend yield) vs realized
 per-share growth; the active side is scored where it runs.
 
+## Tax lots from Schwab transactions (2026-10-28, branch `schwab-tax-lots`)
+
+Research A0004 (`docs/research/tax-lots/2026-10-28-synthesis.md`; journaled A0003
+on the branch, renumbered A0004 at the merge with `schwab-risk-inputs`) and the ADR-0279 "tax lots" amendment. Built by Claude Opus 5.5, test
+first: tier-2 `schwab_transactions` (`trades`: one row per kept transfer item,
+windows of at most a year from `start`, the 3,000-transaction cap refused, fee
+lines and skipped asset types counted; `tests/onboarding/test_schwab_transactions.py`,
+58 tests), tier-1 `dskit/pipeline/tax_lots.py` (`TaxLots` FIFO lots,
+`LotPositions` reconciled per holding; `tests/pipeline/test_tax_lots.py`, 90) and
+`DecisionOutcomes.match_fields` (8 new cases, 58 in the file). The decision
+document now runs per lot: each lot's own date picks its rate, so shares bought
+within the year pay the short-term rate on their own gain (e2e: VTI 119 aggregate
+becomes 99.96 + 32.64 = 132.60). A holding whose lots do not reconcile refuses
+unless `allow_incomplete` (aggregate fallback). Child: 72 passed, 9 skipped (5
+new). Sonnet round 1 (Claude Sonnet 5.5; ADR amendment "tax lots, Sonnet round 1
+corrections"): 1 Major (no two-account coverage: A1/A2 unit tests, an A2 holding in the
+child e2e with a commissioned buy, pooling by symbol shown red in a scratch copy, 8 + 7
+unit and 6 + 5 child tests) and 8 Minors fixed (`amount_field` refusal + fallback count,
+`status` VALID, `time` and `order_fields`, `start` in STATE, `basis_gap_max` + warning,
+per-holding scoring counts, boundary and 365/366-day pins, the aggregate recipe, which
+now runs); tests 411 -> 448 in the required dskit run, child 72 -> 76 passed, 9 skipped.
+Awaiting round 2. Open: the lot method election (Schwab's average-cost
+default for some funds/ETFs), `allow_incomplete`, `tolerance`, how far back
+Schwab serves transactions, and the ETF `asset_type` (`COLLECTIVE_INVESTMENT`).
+
 ## Review evidence
 
 - **Lens 1** (correctness/authority, Claude general-purpose subagent, on

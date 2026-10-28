@@ -34011,3 +34011,318 @@ No original producer is claimed to have produced the stitched file. Separate
 final correctness and integration reviews and focused tests remain required.
 Sweep searched 37 refs and 91 worktrees for owner_selected_saved_zoo_outputs,
 mio-broad-2019 and saved-half-forecast: no matching existing implementation.
+
+#### ADR-0279 amendment: risk inputs from Schwab daily bars (approved by owner 2026-10-28, research A0003)
+
+**Ask.** "Build so that we have all the machinery we need to pull from Schwab and calculate
+the figures I need to know whether or not I should continue to hold an asset." The decision
+document still needed two hand inputs: the `betas` table and (for the summary) per-symbol
+volatility, null because no daily prices were onboarded. Both now come from Schwab daily
+bars, through onboarding, in the same run as the decision.
+
+**Estimators (research A0003, `children/portfolio_policy/docs/research/risk-inputs/`).**
+Beta: OLS slope of 252 daily log returns on SPY's (one year), Blume-adjusted
+`0.67 x raw + 0.33`; the adjusted beta prices the hold return, the raw one is reported.
+Volatility: zero-mean RMS of 252 daily log returns `x sqrt(252)` (the existing
+`DailyBarFeatures.realized_vol`). The window (252 sessions) and the annualization factor
+(252 trading days a year) are separate declarations that happen to be equal.
+
+**Files.**
+
+- `dskit/onboarding/libs/schwab.py`: `SchwabDailyBarsConnector`, registered `schwab_daily`
+  in `connector.DEFAULT_CONNECTORS` beside `schwab` and `schwab_positions`; same OAuth and
+  transport base (`_NOUN` "Schwab daily history", one token file for all three). Knobs
+  `symbols`, `start` (ISO date), `overlap_days` (default `DEFAULT_OVERLAP_DAYS` 5) plus the
+  shared OAuth/transport knobs. Request `periodType=year`, `frequencyType=daily`,
+  `frequency=1`, `startDate` = 00:00 New York of the first day, `endDate` = 00:00 New York of
+  the pull's New York date, `needExtendedHoursData=false`, `needPreviousClose=false`. Emits
+  the provider-neutral `bars` stream keyed `(symbol, ts)` with `ts` the session date
+  `YYYY-MM-DD` (also the `effective_date`), OHLCV, `trade_count`/`vwap` null. Session date
+  = the America/New_York calendar date of the candle's `datetime` (Schwab stamps 00:00
+  Central of the session: 05:00 UTC in daylight time, 06:00 in standard time); a stamp at
+  or after 09:30 New York refuses (not a session-start label, so its session would be a
+  guess), as do two candles on one session and any non-finite or bool number. Closed = a
+  session date strictly before the pull's New York date; today's candle is never emitted.
+  Backfill resumes the day after the cursor (the last emitted session); live re-requests
+  `overlap_days` calendar days before it, so late corrections land as new bitemporal
+  evidence. The one-minute pack's behaviour is unchanged; its symbols check, non-object
+  and candles-list checks and `read` argument guards move to shared helpers with the same
+  messages. Tests: `tests/onboarding/test_schwab_daily.py`.
+- `dskit/pipeline/kinds_flow.py`: `DateOrderedGroupBy`, a `GroupBy` subclass by import
+  path (not registered) whose `order_field` holds ISO `YYYY-MM-DD` dates
+  (`document.date_problem`, the one date rule) instead of numbers; only the `_instant` hook
+  changes. Why a capability: the risk numbers are read at the latest closed session on or
+  before the snapshot day, and a same-day pull has no closed bar on the snapshot day, so an
+  equality filter would match nothing; "last row per symbol by date" is generic, and the
+  registered `groupby` refuses a date-text order on purpose (its test is unchanged).
+  Tests: `tests/pipeline/test_kinds_flow.py` (and the module's pinned `__all__` in
+  `test_kinds_banking.py`).
+- `dskit/pipeline/hold_return.py`: `BetaHoldReturns` gains an optional `betas` INPUT port
+  (`{symbol: number}`) that replaces the now-optional `betas` param (mirroring
+  `HoldVsRedeploy.hold_returns`): a wired `None` or non-number entry refuses, an unknown
+  symbol still refuses unless `default_beta`, and the summary names `betas_source`
+  (`wired` | `param`). The hand table stays as the fallback. Tests:
+  `tests/pipeline/test_hold_return.py`.
+- `children/portfolio_policy/configs/run-hold-vs-redeploy.json` (option ii, one run does
+  everything): `bars` (ObservationRows, source `schwab_daily`, stream `bars`, key
+  `(symbol, ts)`) -> `benchmark` (filter symbol == SPY) -> `risk_features`
+  (`DailyBarFeatures`: `realized_vol` 252, `market_relative.beta_window` 252) -> `risk_day`
+  (filter `ts <=` the snapshot day) -> `risk_latest` (`DateOrderedGroupBy`, last per symbol
+  by `ts`) -> `risk` (`ComputeFields`: `annual_vol`, adjusted `beta`, `as_of`, windows) ->
+  `vols` / `risk_betas` (`keyby` symbol) -> `betas.betas` input and
+  `summary.volatilities`; `risks` writes `risk/{run}.jsonl`. The bars snapshot becomes part
+  of the decision's identity, which is correct: the betas price the decision. `betas`
+  carries no table literal. A standalone `run-risk-inputs.json` is not shipped: option (ii)
+  holds the chain once, and a second copy would need a node-for-node pin.
+- Child tests: the synthetic root gains a daily `bars` stream (`localfiles` standing in for
+  `schwab_daily`, 300 seeded sessions of VTI, AAPL, SPY); expectations from the generator's
+  parameters (loose) and recomputed exactly from the written bars in plain Python;
+  `test_configs.py` pins the risk windows each declared twice and risk day == snapshot day.
+- README "First real run from Schwab" runbook, Limits, lane note, the onboarding and
+  pipeline README/CLAUDE trees (+ mirrors), `.gitignore` `children/*/risk/`.
+
+**Deferred.** A staleness bound on the risk session (it is reported as `as_of` in
+`risk/<run>.jsonl`, not refused); split detection (Schwab's adjustment is undocumented);
+whether mutual funds have Schwab daily history; a default volatility for a holding without
+a year of bars (the run stops on it by name); weekly or monthly beta variants; a covariance
+portfolio volatility; a `dskit.production` serve document.
+
+Sweep: tools/sweep/sweep SchwabDailyBarsConnector schwab_daily daily_bars DailyBars
+daily_history overlap_days DateOrderedGroupBy date_ordered latest_per_key last_per_group
+betas_source DEFAULT_OVERLAP_DAYS DAILY_INTERVAL SESSION_TZ run-risk-inputs; near matches
+only `SchwabBarsConnector` (the one-minute sibling, extended not copied), `GroupBy` (the
+base subclassed), the index_options child's `StockDailyBars` (a Yahoo chart transform,
+unrelated) and private `_session` helpers / tool-script `SESSION_TZ` constants.
+
+#### ADR-0279 amendment: risk inputs, Sonnet round 1 corrections (2026-10-28)
+
+**Findings (round 1 review of `b19f1a5`) and what changed.**
+
+- **Major, the close was unpinned.** The child e2e built bars with `open = high = low = close`, so
+  switching `close_field` / `benchmark_close_field` to open, high or low kept the suite green
+  (reproduced: all six switches passed). The bars now carry independent seeded noise (own
+  generator, the closes untouched; `low <= min(open, close) <= max(open, close) <= high`); after
+  the change each of the six switches fails the e2e (5-6 tests each, checked in scratch copies of
+  the child), a test recomputes the risk from open / high / low to show the numbers move by more
+  than 5% (volatility) and 0.05 (beta), and `test_configs.py` pins both fields to `"close"`.
+- **Minor, stale bars were read silently.** `DateOrderedGroupBy` gains `max_lag_days` (int >= 0)
+  with `reference_date` (ISO date), declared together and needing `order_field`: a group whose
+  LATEST order date is more than `max_lag_days` calendar days before the reference, or after it
+  (a look-ahead, not freshness), refuses, every such group named in one error with its latest date
+  and lag. The base `GroupBy` gains two private hooks (`_reads_order`, `_vet_groups`, both
+  no-ops there); the registered `groupby` is unchanged. The decision document declares
+  `reference_date` = the decision day (the fourth place, pinned with the other three) and
+  `max_lag_days` 5. Calendar days, not sessions: the node holds no trading calendar, and 5 covers
+  the longest healthy closure (Friday to a Tuesday after a holiday Monday is 4). A benchmark
+  stopping short of the holdings is also refused (SPY stale), and a SPY that lags only inside the
+  bound leaves the holdings' last-day betas null, which still stops the run by name downstream.
+- **Window columns as ints.** `ComputeFields` `const` always computes in floats, so the risk
+  file read `252.0`. A new whole-expression `{"integer": n}` (beside `text`; a non-bool int, never
+  nested in an op) writes the int; `const` and every existing document are unchanged.
+- **Nits.** The e2e asserts each window held exactly 252 returns over 253 consecutive sessions, and
+  `risk_features` notes say a missing session stretches the window; the New York `ZoneInfo` is
+  built at first use (`_session_zone`), pinned by an import test with a failing tz database;
+  `BetaHoldReturns` reports a declared `betas` param replaced by the wire (`betas_param_ignored`
+  in its summary and a log warning; neither source still refuses at run, since inputs are unknown
+  at validate); the research note's zero-mean gap is about 0.05% at a 10% drift and 20%
+  volatility (and 0.55%, not 0.4%, at 50% and 30%); README "after 20:00 New York (19:00 in
+  standard time)"; the child `CLAUDE.md` layout lists `risk/` (mirror regenerated); spring-forward
+  (Friday 06:00 UTC and Monday 05:00 UTC stamps, midnight requests across 2026-03-08) and
+  09:29-New-York stamp tests; the daily `check()` now reads its probe response the way `read` does,
+  so a body that is not price history, or a malformed candle, refuses.
+
+Sweep: tools/sweep/sweep max_lag_days max_stale stale_sessions max_age lag_days integer_constant
+whole_expression int_const; no near match for `max_lag_days`, `integer_constant`; near matches only
+the production monitors' `Staleness` / `max_staleness` (feeds, unrelated) and the onboarding
+`lag_days` test (httpblobs default).
+
+#### ADR-0279 amendment: tax lots from Schwab transactions (approved by owner 2026-10-28, research A0004)
+
+**Ask.** "All the machinery we need to pull from Schwab and calculate the
+figures I need to know whether or not I should continue to hold an asset." The
+liquidation tax ran on aggregate positions (average price x shares, every
+holding `default_holding`); the real tax depends on each lot's date and basis.
+Research `children/portfolio_policy/docs/research/tax-lots/2026-10-28-synthesis.md`
+(A0003 on branch `schwab-tax-lots`, renumbered A0004 at merge after
+`schwab-risk-inputs`' A0003) found the endpoint shape, FIFO as the default
+rule (26 CFR 1.1012-1(c)(1)) and the holding period (long iff the sale's trade
+date is after the acquisition's plus one calendar year).
+
+**Tier 2: `SchwabTransactionsConnector`** (`schwab_transactions`, in
+`dskit/onboarding/libs/schwab.py`, `_NOUN` "Schwab transactions"). Knobs:
+`start` (ISO date, REQUIRED), `types` (default `["TRADE"]`, Schwab's closed
+vocabulary), `asset_types` (default `["EQUITY"]`: which instruments become rows;
+ETFs may arrive as `COLLECTIVE_INVESTMENT`), `window_days` (default 365, at most
+365) and the shared OAuth/transport knobs. Accounts come from the shared
+`_hashes` (moved to the base); each account is pulled in windows of at most
+`window_days` from the cursor day (else `start`) to the pull instant; a window
+returning Schwab's 3,000-transaction cap refuses (truncation). Stream `trades`,
+one row per kept transfer item: account (`hashValue`), transaction_id
+(`activityId`), trade_date (the date of `tradeDate` in its own offset), symbol,
+asset_type, quantity (`amount`, signed: + buy / - sell), price, amount (the
+transaction's `netAmount`, signed cash, fees included; null when a transaction
+carries several kept items, since its cash cannot be split), position_effect.
+Key `(account, transaction_id, symbol)`; effective_date = trade_date; cursor =
+the latest trade_date seen, never moved back. The cursor day is re-requested in BOTH modes (a backfill
+that skipped it would lose a trade booked after an earlier same-day pull;
+dedup keeps one copy). Fee lines and items of other asset types are counted,
+never silently dropped: a LOG message and the stream's STATE entry
+(`last_pull`) carry the census. Unrecognised shape refuses by index.
+
+**Tier 1: `dskit/pipeline/tax_lots.py`** (by import path, stdlib + core, both
+`pure`). `TaxLots` (role transform): trade rows -> open lots per `key_fields`
+as of `as_of` (default the run's) by `method` (`fifo`; `LOT_METHODS` maps a
+name to a `LotOrder` whose one hook orders the open lots a sell consumes, so
+`hifo`/`lifo` are one entry each; anything else refuses). A buy's basis is
+`-amount` when `amount_field` is declared and the row's amount is not null,
+else quantity x price; a sell consumes lots in method order, splitting the
+last pro rata. Trades are processed by date then `order_field` (else input
+order); trades after `as_of` are counted, not used. A sell beyond the open
+quantity (missing history or a short sale) refuses by key unless
+`allow_incomplete`, when the key is flagged `history_incomplete` and ALL its
+lots withheld. Lot rows: the key fields, `lot_id` (`<key...>:<acquired>:<n>`,
+n the 1-based ordinal of that day's buys for the key), `acquired`, `quantity`,
+`basis`, `basis_per_share`. `LotPositions` (role transform): lots joined to the
+positions snapshot on `key_fields`; per lot the snapshot's `quantity_field`,
+`value_field` (= lot quantity x snapshot value / snapshot quantity) and
+`basis_field` (the lot basis) plus `lot_id`, `acquired` and declared
+`carry_fields`. A snapshot key whose lots' total differs from its quantity by
+more than `tolerance` (default 0; share float noise below `QUANTITY_RTOL` is
+equality), or which has no lots, refuses unless `allow_incomplete`, when its
+aggregate row passes through with `lot_id` `<key...>:aggregate` and a null
+`acquired` (LiquidationTax's `default_holding`). Lots for keys the snapshot
+does not carry are counted (`unpositioned`); the summary reports each key's
+`basis_gap` (lot basis - position basis), the check that FIFO matches the
+broker's books.
+
+**`DecisionOutcomes`** gains optional `match_fields` (a subset of `key_fields`,
+default all): decisions are keyed per lot (account, symbol, lot_id), the later
+snapshot is matched on account + symbol, and growth stays per share.
+
+**Child.** `run-hold-vs-redeploy.json`: `trades` (ObservationRows, source
+`schwab_trades` — one alias is one connector — stream `trades`) -> `lots`
+(TaxLots, fifo, `as_of` = the snapshot day) -> `lot_positions` (with
+`$snapshot.records`) -> `tax` (`acquired_field: "acquired"`) -> decide ->
+summary and writers keyed by `lot_id`; `run-decision-outcomes.json` keys
+decisions on account + symbol + lot_id and matches on account + symbol. Config
+tests pin `tax.as_of == lots.as_of ==` the snapshot day and the two
+`allow_incomplete` equal; the aggregate path stays available by pointing
+`tax.inputs.records` at `$snapshot.records` and dropping `acquired_field`.
+
+**Files.** `dskit/onboarding/libs/schwab.py`, `dskit/onboarding/connector.py`,
+`tests/onboarding/test_schwab_transactions.py`; `dskit/pipeline/tax_lots.py`,
+`tests/pipeline/test_tax_lots.py`; `dskit/pipeline/decision_outcomes.py` and its
+test; the two child documents, `tests/test_configs.py`,
+`tests/test_hold_vs_redeploy.py`; the onboarding and pipeline README and
+CLAUDE.md (+ AGENTS mirrors), the child README, lane note and memo.
+
+**Deferred.** `hifo` / `lifo` / `average` methods (average cost is Schwab's
+default for RIC ETFs in accounts opened before October 2024: the owner declares
+the election); the calendar-year holding rule in `LiquidationTax` (366 days is
+off by one day when the year spans 29 February); short sales and buy-to-cover;
+splits, spin-offs, transfers-in (RECEIVE_AND_DELIVER) and reinvestments outside
+TRADE, each caught by the reconciliation rather than modelled; a days-to-long-term
+figure per lot; a lot-detail CSV export as a second lot source (TaxLots reads
+it by field name already).
+
+Sweep: tools/sweep/sweep SchwabTransactionsConnector schwab_transactions
+transactions TRADE_STREAM trades tax_lots TaxLots LotPositions lot_positions
+lot_id fifo hifo lifo lot_ledger lot_method history_incomplete allow_incomplete
+match_fields carry_fields window_days asset_types LOT_METHODS TRADE_FIELDS
+QUANTITY_RTOL basis_gap unpositioned format_lot_id TRANSACTION_STREAM
+TRANSACTION_FIELDS TRANSACTION_KEY_FIELDS TRANSACTION_TYPES INSTRUMENT_ASSET_TYPES
+POSITION_EFFECTS MAX_TRANSACTIONS DEFAULT_WINDOW_DAYS LotOrder FifoOrder
+AGGREGATE_LOT LOT_FIELDS; no near matches (`carry_fields` is the numpy pack's
+existing name for the same idea, reused; `TRADE_STREAM` / `TRADE_FIELDS` exist in
+`kalshi_history`, unrelated, so the new constants are named `TRANSACTION_*`).
+
+#### ADR-0279 amendment: tax lots, Sonnet round 1 corrections (2026-10-28)
+
+Round 1 of the review on branch `schwab-tax-lots`: one Major, eight Minors and three
+Nits, all fixed. No new capability; the contracts above are tightened as follows.
+
+**Major: the account was never tested as part of the key.** `TaxLots` and
+`LotPositions` key on `key_fields` (account + symbol), but every fixture held one
+account. New tests hold the same symbol in A1 and A2 with different buys and sells (a
+shared purchase day numbers `:1` in each key; a sale covered only by the other
+account's shares refuses naming `A2:VTI`, or withholds only A2 under
+`allow_incomplete`; snapshot quantities swapped between the accounts, whose totals
+agree, refuse; a position never borrows another account's lots; a lot is valued at its
+own position's price; each account's lots are taxed by their own date and basis). The
+child e2e gains an A2 holding (8 VTI bought with a 4.00 commission, 3 sold: one lot,
+5 sh, basis 1524 x 5/8 = 952.5, long, tax 297.5 x .238 = 70.805), a refusal for an A2
+sale only A1's shares could cover, and the scoring run matches A2 to its own later row
+(260 / 250, not A1's 275 / 250). Pooling lots by symbol only was shown to fail them in
+a scratch copy, once in the replay and once in the join (8 and 7 unit, 6 and 5 child
+tests red).
+
+**`TaxLots`.** (1) `amount_field`, when declared, must be a key of EVERY trade: an
+absent key refuses by row (a misspelt name used to read as all-null and turn every
+buy's cash into quantity x price); a null still falls back, and the summary counts the
+replayed buys that fell back under `amount_fallbacks` (null when no `amount_field`).
+(2) `order_field` becomes `order_fields`, a non-empty list of distinct names (the rule
+is `decision_outcomes.check_field_list_param`, the owner under `check_key_fields_param`):
+a day replays by day, then each field in turn, then input order, so a same-day buy
+precedes its sale by time whatever the ids; each field's values must be one type.
+(3) A trade dated ON `as_of` is replayed and only a later one is excluded (`day >
+as_of`); the boundary is now pinned by a test, read from the finding's "(`>` not `>=`)"
+rather than its "excluded". (4) Wash sales are not modelled
+(a disallowed loss would raise the new lot's basis and tack the old holding period): a
+wash-sale account, like an average-cost one, shows as a `basis_gap`.
+
+**`LotPositions`.** The summary gains `basis_gap_max` (the largest |gap|, null when
+nothing reconciled) and a gap beyond `BASIS_RTOL` (1e-9 of the position's basis, float
+noise) logs one warning with the count and the largest on its key.
+
+**`schwab_transactions`.** (1) `time` joins `TRANSACTION_FIELDS`: the transaction's
+`time` string exactly as Schwab writes it (ISO-8601, validated, not converted); a
+missing or non-ISO `time` refuses by index. (2) `status` must be `VALID`: a PENDING
+trade has not settled and an INVALID one was cancelled, so any other status refuses
+by index rather than becoming a lot. Consequence, disclosed: an INVALID transaction
+stays in Schwab's history and stops every pull whose window reaches it until `start`
+moves past it; a skip knob is an owner decision, not built. (3) The stream's STATE
+stores `start`; a later pull with a LOWER `start` clears the cursor and re-pulls from
+it (dedup keeps one copy); an equal or higher one resumes from the cursor; a stored
+`start` that is not an ISO date refuses. (4) The class docstring now separates what is
+REFUSED (shapes, statuses, the cap, a repeated key with different content) from what is
+ASSUMED and rests on the downstream reconciliation (the signed share count, the trade
+date's offset, the time order, history reach, shares moved outside `types`, the ETF
+asset type).
+
+**`DecisionOutcomes`.** One row is one decision, a lot when decisions are per lot, so
+the summary counts both ways: `scored`, `mean_surprise` and `by_decision` `count` /
+`mean_surprise` per row; `holdings`, `holding_mean_surprise` and `by_decision`
+`holdings` / `holding_mean_surprise` per holding (the `match_fields` key, each holding
+once with the mean surprise of its lots; the two agree without `match_fields`). The
+docstrings, `run-decision-outcomes.json` notes and the writer's `source` now say per lot,
+not per symbol.
+
+**Child.** `run-hold-vs-redeploy.json`: `lots.order_fields` is `["time",
+"transaction_id"]`; notes state the null-amount fallback, the wash-sale and
+average-cost basis gap and the status rule. The aggregate-path recipe now also sets
+`summary.key_fields` to `["account", "symbol"]` and, in the scoring document,
+`decisions.key_fields` to `["account", "symbol", "as_of"]`, `outcomes.key_fields` to
+`["account", "symbol"]` and drops `match_fields` (without them the summary and the
+scoring refuse: no `lot_id`); `tests/test_hold_vs_redeploy.py` runs the recipe on both
+documents. `tests/test_configs.py` pins `lot_positions.tolerance == 0.0` and every lots
+field (`amount_field` included) as one of `TRANSACTION_FIELDS`. A child test passes
+lots 365 and 366 days old through the shipped lots, join and tax nodes: with
+`long_term_days` 366 the first is short, the second long. The README states that
+`PositionSummary`'s `positions`, `exit_positions` and `hold_positions` count lots.
+
+**Files.** `dskit/onboarding/libs/schwab.py`, `dskit/pipeline/tax_lots.py`,
+`dskit/pipeline/decision_outcomes.py`, their tests
+(`tests/onboarding/test_schwab_transactions.py`, `tests/pipeline/test_tax_lots.py`,
+`tests/pipeline/test_decision_outcomes.py`), the two child documents,
+`children/portfolio_policy/tests/test_configs.py` and `test_hold_vs_redeploy.py`, the
+onboarding and pipeline README, the pipeline CLAUDE.md (+ AGENTS mirror), the child
+README, lane note and memo.
+
+**Deferred.** A skip for an INVALID transaction; wash-sale modelling; UTC-normalising
+`time` (the string compare is exact while Schwab writes one offset, and a misorder
+that matters surfaces as an oversell refusal); everything in the earlier Deferred list.
+
+Sweep: tools/sweep/sweep order_fields amount_fallbacks basis_gap_max BASIS_RTOL
+check_field_list_param holding_mean_surprise; no near matches (`order_fields` is a
+common param name in other kinds, unrelated; `kinds_flow._field_list` is a private
+reader of a different rule: a bare string allowed, no distinctness, node refs).

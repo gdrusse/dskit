@@ -58,6 +58,10 @@ def test_exact_manifest_and_agent_parity(child_root):
         # Owner-requested broad/sparse saved-M53 development comparisons.
         "configs/source-mio-broad-2019.json", "configs/source-mio-broad-2019-admission.json",
         "configs/mio-2019-limited36.json", "configs/mio-2019-broad212.json", "configs/mio-2019-pins.json",
+        # Owner-authorized final result evidence; original study JSONs remain unchanged.
+        "configs/mio-2019-results-pins.json",
+        "docs/memos/2026-10-28-mio-2019-comparison.md",
+        "docs/memos/2026-10-28-mio-2019-comparison.csv",
         # The future schedule reference remains unadopted.
         "docs/plans/mio-json/study.json",
         "docs/plans/mio-json/plan.template.json",
@@ -644,7 +648,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # Exact approved inventory, including the prescription memos and 2020 evidence.
     # Four owner-requested, explicitly non-executable MIO JSON design files.
     # Five owner-authorized executable MIO 2019 warm-up packet files.
-    assert len(actual) == 794
+    assert len(actual) == 797
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
