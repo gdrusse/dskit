@@ -62,12 +62,58 @@ def test_source_sample_validates_against_the_connectors_spec():
 
 
 def test_decision_day_is_declared_once_per_document():
-    """The snapshot filter and the tax date name the same day: a mismatch would
-    tax one day's positions as of another, silently, once lots carry dates."""
+    """The snapshot filter, the tax date and the risk day name the same day: a mismatch would
+    tax one day's positions as of another, or price them with another day's risk, silently."""
     document = load_document(_path("run-hold-vs-redeploy.json"))
     where = {c["field"]: c["value"] for c in document.pipeline["snapshot"].params["where"]}
     assert document.pipeline["tax"].params["as_of"] == where["as_of"]
     assert where["asset_type"] == "EQUITY"
+    (risk_day,) = document.pipeline["risk_day"].params["where"]
+    # <=: a pull on the decision day has no closed bar for it, so the latest earlier session
+    assert risk_day == {"field": "ts", "op": "<=", "value": where["as_of"]}
+
+
+def test_the_risk_windows_declared_twice_agree():
+    """The windows live in risk_features; the field names they produce and the window columns
+    the risk file carries restate them, so a changed window must change every restatement."""
+    document = load_document(_path("run-hold-vs-redeploy.json"))
+    features = document.pipeline["risk_features"].params
+    latest = document.pipeline["risk_latest"].params["aggregates"]
+    fields = document.pipeline["risk"].params["fields"]
+    (vol_window,) = features["realized_vol"]["windows"]
+    beta_window = features["market_relative"]["beta_window"]
+    assert fields["vol_window"] == {"const": vol_window}
+    assert fields["beta_window"] == {"const": beta_window}
+    assert latest["daily_vol"]["field"] == features["realized_vol"]["field"].replace(
+        "{window}", str(vol_window))
+    assert latest["beta_raw"]["field"] == features["market_relative"]["beta_field"]
+    assert (vol_window, beta_window) == (252, 252), "one year of sessions (research A0003)"
+
+
+def test_the_risk_estimators_are_the_research_decision():
+    """Research A0003: annual volatility = daily RMS x sqrt(252 trading days); the beta that
+    prices the hold return is Blume-adjusted, raw - 0.33 x (raw - 1) = 0.67 x raw + 0.33."""
+    fields = load_document(_path("run-hold-vs-redeploy.json")).pipeline["risk"].params["fields"]
+    assert fields["annual_vol"] == {"op": "mul", "args": [
+        {"field": "daily_vol"}, {"op": "sqrt", "args": [{"const": 252}]}]}
+    assert fields["beta"] == {"op": "sub", "args": [
+        {"field": "beta_raw"},
+        {"op": "mul", "args": [{"const": 0.33},
+                               {"op": "sub", "args": [{"field": "beta_raw"}, {"const": 1}]}]}]}
+
+
+def test_the_betas_and_volatilities_are_wired_never_typed():
+    """No hand beta table ships: the hold returns read the risk chain's adjusted betas, and the
+    summary its annual volatilities. The hand `betas` param stays a fallback of the kind only."""
+    pipeline = load_document(_path("run-hold-vs-redeploy.json")).pipeline
+    assert "betas" not in pipeline["betas"].params
+    assert "default_beta" not in pipeline["betas"].params
+    assert pipeline["betas"].inputs["betas"] == "$risk_betas.table"
+    assert pipeline["risk_betas"].params == {"key": "symbol", "value": "beta"}
+    assert pipeline["summary"].inputs["volatilities"] == "$vols.table"
+    assert pipeline["vols"].params == {"key": "symbol", "value": "annual_vol"}
+    assert pipeline["bars"].params["source"] == "schwab_daily"
+    assert pipeline["bars"].params["key_fields"] == ["symbol", "ts"]
 
 
 def test_market_horizon_is_the_decision_horizon():
@@ -92,7 +138,7 @@ def test_summary_restates_the_decision_terms_exactly():
     assert summary["symbol_field"] in summary["key_fields"]
 
 
-@pytest.mark.parametrize("writer", ["decisions", "summaries"])
+@pytest.mark.parametrize("writer", ["decisions", "summaries", "risks"])
 def test_the_run_writers_never_overwrite(writer):
     """Each run writes its own file (ADR-0247); a writer allowed to overwrite could replace the
     rows a later run reads or a past run's evidence, silently, so the document pins it off."""

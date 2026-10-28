@@ -34003,8 +34003,9 @@ Volatility: zero-mean RMS of 252 daily log returns `x sqrt(252)` (the existing
   session date strictly before the pull's New York date; today's candle is never emitted.
   Backfill resumes the day after the cursor (the last emitted session); live re-requests
   `overlap_days` calendar days before it, so late corrections land as new bitemporal
-  evidence. The one-minute pack's behaviour is unchanged; the symbols check and the
-  candles-list check move to shared helpers with the same messages.
+  evidence. The one-minute pack's behaviour is unchanged; its symbols check, non-object
+  and candles-list checks and `read` argument guards move to shared helpers with the same
+  messages. Tests: `tests/onboarding/test_schwab_daily.py`.
 - `dskit/pipeline/kinds_flow.py`: `DateOrderedGroupBy`, a `GroupBy` subclass by import
   path (not registered) whose `order_field` holds ISO `YYYY-MM-DD` dates
   (`document.date_problem`, the one date rule) instead of numbers; only the `_instant` hook
@@ -34012,11 +34013,14 @@ Volatility: zero-mean RMS of 252 daily log returns `x sqrt(252)` (the existing
   before the snapshot day, and a same-day pull has no closed bar on the snapshot day, so an
   equality filter would match nothing; "last row per symbol by date" is generic, and the
   registered `groupby` refuses a date-text order on purpose (its test is unchanged).
+  Tests: `tests/pipeline/test_kinds_flow.py` (and the module's pinned `__all__` in
+  `test_kinds_banking.py`).
 - `dskit/pipeline/hold_return.py`: `BetaHoldReturns` gains an optional `betas` INPUT port
   (`{symbol: number}`) that replaces the now-optional `betas` param (mirroring
   `HoldVsRedeploy.hold_returns`): a wired `None` or non-number entry refuses, an unknown
   symbol still refuses unless `default_beta`, and the summary names `betas_source`
-  (`wired` | `param`). The hand table stays as the fallback.
+  (`wired` | `param`). The hand table stays as the fallback. Tests:
+  `tests/pipeline/test_hold_return.py`.
 - `children/portfolio_policy/configs/run-hold-vs-redeploy.json` (option ii, one run does
   everything): `bars` (ObservationRows, source `schwab_daily`, stream `bars`, key
   `(symbol, ts)`) -> `benchmark` (filter symbol == SPY) -> `risk_features`

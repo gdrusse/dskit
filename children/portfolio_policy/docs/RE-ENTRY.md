@@ -1,65 +1,56 @@
 # RE-ENTRY — portfolio_policy
 
-Updated: 2026-10-27 by Claude Sonnet 5.5 (position-summary round 1). Rewritten whole at every `/wrap`;
-the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
+Updated: 2026-10-28 by Claude Opus 5.5 (risk inputs, branch `schwab-risk-inputs`). Rewritten
+whole at every `/wrap`; the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
 
-ADR-0279 base machinery is on `main`: tier-1 kinds by import path, all
-`pure` — `liquidation.py` (`LiquidationTax`, `HoldVsRedeploy`),
-`hold_return.py` (`MarketHoldReturn`, `BetaHoldReturns`),
-`active_hurdle.py` (`ActiveHurdle`), `decision_outcomes.py`
-(`DecisionOutcomes`); tier-2 `schwab_positions`; the child is JSON:
-`run-hold-vs-redeploy.json` (positions → equity longs → tax; market →
-betas; active_returns → hurdle; → decide → `decisions/<run>.jsonl`) and
-`run-decision-outcomes.json` (→ `outcomes/<run>.jsonl`). Review history:
-two skeptic lenses, then a Sonnet review/fix loop of four rounds (5 → 2 →
-1 → 0 Major; 0 Critical throughout), round 4 CLEAN on `75fe315`: 403
-dskit tests + 63 child tests green; mutation sweeps left no surviving
-refusal or hardcode in the ADR-0279 modules. Record and backlog:
-`docs/memos/2026-10-27-adr-0279-base-machinery.md`. No real Schwab pull
-yet; every rate in the documents is a placeholder, and
-`decide.risk_premium` 0.0 is one to set from the backtest's volatility.
+On `main`: ADR-0279 base machinery and `PositionSummary` (A0002), both review loops closed
+CLEAN. Branch `schwab-risk-inputs` (from `689b286`; committed, NOT lens-reviewed, NOT merged)
+removes the last hand inputs, research A0003 + ADR-0279 amendment "risk inputs from Schwab
+daily bars (approved by owner 2026-10-28)":
 
-In flight: branch `portfolio-summary` (Opus, research A0002 +
-`dskit/pipeline/position_summary.py`, `PositionSummary`: weight, expected
-return, beta, volatility (port only), embedded gain, tax cost, break-even
-return and opportunity cost per holding, one portfolio roll-up in `metrics`;
-the document's `summary` node writes `summary/<run>.jsonl`). `main`'s four
-Sonnet rounds are merged into it. Its own Sonnet loop: round 1 fixed 2 Major
-(loss and zero-basis rows, the break-even kinks; 304 dskit + 67 child tests
-green); round 2 review is next, and it stays off `main` until the loop is clean.
+- tier 2 `schwab_daily` (`SchwabDailyBarsConnector`): closed daily candles as `bars` keyed
+  `(symbol, ts)`, `ts` = the New York session date of Schwab's 00:00 Central stamp (a stamp
+  at or after 09:30 New York refuses); today's session never; backfill resumes after the
+  cursor, live re-requests `overlap_days` (5); one token with `schwab_positions`.
+- tier 1: `kinds_flow.DateOrderedGroupBy` (groupby ordered by ISO date, by import path);
+  `BetaHoldReturns` optional `betas` input port (`betas_source` in its summary).
+- child `run-hold-vs-redeploy.json`: bars -> benchmark (SPY) -> risk_features (252-session
+  zero-mean RMS vol, 252-session OLS beta) -> risk_day (`ts <=` the decision day) ->
+  risk_latest -> risk (x sqrt(252); Blume 0.67 raw + 0.33) -> vols / risk_betas ->
+  `betas.betas` and `summary.volatilities`; `risks` writes `risk/<run>.jsonl`. No beta is
+  typed; summary volatility and beta are non-null in the e2e.
+- README "First real run from Schwab" runbook and Limits.
 
 ## Next
 
-Merge `portfolio-summary` after its Sonnet loop is clean. Then the owner
-sets the decision document's placeholders (blocks, betas, tax rates — pinned
-pairs are tested — `trials`, `min_dsr`, `min_periods`, `risk_premium`, the
-snapshot day), chooses the backtest that feeds `active`/`returns`, and runs
-the README sequence for the first real snapshot + decision; record it with
-the `memo` skill.
+1. Two independent skeptic lenses on `schwab-risk-inputs` (contract: the session-date
+   mapping and closed rule, the `<=` risk day, the betas port refusals), then merge.
+2. Owner: the first real run from the README runbook, recorded with the memo skill. On
+   that first pull check a holding with a recent split (Schwab's adjustment is
+   undocumented), ETF / fund `asset_type`, and `risk/<run>.jsonl` `as_of`.
 
 ## Blocked / owner decisions
 
-- Volatility source for the summary: yahoo chart file per symbol vs Alpaca
-  daily bars; 252-day window on adjusted closes proposed (then wire
-  realized_vol -> filter -> ComputeFields -> keyby into `summary`).
-- Lot-level data: a Schwab lot CSV through `localfiles` (then declare
-  `acquired_field`) vs aggregate-only.
+- Document placeholders: market blocks, `risk_free`, tax rates, horizon, `trials`,
+  `min_dsr`, `min_periods`, `redeploy_cost`, `risk_premium` (pinned pairs are tested).
 - Which child's backtest feeds `active` / `returns`, and its honest `trials`.
-- Cadence: a weekly scheduled `pipeline run` vs a `dskit.production` serve
-  document (deferred: advisory, no order path).
+- Lot-level data (a Schwab lot CSV through `localfiles`) vs aggregate-only.
+- Cadence: a weekly scheduled `pipeline run` vs a serve document (deferred).
+- Deferred, owner may want: a staleness bound on the risk session; a default volatility
+  for a holding without a year of bars; split detection.
 
 ## Read first
 
-- `README.md`
+- `README.md` ("First real run from Schwab", Limits)
+- `docs/research/risk-inputs/2026-10-28-synthesis.md` (A0003)
+- `docs/architecture/decision-log.md` § ADR-0279 and amendments (last: risk inputs)
 - `docs/memos/2026-10-27-adr-0279-base-machinery.md`
-- `docs/architecture/decision-log.md` § ADR-0279 and amendments
-- `docs/research/hold-return/2026-10-27-synthesis.md`
-- `docs/research/position-summary/2026-10-27-synthesis.md`
 
 ## Do not
 
 - No live orders, ever (research child; decisions are advisory).
 - No real Schwab pull before the owner sets the document values.
-- Do not paste a return into either document: both arrive wired.
+- Do not type a beta or a return into the document: all arrive wired.
+- Do not change the decision day in one place only (three, pinned by a test).

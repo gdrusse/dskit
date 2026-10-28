@@ -8,15 +8,25 @@ for ``schwab_positions`` (the observations kind reads the root, never the
 connector). The expectations are worked by hand in this file from the rates the
 loaded documents declare, never from literals, so an owner replacing a
 placeholder keeps the suite green. With the placeholders shipped on 2026-10-27
-the same arithmetic gives, for VTI: tax 119, net 2381, hold_net 2680.58 against
-redeploy_net 3052.07, so ``exit``.
+and a beta of exactly 1 the same arithmetic gave, for VTI: tax 119, net 2381,
+hold_net 2680.58 against redeploy_net 3052.07, so ``exit``.
+
+A daily ``bars`` stream (``localfiles`` standing in for ``schwab_daily``) carries
+300 sessions of SPY, VTI and AAPL from a seeded one-factor process (see
+``_daily_bars``), ending the Friday before the decision day, as a pull on that
+Monday would. The betas that price the hold return and the volatilities in the
+summary come from it: checked loosely against the generator's known parameters,
+and exactly against a plain-Python recomputation from the written bars.
 """
 
 import json
+import math
 import os
+import random
 import subprocess
 import sys
 from dataclasses import replace
+from datetime import date, timedelta
 
 import pytest
 
@@ -63,6 +73,83 @@ ACTIVE = [0.01, -0.005, 0.02, 0.0, 0.015, -0.01, 0.005, 0.01, 0.012, -0.002, 0.0
 EMAX_5 = 0.39777384449675074
 HURDLE_PINS = {"min_periods": 12, "trials": 5, "min_dsr": 0.5}
 
+# Daily bars from a seeded one-factor process with a known truth. SPY's daily log return is
+# MU_M + SIG_M x z; a holding's is BETA x SPY's + SIG_E x z' (z, z' independent standard
+# normals from random.Random(SEED), drawn SPY first, then VTI, then AAPL, every session). So a
+# holding's beta is BETA and its zero-mean RMS a day is sqrt(BETA^2 (SIG_M^2 + MU_M^2) + SIG_E^2).
+SEED = 20251027
+MU_M, SIG_M = 0.0004, 0.01
+FACTORS = {"VTI": (1.0, 0.002), "AAPL": (1.3, 0.012)}       # symbol: (BETA, SIG_E)
+START_CLOSE = {"AAPL": 200.0, "SPY": 500.0, "VTI": 250.0}
+SESSIONS = 300
+# DECIDED is a Monday; a pull that day has no closed bar for it, so the last session is Friday's
+LAST_SESSION = "2025-10-24"
+TRADING_DAYS = 252   # the annualization factor of research A0003: trading days a year
+
+
+def _sessions():
+    """SESSIONS weekdays (no holidays: synthetic) ending on LAST_SESSION."""
+    days, day = [], date.fromisoformat(LAST_SESSION)
+    while len(days) < SESSIONS:
+        if day.weekday() < 5:
+            days.append(day.isoformat())
+        day -= timedelta(days=1)
+    return days[::-1]
+
+
+def _daily_bars():
+    """The bar rows, shaped like schwab_daily's: the close repeated as open/high/low."""
+    rng = random.Random(SEED)
+    closes, rows = dict(START_CLOSE), []
+    for index, day in enumerate(_sessions()):
+        if index:
+            market = MU_M + SIG_M * rng.gauss(0.0, 1.0)
+            moves = {"SPY": market}
+            for symbol, (beta, sig_e) in FACTORS.items():
+                moves[symbol] = beta * market + sig_e * rng.gauss(0.0, 1.0)
+            closes = {symbol: close * math.exp(moves[symbol]) for symbol, close in closes.items()}
+        rows += [{"symbol": symbol, "ts": day, "open": close, "high": close, "low": close,
+                  "close": close, "volume": 1e6, "trade_count": None, "vwap": None}
+                 for symbol, close in sorted(closes.items())]
+    return rows
+
+
+def _plain_risk(root, day):
+    """Each symbol's risk numbers at its latest session on or before ``day``, recomputed from
+    the WRITTEN bars in plain Python (no dskit): the zero-mean RMS of its last ``window`` daily
+    log returns x sqrt(252), and the OLS slope of those returns on SPY's over the same sessions,
+    Blume-adjusted 0.67 x raw + 0.33 (research A0003). The windows are the document's."""
+    features = _shipped(RUN_DOC, "risk_features")
+    vol_window = features["realized_vol"]["windows"][0]
+    beta_window = features["market_relative"]["beta_window"]
+    with open(root / "daily" / "bars.jsonl") as fh:
+        bars = [json.loads(line) for line in fh]
+    close = {(row["symbol"], row["ts"]): row["close"] for row in bars}
+    out = {}
+    for symbol in sorted({row["symbol"] for row in bars}):
+        days = sorted(ts for (s, ts) in close if s == symbol and ts <= day)
+
+        def returns(name, window, days=days):
+            last = days[-(window + 1):]
+            return [math.log(close[name, b] / close[name, a]) for a, b in zip(last, last[1:])]
+
+        own = returns(symbol, vol_window)
+        daily = math.sqrt(sum(r * r for r in own) / vol_window)
+        own, mkt = returns(symbol, beta_window), returns("SPY", beta_window)
+        mean_own, mean_mkt = sum(own) / beta_window, sum(mkt) / beta_window
+        raw = (sum((o - mean_own) * (m - mean_mkt) for o, m in zip(own, mkt))
+               / sum((m - mean_mkt) ** 2 for m in mkt))
+        out[symbol] = {"as_of": days[-1], "daily_vol": daily,
+                       "annual_vol": daily * math.sqrt(TRADING_DAYS),
+                       "beta_raw": raw, "beta": 0.67 * raw + 0.33}
+    return out
+
+
+def _held_betas(root):
+    """The adjusted betas of the two decided holdings, from the plain recomputation."""
+    risk = _plain_risk(root, DECIDED)
+    return {symbol: risk[symbol]["beta"] for symbol in ("VTI", "AAPL")}
+
 
 def _cli(cwd, *args):
     done = subprocess.run([sys.executable, "-m", "dskit.onboarding", *args], cwd=cwd,
@@ -78,16 +165,19 @@ def _jsonl(path, rows):
 
 @pytest.fixture
 def root(tmp_path):
-    """An onboarding root under ``tmp_path/ob``: two positions snapshots, the active series."""
-    data, active = tmp_path / "data", tmp_path / "active"
+    """An onboarding root under ``tmp_path/ob``: two positions snapshots, the active series and
+    the daily bars."""
+    data, active, daily = tmp_path / "data", tmp_path / "active", tmp_path / "daily"
     data.mkdir()
     active.mkdir()
+    daily.mkdir()
     _jsonl(data / "positions.jsonl", THEN + LATER)
+    _jsonl(daily / "bars.jsonl", _daily_bars())
     _jsonl(active / "returns.jsonl", [
         {"period": f"2025-W{i + 1:02d}", "net_return": v,
          "day": f"2025-{(i // 4) + 1:02d}-{(i % 4) * 7 + 1:02d}"}
         for i, v in enumerate(ACTIVE)])
-    for name in ("decisions", "outcomes", "summary"):
+    for name in ("decisions", "outcomes", "summary", "risk"):
         (tmp_path / name).mkdir()
     _cli(tmp_path, "init", "--root", "./ob")
     _cli(tmp_path, "register-source", "schwab", "--root", "./ob",
@@ -100,6 +190,11 @@ def root(tmp_path):
          "--config", json.dumps({"path": str(active), "effective_field": "day"}), "--activate")
     _cli(tmp_path, "acquire", "--root", "./ob", "--source", "active",
          "--stream", "returns", "--mode", "backfill")
+    _cli(tmp_path, "register-source", "schwab_daily", "--root", "./ob",
+         "--catalog-source", "schwab-daily-src", "--connector", "localfiles",
+         "--config", json.dumps({"path": str(daily), "effective_field": "ts"}), "--activate")
+    _cli(tmp_path, "acquire", "--root", "./ob", "--source", "schwab_daily",
+         "--stream", "bars", "--mode", "backfill")
     return tmp_path
 
 
@@ -121,30 +216,31 @@ def _shipped(path, node):
     return load_document(path).pipeline[node].params
 
 
-def _shipped_where(path, node, day):
+def _shipped_where(path, node, day, field="as_of"):
     """A shipped filter with only its date replaced, so every other clause (equities only,
     longs only) runs exactly as shipped."""
     where = _shipped(path, node)["where"]
-    return [{**clause, "value": day} if clause["field"] == "as_of" else clause for clause in where]
+    return [{**clause, "value": day} if clause["field"] == field else clause for clause in where]
 
 
-def _expected_rates():
-    """``(market, {symbol: rate})`` worked by hand from the decision document's declarations:
-    market = yield + growth + inflation + ((fair CAPE / CAPE) ** (1 / years) - 1);
-    symbol = risk_free + beta x (market - risk_free)."""
+def _expected_rates(betas):
+    """``(market, {symbol: rate})`` worked by hand from the decision document's declarations
+    and the given betas: market = yield + growth + inflation + ((fair CAPE / CAPE) ** (1 /
+    years) - 1); symbol = risk_free + beta x (market - risk_free)."""
     m, b = _shipped(RUN_DOC, "market"), _shipped(RUN_DOC, "betas")
     market = (m["dividend_yield"] + m["real_growth"] + m["inflation"]
               + (m["fair_cape"] / m["cape"]) ** (1.0 / m["reversion_years"]) - 1.0)
     return market, {symbol: b["risk_free"] + beta * (market - b["risk_free"])
-                    for symbol, beta in b["betas"].items()}
+                    for symbol, beta in betas.items()}
 
 
-def _decide(root):
+def _decide(root, risk_day=DECIDED):
     # twelve weekly returns stand in for a year: the shipped floor is 52 (one year), and the
     # E[max null Sharpe] worked below is for five trials of this series
     document = _load(RUN_DOC, str(root),
                      snapshot={"where": _shipped_where(RUN_DOC, "snapshot", DECIDED)},
-                     tax={"as_of": DECIDED}, hurdle=HURDLE_PINS)
+                     tax={"as_of": DECIDED}, hurdle=HURDLE_PINS,
+                     risk_day={"where": _shipped_where(RUN_DOC, "risk_day", risk_day, "ts")})
     result = run_document(document, asof=DECIDED, journal=False)
     assert result.state == "ran", (result.state, result.error)
     return result
@@ -153,10 +249,15 @@ def _decide(root):
 def test_documents_are_valid_and_wire_their_stages():
     decide = load_document(RUN_DOC)
     assert list(decide.pipeline) == [
-        "positions", "snapshot", "tax", "market", "betas", "active_returns", "hurdle",
-        "decide", "decisions", "summary", "summaries"]
+        "positions", "snapshot", "tax", "market", "bars", "benchmark", "risk_features",
+        "risk_day", "risk_latest", "risk", "vols", "risk_betas", "risks", "betas",
+        "active_returns", "hurdle", "decide", "decisions", "summary", "summaries"]
     assert decide.pipeline["summary"].inputs == {"records": "$decide.records",
-                                                 "betas": "$betas.betas"}
+                                                 "betas": "$betas.betas",
+                                                 "volatilities": "$vols.table"}
+    assert decide.pipeline["betas"].inputs["betas"] == "$risk_betas.table"
+    assert decide.pipeline["risk_features"].inputs == {"bars": "$bars.records",
+                                                       "benchmark": "$benchmark.records"}
     where = decide.pipeline["snapshot"].params["where"]
     assert [clause["field"] for clause in where] == ["as_of", "asset_type", "long_quantity"]
     assert decide.pipeline["tax"].params["as_of"] == where[0]["value"]
@@ -169,6 +270,88 @@ def test_documents_are_valid_and_wire_their_stages():
     assert list(outcomes.pipeline) == ["decisions", "positions", "later", "outcomes", "scored"]
     assert outcomes.pipeline["outcomes"].params["key_fields"] == ["account", "symbol"]
     assert decide.hash and outcomes.hash
+
+
+def test_risk_inputs_from_daily_bars_end_to_end(root, monkeypatch):
+    """Volatility and beta per symbol, from the daily bars: near the generator's truth, and
+    exactly the plain-Python recomputation from the written bars; then wired into the hold
+    returns and written to risk/<run>.jsonl."""
+    monkeypatch.chdir(root)
+    result = _decide(root)
+    rows = {row["symbol"]: row for row in result.outputs["risk"]["records"]}
+    assert list(rows) == ["AAPL", "SPY", "VTI"]
+    plain = _plain_risk(root, DECIDED)
+    features = _shipped(RUN_DOC, "risk_features")
+    for symbol, row in rows.items():
+        # the decision day is a Monday with no closed bar yet: the latest session before it
+        assert row["as_of"] == plain[symbol]["as_of"] == LAST_SESSION
+        for field in ("daily_vol", "annual_vol", "beta_raw", "beta"):
+            assert row[field] == pytest.approx(plain[symbol][field], rel=1e-9), (symbol, field)
+        assert row["vol_window"] == features["realized_vol"]["windows"][0]
+        assert row["beta_window"] == features["market_relative"]["beta_window"]
+    # loosely, the generator's known truth (252 returns: about 4.5% relative error on a
+    # volatility, 0.01 / 0.08 on VTI's / AAPL's beta, so these bounds are 3 standard errors+)
+    truth_daily = {"SPY": math.sqrt(SIG_M ** 2 + MU_M ** 2)}
+    for symbol, (beta, sig_e) in FACTORS.items():
+        truth_daily[symbol] = math.sqrt(beta ** 2 * (SIG_M ** 2 + MU_M ** 2) + sig_e ** 2)
+    for symbol, daily in truth_daily.items():
+        # SPY 0.159, VTI 0.162, AAPL 0.281 a year
+        assert rows[symbol]["annual_vol"] == pytest.approx(daily * math.sqrt(TRADING_DAYS),
+                                                           rel=0.15)
+    assert rows["SPY"]["beta_raw"] == pytest.approx(1.0, abs=1e-12)    # SPY on itself
+    assert rows["VTI"]["beta_raw"] == pytest.approx(FACTORS["VTI"][0], abs=0.05)
+    assert rows["AAPL"]["beta_raw"] == pytest.approx(FACTORS["AAPL"][0], abs=0.25)
+    assert rows["AAPL"]["beta"] == pytest.approx(0.67 * rows["AAPL"]["beta_raw"] + 0.33)
+    # the adjusted betas price the hold return; the summary sees the same table
+    assert result.outputs["betas"]["betas"] == {
+        "VTI": pytest.approx(rows["VTI"]["beta"]), "AAPL": pytest.approx(rows["AAPL"]["beta"])}
+    assert result.outputs["vols"]["table"] == {s: row["annual_vol"] for s, row in rows.items()}
+    written = result.outputs["risks"]["path"]
+    assert os.path.dirname(os.path.abspath(written)) == str(root / "risk")
+    with open(written) as fh:
+        lines = [json.loads(line) for line in fh.read().splitlines()]
+    run_id = os.path.basename(result.run_dir)
+    assert lines == [{**row, "run_id": run_id} for row in result.outputs["risk"]["records"]]
+
+
+def test_the_risk_day_reads_no_later_session(root, monkeypatch):
+    """A risk day two sessions earlier reads that day's numbers: nothing after it is seen."""
+    monkeypatch.chdir(root)
+    earlier = _sessions()[-3]
+    result = _decide(root, risk_day=earlier)
+    rows = {row["symbol"]: row for row in result.outputs["risk"]["records"]}
+    plain, latest = _plain_risk(root, earlier), _plain_risk(root, DECIDED)
+    for symbol, row in rows.items():
+        assert row["as_of"] == earlier
+        assert row["annual_vol"] == pytest.approx(plain[symbol]["annual_vol"], rel=1e-9)
+        assert row["beta"] == pytest.approx(plain[symbol]["beta"], rel=1e-9)
+        assert row["annual_vol"] != pytest.approx(latest[symbol]["annual_vol"], rel=1e-9)
+
+
+@pytest.mark.parametrize("missing, message", [
+    ("AAPL", "no beta for symbol 'AAPL'"),               # the symbols forgot a holding
+    ("SPY", "betas input['AAPL'] must be a number, got None"),   # ... or the benchmark
+])
+def test_a_bars_pull_missing_a_symbol_stops_the_decision_by_name(root, monkeypatch, missing,
+                                                                  message):
+    """No default beta and no default volatility: what the bars cannot price refuses."""
+    monkeypatch.chdir(root)
+    lite = root / f"without-{missing}"
+    lite.mkdir()
+    _jsonl(lite / "bars.jsonl", [row for row in _daily_bars() if row["symbol"] != missing])
+    _cli(root, "register-source", "schwab_daily_lite", "--root", "./ob",
+         "--catalog-source", "schwab-daily-lite-src", "--connector", "localfiles",
+         "--config", json.dumps({"path": str(lite), "effective_field": "ts"}), "--activate")
+    _cli(root, "acquire", "--root", "./ob", "--source", "schwab_daily_lite",
+         "--stream", "bars", "--mode", "backfill")
+    document = _load(RUN_DOC, str(root),
+                     snapshot={"where": _shipped_where(RUN_DOC, "snapshot", DECIDED)},
+                     tax={"as_of": DECIDED}, hurdle=HURDLE_PINS,
+                     bars={"source": "schwab_daily_lite"},
+                     risk_day={"where": _shipped_where(RUN_DOC, "risk_day", DECIDED, "ts")})
+    result = run_document(document, asof=DECIDED, journal=False)
+    assert result.state != "ran"
+    assert message in str(result.error)
 
 
 def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
@@ -189,9 +372,10 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
     assert vti["liq_holding"] == holding
     assert vti["liq_tax"] == pytest.approx(liq_tax)
     assert vti["liq_net"] == pytest.approx(liq_net)
-    market, expected = _expected_rates()
+    market, expected = _expected_rates(_held_betas(root))
     assert result.outputs["market"]["rate"] == pytest.approx(market)
     rates = result.outputs["betas"]["rates"]
+    assert result.outputs["betas"]["summary"]["betas_source"] == "wired"
     assert rates["VTI"] == pytest.approx(expected["VTI"])
     assert rates["AAPL"] == pytest.approx(expected["AAPL"])
     # hurdle: (mean - E[max null Sharpe] x sd) x periods a year; admissible at the pinned dsr bar
@@ -266,7 +450,9 @@ def test_position_summary_end_to_end(root, monkeypatch):
     result = _decide(root)
     decide = _shipped(RUN_DOC, "decide")
     assert decide["redeploy_tax_timing"] == "annual", "this test works the annual path by hand"
-    betas = _shipped(RUN_DOC, "betas")["betas"]
+    risk = _plain_risk(root, DECIDED)
+    betas = {symbol: risk[symbol]["beta"] for symbol in ("VTI", "AAPL")}
+    vols = {symbol: risk[symbol]["annual_vol"] for symbol in ("VTI", "AAPL")}
     hurdle = result.outputs["hurdle"]["rate"]    # worked by hand in the end-to-end test above
     rates = result.outputs["betas"]["rates"]
     years = decide["horizon_years"]
@@ -283,8 +469,11 @@ def test_position_summary_end_to_end(root, monkeypatch):
     # expected return a year is the beta rate itself: (hold_value / value) ** (1 / H) - 1
     assert vti["expected_return"] == pytest.approx(rates["VTI"])
     assert aapl["expected_return"] == pytest.approx(rates["AAPL"])
-    assert (vti["beta"], aapl["beta"]) == (betas["VTI"], betas["AAPL"])   # wired, never restated
-    assert vti["volatility"] is None, "no price history is wired yet"
+    # wired from the daily bars, never restated: the plain-Python recomputation, exactly
+    assert (vti["beta"], aapl["beta"]) == (pytest.approx(betas["VTI"], rel=1e-9),
+                                           pytest.approx(betas["AAPL"], rel=1e-9))
+    assert (vti["volatility"], aapl["volatility"]) == (pytest.approx(vols["VTI"], rel=1e-9),
+                                                       pytest.approx(vols["AAPL"], rel=1e-9))
     assert vti["embedded_gain"] == pytest.approx(500.0 / 2500.0)         # (value - basis) / value
     assert aapl["embedded_gain"] == pytest.approx(150.0 / 600.0)
     assert vti["tax_cost"] == pytest.approx(worked["VTI"]["liq_tax"] / 2500.0)   # 119 / 2500
@@ -318,7 +507,7 @@ def test_position_summary_end_to_end(root, monkeypatch):
         (total["redeploy_net"] / total["hold_net"]) ** (1.0 / years) - 1.0)
     assert m["break_even_return"] == pytest.approx(
         _break_even(total["net"], total["hold_net"])["break_even"])
-    assert m["weighted_volatility"] is None
+    assert m["weighted_volatility"] == pytest.approx(sum(weights[s] * vols[s] for s in weights))
     assert (m["exit_positions"], m["hold_positions"]) == (
         sum(r["decision"] == "exit" for r in decided.values()),
         sum(r["decision"] == "hold" for r in decided.values()))
@@ -365,7 +554,7 @@ def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):
     decided_vti = {r["symbol"]: r for r in decided.outputs["decide"]["records"]}["VTI"]
     income = _shipped(OUTCOMES_DOC, "outcomes")["income_rate"]
     horizon = _shipped(RUN_DOC, "decide")["horizon_years"]
-    _, expected = _expected_rates()
+    _, expected = _expected_rates(_held_betas(root))
     elapsed = 365 / 365.25
     total = (decided_vti["hold_value"] / 2500.0) ** (1 / horizon)
     assert total == pytest.approx(1.0 + expected["VTI"])

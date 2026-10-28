@@ -885,11 +885,19 @@ they register only into private registries, never the default one.
   A0001, by import path): the market's expected nominal return as named blocks
   (dividend yield + real growth + inflation + `(fair_cape / cape) **
   (1 / reversion_years) - 1`), then `risk_free + beta x (market - risk_free)`
-  per symbol from a declared beta table; a symbol without a beta refuses
+  per symbol from a beta table, wired on the optional `betas` input (`{symbol:
+  number}`, from daily bars; it replaces the hand `betas` param, which is then
+  optional; a wired `None` or non-number entry refuses; the summary names
+  `betas_source`); a symbol without a beta refuses
   unless `default_beta` is declared. `horizon_years` (required, <= `reversion_years`,
   pinned to the decision's by the child's tests) keeps the drift from compounding
   past full reversion; any computed rate outside `RATE_BOUNDS` refuses. A
   `betas` output carries the beta each symbol was priced with.
+- `kinds_flow.DateOrderedGroupBy` (ADR-0279 amendment, by import path, not
+  registered): `groupby` whose `order_field` holds ISO `YYYY-MM-DD` dates
+  (`document.date_problem`) instead of numbers, so `filter` (`date <= day`) then
+  `last` reads each entity's latest daily row on or before a day; the registered
+  `groupby` keeps its numbers-only order.
 - `position_summary.py` (`PositionSummary`) (ADR-0279, research A0002, by import
   path): a `HoldVsRedeploy` run reduced to a few numbers. Per position: weight,
   expected return a year `(hold_value / value) ** (1/H) - 1`, volatility and beta
@@ -1082,7 +1090,8 @@ dskit/pipeline/
 │                      out-of-fold residual vectors (ADR-0155)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
-│                      weekday-onehot, attach-by-identity — record-flow verbs
+│                      weekday-onehot, attach-by-identity — record-flow verbs;
+│                      DateOrderedGroupBy (by import path): groupby ordered by an ISO date
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
@@ -1155,7 +1164,7 @@ dskit/pipeline/
 │                      owns the shared row readers (`require_rows` / `require_number` / `require_amount`) and `check_redeploy_params`;
 │                      `MAX_COUNT` (10**6) + `check_count_param`: the one ceiling of a count param; an acquisition date after `as_of` refuses
 ├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, `horizon_years` <= `reversion_years`, role data) + BetaHoldReturns
-│                      (risk_free + beta x (market - risk_free) per symbol, plus the `betas` used) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
+│                      (risk_free + beta x (market - risk_free) per symbol from the wired `betas` input or the hand table, plus the `betas` used) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
 │                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr), declared `min_periods` floor -> HoldVsRedeploy's `redeploy_return` port;
 │                      a constant series (spread within `stats.NO_VARIANCE_RTOL`) has no Sharpe and refuses

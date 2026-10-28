@@ -36,6 +36,7 @@ from dskit.pipeline.kinds_flow import (
     CLAUSE_OPS,
     AttachByIdentity,
     Concat,
+    DateOrderedGroupBy,
     Derive,
     EventGrid,
     Filter,
@@ -1270,6 +1271,62 @@ class TestGroupBy:
 # ---------------------------------------------------------------------------
 # keyby — records -> the keyed side table join reads (ADR-0086's pivot)
 # ---------------------------------------------------------------------------
+
+
+class TestDateOrderedGroupBy:
+    """GroupBy ordered by an ISO calendar date, by import path: the latest row per entity."""
+
+    ROWS = [
+        {"symbol": "B", "ts": "2026-10-20", "v": 2.0},
+        {"symbol": "A", "ts": "2026-10-22", "v": 3.0},
+        {"symbol": "A", "ts": "2026-09-30", "v": 1.0},
+        {"symbol": "A", "ts": "2026-10-21", "v": None},
+        {"symbol": "B", "ts": "2026-10-23", "v": 4.0},
+    ]
+
+    @staticmethod
+    def node(**over):
+        return DateOrderedGroupBy("latest", {
+            "keys": "symbol", "order_field": "ts",
+            "aggregates": {"as_of": {"op": "last", "field": "ts"},
+                           "v": {"op": "last", "field": "v"},
+                           "first_v": {"op": "first", "field": "v"}}, **over})
+
+    def test_last_and_first_follow_the_date_whatever_the_input_order(self, ctx):
+        out = self.node().run(ctx, {"records": self.ROWS})
+        assert out["records"] == [
+            {"symbol": "A", "as_of": "2026-10-22", "v": 3.0, "first_v": 1.0},
+            {"symbol": "B", "as_of": "2026-10-23", "v": 4.0, "first_v": 2.0},
+        ]
+        assert out["metrics"] == {"rows_in": 5, "groups": 2}
+        # a null cell is carried, never skipped: the latest row's value is what it is
+        rows = [*self.ROWS, {"symbol": "A", "ts": "2026-10-24", "v": None}]
+        assert self.node().run(ctx, {"records": rows})["records"][0]["v"] is None
+
+    def test_ties_on_one_date_resolve_by_input_order(self, ctx):
+        rows = [{"symbol": "A", "ts": "2026-10-22", "v": 1.0},
+                {"symbol": "A", "ts": "2026-10-22", "v": 2.0}]
+        assert self.node().run(ctx, {"records": rows})["records"][0]["v"] == 2.0
+
+    @pytest.mark.parametrize("bad", ["2026-10-22T00:00:00", "20261022", "2026-02-30",
+                                     "2026-10-22 ", 20261022, 1.5, None, True])
+    def test_an_order_value_that_is_not_an_iso_date_is_refused_by_name(self, ctx, bad):
+        rows = [{"symbol": "A", "ts": "2026-10-21", "v": 1.0}, {"symbol": "A", "ts": bad, "v": 2.0}]
+        with pytest.raises(ValueError, match=r"latest: order_field 'ts' .* row 1 holds .*"
+                                             r"not an ISO YYYY-MM-DD date"):
+            self.node().run(ctx, {"records": rows})
+
+    def test_it_declares_like_groupby_and_is_not_registered(self, ctx):
+        assert DateOrderedGroupBy.validate_params(
+            {"keys": "s", "aggregates": {"l": {"op": "last", "field": "x"}}}) == [
+            "order_field is required — aggregate(s) ['l'] take the FIRST or LAST row of a "
+            "group, and which row that is depends on an order the document has not named"]
+        with pytest.raises(ValueError, match="row 0 carries no 'ts'"):
+            self.node().run(ctx, {"records": [{"symbol": "A", "v": 1.0}]})
+        registry = register(NodeKindRegistry())
+        assert all(registry.get(kind)[0] is not DateOrderedGroupBy for kind in registry.kinds())
+        assert registry.get("groupby") == (GroupBy, False)   # numbers-only order, TestGroupBy
+        assert DateOrderedGroupBy.serving_effect({}, {}) == "pure"
 
 
 class TestKeyBy:

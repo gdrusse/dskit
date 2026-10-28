@@ -1,5 +1,8 @@
 """The record-flow kinds: filter, event-grid, concat, join, derive, groupby, keyby, weekday-onehot, attach-by-identity.
 
+:class:`DateOrderedGroupBy` (by import path, not registered) is ``groupby`` ordered by
+an ISO date instead of a number: the latest row per entity of a daily stream.
+
 Two verbs read a single stream; the RELATIONAL four combine, project or
 reduce streams instead of reading one. ``weekday-onehot`` (ADR-0214) is
 a pure per-row projection beside ``derive``: it adds the 0/1 weekday
@@ -87,6 +90,7 @@ __all__ = [
     "CLAUSE_OPS",
     "AttachByIdentity",
     "Concat",
+    "DateOrderedGroupBy",
     "Derive",
     "EventGrid",
     "Filter",
@@ -2246,6 +2250,47 @@ class GroupBy(Node):
             list(keys),
         )
         return {"records": out, "metrics": {"rows_in": len(records), "groups": len(out)}}
+
+
+class DateOrderedGroupBy(GroupBy):
+    """:class:`GroupBy` whose ``order_field`` holds ISO ``YYYY-MM-DD`` dates — by import path.
+
+    The registered ``groupby`` orders a group by NUMBERS and refuses date text on
+    purpose (a number is the one order every JSON row can carry unambiguously). A
+    daily stream is keyed by its session DATE, though, and "the latest row per entity
+    on or before a day" — a ``filter`` (``date <= day``) then ``last`` here — is the
+    as-of read a decision makes of it (ADR-0279 amendment, risk inputs). Everything
+    but the order rule is :class:`GroupBy`'s: params, the refusals, ``first`` /
+    ``last`` with ties resolved by input order, output sorted by key values. An
+    order value must be a real calendar date in the extended form
+    (:func:`~dskit.pipeline.document.date_problem`, the one date rule): a datetime,
+    ``20261022``, ``2026-02-30``, a number or ``None`` refuses by node, row and field.
+
+    Not registered; wired as ``dskit.pipeline.kinds_flow:DateOrderedGroupBy``.
+
+    Examples
+    --------
+    Each symbol's latest feature row::
+
+        node = DateOrderedGroupBy("latest", {
+            "keys": "symbol", "order_field": "ts",
+            "aggregates": {"as_of": {"op": "last", "field": "ts"},
+                           "vol": {"op": "last", "field": "vol_252"}}})
+        node.run(ctx, {"records": rows})["records"]
+        # -> [{"symbol": "AAPL", "as_of": "2026-10-22", "vol": 0.0171}, ...]
+    """
+
+    def _instant(self, field, index, row):
+        """One row's order value as a date, refusing anything that is not an ISO calendar date."""
+        value = self._cell(index, row, field)
+        if date_problem(value):
+            raise ValueError(
+                f"{self.key}: order_field {field!r} orders each group's rows by date, "
+                f"and row {index} holds {value!r} — that is not an ISO YYYY-MM-DD date "
+                "(document.date_problem), so which row is FIRST and which is LAST "
+                "cannot be answered"
+            )
+        return date.fromisoformat(value)
 
 
 class KeyBy(Node):

@@ -110,7 +110,49 @@ def test_beta_rates_by_hand(ctx):
     out = BetaHoldReturns("b", BETAS).run(ctx, {"records": ROWS, "market": 0.10})
     assert out["rates"] == {"VTI": pytest.approx(0.10), "AAPL": pytest.approx(0.112)}
     assert out["summary"] == {"stage": "beta hold returns", "symbols": 2,
-                              "market": 0.10, "risk_free": 0.04, "defaulted": []}
+                              "market": 0.10, "risk_free": 0.04, "defaulted": [],
+                              "betas_source": "param"}
+    assert out["betas"] == {"VTI": 1.0, "AAPL": 1.2}
+
+
+def test_a_wired_beta_table_replaces_the_param_by_hand(ctx):
+    # risk_free 0.04, market 0.10, excess 0.06: VTI 0.04 + 0.9 x 0.06 = 0.094 and AAPL
+    # 0.04 + 1.5 x 0.06 = 0.13, though the param says 1.0 and 1.2; SPY is in the table, not held
+    wired = {"VTI": 0.9, "AAPL": 1.5, "SPY": 1.0}
+    out = BetaHoldReturns("b", BETAS).run(ctx, {"records": ROWS, "market": 0.10, "betas": wired})
+    assert out["rates"] == {"VTI": pytest.approx(0.094), "AAPL": pytest.approx(0.13)}
+    assert out["betas"] == {"VTI": 0.9, "AAPL": 1.5}
+    assert out["summary"]["betas_source"] == "wired"
+    # the param is optional once the table is wired, and the same numbers come out
+    without = {k: v for k, v in BETAS.items() if k != "betas"}
+    assert BetaHoldReturns.validate_params(without) == []
+    again = BetaHoldReturns("b", without).run(ctx, {"records": ROWS, "market": 0.10,
+                                                    "betas": wired})
+    assert again["rates"] == out["rates"] and again["summary"]["betas_source"] == "wired"
+    with pytest.raises(ValueError, match="no betas param and no betas input"):
+        BetaHoldReturns("b", without).run(ctx, {"records": ROWS, "market": 0.10})
+
+
+def test_a_wired_beta_table_refuses_what_is_not_a_number_by_symbol(ctx):
+    node = BetaHoldReturns("b", BETAS)
+    for bad in (None, [1.0], "VTI", 1.0):
+        with pytest.raises(ValueError, match="betas input must be a {symbol: number} mapping"):
+            node.run(ctx, {"records": ROWS, "market": 0.10, "betas": bad})
+    for entry in (None, True, "1.0", float("nan"), float("inf")):
+        with pytest.raises(ValueError, match=r"betas input\['NEWCO'\] must be a number"):
+            node.run(ctx, {"records": ROWS, "market": 0.10,
+                           "betas": {"VTI": 1.0, "AAPL": 1.2, "NEWCO": entry}})
+    with pytest.raises(ValueError, match="betas input keys must be non-empty symbols"):
+        node.run(ctx, {"records": ROWS, "market": 0.10, "betas": {"VTI": 1.0, 5: 1.0}})
+    # a held symbol the wired table lacks still refuses, unless a default is declared
+    with pytest.raises(ValueError, match="row 1 has no beta for symbol 'AAPL'"):
+        node.run(ctx, {"records": ROWS, "market": 0.10, "betas": {"VTI": 1.0}})
+    out = BetaHoldReturns("b", {**BETAS, "default_beta": 1.0}).run(
+        ctx, {"records": ROWS, "market": 0.10, "betas": {"VTI": 0.9}})
+    assert out["rates"]["AAPL"] == pytest.approx(0.10) and out["summary"]["defaulted"] == ["AAPL"]
+    # and a wired beta is held to the same rate bound: 0.04 + 40 x 0.06 = 2.44 > 2
+    with pytest.raises(ValueError, match="rate for 'AAPL'.*outside"):
+        node.run(ctx, {"records": ROWS, "market": 0.10, "betas": {"VTI": 1.0, "AAPL": 40.0}})
 
 
 def test_beta_rates_follow_the_declared_risk_free_by_hand(ctx):
@@ -265,7 +307,7 @@ def test_the_count_ceiling_is_one_owner_inclusive_and_huge_ints_never_reach_run(
         MarketHoldReturn("m", {**MARKET, "reversion_years": 10 ** 400})
 
 
-BETAS_REQUIRED = ("risk_free", "betas", "symbol_field")
+BETAS_REQUIRED = ("risk_free", "symbol_field")
 BAD_BETAS = [
     ({"surprise": 1}, "unknown"),
     *[({"risk_free": bad}, "risk_free must be a number in") for bad in (7, -1.01, True, "x", None)],
