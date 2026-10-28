@@ -34553,3 +34553,179 @@ diagnostics. `OptionScenarioReprice` is unchanged.
 Sweep: tools/sweep/sweep filled_account fill_aware shock_admission postfill
 held_shock shock_scope; no near matches on 40 refs and 92 worktrees. Owners:
 `children/index_options/index_options/ledger_studies.py` and its tests.
+
+#### ADR-0278 amendment: one-day account mark and IV coverage (APPROVED 2026-10-28; proof-first build)
+
+**Authority and scope.** The owner chose the one-day mark/IV design track after the
+2019 wrap at `6f1b667bd0b329d21c6938699298cfa23f94afbf`. This entry is an
+owner-approved proof-first build contract; it does not authorize a new MIO
+market run or altering the terminal `filled_account` gate. Locked Path A0003 keeps 2019 as development; A0008
+keeps the saved zoo training sequence. Path and TDD stay unchanged. Work stays
+in an isolated WSL2 checkout and preserves the original 2019 JSON/CSV pins.
+
+**Evidence.** The existing `down_12_vol_up_15` scenario is -12% on each
+underlying, +0.15 absolute IV and one calendar day; it is a European Black-76
+model-mark diagnostic using same-date quoted IV, spot-as-forward and zero rate.
+On 2019-06-17 broad W1 plus shock, all three held books price: model equity
+$250,708.25 becomes $134,173.17, a $116,535.08 loss (46.48% of model equity,
+90.58% of $128,656.75 funding). Observed NBBO equity $251,622.80 is a
+different baseline. The new terminal `filled_account` gate does not bound
+this mark loss or retroactively alter the original eight runs.
+
+Of 1,124 active common-horizon weekly rows, 588 are complete and 536 are
+incomplete. Joining the pinned stress-books and stress-weekly-account CSVs by
+(cohort, method, date, scenario) gives 328 envelope-only incomplete rows, 153
+zero-IV-only rows, and 55 with both causes on different or multiple held books.
+For `down_12_vol_up_15`, only 123/281 active rows are complete (31/96
+limited36; 92/185 broad212). This is coverage, not a worst-loss estimate.
+The 814 envelope refusals comprise 300 baseline failures across 60 book-dates
+and 514 scenario-only failures. The 335 zero-IV case refusals trace to 47
+distinct source quotes; under the declared spot-as-forward proxy, 30 mids are
+below intrinsic, five at intrinsic and 12 above. Source zero semantics remain
+unknown. Exact originals: results-pins SHA-256
+`2bbd7e9247bf46c016745dde8436e9a7394e770e52031f9024baebd049fbf7d2`;
+limited36 task-index `ef5d81c40b5ea1fdac65adf1e235573db21fcbb2d6ff4ded83a61935a3b75448`,
+stress-books `51111d0c0625323bd729e4d7673a698cb08b4dce042191d9837c5d5fce200856`,
+weekly-account `ff82ccbd6139b11e7021ace41063ca8d41e54811d0c0d274b6b51d5a4b233c28`;
+broad212 task-index `e9b916a364da677cacee5564584a3fb18321d5c62592c95b31b6fa30aea08a01`,
+stress-books `375ff6a1ed93ee038e0f7c4f6ea1830acff67e8c1fdae89d15b0df7f60d31581`,
+weekly-account `a4be2e97c4358a1d1d60d5a96dc2522450435f9f1c5842de534d9d6a59f75993`.
+
+**Proposed diagnostic contract.** Reuse each existing actual-book stress JSON and
+its attested report. At a common date and one-day horizon, sum signed
+`scenario_value - base_value` over *every* open book; cash cancels, so
+model_baseline_equity = cash + sum(base_value) and scenario_equity = cash +
+sum(scenario_value). Report signed change and loss = max(0, -change), funding,
+loss/funding, loss/model-baseline-equity and loss/contributions, book
+contributions, source quote keys and the exact scenario. A ratio is null with
+a reason when its denominator is nonpositive. Never substitute fill credit, observed NBBO marks or terminal
+payoff for a refused model mark. The expiry shock stays per-book because expiries
+differ. A complete account number requires every open book to price under the
+same horizon. Cash-only is a separate status. Otherwise report incomplete,
+the unpriced book/leg IDs and *all* known causes, leave account mark totals
+blank, and exclude that row from any complete-case maximum or pass claim.
+Distinguish baseline refusal from scenario-only refusal. The zero-shock control
+must give zero change for a fully priced book.
+
+**IV rule.** Zero, missing, nonfinite or nonpositive source IV is unavailable,
+not zero volatility. A read-only audit of the 47 distinct pinned source rows
+(13 symbols) found positive bid, ask and mid on every row, IV exactly zero,
+nonzero delta, and zero gamma and vega. Both the vendor-underlying and
+bar-as-forward proxies leave 30 mids below intrinsic, five at and 12 above.
+The archive copies vendor implied_vol into implied_volatility and has a source
+date but no intraday quote timestamp; the reason for zero and intraday age
+remain unknown. Preserve the raw zero and the 335 original refusals. Do not invert mids, borrow adjacent
+quotes or invent IV. If an authoritative corrected source or a separately
+approved quote-derived-IV and forward policy is later established, create a
+new provenance-tagged, opt-in input and review its quote-arbitrage and timing
+checks; otherwise those rows remain incomplete.
+
+**Numeric rule.** The existing +/-3 standardized-moneyness guard and all other
+OptionScenarioReprice guards stay the legacy default. Simply removing the guard
+is unsupported: the ordinary double-precision CDF arithmetic can produce zero
+or negative far-tail option marks. A read-only 120-digit feasibility probe of
+all 814 refused configs found maximum absolute moneyness 38.9298 across their
+leg valuations (28.522 in the diagnosis is the maximum *first failing* leg).
+The shocked RIOT put in broad212 key
+00702-weekly_open_book-2019-05-13-RIOT-w1_003_component25_lp-up_10_vol_down_5
+has a positive reference mark about 1.91e-334 per unit, below binary64's
+smallest positive value; simply rounding it to zero would change the declared
+normal-range rule. This probe is not the required independent proof. A separate opt-in `numeric_policy="stable_tail_v1"` may be proposed in the generic tier-2 repricer only after an
+independent high-precision reference validates all 814 affected JSON inputs,
+both rights, long/short signs, the +/-3 boundary and adversarial far tails.
+The stable-tail branch must preserve nonnegative finite leg marks, put-call
+parity, the existing volatility-time/rate/gross/exposure limits and at most
+$0.005 error per full book baseline and scenario value versus the reference
+for the declared supported range. Its supported range must be explicit and
+refuse outside it; no default, implicit guard change or source-IV fallback.
+A positive mark below representable range remains refused unless a separate,
+explicitly approved certified-negligible-zero bound is proved; cent error
+alone cannot waive the legacy normal-range guard. No recovery count is promised.
+If this proof fails, retain the refusals. The opt-in moneyness limit is
+|z| <= 37; outside it the repricer refuses. Its two CDF tail probabilities
+must each remain in normal binary64 range, and each baseline/scenario book
+side must stay within a $0.0025 conservative dollar roundoff budget, computed
+from 1,000,000 binary64 epsilons times discounted OTM subtraction terms,
+any ITM intrinsic term, and absolute signed exposure. Both extra refusals
+are recorded; they do not change the legacy path.
+
+Independent pre-build validation used mpmath 1.3.0 at 120 decimal digits on
+all 814 pinned envelope-refused JSON configs: 3,270 leg marks and 1,628
+baseline/scenario book values. An erfc plus out-of-money-wing/parity candidate
+was within $0.005 on every book side; maximum observed absolute error was
+$1.3957032567e-10 on broad212 TTD key 00360 (2019-06-24). The sole input
+with |z| > 37 was the shocked RIOT put above, whose positive subnormal
+reference remains refused. Synthetic both-right boundary and far-tail checks
+covered |z| = 3, 8, 10, 20, 30, 37, 38 and 38.9298, with the latter two
+showing the representability limit. This validates the pinned packet and
+challenging boundary samples; it is not a proof of every possible book.
+A subsequent legal high-multiplier call (F=1e6, K=1003696.8164316323,
+vol=1e-4, one year, multiplier=1e306) exposed $15.32 error despite |z|<37
+and gross value below $1e9. A large put with a subnormal/zero CDF tail
+exposed an even larger error despite a normal final mark. Those cases
+require the dollar and normal-tail refusals above. With both guards, a
+read-only preflight still accepts 813 of the 814 original envelope cases;
+the RIOT subnormal case stays refused. This preflight is not a rerun or
+coverage result. A read-only Luna adversarial review then found a legal boundary put where
+`log(F)-log(K)` placed |z| just below 3 while Black-76's `log(F/K)` put it
+just above 3. The first opt-in implementation selected legacy CDF arithmetic
+without an error budget and accepted a $0.27924 full-book error against a
+160-digit reference. The correction selects the same log-ratio expression
+used by the price and applies the stable wing and dollar budget throughout
+the entire opt-in range, including inside |z|=3. A focused regression first
+failed on the counterexample, then passed with this correction. The unchanged
+legacy path keeps its prior calculation. A second read-only Luna pass verified
+the former counterexample now refuses and compared 836 accepted books from
+2,200 deterministic synthetic configs with direct 120-digit Black-76. It saw
+no full-book baseline/scenario error above $0.005; the maximum observed was
+$3.2459419134e-8. This is bounded sampling, not an exhaustive numerical
+proof. After the correction, focused pricing tests passed (177, six skipped),
+and the original 814-envelope preflight still accepted 813 opt-in cases while
+the subnormal RIOT case refused. No empirical stress rerun has occurred.
+
+**Execution and acceptance.** The 47-row read-only archive audit above is
+complete. The next bounded packet is an independent high-precision numeric
+reference plus source-semantics review from existing metadata; neither is an
+MIO run.
+After owner approval of a validated numeric policy, select affected cases
+from the pinned original task-index and config hashes and explicit envelope
+refusal reasons; never regenerate the original helper's index-ordered keys.
+The preflight candidates are 813 accepted numeric cases, with one RIOT case
+still refused; this is a candidate count, not empirical coverage. Use distinct
+JSON identities to rerun only eligible 2019 stress cases, attest reports,
+and pin each new attempt beside the original task-index/CSV hashes. Match
+weekly held books exactly once by `(cohort, method, date, scenario, group_id)`
+against the daily-account `open_ids`; source quote lineage is the pinned
+`(symbol, quote date, expiry, right, strike)` key for each config leg. Rebuild
+affected weekly aggregates from original priced reports plus new reports;
+preserve original rows, all known refusal causes and leg IDs, and disclose
+remaining incomplete coverage. The original daily-account CSVs are SHA-256
+`a3aa2a5e25a800eb8089cf5c5b1bbfe53f1394263a63eb51ab2cedd5e2f6da53`
+(limited36) and
+`244f188199dcfd9932441aebea04fe5572757fe6dfe69b3e16762a3aa2f60086`
+(broad212). Focused synthetic tests must
+cover exact/partial/cash-only aggregation, mixed IV+envelope causes, baseline
+versus scenario refusal, boundary, tail and subnormal-mark numerics, and
+June 17's unchanged three-book loss. They must also prove that an omitted numeric_policy preserves
+legacy config identity, output and +/-3 refusal; an opt-in JSON has a distinct
+identity; and an unknown policy value refuses. No 2020+ read, retraining, provider pull, optional hindsight,
+Path/TDD edit or full-suite run.
+
+**Admission boundary.** This proposal is diagnostic. A future opt-in one-day
+mark admission rule needs a separate owner-approved loss denominator/threshold
+and treatment of held-only breaches. It would need same-date IV at signal and
+next-session fill, all held books plus only quote/size-surviving fills, and
+fail-closed missing inputs; signal projections cannot count refused hedges.
+The current MIO run-local quote index omits implied_volatility, whereas the
+stress helper reads it from the pinned Parquet source. Date equality alone
+cannot establish that an IV was available by the signal or fill cutoff: any
+future admission use needs timestamp/cutoff-attested IV (or a trusted EOD
+ordering attestation), else it fails closed. That intake change and daily
+actions for an appreciated held book are outside this packet. An EOD admission
+gate alone cannot guarantee the June 17 loss stays under a limit.
+
+Sweep: `tools/sweep/sweep mark_stress one_day_mark iv_coverage numeric_policy
+scenario_coverage` (41 refs, 93 other worktrees); no near match for the proposed
+numeric policy. Two independent Luna design reviews reported C0/M0; three
+minor observations were addressed before the owner approved this ADR.
+Independent pinned-input and boundary numeric validation is complete.

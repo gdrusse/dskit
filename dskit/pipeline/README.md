@@ -306,7 +306,13 @@ standardized log-moneyness ≤3, absolute `rate * years` ≤10, and gross
 baseline/scenario model value ≤1e9 in the declared quote currency. Integer
 counts must be exactly representable (magnitude ≤2^53). These are numeric
 validity limits, not trading or margin thresholds. Subnormal levels, marks
-and exposures are refused as well.
+and exposures are refused as well. Optional `numeric_policy="stable_tail_v1"`
+uses an erfc out-of-money wing and parity throughout its explicit
+|standardized moneyness| ≤37 range. It also refuses subnormal normal-tail
+probabilities and books whose conservative dollar roundoff budget exceeds
+$0.0025 per baseline/scenario side. Omission retains the legacy output and identity;
+unknown policies refuse. The stable mode is still a hypothetical model mark
+and does not replace missing source IV.
 
 ADR-0276 adds `option_structures.classify_option_strategy(legs, strikes)` for
 post-solve labels of a same-underlying, same-expiry option book. It nets exact

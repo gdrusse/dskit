@@ -527,7 +527,6 @@ def test_sqlite_quote_index_matches_legacy_weekly_account(tmp_path):
     pq.write_table(pa.Table.from_pylist(original["X"]["chain"]), archive, row_group_size=2)
     node = _AllQuotedOptionContext("prepare", {**params["bridge"], "symbol": "X"})
     factors = {}
-    expiries = sorted({row["expiry"] for row in original["X"]["forecasts"]})
     descriptor = SQLiteParquetIndex.build(str(archive), str(tmp_path / "quotes.sqlite"),
         ["symbol", "date", "expiration", "type", "strike_raw", "strike", "bid", "ask",
          "bid_size", "ask_size", "basis_factor", "underlying_price"],
@@ -599,3 +598,109 @@ def test_filled_account_shock_packet_matches_direct_study(study):
     assert without_timing(actual) == without_timing(expected)
     assert actual["decisions"][0]["shock"]["scope"] == "filled_account"
     assert actual["decisions"][0]["shock_admission"]["status"] == "admissible"
+
+def test_stress_coverage_selects_only_pinned_envelope():
+    from index_options.mio_stress_coverage import select_numeric_jobs
+    envelope = "scenarios[0] cannot price leg 'leg_0': standardized moneyness is outside numeric envelope [-3, 3]"
+    jobs = [{"key": "one", "preflight_refusals": [envelope]},
+            {"key": "two", "preflight_refusals": ["missing_or_invalid_quote_iv_leg_0"]},
+            {"key": "three", "preflight_refusals": []},
+            {"key": "four", "preflight_refusals": [envelope, "missing_or_invalid_quote_iv_leg_0"]}]
+    assert [j["key"] for j in select_numeric_jobs(jobs)] == ["one"]
+
+
+def test_stress_coverage_exact_books_and_all_causes():
+    from index_options.mio_stress_coverage import aggregate_weekly
+    daily = {"cohort": "c", "method": "m", "date": "2019-06-17",
+             "open_ids": '["d:A:e", "d:B:e"]', "cash": "100", "funding": "200",
+             "contributions": "150", "equity": "240"}
+    rows = [
+        {"cohort": "c", "method": "m", "kind": "weekly_open_book", "date": daily["date"],
+         "scenario": "down_12_vol_up_15", "group_id": "d:A:e", "status": "priced",
+         "model_base_value_usd": "80", "scenario_full_value_usd": "30",
+         "reason": "", "key": "one"},
+        {"cohort": "c", "method": "m", "kind": "weekly_open_book", "date": daily["date"],
+         "scenario": "down_12_vol_up_15", "group_id": "d:B:e", "status": "priced",
+         "model_base_value_usd": "60", "scenario_full_value_usd": "20",
+         "reason": "", "key": "two"},
+    ]
+    result = aggregate_weekly(daily, "down_12_vol_up_15", rows)
+    assert result["status"] == "complete"
+    assert result["model_baseline_equity_usd"] == 240
+    assert result["hypothetical_scenario_equity_usd"] == 150
+    assert result["loss_usd"] == 90
+    assert result["loss_over_funding"] == .45
+    rows[1].update(status="refused", reason="missing_or_invalid_quote_iv_leg_1; "
+                   "scenarios[0] cannot price leg 'leg_0': standardized moneyness is outside numeric envelope [-3, 3]")
+    result = aggregate_weekly(daily, "down_12_vol_up_15", rows)
+    assert result["status"] == "incomplete"
+    assert result["model_baseline_equity_usd"] is None
+    assert set(result["refusal_causes"]) == {"source_iv_unavailable", "numeric_envelope"}
+    assert result["unpriced_books"][0]["group_id"] == "d:B:e"
+    with pytest.raises(ValueError, match="open_ids"):
+        aggregate_weekly(daily, "down_12_vol_up_15", rows[:1])
+    with pytest.raises(ValueError, match="duplicate"):
+        aggregate_weekly(daily, "down_12_vol_up_15", rows + rows[:1])
+    cash = {**daily, "open_ids": "[]"}
+    assert aggregate_weekly(cash, "down_12_vol_up_15", [])["status"] == "cash_only"
+
+def test_stress_coverage_keeps_new_numeric_refusal_cause():
+    from index_options.mio_stress_coverage import _causes
+    reasons = (_causes("scenarios[0] cannot price leg 'leg_0': standardized moneyness "
+                       "is outside numeric envelope [-3, 3]; scenarios[0] cannot price "
+                       "leg 'leg_0': standardized moneyness is outside stable-tail "
+                       "numeric range [-37, 37]"))
+    assert [(r["cause"], r["phase"], r["leg_id"]) for r in reasons] == [
+        ("numeric_envelope", "scenario", "leg_0"),
+        ("numeric_stable_range", "scenario", "leg_0"),
+    ]
+
+
+def test_stress_coverage_null_ratios_cash_expiry_and_pin_drift(tmp_path):
+    from index_options.mio_stress_coverage import CoverageDriver, aggregate_weekly
+    daily = {"cohort": "c", "method": "m", "date": "2019-06-17",
+             "open_ids": '["d:A:e"]', "cash": "0", "funding": "0",
+             "contributions": "0", "equity": "0"}
+    row = {"cohort": "c", "method": "m", "kind": "weekly_open_book",
+           "date": daily["date"], "scenario": "unchanged", "group_id": "d:A:e",
+           "status": "priced", "model_base_value_usd": "0",
+           "scenario_full_value_usd": "0", "reason": ""}
+    result = aggregate_weekly(daily, "unchanged", [row])
+    assert result["status"] == "complete"
+    assert result["loss_over_funding"] is None
+    assert result["loss_over_model_baseline_equity"] is None
+    assert result["loss_over_contributions"] is None
+    assert set(result["ratio_null_reasons"]) == {
+        "loss_over_funding", "loss_over_model_baseline_equity",
+        "loss_over_contributions"}
+    assert aggregate_weekly({**daily, "open_ids": "[]"},
+                            "expiry_down_15", [])["status"] == "cash_only"
+    root = tmp_path / "original"
+    root.mkdir()
+    pin = tmp_path / "pin.json"
+    pin.write_text("{}")
+    driver = CoverageDriver(root / "new", original_root=root, pin_path=pin,
+                            pin_sha256="0" * 64, expected_envelope=1,
+                            expected_eligible=1)
+    with pytest.raises(ValueError, match="results pin SHA-256"):
+        driver.originals("limited36")
+
+
+def test_stress_coverage_selection_rejects_duplicate_and_missing(tmp_path, monkeypatch):
+    from index_options.mio_stress_coverage import CoverageDriver
+    root = tmp_path / "original"
+    out = root / "new" / "limited36"
+    out.mkdir(parents=True)
+    driver = CoverageDriver(root / "new", root, tmp_path / "pin.json", "0" * 64, 2, 1)
+    monkeypatch.setattr(driver, "_input_hashes", lambda cohort: {"pin": "abc"})
+    selection = {"schema_version": 1, "cohort": "limited36",
+                 "original_results_pin_sha256": "0" * 64,
+                 "input_sha256": {"pin": "abc"},
+                 "jobs": [{"key": "x", "status": "eligible"}]}
+    (out / "selection.json").write_text(json.dumps(selection))
+    with pytest.raises(ValueError, match="coverage count"):
+        driver._selection("limited36")
+    selection["jobs"].append({"key": "x", "status": "opt_in_refused"})
+    (out / "selection.json").write_text(json.dumps(selection))
+    with pytest.raises(ValueError, match="duplicate selection"):
+        driver._selection("limited36")

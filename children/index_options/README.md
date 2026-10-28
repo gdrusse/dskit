@@ -610,6 +610,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258);
+                           # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate);
                            # theta_exact_expiry.py (ADR-0270: ThetaExactExpiryTables, the frozen Theta chains -> the
                            # exact-expiry surface, lifecycle, chain archive and own_iv series; no model)
                            # strike_region_scores.py (ADR-0270: StrikeRegionScores, saved CDFExperiment fits scored on fit and

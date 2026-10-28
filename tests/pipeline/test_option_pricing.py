@@ -355,6 +355,131 @@ def test_option_scenario_reprice_refuses_invalid_json_knobs(change, match):
     with pytest.raises(ConfigError, match=match):
         option_pricing.OptionScenarioReprice("stress", params)
 
+@pytest.mark.parametrize("right,strike,quantity,reference", [
+    ("call", 125.0, 1, 0.00007360156437444373),
+    ("put", 80.0, -1, 0.00005888125149955498),
+])
+def test_option_scenario_reprice_stable_tail_is_explicit_and_prices_both_rights(
+        right, strike, quantity, reference):
+    """High-precision Black-76 references at |z|=3.8917, outside legacy."""
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["legs"] = [{"name": "tail", "right": right, "strike": strike,
+                       "iv": 0.2, "days_to_expiry": 30,
+                       "quantity": quantity, "multiplier": 100}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    with pytest.raises(ConfigError, match="standardized moneyness"):
+        option_pricing.OptionScenarioReprice("stress", params)
+    params["numeric_policy"] = "stable_tail_v1"
+    report = option_pricing.OptionScenarioReprice("stress", params).run(None, {})["report"].value
+    assert report["numeric_policy"] == "stable_tail_v1"
+    assert report["base_value"] == pytest.approx(quantity * 100 * reference, rel=1e-8)
+    assert report["scenarios"][0]["pnl"] == 0.0
+
+
+def test_option_scenario_reprice_stable_tail_refuses_outside_range_and_underflow():
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["numeric_policy"] = "stable_tail_v1"
+    params["legs"] = [{"name": "far_put", "right": "put", "strike": 1.0,
+                       "iv": 0.5, "days_to_expiry": 4,
+                       "quantity": -40, "multiplier": 100}]
+    params["forward"] = 4.45
+    params["scenarios"] = [{"name": "riot_shock", "forward_return": 0.1,
+                            "iv_shift": -0.05, "days_elapsed": 1}]
+    with pytest.raises(ConfigError, match="stable-tail.*range"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+    params["forward"] = 1e-200
+    params["legs"] = [{"name": "unrepresentable", "right": "call",
+                       "strike": 1e-200 * math.exp(6), "iv": 0.2,
+                       "days_to_expiry": 365, "quantity": 1,
+                       "multiplier": 1}]
+    params["scenarios"] = [{"name": "unchanged"}]
+    with pytest.raises(ConfigError, match="model price"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_stable_tail_refuses_unresolved_dollar_scale():
+    """A representable tail can lose dollars after a huge position multiplier."""
+    params = {
+        "forward": 1e6, "rate": 0.0, "currency": "USD",
+        "year_basis_days": 365, "numeric_policy": "stable_tail_v1",
+        "legs": [{"name": "large_tail", "right": "call",
+                  "strike": 1003696.8164316323, "iv": 1e-4,
+                  "days_to_expiry": 365, "quantity": 1,
+                  "multiplier": 1e306}],
+        "scenarios": [{"name": "unchanged"}],
+    }
+    # 120-digit reference full value: $626,396,658.2815887. The unguarded
+    # binary64 erfc subtraction gives $626,396,673.6048335.
+    with pytest.raises(ConfigError, match="stable-tail.*dollar error"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+@pytest.mark.parametrize("forward,log_ratio,multiplier", [
+    (1e150, 110.7, 1e181),
+    (1e308, 110.99, 1e24),
+])
+def test_option_scenario_reprice_stable_tail_refuses_subnormal_cdf_probability(
+        forward, log_ratio, multiplier):
+    """A vanished wing term can hide millions after a large multiplier."""
+    params = {
+        "forward": forward, "rate": 0.0, "currency": "USD",
+        "year_basis_days": 365, "numeric_policy": "stable_tail_v1",
+        "legs": [{"name": "far_put", "right": "put",
+                  "strike": forward / math.exp(log_ratio), "iv": 3.0,
+                  "days_to_expiry": 365, "quantity": 1,
+                  "multiplier": multiplier}],
+        "scenarios": [{"name": "unchanged"}],
+    }
+    # The unguarded erfc path misses a subnormal or vanished CDF term
+    # while its final mark and gross book value appear valid.
+    with pytest.raises(ConfigError, match="stable-tail.*normal.*probability"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_stable_tail_refuses_boundary_budget_bypass():
+    """At z~3, log(F)-log(K) and log(F/K) straddle the old branch."""
+    params = {
+        "forward": 1.2531488658419908e149, "rate": 0.0, "currency": "USD",
+        "year_basis_days": 365, "numeric_policy": "stable_tail_v1",
+        "legs": [{"name": "boundary_put", "right": "put",
+                  "strike": 1.2527729775682982e149, "iv": 1e-4,
+                  "days_to_expiry": 365, "quantity": 1,
+                  "multiplier": 2.0884482066094767e-133}],
+        "scenarios": [{"name": "unchanged"}],
+    }
+    # A 160-digit independent reference is $1,000,000,000.0059262;
+    # the legacy branch accepts a mark $0.27924 lower with no error budget.
+    with pytest.raises(ConfigError, match="stable-tail.*dollar error"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
+def test_option_scenario_reprice_numeric_policy_identity_and_unknown_refusal():
+    from pathlib import Path
+    import json
+
+    from dskit.pipeline.document import PipelineDocument
+
+    path = Path(__file__).parents[2] / "children/index_options/configs/run-option-scenario-stress.json"
+    source = json.loads(path.read_text())
+    original_hash = PipelineDocument.from_obj(source).hash
+    assert original_hash == "ae6534afe4bbe52cf534d12efa882952a5beec2a11d74ed3aaf39fae652f2d95"
+    opted = copy.deepcopy(source)
+    opted["pipeline"]["scenario_stress"]["params"]["numeric_policy"] = "stable_tail_v1"
+    assert PipelineDocument.from_obj(opted).hash != original_hash
+
+    implicit = option_pricing.OptionScenarioReprice("stress", SCENARIO_BOOK).run(None, {})["report"].value
+    explicit_legacy = copy.deepcopy(SCENARIO_BOOK)
+    explicit_legacy["numeric_policy"] = "legacy"
+    assert option_pricing.OptionScenarioReprice("stress", explicit_legacy).run(
+        None, {})["report"].value == implicit
+
+    params = copy.deepcopy(SCENARIO_BOOK)
+    params["numeric_policy"] = "other"
+    with pytest.raises(ConfigError, match="numeric_policy"):
+        option_pricing.OptionScenarioReprice("stress", params)
+
+
 YEARS = 21 / 252
 
 #: (atm_ratio, put_skew_per_z, call_skew_per_z, smile_curvature).

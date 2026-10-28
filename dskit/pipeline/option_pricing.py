@@ -116,6 +116,32 @@ def black76(right, forward, strike, vol, years, rate=0.0):
     return discount * (strike * cdf(-d2) - forward * cdf(-d1))
 
 
+def _normal_tail(x):
+    """Return a normal upper tail, refusing CDF terms below normal range."""
+    value = 0.5 * math.erfc(x / math.sqrt(2.0))
+    if value < sys.float_info.min:
+        raise ValueError("stable-tail normal-tail probability is outside normal range")
+    return value
+
+
+def _black76_stable_tail(right, forward, strike, vol, years, rate):
+    """Price the out-of-money wing with erfc, then use parity for the other right."""
+    d1, d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
+    if forward >= strike:
+        first = strike * _normal_tail(d2)
+        second = forward * _normal_tail(d1)
+        out_put = math.fsum((first, -second))
+        price = out_put if right == "put" else math.fsum((forward - strike, out_put))
+        scale = first + second + (forward - strike if right == "call" else 0.0)
+    else:
+        first = forward * _normal_tail(-d1)
+        second = strike * _normal_tail(-d2)
+        out_call = math.fsum((first, -second))
+        price = out_call if right == "call" else math.fsum((strike - forward, out_call))
+        scale = first + second + (strike - forward if right == "put" else 0.0)
+    return discount * price, discount * scale
+
+
 def black76_delta(right, forward, strike, vol, years, rate=0.0):
     """Return the forward delta of a European option on a forward (Black 1976).
 
@@ -455,7 +481,10 @@ class OptionScenarioReprice(Node):
     at most 10. Baseline and scenario gross marks must each be at most 1e9
     quote-currency units; integer counts must fit exactly within 2^53.
     Subnormal price levels, marks and exposures are refused. A book outside
-    this numeric envelope is refused, not approximated.
+    this numeric envelope is refused, not approximated. An explicit
+    ``numeric_policy="stable_tail_v1"`` uses an erfc out-of-money wing and
+    put-call parity throughout its explicit |standardized moneyness| <= 37 range. Every
+    other guard and the omitted-policy legacy result stay unchanged.
 
     Parameters
     ----------
@@ -466,7 +495,9 @@ class OptionScenarioReprice(Node):
         ``currency`` is the three-letter quote currency for all legs;
         ``year_basis_days`` converts declared calendar days to Black-76 years;
         ``legs`` is a non-empty list of named signed option contracts;
-        ``scenarios`` is a non-empty list of named market shocks.
+        ``scenarios`` is a non-empty list of named market shocks. Optional
+        ``numeric_policy`` is ``"legacy"`` (the omitted default) or
+        ``"stable_tail_v1"``; other values refuse.
 
     Examples
     --------
@@ -482,7 +513,8 @@ class OptionScenarioReprice(Node):
 
     role = "transform"
     outputs = ("metrics", "report")
-    _PARAMS = ("forward", "rate", "currency", "year_basis_days", "legs", "scenarios")
+    _PARAMS = ("forward", "rate", "currency", "year_basis_days", "legs", "scenarios",
+               "numeric_policy")
     _LEG_KEYS = ("name", "right", "strike", "iv", "days_to_expiry",
                  "quantity", "multiplier", "notes")
     _SCENARIO_KEYS = ("name", "forward_return", "iv_shift", "days_elapsed",
@@ -495,6 +527,10 @@ class OptionScenarioReprice(Node):
     _MIN_TOTAL_VOL = 1e-4
     _MAX_TOTAL_VOL = 3.0
     _MAX_STANDARDIZED_MONEYNESS = 3.0
+    _MAX_STABLE_STANDARDIZED_MONEYNESS = 37.0
+    _NUMERIC_POLICIES = ("legacy", "stable_tail_v1")
+    _STABLE_ROUNDOFF_FACTOR = 1_000_000
+    _MAX_STABLE_SIDE_DOLLAR_BUDGET = 0.0025
     _MAX_DISCOUNT_EXPONENT = 10.0
     _MAX_GROSS_VALUE = 1e9
     _MAX_EXACT_INTEGER = 2 ** 53
@@ -586,6 +622,8 @@ class OptionScenarioReprice(Node):
         """Return a priced report or all structural problems before a run."""
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
+        if params.get("numeric_policy", "legacy") not in cls._NUMERIC_POLICIES:
+            problems.append(f"numeric_policy must be one of {cls._NUMERIC_POLICIES}")
         if not cls._numeric_ok(params.get("forward"), price_ok):
             problems.append("forward must be positive and finite")
         if not cls._numeric_ok(params.get("rate"), number_ok):
@@ -674,7 +712,7 @@ class OptionScenarioReprice(Node):
             mark = max(0.0, intrinsic)
             if mark != 0 and mark < cls._MIN_NORMAL:
                 raise ValueError("expiry model price is outside normal range")
-            return mark
+            return mark, 0.0
         # Volatility and discount are irrelevant at expiry. Validate and apply
         # those shocks only while the leg still has time value.
         rate_shift = shock.get("rate_shift", cls._SHOCK_DEFAULTS["rate_shift"])
@@ -696,21 +734,45 @@ class OptionScenarioReprice(Node):
         total_vol = vol * math.sqrt(years)
         if not cls._MIN_TOTAL_VOL <= total_vol <= cls._MAX_TOTAL_VOL:
             raise ValueError("volatility time scale is outside numeric envelope [1e-4, 3]")
-        standardized = (math.log(forward) - math.log(leg["strike"])) / total_vol
-        if not number_ok(standardized) or abs(standardized) > cls._MAX_STANDARDIZED_MONEYNESS:
-            raise ValueError("standardized moneyness is outside numeric envelope [-3, 3]")
+        policy = params.get("numeric_policy", "legacy")
+        # The opt-in price uses log(F/K). Use that same expression for its
+        # range check; log(F)-log(K) can cross a tight boundary differently.
+        standardized = ((math.log(forward / leg["strike"]) if policy == "stable_tail_v1"
+                         else math.log(forward) - math.log(leg["strike"])) / total_vol)
+        limit = (cls._MAX_STABLE_STANDARDIZED_MONEYNESS if policy == "stable_tail_v1"
+                 else cls._MAX_STANDARDIZED_MONEYNESS)
+        if not number_ok(standardized) or abs(standardized) > limit:
+            if policy == "legacy":
+                raise ValueError("standardized moneyness is outside numeric envelope [-3, 3]")
+            raise ValueError("standardized moneyness is outside stable-tail numeric range [-37, 37]")
         discount_exponent = rate * years
         if not number_ok(discount_exponent) or abs(discount_exponent) > cls._MAX_DISCOUNT_EXPONENT:
             raise ValueError("discount exponent is outside numeric envelope [-10, 10]")
         if (rate_shift != 0 and
                 math.exp(-discount_exponent) == math.exp(-params["rate"] * years)):
             raise ValueError("rate_shift is rounded away in the discount factor")
-        mark = black76(leg["right"], forward, leg["strike"], vol, years, rate)
+        if policy == "stable_tail_v1":
+            mark, scale = _black76_stable_tail(
+                leg["right"], forward, leg["strike"], vol, years, rate)
+        else:
+            mark = black76(leg["right"], forward, leg["strike"], vol, years, rate)
+            scale = 0.0
         if not price_ok(mark):
             raise ValueError("pre-expiry model price must be positive and finite")
         if mark < cls._MIN_NORMAL:
             raise ValueError("pre-expiry model price is outside normal range")
-        return mark
+        return mark, scale
+
+    @classmethod
+    def _stable_dollar_budget(cls, scales, exposures, label):
+        """Refuse a book whose tail cancellation may move a cent-scale value."""
+        budget = math.fsum(
+            scale * abs(exposure) * (cls._STABLE_ROUNDOFF_FACTOR * sys.float_info.epsilon)
+            for scale, exposure in zip(scales, exposures))
+        if not number_ok(budget) or budget > cls._MAX_STABLE_SIDE_DOLLAR_BUDGET:
+            raise ValueError(f"{label} stable-tail dollar error budget exceeds "
+                             f"{cls._MAX_STABLE_SIDE_DOLLAR_BUDGET}")
+        return budget
 
     @classmethod
     def _portfolio_total(cls, values, label):
@@ -739,7 +801,7 @@ class OptionScenarioReprice(Node):
     @classmethod
     def _evaluate(cls, params):
         """Use the same guarded arithmetic for constructor validation and run."""
-        baseline_marks, exposures, baseline_values = [], [], []
+        baseline_marks, baseline_scales, exposures, baseline_values = [], [], [], []
         for leg in params["legs"]:
             try:
                 exposure = float(leg["quantity"]) * float(leg["multiplier"])
@@ -747,20 +809,23 @@ class OptionScenarioReprice(Node):
                     raise ValueError("signed quantity × multiplier exposure is non-finite or zero")
                 if abs(exposure) < cls._MIN_NORMAL:
                     raise ValueError("signed quantity × multiplier exposure is outside normal range")
-                mark = cls._mark(params, leg, None)
+                mark, scale = cls._mark(params, leg, None)
                 value = cls._position_value(mark, exposure)
             except (OverflowError, ValueError, ZeroDivisionError) as exc:
                 raise ValueError(f"baseline cannot price leg {leg['name']!r}: {exc}") from exc
             baseline_marks.append(mark)
+            baseline_scales.append(scale)
             exposures.append(exposure)
             baseline_values.append(value)
         base_value = cls._portfolio_total(baseline_values, "baseline")
+        if params.get("numeric_policy", "legacy") == "stable_tail_v1":
+            cls._stable_dollar_budget(baseline_scales, exposures, "baseline")
         rows = []
         for index, scenario in enumerate(params["scenarios"]):
-            leg_rows, values = [], []
+            leg_rows, scales, values = [], [], []
             for leg, base_mark, exposure in zip(params["legs"], baseline_marks, exposures):
                 try:
-                    mark = cls._mark(params, leg, scenario)
+                    mark, scale = cls._mark(params, leg, scenario)
                     value = cls._position_value(mark, exposure)
                     mark_change = mark - base_mark
                     pnl = mark_change * exposure
@@ -770,9 +835,12 @@ class OptionScenarioReprice(Node):
                     raise ValueError(
                         f"scenarios[{index}] cannot price leg {leg['name']!r}: {exc}") from exc
                 values.append(value)
+                scales.append(scale)
                 leg_rows.append({"name": leg["name"], "base_mark": base_mark,
                                  "scenario_mark": mark, "pnl": pnl})
             value = cls._portfolio_total(values, f"scenarios[{index}]")
+            if params.get("numeric_policy", "legacy") == "stable_tail_v1":
+                cls._stable_dollar_budget(scales, exposures, f"scenarios[{index}]")
             pnl = math.fsum(row["pnl"] for row in leg_rows)
             if not number_ok(pnl):
                 raise ValueError(f"scenarios[{index}] portfolio P&L is non-finite")
@@ -783,11 +851,15 @@ class OptionScenarioReprice(Node):
         metrics = {"n_scenarios": len(rows), "base_value": base_value,
                    "worst_pnl": worst["pnl"],
                    "worst_loss": max(0.0, -worst["pnl"])}
-        return {"kind": "option_scenario_reprice", "decision_eligible": False,
-                "pricing": "black76_forward", "currency": params["currency"],
-                "basis": "model mid; excludes fills, fees, liquidity and margin",
-                "base_value": base_value, "worst_scenario": worst["name"],
-                "scenarios": rows, "metrics": metrics}
+        report = {"kind": "option_scenario_reprice", "decision_eligible": False,
+                  "pricing": "black76_forward", "currency": params["currency"],
+                  "basis": "model mid; excludes fills, fees, liquidity and margin",
+                  "base_value": base_value, "worst_scenario": worst["name"],
+                  "scenarios": rows, "metrics": metrics}
+        if params.get("numeric_policy", "legacy") == "stable_tail_v1":
+            report["numeric_policy"] = "stable_tail_v1"
+            report["pricing"] = "black76_forward_stable_tail_v1"
+        return report
 
     def run(self, ctx, inputs):
         """Return per-scenario, per-leg hypothetical USD P&L and worst loss.

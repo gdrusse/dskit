@@ -148,6 +148,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258)
+                           # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate);
                            # theta_hypotheses.py (ADR-0265 Amendment 5: generates the H0-H7 documents, their validation twins and the
                            # index-panel document from configs/theta-hypothesis-inputs.json; write | check | set-pin | freeze-universe)
                            # pooled.py (generates configs/run-pooled-zoo-417{,-folds}.json, workflow-pooled-zoo-417.json
