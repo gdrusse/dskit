@@ -10,6 +10,10 @@ time elapsed against the realized per-share growth, ``(later value / later
 quantity) / (value / quantity)``. Per-share, so a purchase or a sale between
 the two dates is not mistaken for a return; without a declared quantity field
 the value itself is the measure. ``surprise`` is realized minus projected.
+When decisions are finer than the snapshot (one per tax lot, keyed by account,
+symbol and lot id), ``match_fields`` names the subset of ``key_fields`` the later
+snapshot is keyed on: every lot of a position is scored against that position's
+later row, per share, and the outcome rows keep the full decision key.
 
 The two sides are not the same kind of return. ``hold_value`` is a TOTAL
 return forecast (price plus income), while a position's market value moves with
@@ -101,7 +105,10 @@ class DecisionOutcomes(Node):
     ----------
     params : dict
         ``key_fields`` (non-empty list of distinct field names, REQUIRED):
-        what identifies one position on both inputs; ``as_of_field``,
+        what identifies one decision, and one later position unless
+        ``match_fields`` is declared; ``match_fields`` (non-empty list of distinct
+        ``key_fields``, optional): what identifies one later position (account and
+        symbol for lot decisions); ``as_of_field``,
         ``value_field`` (field names, REQUIRED), shared by both inputs;
         ``quantity_field`` (field name, optional): the share count on both
         inputs, making growth per share; ``income_rate`` (number in
@@ -131,7 +138,8 @@ class DecisionOutcomes(Node):
     role = "transform"
     outputs = ("records", "summary")
 
-    _PARAMS = ("key_fields", "as_of_field", "value_field", "quantity_field", "income_rate")
+    _PARAMS = ("key_fields", "match_fields", "as_of_field", "value_field", "quantity_field",
+               "income_rate")
     _REQUIRED = ("key_fields", "as_of_field", "value_field", "income_rate")
 
     @classmethod
@@ -142,7 +150,15 @@ class DecisionOutcomes(Node):
         missing = sorted(set(cls._REQUIRED) - set(params))
         if missing:
             problems.append(f"missing required params {missing}")
-        check_key_fields_param(problems, params)
+        keys_ok = check_key_fields_param(problems, params)
+        if "match_fields" in params:
+            match, keys = params["match_fields"], params.get("key_fields")
+            if (not isinstance(match, list) or not match or not all(name_ok(m) for m in match)
+                    or len(set(match)) != len(match)
+                    or (keys_ok and not set(match) <= set(keys))):
+                problems.append(
+                    f"match_fields must be a non-empty list of distinct key_fields {keys!r}, "
+                    f"got {match!r}")
         for name in ("as_of_field", "value_field", "quantity_field"):
             if name in params and not name_ok(params[name]):
                 problems.append(f"{name} must be a non-empty field name, got {params[name]!r}")
@@ -150,12 +166,16 @@ class DecisionOutcomes(Node):
             check_number_param(problems, "income_rate", params["income_rate"], lower=0.0, upper=1.0)
         return problems
 
-    def _key(self, what, index, row):
-        """Return the row's key tuple; refuse a row missing any key field."""
+    def _match_fields(self):
+        """Return the fields one later position is keyed on: ``match_fields``, else ``key_fields``."""
+        return self.params.get("match_fields", self.params["key_fields"])
+
+    def _key(self, what, index, row, fields=None):
+        """Return the row's key tuple over ``fields`` (default ``key_fields``); refuse a missing one."""
         if not isinstance(row, dict):
             raise ValueError(f"{self.key}: {what} {index} must be a mapping, got {type(row).__name__}")
         key = []
-        for field in self.params["key_fields"]:
+        for field in fields or self.params["key_fields"]:
             value = row.get(field)
             if value is None or isinstance(value, (dict, list)):
                 raise ValueError(f"{self.key}: {what} {index} has no usable key field {field!r}")
@@ -195,7 +215,7 @@ class DecisionOutcomes(Node):
         as_of_field = self.params["as_of_field"]
         dates, rows = set(), {}
         for index, row in enumerate(positions):
-            key = self._key("position", index, row)
+            key = self._key("position", index, row, self._match_fields())
             if date_problem(row.get(as_of_field)):
                 raise ValueError(
                     f"{self.key}: position {index} field {as_of_field!r} is not an ISO date"
@@ -235,7 +255,8 @@ class DecisionOutcomes(Node):
                     f"{self.key}: decision {index} dated {decided} is not before the "
                     f"positions as_of {later_day}"
                 )
-            if key not in later:
+            match = self._key("decision", index, row, self._match_fields())
+            if match not in later:
                 unmatched.append(key)
                 continue
             horizon = self._positive(
@@ -262,7 +283,7 @@ class DecisionOutcomes(Node):
                     "a non-positive base has no growth path"
                 )
             projected = price_growth ** elapsed
-            position_index, position = later[key]
+            position_index, position = later[match]
             realized = self._per_unit("position", position_index, position) / then
             surprise = realized - projected
             decision = row.get("decision")

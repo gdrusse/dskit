@@ -401,3 +401,63 @@ def test_check_key_fields_param_is_the_one_key_fields_rule():
     # the node's own validation reports exactly this problem
     assert DecisionOutcomes.validate_params({**PARAMS, "key_fields": []}) == [
         "key_fields must be a non-empty list of distinct field names, got []"]
+
+
+LOT_PARAMS = {**PARAMS, "key_fields": ["account", "symbol", "lot_id"],
+              "match_fields": ["account", "symbol"]}
+# two lots of A1 VTI decided apart at 250 a share (the young lot exits, the old one holds), and
+# a lot of a holding the later snapshot no longer carries
+LOT_DECISIONS = [
+    {"account": "A1", "symbol": "VTI", "lot_id": "A1:VTI:2024-01-10:1", "as_of": "2026-10-27",
+     "market_value": 1500.0, "long_quantity": 6.0, "hold_value": 1800.0, "horizon_years": 5,
+     "decision": "hold"},
+    {"account": "A1", "symbol": "VTI", "lot_id": "A1:VTI:2026-07-01:1", "as_of": "2026-10-27",
+     "market_value": 1000.0, "long_quantity": 4.0, "hold_value": 1200.0, "horizon_years": 5,
+     "decision": "exit"},
+    {"account": "A1", "symbol": "MSFT", "lot_id": "A1:MSFT:2025-01-02:1", "as_of": "2026-10-27",
+     "market_value": 400.0, "long_quantity": 1.0, "hold_value": 480.0, "horizon_years": 5,
+     "decision": "hold"},
+]
+
+
+def test_lot_decisions_are_scored_against_their_position_per_share(ctx):
+    """Decisions keyed per lot, the later snapshot per position: each lot of A1 VTI is scored
+    against the one later A1 VTI row, per share (5500 / 20 = 275 over 1500 / 6 = 250: 1.1)."""
+    out = DecisionOutcomes("o", LOT_PARAMS).run(
+        ctx, {"decisions": LOT_DECISIONS, "positions": LATER})
+    old, young = out["records"]
+    assert (old["lot_id"], young["lot_id"]) == ("A1:VTI:2024-01-10:1", "A1:VTI:2026-07-01:1")
+    for row in (old, young):
+        assert (row["account"], row["symbol"]) == ("A1", "VTI")
+        assert row["realized_growth"] == pytest.approx(1.1)
+        # the same 1.2 x over five years as test_outcomes_by_hand: 1.024121 one year in
+        assert row["projected_growth"] == pytest.approx(1.024121, abs=1e-6)
+    assert (old["decision"], young["decision"]) == ("hold", "exit")
+    summary = out["summary"]
+    assert summary["scored"] == 2
+    assert summary["unmatched"] == [
+        {"account": "A1", "symbol": "MSFT", "lot_id": "A1:MSFT:2025-01-02:1"}]
+    assert summary["by_decision"]["exit"]["count"] == 1
+    # without match_fields the later snapshot is keyed on every key field, and lacks lot_id
+    with pytest.raises(ValueError, match="position 0 has no usable key field 'lot_id'"):
+        DecisionOutcomes("o", {k: v for k, v in LOT_PARAMS.items() if k != "match_fields"}).run(
+            ctx, {"decisions": LOT_DECISIONS, "positions": LATER})
+
+
+def test_the_later_snapshot_carries_each_match_key_once(ctx):
+    later = LATER + [{**LATER[0], "market_value": 1.0}]
+    with pytest.raises(ValueError, match=r"positions carry key \('A1', 'VTI'\) several times"):
+        DecisionOutcomes("o", LOT_PARAMS).run(ctx, {"decisions": LOT_DECISIONS, "positions": later})
+    # two decisions on one lot key still refuse: a lot is decided once
+    with pytest.raises(ValueError, match="decisions carry key .* several times"):
+        DecisionOutcomes("o", LOT_PARAMS).run(
+            ctx, {"decisions": LOT_DECISIONS + LOT_DECISIONS[:1], "positions": LATER})
+
+
+@pytest.mark.parametrize("bad", [[], "symbol", ["symbol", "symbol"], ["account", "as_of"], [5],
+                                 None])
+def test_match_fields_must_be_distinct_key_fields(bad):
+    problems = DecisionOutcomes.validate_params({**LOT_PARAMS, "match_fields": bad})
+    assert problems == [
+        f"match_fields must be a non-empty list of distinct key_fields {LOT_PARAMS['key_fields']!r}, "
+        f"got {bad!r}"]
