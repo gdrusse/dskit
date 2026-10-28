@@ -1,5 +1,5 @@
 {
-  "status": "prepared_not_executed",
+  "status": "development_running",
   "configs": {
     "source-mio-warmup-inputs.json": {
       "path": "/home/russell/wt/index-options-mio-schedule-20261027/children/index_options/configs/source-mio-warmup-inputs.json",
@@ -493,7 +493,449 @@
       "domain": "index_options_MIO"
     },
     "expected_revision": 30,
-    "frontier_before": 1
+    "frontier_before": 1,
+    "final_snapshot": {
+      "active": null,
+      "claims": {
+        "115bc9f8-225f-4f2c-bb3a-8905801f2e56": {
+          "execution": "ec479f52640da8d746fa127897b24fae13b54aab90e0faf6ad3e5e83ae30aa39",
+          "inputs": "c52dfd653669afdeaf5dbcfd4033569657618a877b9257a321c1e1fca5d4bbe6",
+          "permit": {
+            "classification": "development",
+            "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+            "freeze": {
+              "classification": "development",
+              "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+              "plan_sha256": "a7c71351b1c274ec6a48ec862200ec15bc11738e7ac3a014757300c6b47e74aa",
+              "predecessor": null,
+              "registry": {
+                "domain": "index_options_MIO",
+                "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+                "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+              },
+              "registry_revision": 12,
+              "sha256": "a0815a5802daf61e21cece3fb6f35af5866fc269e01315d542520b034f100d67"
+            },
+            "id": "115bc9f8-225f-4f2c-bb3a-8905801f2e56",
+            "packet_id": "dev_2020_0224_0309",
+            "plan_sha256": "a7c71351b1c274ec6a48ec862200ec15bc11738e7ac3a014757300c6b47e74aa",
+            "previous_frontier": 1,
+            "read_bounds": {
+              "bars": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              },
+              "chain": {
+                "end_before": "2020-04-24",
+                "start": "2020-02-24"
+              },
+              "contexts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "forecasts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "sessions": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              }
+            },
+            "registry": {
+              "domain": "index_options_MIO",
+              "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+              "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+            },
+            "registry_revision_after": 14,
+            "registry_revision_before": 13,
+            "sha256": "a0f92b5f891d168ebe5537e51622cb92fbeb15e785001bd01ef3385d87d441c5",
+            "source_pins_sha256": "12ea6bf2c156cc6e2988d051513f5a6b1f2f7337fc002b728de28bb2a43b629d"
+          },
+          "publication": {
+            "artifact_sha256": "68fcfa50407cb414401fbbf1fd20cf4a8967015097d9a22672190723cb817f3f",
+            "receipt": {
+              "document_hash": "c49246f310766bcbb9f8fb19755278c408846062953e34213c616e78503cdba4",
+              "node": "close_packet",
+              "port": "receipt",
+              "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/development/mio-development-2020-0224-2020-04-24-36a6e39e"
+            }
+          },
+          "result": "a2d1b97aa2aa70dfabfddd603e92f32257589848acc8ff9f1704950b66ff0f96",
+          "status": "reviewed_closed"
+        },
+        "6d0a6eaa-0827-4d1d-a36a-5432fd322485": {
+          "execution": "4788096cc72f2b779787dcd531e84e863a99c14a1c20219089f0586815dcd44c",
+          "inputs": "1748b2d1edfede51da242986175085955ecec312216af2b955c245eb34d36d78",
+          "permit": {
+            "classification": "development",
+            "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+            "freeze": {
+              "classification": "development",
+              "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+              "plan_sha256": "7a60eb4fc02e81c9ea12f9eac88355c70336880720ef9750cc3fc4bc48644764",
+              "predecessor": null,
+              "registry": {
+                "domain": "index_options_MIO",
+                "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+                "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+              },
+              "registry_revision": 0,
+              "sha256": "a9af1be549209a2fdab4365fc1a063d20d2ca339a677bf1f0d6fd050c8c54469"
+            },
+            "id": "6d0a6eaa-0827-4d1d-a36a-5432fd322485",
+            "packet_id": "dev_2020_0224_0309",
+            "plan_sha256": "7a60eb4fc02e81c9ea12f9eac88355c70336880720ef9750cc3fc4bc48644764",
+            "previous_frontier": 0,
+            "read_bounds": {
+              "bars": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              },
+              "chain": {
+                "end_before": "2020-04-24",
+                "start": "2020-02-24"
+              },
+              "contexts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "forecasts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "sessions": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              }
+            },
+            "registry": {
+              "domain": "index_options_MIO",
+              "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+              "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+            },
+            "registry_revision_after": 2,
+            "registry_revision_before": 1,
+            "sha256": "3bee838053dee15e69e3f97d1e5f50137e30f33a8ad8ad67f97caae13732c1bb",
+            "source_pins_sha256": "12ea6bf2c156cc6e2988d051513f5a6b1f2f7337fc002b728de28bb2a43b629d"
+          },
+          "result": "06fe88c34d543154a1ad4bd4615b1d81b8d7e2600db69330854602d606b5b8cf",
+          "status": "abandoned_exposed"
+        },
+        "a6b861ce-cd74-423d-83d9-845b529b0777": {
+          "execution": "2a5dc1bca4713e8cb25454d0255abc056e9d9954253b1b7212f28e545378913e",
+          "inputs": "c3c478eab24b2533d6cf511adcdbaff6e58d8a2786d3e40e268c9a09146d7006",
+          "permit": {
+            "classification": "development",
+            "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+            "freeze": {
+              "classification": "development",
+              "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+              "plan_sha256": "7417ff70b8990696c9ee7f7149cdb1aef11f1ae0e815ac6d525d2a9754327df0",
+              "predecessor": null,
+              "registry": {
+                "domain": "index_options_MIO",
+                "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+                "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+              },
+              "registry_revision": 18,
+              "sha256": "31ac14aed283b72891c332aceedb8ccc59170b7fc34e3225f5dae59bf7be939f"
+            },
+            "id": "a6b861ce-cd74-423d-83d9-845b529b0777",
+            "packet_id": "dev_2020_0224_0309",
+            "plan_sha256": "7417ff70b8990696c9ee7f7149cdb1aef11f1ae0e815ac6d525d2a9754327df0",
+            "previous_frontier": 1,
+            "read_bounds": {
+              "bars": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              },
+              "chain": {
+                "end_before": "2020-04-24",
+                "start": "2020-02-24"
+              },
+              "contexts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "forecasts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "sessions": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              }
+            },
+            "registry": {
+              "domain": "index_options_MIO",
+              "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+              "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+            },
+            "registry_revision_after": 20,
+            "registry_revision_before": 19,
+            "sha256": "f369a210badcd0dd6b0152ab3050a1492abd7055a851ff6130405921448d22a3",
+            "source_pins_sha256": "12ea6bf2c156cc6e2988d051513f5a6b1f2f7337fc002b728de28bb2a43b629d"
+          },
+          "publication": {
+            "artifact_sha256": "e808e6b1f3707525b2f1aed57622bfb88daef9eb8d1a5086e2de787a3feb9f8f",
+            "receipt": {
+              "document_hash": "53b88fb35d1d78233d9ac782b81834c05f19d673cc8d6d85c359cea41eda2614",
+              "node": "close_packet",
+              "port": "receipt",
+              "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/development/mio-development-2020-0224-2020-04-24-e5e885f3"
+            }
+          },
+          "result": "fe31ae28e81876738253da9d54504aa58fd79ab8345e3ff2043a25fd98e800a5",
+          "status": "reviewed_closed"
+        },
+        "ab5d9fc3-89fe-4784-89c8-ad8c9ffdea66": {
+          "execution": "9787fde7d386b35ad5aaf34c9b3efcfb4e65b483a8abbf6b38173232350b4d90",
+          "inputs": "a4faa8f76f0ff78dbafacb396bd01be17e787c41f7d18e2f0abb07608ebb2f67",
+          "permit": {
+            "classification": "development",
+            "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+            "freeze": {
+              "classification": "development",
+              "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+              "plan_sha256": "f73bc01b6586aa8231c6b6e82514e8f42cfebf300b48d0c08126c743de000451",
+              "predecessor": null,
+              "registry": {
+                "domain": "index_options_MIO",
+                "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+                "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+              },
+              "registry_revision": 6,
+              "sha256": "c590b53834bdb34ddedddb69c0fff7946f29f3cd2ad3398a7a007ede8fd07080"
+            },
+            "id": "ab5d9fc3-89fe-4784-89c8-ad8c9ffdea66",
+            "packet_id": "dev_2020_0224_0309",
+            "plan_sha256": "f73bc01b6586aa8231c6b6e82514e8f42cfebf300b48d0c08126c743de000451",
+            "previous_frontier": 1,
+            "read_bounds": {
+              "bars": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              },
+              "chain": {
+                "end_before": "2020-04-24",
+                "start": "2020-02-24"
+              },
+              "contexts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "forecasts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "sessions": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              }
+            },
+            "registry": {
+              "domain": "index_options_MIO",
+              "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+              "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+            },
+            "registry_revision_after": 8,
+            "registry_revision_before": 7,
+            "sha256": "45a45a54d6e518e01ad8c005ac184799a0523eea8af164d4b4a25b3b598a9d7f",
+            "source_pins_sha256": "12ea6bf2c156cc6e2988d051513f5a6b1f2f7337fc002b728de28bb2a43b629d"
+          },
+          "result": "25b41177a37516edf29c386138d7190e5b2b911edf770dde9314ed61505e7e24",
+          "status": "reviewed_closed"
+        },
+        "f0b539b1-3ebf-40e5-8d9e-c3767e23a4cb": {
+          "execution": "ea3b208ac7b9c4dd4c8d1d1dca390fddd8b759d9c41be001bc3a42229f9b96f5",
+          "inputs": "198cfdc54ca5ae6041c48752b149cfd43608042f2be0cea591e7a0b80258249b",
+          "permit": {
+            "classification": "development",
+            "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+            "freeze": {
+              "classification": "development",
+              "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+              "plan_sha256": "7d00e5f57e289c385a2f26010bfdd1112a125e0edb6ba2778b818e6c06b72ead",
+              "predecessor": null,
+              "registry": {
+                "domain": "index_options_MIO",
+                "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+                "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+              },
+              "registry_revision": 24,
+              "sha256": "58017b5fe908f9937d61a8555e21339c946bb4999b0c6740e9a460187c35b038"
+            },
+            "id": "f0b539b1-3ebf-40e5-8d9e-c3767e23a4cb",
+            "packet_id": "dev_2020_0224_0309",
+            "plan_sha256": "7d00e5f57e289c385a2f26010bfdd1112a125e0edb6ba2778b818e6c06b72ead",
+            "previous_frontier": 1,
+            "read_bounds": {
+              "bars": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              },
+              "chain": {
+                "end_before": "2020-04-24",
+                "start": "2020-02-24"
+              },
+              "contexts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "forecasts": {
+                "end_before": "2020-03-09",
+                "start": "2020-02-24"
+              },
+              "sessions": {
+                "end_before": "2020-04-24",
+                "start": "2019-11-22"
+              }
+            },
+            "registry": {
+              "domain": "index_options_MIO",
+              "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+              "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+            },
+            "registry_revision_after": 26,
+            "registry_revision_before": 25,
+            "sha256": "971b8e8ea9e8417723ba01c6a7a4b11012dc0bd5da77c37a0c13d69c6676aad8",
+            "source_pins_sha256": "12ea6bf2c156cc6e2988d051513f5a6b1f2f7337fc002b728de28bb2a43b629d"
+          },
+          "publication": {
+            "artifact_sha256": "8383406a047b72480db53969fe6ffba5f7e78946b9a82c413bf03010cd5c8bc5",
+            "receipt": {
+              "document_hash": "2feff9ed5bd47368005fdff70e850c968588c5f1ecf2762bfb155c477d04c73a",
+              "node": "close_packet",
+              "port": "receipt",
+              "run_dir": "/home/russell/data/index_options/mio-pipelines-20261027/development/mio-development-2020-0224-2020-04-24-535c4d43"
+            }
+          },
+          "result": "3d7791b21280e4fca9441b0bad519011df13b3a7a1c9f42993402261dc32104d",
+          "status": "reviewed_closed"
+        }
+      },
+      "development_import_reasons": {
+        "dev_2019_full_year_weekly": "Owner selected the full 2019 weekly development window; preserve registry history, all 2020 exposure and the fresh frontier."
+      },
+      "development_imports": [
+        "dev_2019_full_year_weekly"
+      ],
+      "dispositions": {
+        "dev_2020_0224_0309": {
+          "action": "review",
+          "claim": "f0b539b1-3ebf-40e5-8d9e-c3767e23a4cb",
+          "packet_id": "dev_2020_0224_0309",
+          "reason": "Engineering review only: reran the same already-exposed 2020 development window after final implementation identity change; all four methods completed and exactly replayed. No research promotion or fresh packet.",
+          "revision": 29,
+          "sha256": "b0db1ff43db043e2dc974f49a0b7054291a338df1183dda2d569f373eef7dea3"
+        }
+      },
+      "end_before": "2024-01-01",
+      "event": "60ca7e8bafed0f723f3c4c00e7dd81c9c44ee3ae5b9c00bb12708d43b6d8071b",
+      "freezes": {
+        "31ac14aed283b72891c332aceedb8ccc59170b7fc34e3225f5dae59bf7be939f": {
+          "classification": "development",
+          "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+          "plan_sha256": "7417ff70b8990696c9ee7f7149cdb1aef11f1ae0e815ac6d525d2a9754327df0",
+          "predecessor": null,
+          "registry": {
+            "domain": "index_options_MIO",
+            "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+            "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+          },
+          "registry_revision": 18,
+          "sha256": "31ac14aed283b72891c332aceedb8ccc59170b7fc34e3225f5dae59bf7be939f"
+        },
+        "58017b5fe908f9937d61a8555e21339c946bb4999b0c6740e9a460187c35b038": {
+          "classification": "development",
+          "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+          "plan_sha256": "7d00e5f57e289c385a2f26010bfdd1112a125e0edb6ba2778b818e6c06b72ead",
+          "predecessor": null,
+          "registry": {
+            "domain": "index_options_MIO",
+            "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+            "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+          },
+          "registry_revision": 24,
+          "sha256": "58017b5fe908f9937d61a8555e21339c946bb4999b0c6740e9a460187c35b038"
+        },
+        "a0815a5802daf61e21cece3fb6f35af5866fc269e01315d542520b034f100d67": {
+          "classification": "development",
+          "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+          "plan_sha256": "a7c71351b1c274ec6a48ec862200ec15bc11738e7ac3a014757300c6b47e74aa",
+          "predecessor": null,
+          "registry": {
+            "domain": "index_options_MIO",
+            "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+            "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+          },
+          "registry_revision": 12,
+          "sha256": "a0815a5802daf61e21cece3fb6f35af5866fc269e01315d542520b034f100d67"
+        },
+        "a9af1be549209a2fdab4365fc1a063d20d2ca339a677bf1f0d6fd050c8c54469": {
+          "classification": "development",
+          "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+          "plan_sha256": "7a60eb4fc02e81c9ea12f9eac88355c70336880720ef9750cc3fc4bc48644764",
+          "predecessor": null,
+          "registry": {
+            "domain": "index_options_MIO",
+            "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+            "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+          },
+          "registry_revision": 0,
+          "sha256": "a9af1be549209a2fdab4365fc1a063d20d2ca339a677bf1f0d6fd050c8c54469"
+        },
+        "c590b53834bdb34ddedddb69c0fff7946f29f3cd2ad3398a7a007ede8fd07080": {
+          "classification": "development",
+          "cohort_sha256": "8cf8f6fbf601dc66d5dad537ce7286731e3194303c481d5932c3e12b63954cca",
+          "plan_sha256": "f73bc01b6586aa8231c6b6e82514e8f42cfebf300b48d0c08126c743de000451",
+          "predecessor": null,
+          "registry": {
+            "domain": "index_options_MIO",
+            "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+            "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+          },
+          "registry_revision": 6,
+          "sha256": "c590b53834bdb34ddedddb69c0fff7946f29f3cd2ad3398a7a007ede8fd07080"
+        }
+      },
+      "frontier": 1,
+      "identity": {
+        "domain": "index_options_MIO",
+        "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+        "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+      },
+      "packets": [
+        {
+          "end_before": "2020-03-09",
+          "id": "dev_2020_0224_0309",
+          "predecessor": null,
+          "purpose": "development",
+          "start": "2020-02-24"
+        },
+        {
+          "end_before": "2020-01-01",
+          "id": "dev_2019_full_year_weekly",
+          "predecessor": "dev_2020_0224_0309",
+          "purpose": "development",
+          "start": "2019-01-02"
+        }
+      ],
+      "prior": [
+        {
+          "end_before": "2021-01-01",
+          "evidence": "legacy result-2020-1d0146f2404a.json; params sha256 72e7dd8a1e48a42f1009eb25b55c8072b6af605f5af870cb424038c0335c349f",
+          "start": "2020-01-01"
+        },
+        {
+          "end_before": "2020-04-24",
+          "evidence": "Combined exposure interval cites Path A0003 2017-2019 development, memo sha256=6da785704b858b1aeba845498dee456cc113db82d5339beb6f93433c77aed471; existing registry revision 30 prior records: prior:2020-01-01..2021-01-01 legacy result-2020-1d0146f2404a.json; params sha256 72e7dd8a1e48a42f1009eb25b55c8072b6af605f5af870cb424038c0335c349f; already-exposed 2020 packet claims: 115bc9f8-225f-4f2c-bb3a-8905801f2e56:reviewed_closed:{'bars': {'end_before': '2020-04-24', 'start': '2019-11-22'}, 'chain': {'end_before': '2020-04-24', 'start': '2020-02-24'}, 'contexts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'forecasts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'sessions': {'end_before': '2020-04-24', 'start': '2019-11-22'}}; 6d0a6eaa-0827-4d1d-a36a-5432fd322485:abandoned_exposed:{'bars': {'end_before': '2020-04-24', 'start': '2019-11-22'}, 'chain': {'end_before': '2020-04-24', 'start': '2020-02-24'}, 'contexts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'forecasts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'sessions': {'end_before': '2020-04-24', 'start': '2019-11-22'}}; a6b861ce-cd74-423d-83d9-845b529b0777:reviewed_closed:{'bars': {'end_before': '2020-04-24', 'start': '2019-11-22'}, 'chain': {'end_before': '2020-04-24', 'start': '2020-02-24'}, 'contexts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'forecasts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'sessions': {'end_before': '2020-04-24', 'start': '2019-11-22'}}; ab5d9fc3-89fe-4784-89c8-ad8c9ffdea66:reviewed_closed:{'bars': {'end_before': '2020-04-24', 'start': '2019-11-22'}, 'chain': {'end_before': '2020-04-24', 'start': '2020-02-24'}, 'contexts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'forecasts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'sessions': {'end_before': '2020-04-24', 'start': '2019-11-22'}}; f0b539b1-3ebf-40e5-8d9e-c3767e23a4cb:reviewed_closed:{'bars': {'end_before': '2020-04-24', 'start': '2019-11-22'}, 'chain': {'end_before': '2020-04-24', 'start': '2020-02-24'}, 'contexts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'forecasts': {'end_before': '2020-03-09', 'start': '2020-02-24'}, 'sessions': {'end_before': '2020-04-24', 'start': '2019-11-22'}}. The 2017-2019 history and 2020 settlement-only reads are concatenated as evidence, not represented as a new source.",
+          "start": "2017-01-03"
+        }
+      ],
+      "revision": 31
+    }
   },
   "calendar": {
     "calendar": "XNYS",
@@ -1671,10 +2113,74 @@
     "basis": "metadata inventory only; no runtime peak measured; execution remains pending fresh reviews"
   },
   "runs": {
-    "import": null,
-    "development": null,
+    "import": {
+      "run_dir": "/home/russell/data/index_options/mio-warmup-full-year-20261027/import-2019-full-year/mio-warmup-2019-full-year-import-2026-10-27-219b7342",
+      "document_hash": "bb83c153c9b457b752e6337697fe20a2955b3db879aa3356198197cd484ad9a5",
+      "run_hash": "219b7342b0cc7ad6178bc38a590d1c99d52dc2c65f7d456ec9b219e120fdc0bf",
+      "state": "ran",
+      "node": "import_development",
+      "port": "control",
+      "control_sha256": "c662ab7f21df33d920a034c5fdf52963b0643479c65c759ee3f30b93e6668202",
+      "carry_sha256": "08bafa5af8e7ed69dd719fee331714824097db54b975d20982c476e078560190",
+      "recovered_metadata_only": true
+    },
+    "development": {
+      "run_dir": "/home/russell/data/index_options/mio-warmup-full-year-20261027/development-2019-full-year/mio-warmup-2019-full-year-weekly-2020-03-08-a8d4295a",
+      "document_hash": "aa41e9a69f1fa0abf7fdf87bb55003b48f87bfe8ce7c9beb8d6c78af52eb0219",
+      "run_hash": "a8d4295ab7945cbc47d7b7a7f4ea703e322ad15c07d5fe3ed94d71f59a129b70",
+      "state": "running",
+      "node": "close_packet",
+      "port": "receipt"
+    },
     "comparison": null
   },
   "tdd_update": "deferred_for_joint_owner_update",
-  "owner_window_decision": "all of calendar 2019; 2019-01-02 through 2020-01-01 exclusive"
+  "owner_window_decision": "all of calendar 2019; 2019-01-02 through 2020-01-01 exclusive",
+  "helper_attempts": [
+    {
+      "stage": "import",
+      "status": "attestation_shape_mismatch_after_completed_run",
+      "run_dir": "/home/russell/data/index_options/mio-warmup-full-year-20261027/import-2019-full-year/mio-warmup-2019-full-year-import-2026-10-27-219b7342",
+      "document_hash": "bb83c153c9b457b752e6337697fe20a2955b3db879aa3356198197cd484ad9a5",
+      "error": "Completed run lacks requested attestation: node record summarizes ordinary dict; carry contains control"
+    }
+  ],
+  "import_recovery": {
+    "control_sha256": "c662ab7f21df33d920a034c5fdf52963b0643479c65c759ee3f30b93e6668202",
+    "carry_sha256": "08bafa5af8e7ed69dd719fee331714824097db54b975d20982c476e078560190",
+    "effect": {
+      "revision": 31,
+      "frontier": 1,
+      "packet": {
+        "id": "dev_2019_full_year_weekly",
+        "start": "2019-01-02",
+        "end_before": "2020-01-01",
+        "purpose": "development",
+        "predecessor": "dev_2020_0224_0309"
+      }
+    },
+    "recovered_at": "2026-10-28T00:48:56.280072+00:00"
+  },
+  "worker": {
+    "unit": "dskit-mio-2019-20261027.service",
+    "reviewed_candidate": "6b97ede9205996fd1893f4bb3b12cd5a41284896",
+    "helper": "/home/russell/data/index_options/mio-warmup-full-year-20261027/execution-helper.py",
+    "helper_sha256": "825cd46f9fd539d33bf69f7d98f632923df6d8af3e9abe04eec0f30dce522324",
+    "state_path": "/home/russell/data/index_options/mio-warmup-full-year-20261027/execution-pins.json",
+    "stream_path": "/home/russell/data/index_options/mio-warmup-full-year-20261027/live-events.jsonl",
+    "log_path": "/home/russell/data/index_options/mio-warmup-full-year-20261027/worker.log",
+    "prepared_at": "2026-10-28T00:49:06.437844+00:00",
+    "status": "running",
+    "observed_at": "2026-10-28T00:49:32.682596+00:00",
+    "systemd": {
+      "MainPID": "288109",
+      "ExecMainStatus": "0",
+      "MemoryCurrent": "2568716288",
+      "MemoryPeak": "2569773056",
+      "ActiveState": "active",
+      "SubState": "running",
+      "InvocationID": "b24240e192d74a37bed11357a3f0bfa6"
+    }
+  },
+  "operational_note": "Tracked pins are a launch snapshot. Current status and eventual attested outputs are written by the active worker to worker.state_path; no comparison or explicit review has run yet."
 }

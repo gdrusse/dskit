@@ -33915,3 +33915,57 @@ Final fresh reviews examined the same code candidate 83efeedc8481e4deef778f7ad81
 The correctness reviewer retained a Major claim that comparison attestation must precede explicit review. The independent adjudicator found that claim not proven under approved contract #8: comparison verifies bindings and reports no winner; acceptance requires comparison coverage but does not make a comparison-attestation receipt a hard prerequisite. Close already validates method replay, and explicit review requires the attested completed-close receipt matching claim, plan, inputs, execution and digest. Skipping the aggregate report has no demonstrated material release consequence. This is an adjudicated resolution, not an author downgrade. The comparison-order wording remains a deferred Minor; no behavior or gate was changed. No further review was run after closure.
 
 Metadata-only mapping: the ambient-attributed integration merge a83f6ab665d1366cfb74d3782de8d87296d9b5c2 was replaced by 38a24bf74e5ffc7b2f99c240c535f5b413850531, preserving tree 3c9d41e51d86dbb1f8f4a92071f85f30ff65c70a, both original parents (fa54da29052f425a9886d1cbe0125b4ede504204, 6834b308b46ef1cf1dd35ca643a7003e533250e0), message and timestamps while correcting author/committer to GPT-6 Luna and adding its co-author trailer. Candidate 83efeedc8481e4deef778f7ad811fd2d4c2b8e87 was recreated as ab9b6a445c1f40a4a7ffcd1d138cc3090d36eb9e with identical tree 96568e41e649aa00f42caa24a3e26898efd3a49b, message and GPT-6 Luna attribution. Thus reviewed code, tests, contracts and dependencies are unchanged and the reviews remain applicable.
+
+
+#### ADR-0278 amendment: full-year MIO launch and helper recovery (2026-10-27)
+
+Fresh correctness/authority and integration reviews examined the same frozen
+implementation candidate 6b97ede9205996fd1893f4bb3b12cd5a41284896. Correctness
+reported C0/M0/m0/N0 with one manifest test; integration reported C0/M0/m0/N0,
+covering 119 packet/index/protocol tests, 86 weekly tests and the exact manifest.
+The full-year calendar configuration is newer than the earlier window-specific
+review; no code or study JSON changed after the reviewed candidate.
+
+The one-time metadata import completed before development launch: registry
+revision 30 became 31, appending development packet
+dev_2019_full_year_weekly over [2019-01-02, 2020-01-01), with frontier still 1,
+no active claim and the prior schedule/history retained. The first external
+helper then failed after that successful side effect because StudyProtocolControl
+returns an ordinary carried dictionary, while its node record stores only a
+type/length summary; the artifact-only attestation lookup therefore returned no
+manifest. The import was not repeated. The helper fix preserved the original
+as execution-helper-v1.py (SHA256
+ec92039d131b4347fadce2ec7b74e00bb88365e7744bd48a718b2895ba6a2f5c) and added
+a separate ordinary-control reader using RunAttestation.node_output_for_document,
+the exact declared node implementation/port, node record summary, and matching
+carry. Control and carry canonical digests are recorded. Development and
+comparison remain on strict JsonArtifact attestation. The ordinary-control
+reviewer noted that the generic length/type summary alone is not a full-value
+verifier; author adjudication used the saved completed import's actual carry,
+matched control digest, expected packet/reason/revision/frontier and current
+registry snapshot, with seven negative state/control cases. All passed; the
+read-only metadata recovery then recorded the completed import without invoking
+run_document or touching the registry. Fixed helper SHA256 is
+825cd46f9fd539d33bf69f7d98f632923df6d8af3e9abe04eec0f30dce522324. Nine
+synthetic recovery/refusal tests and py_compile passed. The original helper
+failure and attempt remain preserved in the runtime evidence/pins.
+
+The full-year worker was launched with systemd as
+dskit-mio-2019-20261027.service (invocation
+b24240e192d74a37bed11357a3f0bfa6; PID 288109 at launch observation). Its
+development run is
+a8d4295ab7945cbc47d7b7a7f4ea703e322ad15c07d5fe3ed94d71f59a129b70
+(document aa41e9a69f1fa0abf7fdf87bb55003b48f87bfe8ce7c9beb8d6c78af52eb0219).
+The next status observation recorded all 116 quote indexes built, intake
+complete in 176.924 seconds, and the nominal method start event at
+2026-10-28T00:51:57.929801Z. At that observation, Python RSS was 684,796 KiB
+(about 669 MiB); cgroup memory was 7.4 GB including filesystem cache. These
+are distinct measurements; cgroup cache is not process RSS. No decision or
+return event had arrived. External execution-pins.json, worker.log and
+live-events.jsonl are live worker artifacts; the tracked pins file is the
+launch snapshot plus recovery evidence. An earlier systemd snapshot showed
+2.57 GB current/peak cgroup memory during indexing, not a full-run peak.
+Actual full-year peak resource use, solves, returns and replay remain
+unmeasured. Do not compare or review until all methods complete and retained
+outputs are inspected. No result, outperformance, promotion or predictive
+selection claim is made.
