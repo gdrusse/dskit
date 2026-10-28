@@ -103,7 +103,7 @@ Pricing uses same-date quoted IV, zero interest and spot as the forward proxy. M
 
 Both stress queues completed at 17:34:35 UTC on 2026-10-28. Across 5,645 book/date/scenario cases, 4,496 priced and 1,149 explicitly refused. Limited36 priced 1,208/1,600 cases (301/345 entry; 907/1,255 weekly-held). Broad212 priced 3,288/4,045 (693/775 entry; 2,595/3,270 weekly-held). These are processing-completion counts, not a risk acceptance test.
 
-Refusals were entirely retained preflight checks: limited36 had 212 numerical-envelope and 180 missing/invalid-IV cases; broad212 had 582 numerical-envelope and 175 missing/invalid-IV cases. No baseline or scenario values were imputed.
+Refusals were entirely retained preflight checks: limited36 had 232 numerical-envelope and 160 missing/invalid-IV cases; broad212 had 582 numerical-envelope and 175 missing/invalid-IV cases. No baseline or scenario values were imputed.
 
 For each method there are 212 common-horizon weekly rows (53 dates × four scenarios). “Active” means at least one held book; the complete-active numerator requires every held book to price. Cash-only rows are shown separately and excluded from that numerator.
 

@@ -826,7 +826,7 @@
   ],
   "memo": {
     "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/docs/memos/2026-10-28-mio-2019-comparison.md",
-    "sha256": "a3bd19c05106023b6208046c5ca6e44b8c86ea62e42f8da2b80c9f94b610b1c3",
+    "sha256": "2b28a8dd5be581c20cea303a5e0df3b11bae64d09c567615e17a39a48c022008",
     "bytes": 24102
   },
   "verification": {
@@ -858,7 +858,42 @@
       "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-memo-download-verification.json",
       "sha256": "ec9ba8d98e901c36251af733426e593ea8b931ed1f02716606a3e916650ec86f",
       "bytes": 360
+    },
+    "latest_memo_download": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/refusal-correction-download-verification.json",
+      "sha256": "0652d7cf23ccd395ac0c12a45800a8fc2707963d7e9bdc267ac6f5829b3ce91f",
+      "bytes": 365
     }
   },
-  "windows_delivery": "C:\\Users\\russe\\DSKit-MIO-2019-20261028"
+  "windows_delivery": "C:\\Users\\russe\\DSKit-MIO-2019-20261028",
+  "editorial_corrections": [
+    {
+      "time": "2026-10-28T18:18:18.556267+00:00",
+      "prior_commit": "a6ae047c781bf63305f33af082bc454d4bf612c8",
+      "old_text": "limited36 had 212 numerical-envelope and 180 missing/invalid-IV cases",
+      "corrected_text": "limited36 had 232 numerical-envelope and 160 missing/invalid-IV cases",
+      "classification": "Minor prose transcription error; fixed",
+      "source_csv": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/stress-books.csv",
+        "sha256": "51111d0c0625323bd729e4d7673a698cb08b4dce042191d9837c5d5fce200856",
+        "bytes": 1184240
+      },
+      "source_summary": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/postprocess-summary.json",
+        "sha256": "39daf59462fa39b882ac6b24e67ec1f290793e56dd10c5e45a73c4cfdbdcac88",
+        "bytes": 14977
+      },
+      "independent_GPT_6_Luna_review": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/refusal-count-correction.txt",
+        "sha256": "37b9001c18f98ca897f12240b76757833b8fb41e32480435860cac288fa68aa0",
+        "bytes": 3146
+      },
+      "effects": "No CSV, PnL, coverage, total refusal, helper, study JSON, ZIP or code changes. Prior review reports retained unchanged.",
+      "doc_checks": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/refusal-correction-doc-tests.log",
+        "sha256": "7fe3c174c11445d5cbb0f497919e059adffbfcf98cbb7d3c4a4ace4e8917e831",
+        "bytes": 98
+      }
+    }
+  ]
 }
