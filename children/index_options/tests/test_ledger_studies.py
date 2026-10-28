@@ -2424,6 +2424,82 @@ def test_weekly_portfolio_filled_shock_fails_closed_on_an_unusable_held_close():
     assert len(result["trades"]) == 1
 
 
+_MISSING = object()
+
+
+@pytest.mark.parametrize("observed", [_MISSING, None, math.nan, math.inf, 0., -1., 1.5, True])
+def test_weekly_portfolio_filled_shock_requires_the_observed_basis(observed):
+    """A held book is priced only when the day's observed basis matches its own; else no loss."""
+    params, inputs = _weekly_portfolio_fixture()
+    study, _, result = _filled_run(params, inputs, _FILLED)
+    held = result["trades"][0]
+    day = "2019-01-07"
+    _, losses = study._account_shock([held], day, _FILLED)
+    assert losses is not None
+    if observed is _MISSING:
+        del study._factors["X"][day]
+    else:
+        study._factors["X"][day] = observed
+    estimate, losses = study._account_shock([held], day, _FILLED)
+    assert losses is None and estimate["betas"] == {"X": 1.}
+
+
+def _without_factor(day):
+    def mutate(study):
+        del study._factors["X"][day]
+    return mutate
+
+
+def test_weekly_portfolio_filled_shock_fails_closed_on_a_missing_signal_basis():
+    """No observed basis at the signal close: the held book is unpriced and nothing is solved."""
+    params, inputs = _weekly_portfolio_fixture()
+    _, _, result = _filled_run(params, inputs, _FILLED, _without_factor("2019-01-07"))
+    second = result["decisions"][1]
+    assert second["status"] == "shock_risk_input" and "selection" not in second
+    assert second["shock"]["status"] == "input_unavailable" and second["shock"]["held"] is None
+    assert len(result["trades"]) == 1
+
+
+def _without_fill_quotes(day):
+    def mutate(study):
+        for key in [k for k in study._quotes["X"] if k[0] == day]:
+            del study._quotes["X"][key]
+    return mutate
+
+
+def test_weekly_portfolio_filled_shock_reports_an_unpriced_held_book_without_survivors():
+    """No survivor does not hide an unpriceable held book: input status, breach not assessed."""
+    params, inputs = _weekly_portfolio_fixture()
+    loose = {**_FILLED, "loss_fraction": 1.}
+    _, _, result = _filled_run(params, inputs, loose, _without_factor("2019-01-08"))
+    admission = result["decisions"][1]["shock_admission"]
+    assert admission["survivors"] == [] and admission["refusals"][0]["reason"] == "fill_basis_or_session"
+    assert admission["held"] is None and admission["losses"] is None
+    assert admission["status"] == "shock_risk_input" and admission["existing_breach"] is None
+
+
+def test_weekly_portfolio_filled_shock_reports_a_held_breach_without_survivors():
+    """No survivor does not hide a held-only breach at the fill close."""
+    params, inputs = _weekly_portfolio_fixture()
+    _close(inputs, "2019-01-08", 95.)
+    shock = {"moves": [-.05], "loss_fraction": .08, "beta_lookback": 20, "scope": "filled_account"}
+    _, _, result = _filled_run(params, inputs, shock, _without_fill_quotes("2019-01-08"))
+    admission = result["decisions"][1]["shock_admission"]
+    assert admission["survivors"] == [] and admission["refusals"][0]["reason"] == "missing_fill_quote"
+    assert admission["held"]["-0.05"] > admission["limit"]
+    assert admission["status"] == "shock_risk_limit" and admission["existing_breach"] is True
+
+
+def test_weekly_portfolio_filled_shock_reports_no_survivors_within_the_limit():
+    """No survivor and a priced held book within the limit is plain no_survivors."""
+    params, inputs = _weekly_portfolio_fixture()
+    loose = {**_FILLED, "loss_fraction": 1.}
+    _, _, result = _filled_run(params, inputs, loose, _without_fill_quotes("2019-01-08"))
+    admission = result["decisions"][1]["shock_admission"]
+    assert admission["survivors"] == [] and admission["held"] is not None
+    assert admission["status"] == "no_survivors" and admission["existing_breach"] is False
+
+
 def test_weekly_portfolio_filled_shock_record_replays_and_refuses_tamper():
     """Signal and postfill evidence replay equal; a mutated field of either is refused."""
     import copy

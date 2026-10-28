@@ -1610,7 +1610,8 @@ class WeeklyOptionPortfolioStudy:
         Each book loses its fee-adjusted credit plus multiplier times its
         payoff at max(0, close x (1 + beta x move)), the close in the book's
         basis and beta from strictly earlier sessions. The losses are None when
-        a required input is missing or nonfinite, so the caller fails closed.
+        a required input is missing or nonfinite, or the day's observed basis
+        is not the book's, so the caller fails closed.
         """
         from dskit.pipeline.option_structures import structure_payoff
 
@@ -1622,7 +1623,7 @@ class WeeklyOptionPortfolioStudy:
             close, observed = self._bars[symbol].get(day), self._factors[symbol].get(day)
             if (not number_ok(close) or close <= 0 or not number_ok(factor) or factor <= 0
                     or not number_ok(book["credit"])
-                    or (observed is not None and not math.isclose(observed, factor, rel_tol=1e-9))):
+                    or not number_ok(observed) or not math.isclose(observed, factor, rel_tol=1e-9)):
                 return estimate, None
             legs = [(leg["right"], leg["sign"]*leg["quantity"]) for leg in book["legs"]]
             strikes = [leg["strike"] for leg in book["legs"]]
@@ -1639,13 +1640,13 @@ class WeeklyOptionPortfolioStudy:
         tolerance = self.params["solver"]["parity_tolerance"]
         estimate, held = self._account_shock(list(account.open.values()), day, shock)
         _, losses = self._account_shock([*account.open.values(), *survivors], day, shock)
-        existing = held is not None and any(v > limit+tolerance for v in held.values())
-        if not survivors:
-            status = "no_survivors"
-        elif held is None or losses is None:
+        existing = None if held is None else any(v > limit+tolerance for v in held.values())
+        if held is None or losses is None:
             status = "shock_risk_input"
         elif any(v > limit+tolerance for v in losses.values()):
             status = "shock_risk_limit"
+        elif not survivors:
+            status = "no_survivors"
         else:
             status = "admissible"
         return {"date": day, "funding": account.funding, "limit": limit,

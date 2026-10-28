@@ -34535,8 +34535,12 @@ three-key behavior, JSON identity and results are unchanged.
   only the surviving fills at actual fill credits. Any move over the limit
   declines every surviving new book (`shock_risk_limit`); holdings are kept and
   an existing-only breach is reported. Funding excludes open marks.
-- A missing or nonfinite required input (close, basis, credit) fails closed:
-  no solve at t, or every survivor declined (`shock_risk_input`).
+- A missing or nonfinite required input (close, credit, the day's observed
+  basis factor equal to the book's; never inferred) fails closed: no solve at
+  t, or every survivor declined (`shock_risk_input`). With no survivor the
+  postfill status still reports the held book: `shock_risk_input` with
+  `existing_breach` null when unpriceable, `shock_risk_limit` on a held-only
+  breach, else `no_survivors`.
 - Evidence: the signal block (`held`, projected losses, limit, status) and the
   postfill block (survivors, preflight refusals, losses, limit, status) are
   persisted and reproduced by recorded replay.
