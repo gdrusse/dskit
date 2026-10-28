@@ -12,6 +12,8 @@ import pytest
 from dskit.assets import load_model
 from dskit.onboarding import check_config, load_suite
 from dskit.pipeline.document import load_document
+from dskit.pipeline.hold_verdict import DISPLAY_FIELDS
+from dskit.pipeline.position_summary import SUMMARY_FIELDS
 
 from portfolio_policy.connectors import SampleConnector
 
@@ -92,11 +94,15 @@ def test_summary_restates_the_decision_terms_exactly():
     assert summary["symbol_field"] in summary["key_fields"]
 
 
-@pytest.mark.parametrize("writer", ["decisions", "summaries"])
-def test_the_run_writers_never_overwrite(writer):
+@pytest.mark.parametrize("config, writer", [
+    ("run-hold-vs-redeploy.json", "decisions"),
+    ("run-hold-vs-redeploy.json", "summaries"),
+    ("run-hold-report.json", "verdict"),
+])
+def test_the_run_writers_never_overwrite(config, writer):
     """Each run writes its own file (ADR-0247); a writer allowed to overwrite could replace the
     rows a later run reads or a past run's evidence, silently, so the document pins it off."""
-    document = load_document(_path("run-hold-vs-redeploy.json"))
+    document = load_document(_path(config))
     assert document.pipeline[writer].params["overwrite"] is False
 
 
@@ -129,3 +135,45 @@ def test_the_scoring_snapshot_keeps_the_decision_snapshots_universe():
     assert [c["field"] for c in later] == ["as_of", "asset_type", "long_quantity"]
     assert later[1:] == [c for c in clauses if c["field"] != "as_of"]
     assert later[2] == {"field": "long_quantity", "op": ">", "value": 0}
+
+
+#: What the report's verdict node reads, by param: the PositionSummary output each ``*_field``
+#: must name. Literal on purpose. Every name below exists in the summary's rows, so a swap of
+#: two (the expected return reading the break-even) leaves a page of real numbers under the
+#: wrong labels; only this exact mapping shows it.
+VERDICT_READS = {
+    "weight_field": "weight",
+    "expected_return_field": "expected_return",
+    "volatility_field": "volatility",
+    "beta_field": "beta",
+    "embedded_gain_field": "embedded_gain",
+    "tax_cost_field": "tax_cost",
+    "break_even_field": "break_even_return",
+    "opportunity_cost_field": "opportunity_cost",
+    "decision_field": "decision",
+}
+
+
+def test_the_verdict_reads_each_summary_output_by_its_own_name():
+    document = load_document(_path("run-hold-report.json"))
+    verdict, summary = document.pipeline["verdict"].params, document.pipeline["summary"].params
+    named = {name: value for name, value in verdict.items() if name.endswith("_field")}
+    assert named == {**VERDICT_READS, "as_of_field": "as_of"}
+    # the pin covers every field the node requires: a new display field must be added above
+    assert set(VERDICT_READS) == set(DISPLAY_FIELDS) | {"decision_field"}
+    assert set(VERDICT_READS.values()) <= set(SUMMARY_FIELDS), "outputs PositionSummary emits"
+    # the as-of day and the holding label are the summary's key fields, riding onto its rows
+    assert verdict["as_of_field"] in summary["key_fields"]
+    assert verdict["key_fields"] == ["account", "symbol"]
+    assert set(verdict["key_fields"]) <= set(summary["key_fields"])
+
+
+def test_the_report_states_the_universe_the_decision_snapshot_keeps():
+    """The total's label says "listed equity longs"; the decision document's filter is that, in
+    clauses. Words and clauses are one fact written twice, so a change to either fails here."""
+    decide = load_document(_path("run-hold-vs-redeploy.json"))
+    clauses = decide.pipeline["snapshot"].params["where"]
+    assert clauses[1:] == [{"field": "asset_type", "op": "==", "value": "EQUITY"},
+                           {"field": "long_quantity", "op": ">", "value": 0}]
+    report = load_document(_path("run-hold-report.json"))
+    assert report.pipeline["verdict"].params["universe"] == "listed equity longs"

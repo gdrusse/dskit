@@ -23,6 +23,10 @@ set -euo pipefail
 py="${PYTHON:-python}"
 day="${1:?usage: bash weekly.sh <snapshot day YYYY-MM-DD>}"
 
+# every step runs from the child root, so the day is checked from there too: the same interpreter
+# path, the same dskit, not whichever dskit the caller's directory happens to hold
+cd "$(dirname "$0")"
+
 # dskit's one date rule (a real calendar day in the extended form), not a regex restated here;
 # status 3 is the rule's refusal, any other failure is the interpreter or dskit not being found
 status=0
@@ -35,7 +39,6 @@ case "$status" in
     *) echo "weekly.sh: could not check the day: is dskit importable by '$py'?" >&2; exit 1 ;;
 esac
 
-cd "$(dirname "$0")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
@@ -60,7 +63,7 @@ derive() {
     "$py" - "$@" <<'PY'
 import json, sys
 source, target, day, stream = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-with open(source) as fh:
+with open(source, encoding="utf-8") as fh:
     doc = json.load(fh)
 nodes = doc["pipeline"]
 if "tax" in nodes:
@@ -74,7 +77,7 @@ if "tax" in nodes:
     doc["pipeline"] = swap(nodes)
 if stream:
     doc["pipeline"]["decisions"]["params"]["stream"] = stream
-with open(target, "w") as fh:
+with open(target, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, indent=2)
 PY
 }

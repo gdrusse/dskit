@@ -34061,3 +34061,49 @@ Gates: `tests/pipeline/test_hold_verdict.py` 42 -> 61 tests; the child suite 74 
 `tests/pipeline` that fail identically on `16a261f` (`test_purity` `parquet.py`
 imports `dskit.onboarding.snapshot`; `test_runs` unlistable nodes dir, run as root;
 `test_study_protocol` fresh release; `test_uncertainty_set` replace arrays).
+
+#### ADR-0279 amendment: hold verdict, Sonnet round 2 corrections (2026-10-28)
+
+The round-2 review of the hold verdict report (`8678c86`) found 1 Major and 8 Minor
+(plus Nits); all fixed. RED first on the unchanged build; the mutants named below were
+run in a scratch copy of the child, each killed.
+
+- Major — the shipped column -> field mapping was untested (every field name exists in the
+  summary, so a swap prints real numbers under wrong labels). `test_hold_report_end_to_end`
+  now asserts EVERY cell of VTI's line (weight, expected return, vol, beta, embedded gain,
+  tax, break-even, opportunity cost, verdict) and the header, against numbers worked by hand
+  from the shipped declarations (`_expected_rates`, `_worked`) and formatted by the test's
+  own `_pct`, with 80.6% and 20.0% written out (2500 / 3100, 500 / 2500) and six distinct
+  values so no two columns can swap unseen. `test_configs.py` pins each `*_field` of the
+  `verdict` node to the PositionSummary output it must read (literal table; the names must
+  be in `SUMMARY_FIELDS`, the keys equal `DISPLAY_FIELDS` plus `decision_field`; the as-of day
+  and holding label are the summary's key fields). Killed: `expected_return_field` swapped
+  with `break_even_field` fails both (cell 2 reads 6.1%, not 3.0%).
+- Minor — `weekly.sh` exits with the pipeline's status: the no-snapshot run is exactly 1
+  ("exited 1"), and a stand-in interpreter that halts `-m dskit.pipeline run` shows a 3
+  travels as 3 (killed: `exit 1`).
+- Minor — the derived decision document's `tax.as_of` and `snapshot.where[as_of]` are the
+  run day and nothing else moves; `derive` is cut out of the script and run directly
+  (killed: `tax.as_of` left at the placeholder, which no whole-run test can see).
+- Minor — `verdict.overwrite == false` is pinned beside the decision writers (killed).
+- Minor — child README: re-running a day refuses; delete its two run directories and the three
+  run-named files (verified by doing it). Break-even row (was "after every tax and cost")
+  now reads "before its own cost and tax". Key and README: "unless loss_offset is true";
+  new key line "Embedded gain is a share of value, not of cost."
+- Minor — the total says what it covers: a required `universe` param, shown as `Total value
+  (listed equity longs)` (the word is the document's, not the kind's); a test ties the words
+  to the decision snapshot's EQUITY and `long_quantity > 0` clauses.
+- Minor — `_cell` is `runs.render_cell`, the one owner of cell text: a line break reads
+  `⏎` (was a space), a cell past its limit is cut. Stated in the module docstring.
+- Nits — `_plain` guards `-0.00` (one formatter now serves rates and betas); `weekly.sh` checks
+  the day after the `cd`, so the check and the steps import the same dskit (tested with a
+  decoy `dskit` in the caller's directory; killed by restoring the old order); `derive` opens
+  files as UTF-8 (the shipped document holds an em dash; tested under `LC_ALL=C`, killed).
+
+Sweep: `universe` is also a symbol in intraday_equities and `production.document`, unrelated
+objects; no owner of a page's coverage label.
+
+Gates: `tests/pipeline/test_hold_verdict.py` 61 -> 67 tests; the child suite 83 -> 91 passed
+(9 skipped as before); `test_hold_verdict`, `test_serving_effect` and `tests/docs` 169 -> 175
+passed; ruff clean on the touched files; `bash -n weekly.sh`; `run-hold-report.json` validates.
+The four `tests/pipeline` failures disclosed in round 1 are untouched.

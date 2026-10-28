@@ -28,7 +28,7 @@ RUN_ASOF = "2026-11-02"
 
 PARAMS = {
     "path": "", "source": "hold verdict per holding", "overwrite": False,
-    "title": "Hold verdict",
+    "title": "Hold verdict", "universe": "listed equity longs",
     "key_fields": ["account", "symbol"], "as_of_field": "as_of",
     "weight_field": "weight", "expected_return_field": "expected_return",
     "volatility_field": "volatility", "beta_field": "beta",
@@ -74,8 +74,9 @@ KEY = ("## Key\n\n"
        "- Break-even: the annual return an alternative must earn, before its own cost and tax "
        "(same basis as the hurdle), for exiting to tie holding.\n"
        "- Expected return is before tax.\n"
+       "- Embedded gain is a share of value, not of cost.\n"
        "- Tax to sell is a share of value; 'tax to sell all' ignores loss offsets unless "
-       "loss_offset is declared.\n")
+       "loss_offset is true.\n")
 
 EXPECTED = (
     f"# Hold verdict — {DECIDED}\n\n"
@@ -85,7 +86,7 @@ EXPECTED = (
     + "| A1 / MSFT | 15.0% | 7.5% | 22.0% | 1.10 | 10.0% | 2.4% | 8.1% | -1.5% | HOLD |\n"
     + "| A1 / BND | 10.0% | 4.5% | 5.0% | 0.25 | 0.0% | 0.0% | 6.0% | -2.0% | HOLD |\n\n"
     + "## Portfolio\n\n"
-    + "- Total value: 4,000.00\n"
+    + "- Total value (listed equity longs): 4,000.00\n"
     + "- Weighted expected return: 7.1% a year\n"
     + "- Weighted beta: 0.99\n"
     + "- Concentration: HHI 0.345, effective holdings 2.9, top holding VTI at 50.0% of value\n"
@@ -199,6 +200,28 @@ def test_a_negative_zero_percent_prints_without_its_sign(tmp_path, ctx):
     assert "| 0.0% | HOLD |" in text
 
 
+def test_a_negative_zero_beta_prints_without_its_sign(tmp_path, ctx):
+    """A beta that rounds to zero reads 0.00, in the table and in the portfolio line."""
+    portfolio = {**PORTFOLIO, "beta": -0.001}
+    text = _page(tmp_path, ctx, [{**AAPL, "beta": -0.001}], portfolio)
+    assert "| 28.0% | 0.00 | 25.0% |" in text
+    assert "- Weighted beta: 0.00\n" in text
+    assert "-0.00" not in text
+
+
+def test_a_real_negative_beta_keeps_its_sign(tmp_path, ctx):
+    text = _page(tmp_path, ctx, [{**AAPL, "beta": -0.4}], {**PORTFOLIO, "beta": -0.4})
+    assert "| 28.0% | -0.40 | 25.0% |" in text
+    assert "- Weighted beta: -0.40\n" in text
+
+
+def test_the_universe_label_is_the_params_not_a_constant(tmp_path, ctx):
+    node = _node(tmp_path, universe="every taxable account")
+    text = _text(node.run(ctx, {"records": [VTI], "portfolio": PORTFOLIO}))
+    assert "- Total value (every taxable account): 4,000.00\n" in text
+    assert "listed equity longs" not in text
+
+
 def test_a_pipe_in_a_symbol_cannot_open_a_phantom_column(tmp_path, ctx):
     portfolio = {**PORTFOLIO, "top_symbol": "A|B"}
     text = _page(tmp_path, ctx, [{**VTI, "symbol": "A|B"}], portfolio)
@@ -212,7 +235,8 @@ def test_a_pipe_in_a_symbol_cannot_open_a_phantom_column(tmp_path, ctx):
 def test_a_line_break_in_a_symbol_cannot_open_a_phantom_row(tmp_path, ctx):
     text = _page(tmp_path, ctx, [{**VTI, "symbol": "A\nB"}, {**AAPL, "symbol": "C\r\nD"}])
     rows = [line for line in text.splitlines() if line.startswith("| A1 / ")]
-    assert [line.split(" | ")[0] for line in rows] == ["| A1 / A B", "| A1 / C D"]
+    # runs.render_cell's rule: a break reads as the visible mark, not as a space
+    assert [line.split(" | ")[0] for line in rows] == ["| A1 / A⏎B", "| A1 / C⏎D"]
 
 
 @pytest.mark.parametrize("records, why", [
@@ -278,6 +302,8 @@ def test_the_written_file_is_not_left_executable_or_partial(tmp_path, ctx):
 
 @pytest.mark.parametrize("change, why", [
     ({"title": ""}, "title must be a non-empty string"),
+    ({"universe": ""}, "universe must be a non-empty string"),
+    ({"universe": 3}, "universe must be a non-empty string"),
     ({"weight_field": ""}, "weight_field must be a non-empty field name"),
     ({"as_of_field": ""}, "as_of_field must be a non-empty field name"),
     ({"key_fields": []}, "key_fields must be a non-empty list"),

@@ -7,6 +7,9 @@ leaving would cost today, and what return an alternative must clear. :class:`Hol
 writes that page and nothing else. Every number is read from its inputs; the one product it
 forms is the portfolio's tax to sell in currency (its share of value times the total value),
 and the rest is display (percentages to one decimal, a beta to two, nulls as an em dash).
+The page says what its total covers: the required ``universe`` param is the label's words
+("Total value (listed equity longs)"), because a total over a filtered snapshot reads as the
+account's value unless it says otherwise.
 
 The page: a title line with the decisions' as-of day, read from the rows themselves (every
 row carries ``as_of_field``; several days refuse, and the run's own ``asof`` is never used);
@@ -17,6 +20,11 @@ admissible alternative) reads ``n/a — no admissible alternative`` instead of H
 and so do the portfolio's sell-all comparison and its verdict counts. A row's decision must
 agree with the sign of its opportunity cost (exit needs more than zero; hold needs zero, less
 or null, so a tie holds): a disagreement refuses by index, because the page prints both.
+
+A text cell (the holding, the top symbol) goes through :func:`dskit.pipeline.runs.render_cell`,
+the pipeline's one owner of cell text: a ``|`` is escaped, a line break reads as ``⏎`` and a
+cell past its length limit is cut with an ellipsis, so a value cannot open a phantom column or
+row. (Numbers are not its: it prints a float to six figures, the page wants a percent.)
 
 The portfolio block reads PositionSummary's ``metrics`` dict when it is wired to the
 ``portfolio`` port (:data:`PORTFOLIO_FIELDS` are the keys read; a test pins them to what
@@ -46,7 +54,7 @@ from dskit.pipeline.kinds_run_write import RUN_PLACEHOLDER, RecordsWriteRun
 from dskit.pipeline.kinds_table import RecordsWrite
 from dskit.pipeline.liquidation import check_name_params
 from dskit.pipeline.records import number_ok
-from dskit.pipeline.runs import _escape_pipe
+from dskit.pipeline.runs import render_cell
 
 __all__ = ["DISPLAY_FIELDS", "NO_ALTERNATIVE", "NULLABLE_FIELDS", "PORTFOLIO_FIELDS", "VERDICTS",
            "HoldVerdict"]
@@ -73,6 +81,9 @@ PORTFOLIO_FIELDS = (
 _PORTFOLIO_NULLABLE = ("weighted_volatility", "beta", "opportunity_cost")
 _PORTFOLIO_TEXT = ("top_symbol",)
 
+#: The params that are free text on the page: the title line and the total's label.
+_TEXT_PARAMS = ("title", "universe")
+
 _NULL = "—"
 _COLUMNS = ("Holding", "Weight", "Expected return", "Vol", "Beta", "Embedded gain",
             "Tax to sell", "Break-even", "Opportunity cost/yr", "Verdict")
@@ -88,33 +99,25 @@ _KEY_LINES = (
     "Break-even: the annual return an alternative must earn, before its own cost and tax "
     "(same basis as the hurdle), for exiting to tie holding.",
     "Expected return is before tax.",
+    "Embedded gain is a share of value, not of cost.",
     "Tax to sell is a share of value; 'tax to sell all' ignores loss offsets unless "
-    "loss_offset is declared.",
+    "loss_offset is true.",
 )
 _NOT_WIRED = ("Not wired: wire the summary's portfolio metrics to `portfolio` for the "
               "totals, concentration and the cost of selling everything.")
 
 
-def _percent(value):
-    """``value`` (a fraction) as a percent to one decimal; null as the em dash; never ``-0.0%``."""
+def _plain(value, places):
+    """``value`` to ``places`` decimals; null as the em dash; a value that rounds to zero is unsigned."""
     if value is None:
         return _NULL
-    text = f"{value * 100.0:.1f}"
-    return ("0.0" if text == "-0.0" else text) + "%"
+    text = f"{value:.{places}f}"
+    return text[1:] if text.startswith("-") and float(text) == 0.0 else text
 
 
-def _plain(value, places):
-    """``value`` to ``places`` decimals; null as the em dash."""
-    return _NULL if value is None else f"{value:.{places}f}"
-
-
-def _cell(text):
-    """``text`` safe inside a markdown table cell: a line break reads as a space, a ``|`` is escaped.
-
-    A line break would end the row and a pipe would add a column; the pipe rule is
-    :func:`dskit.pipeline.runs._escape_pipe`, the pipeline's one owner of it.
-    """
-    return _escape_pipe(" ".join(str(text).splitlines()))
+def _percent(value):
+    """``value`` (a fraction) as a percent to one decimal; null as the em dash; never ``-0.0%``."""
+    return _NULL if value is None else _plain(value * 100.0, 1) + "%"
 
 
 class _Frame(NamedTuple):
@@ -134,7 +137,8 @@ class HoldVerdict(RecordsWrite):
         :class:`~dskit.pipeline.kinds_table.RecordsWrite`'s ``path`` / ``source`` /
         ``overwrite`` / ``expect``, ``path`` carrying exactly one ``{run}`` in its file stem
         (:meth:`~dskit.pipeline.kinds_run_write.RecordsWriteRun.path_problems`). REQUIRED,
-        none defaulted: ``title`` (non-empty string); ``key_fields`` (non-empty list of
+        none defaulted: ``title`` and ``universe`` (non-empty strings; the universe is what the
+        total covers, shown as ``Total value (<universe>)``); ``key_fields`` (non-empty list of
         distinct field names, joined with `` / `` as the Holding cell); ``as_of_field`` (the
         field every row carries the decision day in, an ISO date; the title shows it);
         and one field name per :data:`DISPLAY_FIELDS` entry plus ``decision_field``.
@@ -158,14 +162,16 @@ class HoldVerdict(RecordsWrite):
     One page per run::
 
         node = HoldVerdict("verdict", {"path": "report/{run}.md", "source": "hold verdict",
-            "title": "Hold verdict", "key_fields": ["account", "symbol"],
-            "as_of_field": "as_of", "weight_field": "weight", ..., "decision_field": "decision"})
+            "title": "Hold verdict", "universe": "listed equity longs",
+            "key_fields": ["account", "symbol"], "as_of_field": "as_of",
+            "weight_field": "weight", ..., "decision_field": "decision"})
         out = node.run(ctx, {"records": summary_rows, "portfolio": summary_metrics})
     """
 
-    _PARAMS = RecordsWrite._PARAMS + ("title", "key_fields", "as_of_field", *DISPLAY_FIELDS,
-                                      "decision_field")
-    _REQUIRED = ("title", "key_fields", "as_of_field", *DISPLAY_FIELDS, "decision_field")
+    _PARAMS = RecordsWrite._PARAMS + ("title", "universe", "key_fields", "as_of_field",
+                                      *DISPLAY_FIELDS, "decision_field")
+    _REQUIRED = ("title", "universe", "key_fields", "as_of_field", *DISPLAY_FIELDS,
+                 "decision_field")
     _PORTFOLIO = "portfolio"
 
     #: Set only on the per-run copy :meth:`run` renders from.
@@ -178,10 +184,11 @@ class HoldVerdict(RecordsWrite):
         missing = sorted(set(cls._REQUIRED) - set(params))
         if missing:
             problems.append(f"missing required params {missing}")
-        title = params.get("title")
-        if "title" in params and not is_node_ref(title) and not (
-                isinstance(title, str) and title.strip()):
-            problems.append(f"title must be a non-empty string, got {title!r}")
+        for name in _TEXT_PARAMS:
+            text = params.get(name)
+            if name in params and not is_node_ref(text) and not (
+                    isinstance(text, str) and text.strip()):
+                problems.append(f"{name} must be a non-empty string, got {text!r}")
         check_key_fields_param(problems, params)
         check_name_params(problems, params, ("as_of_field", *DISPLAY_FIELDS, "decision_field"))
         path = params.get("path")
@@ -300,7 +307,7 @@ class HoldVerdict(RecordsWrite):
                  "|---|" + "---:|" * (len(_COLUMNS) - 2) + "---|"]
         for row in rows:
             numbers = row["numbers"]
-            cells = [_cell(row["holding"])]
+            cells = [render_cell(row["holding"])]
             cells += [_plain(numbers[name], 2) if name == _BETA_PARAM else _percent(numbers[name])
                       for name in DISPLAY_FIELDS]
             admissible = numbers[_COST_PARAM] is not None
@@ -329,7 +336,7 @@ class HoldVerdict(RecordsWrite):
         if portfolio is None:
             return lines + [_NOT_WIRED]
         total = portfolio["total_value"]
-        lines.append(f"- Total value: {total:,.2f}")
+        lines.append(f"- Total value ({self.params['universe']}): {total:,.2f}")
         lines.append(f"- Weighted expected return: {_percent(portfolio['expected_return'])} a year")
         if portfolio["weighted_volatility"] is not None:
             lines.append("- Weighted volatility (an upper bound): "
@@ -338,7 +345,7 @@ class HoldVerdict(RecordsWrite):
             lines.append(f"- Weighted beta: {_plain(portfolio['beta'], 2)}")
         lines.append(f"- Concentration: HHI {portfolio['hhi']:.3f}, effective holdings "
                      f"{portfolio['effective_holdings']:.1f}, top holding "
-                     f"{_cell(portfolio['top_symbol'])} at {_percent(portfolio['top_weight'])} of value")
+                     f"{render_cell(portfolio['top_symbol'])} at {_percent(portfolio['top_weight'])} of value")
         tax = portfolio["tax_cost"]
         lines.append(f"- Tax to sell all: {_percent(tax)} of value ({tax * total:,.2f})")
         cost = portfolio["opportunity_cost"]

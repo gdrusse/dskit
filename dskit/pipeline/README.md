@@ -917,14 +917,16 @@ they register only into private registries, never the default one.
   several days refuse), a table per holding sorted by opportunity cost descending (nulls
   last; percentages to one decimal, beta to two, null as an em dash; verdict HOLD / EXIT,
   `n/a — no admissible alternative` when the opportunity cost is null, and then the
-  portfolio's sell-all and verdict-count lines read it too), the portfolio block, a four-line
-  key (break-even is on the hurdle's pre-cost, pre-tax basis; expected return is pre-tax).
+  portfolio's sell-all and verdict-count lines read it too), the portfolio block (its total
+  is labelled with the required `universe` param, e.g. "Total value (listed equity longs)"),
+  a five-line key (break-even is on the hurdle's pre-cost, pre-tax basis; expected return is
+  pre-tax; embedded gain and tax to sell are shares of value).
   A row's decision must agree with its opportunity cost's sign (exit above zero; a tie holds)
   or it refuses by index. Every field name is a required param. The write is
   `RecordsWrite`'s (no clobber, atomic, `provenance` + `metrics` digest); `{run}` in the
-  stem follows `RecordsWriteRun.path_problems` / `run_name`; a cell escapes `|` through
-  `runs._escape_pipe` and reads a line break as a space. An absent portfolio is stated,
-  never recomputed.
+  stem follows `RecordsWriteRun.path_problems` / `run_name`; a text cell goes through
+  `runs.render_cell` (`|` escaped, a line break reads `⏎`, a long cell is cut). A rate that
+  rounds to zero prints unsigned. An absent portfolio is stated, never recomputed.
 - `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
   `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
   out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one

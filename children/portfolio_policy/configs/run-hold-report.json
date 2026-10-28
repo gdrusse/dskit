@@ -36,6 +36,7 @@
         "source": "hold verdict per account x symbol, with the portfolio block",
         "overwrite": false,
         "title": "What holding is worth",
+        "universe": "listed equity longs",
         "key_fields": ["account", "symbol"],
         "as_of_field": "as_of",
         "weight_field": "weight",
@@ -48,7 +49,7 @@
         "opportunity_cost_field": "opportunity_cost",
         "decision_field": "decision"
       },
-      "notes": "Role 'report': one markdown page per run in ./report under the invoking cwd (gitignored). Holdings sorted by opportunity cost a year, highest first: above zero the after-tax alternative beats holding. The title day is the as_of the decisions carry (several refuse), not the run's --asof. The portfolio block is the summary's metrics, wired, never recomputed."
+      "notes": "Role 'report': one markdown page per run in ./report under the invoking cwd (gitignored). Holdings sorted by opportunity cost a year, highest first: above zero the after-tax alternative beats holding. The title day is the as_of the decisions carry (several refuse), not the run's --asof. The total's label states the universe (the decision document's snapshot keeps equity longs; tests/test_configs.py pins the words to its clauses). The portfolio block is the summary's metrics, wired, never recomputed."
     }
   },
   "outputs": {

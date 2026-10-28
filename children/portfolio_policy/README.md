@@ -86,7 +86,7 @@ tables them run over run). Rates are a year; shares are of today's value.
 | `beta` | how hard it moves with the market | above 1 swings more than the market |
 | `embedded_gain` | how much of the value is untaxed gain | the higher it is, the more selling costs |
 | `tax_cost` | what selling today loses to tax | the price of exiting, paid once |
-| `break_even_return` | the active return at which exiting exactly ties holding, after every tax and cost | exit only if you trust the strategy to beat it |
+| `break_even_return` | the annual return an alternative must earn, before its own cost and tax (the hurdle's basis), for exiting to tie holding | exit only if you trust the strategy to beat it |
 | `opportunity_cost` | what holding costs a year, after tax, against the alternative | above zero: you lose that much a year by holding (`decision` is `exit`); below zero holding wins |
 
 The portfolio adds `total_value`, the weighted `expected_return` and `beta`,
@@ -351,9 +351,13 @@ embedded gain, tax to sell, break-even and opportunity cost a year, then HOLD or
 (`n/a — no admissible alternative` when the hurdle was withheld). Opportunity cost above
 zero: the after-tax alternative beats holding by that much a year. Break-even: the annual
 return an alternative must earn, before its own cost and tax (the hurdle's basis), for
-exiting to tie holding. Expected return is before tax. Tax to sell is a share of value;
-"tax to sell all" ignores loss offsets unless `loss_offset` is declared. The portfolio block
-gives the total, weighted return, concentration (HHI, top holding), tax to sell everything
-and selling all against holding all. The title day is the decisions' own `as_of`. Beta and
+exiting to tie holding. Expected return is before tax. Embedded gain is a share of value,
+not of cost. Tax to sell is a share of value; "tax to sell all" ignores loss offsets unless
+`loss_offset` is true. The portfolio block gives the total (labelled "listed equity longs":
+the decision document's snapshot filter, not the whole account), weighted return,
+concentration (HHI, top holding), tax to sell everything and selling all against holding all. The title day is the decisions' own `as_of`. Beta and
 volatility read `—` until the verdict is wired into the decision document. A step that fails
-stops `weekly.sh` with its output, and a pipeline run's document and run directory.
+stops `weekly.sh` with its output, and a pipeline run's document and run directory, and
+the script exits with that run's status (1 error, 3 halted). A day already run refuses
+(a run's name is its day and hash): to repeat it, delete its two run directories under
+`pipeline_runs/` and the three files named for them (`decisions/`, `summary/`, `report/`).
