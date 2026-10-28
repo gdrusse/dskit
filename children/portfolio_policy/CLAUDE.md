@@ -106,7 +106,8 @@ portfolio_policy/           # tier-3 code: connectors.py, nodes.py, and the four
                        #   production seams — execution / accounting /
                        #   approvals / coordination, all fail-closed
 configs/               # asset-model / source-sample / suite-sample /
-                       #   run-sample / serve-sample / run-hold-vs-redeploy
+                       #   run-sample / serve-sample / run-hold-vs-redeploy /
+                       #   run-hold-report / run-decision-outcomes
 decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
 summary/               # the few numbers per holding, one file per run (gitignored)
 report/                # the hold verdict page, one markdown file per run (gitignored)
@@ -120,7 +121,8 @@ docs/memos/            # README points to memo
 docs/plans/            # the child's own project-specific plan builds
 docs/research/         # topic folders; <date>-synthesis.md + dated notes
 tests/                 # conftest bootstrap + configs/connectors/nodes/
-                       #   execution/production tests
+                       #   execution/production tests, test_hold_vs_redeploy,
+                       #   test_hold_report (weekly.sh run for real)
 pyproject.toml         # dependencies = ["dskit"]
 ```
 

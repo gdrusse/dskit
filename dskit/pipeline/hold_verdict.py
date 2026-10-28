@@ -4,14 +4,19 @@
 numbers per holding and for the portfolio. An owner who has just pulled a snapshot wants
 those numbers as one page: which holdings cost money to keep, by how much a year, what
 leaving would cost today, and what return an alternative must clear. :class:`HoldVerdict`
-writes that page and nothing else; every number is read from its inputs, none is computed
-except the display (percentages to one decimal, a beta to two, nulls as an em dash).
+writes that page and nothing else. Every number is read from its inputs; the one product it
+forms is the portfolio's tax to sell in currency (its share of value times the total value),
+and the rest is display (percentages to one decimal, a beta to two, nulls as an em dash).
 
-The page: a title line with the run's as-of day; one table, one row per holding, sorted by
-opportunity cost descending (a null opportunity cost sorts last, ties keep input order);
-a portfolio block; a three-line key. A holding whose opportunity cost is null (the active
-hurdle was withheld, so the decision run had no admissible alternative) reads
-``n/a — no admissible alternative`` instead of HOLD or EXIT.
+The page: a title line with the decisions' as-of day, read from the rows themselves (every
+row carries ``as_of_field``; several days refuse, and the run's own ``asof`` is never used);
+one table, one row per holding, sorted by opportunity cost descending (a null opportunity
+cost sorts last, ties keep input order); a portfolio block; a key. A holding whose
+opportunity cost is null (the active hurdle was withheld, so the decision run had no
+admissible alternative) reads ``n/a — no admissible alternative`` instead of HOLD or EXIT,
+and so do the portfolio's sell-all comparison and its verdict counts. A row's decision must
+agree with the sign of its opportunity cost (exit needs more than zero; hold needs zero, less
+or null, so a tie holds): a disagreement refuses by index, because the page prints both.
 
 The portfolio block reads PositionSummary's ``metrics`` dict when it is wired to the
 ``portfolio`` port (:data:`PORTFOLIO_FIELDS` are the keys read; a test pins them to what
@@ -36,13 +41,15 @@ import copy
 from typing import NamedTuple
 
 from dskit.pipeline.decision_outcomes import check_key_fields_param
-from dskit.pipeline.document import is_node_ref
+from dskit.pipeline.document import date_problem, is_node_ref
 from dskit.pipeline.kinds_run_write import RUN_PLACEHOLDER, RecordsWriteRun
 from dskit.pipeline.kinds_table import RecordsWrite
 from dskit.pipeline.liquidation import check_name_params
 from dskit.pipeline.records import number_ok
+from dskit.pipeline.runs import _escape_pipe
 
-__all__ = ["DISPLAY_FIELDS", "NULLABLE_FIELDS", "PORTFOLIO_FIELDS", "VERDICTS", "HoldVerdict"]
+__all__ = ["DISPLAY_FIELDS", "NO_ALTERNATIVE", "NULLABLE_FIELDS", "PORTFOLIO_FIELDS", "VERDICTS",
+           "HoldVerdict"]
 
 #: The per-row field-name params, in column order after the holding.
 DISPLAY_FIELDS = (
@@ -51,8 +58,9 @@ DISPLAY_FIELDS = (
 )
 #: The display fields whose value may be null: no table wired, or no admissible hurdle.
 NULLABLE_FIELDS = ("volatility_field", "beta_field", "opportunity_cost_field")
+_HOLD, _EXIT = "hold", "exit"
 #: The decision vocabulary and how each reads (a test pins it to PositionSummary's).
-VERDICTS = {"hold": "HOLD", "exit": "EXIT"}
+VERDICTS = {_HOLD: "HOLD", _EXIT: "EXIT"}
 #: What a holding with no admissible alternative reads instead of a verdict.
 NO_ALTERNATIVE = "n/a — no admissible alternative"
 
@@ -70,11 +78,18 @@ _COLUMNS = ("Holding", "Weight", "Expected return", "Vol", "Beta", "Embedded gai
             "Tax to sell", "Break-even", "Opportunity cost/yr", "Verdict")
 #: The one display column that is not a rate: a beta prints as a plain number.
 _BETA_PARAM = "beta_field"
+#: The param naming the opportunity cost field: the sort key, the n/a test and the sign check.
+_COST_PARAM = "opportunity_cost_field"
 _KEY_SEPARATOR = " / "
+#: The key under the table. Break-even is PositionSummary's ``redeploy_return`` that ties the two
+#: paths: the same pre-cost, pre-tax basis as the hurdle (the declared cost and tax come off it).
 _KEY_LINES = (
     "Opportunity cost > 0: the after-tax alternative beats holding by that much per year.",
-    "Break-even: the after-tax return an alternative must clear to tie.",
-    "Tax to sell: what leaving costs today.",
+    "Break-even: the annual return an alternative must earn, before its own cost and tax "
+    "(same basis as the hurdle), for exiting to tie holding.",
+    "Expected return is before tax.",
+    "Tax to sell is a share of value; 'tax to sell all' ignores loss offsets unless "
+    "loss_offset is declared.",
 )
 _NOT_WIRED = ("Not wired: wire the summary's portfolio metrics to `portfolio` for the "
               "totals, concentration and the cost of selling everything.")
@@ -94,14 +109,17 @@ def _plain(value, places):
 
 
 def _cell(text):
-    """``text`` safe inside a markdown table cell (a ``|`` would split it)."""
-    return str(text).replace("|", "\\|")
+    """``text`` safe inside a markdown table cell: a line break reads as a space, a ``|`` is escaped.
+
+    A line break would end the row and a pipe would add a column; the pipe rule is
+    :func:`dskit.pipeline.runs._escape_pipe`, the pipeline's one owner of it.
+    """
+    return _escape_pipe(" ".join(str(text).splitlines()))
 
 
 class _Frame(NamedTuple):
-    """What a render needs besides the rows: the run's as-of day and the portfolio (or None)."""
+    """What a render needs besides the rows: the checked portfolio metrics, or None when unwired."""
 
-    day: str
     portfolio: dict | None
 
 
@@ -117,13 +135,16 @@ class HoldVerdict(RecordsWrite):
         ``overwrite`` / ``expect``, ``path`` carrying exactly one ``{run}`` in its file stem
         (:meth:`~dskit.pipeline.kinds_run_write.RecordsWriteRun.path_problems`). REQUIRED,
         none defaulted: ``title`` (non-empty string); ``key_fields`` (non-empty list of
-        distinct field names, joined with `` / `` as the Holding cell); and one field name
-        per :data:`DISPLAY_FIELDS` entry plus ``decision_field``.
+        distinct field names, joined with `` / `` as the Holding cell); ``as_of_field`` (the
+        field every row carries the decision day in, an ISO date; the title shows it);
+        and one field name per :data:`DISPLAY_FIELDS` entry plus ``decision_field``.
 
     Inputs
     ------
     ``records`` (REQUIRED)
-        Summary rows, one per holding, each carrying every declared field.
+        Summary rows, one per holding, each carrying every declared field. The summary's own
+        ``key_fields`` may name the as-of field (``["account", "symbol", "as_of"]``): a key
+        field rides along onto its rows, so the day needs no second port.
     ``portfolio`` (optional)
         PositionSummary's ``metrics`` dict; absent, the block says it is not wired.
 
@@ -138,12 +159,13 @@ class HoldVerdict(RecordsWrite):
 
         node = HoldVerdict("verdict", {"path": "report/{run}.md", "source": "hold verdict",
             "title": "Hold verdict", "key_fields": ["account", "symbol"],
-            "weight_field": "weight", ..., "decision_field": "decision"})
+            "as_of_field": "as_of", "weight_field": "weight", ..., "decision_field": "decision"})
         out = node.run(ctx, {"records": summary_rows, "portfolio": summary_metrics})
     """
 
-    _PARAMS = RecordsWrite._PARAMS + ("title", "key_fields", *DISPLAY_FIELDS, "decision_field")
-    _REQUIRED = ("title", "key_fields", *DISPLAY_FIELDS, "decision_field")
+    _PARAMS = RecordsWrite._PARAMS + ("title", "key_fields", "as_of_field", *DISPLAY_FIELDS,
+                                      "decision_field")
+    _REQUIRED = ("title", "key_fields", "as_of_field", *DISPLAY_FIELDS, "decision_field")
     _PORTFOLIO = "portfolio"
 
     #: Set only on the per-run copy :meth:`run` renders from.
@@ -161,16 +183,11 @@ class HoldVerdict(RecordsWrite):
                 isinstance(title, str) and title.strip()):
             problems.append(f"title must be a non-empty string, got {title!r}")
         check_key_fields_param(problems, params)
-        check_name_params(problems, params, (*DISPLAY_FIELDS, "decision_field"))
+        check_name_params(problems, params, ("as_of_field", *DISPLAY_FIELDS, "decision_field"))
         path = params.get("path")
         if isinstance(path, str) and path and not is_node_ref(path):
             problems += RecordsWriteRun.path_problems(path)
         return problems
-
-    @classmethod
-    def serving_effect(cls, params, verified_run_evidence):
-        """Answer ``pure``: the node reads nothing but its inputs and params."""
-        return "pure"
 
     def validate_inputs(self, inputs):
         """List problems with the wired ports: the rows' container and the portfolio's shape."""
@@ -187,12 +204,9 @@ class HoldVerdict(RecordsWrite):
         if problems:
             raise ValueError(f"{self.key}: {'; '.join(problems)}")
         name = RecordsWriteRun.run_name(ctx)
-        day = str(getattr(ctx, "asof", "") or "")[:10]
-        if not day:
-            raise ValueError(f"{self.key}: the title line needs the run's as-of day (ctx.asof)")
         framed = copy.copy(self)
         framed.params = {**self.params, "path": self.params["path"].replace(RUN_PLACEHOLDER, name)}
-        framed._frame = _Frame(day, self._portfolio(inputs.get(self._PORTFOLIO)))
+        framed._frame = _Frame(self._portfolio(inputs.get(self._PORTFOLIO)))
         return super(HoldVerdict, framed).run(ctx, inputs)
 
     def render(self, records):
@@ -200,7 +214,7 @@ class HoldVerdict(RecordsWrite):
         if self._frame is None:
             raise ValueError(f"{self.key}: render needs the run frame; call run()")
         rows = self._rows(records)
-        lines = [f"# {self.params['title']} — {self._frame.day}", ""]
+        lines = [f"# {self.params['title']} — {self._day_of(rows)}", ""]
         lines += self._table(rows) + [""]
         lines += self._portfolio_lines(self._frame.portfolio) + [""]
         lines += ["## Key", ""] + [f"- {line}" for line in _KEY_LINES]
@@ -226,24 +240,59 @@ class HoldVerdict(RecordsWrite):
         for field in p["key_fields"]:
             if field not in row:
                 raise ValueError(f"{self.key}: {where} has no field {field!r}")
+        day = self._day(where, row)
         numbers = {name: self._value(where, row, p[name], name in NULLABLE_FIELDS)
                    for name in DISPLAY_FIELDS}
+        decision = self._decision(where, row, numbers[_COST_PARAM])
+        holding = _KEY_SEPARATOR.join(str(row[k]) for k in p["key_fields"])
+        return {"holding": holding, "day": day, "numbers": numbers, "decision": decision}
+
+    def _day(self, where, row):
+        """Return the row's decision day; refuse a missing field or anything but a real ISO date."""
+        field = self.params["as_of_field"]
+        if field not in row:
+            raise ValueError(f"{self.key}: {where} has no field {field!r}")
+        if date_problem(row[field]):
+            raise ValueError(f"{self.key}: {where} field {field!r} must be an ISO date "
+                             f"(YYYY-MM-DD), got {row[field]!r}")
+        return row[field]
+
+    def _decision(self, where, row, cost):
+        """Return the row's decision; refuse one outside the vocabulary or against ``cost``'s sign.
+
+        The page prints the opportunity cost and the verdict side by side, so they must agree:
+        exit needs a cost above zero; hold needs zero (a tie holds), a negative cost or None.
+        """
+        p = self.params
         field = p["decision_field"]
         if field not in row:
             raise ValueError(f"{self.key}: {where} has no field {field!r}")
-        if row[field] not in VERDICTS:
+        decision = row[field]
+        if not isinstance(decision, str) or decision not in VERDICTS:
             raise ValueError(f"{self.key}: {where} field {field!r} must be one of "
-                             f"{sorted(VERDICTS)}, got {row[field]!r}")
-        holding = _KEY_SEPARATOR.join(str(row[k]) for k in p["key_fields"])
-        return {"holding": holding, "numbers": numbers, "decision": row[field]}
+                             f"{sorted(VERDICTS)}, got {decision!r}")
+        if (cost is not None and cost > 0.0) != (decision == _EXIT):
+            raise ValueError(
+                f"{self.key}: {where} field {field!r} is {decision!r} but field "
+                f"{p[_COST_PARAM]!r} is {cost!r}: exit needs a positive opportunity cost; hold "
+                "needs zero, a negative one or null")
+        return decision
+
+    def _day_of(self, rows):
+        """Return the one decision day the rows carry; refuse several."""
+        days = sorted({row["day"] for row in rows})
+        if len(days) != 1:
+            raise ValueError(f"{self.key}: rows carry several {self.params['as_of_field']} days "
+                             f"{days}; a page is one decision day")
+        return days[0]
 
     def _rows(self, records):
         """Read every row and sort by opportunity cost descending, nulls last, ties stable."""
         if not records:
             raise ValueError(f"{self.key}: records carry no rows: there is no holding to report")
         rows = [self._row(index, row) for index, row in enumerate(records)]
-        return sorted(rows, key=lambda r: (r["numbers"]["opportunity_cost_field"] is None,
-                                           -(r["numbers"]["opportunity_cost_field"] or 0.0)))
+        return sorted(rows, key=lambda r: (r["numbers"][_COST_PARAM] is None,
+                                           -(r["numbers"][_COST_PARAM] or 0.0)))
 
     def _table(self, rows):
         """Return the table's lines: header, alignment, one line per holding."""
@@ -254,7 +303,7 @@ class HoldVerdict(RecordsWrite):
             cells = [_cell(row["holding"])]
             cells += [_plain(numbers[name], 2) if name == _BETA_PARAM else _percent(numbers[name])
                       for name in DISPLAY_FIELDS]
-            admissible = numbers["opportunity_cost_field"] is not None
+            admissible = numbers[_COST_PARAM] is not None
             cells.append(VERDICTS[row["decision"]] if admissible else NO_ALTERNATIVE)
             lines.append("| " + " | ".join(cells) + " |")
         return lines
@@ -298,6 +347,9 @@ class HoldVerdict(RecordsWrite):
         else:
             wins = "selling all wins" if cost > 0.0 else "holding all wins"
             lines.append(f"- Sell all vs hold all: opportunity cost {_percent(cost)} a year ({wins})")
-        lines.append(f"- Verdicts: {int(portfolio['exit_positions'])} {VERDICTS['exit']}, "
-                     f"{int(portfolio['hold_positions'])} {VERDICTS['hold']}")
+        if cost is None:
+            lines.append(f"- Verdicts: {NO_ALTERNATIVE}")
+        else:
+            lines.append(f"- Verdicts: {int(portfolio['exit_positions'])} {VERDICTS[_EXIT]}, "
+                         f"{int(portfolio['hold_positions'])} {VERDICTS[_HOLD]}")
         return lines

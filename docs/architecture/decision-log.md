@@ -33974,10 +33974,11 @@ selection claim is made.
 
 Owner's ask: "sign into Schwab and answer what it is worth to hold something".
 Tier 1 `dskit/pipeline/hold_verdict.py`, `HoldVerdict` (by import path, role
-report, `pure`): `PositionSummary` rows plus, on an optional `portfolio` port,
-its `metrics` -> one markdown page per run (holdings by opportunity cost
+report, `serving_effect` `forbidden` as for every file writer; first built
+`pure`, corrected below): `PositionSummary` rows plus, on an optional `portfolio`
+port, its `metrics` -> one markdown page per run (holdings by opportunity cost
 descending; HOLD / EXIT, `n/a — no admissible alternative` when the hurdle was
-withheld; portfolio block; three-line key). A `RecordsWrite` member, `{run}` per
+withheld; portfolio block; key). A `RecordsWrite` member, `{run}` per
 `RecordsWriteRun`; every field name a required param. An absent portfolio is
 stated, not recomputed (a second owner of `PositionSummary`'s concentration rule).
 Child: `configs/run-hold-report.json` reads the published `decisions` stream and
@@ -33987,3 +33988,76 @@ volatility read an em dash there until the verdict node is wired into the
 decision document itself. `weekly.sh <day>` chains pull -> decide -> publish ->
 report; an ADR-0227 manifest is deferred (the report's stream is the decision
 run's name, known only after it runs).
+
+#### ADR-0279 amendment: hold verdict, Sonnet round 1 corrections (2026-10-28)
+
+A Sonnet reviewer found 2 Major and 10 Minor (plus Nits) on the hold verdict
+report (Opus build `16a261f`); all fixed. RED first on the unchanged build; the
+two `weekly.sh` mutants named below survived the old tests and are killed by the
+new one, each run in a scratch copy of the child.
+
+- Major 1 — the break-even key. It is the pre-cost, pre-tax `redeploy_return`, the
+  hurdle's basis, not an after-tax return. The key now reads "Break-even: the
+  annual return an alternative must earn, before its own cost and tax (same basis
+  as the hurdle), for exiting to tie holding.", and adds "Expected return is
+  before tax." and "Tax to sell is a share of value; 'tax to sell all' ignores
+  loss offsets unless loss_offset is declared." (four lines; the string is locked
+  by the hand-written page test).
+- Major 2 — `weekly.sh` was untested. `test_hold_report.py` copies the script and
+  the shipped configs beside a scratch onboarding root (`localfiles` for Schwab,
+  PYTHON and PYTHONPATH in the env, run from another directory) holding two
+  snapshots: the shipped placeholder day with VTI 2500 / AAPL 600 (a decoy) and
+  the run day (the placeholder less seven) with 2750 / 640. It asserts the decisions
+  file's `as_of` and name, VTI's `liq_net` (2750 less 750 x the declared rate), the
+  page title day, the report run's name, VTI's weight 2750 / 3390 = 81.1%, embedded
+  gain 27.3% and tax to sell 6.5%, and that the shipped documents are unedited.
+  Killed: disabling the day substitution (decisions `as_of` 2026-10-27, not
+  2026-10-20) and the stream substitution (the report run refuses the
+  `REPLACE-with-the-decision-run-name` stream).
+- Minor 1 — a null portfolio `opportunity_cost` (withheld hurdle): the Verdicts
+  line reads `n/a — no admissible alternative`, not "0 EXIT, 2 HOLD".
+- Minor 2 — `weekly.sh`: a pipeline run's output is captured with its stderr,
+  printed, and on a non-zero status the script says `weekly.sh: the pipeline run
+  of <document> exited <n>; run dir: <dir>` and exits with that status (1 error, 3
+  halted); a failed run (a day with no snapshot) is tested for the message, the run
+  directory and no report written. Other steps' output flows unchanged.
+- Minor 3 — `serving_effect`: the `pure` override is dropped. A file writer stays
+  `forbidden` like `records-write`, `table-write` and `run-report`; tested against
+  `RecordsWrite` / `RecordsWriteRun` and that the class defines no override.
+- Minor 4 — the main fixture is four holdings, one EXIT and three HOLD, so a swapped
+  count or label fails; a symbol with `|` cannot add a column; a tie (opportunity
+  cost 0.0) reads HOLD, the portfolio's reads "holding all wins".
+- Minor 5 — a row's decision must agree with its opportunity cost's sign: exit
+  needs more than zero, hold needs zero, a negative or null; a disagreement refuses
+  by index and field (four cases).
+- Minor 6 — covered by Major 1's key text.
+- Minor 7 — the title day is the decisions' own `as_of`, never `ctx.asof`: the
+  new required param `as_of_field` names it on every row (an ISO date by
+  `document.date_problem`, the one date rule); several days refuse. The summary
+  rows carry it because `run-hold-report.json` adds `as_of` to the summary's
+  `key_fields` (a key field rides onto its rows; the other summary terms stay
+  pinned equal to the decision document's, `key_fields` aside, by a test). The
+  child e2e reports a year after the decision and the title still reads the
+  decision's day.
+- Minor 8 — the cell escape is `runs._escape_pipe` (the owner `driver._md_cell`
+  already imports), not a restated `replace`; a line break reads as a space
+  (`str.splitlines`), tested for `\n` and `\r\n`.
+- Minor 9 — `shopt -s inherit_errexit` is gone (bash 4.4; macOS ships 3.2);
+  `set -euo pipefail` stays, each `$(...)` is checked by `|| exit $?`, a test
+  refuses bash 4-only constructs in the script's code.
+- Minor 10 — the child README Layout tree and its CLAUDE.md Layout name
+  `run-hold-report.json`, `report/`, `weekly.sh` and `test_hold_report.py`
+  (AGENTS.md mirrored); the dskit pipeline README entry is current.
+- Nits — the docstring no longer says nothing is computed: the one product is the
+  portfolio's tax to sell in currency; `NO_ALTERNATIVE` is in `__all__`; a list or
+  dict `decision` refuses with `ValueError` (it was a `TypeError`); `weekly.sh`
+  checks the day with `date_problem` (a real calendar day: 2026-02-30 and 2026-1-5
+  refuse) and tells an unimportable dskit from a bad day; the key says "tax to
+  sell" is a share of value.
+
+Gates: `tests/pipeline/test_hold_verdict.py` 42 -> 61 tests; the child suite 74 ->
+83 passed (9 skipped as before); `test_hold_verdict`, `test_serving_effect` and
+`tests/docs` 169 passed; ruff clean. Disclosed, not caused here: four failures in
+`tests/pipeline` that fail identically on `16a261f` (`test_purity` `parquet.py`
+imports `dskit.onboarding.snapshot`; `test_runs` unlistable nodes dir, run as root;
+`test_study_protocol` fresh release; `test_uncertainty_set` replace arrays).

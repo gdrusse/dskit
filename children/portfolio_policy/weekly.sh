@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The weekly hold verdict (ADR-0279 amendment, 2026-10-28), from the child root:
+# The weekly hold verdict (ADR-0279 amendment, 2026-10-28), from anywhere:
 #
 #   bash weekly.sh <snapshot day YYYY-MM-DD>
 #
@@ -11,24 +11,46 @@
 # so the shipped document is never edited and the run's identity hash records the day.
 # A workflow manifest (ADR-0227) is deferred: the summary stream is named by the decision run,
 # which is known only after it runs, and the decision document is not a template.
+#
+# A failed step stops the script with a non-zero status. A pipeline run that fails or halts has
+# its own output printed first, then the document and its run directory; any other step's output
+# flows as it is. PYTHON names the interpreter (default: python).
+#
+# bash 3.2 (macOS) is enough: there is no `shopt -s inherit_errexit` (bash 4.4), so a failure
+# inside $(...) is checked explicitly: `|| exit $?` after each substitution, a status test in run().
 set -euo pipefail
-shopt -s inherit_errexit   # a failed run inside $(...) stops the script too
 
-day="${1:?usage: bash weekly.sh <snapshot day YYYY-MM-DD>}"
-[[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "not a YYYY-MM-DD day: $day" >&2; exit 1; }
 py="${PYTHON:-python}"
+day="${1:?usage: bash weekly.sh <snapshot day YYYY-MM-DD>}"
+
+# dskit's one date rule (a real calendar day in the extended form), not a regex restated here;
+# status 3 is the rule's refusal, any other failure is the interpreter or dskit not being found
+status=0
+"$py" -c 'import sys
+from dskit.pipeline.document import date_problem
+sys.exit(3 if date_problem(sys.argv[1]) else 0)' "$day" || status=$?
+case "$status" in
+    0) ;;
+    3) echo "weekly.sh: not a real YYYY-MM-DD day: $day" >&2; exit 1 ;;
+    *) echo "weekly.sh: could not check the day: is dskit importable by '$py'?" >&2; exit 1 ;;
+esac
+
 cd "$(dirname "$0")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# one pipeline run; prints its output and returns the run directory's name
+# one pipeline run of document $1: its output goes to stderr, its run directory's name to stdout;
+# a run that fails or halts exits with the pipeline's own status (1 error, 3 halted at a NO-GO)
 run() {
-    local out
-    out="$("$py" -m dskit.pipeline run "$1" --asof "$day")"
+    local out dir status=0
+    out="$("$py" -m dskit.pipeline run "$1" --asof "$day" 2>&1)" || status=$?
     printf '%s\n' "$out" >&2
-    local dir
     dir="$(printf '%s\n' "$out" | sed -n 's/^(run dir: \(.*\))$/\1/p' | tail -n 1)"
-    [[ -n "$dir" ]] || { echo "no run directory reported by $1" >&2; exit 1; }
+    if [[ "$status" -ne 0 ]]; then
+        echo "weekly.sh: the pipeline run of $(basename "$1") exited $status${dir:+; run dir: $dir}" >&2
+        exit "$status"
+    fi
+    [[ -n "$dir" ]] || { echo "weekly.sh: no run directory reported by $1" >&2; exit 1; }
     basename "$dir"
 }
 
@@ -61,7 +83,7 @@ mkdir -p decisions summary report
 "$py" -m dskit.onboarding acquire --root ./ob --source schwab --stream positions --mode backfill
 
 derive configs/run-hold-vs-redeploy.json "$work/run-hold-vs-redeploy.json" "$day" ""
-decision_run="$(run "$work/run-hold-vs-redeploy.json")"
+decision_run="$(run "$work/run-hold-vs-redeploy.json")" || exit $?
 
 "$py" -m dskit.onboarding register-source decisions --root ./ob \
     --catalog-source decisions-src --connector localtables \
@@ -69,6 +91,6 @@ decision_run="$(run "$work/run-hold-vs-redeploy.json")"
 "$py" -m dskit.onboarding acquire --root ./ob --source decisions --stream "$decision_run" --mode backfill
 
 derive configs/run-hold-report.json "$work/run-hold-report.json" "$day" "$decision_run"
-report_run="$(run "$work/run-hold-report.json")"
+report_run="$(run "$work/run-hold-report.json")" || exit $?
 
 echo "report/${report_run}.md"

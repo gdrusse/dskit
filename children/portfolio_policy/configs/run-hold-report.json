@@ -16,7 +16,7 @@
       "uses": "dskit.pipeline.position_summary:PositionSummary",
       "inputs": { "records": "$decisions.records" },
       "params": {
-        "key_fields": ["account", "symbol"],
+        "key_fields": ["account", "symbol", "as_of"],
         "symbol_field": "symbol",
         "value_field": "market_value",
         "net_field": "liq_net",
@@ -26,7 +26,7 @@
         "redeploy_tax_rate": 0.408,
         "redeploy_tax_timing": "annual"
       },
-      "notes": "Restates run-hold-vs-redeploy.json summary's params (tests/test_hold_report.py pins them equal), so every number matches the decision run's own summary. betas and volatilities are not wired here: the decision rows carry neither, so the Beta and Vol columns read an em dash. Wiring the verdict node into the decision document itself (once the risk and lots lanes merge) gives them back."
+      "notes": "Restates run-hold-vs-redeploy.json summary's params (tests/test_hold_report.py pins them equal, key_fields aside), so every number matches the decision run's own summary. key_fields adds as_of: a key field rides onto each summary row, which is how the verdict page reads the decisions' own day for its title. betas and volatilities are not wired here: the decision rows carry neither, so the Beta and Vol columns read an em dash. Wiring the verdict node into the decision document itself (once the risk and lots lanes merge) gives them back."
     },
     "verdict": {
       "uses": "dskit.pipeline.hold_verdict:HoldVerdict",
@@ -37,6 +37,7 @@
         "overwrite": false,
         "title": "What holding is worth",
         "key_fields": ["account", "symbol"],
+        "as_of_field": "as_of",
         "weight_field": "weight",
         "expected_return_field": "expected_return",
         "volatility_field": "volatility",
@@ -47,7 +48,7 @@
         "opportunity_cost_field": "opportunity_cost",
         "decision_field": "decision"
       },
-      "notes": "Role 'report': one markdown page per run in ./report under the invoking cwd (gitignored). Holdings sorted by opportunity cost a year, highest first: above zero the after-tax alternative beats holding. The portfolio block is the summary's metrics, wired, never recomputed."
+      "notes": "Role 'report': one markdown page per run in ./report under the invoking cwd (gitignored). Holdings sorted by opportunity cost a year, highest first: above zero the after-tax alternative beats holding. The title day is the as_of the decisions carry (several refuse), not the run's --asof. The portfolio block is the summary's metrics, wired, never recomputed."
     }
   },
   "outputs": {

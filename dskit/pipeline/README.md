@@ -911,14 +911,20 @@ they register only into private registries, never the default one.
   `key_fields` rule are `decision_outcomes`' `annualized_growth` /
   `check_key_fields_param`.
 - `hold_verdict.py` (`HoldVerdict`) (ADR-0279 amendment 2026-10-28, by import
-  path, role report, `pure`): `PositionSummary` rows (+ its `metrics` on the optional
-  `portfolio` port) -> ONE markdown page: title with the as-of day, a table per holding
-  sorted by opportunity cost descending (nulls last; percentages to one decimal, beta to
-  two, null as an em dash; verdict HOLD / EXIT, `n/a — no admissible alternative` when the
-  opportunity cost is null), the portfolio block, a three-line key. Every field name is a
-  required param. The write is `RecordsWrite`'s (no clobber, atomic, `provenance` +
-  `metrics` digest); `{run}` in the stem follows `RecordsWriteRun.path_problems` /
-  `run_name`. An absent portfolio is stated, never recomputed.
+  path, role report, `serving_effect` `forbidden` like every file writer): `PositionSummary`
+  rows (+ its `metrics` on the optional `portfolio` port) -> ONE markdown page: title with
+  the decisions' as-of day (read from `as_of_field` on the rows, never the run's `asof`;
+  several days refuse), a table per holding sorted by opportunity cost descending (nulls
+  last; percentages to one decimal, beta to two, null as an em dash; verdict HOLD / EXIT,
+  `n/a — no admissible alternative` when the opportunity cost is null, and then the
+  portfolio's sell-all and verdict-count lines read it too), the portfolio block, a four-line
+  key (break-even is on the hurdle's pre-cost, pre-tax basis; expected return is pre-tax).
+  A row's decision must agree with its opportunity cost's sign (exit above zero; a tie holds)
+  or it refuses by index. Every field name is a required param. The write is
+  `RecordsWrite`'s (no clobber, atomic, `provenance` + `metrics` digest); `{run}` in the
+  stem follows `RecordsWriteRun.path_problems` / `run_name`; a cell escapes `|` through
+  `runs._escape_pipe` and reads a line break as a space. An absent portfolio is stated,
+  never recomputed.
 - `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
   `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
   out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one

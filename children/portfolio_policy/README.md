@@ -293,9 +293,12 @@ portfolio_policy/
 │   ├── run-sample.json    # a pipeline document
 │   ├── serve-sample.json  # a serve document — the run, served forward
 │   ├── run-hold-vs-redeploy.json   # ADR-0279: positions -> tax, market -> betas, hurdle -> decide -> summary
+│   ├── run-hold-report.json        # ADR-0279 amendment: a decision run's rows -> summary -> the verdict page
 │   └── run-decision-outcomes.json  # ADR-0279: a past decision run scored against a later snapshot
+├── weekly.sh              # bash weekly.sh <day>: pull -> decide -> publish -> report
 ├── decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
 ├── summary/               # the few numbers per holding, one file per run (gitignored)
+├── report/                # the hold verdict page, one markdown file per run (gitignored)
 ├── outcomes/              # scored hold forecasts, one file per run (gitignored)
 ├── models/                # fitted ML/optimization artifacts (gitignored)
 │   ├── README.md          # what belongs here vs the run directory
@@ -326,6 +329,7 @@ portfolio_policy/
     ├── test_execution.py  # the venue executor's shape; the battery, one line away
     ├── test_nodes.py      # conformance suite + a document e2e
     ├── test_hold_vs_redeploy.py  # both ADR-0279 documents e2e on a synthetic onboarding root
+    ├── test_hold_report.py       # the report e2e, and weekly.sh run for real on a scratch root
     └── test_production.py # the serve document validates; every template fail-closed
 ```
 
@@ -345,8 +349,11 @@ publishes the decisions and runs `configs/run-hold-report.json`. The page lists 
 holding, highest opportunity cost first: weight, expected return, volatility, beta,
 embedded gain, tax to sell, break-even and opportunity cost a year, then HOLD or EXIT
 (`n/a — no admissible alternative` when the hurdle was withheld). Opportunity cost above
-zero: the after-tax alternative beats holding by that much a year. Break-even: the return
-an alternative must clear to tie. Tax to sell: what leaving costs today. The portfolio block
+zero: the after-tax alternative beats holding by that much a year. Break-even: the annual
+return an alternative must earn, before its own cost and tax (the hurdle's basis), for
+exiting to tie holding. Expected return is before tax. Tax to sell is a share of value;
+"tax to sell all" ignores loss offsets unless `loss_offset` is declared. The portfolio block
 gives the total, weighted return, concentration (HHI, top holding), tax to sell everything
-and selling all against holding all. Beta and volatility read `—` until the verdict is
-wired into the decision document.
+and selling all against holding all. The title day is the decisions' own `as_of`. Beta and
+volatility read `—` until the verdict is wired into the decision document. A step that fails
+stops `weekly.sh` with its output, and a pipeline run's document and run directory.
