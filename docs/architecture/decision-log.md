@@ -33969,3 +33969,81 @@ Actual full-year peak resource use, solves, returns and replay remain
 unmeasured. Do not compare or review until all methods complete and retained
 outputs are inspected. No result, outperformance, promotion or predictive
 selection claim is made.
+
+#### ADR-0279 amendment: risk inputs from Schwab daily bars (approved by owner 2026-10-28, research A0003)
+
+**Ask.** "Build so that we have all the machinery we need to pull from Schwab and calculate
+the figures I need to know whether or not I should continue to hold an asset." The decision
+document still needed two hand inputs: the `betas` table and (for the summary) per-symbol
+volatility, null because no daily prices were onboarded. Both now come from Schwab daily
+bars, through onboarding, in the same run as the decision.
+
+**Estimators (research A0003, `children/portfolio_policy/docs/research/risk-inputs/`).**
+Beta: OLS slope of 252 daily log returns on SPY's (one year), Blume-adjusted
+`0.67 x raw + 0.33`; the adjusted beta prices the hold return, the raw one is reported.
+Volatility: zero-mean RMS of 252 daily log returns `x sqrt(252)` (the existing
+`DailyBarFeatures.realized_vol`). The window (252 sessions) and the annualization factor
+(252 trading days a year) are separate declarations that happen to be equal.
+
+**Files.**
+
+- `dskit/onboarding/libs/schwab.py`: `SchwabDailyBarsConnector`, registered `schwab_daily`
+  in `connector.DEFAULT_CONNECTORS` beside `schwab` and `schwab_positions`; same OAuth and
+  transport base (`_NOUN` "Schwab daily history", one token file for all three). Knobs
+  `symbols`, `start` (ISO date), `overlap_days` (default `DEFAULT_OVERLAP_DAYS` 5) plus the
+  shared OAuth/transport knobs. Request `periodType=year`, `frequencyType=daily`,
+  `frequency=1`, `startDate` = 00:00 New York of the first day, `endDate` = 00:00 New York of
+  the pull's New York date, `needExtendedHoursData=false`, `needPreviousClose=false`. Emits
+  the provider-neutral `bars` stream keyed `(symbol, ts)` with `ts` the session date
+  `YYYY-MM-DD` (also the `effective_date`), OHLCV, `trade_count`/`vwap` null. Session date
+  = the America/New_York calendar date of the candle's `datetime` (Schwab stamps 00:00
+  Central of the session: 05:00 UTC in daylight time, 06:00 in standard time); a stamp at
+  or after 09:30 New York refuses (not a session-start label, so its session would be a
+  guess), as do two candles on one session and any non-finite or bool number. Closed = a
+  session date strictly before the pull's New York date; today's candle is never emitted.
+  Backfill resumes the day after the cursor (the last emitted session); live re-requests
+  `overlap_days` calendar days before it, so late corrections land as new bitemporal
+  evidence. The one-minute pack's behaviour is unchanged; the symbols check and the
+  candles-list check move to shared helpers with the same messages.
+- `dskit/pipeline/kinds_flow.py`: `DateOrderedGroupBy`, a `GroupBy` subclass by import
+  path (not registered) whose `order_field` holds ISO `YYYY-MM-DD` dates
+  (`document.date_problem`, the one date rule) instead of numbers; only the `_instant` hook
+  changes. Why a capability: the risk numbers are read at the latest closed session on or
+  before the snapshot day, and a same-day pull has no closed bar on the snapshot day, so an
+  equality filter would match nothing; "last row per symbol by date" is generic, and the
+  registered `groupby` refuses a date-text order on purpose (its test is unchanged).
+- `dskit/pipeline/hold_return.py`: `BetaHoldReturns` gains an optional `betas` INPUT port
+  (`{symbol: number}`) that replaces the now-optional `betas` param (mirroring
+  `HoldVsRedeploy.hold_returns`): a wired `None` or non-number entry refuses, an unknown
+  symbol still refuses unless `default_beta`, and the summary names `betas_source`
+  (`wired` | `param`). The hand table stays as the fallback.
+- `children/portfolio_policy/configs/run-hold-vs-redeploy.json` (option ii, one run does
+  everything): `bars` (ObservationRows, source `schwab_daily`, stream `bars`, key
+  `(symbol, ts)`) -> `benchmark` (filter symbol == SPY) -> `risk_features`
+  (`DailyBarFeatures`: `realized_vol` 252, `market_relative.beta_window` 252) -> `risk_day`
+  (filter `ts <=` the snapshot day) -> `risk_latest` (`DateOrderedGroupBy`, last per symbol
+  by `ts`) -> `risk` (`ComputeFields`: `annual_vol`, adjusted `beta`, `as_of`, windows) ->
+  `vols` / `risk_betas` (`keyby` symbol) -> `betas.betas` input and
+  `summary.volatilities`; `risks` writes `risk/{run}.jsonl`. The bars snapshot becomes part
+  of the decision's identity, which is correct: the betas price the decision. `betas`
+  carries no table literal. A standalone `run-risk-inputs.json` is not shipped: option (ii)
+  holds the chain once, and a second copy would need a node-for-node pin.
+- Child tests: the synthetic root gains a daily `bars` stream (`localfiles` standing in for
+  `schwab_daily`, 300 seeded sessions of VTI, AAPL, SPY); expectations from the generator's
+  parameters (loose) and recomputed exactly from the written bars in plain Python;
+  `test_configs.py` pins the risk windows each declared twice and risk day == snapshot day.
+- README "First real run from Schwab" runbook, Limits, lane note, the onboarding and
+  pipeline README/CLAUDE trees (+ mirrors), `.gitignore` `children/*/risk/`.
+
+**Deferred.** A staleness bound on the risk session (it is reported as `as_of` in
+`risk/<run>.jsonl`, not refused); split detection (Schwab's adjustment is undocumented);
+whether mutual funds have Schwab daily history; a default volatility for a holding without
+a year of bars (the run stops on it by name); weekly or monthly beta variants; a covariance
+portfolio volatility; a `dskit.production` serve document.
+
+Sweep: tools/sweep/sweep SchwabDailyBarsConnector schwab_daily daily_bars DailyBars
+daily_history overlap_days DateOrderedGroupBy date_ordered latest_per_key last_per_group
+betas_source DEFAULT_OVERLAP_DAYS DAILY_INTERVAL SESSION_TZ run-risk-inputs; near matches
+only `SchwabBarsConnector` (the one-minute sibling, extended not copied), `GroupBy` (the
+base subclassed), the index_options child's `StockDailyBars` (a Yahoo chart transform,
+unrelated) and private `_session` helpers / tool-script `SESSION_TZ` constants.
