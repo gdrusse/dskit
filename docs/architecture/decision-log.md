@@ -34504,3 +34504,48 @@ Gates: `test_hold_verdict`, `test_serving_effect`, `test_tax_lots`, `test_positi
 `tests/docs` 333 passed; child suite 118 passed (9 skipped as before); `tests/pipeline` fails the
 four tests disclosed in round 1 and nothing else; ruff clean on the changed files; `bash -n weekly.sh`;
 the three child documents validate; `weekly.sh` run for two consecutive weeks on a scratch root.
+
+#### ADR-0278 amendment: opt-in filled-account terminal shock admission (owner request 2026-10-28, approved as the build instruction)
+
+**Approval.** The owner requested an isolated end-to-end build of the presented
+fill-aware rule in this session; that request is the approval. Research-only,
+development year 2019 under locked Path A0003 (windows) and A0008 (training
+sequence); no rerun, retraining, 2020+ read, Path or TDD change.
+
+**Why.** The 2019 stress diagnosis found the legacy `shock` row is a
+signal-time terminal check on the new batch only: it ignores held books and is
+not recomputed after fill refusals (May 20: a refused WYNN hedge left an
+unhedged 55-call TTD book).
+
+**Rule.** `WeeklyOptionPortfolioStudy` method `shock` gains optional
+`scope`, whose only accepted value is `filled_account`. Absent, the legacy
+three-key behavior, JSON identity and results are unchanged.
+- Signal t: each open book's terminal loss per move is
+  `-(fill credit net of fees) - multiplier x structure_payoff(signed legs,
+  max(0, S x (1 + beta x move)))`, S the day's close in the book's basis,
+  beta from strictly earlier sessions (1.0 fallback unchanged). Losses net
+  across books, gains included. The joint-row upper becomes
+  `max(0, loss_fraction x max(0, funding) - held loss)`; candidate
+  coefficients stay signal-quote projected. If held loss alone exceeds the
+  limit (plus `solver.parity_tolerance`), the week records the breach and
+  solves no batch.
+- Fill t+1 EOD, after deposits and settlements: the existing per-book
+  all-or-none quote/size preflight runs; before `FundedOptionAccount.admit`,
+  the same loss is recomputed at t+1's close and betas for all open books plus
+  only the surviving fills at actual fill credits. Any move over the limit
+  declines every surviving new book (`shock_risk_limit`); holdings are kept and
+  an existing-only breach is reported. Funding excludes open marks.
+- A missing or nonfinite required input (close, basis, credit) fails closed:
+  no solve at t, or every survivor declined (`shock_risk_input`).
+- Evidence: the signal block (`held`, projected losses, limit, status) and the
+  postfill block (survivors, preflight refusals, losses, limit, status) are
+  persisted and reproduced by recorded replay.
+
+**Limits.** Conditional EOD backtest admission; not real-time executable,
+cross-symbol atomic or broker protection. The June 17 one-day -12%/+15-point
+model-mark loss and the 1,149 pricing refusals stay separate, incomplete
+diagnostics. `OptionScenarioReprice` is unchanged.
+
+Sweep: tools/sweep/sweep filled_account fill_aware shock_admission postfill
+held_shock shock_scope; no near matches on 40 refs and 92 worktrees. Owners:
+`children/index_options/index_options/ledger_studies.py` and its tests.

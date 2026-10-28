@@ -573,3 +573,29 @@ def test_sqlite_quote_index_matches_legacy_weekly_account(tmp_path):
                and "funding_cash_usd" not in e and "twr" not in e for e in daily)
     assert sum(e["type"] == "marked_equity_point" for e in events) == len(indexed.calendar)
     indexed.close_quote_indexes(verify=True)
+
+
+def test_filled_account_shock_packet_matches_direct_study(study):
+    """The packet runs the filled-account scope exactly as the direct study does."""
+    study["domain"]["params"]["methods"][0]["shock"] = {
+        "moves": [-.1, .1], "loss_fraction": .08, "beta_lookback": 2, "scope": "filled_account"}
+    registry, plan, permit = _open(study)
+    intake = MIOPacketInputs("intake", {"study": study}).run(None, {"permit": permit})
+    packet = MIOPacketStudy("study", {"study": study}).run(None, {"permit": permit, **intake})
+    assert [(r["status"], r["replay_parity"]) for r in packet["results"]] == [("completed", True)]
+    bounded = intake["bounded_inputs"]
+    d = study["domain"]
+    direct = WeeklyOptionPortfolioStudy(
+        {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}, bounded["inputs"])
+    expected = direct._method(d["params"]["methods"][0], None)
+    direct.close_quote_indexes()
+    def without_timing(result):
+        result = copy.deepcopy(result)
+        for decision in result["decisions"]:
+            for certificate in decision.get("certificates", []):
+                certificate.pop("seconds", None)
+        return result
+    actual = packet["results"][0]["result"]
+    assert without_timing(actual) == without_timing(expected)
+    assert actual["decisions"][0]["shock"]["scope"] == "filled_account"
+    assert actual["decisions"][0]["shock_admission"]["status"] == "admissible"

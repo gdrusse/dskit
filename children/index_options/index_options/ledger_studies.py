@@ -1312,7 +1312,12 @@ class WeeklyOptionPortfolioStudy:
         terminal loss may reach) and beta_lookback (int >= 2, trailing
         sessions for each name's beta on the equal-weight basket). Each move
         adds one joint solver row bounding the selection's terminal loss net
-        of premium when every name moves beta times that fraction.
+        of premium when every name moves beta times that fraction. An
+        optional fourth key, scope "filled_account" (ADR-0278 amendment,
+        research-only), adds every open book at its fill credit and the
+        day's close to the same budget at the signal, and at the next-session
+        fill recomputes it for the open books plus the surviving fills before
+        admission: a breach declines every surviving new book.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1332,6 +1337,7 @@ class WeeklyOptionPortfolioStudy:
     _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock"}
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
+    _FILLED_ACCOUNT = "filled_account"
 
     def __init__(self, params, inputs):
         import copy
@@ -1553,8 +1559,9 @@ class WeeklyOptionPortfolioStudy:
 
     @classmethod
     def _shock_valid(cls, shock):
-        """Return whether a shock policy has exactly its three well-formed keys."""
-        if not isinstance(shock, dict) or set(shock) != cls._SHOCK_KEYS:
+        """Return whether a shock policy has its three well-formed keys and an optional scope."""
+        if (not isinstance(shock, dict) or set(shock)-{"scope"} != cls._SHOCK_KEYS
+                or shock.get("scope", cls._FILLED_ACCOUNT) != cls._FILLED_ACCOUNT):
             return False
         moves = shock["moves"]
         return (isinstance(moves, list) and bool(moves)
@@ -1575,8 +1582,17 @@ class WeeklyOptionPortfolioStudy:
                                      else spot-i["strike"]), 0.) for i in items]
 
     @classmethod
-    def _shock_rows(cls, shock, betas, metadata, groups, mult, funding):
-        """Return one joint row per move: terminal loss net of premium at the shocked price."""
+    def _filled_scope(cls, shock):
+        """Return whether a declared shock policy covers the filled account."""
+        return shock is not None and shock.get("scope") == cls._FILLED_ACCOUNT
+
+    @classmethod
+    def _shock_rows(cls, shock, betas, metadata, groups, mult, funding, held=None):
+        """Return one joint row per move: terminal loss net of premium at the shocked price.
+
+        ``held`` maps each move to the open books' loss, which the row's upper
+        bound leaves out of the budget (a held gain widens it).
+        """
         import numpy as np
 
         upper = shock["loss_fraction"]*max(0., funding)
@@ -1585,7 +1601,58 @@ class WeeklyOptionPortfolioStudy:
                                meta["items"], max(0., meta["spot"]*(1.+betas[meta["symbol"]]*move)), mult))
                                         - np.asarray(group["credit"])).tolist()
                            for group, meta in zip(groups, metadata)},
-                 "upper": upper} for move in shock["moves"]]
+                 "upper": upper if held is None else max(0., upper-held[str(move)])}
+                for move in shock["moves"]]
+
+    def _account_shock(self, books, day, shock):
+        """Return the betas and each move's net terminal loss of books at the day's close.
+
+        Each book loses its fee-adjusted credit plus multiplier times its
+        payoff at max(0, close x (1 + beta x move)), the close in the book's
+        basis and beta from strictly earlier sessions. The losses are None when
+        a required input is missing or nonfinite, so the caller fails closed.
+        """
+        from dskit.pipeline.option_structures import structure_payoff
+
+        estimate = self._betas(day, shock["beta_lookback"])
+        mult = self.params["bridge"]["solver"]["multiplier"]
+        losses = {str(move): 0. for move in shock["moves"]}
+        for book in books:
+            symbol, factor = book["symbol"], book["factor"]
+            close, observed = self._bars[symbol].get(day), self._factors[symbol].get(day)
+            if (not number_ok(close) or close <= 0 or not number_ok(factor) or factor <= 0
+                    or not number_ok(book["credit"])
+                    or (observed is not None and not math.isclose(observed, factor, rel_tol=1e-9))):
+                return estimate, None
+            legs = [(leg["right"], leg["sign"]*leg["quantity"]) for leg in book["legs"]]
+            strikes = [leg["strike"] for leg in book["legs"]]
+            for move in shock["moves"]:
+                spot = max(0., close/factor*(1.+estimate["betas"][symbol]*move))
+                losses[str(move)] -= book["credit"]+mult*structure_payoff(legs, spot, strikes)
+        if not all(math.isfinite(v) for v in losses.values()):
+            return estimate, None
+        return estimate, losses
+
+    def _postfill_shock(self, account, day, shock, survivors, refusals):
+        """Recompute the account's terminal loss with the surviving fills before admission."""
+        limit = shock["loss_fraction"]*max(0., account.funding)
+        tolerance = self.params["solver"]["parity_tolerance"]
+        estimate, held = self._account_shock(list(account.open.values()), day, shock)
+        _, losses = self._account_shock([*account.open.values(), *survivors], day, shock)
+        existing = held is not None and any(v > limit+tolerance for v in held.values())
+        if not survivors:
+            status = "no_survivors"
+        elif held is None or losses is None:
+            status = "shock_risk_input"
+        elif any(v > limit+tolerance for v in losses.values()):
+            status = "shock_risk_limit"
+        else:
+            status = "admissible"
+        return {"date": day, "funding": account.funding, "limit": limit,
+                "betas": dict(estimate["betas"]), "observations": estimate["observations"],
+                "survivors": [b["id"] for b in survivors], "refusals": refusals,
+                "held_ids": sorted(account.open), "held": held, "losses": losses,
+                "existing_breach": existing, "status": status}
 
     @staticmethod
     def _shock_losses(rows, metadata, quantities):
@@ -1982,13 +2049,22 @@ class WeeklyOptionPortfolioStudy:
         for day in self.calendar:
             deposited = account.advance(day, self._settlements(account, day))
             if pending is not None:
-                survivors = []
+                survivors, refusals = [], []
                 for book in pending["books"]:
                     filled, reason = self._fill(book, day, charge)
                     if filled is None:
                         rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
+                        refusals.append({"id": book["id"], "reason": reason})
                     else:
                         survivors.append(filled)
+                shock = self._shock(method)
+                if self._filled_scope(shock):
+                    admission = self._postfill_shock(account, day, shock, survivors, refusals)
+                    pending["record"]["shock_admission"] = admission
+                    if admission["status"] != "admissible":
+                        rejected.extend({**b, "status": "unfilled", "reason": admission["status"]}
+                                        for b in survivors)
+                        survivors = []
                 limits = self._limits(account, method, pending["components"])
                 if survivors and not account.admit(day, survivors, limits):
                     rejected.extend({**b, "status": "unfilled", "reason": "repriced_shared_cap"} for b in survivors)
@@ -2006,11 +2082,27 @@ class WeeklyOptionPortfolioStudy:
                     record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
                     record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
                     record["fallback"] = len(metadata)-record["fitted"]
+                shock = self._shock(method)
+                held = None
+                if self._filled_scope(shock):
+                    estimate, held = self._account_shock(list(account.open.values()), day, shock)
+                    limit = shock["loss_fraction"]*max(0., account.funding)
+                    tolerance = p["solver"]["parity_tolerance"]
+                    record["shock"] = {
+                        "scope": shock["scope"], "betas": dict(estimate["betas"]),
+                        "observations": estimate["observations"], "limit": limit,
+                        "held_ids": sorted(account.open), "held": held, "losses": None,
+                        "projected": None,
+                        "status": "input_unavailable" if held is None
+                        else "held_breach" if any(v > limit+tolerance for v in held.values())
+                        else "within"}
                 if any(lim["upper"] < -1e-5 for lim in limits):
                     record["status"] = "existing_cap_breach_cash"
                 elif (self.clocks and (day == self.calendar[-1]
                       or self.calendar[self.calendar.index(day)+1] >= self.clocks["entry_end_before"])):
                     record["status"] = "no_entry_fill_session"
+                elif "shock" in record and record["shock"]["status"] != "within":
+                    record["status"] = ("shock_risk_input" if held is None else "shock_held_breach")
                 elif not groups or day == self.calendar[-1]:
                     record["status"] = "no_eligible_candidates"
                 else:
@@ -2021,11 +2113,10 @@ class WeeklyOptionPortfolioStudy:
                                   for g, meta in zip(groups, metadata)]
                     solver = TransportPortfolioSolve("portfolio", p["solver"])
                     program = {"groups": configured, "caps": self._caps(limits, metadata)}
-                    shock = self._shock(method)
                     if shock is not None:
                         estimate = self._betas(day, shock["beta_lookback"])
                         rows = self._shock_rows(shock, estimate["betas"], metadata, configured,
-                                                mult, account.funding)
+                                                mult, account.funding, held)
                         program["joint_rows"] = rows
                     if recorded_decisions is None:
                         selection = solver.run(None, program)["selection"]
@@ -2043,13 +2134,17 @@ class WeeklyOptionPortfolioStudy:
                                                 for c in selection["certificates"]],
                                   books=copy.deepcopy(books))
                     if shock is not None:
-                        record["shock"] = {
-                            "betas": dict(estimate["betas"]), "observations": estimate["observations"],
-                            "limit": rows[0]["upper"],
-                            "losses": {row["id"].split(":", 1)[1]: None for row in rows} if timed_out
-                            else self._shock_losses(rows, metadata, selection["quantities"])}
+                        losses = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
+                                  else self._shock_losses(rows, metadata, selection["quantities"]))
+                        if held is None:
+                            record["shock"] = {
+                                "betas": dict(estimate["betas"]), "observations": estimate["observations"],
+                                "limit": rows[0]["upper"], "losses": losses}
+                        else:
+                            record["shock"].update(losses=losses, projected=None if timed_out else {
+                                move: held[move]+loss for move, loss in losses.items()})
                     if books:
-                        pending = {"books": books, "components": components}
+                        pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
                 if events is not None and day in self.weeks:
                     selection = record.get("selection", {})

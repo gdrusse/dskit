@@ -2191,6 +2191,261 @@ def test_weekly_portfolio_shock_losses_use_estimated_betas_end_to_end():
             assert loss <= decision["shock"]["limit"]+1e-6
     assert study._method(params["methods"][0], None, recorded=copy.deepcopy(result)) == result
 
+_FILLED = {**_SHOCK, "scope": "filled_account"}
+
+
+def _account_loss(books, spots, betas, move, mult):
+    """Recompute the books' net terminal loss leg by leg at each name's shocked spot."""
+    loss = 0.
+    for book in books:
+        spot = max(0., spots[book["symbol"]]*(1.+betas[book["symbol"]]*move))
+        loss -= book["credit"]
+        for leg in book["legs"]:
+            payoff = max((leg["strike"]-spot) if leg["right"] == "put" else (spot-leg["strike"]), 0.)
+            loss -= leg["sign"]*mult*payoff*leg["quantity"]
+    return loss
+
+
+def _filled_run(params, inputs, shock, mutate=None):
+    """Run one method under a shock policy; mutate(study) may alter the built study first."""
+    import copy
+
+    params = copy.deepcopy(params)
+    params["methods"] = [{**params["methods"][0], "shock": copy.deepcopy(shock)}]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    if mutate is not None:
+        mutate(study)
+    return study, params["methods"][0], study._method(params["methods"][0], None)
+
+
+@pytest.mark.parametrize("scope", ["selection", "", None, 1, "FILLED_ACCOUNT", ["filled_account"]])
+def test_weekly_portfolio_shock_scope_refuses_invalid(scope):
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    bad = copy.deepcopy(params)
+    bad["methods"][0]["shock"] = {**_SHOCK, "scope": scope}
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy(bad, inputs)
+
+
+def test_weekly_portfolio_legacy_shock_keeps_its_exact_record():
+    """Three-key shock JSON keeps its record shape, selections and pinned results."""
+    params, inputs = _weekly_portfolio_fixture()
+    _, _, result = _filled_run(params, inputs, _SHOCK)
+    assert not any("shock_admission" in d for d in result["decisions"])
+    solved = _solved(result)
+    assert [set(d["shock"]) for d in solved] == [{"betas", "observations", "limit", "losses"}]*2
+    assert [d["shock"]["losses"] for d in solved] == [
+        {"-0.1": pytest.approx(613.3), "0.1": pytest.approx(-386.7)}]*2
+    assert [len(d["books"]) for d in solved] == [1, 1]
+    assert [t["credit"] for t in result["trades"]] == [pytest.approx(386.7)]*2
+    assert result["pnl"] == pytest.approx(773.4)
+
+
+def test_weekly_portfolio_filled_shock_counts_held_books_in_the_budget():
+    """Held fills use their fill credit and the day's close; they shrink the next week's headroom."""
+    params, inputs = _weekly_portfolio_fixture()
+    mult = params["bridge"]["solver"]["multiplier"]
+    _, _, legacy = _filled_run(params, inputs, _SHOCK)
+    _, _, result = _filled_run(params, inputs, _FILLED)
+    first, second = result["decisions"][:2]
+    assert first["shock"]["scope"] == "filled_account"
+    assert first["shock"]["held_ids"] == [] and first["shock"]["status"] == "within"
+    assert first["shock"]["held"] == {"-0.1": 0., "0.1": 0.}
+    assert first["selection"]["quantities"] == legacy["decisions"][0]["selection"]["quantities"]
+    held = result["trades"][0]
+    assert second["shock"]["held_ids"] == [held["id"]]
+    for move in _SHOCK["moves"]:
+        expected = _account_loss([held], {"X": 100.}, {"X": 1.}, move, mult)
+        assert second["shock"]["held"][str(move)] == pytest.approx(expected, abs=1e-9)
+        assert second["shock"]["projected"][str(move)] == pytest.approx(
+            expected+second["shock"]["losses"][str(move)], abs=1e-9)
+        assert second["shock"]["projected"][str(move)] <= second["shock"]["limit"]+1e-6
+    # 613.30 held at -10% leaves 186.70 of the 800 limit: no new 613.30 spread fits.
+    assert second["shock"]["held"]["-0.1"] == pytest.approx(613.3)
+    assert second["status"] == "cash" and legacy["decisions"][1]["status"] == "selected"
+    assert len(result["trades"]) == 1 and len(legacy["trades"]) == 2
+
+
+def test_weekly_portfolio_filled_shock_admits_an_all_fill_batch():
+    """A loose limit admits every fill and records the postfill recomputation at the fill close."""
+    params, inputs = _weekly_portfolio_fixture()
+    mult = params["bridge"]["solver"]["multiplier"]
+    loose = {**_FILLED, "loss_fraction": 1.}
+    _, _, legacy = _filled_run(params, inputs, {**_SHOCK, "loss_fraction": 1.})
+    _, _, result = _filled_run(params, inputs, loose)
+    assert result["trades"] == legacy["trades"] and result["rejected"] == []
+    admissions = [d["shock_admission"] for d in result["decisions"] if "shock_admission" in d]
+    assert [a["status"] for a in admissions] == ["admissible", "admissible"]
+    for admission, trade, held in zip(admissions, result["trades"], [[], result["trades"][:1]]):
+        assert admission["date"] == trade["fill_date"]
+        assert admission["survivors"] == [trade["id"]] and admission["refusals"] == []
+        assert admission["held_ids"] == [b["id"] for b in held]
+        assert admission["limit"] == pytest.approx(admission["funding"])
+        assert admission["existing_breach"] is False
+        for move in _SHOCK["moves"]:
+            assert admission["losses"][str(move)] == pytest.approx(
+                _account_loss(held+[trade], {"X": 100.}, {"X": 1.}, move, mult), abs=1e-9)
+
+
+def _hedge_fixture():
+    """X sells a put spread, Y buys a cheap far put that hedges it at -20%; Y's fill lacks size."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    params = copy.deepcopy(params)
+    params["symbols"] = ["X", "Y"]
+    hedge = copy.deepcopy(inputs["X"])
+    for rows in hedge.values():
+        for row in rows:
+            row["symbol"] = "Y"
+    for row in hedge["chain"]:
+        if row["strike"] == 90.:
+            row["bid"], row["ask"] = .008, .01
+            if row["date"] == "2019-01-03":
+                row["ask_size"] = 1
+        else:
+            row["bid"] = 3.6
+    for row in inputs["X"]["chain"]:
+        if row["strike"] == 100.:
+            row["bid"] = 4.1
+    inputs["Y"] = hedge
+    return params, inputs
+
+
+def test_weekly_portfolio_filled_shock_declines_a_survivor_whose_hedge_failed():
+    """A refused hedge leaves the sold spread over the limit: it is declined, not admitted alone."""
+    params, inputs = _hedge_fixture()
+    mult = params["bridge"]["solver"]["multiplier"]
+    shock = {"moves": [-.2], "loss_fraction": .08, "beta_lookback": 20}
+    _, _, legacy = _filled_run(params, inputs, shock)
+    first = legacy["decisions"][0]
+    assert sorted(b["symbol"] for b in first["books"]) == ["X", "Y"]
+    assert any(t["id"].startswith("2019-01-02:X") for t in legacy["trades"])
+    _, _, result = _filled_run(params, inputs, {**shock, "scope": "filled_account"})
+    decision = result["decisions"][0]
+    x_id, y_id = (next(b["id"] for b in decision["books"] if b["symbol"] == s) for s in ("X", "Y"))
+    admission = decision["shock_admission"]
+    assert admission["survivors"] == [x_id]
+    assert admission["refusals"] == [{"id": y_id, "reason": "insufficient_fill_size"}]
+    assert admission["status"] == "shock_risk_limit" and admission["existing_breach"] is False
+    assert admission["losses"]["-0.2"] > admission["limit"]
+    reasons = {r["id"]: r["reason"] for r in result["rejected"]}
+    assert reasons[x_id] == "shock_risk_limit" and reasons[y_id] == "insufficient_fill_size"
+    declined = next(r for r in result["rejected"] if r["id"] == x_id)
+    assert admission["losses"]["-0.2"] == pytest.approx(
+        _account_loss([declined], {"X": 100.}, {"X": 1.}, -.2, mult), abs=1e-9)
+    assert not any(t["decision_date"] == "2019-01-02" for t in result["trades"])
+
+
+def test_weekly_portfolio_filled_shock_reprices_at_the_fill_credit():
+    """A spread within the limit at signal prices breaches at a worse fill bid and is declined."""
+    params, inputs = _weekly_portfolio_fixture()
+    for row in inputs["X"]["chain"]:
+        if row["date"] == "2019-01-03" and row["expiration"] == "2019-02-01" and row["strike"] == 100.:
+            row["bid"] = 3.97
+    shock = {**_SHOCK, "loss_fraction": .0615}
+    _, _, legacy = _filled_run(params, inputs, shock)
+    assert legacy["trades"][0]["decision_date"] == "2019-01-02"
+    _, _, result = _filled_run(params, inputs, {**shock, "scope": "filled_account"})
+    decision = result["decisions"][0]
+    assert decision["shock"]["projected"]["-0.1"] == pytest.approx(613.3)
+    assert decision["shock"]["projected"]["-0.1"] <= decision["shock"]["limit"]
+    admission = decision["shock_admission"]
+    assert admission["losses"]["-0.1"] == pytest.approx(616.3)
+    assert admission["status"] == "shock_risk_limit"
+    assert result["rejected"][0]["reason"] == "shock_risk_limit"
+    assert result["rejected"][0]["credit"] == pytest.approx(383.7)
+    assert result["trades"][0]["decision_date"] == "2019-01-07"
+
+
+def _close(inputs, day, close):
+    for row in inputs["X"]["bars"]:
+        if row["date"] == day:
+            row["close"] = close
+
+
+def test_weekly_portfolio_filled_shock_held_breach_skips_the_solve():
+    """Held books alone over the limit at signal: the week is reported and no batch is solved."""
+    params, inputs = _weekly_portfolio_fixture()
+    mult = params["bridge"]["solver"]["multiplier"]
+    _close(inputs, "2019-01-07", 95.)
+    shock = {"moves": [-.05], "loss_fraction": .08, "beta_lookback": 20, "scope": "filled_account"}
+    _, _, result = _filled_run(params, inputs, shock)
+    held = result["trades"][0]
+    second = result["decisions"][1]
+    assert second["status"] == "shock_held_breach" and "selection" not in second
+    assert second["shock"]["status"] == "held_breach" and second["shock"]["losses"] is None
+    assert second["shock"]["held"]["-0.05"] == pytest.approx(
+        _account_loss([held], {"X": 95.}, {"X": 1.}, -.05, mult), abs=1e-9)
+    assert second["shock"]["held"]["-0.05"] > second["shock"]["limit"]
+    assert [t["id"] for t in result["trades"]] == [held["id"]]
+
+
+def test_weekly_portfolio_filled_shock_reports_an_existing_only_breach_at_fill():
+    """Held books breach at the fill close: the new books are declined, the holdings kept."""
+    params, inputs = _weekly_portfolio_fixture()
+    _close(inputs, "2019-01-08", 95.)
+    shock = {"moves": [-.05], "loss_fraction": .08, "beta_lookback": 20, "scope": "filled_account"}
+    _, _, result = _filled_run(params, inputs, shock)
+    second = result["decisions"][1]
+    assert second["status"] == "selected"
+    admission = second["shock_admission"]
+    assert admission["existing_breach"] is True and admission["status"] == "shock_risk_limit"
+    assert admission["held"]["-0.05"] > admission["limit"]
+    assert [r["reason"] for r in result["rejected"]] == ["shock_risk_limit"]
+    assert [t["decision_date"] for t in result["trades"]] == ["2019-01-02"]
+
+
+def test_weekly_portfolio_filled_shock_fails_closed_on_an_unusable_close():
+    """A nonfinite fill-day close cannot price the survivor: it is declined with its own reason."""
+    params, inputs = _weekly_portfolio_fixture()
+    def unusable(study):
+        study._bars["X"]["2019-01-03"] = math.nan
+    _, _, result = _filled_run(params, inputs, _FILLED, unusable)
+    admission = result["decisions"][0]["shock_admission"]
+    assert admission["status"] == "shock_risk_input"
+    assert admission["held"] == {"-0.1": 0., "0.1": 0.} and admission["losses"] is None
+    assert result["rejected"][0]["reason"] == "shock_risk_input"
+    assert not any(t["decision_date"] == "2019-01-02" for t in result["trades"])
+
+
+def test_weekly_portfolio_filled_shock_fails_closed_on_an_unusable_held_close():
+    """A held book that cannot be priced at the signal close stops the week's solve."""
+    params, inputs = _weekly_portfolio_fixture()
+    def unusable(study):
+        study._bars["X"]["2019-01-07"] = math.nan
+    _, _, result = _filled_run(params, inputs, _FILLED, unusable)
+    second = result["decisions"][1]
+    assert second["status"] == "shock_risk_input" and "selection" not in second
+    assert second["shock"]["status"] == "input_unavailable" and second["shock"]["held"] is None
+    assert second["shock"]["held_ids"] == [result["trades"][0]["id"]]
+    assert len(result["trades"]) == 1
+
+
+def test_weekly_portfolio_filled_shock_record_replays_and_refuses_tamper():
+    """Signal and postfill evidence replay equal; a mutated field of either is refused."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    study, method, original = _filled_run(params, inputs, _FILLED)
+    assert study._method(method, None, recorded=copy.deepcopy(original)) == original
+    def tampered(edit):
+        bad = copy.deepcopy(original)
+        edit(next(d for d in bad["decisions"] if "shock_admission" in d))
+        return bad
+    edits = [lambda d: d["shock"]["held"].update({"-0.1": 1.}),
+             lambda d: d["shock"].update(status="held_breach"),
+             lambda d: d["shock_admission"]["losses"].update({"-0.1": 0.}),
+             lambda d: d["shock_admission"].update(status="shock_risk_limit"),
+             lambda d: d["shock_admission"]["survivors"].clear(),
+             lambda d: d["shock_admission"].update(limit=0.)]
+    for edit in edits:
+        with pytest.raises(ValueError, match="recorded"):
+            study._method(method, None, recorded=tampered(edit))
+
+
 def test_weekly_portfolio_accepts_eighteen_symbols():
     """The selected universe is configuration, not a legacy pilot-size limit."""
     import copy
