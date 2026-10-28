@@ -1,0 +1,899 @@
+{
+  "schema_version": 1,
+  "kind": "index_options_2019_mio_results",
+  "status": "completed_development_evidence",
+  "runtime_candidate": "64cb99b5aacecab8f2b579b3dc3dd09b17087b73",
+  "integrated_upstream": "ec5028184c976fac3a403e497537d336a6f0add3",
+  "scope": "All 2019 weekly development comparisons: four fixed MIO methods each in broad212 and limited36. No Path/TDD changes, training, provider pulls, new years or promotion. Optional broad portfolio hindsight stopped by owner; known-answer output is per contract.",
+  "original_configs": {
+    "source-mio-broad-2019.json": {
+      "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/configs/source-mio-broad-2019.json",
+      "sha256": "1a8fd6a3867d1484be59184cb0372b4112d240b03203661be55a5f303f27f4ba",
+      "bytes": 169
+    },
+    "source-mio-broad-2019-admission.json": {
+      "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/configs/source-mio-broad-2019-admission.json",
+      "sha256": "4ee85ce8458d552d9d89044148af8c06193b30a3bad52052162a644d141d2878",
+      "bytes": 172
+    },
+    "mio-2019-limited36.json": {
+      "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/configs/mio-2019-limited36.json",
+      "sha256": "479be5d158eebb76fd933e7d6c6ff9acef6750feea59181204092278d2978bfa",
+      "bytes": 1309443
+    },
+    "mio-2019-broad212.json": {
+      "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/configs/mio-2019-broad212.json",
+      "sha256": "7e5bdb7057d041ef8947d5ee22942ebb55d01d63887fabd8ce7ba5254261804e",
+      "bytes": 1599001
+    },
+    "mio-2019-pins.json": {
+      "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/configs/mio-2019-pins.json",
+      "sha256": "16cfb99496736da2250bcc8143b02e9c79586f3e08c339c3721fefe17cb70c8e",
+      "bytes": 25837
+    }
+  },
+  "sources": {
+    "input_manifest": {
+      "root": "/home/russell/data/index_options/ob",
+      "source": "mio-broad-2019-inputs-full-20261027",
+      "stream": "files",
+      "snapshot": "20261028T031020Z-backfill-9c2a6ed5",
+      "manifest_sha256": "9c2a6ed5d0db549a8b8d6d0a7d18a7e1db893b169c1ddafebad470e31fff436a"
+    },
+    "admission_manifest": {
+      "root": "/home/russell/data/index_options/ob",
+      "source": "mio-broad-2019-admission-20261027",
+      "snapshot": "20261028T031200Z-backfill-cec1bfd2",
+      "stream": "files",
+      "manifest_sha256": "cec1bfd2711822ed14797a6c7cd06d68242429704a4f4985632144d2a8bb53cb"
+    }
+  },
+  "runs": {
+    "limited36": {
+      "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/runs/mio-2019-limited36-saved-m53-2020-03-08-e72da842",
+      "document_hash": "b8d194bacc9fbf96de19be7145c90697580277d24ecf3f40245ba5e4ad2958f6",
+      "state": "ran",
+      "run_hash": "e72da8427bc9274a0f35a5effee75e1789944a47cbcac9b08ae58431b0b886f9",
+      "receipt": {
+        "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/runs/mio-2019-limited36-saved-m53-2020-03-08-e72da842",
+        "document_hash": "b8d194bacc9fbf96de19be7145c90697580277d24ecf3f40245ba5e4ad2958f6",
+        "node": "close_packet",
+        "port": "receipt"
+      },
+      "sha256": "bd5091ad6164f9613a4bb7586ce546ffa4bb50ecd0f5e55fd04c942a13de7c32"
+    },
+    "broad212": {
+      "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/broad212/runs/mio-2019-broad212-saved-m53-2020-03-08-e2162345",
+      "document_hash": "bba78d0995e7ade4999a52f845b1f109013f3905ae2688c3dad5cede620e6bbe",
+      "state": "ran",
+      "run_hash": "e216234597328a31fa8ec915cd60422172796f1cc98ad1c8f11a9b20f9c0547c",
+      "receipt": {
+        "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/broad212/runs/mio-2019-broad212-saved-m53-2020-03-08-e2162345",
+        "document_hash": "bba78d0995e7ade4999a52f845b1f109013f3905ae2688c3dad5cede620e6bbe",
+        "node": "close_packet",
+        "port": "receipt"
+      },
+      "sha256": "63cb8c2d826cbd581691cd01b9b8b77f492d0135b9c55d7257cd6d59abb3c95a"
+    }
+  },
+  "comparisons": {
+    "limited36": {
+      "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/comparison/mio-2019-limited36-compare-2020-03-08-15c3c6d3",
+      "document_hash": "96251217a14f7312d624873136ac473fd9a01dd0c56085d7c5faeb4aa76c362e",
+      "state": "ran",
+      "run_hash": "15c3c6d34e8beb6522c5311bea2772ed148932fdb223213aab751e2012a5e51a",
+      "receipt": {
+        "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/comparison/mio-2019-limited36-compare-2020-03-08-15c3c6d3",
+        "document_hash": "96251217a14f7312d624873136ac473fd9a01dd0c56085d7c5faeb4aa76c362e",
+        "node": "comparison",
+        "port": "report"
+      },
+      "sha256": "3c325f2abbeb404f6e0ad20dbf95e7160731af284109033885b42daeb838d404"
+    },
+    "broad212": {
+      "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/broad212/comparison/mio-2019-broad212-compare-2020-03-08-9bd06036",
+      "document_hash": "d8c3cb43b7ca078c01f6537c076b6386e3e6c8ec0b4cd0006df53b5efb695c38",
+      "state": "ran",
+      "run_hash": "9bd0603682b7729ee174b1179c91b76de53b2943aabbe6338b2415569e48ddd6",
+      "receipt": {
+        "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/broad212/comparison/mio-2019-broad212-compare-2020-03-08-9bd06036",
+        "document_hash": "d8c3cb43b7ca078c01f6537c076b6386e3e6c8ec0b4cd0006df53b5efb695c38",
+        "node": "comparison",
+        "port": "report"
+      },
+      "sha256": "e9e11dcb7af178d8e550da901f431248548980bb95930cc7369fb456a45a4557"
+    }
+  },
+  "dispositions": {
+    "limited36": {
+      "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/disposition/mio-2019-limited36-review-2026-10-27-706ae2ec",
+      "document_hash": "ae5b7e643f24ba4679f66619aa42b52d9e0345f4f1c69ffaa43e65ebf25c8ced",
+      "state": "ran",
+      "run_hash": "706ae2ec903e7ba964062d33a333baab37f83849507736ddd39bba3375a4e19a"
+    },
+    "broad212": {
+      "run_dir": "/home/russell/data/index_options/mio-broad-2019-20261027/broad212/disposition/mio-2019-broad212-review-2026-10-27-cfc86de6",
+      "document_hash": "3c235cd715ebeabf57c53920d9636755d4bd0631b078aebf66efd2bba173c8cc",
+      "state": "ran",
+      "run_hash": "cfc86de6c9c8abc077324a11e8863e86fd2afc7e72d0284bfdaf45066e5b32bf"
+    }
+  },
+  "evidence": {
+    "execution-pins.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/execution-pins.json",
+      "sha256": "508c620f93a9280467233870b0762d284d00ce7992c9c0f09e89241f56e8f843",
+      "bytes": 34261
+    },
+    "upstream-model-pins.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/upstream-model-pins.json",
+      "sha256": "0085e29580e3b2cf59adea85262add316440ddf7e50e09aec08b727e18a98966",
+      "bytes": 6558
+    },
+    "completion-pins.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/completion-pins.json",
+      "sha256": "91826f67ee29fa1f0ee71c68d1308023fbfac3be12acf94a18e195cd624ec7c7",
+      "bytes": 1641
+    },
+    "completion-attempt-1.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/completion-attempt-1.json",
+      "sha256": "49a396f0701b624dd7ac5994f4f5bf73a89b4638511c14653eec409d19758ebb",
+      "bytes": 811
+    },
+    "completion-attempt-2.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/completion-attempt-2.json",
+      "sha256": "9738eaf898d4b43b114577a9170aec32715d6083a7d500ce1ab72ea2b5e930f9",
+      "bytes": 1631
+    },
+    "scope-correction.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/scope-correction.json",
+      "sha256": "2a3c954ac1da47583f9e5aebc065c06f3a5b91422c9ff216665bfbfb548901ec",
+      "bytes": 12068
+    },
+    "stress-config-name-correction.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/stress-config-name-correction.json",
+      "sha256": "ef56b00647039b997b45d9d64b6aa1fd69017de902cc0b1a841dd2fe81f7c408",
+      "bytes": 3302603
+    },
+    "postprocess-plan.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/postprocess-plan.json",
+      "sha256": "ad8cd95fa23907afef4f2fe21a1185dc90ee136e8b1375dc867421cd32d81973",
+      "bytes": 1739
+    },
+    "postprocess-plan-v2.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/postprocess-plan-v2.json",
+      "sha256": "716c0c533a4d5f78aec6a0acd8b9408ca00dfa2525a859e94e63a0d94a95bf1d",
+      "bytes": 1418
+    },
+    "postprocess-plan-v3.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/postprocess-plan-v3.json",
+      "sha256": "27378a08e68f988f94e3fd169220383d3b8dd9299d83a7620985128b45bb1de7",
+      "bytes": 1440
+    },
+    "stress-queue-launch.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/stress-queue-launch.json",
+      "sha256": "a0f2b005eca115634b89440857689bca3597f873b42ab00b107a5dd1e4d85392",
+      "bytes": 1797
+    },
+    "postprocess-summary.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/postprocess-summary.json",
+      "sha256": "39daf59462fa39b882ac6b24e67ec1f290793e56dd10c5e45a73c4cfdbdcac88",
+      "bytes": 14977
+    },
+    "column-guide.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/column-guide.json",
+      "sha256": "f936aa1f2c5d740a7fc1533d94a30bb0ce54f68f9081c19f409a2435c1ec63dd",
+      "bytes": 8790
+    },
+    "artifact-index.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/artifact-index.json",
+      "sha256": "ffa85119a44f7a897358c075305301d93655936e0aabddbf464c04d35a144621",
+      "bytes": 19030489
+    },
+    "delivery-pins.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/delivery-pins.json",
+      "sha256": "0afc1bb26a3e63acec6babd45048cf6d4063d07ef592b1574447f93c20201fbe",
+      "bytes": 722
+    },
+    "limited36/candidate-export-receipt.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/candidate-export-receipt.json",
+      "sha256": "4777770dbd1687ba2fcd633f59453aac8ea7d2b952d81d3451998e46e3df8a16",
+      "bytes": 2354
+    },
+    "limited36/stress-receipt.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/stress-receipt.json",
+      "sha256": "472a16e68971a347a9cb75b75197137ff3c63f61accc2f05f3706ea0b22e5304",
+      "bytes": 937
+    },
+    "limited36/stress/task-index.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/stress/task-index.json",
+      "sha256": "ef5d81c40b5ea1fdac65adf1e235573db21fcbb2d6ff4ded83a61935a3b75448",
+      "bytes": 1485287
+    },
+    "broad212/candidate-export-receipt.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/broad212/candidate-export-receipt.json",
+      "sha256": "af47c308f9379c3c7d40c556610dab2fe611b22d3f32736802a19622c4e7d19e",
+      "bytes": 2357
+    },
+    "broad212/stress-receipt.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/broad212/stress-receipt.json",
+      "sha256": "6f9928cd72c790b2781103318f270d4f0c2289bb8cdfa31a2528c44a683bc5f2",
+      "bytes": 934
+    },
+    "broad212/stress/task-index.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/broad212/stress/task-index.json",
+      "sha256": "e9b916a364da677cacee5564584a3fb18321d5c62592c95b31b6fa30aea08a01",
+      "bytes": 3640183
+    },
+    "limited36/hindsight-receipt.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/hindsight-receipt.json",
+      "sha256": "f09854ddb30b704a5b3bb14fd735262bcae41b897d00f68999fc53489e48cac5",
+      "bytes": 117287
+    },
+    "final-review-candidate.json": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-review-candidate.json",
+      "sha256": "747c96d8cb6b41ac2d06b3818d42d30ca662099de4eb6a5d9eb0d4890e8aa009",
+      "bytes": 6212
+    }
+  },
+  "helpers": {
+    "run-comparisons.py": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/run-comparisons.py",
+      "sha256": "3e8b56eb016e2bde14e42ca7d4738c53370c9f50a670cd551bc65786b3fbffaf",
+      "bytes": 7264
+    },
+    "analyze-results.py": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/analyze-results.py",
+      "sha256": "ac5e2b4819facd56689fe245e881abea7c2f5a9d945885dfc27f341b943ca7a2",
+      "bytes": 16104
+    },
+    "known-answer.py": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/known-answer.py",
+      "sha256": "53e4021f43626efe18383bf66719d789bd205bcee3efaa6b58737b09286d5cb6",
+      "bytes": 11006
+    },
+    "stress-results.py": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/stress-results.py",
+      "sha256": "552ad0811887c76f36aa5edb7cf3f6f48838dbe915dc86505e5c48d6bbf35d84",
+      "bytes": 12556
+    },
+    "finish-results.py": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/finish-results.py",
+      "sha256": "16832b87a16b0da0ace03b186bd1b1e7c3cd74b494bf9050e41d5dcf57eb4546",
+      "bytes": 1940
+    },
+    "package-results.py": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/package-results.py",
+      "sha256": "979108b311aad7d70271cbd8981d57584361d8921205dd454d12c98792859fe1",
+      "bytes": 12650
+    },
+    "postprocess-summary.py": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/postprocess-summary.py",
+      "sha256": "0ca10c773c56c82734654d8a6511eaf6340d2336886dd53d7109753d2c76819c",
+      "bytes": 2983
+    }
+  },
+  "comparison_csv": {
+    "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/docs/memos/2026-10-28-mio-2019-comparison.csv",
+    "sha256": "b06d230ab578af239e873bc04e0a599f88c4935e78d14af71fd5fc990c845610",
+    "bytes": 1476
+  },
+  "postprocess": {
+    "limited36": {
+      "export": {
+        "candidate-options": {
+          "rows": 178578,
+          "sha256": "b5c6ec676a4783a1f110b218299682273d7be283c8c7e1473120d063f8215eb6"
+        },
+        "candidate-group-methods": {
+          "rows": 6004,
+          "sha256": "dbbbe5825d850e6960a75c997f574808b09f5fc47ce72021f910f67703d5edb2"
+        },
+        "candidate-refusals": {
+          "rows": 184,
+          "sha256": "033b4ecb8edeb52c4baf0a8f698b8891ba6d320637c1097d15914617226fe0df"
+        },
+        "best-known-single-contract": {
+          "rows": 1498,
+          "sha256": "657d63f7a640df8ffe915111f825bf3689931ee00a907256e708250ebb4210c9"
+        }
+      },
+      "hindsight": {
+        "counts": {
+          "certified": 206,
+          "no_program": 2,
+          "no_entry": 4
+        },
+        "max_certified_gap": 49.993857948706136,
+        "exceptional": [
+          {
+            "cohort": "limited36",
+            "method": "w1_003_component25_lp",
+            "date": "2019-11-04",
+            "forward_status": "existing_cap_breach_cash",
+            "funding_usd": "24807.399999999987",
+            "open_reserve_usd": "7560.0",
+            "prepared_groups": "36",
+            "screened_groups": "2",
+            "fillable_groups": "0",
+            "conditional_hindsight_value_usd": "",
+            "conditional_hindsight_bound_usd": "",
+            "conditional_hindsight_gap_usd": "",
+            "certified_within_50_usd": "False",
+            "actual_new_filled_book_pnl_usd": "0",
+            "status": "no_program",
+            "reason": "existing_cap_breach",
+            "program_sha256": "",
+            "result_sha256": "",
+            "seconds": "0.0"
+          },
+          {
+            "cohort": "limited36",
+            "method": "w1_003_component25_lp",
+            "date": "2019-11-11",
+            "forward_status": "existing_cap_breach_cash",
+            "funding_usd": "25807.399999999987",
+            "open_reserve_usd": "7560.0",
+            "prepared_groups": "36",
+            "screened_groups": "2",
+            "fillable_groups": "0",
+            "conditional_hindsight_value_usd": "",
+            "conditional_hindsight_bound_usd": "",
+            "conditional_hindsight_gap_usd": "",
+            "certified_within_50_usd": "False",
+            "actual_new_filled_book_pnl_usd": "0",
+            "status": "no_program",
+            "reason": "existing_cap_breach",
+            "program_sha256": "",
+            "result_sha256": "",
+            "seconds": "0.0"
+          },
+          {
+            "cohort": "limited36",
+            "method": "nominal_lp",
+            "date": "2019-12-30",
+            "forward_status": "no_eligible_candidates",
+            "funding_usd": "77278.20999999995",
+            "open_reserve_usd": "0",
+            "prepared_groups": "0",
+            "screened_groups": "0",
+            "fillable_groups": "0",
+            "conditional_hindsight_value_usd": "0.0",
+            "conditional_hindsight_bound_usd": "0.0",
+            "conditional_hindsight_gap_usd": "0.0",
+            "certified_within_50_usd": "False",
+            "actual_new_filled_book_pnl_usd": "0",
+            "status": "no_entry",
+            "reason": "no_eligible_candidate_or_entry_session",
+            "program_sha256": "",
+            "result_sha256": "",
+            "seconds": "0.0"
+          },
+          {
+            "cohort": "limited36",
+            "method": "w1_003_lp",
+            "date": "2019-12-30",
+            "forward_status": "no_eligible_candidates",
+            "funding_usd": "35607.89999999999",
+            "open_reserve_usd": "0",
+            "prepared_groups": "0",
+            "screened_groups": "0",
+            "fillable_groups": "0",
+            "conditional_hindsight_value_usd": "0.0",
+            "conditional_hindsight_bound_usd": "0.0",
+            "conditional_hindsight_gap_usd": "0.0",
+            "certified_within_50_usd": "False",
+            "actual_new_filled_book_pnl_usd": "0",
+            "status": "no_entry",
+            "reason": "no_eligible_candidate_or_entry_session",
+            "program_sha256": "",
+            "result_sha256": "",
+            "seconds": "0.0"
+          },
+          {
+            "cohort": "limited36",
+            "method": "w1_003_shock10_lp",
+            "date": "2019-12-30",
+            "forward_status": "no_eligible_candidates",
+            "funding_usd": "35196.54999999999",
+            "open_reserve_usd": "0",
+            "prepared_groups": "0",
+            "screened_groups": "0",
+            "fillable_groups": "0",
+            "conditional_hindsight_value_usd": "0.0",
+            "conditional_hindsight_bound_usd": "0.0",
+            "conditional_hindsight_gap_usd": "0.0",
+            "certified_within_50_usd": "False",
+            "actual_new_filled_book_pnl_usd": "0",
+            "status": "no_entry",
+            "reason": "no_eligible_candidate_or_entry_session",
+            "program_sha256": "",
+            "result_sha256": "",
+            "seconds": "0.0"
+          },
+          {
+            "cohort": "limited36",
+            "method": "w1_003_component25_lp",
+            "date": "2019-12-30",
+            "forward_status": "no_eligible_candidates",
+            "funding_usd": "28843.749999999985",
+            "open_reserve_usd": "0",
+            "prepared_groups": "0",
+            "screened_groups": "0",
+            "fillable_groups": "0",
+            "conditional_hindsight_value_usd": "0.0",
+            "conditional_hindsight_bound_usd": "0.0",
+            "conditional_hindsight_gap_usd": "0.0",
+            "certified_within_50_usd": "False",
+            "actual_new_filled_book_pnl_usd": "0",
+            "status": "no_entry",
+            "reason": "no_eligible_candidate_or_entry_session",
+            "program_sha256": "",
+            "result_sha256": "",
+            "seconds": "0.0"
+          }
+        ],
+        "total_seconds": 696.6583346099578,
+        "by_method": {
+          "nominal_lp": {
+            "certified": 52,
+            "no_entry": 1
+          },
+          "w1_003_component25_lp": {
+            "certified": 50,
+            "no_program": 2,
+            "no_entry": 1
+          },
+          "w1_003_lp": {
+            "certified": 52,
+            "no_entry": 1
+          },
+          "w1_003_shock10_lp": {
+            "certified": 52,
+            "no_entry": 1
+          }
+        }
+      },
+      "stress": {
+        "jobs": 1600,
+        "counts": {
+          "priced": 1208,
+          "refused": 392
+        },
+        "by_kind": {
+          "entry": {
+            "priced": 301,
+            "refused": 44
+          },
+          "weekly_open_book": {
+            "priced": 907,
+            "refused": 348
+          }
+        },
+        "methods": {
+          "nominal_lp": {
+            "active_rows": 172,
+            "complete_active": 96,
+            "cash_rows": 40,
+            "worst": {
+              "cohort": "limited36",
+              "method": "nominal_lp",
+              "date": "2019-04-29",
+              "scenario": "down_5_vol_up_5",
+              "status": "complete",
+              "held_books": "3",
+              "priced_books": "3",
+              "refused_books": "0",
+              "cash_usd": "5295.550000000017",
+              "contributions_usd": "18000.0",
+              "observed_nbbo_equity_usd": "30105.550000000014",
+              "model_baseline_equity_usd": "29642.570830602148",
+              "hypothetical_scenario_equity_usd": "7832.279500114228",
+              "hypothetical_model_equity_change_usd": "-21810.29133048792"
+            },
+            "priced_book_jobs": 855,
+            "total_book_jobs": 1005
+          },
+          "w1_003_component25_lp": {
+            "active_rows": 76,
+            "complete_active": 36,
+            "cash_rows": 136,
+            "worst": {
+              "cohort": "limited36",
+              "method": "w1_003_component25_lp",
+              "date": "2019-10-21",
+              "scenario": "down_5_vol_up_5",
+              "status": "complete",
+              "held_books": "1",
+              "priced_books": "1",
+              "refused_books": "0",
+              "cash_usd": "23807.399999999987",
+              "contributions_usd": "30000.0",
+              "observed_nbbo_equity_usd": "31464.899999999987",
+              "model_baseline_equity_usd": "31382.99434635699",
+              "hypothetical_scenario_equity_usd": "26979.257294624276",
+              "hypothetical_model_equity_change_usd": "-4403.7370517327145"
+            },
+            "priced_book_jobs": 130,
+            "total_book_jobs": 200
+          },
+          "w1_003_lp": {
+            "active_rows": 68,
+            "complete_active": 16,
+            "cash_rows": 144,
+            "worst": {
+              "cohort": "limited36",
+              "method": "w1_003_lp",
+              "date": "2019-01-14",
+              "scenario": "down_12_vol_up_15",
+              "status": "complete",
+              "held_books": "2",
+              "priced_books": "2",
+              "refused_books": "0",
+              "cash_usd": "9377.75",
+              "contributions_usd": "10000.0",
+              "observed_nbbo_equity_usd": "11922.25",
+              "model_baseline_equity_usd": "11881.30556849434",
+              "hypothetical_scenario_equity_usd": "10062.335943274638",
+              "hypothetical_model_equity_change_usd": "-1818.9696252197016"
+            },
+            "priced_book_jobs": 100,
+            "total_book_jobs": 200
+          },
+          "w1_003_shock10_lp": {
+            "active_rows": 68,
+            "complete_active": 30,
+            "cash_rows": 144,
+            "worst": {
+              "cohort": "limited36",
+              "method": "w1_003_shock10_lp",
+              "date": "2019-02-04",
+              "scenario": "down_12_vol_up_15",
+              "status": "complete",
+              "held_books": "2",
+              "priced_books": "2",
+              "refused_books": "0",
+              "cash_usd": "10109.8",
+              "contributions_usd": "12000.0",
+              "observed_nbbo_equity_usd": "16291.8",
+              "model_baseline_equity_usd": "16263.334455743709",
+              "hypothetical_scenario_equity_usd": "12157.104258459252",
+              "hypothetical_model_equity_change_usd": "-4106.230197284458"
+            },
+            "priced_book_jobs": 123,
+            "total_book_jobs": 195
+          }
+        },
+        "refusal_families": {
+          "numeric_envelope": 232,
+          "missing_or_invalid_iv": 160
+        }
+      },
+      "groups": {
+        "prepared_groups": 1501,
+        "fitted_groups": 1289
+      }
+    },
+    "broad212": {
+      "export": {
+        "candidate-options": {
+          "rows": 5541792,
+          "sha256": "6c90d77f16a876563a25ea26068663e4bcb3dfa021f8ea50c3612deecfbd805c"
+        },
+        "candidate-group-methods": {
+          "rows": 221248,
+          "sha256": "f6406379e1d8463318363d51c5130c45245c082fa2127f33787cc321f17fdc0e"
+        },
+        "candidate-refusals": {
+          "rows": 619,
+          "sha256": "b0d83768cd2963807552cde0f62f055dd6dd5ed23fb03d15865f614df3aaa260"
+        },
+        "best-known-single-contract": {
+          "rows": 54954,
+          "sha256": "713a1dbe604e304c8720c94d701c25a2807018414ab301d1ea85470529dc031b"
+        }
+      },
+      "hindsight": {
+        "status": "optional_portfolio_diagnostic_stopped",
+        "completed_rows": 32,
+        "completed_status_counts": {
+          "certified": 30,
+          "uncertified": 2
+        },
+        "full_year_complete": false,
+        "receipt": "scope-correction.json"
+      },
+      "stress": {
+        "jobs": 4045,
+        "counts": {
+          "priced": 3288,
+          "refused": 757
+        },
+        "by_kind": {
+          "entry": {
+            "priced": 693,
+            "refused": 82
+          },
+          "weekly_open_book": {
+            "priced": 2595,
+            "refused": 675
+          }
+        },
+        "methods": {
+          "nominal_lp": {
+            "active_rows": 196,
+            "complete_active": 75,
+            "cash_rows": 16,
+            "worst": {
+              "cohort": "broad212",
+              "method": "nominal_lp",
+              "date": "2019-11-25",
+              "scenario": "down_12_vol_up_15",
+              "status": "complete",
+              "held_books": "5",
+              "priced_books": "5",
+              "refused_books": "0",
+              "cash_usd": "31086.7550898529",
+              "contributions_usd": "33000.0",
+              "observed_nbbo_equity_usd": "40660.25508985289",
+              "model_baseline_equity_usd": "40287.345022657435",
+              "hypothetical_scenario_equity_usd": "32436.732381309386",
+              "hypothetical_model_equity_change_usd": "-7850.612641348051"
+            },
+            "priced_book_jobs": 1264,
+            "total_book_jobs": 1615
+          },
+          "w1_003_component25_lp": {
+            "active_rows": 184,
+            "complete_active": 120,
+            "cash_rows": 28,
+            "worst": {
+              "cohort": "broad212",
+              "method": "w1_003_component25_lp",
+              "date": "2019-06-17",
+              "scenario": "down_12_vol_up_15",
+              "status": "complete",
+              "held_books": "1",
+              "priced_books": "1",
+              "refused_books": "0",
+              "cash_usd": "36452.35000000001",
+              "contributions_usd": "21000.0",
+              "observed_nbbo_equity_usd": "122482.35",
+              "model_baseline_equity_usd": "122041.5764705087",
+              "hypothetical_scenario_equity_usd": "63076.86395786019",
+              "hypothetical_model_equity_change_usd": "-58964.71251264852"
+            },
+            "priced_book_jobs": 640,
+            "total_book_jobs": 755
+          },
+          "w1_003_lp": {
+            "active_rows": 168,
+            "complete_active": 107,
+            "cash_rows": 44,
+            "worst": {
+              "cohort": "broad212",
+              "method": "w1_003_lp",
+              "date": "2019-06-17",
+              "scenario": "down_12_vol_up_15",
+              "status": "complete",
+              "held_books": "3",
+              "priced_books": "3",
+              "refused_books": "0",
+              "cash_usd": "65912.40000000005",
+              "contributions_usd": "21000.0",
+              "observed_nbbo_equity_usd": "255217.40000000008",
+              "model_baseline_equity_usd": "254104.2478188259",
+              "hypothetical_scenario_equity_usd": "119772.04024132199",
+              "hypothetical_model_equity_change_usd": "-134332.20757750396"
+            },
+            "priced_book_jobs": 422,
+            "total_book_jobs": 525
+          },
+          "w1_003_shock10_lp": {
+            "active_rows": 192,
+            "complete_active": 108,
+            "cash_rows": 20,
+            "worst": {
+              "cohort": "broad212",
+              "method": "w1_003_shock10_lp",
+              "date": "2019-06-17",
+              "scenario": "down_12_vol_up_15",
+              "status": "complete",
+              "held_books": "3",
+              "priced_books": "3",
+              "refused_books": "0",
+              "cash_usd": "81652.80000000003",
+              "contributions_usd": "21000.0",
+              "observed_nbbo_equity_usd": "251622.80000000005",
+              "model_baseline_equity_usd": "250708.25400673476",
+              "hypothetical_scenario_equity_usd": "134173.1707853763",
+              "hypothetical_model_equity_change_usd": "-116535.08322135845"
+            },
+            "priced_book_jobs": 962,
+            "total_book_jobs": 1150
+          }
+        },
+        "refusal_families": {
+          "numeric_envelope": 582,
+          "missing_or_invalid_iv": 175
+        }
+      },
+      "groups": {
+        "prepared_groups": 55312,
+        "fitted_groups": 33928
+      }
+    }
+  },
+  "delivery": {
+    "artifact_index_sha256": "ffa85119a44f7a897358c075305301d93655936e0aabddbf464c04d35a144621",
+    "bundles": {
+      "mio-2019-csvs.zip": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/delivery/mio-2019-csvs.zip",
+        "sha256": "387ffdd9a3fd1ae68ad63da45bd2401976de3fb73c0db4f80bf3b575d1604347",
+        "bytes": 191722367
+      },
+      "mio-2019-reproducibility.zip": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/delivery/mio-2019-reproducibility.zip",
+        "sha256": "9dafd0cd3b387491852bdd4fa4165003d6fb5d2d35552930fbfde21115b8c773",
+        "bytes": 341452171
+      }
+    },
+    "package_helper_sha256": "979108b311aad7d70271cbd8981d57584361d8921205dd454d12c98792859fe1"
+  },
+  "review_snapshot": {
+    "analysis-design.txt": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/analysis-design.txt",
+      "sha256": "2d52b479aa48bd21bf9c69ec7882be3e0bf105fda95c77d3bd97e47c07fb0c33",
+      "bytes": 12801
+    },
+    "candidate-export.txt": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/candidate-export.txt",
+      "sha256": "05de5c8606bcf4a8ae88e97a8ae2d78ca2e333572887f3de033e0edbcd2e8e2d",
+      "bytes": 12028
+    },
+    "correctness.txt": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/correctness.txt",
+      "sha256": "f594d512b1c1373655b308a7521faebc26831e55e3f190180ba6b8fb1bbbc361",
+      "bytes": 3890
+    },
+    "delivery.txt": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/delivery.txt",
+      "sha256": "951d845f4dd3bf3defdffa4b08820933530b9d62751b0ee2c667e036e8218ba1",
+      "bytes": 13244
+    },
+    "integration.txt": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/integration.txt",
+      "sha256": "6e2de48f8dd31e42b6121cda95195cd6495b7f911c88f5572c0c282f3306c8a3",
+      "bytes": 3246
+    }
+  },
+  "final_gate": {
+    "status": "closed",
+    "candidate": "782f1751e51c212f3fa500a1f983c1a826ed1a4a",
+    "tree": "6fa816b652567c6a47bcfdcc083ef7ba4ea4671a",
+    "runtime_gate": "closed_on_64cb99b5; no runtime code/contracts changed by evidence closure",
+    "reviews": {
+      "correctness": {
+        "model": "GPT-6 Luna",
+        "candidate": "782f1751e51c212f3fa500a1f983c1a826ed1a4a",
+        "report": {
+          "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/final-correctness-782f1751.txt",
+          "sha256": "bae838866328dd0b7336ab59cfe6af5abc9be0837a5f26602f4bada5b44264f0",
+          "bytes": 4571
+        },
+        "unresolved": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 0,
+          "Nit": 0
+        }
+      },
+      "integration": {
+        "model": "GPT-6 Luna",
+        "candidate": "782f1751e51c212f3fa500a1f983c1a826ed1a4a",
+        "report": {
+          "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/final-integration-782f1751.txt",
+          "sha256": "45bf0892f8130d949ff13e64a30c908e3ab091c57e09ffff623957d3a9da5540",
+          "bytes": 5179
+        },
+        "unresolved": {
+          "Critical": 0,
+          "Major": 0,
+          "Minor": 0,
+          "Nit": 0
+        }
+      }
+    },
+    "identity_check": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-review-closure.json",
+      "sha256": "0149fade418c5ddd4d858cdc1992cf3da7ad5b0bdabba4c26108e27c624dd63d",
+      "bytes": 1474
+    },
+    "scope": "Result accounting, provenance, scope correction, actual stress coverage, package/download integrity and documentation integration. No runtime rerun.",
+    "unresolved_backlog": []
+  },
+  "viewer": "http://gibson-deskop.tail27a0c8.ts.net/",
+  "limits": [
+    "Retrospective 2019 recipe and limited-universe selection; no independent holdout claim.",
+    "Trained MLP fallback remains included; contributions and TWR use different denominators.",
+    "Large drawdowns and concentrated profits; broad shock two timeouts and one carried mark.",
+    "Shock rows cover new signal-time selections, not all held positions or a refused-fill subset.",
+    "The bridge 10-contract setting is not a weekly-portfolio cap.",
+    "Solver certificates cover the LP-screened program only; USD50 objective gap does not bound realized losses.",
+    "Stress processing completed with 1149 explicit refusals; active-book weekly coverage is incomplete.",
+    "Per-contract known answers are not feasible portfolio maxima. Limited conditional portfolio weeks cannot be summed into an achievable annual account.",
+    "Broad optional portfolio diagnostic stopped: 32 completed JSONs retained; partial CSVs excluded from convenience joins.",
+    "Raw datasets remain in pinned external WSL stores; bundles preserve the pre-final-review snapshot."
+  ],
+  "memo": {
+    "path": "/home/russell/wt/index-options-m53-universe-20261027/children/index_options/docs/memos/2026-10-28-mio-2019-comparison.md",
+    "sha256": "2b28a8dd5be581c20cea303a5e0df3b11bae64d09c567615e17a39a48c022008",
+    "bytes": 24102
+  },
+  "verification": {
+    "docs_tests": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-doc-tests.log",
+      "sha256": "1997c803566c9ea96ab164bee3c2f662c3c0ed368416a49a4483ec63a25ee54e",
+      "bytes": 98
+    },
+    "command": "PYTHONPATH=<worktree>:<worktree>/children/index_options /home/russell/dskit/.venv/bin/python -B -m pytest -q children/index_options/tests/test_configs.py::test_exact_manifest_and_agent_parity tests/docs/test_budgets.py",
+    "result": "5 passed in 0.67s",
+    "artifact_and_download_verification": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/download-verification.json",
+      "sha256": "53ea4264e0553170361a32e7a3305384e94adf4ebb65d45ced5c46e683eb58b5",
+      "bytes": 1068
+    },
+    "full_suite_run": false,
+    "tailnet_viewer": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/tailnet-viewer-verification.json",
+      "sha256": "d1bbb3b9463e487e635bfb4393a5a98546661c7785fe57a4db6d76622399d0c3",
+      "bytes": 558
+    },
+    "closure_docs_tests": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-doc-tests-closure.log",
+      "sha256": "0f63423895c9108b8bf58f88f05a659cb23e96f01d3361b2261d57bc520de099",
+      "bytes": 98
+    },
+    "closure_docs_result": "5 passed",
+    "final_memo_download": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/final-memo-download-verification.json",
+      "sha256": "ec9ba8d98e901c36251af733426e593ea8b931ed1f02716606a3e916650ec86f",
+      "bytes": 360
+    },
+    "latest_memo_download": {
+      "path": "/home/russell/data/index_options/mio-broad-2019-20261027/refusal-correction-download-verification.json",
+      "sha256": "0652d7cf23ccd395ac0c12a45800a8fc2707963d7e9bdc267ac6f5829b3ce91f",
+      "bytes": 365
+    }
+  },
+  "windows_delivery": "C:\\Users\\russe\\DSKit-MIO-2019-20261028",
+  "editorial_corrections": [
+    {
+      "time": "2026-10-28T18:18:18.556267+00:00",
+      "prior_commit": "a6ae047c781bf63305f33af082bc454d4bf612c8",
+      "old_text": "limited36 had 212 numerical-envelope and 180 missing/invalid-IV cases",
+      "corrected_text": "limited36 had 232 numerical-envelope and 160 missing/invalid-IV cases",
+      "classification": "Minor prose transcription error; fixed",
+      "source_csv": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/limited36/stress-books.csv",
+        "sha256": "51111d0c0625323bd729e4d7673a698cb08b4dce042191d9837c5d5fce200856",
+        "bytes": 1184240
+      },
+      "source_summary": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/postprocess-summary.json",
+        "sha256": "39daf59462fa39b882ac6b24e67ec1f290793e56dd10c5e45a73c4cfdbdcac88",
+        "bytes": 14977
+      },
+      "independent_GPT_6_Luna_review": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/reviews/refusal-count-correction.txt",
+        "sha256": "37b9001c18f98ca897f12240b76757833b8fb41e32480435860cac288fa68aa0",
+        "bytes": 3146
+      },
+      "effects": "No CSV, PnL, coverage, total refusal, helper, study JSON, ZIP or code changes. Prior review reports retained unchanged.",
+      "doc_checks": {
+        "path": "/home/russell/data/index_options/mio-broad-2019-20261027/refusal-correction-doc-tests.log",
+        "sha256": "7fe3c174c11445d5cbb0f497919e059adffbfcf98cbb7d3c4a4ace4e8917e831",
+        "bytes": 98
+      }
+    }
+  ]
+}

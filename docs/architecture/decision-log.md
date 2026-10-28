@@ -33970,6 +33970,48 @@ unmeasured. Do not compare or review until all methods complete and retained
 outputs are inspected. No result, outperformance, promotion or predictive
 selection claim is made.
 
+
+#### ADR-0278 amendment: saved broad M53 halves and configuration comparisons (2026-10-27)
+
+Owner instructions in this session authorize autonomous 2019 weekly comparisons
+using existing MIO formulations, broad saved model-zoo forecasts and the 36
+owner-selected research cells, candidate/trade/P&L CSVs, then existing stress
+tests and a memo. This is configuration and evidence work; the sole runtime
+compatibility change accepts two saved chronological M53 outputs without
+misrepresenting them as the older single-fold zoo receipt. No model training,
+optimizer redesign, fresh validation, protected-year read or TDD/Path edit.
+
+Base: 689b286b69908a1875bc366d26daf21f36c23d21. Allowed paths: existing
+mio_contract.py, its focused packet tests, scoped source/run/pins JSONs,
+the requested memo and CSV evidence, and required manifest/closure records.
+Predictive policy owner_selected_saved_zoo_outputs is development-only in 2019.
+Its pinned JSON receipt binds original completed method runs/configs,
+original forecast/context hashes, unchanged method recipe, source fold 2,
+contiguous quote halves [2019-01-02,2019-07-01) and [2019-07-01,2020-01-01),
+and the exact derived forecast/context files and onboarding manifest.
+The derivation retains only each source's validation fold 2, with no relabeling.
+Legacy selection behavior and registry/implementation pins remain unchanged.
+
+Acceptance matrix: exact original-to-derived row equality and unique shared
+forecast/context key sets; half/fold/date and label-maturity bounds; all 214
+declared symbols inventoried with explicit source missingness; exact 36-cell
+selection from the owner CSV; recipe/config/run and manifest drift refusal;
+legacy predictive compatibility; no overlapping registry claim; fixed methods,
+funding/fill/cost clocks and exact JSON pins; complete retained method failures,
+solve gaps and candidate/decision/trade/account reconciliation; actual-book
+stress and separately labeled hindsight benchmark. The 36-cell study is
+retrospective: both 2019 halves influenced its selection.
+
+Phase0: GPT-6 Luna /root/mio_luna_integration_r1 reviewed this schema against
+689b286 and reported C0/M0/m0/N0 conditional on full expected key coverage
+checks. Those checks are adopted as a required pre-execution preparation gate,
+including explicit legitimate missingness (214 declared; 212 H1 forecast names,
+211 H2 forecast names). No claim that every name has every date/expiry.
+No original producer is claimed to have produced the stitched file. Separate
+final correctness and integration reviews and focused tests remain required.
+Sweep searched 37 refs and 91 worktrees for owner_selected_saved_zoo_outputs,
+mio-broad-2019 and saved-half-forecast: no matching existing implementation.
+
 #### ADR-0279 amendment: risk inputs from Schwab daily bars (approved by owner 2026-10-28, research A0003)
 
 **Ask.** "Build so that we have all the machinery we need to pull from Schwab and calculate
