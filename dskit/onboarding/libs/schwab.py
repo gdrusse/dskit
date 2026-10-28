@@ -1,16 +1,19 @@
-"""Schwab REST connectors: price-history bars and account positions.
+"""Schwab REST connectors: price-history bars, account positions and transactions.
 
 Phase 1 wraps REST price-history candles; ADR-0279 adds a point-in-time
-``positions`` snapshot of every linked account. The bars connector
-re-requests a declared overlap on live pulls so corrected closed minutes become
-new bitemporal evidence; downstream observation scanning chooses the latest
-acquisition. OAuth values and token paths are named through environment
-variables, and token refresh is delegated to the generic onboarding service.
+``positions`` snapshot of every linked account and the ``trades`` stream of
+each account's transactions (the history tax lots are rebuilt from). The bars
+connector re-requests a declared overlap on live pulls so corrected closed
+minutes become new bitemporal evidence; downstream observation scanning chooses
+the latest acquisition. OAuth values and token paths are named through
+environment variables, and token refresh is delegated to the generic onboarding
+service.
 
-Both packs share one transport (:class:`_SchwabConnector`): a bearer-token GET,
+Every pack shares one transport (:class:`_SchwabConnector`): a bearer-token GET,
 retried on throttling, server and network failures, whose refusals name the
 pack's request through ``_NOUN`` ("Schwab price history" for bars, "Schwab
-accounts" for positions).
+accounts" for positions, "Schwab transactions" for trades), and one reader of
+the accountNumbers endpoint (``_hashes``).
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
 from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector, backoff
@@ -37,11 +40,20 @@ __all__ = [
     "DEFAULT_LIVE_LOOKBACK_MINUTES",
     "DEFAULT_OVERLAP_MINUTES",
     "DEFAULT_TOKEN_PATH_ENV",
+    "DEFAULT_WINDOW_DAYS",
+    "INSTRUMENT_ASSET_TYPES",
+    "MAX_TRANSACTIONS",
+    "POSITION_EFFECTS",
     "POSITION_FIELDS",
     "POSITION_KEY_FIELDS",
     "POSITION_STREAM",
+    "TRANSACTION_FIELDS",
+    "TRANSACTION_KEY_FIELDS",
+    "TRANSACTION_STREAM",
+    "TRANSACTION_TYPES",
     "SchwabBarsConnector",
     "SchwabPositionsConnector",
+    "SchwabTransactionsConnector",
 ]
 
 BAR_INTERVAL = (1, "Minute")
@@ -64,6 +76,30 @@ POSITION_FIELDS = (
 )
 POSITION_KEY_FIELDS = ("account", "symbol", "as_of")
 _POSITION_NUMBERS = ("longQuantity", "shortQuantity", "averagePrice", "marketValue")
+TRANSACTION_STREAM = "trades"
+TRANSACTION_FIELDS = (
+    "account", "transaction_id", "trade_date", "symbol", "asset_type", "quantity",
+    "price", "amount", "position_effect",
+)
+TRANSACTION_KEY_FIELDS = ("account", "transaction_id", "symbol")
+#: Schwab's closed vocabulary for a transaction's ``type`` (the ``types`` filter).
+TRANSACTION_TYPES = (
+    "TRADE", "RECEIVE_AND_DELIVER", "DIVIDEND_OR_INTEREST", "ACH_RECEIPT",
+    "ACH_DISBURSEMENT", "CASH_RECEIPT", "CASH_DISBURSEMENT", "ELECTRONIC_FUND",
+    "WIRE_OUT", "WIRE_IN", "JOURNAL", "MEMORANDUM", "MARGIN_CALL", "MONEY_MARKET",
+    "SMA_ADJUSTMENT",
+)
+#: Schwab's closed vocabulary for a transfer item instrument's ``assetType``.
+INSTRUMENT_ASSET_TYPES = (
+    "EQUITY", "OPTION", "INDEX", "MUTUAL_FUND", "CASH_EQUIVALENT", "FIXED_INCOME",
+    "CURRENCY", "COLLECTIVE_INVESTMENT", "FOREX", "FUTURE", "PRODUCT",
+)
+#: Schwab's closed vocabulary for a transfer item's ``positionEffect``.
+POSITION_EFFECTS = ("OPENING", "CLOSING", "AUTOMATIC", "UNKNOWN")
+#: The widest window one transactions request may span, in days (Schwab: one year).
+DEFAULT_WINDOW_DAYS = 365
+#: Schwab's per-response transaction cap: a window returning this many may be truncated.
+MAX_TRANSACTIONS = 3000
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
@@ -245,6 +281,27 @@ class _SchwabConnector(Connector):
             [f"{self._NOUN} for {label!r} failed after "
              f"{knobs['max_retries'] + 1} attempt(s): {last}"]
         )
+
+    def _hashes(self, token, knobs):
+        """Return ``{accountNumber: hashValue}`` from Schwab's own account-number digest list.
+
+        The one reader of the accountNumbers endpoint for every account-level pack
+        (positions, transactions); the number never leaves the connector.
+        """
+        body = self._get(token, "accountNumbers", _ACCOUNT_NUMBERS_URL, {}, knobs)
+        if not isinstance(body, list):
+            raise AssetError(["Schwab accountNumbers response is not a list"])
+        hashes = {}
+        for index, entry in enumerate(body):
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("accountNumber"), str)
+                or not isinstance(entry.get("hashValue"), str)
+                or not entry["hashValue"]
+            ):
+                raise AssetError([f"Schwab accountNumbers entry {index} is malformed"])
+            hashes[entry["accountNumber"]] = entry["hashValue"]
+        return hashes
 
 
 class SchwabBarsConnector(_SchwabConnector):
@@ -651,23 +708,6 @@ class SchwabPositionsConnector(_SchwabConnector):
             raise AssetError(problems)
         return {**transport, **envs}
 
-    def _hashes(self, token, knobs):
-        """Return ``{accountNumber: hashValue}`` from Schwab's own account-number digest list."""
-        body = self._get(token, "accountNumbers", _ACCOUNT_NUMBERS_URL, {}, knobs)
-        if not isinstance(body, list):
-            raise AssetError(["Schwab accountNumbers response is not a list"])
-        hashes = {}
-        for index, entry in enumerate(body):
-            if (
-                not isinstance(entry, dict)
-                or not isinstance(entry.get("accountNumber"), str)
-                or not isinstance(entry.get("hashValue"), str)
-                or not entry["hashValue"]
-            ):
-                raise AssetError([f"Schwab accountNumbers entry {index} is malformed"])
-            hashes[entry["accountNumber"]] = entry["hashValue"]
-        return hashes
-
     @staticmethod
     def _symbol_note(position):
         """Return `` (symbol 'X')`` when the position names a usable symbol, else nothing."""
@@ -814,4 +854,383 @@ class SchwabPositionsConnector(_SchwabConnector):
                     "data": row,
                 }
             new_state.setdefault(stream, {})["cursor"] = as_of
+        yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
+
+
+
+def _ms_stamp(instant):
+    """Return ``instant`` in the query form Schwab documents: ``yyyy-MM-ddTHH:mm:ss.SSSZ``, UTC."""
+    utc = instant.astimezone(timezone.utc)
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond // 1000:03d}Z"
+
+
+def _vocabulary_list(problems, config, name, default, allowed, what):
+    """Resolve a list knob that must name distinct members of a closed vocabulary."""
+    value = config.get(name, default)
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(item, str) and item in allowed for item in value)
+        or len(set(value)) != len(value)
+    ):
+        problems.append(
+            f"config.{name} must be a non-empty list of distinct {what} {list(allowed)}, "
+            f"got {value!r}"
+        )
+    return value
+
+
+def _finite(value):
+    """Return ``float(value)`` for a finite, non-bool number; raise ValueError otherwise."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("not a number")
+    number = float(value)       # OverflowError for an int no float can hold
+    if not math.isfinite(number):
+        raise ValueError("not finite")
+    return number
+
+
+class SchwabTransactionsConnector(_SchwabConnector):
+    """Every linked account's transactions as a ``trades`` stream (ADR-0279).
+
+    The history tax lots are rebuilt from. Accounts come from the accountNumbers
+    endpoint (``_hashes``); each is pulled from ``/accounts/{hashValue}/transactions``
+    in half-open windows of at most ``window_days`` (Schwab allows one year per
+    request), from midnight UTC of the cursor day (else ``start``) to the pull
+    instant. The cursor is the latest trade date emitted (never moved back) and its
+    day is requested again in BOTH modes: a pull that skipped it would lose a trade
+    booked after an earlier same-day pull, and bitemporal dedup on the key keeps one
+    copy of every trade seen twice. A window that returns ``MAX_TRANSACTIONS`` (Schwab's
+    per-response cap) refuses: the window may be truncated, so lower ``window_days``.
+    A ``start`` earlier than the cursor never re-reaches back; lowering ``start``
+    after a pull needs a fresh source (cursors are per source).
+
+    One row per KEPT transfer item: an item whose instrument ``assetType`` is in
+    ``asset_types``. ``account`` is the hashValue (no account number leaves the
+    connector), ``transaction_id`` the ``activityId``, ``trade_date`` the calendar
+    date of ``tradeDate`` in the offset Schwab writes it, ``quantity`` the item's
+    ``amount`` (signed shares: + bought, - sold), ``price`` the item's ``price``,
+    ``amount`` the transaction's ``netAmount`` (signed net cash, fees included:
+    negative is cash paid) when the transaction carries exactly one kept item, and
+    null when it carries several (its cash cannot be split between them),
+    ``position_effect`` the item's ``positionEffect`` or null when absent. Key
+    ``(account, transaction_id, symbol)``; a key seen twice in one pull is one row
+    when identical and refuses when not.
+
+    Nothing is silently dropped: an item carrying ``feeType`` is a fee line (its
+    cash is already in ``netAmount``) and an item of another asset type is
+    skipped; both are counted, with the transactions read, the rows kept and the
+    transactions whose amount is null, in a LOG message (printed by ``acquire``)
+    and in the stream's STATE entry under ``last_pull``.
+
+    Assumptions, from Schwab's public SDKs rather than its (login-only) spec, each
+    checked by a refusal instead of trusted: an item's ``amount`` is the signed
+    share count; ``tradeDate`` is an ISO-8601 instant whose own date is the trade
+    date (an execution after 20:00 New York written in UTC would be dated the next
+    day); ``types`` with several values is sent comma-separated; how far back
+    Schwab serves history is unverified (one client documents a one-year lookback),
+    so a purchase older than the API reaches leaves its lots incomplete, which the
+    downstream reconciliation refuses rather than guesses. A transaction or item
+    of unrecognised shape refuses by index. ETFs are typed
+    ``COLLECTIVE_INVESTMENT`` in Schwab's transaction schema; the default
+    ``asset_types`` keeps ``EQUITY`` only, and the skipped census of the first real
+    pull says whether to widen it.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; config and checkpoints supply all state.
+    """
+
+    _NOUN = "Schwab transactions"
+
+    def spec(self):
+        """Declare the default-deny transactions configuration catalogue."""
+        return {"params": {
+            "start": {
+                "required": True,
+                "notes": "Earliest trade date to request, ISO YYYY-MM-DD: on or before "
+                         "the earliest purchase still held.",
+            },
+            "types": {
+                "notes": "Schwab transaction types requested; default ['TRADE']; members "
+                         f"of {list(TRANSACTION_TYPES)}.",
+            },
+            "asset_types": {
+                "notes": "Instrument asset types kept as rows; default ['EQUITY']; members "
+                         f"of {list(INSTRUMENT_ASSET_TYPES)}. ETFs may arrive as "
+                         "COLLECTIVE_INVESTMENT.",
+            },
+            "window_days": {
+                "notes": f"Days one request spans, 1..{DEFAULT_WINDOW_DAYS}; default "
+                         f"{DEFAULT_WINDOW_DAYS}. Lower it when a window reaches the "
+                         f"{MAX_TRANSACTIONS}-transaction cap.",
+            },
+            **_shared_spec(),
+        }}
+
+    def resolve_knobs(self, config):
+        """Validate config and resolve every transactions request setting.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration after reserved keys are removed.
+
+        Returns
+        -------
+        dict
+            Resolved window, filter, OAuth and transport settings; ``start`` is a date.
+
+        Raises
+        ------
+        AssetError
+            Listing all malformed values.
+        """
+        if not isinstance(config, dict):
+            raise AssetError(
+                [f"config must be a dict, got {type(config).__name__}"]
+            )
+        problems = []
+        start = config.get("start")
+        start_day = None
+        try:
+            start_day = date.fromisoformat(start) if isinstance(start, str) else None
+        except ValueError:
+            pass
+        if start_day is None or start_day.isoformat() != start:
+            problems.append(f"config.start must be an ISO date YYYY-MM-DD, got {start!r}")
+        types = _vocabulary_list(problems, config, "types", ["TRADE"], TRANSACTION_TYPES,
+                                 "Schwab transaction types")
+        asset_types = _vocabulary_list(problems, config, "asset_types", ["EQUITY"],
+                                       INSTRUMENT_ASSET_TYPES, "Schwab instrument asset types")
+        window = config.get("window_days", DEFAULT_WINDOW_DAYS)
+        if (
+            isinstance(window, bool)
+            or not isinstance(window, int)
+            or not 1 <= window <= DEFAULT_WINDOW_DAYS
+        ):
+            problems.append(
+                f"config.window_days must be an int in [1, {DEFAULT_WINDOW_DAYS}], got {window!r}"
+            )
+        transport = _transport_knobs(problems, config)
+        envs = _env_knobs(problems, config)
+        if problems:
+            raise AssetError(problems)
+        return {
+            "start": start_day,
+            "types": list(types),
+            "asset_types": list(asset_types),
+            "window_days": window,
+            **transport,
+            **envs,
+        }
+
+    @staticmethod
+    def _windows(begin, now, days):
+        """Yield half-open ``(start, end)`` windows of at most ``days`` from ``begin`` to ``now``."""
+        start = datetime(begin.year, begin.month, begin.day, tzinfo=timezone.utc)
+        while start < now:
+            end = min(start + timedelta(days=days), now)
+            yield start, end
+            start = end
+
+    @staticmethod
+    def _item(item, kept_types, census):
+        """Return a kept item's row fields, or None for a counted fee line or skipped item."""
+        asset = item["instrument"]["assetType"]
+        if not isinstance(asset, str) or not asset:
+            raise ValueError("an instrument assetType is not a non-empty string")
+        fee = item.get("feeType")
+        if fee is not None:
+            if not isinstance(fee, str):
+                raise ValueError("a feeType is not a string")
+            census["fee_items"] += 1
+            return None
+        if asset not in kept_types:
+            census["skipped"][asset] = census["skipped"].get(asset, 0) + 1
+            return None
+        symbol = item["instrument"]["symbol"]
+        if not isinstance(symbol, str) or not symbol:
+            raise ValueError("a kept item's symbol is not a non-empty string")
+        quantity = _finite(item["amount"])
+        if quantity == 0.0:
+            raise ValueError("a kept item moves no shares")
+        price = _finite(item["price"])
+        if price < 0.0:
+            raise ValueError("a kept item's price is negative")
+        effect = item.get("positionEffect")
+        if effect is not None and effect not in POSITION_EFFECTS:
+            raise ValueError("a positionEffect is outside Schwab's vocabulary")
+        return {"symbol": symbol, "asset_type": asset, "quantity": quantity,
+                "price": price, "position_effect": effect}
+
+    def _rows(self, body, knobs, account, label, census):
+        """Validate one window's transactions and return its rows, counting the rest."""
+        if not isinstance(body, list):
+            raise AssetError([f"Schwab transactions response for {label} is not a list"])
+        if len(body) >= MAX_TRANSACTIONS:
+            raise AssetError(
+                [f"Schwab transactions for {label} returned {len(body)} transactions, the "
+                 "response cap: the window may be truncated; lower window_days"]
+            )
+        rows = []
+        for t_index, transaction in enumerate(body):
+            where = f"transaction {t_index} for {label}"
+            try:
+                activity = transaction["activityId"]
+                if isinstance(activity, bool) or not isinstance(activity, int):
+                    raise ValueError("an activityId is not an int")
+                kind = transaction["type"]
+                stamp = transaction["tradeDate"]
+                if not isinstance(stamp, str):
+                    raise ValueError("a tradeDate is not a string")
+                trade_date = datetime.fromisoformat(stamp).date().isoformat()
+                net = _finite(transaction["netAmount"])
+                items = transaction["transferItems"]
+                if not isinstance(items, list):
+                    raise ValueError("transferItems is not a list")
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise AssetError([f"Schwab {where} is malformed"]) from exc
+            if kind not in knobs["types"]:
+                raise AssetError(
+                    [f"Schwab {where} has type {kind!r}, not one requested {knobs['types']}"]
+                )
+            census["transactions"] += 1
+            kept = []
+            for i_index, item in enumerate(items):
+                try:
+                    fields = self._item(item, knobs["asset_types"], census)
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    raise AssetError([f"Schwab item {i_index} of {where} is malformed"]) from exc
+                if fields is not None:
+                    kept.append(fields)
+            if len(kept) > 1:
+                census["unattributed"] += 1
+            amount = net if len(kept) == 1 else None
+            for fields in kept:
+                rows.append({
+                    "account": account, "transaction_id": activity, "trade_date": trade_date,
+                    "symbol": fields["symbol"], "asset_type": fields["asset_type"],
+                    "quantity": fields["quantity"], "price": fields["price"],
+                    "amount": amount, "position_effect": fields["position_effect"],
+                })
+        return rows
+
+    def check(self, config):
+        """Validate OAuth and perform one non-persisting accountNumbers probe."""
+        knobs = self.resolve_knobs(config)
+        self._hashes(self._access_token(knobs), knobs)
+
+    def discover(self, config):
+        """Describe the ``trades`` stream offline."""
+        self.resolve_knobs(config)
+        return [{
+            "stream": TRANSACTION_STREAM,
+            "schema": {"fields": list(TRANSACTION_FIELDS)},
+            "primary_key": list(TRANSACTION_KEY_FIELDS),
+        }]
+
+    def _pull(self, knobs, begin):
+        """Return ``(rows, census)``: every account's kept items from ``begin`` to now, deduplicated."""
+        now = self._now()
+        token = self._access_token(knobs)
+        hashes = self._hashes(token, knobs)
+        census = {"transactions": 0, "rows": 0, "fee_items": 0, "skipped": {},
+                  "unattributed": 0}
+        seen = {}
+        for a_index, account in enumerate(sorted(hashes.values())):
+            url = f"{_ACCOUNTS_URL}/{urllib.parse.quote(account, safe='')}/transactions"
+            for start, end in self._windows(begin, now, knobs["window_days"]):
+                label = f"account {a_index} {start.date()}..{end.date()}"
+                params = {"startDate": _ms_stamp(start), "endDate": _ms_stamp(end),
+                          "types": ",".join(knobs["types"])}
+                body = self._get(token, label, url, params, knobs)
+                for row in self._rows(body, knobs, account, label, census):
+                    key = tuple(row[field] for field in TRANSACTION_KEY_FIELDS)
+                    if key in seen and seen[key] != row:
+                        raise AssetError(
+                            [f"Schwab transactions carry key {key!r} twice with different "
+                             "content"]
+                        )
+                    seen[key] = row
+        rows = sorted(seen.values(), key=lambda row: (
+            row["trade_date"], row["account"], row["transaction_id"], row["symbol"]))
+        census["rows"] = len(rows)
+        census["skipped"] = dict(sorted(census["skipped"].items()))
+        return rows, census
+
+    def read(self, config, streams, state, mode):
+        """Emit every kept transfer item since the cursor day (else ``start``), then checkpoint.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+        streams : list
+            Requested streams; only ``trades`` exists.
+        state : dict
+            Prior mode-keyed connector checkpoint.
+        mode : str
+            ``backfill`` or ``live``; both re-request the cursor day.
+
+        Yields
+        ------
+        dict
+            Onboarding protocol messages, the census as a LOG before the STATE.
+
+        Raises
+        ------
+        AssetError
+            If arguments, config, OAuth, or provider data are invalid.
+        """
+        if not isinstance(state, dict):
+            raise AssetError([f"state must be a dict, got {state!r}"])
+        if not isinstance(streams, list) or not streams:
+            raise AssetError([f"streams must be a non-empty list, got {streams!r}"])
+        if mode not in MODES:
+            raise AssetError([f"mode must be one of {MODES}, got {mode!r}"])
+        knobs = self.resolve_knobs(config)
+        new_state = {key: dict(value) for key, value in state.items()}
+        for stream in streams:
+            if stream != TRANSACTION_STREAM:
+                raise AssetError(
+                    [f"unknown stream {stream!r}; discovered: {[TRANSACTION_STREAM]}"]
+                )
+            yield {
+                "protocol": PROTOCOL,
+                "type": "SCHEMA",
+                "stream": stream,
+                "schema": {"fields": list(TRANSACTION_FIELDS)},
+            }
+            cursor = state.get(stream, {}).get("cursor", "")
+            begin = knobs["start"]
+            if cursor and parse_utc(cursor).date() > begin:
+                begin = parse_utc(cursor).date()
+            rows, census = self._pull(knobs, begin)
+            for row in rows:
+                yield {
+                    "protocol": PROTOCOL,
+                    "type": "RECORD",
+                    "stream": stream,
+                    "effective_date": row["trade_date"],
+                    "kind": "observation",
+                    "data": row,
+                }
+            yield {
+                "protocol": PROTOCOL,
+                "type": "LOG",
+                "level": "info",
+                "message": (
+                    f"{self._NOUN}: {census['transactions']} transaction(s) -> "
+                    f"{census['rows']} row(s); {census['fee_items']} fee line(s); skipped by "
+                    f"asset type {census['skipped']}; {census['unattributed']} transaction(s) "
+                    "with several kept items carry a null amount"
+                ),
+            }
+            entry = new_state.setdefault(stream, {})
+            # the latest trade date seen, never earlier than the cursor (a late posting can
+            # carry an older trade date than the window it arrived in)
+            entry["cursor"] = max([cursor, *(row["trade_date"] for row in rows[-1:])])
+            entry["last_pull"] = census
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}

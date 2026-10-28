@@ -129,6 +129,7 @@ DEFAULT_CONNECTORS = {
     "restapi": "dskit.onboarding.libs.restapi:RestApiConnector",
     "schwab": "dskit.onboarding.libs.schwab:SchwabBarsConnector",
     "schwab_positions": "dskit.onboarding.libs.schwab:SchwabPositionsConnector",
+    "schwab_transactions": "dskit.onboarding.libs.schwab:SchwabTransactionsConnector",
     "thetadata": "dskit.onboarding.libs.thetadata:ThetaDataConnector",
 }
 

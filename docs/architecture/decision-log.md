@@ -33969,3 +33969,103 @@ Actual full-year peak resource use, solves, returns and replay remain
 unmeasured. Do not compare or review until all methods complete and retained
 outputs are inspected. No result, outperformance, promotion or predictive
 selection claim is made.
+
+#### ADR-0279 amendment: tax lots from Schwab transactions (approved by owner 2026-10-28, research A0004)
+
+**Ask.** "All the machinery we need to pull from Schwab and calculate the
+figures I need to know whether or not I should continue to hold an asset." The
+liquidation tax ran on aggregate positions (average price x shares, every
+holding `default_holding`); the real tax depends on each lot's date and basis.
+Research `children/portfolio_policy/docs/research/tax-lots/2026-10-28-synthesis.md`
+(A0003 on branch `schwab-tax-lots`, renumbered A0004 at merge after
+`schwab-risk-inputs`' A0003) found the endpoint shape, FIFO as the default
+rule (26 CFR 1.1012-1(c)(1)) and the holding period (long iff the sale's trade
+date is after the acquisition's plus one calendar year).
+
+**Tier 2: `SchwabTransactionsConnector`** (`schwab_transactions`, in
+`dskit/onboarding/libs/schwab.py`, `_NOUN` "Schwab transactions"). Knobs:
+`start` (ISO date, REQUIRED), `types` (default `["TRADE"]`, Schwab's closed
+vocabulary), `asset_types` (default `["EQUITY"]`: which instruments become rows;
+ETFs may arrive as `COLLECTIVE_INVESTMENT`), `window_days` (default 365, at most
+365) and the shared OAuth/transport knobs. Accounts come from the shared
+`_hashes` (moved to the base); each account is pulled in windows of at most
+`window_days` from the cursor day (else `start`) to the pull instant; a window
+returning Schwab's 3,000-transaction cap refuses (truncation). Stream `trades`,
+one row per kept transfer item: account (`hashValue`), transaction_id
+(`activityId`), trade_date (the date of `tradeDate` in its own offset), symbol,
+asset_type, quantity (`amount`, signed: + buy / - sell), price, amount (the
+transaction's `netAmount`, signed cash, fees included; null when a transaction
+carries several kept items, since its cash cannot be split), position_effect.
+Key `(account, transaction_id, symbol)`; effective_date = trade_date; cursor =
+the latest trade_date seen, never moved back. The cursor day is re-requested in BOTH modes (a backfill
+that skipped it would lose a trade booked after an earlier same-day pull;
+dedup keeps one copy). Fee lines and items of other asset types are counted,
+never silently dropped: a LOG message and the stream's STATE entry
+(`last_pull`) carry the census. Unrecognised shape refuses by index.
+
+**Tier 1: `dskit/pipeline/tax_lots.py`** (by import path, stdlib + core, both
+`pure`). `TaxLots` (role transform): trade rows -> open lots per `key_fields`
+as of `as_of` (default the run's) by `method` (`fifo`; `LOT_METHODS` maps a
+name to a `LotOrder` whose one hook orders the open lots a sell consumes, so
+`hifo`/`lifo` are one entry each; anything else refuses). A buy's basis is
+`-amount` when `amount_field` is declared and the row's amount is not null,
+else quantity x price; a sell consumes lots in method order, splitting the
+last pro rata. Trades are processed by date then `order_field` (else input
+order); trades after `as_of` are counted, not used. A sell beyond the open
+quantity (missing history or a short sale) refuses by key unless
+`allow_incomplete`, when the key is flagged `history_incomplete` and ALL its
+lots withheld. Lot rows: the key fields, `lot_id` (`<key...>:<acquired>:<n>`,
+n the 1-based ordinal of that day's buys for the key), `acquired`, `quantity`,
+`basis`, `basis_per_share`. `LotPositions` (role transform): lots joined to the
+positions snapshot on `key_fields`; per lot the snapshot's `quantity_field`,
+`value_field` (= lot quantity x snapshot value / snapshot quantity) and
+`basis_field` (the lot basis) plus `lot_id`, `acquired` and declared
+`carry_fields`. A snapshot key whose lots' total differs from its quantity by
+more than `tolerance` (default 0; share float noise below `QUANTITY_RTOL` is
+equality), or which has no lots, refuses unless `allow_incomplete`, when its
+aggregate row passes through with `lot_id` `<key...>:aggregate` and a null
+`acquired` (LiquidationTax's `default_holding`). Lots for keys the snapshot
+does not carry are counted (`unpositioned`); the summary reports each key's
+`basis_gap` (lot basis - position basis), the check that FIFO matches the
+broker's books.
+
+**`DecisionOutcomes`** gains optional `match_fields` (a subset of `key_fields`,
+default all): decisions are keyed per lot (account, symbol, lot_id), the later
+snapshot is matched on account + symbol, and growth stays per share.
+
+**Child.** `run-hold-vs-redeploy.json`: `trades` (ObservationRows, source
+`schwab_trades` — one alias is one connector — stream `trades`) -> `lots`
+(TaxLots, fifo, `as_of` = the snapshot day) -> `lot_positions` (with
+`$snapshot.records`) -> `tax` (`acquired_field: "acquired"`) -> decide ->
+summary and writers keyed by `lot_id`; `run-decision-outcomes.json` keys
+decisions on account + symbol + lot_id and matches on account + symbol. Config
+tests pin `tax.as_of == lots.as_of ==` the snapshot day and the two
+`allow_incomplete` equal; the aggregate path stays available by pointing
+`tax.inputs.records` at `$snapshot.records` and dropping `acquired_field`.
+
+**Files.** `dskit/onboarding/libs/schwab.py`, `dskit/onboarding/connector.py`,
+`tests/onboarding/test_schwab_transactions.py`; `dskit/pipeline/tax_lots.py`,
+`tests/pipeline/test_tax_lots.py`; `dskit/pipeline/decision_outcomes.py` and its
+test; the two child documents, `tests/test_configs.py`,
+`tests/test_hold_vs_redeploy.py`; the onboarding and pipeline README and
+CLAUDE.md (+ AGENTS mirrors), the child README, lane note and memo.
+
+**Deferred.** `hifo` / `lifo` / `average` methods (average cost is Schwab's
+default for RIC ETFs in accounts opened before October 2024: the owner declares
+the election); the calendar-year holding rule in `LiquidationTax` (366 days is
+off by one day when the year spans 29 February); short sales and buy-to-cover;
+splits, spin-offs, transfers-in (RECEIVE_AND_DELIVER) and reinvestments outside
+TRADE, each caught by the reconciliation rather than modelled; a days-to-long-term
+figure per lot; a lot-detail CSV export as a second lot source (TaxLots reads
+it by field name already).
+
+Sweep: tools/sweep/sweep SchwabTransactionsConnector schwab_transactions
+transactions TRADE_STREAM trades tax_lots TaxLots LotPositions lot_positions
+lot_id fifo hifo lifo lot_ledger lot_method history_incomplete allow_incomplete
+match_fields carry_fields window_days asset_types LOT_METHODS TRADE_FIELDS
+QUANTITY_RTOL basis_gap unpositioned format_lot_id TRANSACTION_STREAM
+TRANSACTION_FIELDS TRANSACTION_KEY_FIELDS TRANSACTION_TYPES INSTRUMENT_ASSET_TYPES
+POSITION_EFFECTS MAX_TRANSACTIONS DEFAULT_WINDOW_DAYS LotOrder FifoOrder
+AGGREGATE_LOT LOT_FIELDS; no near matches (`carry_fields` is the numpy pack's
+existing name for the same idea, reused; `TRADE_STREAM` / `TRADE_FIELDS` exist in
+`kalshi_history`, unrelated, so the new constants are named `TRANSACTION_*`).
