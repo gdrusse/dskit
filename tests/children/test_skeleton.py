@@ -137,3 +137,16 @@ def test_the_wheel_still_ships_only_dskit():
         f"packages.find.include drifted to {include!r} — wheels ship "
         "dskit* and nothing else (ADR-0021)"
     )
+
+
+def test_a_childs_credentials_and_run_outputs_are_gitignored():
+    """The Schwab OAuth token a weekly pull writes is credential material, and the onboarding root
+    and every run's output directory are local state: none of them may be committed from any
+    child. (Both spellings of ``ob``: a worktree may symlink the store, which a trailing slash
+    never matches.)"""
+    with open(os.path.join(REPO_ROOT, ".gitignore"), encoding="utf-8") as fh:
+        lines = {line.strip() for line in fh if line.strip() and not line.startswith("#")}
+    required = {"children/*/schwab-token.json", "children/*/ob", "children/*/ob/",
+                "children/*/decisions/", "children/*/summary/", "children/*/risk/",
+                "children/*/report/", "children/*/outcomes/"}
+    assert required <= lines, sorted(required - lines)

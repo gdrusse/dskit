@@ -70,14 +70,16 @@ dskit/pipeline/
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
 │                      weekday-onehot, attach-by-identity — flow verbs (keyby: records ->
 │                      the keyed side table join reads; weekday-onehot: ISO date -> 0/1
-│                      weekday columns)
+│                      weekday columns); DateOrderedGroupBy (by import path, ADR-0279):
+│                      groupby whose order_field is an ISO date, the latest row per entity, refused when stale
+│                      against a reference day (`max_lag_days` + `reference_date`, every offending group named)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
 │                      holdout locked first, count-sized rolling folds, warm-up vs
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
-├── kinds_compute.py   ComputeFields (by import path, ADR-0265 Amendment 5): per-row arithmetic over declared fields, `keep` projection, text / list / item; null and
+├── kinds_compute.py   ComputeFields (by import path, ADR-0265 Amendment 5): per-row arithmetic over declared fields, `keep` projection, text / integer / list / item; null and
 │                      out-of-domain results are None and counted
 ├── kinds_series.py    StampSeriesStats (by import path, ADR-0265 Amendment 5): stamped values to a per-group week / month series, Newey-West, Sharpe + calendar-block
 │                      bootstrap interval, hurdle, paired / unpaired contrast
@@ -133,14 +135,19 @@ dskit/pipeline/
 │                      owns the shared row readers (`require_rows` / `require_number` / `require_amount`) and `check_redeploy_params`;
 │                      `MAX_COUNT` (10**6) + `check_count_param`: the one ceiling of a count param; an acquisition date after `as_of` refuses
 ├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, `horizon_years` <= `reversion_years`, role data) + BetaHoldReturns
-│                      (risk_free + beta x (market - risk_free) per symbol, plus the `betas` used) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
+│                      (risk_free + beta x (market - risk_free) per symbol from the wired `betas` input or the hand table (`betas_param_ignored` when a wire replaced a declared param), plus the `betas` used) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
 │                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr), declared `min_periods` floor -> HoldVsRedeploy's `redeploy_return` port;
 │                      a constant series (spread within `stats.NO_VARIANCE_RTOL`) has no Sharpe and refuses
 ├── decision_outcomes.py DecisionOutcomes (by import path, ADR-0279): an earlier run's hold forecasts against a later snapshot, per-share
 │                      projected price growth (total growth less `income_rate`, pro rata) vs realized growth, surprise by decision; the hold side's own score;
 │                      only decision-matched later rows are value-checked (structural refusals cover all)
-│                      owns `annualized_growth` (ratio -> annual rate) + `check_key_fields_param` (the key_fields rule); position_summary imports both
+│                      owns `annualized_growth` (ratio -> annual rate) + `check_field_list_param` / `check_key_fields_param` (the field-list rule); position_summary and tax_lots import them;
+│                      `match_fields` keys the later snapshot by holding when decisions are per lot; the summary counts rows (lots) and holdings apart
+├── tax_lots.py        TaxLots + LotPositions (by import path, ADR-0279, research A0004): trade rows -> open lots per key by a declared method
+│                      (`fifo`; a `LotOrder` per method), an oversell refuses or withholds the key (`allow_incomplete`); lots joined to a positions
+│                      snapshot, each a position row valued pro rata, reconciled share for share (else refuse or the aggregate row), `basis_gap` (+ `basis_gap_max`,
+│                      a warning beyond `BASIS_RTOL`); a day replays by `order_fields` (time, id); a null buy amount falls back to quantity x price, counted
 ├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS

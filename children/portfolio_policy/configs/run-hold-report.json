@@ -1,6 +1,6 @@
 {
   "name": "portfolio_policy-hold-report",
-  "notes": "ADR-0279 amendment 2026-10-28: the answer to 'what is it worth to hold this' as one markdown page. An earlier decision run's rows (published back through onboarding, one stream per run file) -> the few numbers per holding and for the portfolio -> report/<run>.md. weekly.sh runs the whole sequence for a snapshot day. The decision run name is a value of THIS document: reporting a different run is a different report.",
+  "notes": "ADR-0279 amendment 2026-10-28: the answer to 'what is it worth to hold this' as one markdown page, one line per lot. An earlier decision run's rows and risk file (published back through onboarding, one stream per run file) -> the few numbers per lot and for the portfolio -> report/<run>.md. weekly.sh runs the whole sequence for a snapshot day. The decision run name is a value of THIS document (both streams): reporting a different run is a different report.",
   "pipeline": {
     "decisions": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
@@ -8,15 +8,43 @@
         "root": "./ob",
         "source": "decisions",
         "stream": "REPLACE-with-the-decision-run-name",
-        "key_fields": ["account", "symbol", "as_of"]
+        "key_fields": ["account", "symbol", "lot_id", "as_of"]
       },
-      "notes": "Role 'data': the decisions/<run>.jsonl the decision run wrote, acquired through localtables (layout file: the stream is the file stem = the run name), exactly as run-decision-outcomes.json reads it. The decision run's summary/<run>.jsonl is not read: its rows carry no instant, and localtables needs an effective_field on every row, so the summary is recomputed below from the decided rows, which carry as_of."
+      "notes": "Role 'data': the decisions/<run>.jsonl the decision run wrote, acquired through localtables (layout file: the stream is the file stem = the run name), exactly as run-decision-outcomes.json reads it: one row per LOT, keyed account + symbol + lot_id + as_of. The decision run's summary/<run>.jsonl is not read: its rows carry no instant, and localtables needs an effective_field on every row, so the summary is recomputed below from the decided rows, which carry as_of."
+    },
+    "risk_rows": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./ob",
+        "source": "risks",
+        "stream": "REPLACE-with-the-decision-run-name",
+        "key_fields": ["symbol", "as_of"]
+      },
+      "notes": "Role 'data': the risk/<run>.jsonl the same decision run wrote (volatility and adjusted beta per symbol from the Schwab daily bars), acquired through localtables like the decisions beside it. It is the decision run's own file, so the report's Vol and Beta columns are the numbers that priced the decisions, never a recomputation. Its stream is the same placeholder as decisions' and weekly.sh names both with the decision run (a test pins them equal)."
+    },
+    "vols": {
+      "uses": "keyby",
+      "inputs": { "records": "$risk_rows.records" },
+      "params": {
+        "key": "symbol",
+        "value": "annual_vol"
+      },
+      "notes": "The side table PositionSummary reads volatilities from: the decision document's `vols` node, over the published risk rows."
+    },
+    "risk_betas": {
+      "uses": "keyby",
+      "inputs": { "records": "$risk_rows.records" },
+      "params": {
+        "key": "symbol",
+        "value": "beta"
+      },
+      "notes": "The side table PositionSummary reads betas from: the Blume-adjusted beta that priced the hold return (the decision document's `risk_betas` node), over the published risk rows."
     },
     "summary": {
       "uses": "dskit.pipeline.position_summary:PositionSummary",
-      "inputs": { "records": "$decisions.records" },
+      "inputs": { "records": "$decisions.records", "betas": "$risk_betas.table", "volatilities": "$vols.table" },
       "params": {
-        "key_fields": ["account", "symbol", "as_of"],
+        "key_fields": ["account", "symbol", "lot_id", "as_of"],
         "symbol_field": "symbol",
         "value_field": "market_value",
         "net_field": "liq_net",
@@ -26,18 +54,18 @@
         "redeploy_tax_rate": 0.408,
         "redeploy_tax_timing": "annual"
       },
-      "notes": "Restates run-hold-vs-redeploy.json summary's params (tests/test_hold_report.py pins them equal, key_fields aside), so every number matches the decision run's own summary. key_fields adds as_of: a key field rides onto each summary row, which is how the verdict page reads the decisions' own day for its title. betas and volatilities are not wired here: the decision rows carry neither, so the Beta and Vol columns read an em dash. Wiring the verdict node into the decision document itself (once the risk and lots lanes merge) gives them back."
+      "notes": "Restates run-hold-vs-redeploy.json summary's params (tests/test_hold_report.py pins them equal, key_fields aside), so every number matches the decision run's own summary. key_fields is the decision document's (account, symbol, lot_id: one row per lot) plus as_of: a key field rides onto each summary row, which is how the verdict page reads the decisions' own day for its title. Betas and volatilities are the decision run's own, read from the risk rows it published (the decided rows carry neither)."
     },
     "verdict": {
       "uses": "dskit.pipeline.hold_verdict:HoldVerdict",
       "inputs": { "records": "$summary.records", "portfolio": "$summary.metrics" },
       "params": {
         "path": "report/{run}.md",
-        "source": "hold verdict per account x symbol, with the portfolio block",
+        "source": "hold verdict per lot, with the portfolio block",
         "overwrite": false,
         "title": "What holding is worth",
         "universe": "listed equity longs",
-        "key_fields": ["account", "symbol"],
+        "key_fields": ["symbol", "lot_id"],
         "as_of_field": "as_of",
         "weight_field": "weight",
         "expected_return_field": "expected_return",
@@ -49,7 +77,7 @@
         "opportunity_cost_field": "opportunity_cost",
         "decision_field": "decision"
       },
-      "notes": "Role 'report': one markdown page per run in ./report under the invoking cwd (gitignored). Holdings sorted by opportunity cost a year, highest first: above zero the after-tax alternative beats holding. The title day is the as_of the decisions carry (several refuse), not the run's --asof. The total's label states the universe (the decision document's snapshot keeps equity longs; tests/test_configs.py pins the words to its clauses). The portfolio block is the summary's metrics, wired, never recomputed."
+      "notes": "Role 'report': one markdown page per run in ./report under the invoking cwd (gitignored), one line per LOT. The Holding cell is symbol / lot_id; the lot id is account:symbol:acquired:ordinal, so the account is in it (and stays whole: a cell past 120 characters is cut, which a 64-character account hash plus the lot id does not reach). Lots sorted by opportunity cost a year, highest first: above zero the after-tax alternative beats holding. The title day is the as_of the decisions carry (several refuse), not the run's --asof. The total's label states the universe (the decision document's snapshot keeps equity longs; tests/test_configs.py pins the words to its clauses). The portfolio block is the summary's metrics, wired, never recomputed."
     }
   },
   "outputs": {

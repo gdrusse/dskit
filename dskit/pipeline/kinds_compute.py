@@ -11,9 +11,10 @@ the whole expression, so a bare field is a copy and a rename), ``{"const": numbe
 ``{"op": name, "args": [expression, ...]}`` over the closed table :data:`OPS`. ``{"item": {"field": name, "index": i}}``
 is the i-th number of a list field, and ``{"coalesce": [expression, ...]}`` is the first of its expressions that has a value (a
 null or out-of-domain one is skipped; none left is null, counted). A bare ``field`` whose value is NaN or infinite is missing. Two kinds may only be the
-WHOLE expression of an output: ``{"text": "..."}`` (a constant string, such as a structure name) and
-``{"list": [expression, ...]}`` (a list of numbers, such as the strikes of an order; null when any
-element is). Inside an op
+WHOLE expression of an output: ``{"text": "..."}`` (a constant string, such as a structure name),
+``{"integer": n}`` (a constant int, such as a window length: ``const`` computes in floats, so a count it
+writes would read ``252.0``) and ``{"list": [expression, ...]}`` (a list of numbers, such as the strikes
+of an order; null when any element is). Inside an op
 every operand must be a finite real number; a missing key, ``None``, NaN, infinity, boolean or
 text operand makes the result ``None`` and is counted as ``null_input``; an operation outside
 its domain (division by zero, log or square root of a non-positive, an overflow) makes it
@@ -69,7 +70,7 @@ OPS = {
     "min": (("at_least", 2), lambda *a: min(a)),
     "max": (("at_least", 2), lambda *a: max(a)),
 }
-_KINDS = ("field", "const", "op", "text", "list", "item", "coalesce")
+_KINDS = ("field", "const", "op", "text", "integer", "list", "item", "coalesce")
 _NULL = "null_input"
 _DOMAIN = "domain"
 
@@ -129,7 +130,7 @@ class ComputeFields(Node):
             return [f"{where}: an expression has exactly one of {list(_KINDS)}, got {sorted(expr)}"]
         kind = kinds[0]
         allowed = {"op": {"op", "args"}}.get(kind, {kind})
-        if kind in ("text", "list") and nested:
+        if kind in ("text", "integer", "list") and nested:
             return [f"{where}: {kind} is only allowed as the whole expression of an output"]
         problems += [f"{where}: unknown key {k!r}" for k in sorted(set(expr) - allowed)]
         if kind == "field":
@@ -155,6 +156,9 @@ class ComputeFields(Node):
         elif kind == "text":
             if not isinstance(expr["text"], str) or not expr["text"]:
                 problems.append(f"{where}: text must be a non-empty string, got {expr['text']!r}")
+        elif kind == "integer":
+            if not isinstance(expr["integer"], int) or isinstance(expr["integer"], bool):
+                problems.append(f"{where}: integer must be an int, got {expr['integer']!r}")
         elif kind == "list":
             items = expr["list"]
             if not isinstance(items, list) or not items:
@@ -211,7 +215,7 @@ class ComputeFields(Node):
 
     @staticmethod
     def _evaluate(expr, row, top):
-        """The value of ``expr`` on ``row``; raises :class:`_Fail` when it has none.
+        """Return the value of ``expr`` on ``row``; raises :class:`_Fail` when it has none.
 
         A bare ``field`` that is the whole expression (``top``) passes any non-null value through;
         a field inside an op must be a finite real number.
@@ -220,6 +224,8 @@ class ComputeFields(Node):
             return float(expr["const"])
         if "text" in expr:
             return expr["text"]
+        if "integer" in expr:
+            return expr["integer"]
         if "coalesce" in expr:
             last = _Fail(_NULL)
             for item in expr["coalesce"]:

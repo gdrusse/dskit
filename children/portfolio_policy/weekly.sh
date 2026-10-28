@@ -4,12 +4,15 @@
 #   bash weekly.sh <snapshot day YYYY-MM-DD>
 #
 # Pull today's Schwab positions, decide hold vs redeploy on that day's snapshot, publish the
-# decisions back through onboarding, render report/<run>.md and print its path. Prerequisites:
-# the README's one-time setup (onboarding root, schwab + active sources, a live Schwab OAuth
-# token). The day is the pull's UTC day; it is substituted for the decision document's declared
-# snapshot day (snapshot.where[as_of] and tax.as_of, pinned equal by a test) in a temporary copy,
+# decisions and the risk file back through onboarding, render report/<run>.md (one line per lot)
+# and print its path. Prerequisites: the README's one-time setup (onboarding root, the schwab,
+# schwab_trades, schwab_daily and active sources, a live Schwab OAuth token) AND its step 3 pulls
+# already run: the script repeats the positions pull itself (the day is that pull's UTC day), but
+# the trades and the daily bars are read as they stand. The day replaces the decision document's
+# declared decision day wherever it appears (snapshot.where[as_of], lots.as_of, tax.as_of,
+# risk_day.where[ts], risk_latest.reference_date: pinned equal by a test) in a temporary copy,
 # so the shipped document is never edited and the run's identity hash records the day.
-# A workflow manifest (ADR-0227) is deferred: the summary stream is named by the decision run,
+# A workflow manifest (ADR-0227) is deferred: the report's streams are named by the decision run,
 # which is known only after it runs, and the decision document is not a template.
 #
 # A failed step stops the script with a non-zero status. A pipeline run that fails or halts has
@@ -57,32 +60,33 @@ run() {
     basename "$dir"
 }
 
-# the shipped document with its declared snapshot day replaced by $day (and, for the report,
-# the decisions stream set to the decision run's name)
+# the shipped document with its declared decision day replaced by $day wherever it is written
+# (a decision document names it in several nodes; "notes" are prose and stay), and, for the report,
+# the decision run's name replacing the stream both of its published files are declared with
 derive() {
     "$py" - "$@" <<'PY'
 import json, sys
 source, target, day, stream = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(source, encoding="utf-8") as fh:
     doc = json.load(fh)
+def swap(value, declared, new):
+    if isinstance(value, dict):
+        return {k: (v if k == "notes" else swap(v, declared, new)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [swap(v, declared, new) for v in value]
+    return new if value == declared else value
 nodes = doc["pipeline"]
 if "tax" in nodes:
-    declared = nodes["tax"]["params"]["as_of"]
-    def swap(value):
-        if isinstance(value, dict):
-            return {k: (v if k == "notes" else swap(v)) for k, v in value.items()}
-        if isinstance(value, list):
-            return [swap(v) for v in value]
-        return day if value == declared else value
-    doc["pipeline"] = swap(nodes)
+    nodes = swap(nodes, nodes["tax"]["params"]["as_of"], day)
 if stream:
-    doc["pipeline"]["decisions"]["params"]["stream"] = stream
+    nodes = swap(nodes, nodes["decisions"]["params"]["stream"], stream)
+doc["pipeline"] = nodes
 with open(target, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, indent=2)
 PY
 }
 
-mkdir -p decisions summary report
+mkdir -p decisions summary risk report
 "$py" -m dskit.onboarding acquire --root ./ob --source schwab --stream positions --mode backfill
 
 derive configs/run-hold-vs-redeploy.json "$work/run-hold-vs-redeploy.json" "$day" ""
@@ -92,6 +96,12 @@ decision_run="$(run "$work/run-hold-vs-redeploy.json")" || exit $?
     --catalog-source decisions-src --connector localtables \
     --config '{"path": "./decisions", "layout": "file", "effective_field": "as_of"}' --activate >/dev/null
 "$py" -m dskit.onboarding acquire --root ./ob --source decisions --stream "$decision_run" --mode backfill
+# the decision run's risk file (volatility and beta per symbol) is published the same way: the
+# report's Vol and Beta columns are the numbers that priced the decisions
+"$py" -m dskit.onboarding register-source risks --root ./ob \
+    --catalog-source risks-src --connector localtables \
+    --config '{"path": "./risk", "layout": "file", "effective_field": "as_of"}' --activate >/dev/null
+"$py" -m dskit.onboarding acquire --root ./ob --source risks --stream "$decision_run" --mode backfill
 
 derive configs/run-hold-report.json "$work/run-hold-report.json" "$day" "$decision_run"
 report_run="$(run "$work/run-hold-report.json")" || exit $?

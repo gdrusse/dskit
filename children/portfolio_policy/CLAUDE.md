@@ -110,6 +110,7 @@ configs/               # asset-model / source-sample / suite-sample /
                        #   run-hold-report / run-decision-outcomes
 decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
 summary/               # the few numbers per holding, one file per run (gitignored)
+risk/                  # volatility and beta per symbol from the daily bars, one file per run (gitignored)
 report/                # the hold verdict page, one markdown file per run (gitignored)
 weekly.sh              # bash weekly.sh <day>: pull -> decide -> publish -> report
 models/                # fitted ML/optimization artifacts (gitignored)
