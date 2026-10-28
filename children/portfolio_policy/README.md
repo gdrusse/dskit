@@ -46,9 +46,10 @@ python -m dskit.onboarding acquire --root ./ob --source schwab --stream position
 python -m dskit.onboarding acquire --root ./ob --source schwab_daily --stream bars --mode live
 python -m dskit.onboarding acquire --root ./ob --source active --stream returns --mode backfill
 
-# 4. Set the document: the decision day in THREE places, all the positions pull's UTC day
-#    (the rows' as_of; a pull after 20:00 New York is dated the next day), pinned equal by a
-#    test: snapshot.where[as_of], tax.as_of and risk_day.where[ts]. Then the placeholders below.
+# 4. Set the document: the decision day in FOUR places, all the positions pull's UTC day
+#    (the rows' as_of; a pull after 20:00 New York, 19:00 in standard time, is dated the next
+#    day), pinned equal by a test: snapshot.where[as_of], tax.as_of, risk_day.where[ts] and
+#    risk_latest.reference_date. Then the placeholders below.
 
 # 5. Run.
 mkdir -p decisions summary risk
@@ -76,7 +77,7 @@ set them before the first run. Neither return is a literal: `market` builds
 the hold return from dividend yield + real growth + inflation + CAPE drift and
 `betas` scales it per symbol (research A0001) by each holding's beta, wired from
 the `schwab_daily` bars (`bars` -> `risk_features` -> `risk_day` -> `risk_latest`
--> `risk`, research A0003; no beta is typed); `hurdle` deflates the active
+-> `risk`, research A0003; no beta is typed; a bars pull more than 5 days stale is refused); `hurdle` deflates the active
 backtest's mean by what `trials` variants of nothing would have found and
 withholds it below `min_dsr`, in which case every holding holds. The hold
 path is taxed once at the horizon (`terminal_tax_rate`); the active path pays
@@ -110,8 +111,12 @@ backtest's annual volatility (`hurdle` summary `annual_sd`) before a real run.
 - Whether Schwab's daily closes are split- or dividend-adjusted is undocumented: an
   unadjusted split would read as one huge daily return and inflate that holding's
   volatility and beta for a year. Check a holding with a recent split on the first pull.
-- A stale bars pull is not refused: risk is read at each symbol's latest session on or
-  before the decision day, and `risk/<run>.jsonl` `as_of` shows which.
+- A stale bars pull is refused, not read silently: risk is read at each symbol's latest
+  session on or before the decision day, and a symbol (SPY too) whose latest session is more
+  than `risk_latest.max_lag_days` (5 calendar days; a long weekend is 4) before it stops the
+  run by name with its last session and lag. Inside the bound `risk/<run>.jsonl` `as_of`
+  shows the session each number was read at. The bound counts calendar days, not sessions
+  (no trading calendar), and a session missing mid-window stretches the year by that session.
 - A holding without a year of Schwab daily bars (253 closes), or left out of the
   `schwab_daily` symbols, stops the run by name: there is no default beta or
   volatility. A pull without SPY leaves every beta null, which stops it the same

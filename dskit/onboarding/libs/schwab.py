@@ -18,6 +18,7 @@ pack's request through ``_NOUN`` ("Schwab price history" for minute bars,
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import math
 import time
@@ -76,11 +77,17 @@ _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 #: The zone a US equity session is dated in, and the New York wall clock of its regular open.
-_SESSION_ZONE = ZoneInfo("America/New_York")
+_SESSION_ZONE_KEY = "America/New_York"
 _SESSION_OPEN = (9, 30)
 #: Calendar days the daily pack's ``check`` probe asks for, ending at the pull's New York date.
 _PROBE_DAYS = 7
 _CANDLE_NUMBERS = ("open", "high", "low", "close", "volume")
+
+
+@functools.cache
+def _session_zone():
+    """Return the session zone, built at first use: importing the pack needs no tz database."""
+    return ZoneInfo(_SESSION_ZONE_KEY)
 
 
 def _positive_number(problems, name, value):
@@ -742,7 +749,7 @@ class SchwabDailyBarsConnector(_SchwabConnector):
 
     def _today(self):
         """Return the pull's New York calendar date: no session on or after it is closed."""
-        return self._now().astimezone(_SESSION_ZONE).date()
+        return self._now().astimezone(_session_zone()).date()
 
     @staticmethod
     def _first_day(knobs, cursor, mode):
@@ -763,7 +770,7 @@ class SchwabDailyBarsConnector(_SchwabConnector):
     @staticmethod
     def _midnight_ms(day):
         """Return 00:00 New York of ``day`` as epoch milliseconds."""
-        midnight = datetime(day.year, day.month, day.day, tzinfo=_SESSION_ZONE)
+        midnight = datetime(day.year, day.month, day.day, tzinfo=_session_zone())
         return int(midnight.timestamp()) * 1000
 
     def _params(self, first, today):
@@ -797,7 +804,7 @@ class SchwabDailyBarsConnector(_SchwabConnector):
             values = {name: float(v) for name, v in numbers.items()}
             if not all(math.isfinite(v) for v in values.values()):
                 raise ValueError("a candle number is not finite")
-            local = datetime.fromtimestamp(stamp_ms / 1000, tz=_SESSION_ZONE)
+            local = datetime.fromtimestamp(stamp_ms / 1000, tz=_session_zone())
         except (KeyError, TypeError, ValueError, OverflowError, OSError) as exc:
             raise AssetError(
                 [f"Schwab daily candle {index} for {symbol!r} is malformed"]
@@ -831,6 +838,9 @@ class SchwabDailyBarsConnector(_SchwabConnector):
     def check(self, config):
         """Validate OAuth and probe the last week of the first symbol, persisting nothing.
 
+        The response is read the way :meth:`read` reads it (every candle well formed and
+        mapped to its session), so silence means the endpoint answered with price history.
+
         Parameters
         ----------
         config : dict
@@ -844,13 +854,15 @@ class SchwabDailyBarsConnector(_SchwabConnector):
         Raises
         ------
         AssetError
-            If config, OAuth, or the provider request fails.
+            If config, OAuth, the provider request or the response body fails.
         """
         knobs = self.resolve_knobs(config)
         token = self._access_token(knobs)
         today = self._today()
-        params = self._params(today - timedelta(days=_PROBE_DAYS), today)
-        self._history(token, knobs["symbols"][0], params, knobs)
+        first = today - timedelta(days=_PROBE_DAYS)
+        symbol = knobs["symbols"][0]
+        body = self._history(token, symbol, self._params(first, today), knobs)
+        self._rows(body, symbol, first, today)
 
     def discover(self, config):
         """Describe the provider-neutral daily bar stream offline.

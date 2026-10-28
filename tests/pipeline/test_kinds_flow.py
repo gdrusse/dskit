@@ -1328,6 +1328,92 @@ class TestDateOrderedGroupBy:
         assert registry.get("groupby") == (GroupBy, False)   # numbers-only order, TestGroupBy
         assert DateOrderedGroupBy.serving_effect({}, {}) == "pure"
 
+    # -- the staleness gate: max_lag_days against reference_date ---------------------------------
+    # ROWS: A's latest row is 2026-10-22, B's 2026-10-23. Against 2026-10-27 that is a lag of
+    # 5 and 4 calendar days.
+
+    def test_a_group_lagging_the_reference_by_more_than_the_bound_is_refused_by_name(self, ctx):
+        # exactly the bound passes (A lags 5 days under a bound of 5); the output is unchanged
+        out = self.node(reference_date="2026-10-27", max_lag_days=5).run(ctx, {"records": self.ROWS})
+        assert out["records"] == self.node().run(ctx, {"records": self.ROWS})["records"]
+        # one day under the bound refuses A, names its latest date and its lag, and not B (4 days)
+        with pytest.raises(ValueError, match=(
+                r"latest: .*reference_date 2026-10-27.*'A' latest 2026-10-22 is 5 day\(s\) "
+                r"before it \(max_lag_days 4\)")) as caught:
+            self.node(reference_date="2026-10-27", max_lag_days=4).run(ctx, {"records": self.ROWS})
+        assert "'B'" not in str(caught.value)
+
+    def test_every_stale_group_is_named_in_one_refusal_sorted_by_key(self, ctx):
+        rows = [{"symbol": "C", "ts": "2026-10-01", "v": 1.0}, {"symbol": "A", "ts": "2026-10-10", "v": 1.0},
+                {"symbol": "B", "ts": "2026-10-26", "v": 1.0}, {"symbol": "A", "ts": "2026-10-09", "v": 1.0}]
+        with pytest.raises(ValueError) as caught:
+            self.node(reference_date="2026-10-27", max_lag_days=5).run(ctx, {"records": rows})
+        message = str(caught.value)
+        # A's latest is the 10th (17 days), C's the 1st (26 days); B (1 day) is fine
+        assert message.index("'A' latest 2026-10-10 is 17 day(s)") < message.index(
+            "'C' latest 2026-10-01 is 26 day(s)")
+        assert "'B'" not in message
+
+    def test_a_zero_bound_demands_a_row_on_the_reference_day_itself(self, ctx):
+        out = self.node(reference_date="2026-10-23", max_lag_days=0).run(
+            ctx, {"records": [r for r in self.ROWS if r["symbol"] == "B"]})
+        assert [r["symbol"] for r in out["records"]] == ["B"]
+        with pytest.raises(ValueError, match=r"'A' latest 2026-10-22 is 1 day\(s\) before it"):
+            self.node(reference_date="2026-10-23", max_lag_days=0).run(ctx, {"records": self.ROWS})
+
+    def test_a_row_dated_after_the_reference_refuses_as_a_look_ahead(self, ctx):
+        # B's latest row (2026-10-23) is 2 days AFTER a reference of 2026-10-21: the as-of read
+        # was meant to see nothing later, so a lag below zero is not "fresh", it is refused
+        with pytest.raises(ValueError, match=r"'B' latest 2026-10-23 is 2 day\(s\) after it"):
+            self.node(reference_date="2026-10-21", max_lag_days=30).run(ctx, {"records": self.ROWS})
+
+    def test_a_composite_key_is_named_as_its_tuple_of_values(self, ctx):
+        rows = [{"account": "X", "symbol": "A", "ts": "2026-10-01"}]
+        node = DateOrderedGroupBy("latest", {
+            "keys": ["account", "symbol"], "order_field": "ts", "reference_date": "2026-10-27",
+            "max_lag_days": 5, "aggregates": {"n": {"op": "count"}}})
+        with pytest.raises(ValueError, match=r"\('X', 'A'\) latest 2026-10-01 is 26 day\(s\)"):
+            node.run(ctx, {"records": rows})
+
+    def test_the_gate_reads_the_latest_date_of_every_row_not_just_the_last_aggregate(self, ctx):
+        # order_field is legal with no first / last aggregate once the gate reads it
+        params = {"keys": "symbol", "order_field": "ts", "aggregates": {"n": {"op": "count"}},
+                  "reference_date": "2026-10-27", "max_lag_days": 5}
+        assert DateOrderedGroupBy.validate_params(params) == []
+        out = DateOrderedGroupBy("latest", params).run(ctx, {"records": self.ROWS})
+        assert out["records"] == [{"symbol": "A", "n": 3}, {"symbol": "B", "n": 2}]
+        # without the gate the same order_field stays meaningless, as in GroupBy
+        assert DateOrderedGroupBy.validate_params(
+            {k: v for k, v in params.items() if k not in ("reference_date", "max_lag_days")}) == [
+            "order_field is meaningless here — no aggregate reads an order, so nothing would use "
+            "it, and a knob nothing reads is a value validation approves and the run never applies"]
+
+    @pytest.mark.parametrize("over, expected", [
+        ({"max_lag_days": 5}, "max_lag_days and reference_date go together"),
+        ({"reference_date": "2026-10-27"}, "max_lag_days and reference_date go together"),
+        *[({"max_lag_days": bad, "reference_date": "2026-10-27"}, "max_lag_days must be an int >= 0")
+          for bad in (-1, 1.5, True, "5", None)],
+        *[({"max_lag_days": 5, "reference_date": bad}, "reference_date must be an ISO YYYY-MM-DD date")
+          for bad in ("2026-02-30", "20261027", "2026-10-27T00:00:00", 20261027, None)],
+    ])
+    def test_each_bad_gate_declaration_is_one_named_problem(self, over, expected):
+        params = {"keys": "s", "order_field": "ts", "aggregates": {"l": {"op": "last", "field": "x"}}}
+        problems = DateOrderedGroupBy.validate_params({**params, **over})
+        assert len(problems) == 1 and problems[0].startswith(expected), problems
+
+    def test_the_gate_needs_an_order_field_and_references_are_tolerated(self):
+        no_order = {"keys": "s", "aggregates": {"n": {"op": "count"}}, "max_lag_days": 5,
+                    "reference_date": "2026-10-27"}
+        problems = DateOrderedGroupBy.validate_params(no_order)
+        assert len(problems) == 1 and problems[0].startswith("order_field is required — max_lag_days")
+        wired = {**no_order, "order_field": "ts", "max_lag_days": "$limit.n", "reference_date": "$tax.day"}
+        assert DateOrderedGroupBy.validate_params(wired) == []
+
+    def test_the_plain_groupby_does_not_accept_the_gate(self):
+        problems = GroupBy.validate_params({"keys": "s", "aggregates": {"n": {"op": "count"}},
+                                            "max_lag_days": 5, "reference_date": "2026-10-27"})
+        assert len(problems) == 1 and problems[0].startswith("unknown param(s)")
+
 
 class TestKeyBy:
     ROWS = [

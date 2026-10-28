@@ -177,7 +177,10 @@ the same `bars` stream from closed DAILY candles: `ts` is the session date
 `YYYY-MM-DD` (the New York date of Schwab's 00:00 Central stamp; a stamp at or
 after the 09:30 open refuses), knobs `symbols`, `start` (ISO date) and
 `overlap_days` (live re-request, default 5); a session is closed only once the
-pull's New York date has passed it, so today's candle is never emitted. One
+pull's New York date has passed it, so today's candle is never emitted. Its
+`check` reads a week of the first symbol the way `read` does (a body that is not
+price history, or a malformed candle, refuses); the New York zone is built at
+first use, so importing the pack needs no tz database. One
 `authorize` serves all three packs (one token file). Transport refusals name
 the pack's request ("Schwab price history failed for 'AAPL' (HTTP 404)",
 "Schwab daily history ...", "Schwab accounts ...").

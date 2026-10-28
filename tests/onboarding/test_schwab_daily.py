@@ -3,15 +3,19 @@
 Every instant below is written out in UTC by hand. October 2026 is daylight time: New York
 is UTC-4 (00:00 New York = 04:00 UTC) and Schwab stamps a daily candle at 00:00 Central,
 UTC-5, i.e. 05:00 UTC of its session. Daylight time ends on Sunday 2026-11-01; after it New
-York is UTC-5 and the stamp is 06:00 UTC.
+York is UTC-5 and the stamp is 06:00 UTC. It starts again on Sunday 2026-03-08 at 02:00.
 """
 
 import copy
 import json
+import os
 import re
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -262,6 +266,72 @@ def test_a_standard_time_stamp_maps_to_its_own_session():
     assert [r["data"]["ts"] for r in records] == list(days)
 
 
+def test_the_session_dates_and_requests_hold_across_the_spring_forward_weekend():
+    # Fri 2026-03-06 is stamped 06:00 UTC (Central standard, UTC-6); Sunday the 8th moves the
+    # clocks at 02:00; Mon 2026-03-09 is stamped 05:00 UTC (Central daylight, UTC-5)
+    Stub.now = datetime(2026, 3, 11, 18, 0, tzinfo=UTC)
+    stamps = {"2026-03-05": 6, "2026-03-06": 6, "2026-03-09": 5, "2026-03-10": 5}
+    Stub.bodies = {"SPY": {"candles": [_candle(day, 500.0, hour=hour)
+                                       for day, hour in stamps.items()]},
+                   "AAPL": {"candles": []}}
+    records, messages = _read({"symbols": ["SPY"], "start": "2026-03-05"})
+    assert [r["data"]["ts"] for r in records] == list(stamps)
+    assert messages[-1]["state"] == {"bars": {"cursor": "2026-03-10"}}
+    # 00:00 New York on the 5th is 05:00 UTC (EST); on the 11th it is 04:00 UTC (EDT)
+    assert Stub.calls == [(PRICE_URL, _params("SPY", _ms(2026, 3, 5, 5), _ms(2026, 3, 11, 4)))]
+    # resuming on the change day itself: Sunday 00:00 is still standard time, 05:00 UTC, because
+    # the clocks only move at 02:00
+    Stub.calls = []
+    _read({"symbols": ["SPY"], "start": "2026-03-05"}, state={"bars": {"cursor": "2026-03-07"}})
+    assert Stub.calls[0][1]["startDate"] == _ms(2026, 3, 8, 5)
+    assert Stub.calls[0][1]["endDate"] == _ms(2026, 3, 11, 4)
+    # a pull at 23:30 EDT on Sunday 2026-03-08 (03:30 UTC Monday) has the Sunday as its own New
+    # York date, so the request ends at Sunday's midnight: 05:00 UTC, still standard time
+    Stub.calls, Stub.now = [], datetime(2026, 3, 9, 3, 30, tzinfo=UTC)
+    _read({"symbols": ["SPY"], "start": "2026-03-05"})
+    assert Stub.calls[0][1]["endDate"] == _ms(2026, 3, 8, 5)
+
+
+@pytest.mark.parametrize("stamp, session, now", [
+    (_ms(2026, 10, 20, 4), "2026-10-20", NOW),                                  # 00:00 New York
+    (_ms(2026, 10, 20, 13, 29), "2026-10-20", NOW),                             # 09:29, the last minute before the open
+    (_ms(2026, 11, 3, 14, 29), "2026-11-03",
+     datetime(2026, 11, 5, 18, 0, tzinfo=UTC)),                                 # 09:29 in standard time (UTC-5)
+])
+def test_a_stamp_before_the_open_is_that_sessions_own_date(stamp, session, now):
+    Stub.now = now
+    Stub.bodies = {"SPY": {"candles": [{**_candle("2026-10-20", 500.0), "datetime": stamp}]},
+                   "AAPL": {"candles": []}}
+    records, _ = _read({"symbols": ["SPY"], "start": "2026-10-19"})
+    assert [r["data"]["ts"] for r in records] == [session]
+
+
+def test_the_time_zone_is_built_at_first_use_not_at_import():
+    """A machine without a tz database can still import the pack and resolve the minute and
+    positions connectors; only the daily pack's first read of the clock needs the zone."""
+    code = "\n".join([
+        "import zoneinfo",
+        "def refuse(key):",
+        "    raise zoneinfo.ZoneInfoNotFoundError(key)",
+        "zoneinfo.ZoneInfo = refuse",
+        "from dskit.onboarding.libs import schwab",
+        "from dskit.onboarding.connector import resolve_connector",
+        "assert resolve_connector('schwab_positions') is schwab.SchwabPositionsConnector",
+        "try:",
+        "    schwab.SchwabDailyBarsConnector()._today()",
+        "except zoneinfo.ZoneInfoNotFoundError as exc:",
+        "    print('first use asked for', exc.args[0])",
+        "else:",
+        "    raise SystemExit('the zone was never asked for')"])
+    root = str(Path(schwab.__file__).parents[3])
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": root})
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "first use asked for America/New_York"
+    assert schwab._session_zone() is schwab._session_zone()
+    assert schwab._session_zone().key == "America/New_York"
+
+
 def _mutated(**fields):
     body = _body(200.0)
     body["candles"][1].update(fields)
@@ -330,6 +400,28 @@ def test_read_guards_its_arguments(args, message):
 def test_check_probes_the_first_declared_symbol_over_the_last_week():
     assert Stub().check(CONFIG) is None
     assert Stub.calls == [(PRICE_URL, _params("SPY", _ms(2026, 10, 16, 4), _ms(2026, 10, 23, 4)))]
+
+
+def test_check_accepts_a_quiet_week_and_refuses_a_body_that_is_not_price_history():
+    # a week with no session at all is still a candles list
+    Stub.bodies["SPY"] = {"candles": [], "empty": True}
+    assert Stub().check(CONFIG) is None
+
+
+@pytest.mark.parametrize("body, message", [
+    ([{"candles": []}], "Schwab daily history for 'SPY' returned a non-object"),
+    ({"empty": True}, "Schwab daily history for 'SPY' lacks a candles list"),
+    ({"candles": "none"}, "Schwab daily history for 'SPY' lacks a candles list"),
+    # the probe reads candles the way `read` does: one that read would refuse refuses here too
+    ({"candles": [{"datetime": _stamp("2026-10-20"), "open": 1.0}]},
+     "Schwab daily candle 0 for 'SPY' is malformed"),
+    ({"candles": [_candle("2026-10-20", 500.0, hour=14)]},
+     "Schwab daily candle 0 for 'SPY' is stamped 10:00 New York"),
+])
+def test_check_validates_the_response_body_shape(body, message):
+    Stub.bodies["SPY"] = body
+    with pytest.raises(AssetError, match=re.escape(message)):
+        Stub().check(CONFIG)
 
 
 def test_one_authorization_serves_every_schwab_pack():

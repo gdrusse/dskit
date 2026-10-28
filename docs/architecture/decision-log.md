@@ -34051,3 +34051,45 @@ betas_source DEFAULT_OVERLAP_DAYS DAILY_INTERVAL SESSION_TZ run-risk-inputs; nea
 only `SchwabBarsConnector` (the one-minute sibling, extended not copied), `GroupBy` (the
 base subclassed), the index_options child's `StockDailyBars` (a Yahoo chart transform,
 unrelated) and private `_session` helpers / tool-script `SESSION_TZ` constants.
+
+#### ADR-0279 amendment: risk inputs, Sonnet round 1 corrections (2026-10-28)
+
+**Findings (round 1 review of `b19f1a5`) and what changed.**
+
+- **Major, the close was unpinned.** The child e2e built bars with `open = high = low = close`, so
+  switching `close_field` / `benchmark_close_field` to open, high or low kept the suite green
+  (reproduced: all six switches passed). The bars now carry independent seeded noise (own
+  generator, the closes untouched; `low <= min(open, close) <= max(open, close) <= high`); after
+  the change each of the six switches fails the e2e (5-6 tests each, checked in scratch copies of
+  the child), a test recomputes the risk from open / high / low to show the numbers move by more
+  than 5% (volatility) and 0.05 (beta), and `test_configs.py` pins both fields to `"close"`.
+- **Minor, stale bars were read silently.** `DateOrderedGroupBy` gains `max_lag_days` (int >= 0)
+  with `reference_date` (ISO date), declared together and needing `order_field`: a group whose
+  LATEST order date is more than `max_lag_days` calendar days before the reference, or after it
+  (a look-ahead, not freshness), refuses, every such group named in one error with its latest date
+  and lag. The base `GroupBy` gains two private hooks (`_reads_order`, `_vet_groups`, both
+  no-ops there); the registered `groupby` is unchanged. The decision document declares
+  `reference_date` = the decision day (the fourth place, pinned with the other three) and
+  `max_lag_days` 5. Calendar days, not sessions: the node holds no trading calendar, and 5 covers
+  the longest healthy closure (Friday to a Tuesday after a holiday Monday is 4). A benchmark
+  stopping short of the holdings is also refused (SPY stale), and a SPY that lags only inside the
+  bound leaves the holdings' last-day betas null, which still stops the run by name downstream.
+- **Window columns as ints.** `ComputeFields` `const` always computes in floats, so the risk
+  file read `252.0`. A new whole-expression `{"integer": n}` (beside `text`; a non-bool int, never
+  nested in an op) writes the int; `const` and every existing document are unchanged.
+- **Nits.** The e2e asserts each window held exactly 252 returns over 253 consecutive sessions, and
+  `risk_features` notes say a missing session stretches the window; the New York `ZoneInfo` is
+  built at first use (`_session_zone`), pinned by an import test with a failing tz database;
+  `BetaHoldReturns` reports a declared `betas` param replaced by the wire (`betas_param_ignored`
+  in its summary and a log warning; neither source still refuses at run, since inputs are unknown
+  at validate); the research note's zero-mean gap is about 0.05% at a 10% drift and 20%
+  volatility (and 0.55%, not 0.4%, at 50% and 30%); README "after 20:00 New York (19:00 in
+  standard time)"; the child `CLAUDE.md` layout lists `risk/` (mirror regenerated); spring-forward
+  (Friday 06:00 UTC and Monday 05:00 UTC stamps, midnight requests across 2026-03-08) and
+  09:29-New-York stamp tests; the daily `check()` now reads its probe response the way `read` does,
+  so a body that is not price history, or a malformed candle, refuses.
+
+Sweep: tools/sweep/sweep max_lag_days max_stale stale_sessions max_age lag_days integer_constant
+whole_expression int_const; no near match for `max_lag_days`, `integer_constant`; near matches only
+the production monitors' `Staleness` / `max_staleness` (feeds, unrelated) and the onboarding
+`lag_days` test (httpblobs default).

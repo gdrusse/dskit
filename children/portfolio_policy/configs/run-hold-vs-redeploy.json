@@ -84,7 +84,7 @@
         "realized_vol": { "windows": [252], "field": "daily_vol_{window}" },
         "market_relative": { "beta_window": 252, "beta_field": "beta_raw" }
       },
-      "notes": "Per symbol and session (research A0003): the zero-mean root mean square of the last 252 daily log returns (one year, not yet annualized) and the OLS beta of those returns on SPY's over the same 252 sessions (rolling covariance over rolling variance). Null until a symbol has 253 closes."
+      "notes": "Per symbol and session (research A0003): the zero-mean root mean square of the last 252 daily log returns (one year, not yet annualized) and the OLS beta of those returns on SPY's over the same 252 sessions (rolling covariance over rolling variance). Null until a symbol has 253 closes. close_field and benchmark_close_field are both the CLOSE (pinned by tests/test_configs.py): every return is close to close, the holding's and SPY's on one basis. The windows count a symbol's own consecutive bars, not calendar days: a session missing from the pull merges two days into one return, so 252 returns then span more than a year (one missing session stretches the window by one session; SPY missing a day a holding has nulls that return and so every beta window holding it)."
     },
     "risk_day": {
       "uses": "filter",
@@ -94,7 +94,7 @@
           { "field": "ts", "op": "<=", "value": "2026-10-27" }
         ]
       },
-      "notes": "Nothing after the decision day: the same day as snapshot.where[as_of] and tax.as_of (tests/test_configs.py pins the three). <= and not ==: a daily candle is closed only once its New York date has passed, so a pull on the decision day itself has no bar for that day; risk_latest takes each symbol's latest session on or before it."
+      "notes": "Nothing after the decision day: the same day as snapshot.where[as_of], tax.as_of and risk_latest.reference_date (tests/test_configs.py pins the four). <= and not ==: a daily candle is closed only once its New York date has passed, so a pull on the decision day itself has no bar for that day; risk_latest takes each symbol's latest session on or before it."
     },
     "risk_latest": {
       "uses": "dskit.pipeline.kinds_flow:DateOrderedGroupBy",
@@ -102,13 +102,15 @@
       "params": {
         "keys": "symbol",
         "order_field": "ts",
+        "reference_date": "2026-10-27",
+        "max_lag_days": 5,
         "aggregates": {
           "as_of": { "op": "last", "field": "ts" },
           "daily_vol": { "op": "last", "field": "daily_vol_252" },
           "beta_raw": { "op": "last", "field": "beta_raw" }
         }
       },
-      "notes": "One row per symbol: its latest session on or before the decision day and that session's trailing numbers. as_of is carried to risk/{run}.jsonl so a stale bars pull shows; it is not refused."
+      "notes": "One row per symbol: its latest session on or before the decision day and that session's trailing numbers; as_of is carried to risk/{run}.jsonl. Staleness gate: reference_date is the decision day (the same day as risk_day, snapshot and tax; pinned by tests/test_configs.py) and max_lag_days 5 is CALENDAR days, a bound that covers the longest closure a healthy feed shows (Friday to a Tuesday after a holiday Monday is 4 days) with a day to spare. A symbol whose latest session is more than 5 days before the decision day, or after it, stops the run by name with its latest session and lag, so a stale pull (a symbol dropped from the source, a pull not refreshed) is never priced silently."
     },
     "risk": {
       "uses": "dskit.pipeline.kinds_compute:ComputeFields",
@@ -121,11 +123,11 @@
             { "field": "beta_raw" },
             { "op": "mul", "args": [
               { "const": 0.33 }, { "op": "sub", "args": [{ "field": "beta_raw" }, { "const": 1 }] }] }] },
-          "vol_window": { "const": 252 },
-          "beta_window": { "const": 252 }
+          "vol_window": { "integer": 252 },
+          "beta_window": { "integer": 252 }
         }
       },
-      "notes": "annual_vol = the daily RMS x sqrt(252), 252 being trading days a year (not the window, which happens to equal it). beta = beta_raw - 0.33 x (beta_raw - 1) = 0.67 x raw + 0.33, the Blume adjustment (Bloomberg's adjusted beta): a third of the way to 1, the forecast that prices the hold return; beta_raw stays beside it (research A0003). vol_window and beta_window restate risk_features' windows for the reader (pinned equal by tests/test_configs.py). A symbol without a full window has nulls here, and betas / summary refuse it by name."
+      "notes": "annual_vol = the daily RMS x sqrt(252), 252 being trading days a year (not the window, which happens to equal it). beta = beta_raw - 0.33 x (beta_raw - 1) = 0.67 x raw + 0.33, the Blume adjustment (Bloomberg's adjusted beta): a third of the way to 1, the forecast that prices the hold return; beta_raw stays beside it (research A0003). vol_window and beta_window restate risk_features' windows for the reader, as integers (`integer`, not `const`, which computes in floats and would write 252.0), pinned equal by tests/test_configs.py. A symbol without a full window has nulls here, and betas / summary refuse it by name."
     },
     "vols": {
       "uses": "keyby",
@@ -147,7 +149,7 @@
         "source": "risk inputs per symbol from Schwab daily bars",
         "overwrite": false
       },
-      "notes": "Role 'report': one row per symbol in ./risk under the invoking cwd, one file per run (ADR-0247): symbol, as_of (the session read), daily_vol, beta_raw, annual_vol, beta and the two windows."
+      "notes": "Role 'report': one row per symbol in ./risk under the invoking cwd, one file per run (ADR-0247): symbol, as_of (the session read), daily_vol, beta_raw, annual_vol, beta and the two windows (integers)."
     },
     "betas": {
       "uses": "dskit.pipeline.hold_return:BetaHoldReturns",

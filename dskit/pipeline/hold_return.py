@@ -164,8 +164,11 @@ class BetaHoldReturns(Node):
         ``{symbol: beta}``, the beta each rate was priced with (the table's, wired or
         declared, or ``default_beta``), so a reader of the betas is wired, never restated.
     ``summary``
-        Counts, the market, the risk-free rate, the defaulted symbols and
-        ``betas_source``: ``wired`` (the input) or ``param`` (the hand table).
+        Counts, the market, the risk-free rate, the defaulted symbols,
+        ``betas_source``: ``wired`` (the input) or ``param`` (the hand table), and
+        ``betas_param_ignored``: true when a ``betas`` param is declared but the wired
+        input replaced it (also logged as a warning), so a stale hand table is never
+        mistaken for the one used.
 
     Examples
     --------
@@ -215,7 +218,11 @@ class BetaHoldReturns(Node):
         return "pure"
 
     def _beta_source(self, inputs):
-        """Return ``(table, source)``: the wired ``betas`` input when present, else the param."""
+        """Return ``(table, source)``: the wired ``betas`` input when present, else the param.
+
+        Neither present refuses here, at run: the input is not known at validate, so the node
+        cannot say earlier that nothing will price a symbol.
+        """
         if "betas" not in inputs:
             if "betas" not in self.params:
                 raise ValueError(f"{self.key}: no betas param and no betas input")
@@ -246,6 +253,11 @@ class BetaHoldReturns(Node):
             raise ValueError(f"{self.key}: market must be a number, got {market!r}")
         field = self.params["symbol_field"]
         betas, source = self._beta_source(inputs)
+        ignored = source == "wired" and "betas" in self.params
+        if ignored:
+            self.log.warning(
+                "%s: the betas input is wired, so the betas param (%d symbol(s)) is ignored",
+                self.key, len(self.params["betas"]))
         rates, used, defaulted = {}, {}, []
         for index, row in enumerate(records):
             if not isinstance(row, dict) or not name_ok(row.get(field)):
@@ -270,4 +282,4 @@ class BetaHoldReturns(Node):
         return {"rates": rates, "betas": used, "summary": {
             "stage": "beta hold returns", "symbols": len(rates), "market": market,
             "risk_free": self.params["risk_free"], "defaulted": sorted(defaulted),
-            "betas_source": source}}
+            "betas_source": source, "betas_param_ignored": ignored}}

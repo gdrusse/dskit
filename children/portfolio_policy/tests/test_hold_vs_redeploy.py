@@ -16,7 +16,9 @@ A daily ``bars`` stream (``localfiles`` standing in for ``schwab_daily``) carrie
 ``_daily_bars``), ending the Friday before the decision day, as a pull on that
 Monday would. The betas that price the hold return and the volatilities in the
 summary come from it: checked loosely against the generator's known parameters,
-and exactly against a plain-Python recomputation from the written bars.
+and exactly against a plain-Python recomputation from the written bars. Open, high
+and low are independent seeded noise around the close, so only the CLOSE reproduces
+the numbers: a document reading any other bar field fails here.
 """
 
 import json
@@ -81,7 +83,12 @@ SEED = 20251027
 MU_M, SIG_M = 0.0004, 0.01
 FACTORS = {"VTI": (1.0, 0.002), "AAPL": (1.3, 0.012)}       # symbol: (BETA, SIG_E)
 START_CLOSE = {"AAPL": 200.0, "SPY": 500.0, "VTI": 250.0}
+# open, high and low come from their own generator (the closes above are untouched by it): open is
+# the close times exp(OPEN_SD z); high and low sit a wick of WICK_SD |z'| beyond the open-close body
+NOISE_SEED = SEED + 1
+OPEN_SD, WICK_SD = 0.01, 0.01
 SESSIONS = 300
+RISK_WINDOW = 252    # returns in each risk window: one year of sessions (research A0003)
 # DECIDED is a Monday; a pull that day has no closed bar for it, so the last session is Friday's
 LAST_SESSION = "2025-10-24"
 TRADING_DAYS = 252   # the annualization factor of research A0003: trading days a year
@@ -97,9 +104,21 @@ def _sessions():
     return days[::-1]
 
 
+def _ohlc(rng, close):
+    """``(open, high, low)`` around ``close`` from ``rng``: three draws, in that order. Open is
+    ``close x exp(OPEN_SD z)``; high is the body's top times ``exp(WICK_SD |z|)`` and low the body's
+    bottom times ``exp(-WICK_SD |z|)``, so ``low <= min(open, close) <= max(open, close) <= high``."""
+    opened = close * math.exp(OPEN_SD * rng.gauss(0.0, 1.0))
+    high = max(opened, close) * math.exp(WICK_SD * abs(rng.gauss(0.0, 1.0)))
+    low = min(opened, close) * math.exp(-WICK_SD * abs(rng.gauss(0.0, 1.0)))
+    return opened, high, low
+
+
 def _daily_bars():
-    """The bar rows, shaped like schwab_daily's: the close repeated as open/high/low."""
-    rng = random.Random(SEED)
+    """The bar rows, shaped like schwab_daily's: the close from the one-factor process, open /
+    high / low independent noise around it (own generator, one ``_ohlc`` per session and symbol,
+    symbols in sorted order), so no field but the close carries the process's returns."""
+    rng, noise = random.Random(SEED), random.Random(NOISE_SEED)
     closes, rows = dict(START_CLOSE), []
     for index, day in enumerate(_sessions()):
         if index:
@@ -108,23 +127,26 @@ def _daily_bars():
             for symbol, (beta, sig_e) in FACTORS.items():
                 moves[symbol] = beta * market + sig_e * rng.gauss(0.0, 1.0)
             closes = {symbol: close * math.exp(moves[symbol]) for symbol, close in closes.items()}
-        rows += [{"symbol": symbol, "ts": day, "open": close, "high": close, "low": close,
-                  "close": close, "volume": 1e6, "trade_count": None, "vwap": None}
-                 for symbol, close in sorted(closes.items())]
+        for symbol, close in sorted(closes.items()):
+            opened, high, low = _ohlc(noise, close)
+            rows.append({"symbol": symbol, "ts": day, "open": opened, "high": high, "low": low,
+                         "close": close, "volume": 1e6, "trade_count": None, "vwap": None})
     return rows
 
 
-def _plain_risk(root, day):
+def _plain_risk(root, day, field="close"):
     """Each symbol's risk numbers at its latest session on or before ``day``, recomputed from
     the WRITTEN bars in plain Python (no dskit): the zero-mean RMS of its last ``window`` daily
     log returns x sqrt(252), and the OLS slope of those returns on SPY's over the same sessions,
-    Blume-adjusted 0.67 x raw + 0.33 (research A0003). The windows are the document's."""
+    Blume-adjusted 0.67 x raw + 0.33 (research A0003). The windows are the document's; ``field``
+    is the bar field the prices are read from (the document reads the close). Also the number of
+    returns each window held and the session its first close sits on."""
     features = _shipped(RUN_DOC, "risk_features")
     vol_window = features["realized_vol"]["windows"][0]
     beta_window = features["market_relative"]["beta_window"]
     with open(root / "daily" / "bars.jsonl") as fh:
         bars = [json.loads(line) for line in fh]
-    close = {(row["symbol"], row["ts"]): row["close"] for row in bars}
+    close = {(row["symbol"], row["ts"]): row[field] for row in bars}
     out = {}
     for symbol in sorted({row["symbol"] for row in bars}):
         days = sorted(ts for (s, ts) in close if s == symbol and ts <= day)
@@ -134,6 +156,7 @@ def _plain_risk(root, day):
             return [math.log(close[name, b] / close[name, a]) for a, b in zip(last, last[1:])]
 
         own = returns(symbol, vol_window)
+        vol_returns = len(own)
         daily = math.sqrt(sum(r * r for r in own) / vol_window)
         own, mkt = returns(symbol, beta_window), returns("SPY", beta_window)
         mean_own, mean_mkt = sum(own) / beta_window, sum(mkt) / beta_window
@@ -141,7 +164,8 @@ def _plain_risk(root, day):
                / sum((m - mean_mkt) ** 2 for m in mkt))
         out[symbol] = {"as_of": days[-1], "daily_vol": daily,
                        "annual_vol": daily * math.sqrt(TRADING_DAYS),
-                       "beta_raw": raw, "beta": 0.67 * raw + 0.33}
+                       "beta_raw": raw, "beta": 0.67 * raw + 0.33,
+                       "returns": (vol_returns, len(own)), "window_start": days[-(beta_window + 1)]}
     return out
 
 
@@ -163,16 +187,26 @@ def _jsonl(path, rows):
             fh.write(json.dumps(row) + "\n")
 
 
+def _register_bars(root, source, folder, rows):
+    """Onboard ``rows`` as the ``bars`` stream of a ``schwab_daily``-shaped source (``localfiles``
+    reading ``root/folder``, dated by ``ts``)."""
+    (root / folder).mkdir()
+    _jsonl(root / folder / "bars.jsonl", rows)
+    _cli(root, "register-source", source, "--root", "./ob",
+         "--catalog-source", f"{source}-src", "--connector", "localfiles",
+         "--config", json.dumps({"path": str(root / folder), "effective_field": "ts"}), "--activate")
+    _cli(root, "acquire", "--root", "./ob", "--source", source,
+         "--stream", "bars", "--mode", "backfill")
+
+
 @pytest.fixture
 def root(tmp_path):
     """An onboarding root under ``tmp_path/ob``: two positions snapshots, the active series and
     the daily bars."""
-    data, active, daily = tmp_path / "data", tmp_path / "active", tmp_path / "daily"
+    data, active = tmp_path / "data", tmp_path / "active"
     data.mkdir()
     active.mkdir()
-    daily.mkdir()
     _jsonl(data / "positions.jsonl", THEN + LATER)
-    _jsonl(daily / "bars.jsonl", _daily_bars())
     _jsonl(active / "returns.jsonl", [
         {"period": f"2025-W{i + 1:02d}", "net_return": v,
          "day": f"2025-{(i // 4) + 1:02d}-{(i % 4) * 7 + 1:02d}"}
@@ -190,11 +224,7 @@ def root(tmp_path):
          "--config", json.dumps({"path": str(active), "effective_field": "day"}), "--activate")
     _cli(tmp_path, "acquire", "--root", "./ob", "--source", "active",
          "--stream", "returns", "--mode", "backfill")
-    _cli(tmp_path, "register-source", "schwab_daily", "--root", "./ob",
-         "--catalog-source", "schwab-daily-src", "--connector", "localfiles",
-         "--config", json.dumps({"path": str(daily), "effective_field": "ts"}), "--activate")
-    _cli(tmp_path, "acquire", "--root", "./ob", "--source", "schwab_daily",
-         "--stream", "bars", "--mode", "backfill")
+    _register_bars(tmp_path, "schwab_daily", "daily", _daily_bars())
     return tmp_path
 
 
@@ -234,14 +264,20 @@ def _expected_rates(betas):
                     for symbol, beta in betas.items()}
 
 
+def _document(root, risk_day=DECIDED, **overrides):
+    """The decision document as shipped, with only the dated and sized values replaced: the
+    snapshot and tax day, the hurdle's pins (twelve weekly returns stand in for a year: the shipped
+    floor is 52, and the E[max null Sharpe] worked below is for five trials of this series), and
+    the risk day, which the risk gate's reference date follows. ``overrides`` replace more params."""
+    return _load(RUN_DOC, str(root), **{
+        "snapshot": {"where": _shipped_where(RUN_DOC, "snapshot", DECIDED)},
+        "tax": {"as_of": DECIDED}, "hurdle": HURDLE_PINS,
+        "risk_day": {"where": _shipped_where(RUN_DOC, "risk_day", risk_day, "ts")},
+        "risk_latest": {"reference_date": risk_day}, **overrides})
+
+
 def _decide(root, risk_day=DECIDED):
-    # twelve weekly returns stand in for a year: the shipped floor is 52 (one year), and the
-    # E[max null Sharpe] worked below is for five trials of this series
-    document = _load(RUN_DOC, str(root),
-                     snapshot={"where": _shipped_where(RUN_DOC, "snapshot", DECIDED)},
-                     tax={"as_of": DECIDED}, hurdle=HURDLE_PINS,
-                     risk_day={"where": _shipped_where(RUN_DOC, "risk_day", risk_day, "ts")})
-    result = run_document(document, asof=DECIDED, journal=False)
+    result = run_document(_document(root, risk_day), asof=DECIDED, journal=False)
     assert result.state == "ran", (result.state, result.error)
     return result
 
@@ -289,6 +325,13 @@ def test_risk_inputs_from_daily_bars_end_to_end(root, monkeypatch):
             assert row[field] == pytest.approx(plain[symbol][field], rel=1e-9), (symbol, field)
         assert row["vol_window"] == features["realized_vol"]["windows"][0]
         assert row["beta_window"] == features["market_relative"]["beta_window"]
+        # the window columns are counts: ints, never 252.0
+        assert type(row["vol_window"]) is int and type(row["beta_window"]) is int
+        # sanity: each window held exactly RISK_WINDOW returns, over RISK_WINDOW + 1 consecutive
+        # generated sessions (a gap in the pull would stretch the window past a year)
+        assert plain[symbol]["returns"] == (RISK_WINDOW, RISK_WINDOW)
+        assert plain[symbol]["window_start"] == _sessions()[-(RISK_WINDOW + 1)]
+        assert row["vol_window"] == row["beta_window"] == RISK_WINDOW
     # loosely, the generator's known truth (252 returns: about 4.5% relative error on a
     # volatility, 0.01 / 0.08 on VTI's / AAPL's beta, so these bounds are 3 standard errors+)
     truth_daily = {"SPY": math.sqrt(SIG_M ** 2 + MU_M ** 2)}
@@ -312,6 +355,33 @@ def test_risk_inputs_from_daily_bars_end_to_end(root, monkeypatch):
         lines = [json.loads(line) for line in fh.read().splitlines()]
     run_id = os.path.basename(result.run_dir)
     assert lines == [{**row, "run_id": run_id} for row in result.outputs["risk"]["records"]]
+    assert all(type(line["vol_window"]) is int and type(line["beta_window"]) is int for line in lines)
+
+
+def test_the_synthetic_bars_are_well_formed_ohlc_with_independent_noise():
+    """The bars the risk tests run on: a real candle's order (low <= open, close <= high), and
+    open / high / low far from the close (so a document reading one of them is caught)."""
+    bars = _daily_bars()
+    assert len(bars) == 3 * SESSIONS
+    assert all(r["low"] <= min(r["open"], r["close"]) and max(r["open"], r["close"]) <= r["high"]
+               for r in bars)
+    assert all(r["low"] > 0.0 for r in bars)
+    for field in ("open", "high", "low"):
+        assert sum(r[field] != r["close"] for r in bars) == len(bars)
+
+
+def test_only_the_close_reproduces_the_risk_numbers(root):
+    """The pin on the document's close_field / benchmark_close_field: recomputed from the open,
+    the high or the low, every symbol's volatility moves by more than 5% and every holding's raw
+    beta by more than 0.05, so the exact-match e2e below cannot pass on another bar field."""
+    close = _plain_risk(root, DECIDED)
+    for field in ("open", "high", "low"):
+        other = _plain_risk(root, DECIDED, field)
+        for symbol in ("AAPL", "SPY", "VTI"):
+            assert abs(other[symbol]["annual_vol"] / close[symbol]["annual_vol"] - 1.0) > 0.05, (
+                field, symbol)
+        for symbol in ("AAPL", "VTI"):
+            assert abs(other[symbol]["beta_raw"] - close[symbol]["beta_raw"]) > 0.05, (field, symbol)
 
 
 def test_the_risk_day_reads_no_later_session(root, monkeypatch):
@@ -336,22 +406,52 @@ def test_a_bars_pull_missing_a_symbol_stops_the_decision_by_name(root, monkeypat
                                                                   message):
     """No default beta and no default volatility: what the bars cannot price refuses."""
     monkeypatch.chdir(root)
-    lite = root / f"without-{missing}"
-    lite.mkdir()
-    _jsonl(lite / "bars.jsonl", [row for row in _daily_bars() if row["symbol"] != missing])
-    _cli(root, "register-source", "schwab_daily_lite", "--root", "./ob",
-         "--catalog-source", "schwab-daily-lite-src", "--connector", "localfiles",
-         "--config", json.dumps({"path": str(lite), "effective_field": "ts"}), "--activate")
-    _cli(root, "acquire", "--root", "./ob", "--source", "schwab_daily_lite",
-         "--stream", "bars", "--mode", "backfill")
-    document = _load(RUN_DOC, str(root),
-                     snapshot={"where": _shipped_where(RUN_DOC, "snapshot", DECIDED)},
-                     tax={"as_of": DECIDED}, hurdle=HURDLE_PINS,
-                     bars={"source": "schwab_daily_lite"},
-                     risk_day={"where": _shipped_where(RUN_DOC, "risk_day", DECIDED, "ts")})
+    _register_bars(root, "schwab_daily_lite", f"without-{missing}",
+                   [row for row in _daily_bars() if row["symbol"] != missing])
+    document = _document(root, bars={"source": "schwab_daily_lite"})
     result = run_document(document, asof=DECIDED, journal=False)
     assert result.state != "ran"
     assert message in str(result.error)
+
+
+def _bars_stopping_before_the_decision(symbol, days):
+    """The bars with ``symbol``'s history cut at the session ``days`` before the decision day."""
+    stop = (date.fromisoformat(DECIDED) - timedelta(days=days)).isoformat()
+    assert stop in _sessions(), "the test needs a generated session exactly that many days back"
+    return stop, [row for row in _daily_bars() if row["symbol"] != symbol or row["ts"] <= stop]
+
+
+def test_a_holding_stopping_exactly_at_the_bound_is_read_at_its_own_last_session(
+        root, monkeypatch):
+    monkeypatch.chdir(root)
+    bound = _shipped(RUN_DOC, "risk_latest")["max_lag_days"]
+    stop, rows = _bars_stopping_before_the_decision("AAPL", bound)
+    _register_bars(root, "schwab_daily_edge", "edge", rows)
+    result = run_document(_document(root, bars={"source": "schwab_daily_edge"}), asof=DECIDED,
+                          journal=False)
+    assert result.state == "ran", (result.state, result.error)
+    risk = {r["symbol"]: r for r in result.outputs["risk"]["records"]}
+    assert risk["AAPL"]["as_of"] == stop and risk["VTI"]["as_of"] == LAST_SESSION
+    assert risk["AAPL"]["annual_vol"] == pytest.approx(
+        _plain_risk(root, stop)["AAPL"]["annual_vol"], rel=1e-9)
+
+
+@pytest.mark.parametrize("symbol", ["AAPL", "SPY"])
+def test_a_stale_bars_pull_stops_the_decision_by_name_past_the_documents_bound(
+        root, monkeypatch, symbol):
+    """A symbol (the benchmark too) whose bars stop more than max_lag_days before the decision day
+    is refused, naming it, its last session and its lag; the other symbols are never named."""
+    monkeypatch.chdir(root)
+    bound = _shipped(RUN_DOC, "risk_latest")["max_lag_days"]
+    stop, rows = _bars_stopping_before_the_decision(symbol, bound + 1)
+    _register_bars(root, "schwab_daily_stale", "stale", rows)
+    result = run_document(_document(root, bars={"source": "schwab_daily_stale"}), asof=DECIDED,
+                          journal=False)
+    assert result.state != "ran"
+    assert f"{symbol!r} latest {stop} is {bound + 1} day(s) before it (max_lag_days {bound})" in str(
+        result.error)
+    assert all(f"'{other}'" not in str(result.error) for other in ("AAPL", "SPY", "VTI")
+               if other != symbol)
 
 
 def test_hold_vs_redeploy_end_to_end(root, monkeypatch):

@@ -111,7 +111,7 @@ def test_beta_rates_by_hand(ctx):
     assert out["rates"] == {"VTI": pytest.approx(0.10), "AAPL": pytest.approx(0.112)}
     assert out["summary"] == {"stage": "beta hold returns", "symbols": 2,
                               "market": 0.10, "risk_free": 0.04, "defaulted": [],
-                              "betas_source": "param"}
+                              "betas_source": "param", "betas_param_ignored": False}
     assert out["betas"] == {"VTI": 1.0, "AAPL": 1.2}
 
 
@@ -131,6 +131,28 @@ def test_a_wired_beta_table_replaces_the_param_by_hand(ctx):
     assert again["rates"] == out["rates"] and again["summary"]["betas_source"] == "wired"
     with pytest.raises(ValueError, match="no betas param and no betas input"):
         BetaHoldReturns("b", without).run(ctx, {"records": ROWS, "market": 0.10})
+
+
+def test_a_declared_betas_param_the_wired_table_replaces_is_reported_not_silent(ctx, caplog):
+    """Two sources of one number: the wired table wins, and a hand table declared beside it
+    says so in the summary and in the log, so a stale hand beta is never mistaken for the one used."""
+    wired = {"VTI": 0.9, "AAPL": 1.5}
+    with caplog.at_level("WARNING", logger="dskit.pipeline.b"):
+        out = BetaHoldReturns("b", BETAS).run(ctx, {"records": ROWS, "market": 0.10, "betas": wired})
+    assert out["summary"]["betas_source"] == "wired" and out["summary"]["betas_param_ignored"] is True
+    (record,) = [r for r in caplog.records if r.name == "dskit.pipeline.b" and r.levelname == "WARNING"]
+    assert "betas param (2 symbol(s)) is ignored" in record.getMessage()
+    assert "betas input is wired" in record.getMessage()
+    # nothing to report when only one source exists
+    caplog.clear()
+    without = {k: v for k, v in BETAS.items() if k != "betas"}
+    with caplog.at_level("WARNING", logger="dskit.pipeline.b"):
+        wired_only = BetaHoldReturns("b", without).run(
+            ctx, {"records": ROWS, "market": 0.10, "betas": wired})
+        param_only = BetaHoldReturns("b", BETAS).run(ctx, {"records": ROWS, "market": 0.10})
+    assert wired_only["summary"]["betas_param_ignored"] is False
+    assert param_only["summary"]["betas_param_ignored"] is False
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
 
 def test_a_wired_beta_table_refuses_what_is_not_a_number_by_symbol(ctx):

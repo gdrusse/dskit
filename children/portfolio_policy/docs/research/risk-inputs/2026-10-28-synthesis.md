@@ -26,8 +26,8 @@ the raw beta is reported beside it (it is the fit).
 252 daily log returns scaled by the square root of 252 trading days is the textbook
 historical volatility, one year is the horizon an owner reads, and the zero-mean form
 (the RiskMetrics convention) differs from the demeaned sample standard deviation by
-well under 1% of the value on daily data (about 0.2% at a 10% drift and 20% volatility;
-about 0.4% at a 50% drift and 30% volatility).
+well under 1% of the value on daily data (RMS over SD is `sqrt(1 + (mean/SD)^2)`: about
+0.05% at a 10% annual drift and 20% volatility; about 0.55% at a 50% drift and 30%).
 
 What a reader should know:
 
@@ -47,7 +47,12 @@ What a reader should know:
   bound (A0002).
 - **Data needed.** 252 returns need 253 closes; a `start` at least 400 calendar days
   before the decision day leaves room for holidays. A holding with less history gets no
-  number, and the decision run stops on it by name rather than guess.
+  number, and the decision run stops on it by name rather than guess. The window counts a
+  symbol's own consecutive bars: a session missing from the pull merges two days into one
+  return and stretches the year by that session.
+- **Stale bars are refused.** A symbol whose latest closed session is more than 5 calendar
+  days before the decision day (a long weekend is 4) stops the run by name, with its last
+  session and lag; the risk file's `as_of` shows the session each number was read at.
 - **Adjustment is unverified.** Schwab does not document whether daily closes are split-
   or dividend-adjusted. An unadjusted split would appear as one huge daily return and
   inflate both numbers for a year: check a holding with a recent split on the first real

@@ -62,8 +62,9 @@ def test_source_sample_validates_against_the_connectors_spec():
 
 
 def test_decision_day_is_declared_once_per_document():
-    """The snapshot filter, the tax date and the risk day name the same day: a mismatch would
-    tax one day's positions as of another, or price them with another day's risk, silently."""
+    """The snapshot filter, the tax date, the risk day and the staleness reference name the same
+    day: a mismatch would tax one day's positions as of another, price them with another day's
+    risk, or measure a bars pull's staleness from the wrong day, silently."""
     document = load_document(_path("run-hold-vs-redeploy.json"))
     where = {c["field"]: c["value"] for c in document.pipeline["snapshot"].params["where"]}
     assert document.pipeline["tax"].params["as_of"] == where["as_of"]
@@ -71,6 +72,23 @@ def test_decision_day_is_declared_once_per_document():
     (risk_day,) = document.pipeline["risk_day"].params["where"]
     # <=: a pull on the decision day has no closed bar for it, so the latest earlier session
     assert risk_day == {"field": "ts", "op": "<=", "value": where["as_of"]}
+    assert document.pipeline["risk_latest"].params["reference_date"] == where["as_of"]
+
+
+def test_a_stale_bars_pull_is_refused_past_five_calendar_days():
+    """Research A0003 / ADR-0279 amendment: the latest session of a symbol may lag the decision
+    day by a long weekend and a day to spare (Friday to a Tuesday after a holiday Monday is 4),
+    not more. Calendar days: the gate holds no trading calendar."""
+    latest = load_document(_path("run-hold-vs-redeploy.json")).pipeline["risk_latest"].params
+    assert latest["max_lag_days"] == 5
+
+
+def test_every_return_is_close_to_close_on_both_sides():
+    """The holding's and SPY's returns are price returns on one basis: the CLOSE. Another bar
+    field (open, high, low) would be a different, noisier return with no error raised."""
+    features = load_document(_path("run-hold-vs-redeploy.json")).pipeline["risk_features"].params
+    assert features["close_field"] == "close"
+    assert features["benchmark_close_field"] == "close"
 
 
 def test_the_risk_windows_declared_twice_agree():
@@ -82,8 +100,9 @@ def test_the_risk_windows_declared_twice_agree():
     fields = document.pipeline["risk"].params["fields"]
     (vol_window,) = features["realized_vol"]["windows"]
     beta_window = features["market_relative"]["beta_window"]
-    assert fields["vol_window"] == {"const": vol_window}
-    assert fields["beta_window"] == {"const": beta_window}
+    # `integer`, not `const` (which computes in floats): the risk file reads 252, not 252.0
+    assert fields["vol_window"] == {"integer": vol_window}
+    assert fields["beta_window"] == {"integer": beta_window}
     assert latest["daily_vol"]["field"] == features["realized_vol"]["field"].replace(
         "{window}", str(vol_window))
     assert latest["beta_raw"]["field"] == features["market_relative"]["beta_field"]
