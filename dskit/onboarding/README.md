@@ -159,7 +159,7 @@ credential, optional server-side `since` filtering. See
 [`examples/onboarding/source-restapi.json`](../../examples/onboarding/source-restapi.json)
 for a worked config and `libs/restapi.py` for the knob reference.
 
-Market-bar packs are registered as `alpaca` and `schwab`. Both emit
+Market-bar packs are registered as `alpaca`, `schwab` and `schwab_daily`. All emit
 `bars` keyed by `(symbol, ts)` with provider-neutral OHLCV fields.
 Alpaca adds trade count/VWAP; Schwab emits those fields as null and
 re-requests a declared live overlap so bitemporal dedup retains the
@@ -172,7 +172,16 @@ accountNumbers endpoint, so no account number is stored; the four position
 numbers are required, never defaulted. The account type is not read (every
 account is treated as taxable downstream) and an ETF or mutual fund's
 `asset_type` is unverified until a real pull, so a consumer filtering
-`EQUITY` should check it. `schwab_transactions` (ADR-0279, research A0004) pulls
+`EQUITY` should check it. `schwab_daily` (ADR-0279, research A0003) emits
+the same `bars` stream from closed DAILY candles: `ts` is the session date
+`YYYY-MM-DD` (the New York date of Schwab's 00:00 Central stamp; a stamp at or
+after the 09:30 open refuses), knobs `symbols`, `start` (ISO date) and
+`overlap_days` (live re-request, default 5); a session is closed only once the
+pull's New York date has passed it, so today's candle is never emitted. Its
+`check` reads a week of the first symbol the way `read` does (a body that is not
+price history, or a malformed candle, refuses); the New York zone is built at
+first use, so importing the pack needs no tz database.
+`schwab_transactions` (ADR-0279, research A0004) pulls
 every linked account's transactions from a REQUIRED `start` date in windows of
 at most `window_days` (365, Schwab's one-year limit) as `trades` keyed by
 `(account, transaction_id, symbol)`: one row per transfer item of a kept
@@ -184,9 +193,10 @@ transactions are trades: a PENDING or INVALID one refuses by index. Fee lines an
 skipped asset types are counted in a LOG and the STATE's `last_pull`; a window at
 the 3,000-transaction cap refuses as truncated; the cursor day is re-requested in
 both modes, and a LOWER `start` than the last pull's (stored in the STATE) clears the
-cursor and re-pulls from it. Transport refusals name the pack's
-request ("Schwab price history failed for 'AAPL' (HTTP 404)", "Schwab accounts
-...", "Schwab transactions ...").
+cursor and re-pulls from it. One `authorize` serves all four packs (one token
+file). Transport refusals name the pack's request ("Schwab price history failed
+for 'AAPL' (HTTP 404)", "Schwab daily history ...", "Schwab accounts ...",
+"Schwab transactions ...").
 
 The `polymarket` pack (ADR-0075) is keyless: Gamma `events` (one row per
 market, settlement and fee fields; the cursor is recorded, never consulted —
@@ -462,7 +472,7 @@ dskit/onboarding/
 │   ├── restwindow.py  declarative time-window REST: window / cursor pagination, positional rows, epoch instants, a dynamic record key; standalone (stdlib urllib, ADR-0240)
 │   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
 │   ├── zipcsv.py      httpblobs transform: a vendor zip of one CSV -> typed parquet under a JSON layout (pyarrow inside transform, ADR-0242)
-│   ├── schwab.py      Schwab closed-minute REST bars + point-in-time account positions (`schwab_positions`) + account transactions as `trades` (`schwab_transactions`, ADR-0279) + OAuth refresh
+│   ├── schwab.py      Schwab closed-minute REST bars, closed daily bars keyed by session date (`schwab_daily`) + point-in-time account positions (`schwab_positions`, ADR-0279) + account transactions as `trades` (`schwab_transactions`, ADR-0279) + OAuth refresh
 │   └── thetadata.py   ThetaData daily option chains + underlying bars from a local Theta Terminal: per-root newest-first cursor, batch_units, ordered concurrency (stdlib urllib, ADR-0263); ThetaOptionEodExport (Parquet schema + quality checks)
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        the CLI: python -m dskit.onboarding

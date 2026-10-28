@@ -88,8 +88,8 @@ per-share growth; the active side is scored where it runs.
 
 ## Tax lots from Schwab transactions (2026-10-28, branch `schwab-tax-lots`)
 
-Research A0004 (`docs/research/tax-lots/2026-10-28-synthesis.md`; A0003 on the
-branch) and the ADR-0279 "tax lots" amendment. Built by Claude Opus 5.5, test
+Research A0004 (`docs/research/tax-lots/2026-10-28-synthesis.md`; journaled A0003
+on the branch, renumbered A0004 at the merge with `schwab-risk-inputs`) and the ADR-0279 "tax lots" amendment. Built by Claude Opus 5.5, test
 first: tier-2 `schwab_transactions` (`trades`: one row per kept transfer item,
 windows of at most a year from `start`, the 3,000-transaction cap refused, fee
 lines and skipped asset types counted; `tests/onboarding/test_schwab_transactions.py`,

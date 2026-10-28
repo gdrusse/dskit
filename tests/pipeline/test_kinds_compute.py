@@ -177,6 +177,33 @@ def test_a_bad_text_or_list_is_refused_by_name(bad, text):
     assert any(text in p for p in ComputeFields.validate_params({"fields": bad})), bad
 
 
+def test_an_integer_constant_is_written_as_an_integer_where_const_is_a_float(ctx):
+    # a window length (252 sessions) is a count: `const` always computes in floats (252.0), the
+    # whole-expression `integer` keeps the int a reader of the written file expects
+    out = run(ctx, [{"a": 1.0}], {"window": {"integer": 252}, "as_float": {"const": 252},
+                                  "scaled": {"op": "mul", "args": [f("a"), {"const": 252}]}})
+    (row,) = out["records"]
+    assert row["window"] == 252 and type(row["window"]) is int
+    assert row["as_float"] == 252.0 and type(row["as_float"]) is float
+    assert row["scaled"] == 252.0
+    assert out["summary"]["fields"]["window"] == {"computed": 1, "null_input": 0, "domain": 0}
+    assert run(ctx, [{"a": 1.0}], {"zero": {"integer": 0}, "back": {"integer": -3}})["records"] == [
+        {"a": 1.0, "zero": 0, "back": -3}]
+
+
+@pytest.mark.parametrize("bad, text", [
+    ({"z": {"integer": 2.5}}, "integer must be an int"), ({"z": {"integer": 252.0}}, "integer must be an int"),
+    ({"z": {"integer": True}}, "integer must be an int"), ({"z": {"integer": "252"}}, "integer must be an int"),
+    ({"z": {"integer": None}}, "integer must be an int"),
+    ({"z": {"integer": float("nan")}}, "integer must be an int"),
+    ({"z": {"integer": 1, "const": 1}}, "exactly one"), ({"z": {"integer": 1, "args": []}}, "unknown key"),
+    ({"z": {"op": "add", "args": [{"const": 1}, {"integer": 1}]}}, "only allowed as the whole expression"),
+    ({"z": {"list": [{"integer": 1}]}}, "only allowed as the whole expression")])
+def test_a_bad_or_nested_integer_is_refused_by_name(bad, text):
+    problems = ComputeFields.validate_params({"fields": bad})
+    assert len(problems) == 1 and text in problems[0], problems
+
+
 def test_item_reads_one_number_out_of_a_list_field(ctx):
     rows = [{"strikes": [97.0, 104.0]}, {"strikes": [90.0]}, {"strikes": None}]
     out = run(ctx, rows, {"low": {"item": {"field": "strikes", "index": 0}},

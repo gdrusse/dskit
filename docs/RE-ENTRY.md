@@ -14,7 +14,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | stock_options | `children/stock_options/docs/RE-ENTRY.md` | 2026-10-01: bootstrap + AMZN conversion done; gap audit rerun next |
 | intraday_equities | `children/intraday_equities/docs/RE-ENTRY.md` | 2026-10-12: fill-window relabel: next-bar-fill IC 0.01-0.02 (5-min rows), 0.002-0.005 (1-min rows); no fill-reachable edge |
 | pmquant | `children/pmquant/docs/RE-ENTRY.md` | 2026-09-04: child landed; waits on PREDEXON_API_KEY and the real-data twin |
-| portfolio_policy | `children/portfolio_policy/docs/RE-ENTRY.md` | 2026-10-27: ADR-0279 base machinery merged; Sonnet loop closed CLEAN after 4 rounds (8 Major fixed, 0 Critical); `portfolio-summary` branch (PositionSummary) Sonnet loop: round 1 fixed 2 Major, round 2 next; no real pull yet |
+| portfolio_policy | `children/portfolio_policy/docs/RE-ENTRY.md` | 2026-10-28: branch `schwab-tax-lots` carries risk inputs from Schwab daily bars (A0003: `schwab_daily`, `DateOrderedGroupBy`, `BetaHoldReturns` betas port, risk chain and stale-bars gate) merged with tax lots from Schwab transactions (A0004: `schwab_transactions`, `TaxLots`/`LotPositions`, decisions per lot) in one decision document; not lens-reviewed or merged to `main`; base machinery + PositionSummary on `main`; no real pull yet |
 | intraday_poc | `children/intraday_poc/docs/RE-ENTRY.md` | legacy worked example; no active lane |
 
 ## Core (dskit itself)

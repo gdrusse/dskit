@@ -87,6 +87,7 @@ class TestModuleHome:
             "AttachByIdentity",
             "CLAUSE_OPS",
             "Concat",
+            "DateOrderedGroupBy",
             "Derive",
             "EventGrid",
             "Filter",

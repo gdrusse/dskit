@@ -910,11 +910,23 @@ they register only into private registries, never the default one.
   A0001, by import path): the market's expected nominal return as named blocks
   (dividend yield + real growth + inflation + `(fair_cape / cape) **
   (1 / reversion_years) - 1`), then `risk_free + beta x (market - risk_free)`
-  per symbol from a declared beta table; a symbol without a beta refuses
+  per symbol from a beta table, wired on the optional `betas` input (`{symbol:
+  number}`, from daily bars; it replaces the hand `betas` param, which is then
+  optional; a wired `None` or non-number entry refuses; the summary names
+  `betas_source`, and `betas_param_ignored` (with a log warning) when a declared
+  param was replaced by the wire; neither source refuses at run); a symbol without a beta refuses
   unless `default_beta` is declared. `horizon_years` (required, <= `reversion_years`,
   pinned to the decision's by the child's tests) keeps the drift from compounding
   past full reversion; any computed rate outside `RATE_BOUNDS` refuses. A
   `betas` output carries the beta each symbol was priced with.
+- `kinds_flow.DateOrderedGroupBy` (ADR-0279 amendment, by import path, not
+  registered): `groupby` whose `order_field` holds ISO `YYYY-MM-DD` dates
+  (`document.date_problem`) instead of numbers, so `filter` (`date <= day`) then
+  `last` reads each entity's latest daily row on or before a day; the registered
+  `groupby` keeps its numbers-only order. `max_lag_days` with `reference_date`
+  (declared together; needs `order_field`) is a staleness gate: a group whose latest
+  date is more than that many calendar days before the reference, or after it, refuses,
+  every such group named in one error with its latest date and lag.
 - `position_summary.py` (`PositionSummary`) (ADR-0279, research A0002, by import
   path): a `HoldVsRedeploy` run reduced to a few numbers. Per position: weight,
   expected return a year `(hold_value / value) ** (1/H) - 1`, volatility and beta
@@ -936,7 +948,7 @@ they register only into private registries, never the default one.
   `key_fields` rule are `decision_outcomes`' `annualized_growth` /
   `check_key_fields_param`.
 - `kinds_compute.py` (`ComputeFields`), `kinds_series.py` (`StampSeriesStats`), `libs/chain_orders.py` (`ChainStructureOrders`) (ADR-0265 Amendment 5, by import path):
-  `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
+  `ComputeFields` adds fields from small expression trees (`field`, `const`, `text`, `integer`, `list`, `item` and add / sub / mul / div / neg / abs / log / exp / sqrt / min / max); a null or
   out-of-domain operand gives `None`, counted, never a fill, and `keep` projects rows to exactly the columns a keyed attachment demands. `StampSeriesStats` reduces `(stamp, value)` rows to one
   series per group (day, ISO-week or month bucket, mean or sum: the clustering step) and reports the mean with the Newey-West statistics, the Sharpe ratio (analytic and calendar-block
   bootstrap interval, annualised by a declared period count, a `hurdle` on the lower bound) and a paired or unpaired contrast of two groups. `ChainStructureOrders` reads a daily chain and
@@ -1107,14 +1119,16 @@ dskit/pipeline/
 │                      out-of-fold residual vectors (ADR-0155)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
-│                      weekday-onehot, attach-by-identity — record-flow verbs
+│                      weekday-onehot, attach-by-identity — record-flow verbs;
+│                      DateOrderedGroupBy (by import path): groupby ordered by an ISO date,
+│                      refused when stale against a reference day (`max_lag_days`)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
 │                      holdout locked first, count-sized rolling folds, warm-up vs
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
-├── kinds_compute.py   ComputeFields (by import path, ADR-0265 Amendment 5): per-row arithmetic over declared fields, `keep` projection, text / list / item; null and
+├── kinds_compute.py   ComputeFields (by import path, ADR-0265 Amendment 5): per-row arithmetic over declared fields, `keep` projection, text / integer / list / item; null and
 │                      out-of-domain results are None and counted
 ├── kinds_series.py    StampSeriesStats (by import path, ADR-0265 Amendment 5): stamped values to a per-group week / month series, Newey-West, Sharpe + calendar-block
 │                      bootstrap interval, hurdle, paired / unpaired contrast
@@ -1180,7 +1194,7 @@ dskit/pipeline/
 │                      owns the shared row readers (`require_rows` / `require_number` / `require_amount`) and `check_redeploy_params`;
 │                      `MAX_COUNT` (10**6) + `check_count_param`: the one ceiling of a count param; an acquisition date after `as_of` refuses
 ├── hold_return.py     MarketHoldReturn (yield + growth + inflation + annualized CAPE drift, `horizon_years` <= `reversion_years`, role data) + BetaHoldReturns
-│                      (risk_free + beta x (market - risk_free) per symbol, plus the `betas` used) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
+│                      (risk_free + beta x (market - risk_free) per symbol from the wired `betas` input or the hand table, plus the `betas` used) -> HoldVsRedeploy's `hold_returns` port (by import path, ADR-0279)
 ├── active_hurdle.py   ActiveHurdle (by import path, ADR-0279): a backtest's per-period net returns -> (mean - E[max null Sharpe] x sd) x periods,
 │                      deflated Sharpe as the pre-registered admissibility bar (rate None below min_dsr), declared `min_periods` floor -> HoldVsRedeploy's `redeploy_return` port;
 │                      a constant series (spread within `stats.NO_VARIANCE_RTOL`) has no Sharpe and refuses
