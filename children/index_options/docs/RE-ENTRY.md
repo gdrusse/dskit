@@ -1,41 +1,36 @@
 # RE-ENTRY — index_options
 
-Updated: 2026-10-28 by Claude Opus 5.5. Wrapped; prior note archived in docs/archive/re-entry/index_options.md.
+Updated: 2026-10-28 by ChatGPT. One-day mark/IV coverage packet reviewed and executed; prior note archived in docs/archive/re-entry/index_options.md.
 
 ## Now
 
-- Opt-in `filled_account` terminal shock admission is BUILT AND REVIEWED, NOT RUN on 2019 market data. Base d671e3f8; candidate bd23fbfd; final code c10529a1fbea1174d74a5d05bd70060b75ed67dd (ADR-0278 amendment "opt-in filled-account terminal shock admission").
-- `WeeklyOptionPortfolioStudy` `shock.scope = filled_account`: open books join the per-move terminal budget at the signal; at the next-session fill, open books plus surviving fills are recomputed; a breach declines new books (`shock_risk_limit`), a missing/mismatched observed basis fails closed (`shock_risk_input`). The legacy three-key shock is unchanged; original configs do not opt in.
-- Review: two fresh independent GPT-6 Luna final lenses on c10529a1, zero Critical/Major/Minor. Focused checks 243 ledger + 20 packet + 4 docs passed; no full suite.
-- Stress diagnosis (read-only, memo below): of 5,645 cases, the 814 numeric-envelope refusals (|standardized log-moneyness| > 3, the repricer's declared limit) and 335 zero-IV refusals (47 source quotes with `implied_volatility = 0`) are intended/unsupported inputs. No supported safe fix was established, so no duplicate stress runs and no new attempt pins.
-- The broad W1 + shock 2019-06-17 one-day mark loss of $116,535.08 (−12% underlying, +15 IV points; 99.78% from two TTD call books) is a separate diagnostic. The filled_account build does not address it.
-- 536 of 1,124 active weekly common-horizon stress rows remain incomplete.
-- Original 2019 MIO/stress JSONs, results pins (SHA-256 2bbd7e92…f7d2), CSVs and data are unchanged. Sol did read-only design/review only; its approved gate is this Opus implementation.
-- Retained: private viewer http://gibson-deskop.tail27a0c8.ts.net/ with its service, the original checkouts and /home/russell/data/index_options/mio-broad-2019-20261027.
+- Opt-in `stable_tail_v1` pricing and 2019 stress account-coverage driver built at candidate `5df492c4` from main `6f1b667b` under owner-approved ADR-0278 amendment. Legacy pricing and the original 2019 eight MIO/stress runs are unchanged.
+- Two independent GPT-6 Luna final reviews: C0/M0; disclosed Minor2 (no separate stage regression test, manual started-attempt recovery) and Nit1. Focused tests 202 passed/6 skipped, docs 4 passed, lint clean; no full suite.
+- Distinct opt-in JSON pipelines completed 813/814 original envelope cases: 232 limited and 581 broad. The one RIOT far-tail mark stays refused; all 335 zero-IV cases stay unavailable. New attested attempts and account/book JSON+CSV are pinned under `/home/russell/data/index_options/mio-broad-2019-20261027/stress-coverage-v2`.
+- Complete active common-horizon rows rose 588→915 of 1,124; 209 remain incomplete (208 IV, one RIOT). All 588 previously complete active rows and the $116,535.08 three-book June 17 loss are unchanged. This is diagnostic coverage, not a risk pass.
+- Original results-pins SHA-256 `2bbd7e9247bf46c016745dde8436e9a7394e770e52031f9024baebd049fbf7d2` and original task-index/CSV hashes were checked unchanged. Original data, checkouts, bundles and private viewer were preserved.
 
 ## Next
 
-1. One bounded owner decision, made together: EITHER run an opt-in 2019 development variant with `shock.scope = filled_account` (new configs and new pins, preserving the originals), OR design a separate one-day mark/IV coverage contract (mark policy, zero-IV semantics, envelope coverage) with ADR and review before any code.
-2. Nothing else until that choice. Final Windows delivery remains C:\Users\russe\DSKit-MIO-2019-20261028.
+1. With the owner, decide whether a one-day mark admission policy is needed. It needs a separate loss denominator/limit, held-only breach handling and timing-attested IV before a build or 2019 MIO variant.
+2. Resolve the 47 source zero-IV quote semantics from an authoritative source before any replacement-input policy. Incomplete rows cannot yield a maximum-loss claim.
 
 ## Blocked / owner decisions
 
-- The choice in Next 1 is owner-only. No new data window, next-year test, predictive selection, promotion or live deployment is authorized.
-- Path and TDD are unchanged; any TDD update happens together with the owner.
-- Limited cells were chosen retrospectively from both 2019 halves; model-zoo predictions include a trained-MLP fallback.
+- No one-day mark admission threshold or new 2019 MIO variant is approved. The existing opt-in `filled_account` terminal gate is built but has not been run on these 2019 accounts.
+- Path A0003/A0008 and TDD remain unchanged; the owner will update TDD together.
+- The 2019 results are development evidence; limited cells were selected retrospectively, and model-zoo predictions include a trained-MLP fallback.
 
 ## Read first
 
-- docs/memos/2026-10-28-mio-2019-stress-diagnosis.md — refusal findings, June 17 books, exact pins, filled_account build note.
-- docs/memos/2026-10-28-mio-2019-comparison.md — the eight 2019 runs, execution semantics and limits.
-- configs/mio-2019-results-pins.json — exact runs, sources, certificates and delivery hashes.
-- docs/architecture/decision-log.md — ADR-0278 filled-account amendment.
-- index_options/ledger_studies.py — `WeeklyOptionPortfolioStudy` shock scope.
+- docs/memos/2026-10-28-mio-2019-stress-diagnosis.md — updated findings and exact original/new JSON/CSV pins.
+- docs/memos/2026-10-28-mio-2019-comparison.md — eight original runs and execution semantics.
+- configs/mio-2019-results-pins.json — original results/source pins.
+- docs/architecture/decision-log.md — ADR-0278 mark/IV amendment.
+- index_options/mio_stress_coverage.py — opt-in coverage driver.
 
 ## Do not
 
-- Rerun the identical 2019 MIO or stress JSONs, pin a duplicate or unexecuted attempt (a future approved distinct variant pins its actual new attempt), widen the ±3 envelope or invent IV for zero-IV quotes.
-- Claim filled_account lowers the June 17 mark loss, fills the 536 incomplete rows or protects the eight original runs.
-- Start new data windows, pull providers, retrain, resume optional broad hindsight, or edit Path/TDD.
-- Present incomplete stress coverage as passing or hindsight as achievable annual profit.
-- Remove the viewer, original checkouts or data; delete only the contained task branch after verified push.
+- Invent IV, widen legacy pricing, duplicate original MIO/stress attempts, open 2020+, retrain, pull providers, resume optional hindsight or edit Path/TDD.
+- Treat 209 incomplete rows, complete-case maxima, the terminal gate or the June 17 mark as a passing one-day risk bound.
+- Remove the viewer, original checkout, artifacts or data.
