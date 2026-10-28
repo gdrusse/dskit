@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-26: main synced; 37 local/2 remote contained branches purged; unmerged/dirty work retained; sweep receipt below |
-| index_options | children/index_options/docs/RE-ENTRY.md | 2026-10-28: wrapped 8 completed 2019 MIO runs and pinned stress/CSV delivery; Luna C0/M0; next diagnose 814 pricing/335 IV refusals and full-book loss; Path/TDD unchanged |
+| index_options | children/index_options/docs/RE-ENTRY.md | 2026-10-28: opt-in filled_account shock admission built (c10529a1), Luna C0/M0/m0, not run on 2019 data; 814 envelope/335 zero-IV refusals intended, no rerun; next owner choice: opt-in 2019 variant or one-day mark/IV design; Path/TDD unchanged |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |
