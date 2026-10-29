@@ -85,6 +85,14 @@ POSITION_FIELDS = (
 )
 POSITION_KEY_FIELDS = ("account", "symbol", "as_of")
 _POSITION_NUMBERS = ("longQuantity", "shortQuantity", "averagePrice", "marketValue")
+# Schwab omits ``positions`` (rather than sending ``[]``) for an account that holds nothing,
+# as the first real pull showed (ADR-0279 amendment, 2026-10-29). These ``currentBalances``
+# fields, every one present and exactly zero, are the proof an account without the key is
+# empty; cash and a money-market sweep are balances, not positions, so they are not listed.
+_EMPTY_ACCOUNT_VALUES = (
+    "longMarketValue", "shortMarketValue", "longOptionMarketValue",
+    "shortOptionMarketValue", "mutualFundValue", "bondValue",
+)
 TRANSACTION_STREAM = "trades"
 TRANSACTION_FIELDS = (
     "account", "transaction_id", "trade_date", "time", "symbol", "asset_type", "quantity",
@@ -1020,9 +1028,11 @@ class SchwabPositionsConnector(_SchwabConnector):
     standard time, is dated the next day); account numbers never leave the
     connector — ``account`` is Schwab's own ``hashValue`` from the
     accountNumbers endpoint. The four position numbers are required on every
-    row and must be finite; a symbol must already be a non-empty string; an
-    account response without a ``positions`` list refuses. Nothing is
-    defaulted or coerced.
+    row and must be finite; a symbol must already be a non-empty string. An
+    account without a ``positions`` key emits no rows only when its
+    ``currentBalances`` prove it empty (every ``_EMPTY_ACCOUNT_VALUES`` field
+    present and exactly zero: Schwab omits the key for an account holding
+    nothing); otherwise it refuses. Nothing is defaulted or coerced.
     ``cost_basis`` is ``averagePrice x net quantity`` and so is a per-share
     basis only for shares: option rows carry no contract multiplier here,
     and a consumer that values them filters ``asset_type`` first. A backfill
@@ -1084,6 +1094,27 @@ class SchwabPositionsConnector(_SchwabConnector):
         symbol = instrument.get("symbol") if isinstance(instrument, dict) else None
         return f" (symbol {symbol!r})" if isinstance(symbol, str) and symbol else ""
 
+    @staticmethod
+    def _not_empty(account):
+        """Return why ``account``'s balances fail to prove it holds nothing, else ``""``.
+
+        The proof is every field of ``_EMPTY_ACCOUNT_VALUES`` present in ``currentBalances``
+        as a non-bool number equal to zero; NaN and infinity are not zero. The first failing
+        field names the reason.
+        """
+        balances = account.get("currentBalances")
+        if not isinstance(balances, dict):
+            return "no currentBalances"
+        for name in _EMPTY_ACCOUNT_VALUES:
+            if name not in balances:
+                return f"{name} is missing"
+            value = balances[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return f"{name} is not a number"
+            if value != 0:
+                return f"{name} is not zero"
+        return ""
+
     def _rows(self, body, hashes, as_of):
         """Validate and normalize every position in an accounts response."""
         if not isinstance(body, list):
@@ -1099,10 +1130,15 @@ class SchwabPositionsConnector(_SchwabConnector):
                     [f"Schwab account {a_index} has no hashValue in accountNumbers"]
                 )
             if "positions" not in account:
-                raise AssetError(
-                    [f"Schwab account {a_index} has no positions; the response must carry "
-                     "an explicit positions list (empty when the account holds nothing)"]
-                )
+                # an absent list is "holds nothing" only when the balances say so; anything
+                # else could be a truncated response, and guessing [] would drop holdings
+                reason = self._not_empty(account)
+                if reason:
+                    raise AssetError(
+                        [f"Schwab account {a_index} has no positions and its "
+                         f"currentBalances do not show it empty: {reason}"]
+                    )
+                continue
             positions = account["positions"]
             if not isinstance(positions, list):
                 raise AssetError([f"Schwab account {a_index} positions is not a list"])

@@ -34828,3 +34828,19 @@ The ticker x DTE table uses an existing node or a minimal generic fix, test-firs
   - A golden-bytes default test, a node-level default-driver test and a score-0.0 forecast test.
   - A test tying the gap caveat to solver_options.
   - The bare-name rule restated in `libs/matplotlib.py` and `production/ledger.py`.
+
+#### ADR-0279 amendment: an empty Schwab account is zero rows, proved by its balances (approved by owner 2026-10-29, "Approve, build it")
+
+The first real positions pull refused. Schwab omits `positions` for an account that holds
+nothing (here an emptied margin account, every `currentBalances` field zero); it does not send `[]`.
+
+- **Change.** `SchwabPositionsConnector._rows` only. An account without the key emits no rows
+  when its `currentBalances` has every one of the six position-value fields, `longMarketValue`,
+  `shortMarketValue`, `longOptionMarketValue`, `shortOptionMarketValue`, `mutualFundValue` and
+  `bondValue`, each a finite non-bool number equal to zero.
+- **Still refuses.** Any other account without the key, and the message names the first failing
+  field. An explicit `positions` list is read exactly as before.
+- **Limit.** Cash and a money-market sweep are balances, not positions, so a cash-only account
+  is also zero rows. Account cash and totals are a separate proposal.
+- **Tests.** An empty account next to a funded one emits only the funded rows. Each field
+  missing, a bool, non-finite or nonzero refuses. No balances at all still refuses.

@@ -261,9 +261,9 @@ def test_config_and_read_arguments_are_refused_by_name():
     assert Stub.calls == []                     # nothing was requested for a refused call
 
 
-def test_an_account_without_a_positions_key_refuses_never_defaults_to_empty():
+def test_an_account_without_a_positions_key_refuses_without_balances_proving_it_empty():
     Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678"}}]
-    with pytest.raises(AssetError, match="account 0 has no positions"):
+    with pytest.raises(AssetError, match="account 0 has no positions.*no currentBalances"):
         _read()
     # an explicit empty list is the provider saying "none", and emits nothing
     Stub.bodies[ACCOUNTS_URL] = [{"securitiesAccount": {"accountNumber": "12345678",
@@ -273,6 +273,70 @@ def test_an_account_without_a_positions_key_refuses_never_defaults_to_empty():
                                                          "positions": None}}]
     with pytest.raises(AssetError, match="positions is not a list"):
         _read()
+
+
+# Schwab omits `positions` for an account holding nothing (seen on the first real pull,
+# 2026-10-29): these six balances, all present and exactly zero, prove it is empty. Listed
+# here literally, so a change to the connector's own list must change this one too.
+EMPTY_FIELDS = ("longMarketValue", "shortMarketValue", "longOptionMarketValue",
+                "shortOptionMarketValue", "mutualFundValue", "bondValue")
+
+EMPTY_HASH = {"accountNumber": "87654321", "hashValue": "E3E3E3E3E3E3E3E3"}
+
+
+def _empty_account(**balances):
+    """An account with no `positions` key whose six value balances are zero unless overridden."""
+    current = {**{name: 0.0 for name in EMPTY_FIELDS}, "cashBalance": 0.0,
+               "liquidationValue": 0.0, **balances}
+    return {"securitiesAccount": {"accountNumber": "87654321", "type": "MARGIN",
+                                  "currentBalances": current}}
+
+
+def test_an_account_whose_balances_prove_it_empty_emits_nothing_beside_a_funded_one():
+    Stub.bodies[NUMBERS_URL] = HASHES + [EMPTY_HASH]
+    Stub.bodies[ACCOUNTS_URL] = ACCOUNTS + [_empty_account()]
+    records, _ = _read()
+    # the funded account's two holdings, nothing invented for the empty one
+    assert [r["data"]["symbol"] for r in records] == ["AAPL", "VTI"]
+    assert {r["data"]["account"] for r in records} == {"F00DBEEFCAFE4C0DE"}
+    # JSON integer zeros prove it as well as float zeros
+    Stub.bodies[ACCOUNTS_URL] = ACCOUNTS + [_empty_account(**{name: 0 for name in EMPTY_FIELDS})]
+    assert len(_read()[0]) == 2
+    # disclosed limit: cash is a balance, not a position, so a cash-only account is zero rows too
+    Stub.bodies[ACCOUNTS_URL] = [_empty_account(cashBalance=500.0, liquidationValue=500.0)]
+    Stub.bodies[NUMBERS_URL] = [EMPTY_HASH]
+    assert _read()[0] == []
+
+
+MISSING = object()
+
+
+@pytest.mark.parametrize("field", EMPTY_FIELDS)
+@pytest.mark.parametrize("value, reason", [
+    (MISSING, "is missing"),
+    (True, "is not a number"),
+    ("0", "is not a number"),
+    (None, "is not a number"),
+    (0.01, "is not zero"),
+    (-5, "is not zero"),
+    (float("nan"), "is not zero"),
+    (float("inf"), "is not zero"),
+])
+def test_an_account_without_positions_refuses_unless_every_value_balance_is_zero(
+        field, value, reason):
+    account = _empty_account()
+    if value is MISSING:
+        del account["securitiesAccount"]["currentBalances"][field]
+    else:
+        account["securitiesAccount"]["currentBalances"][field] = value
+    Stub.bodies[NUMBERS_URL] = HASHES + [EMPTY_HASH]
+    Stub.bodies[ACCOUNTS_URL] = ACCOUNTS + [account]
+    with pytest.raises(AssetError) as caught:
+        _read()
+    assert caught.value.errors == [
+        f"Schwab account 1 has no positions and its currentBalances do not show it empty: "
+        f"{field} {reason}"
+    ]
 
 
 def test_check_probes_accounts_and_transient_failures_retry_then_refuse(monkeypatch):
