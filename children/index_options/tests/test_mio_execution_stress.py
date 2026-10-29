@@ -24,7 +24,7 @@ def _case(sign=1, bid=1.0, ask=1.4, size=5, quantity=1):
         "id": "2019-01-02:ABC:2019-02-01", "symbol": "ABC",
         "decision_date": "2019-01-02",
         "expiry": "2019-02-01", "factor": 1.0, "contracts": quantity,
-        "credit": -100.0,
+        "credit": -100.0, "reserve": 100.0,
         "legs": [{"right": "call", "strike": 100.0, "sign": sign,
                   "quantity": quantity, "price": 1.2, "capacity": size}],
     }
@@ -195,3 +195,38 @@ def test_failed_session_preserves_prior_daily_account_and_failure_state():
     assert len(progress["daily"]) == 1
     assert progress["daily"][0]["cash"] == 1000
     assert progress["account"].cash == 1000
+
+
+def test_partial_disposition_keeps_closed_trade_and_cap_refusal_details():
+    study, book = _case()
+    filled, _ = stress._scenario_fill(
+        study, book, "2019-01-03", {},
+        {"price_fraction": 0.25, "half_size": False})
+    decision = {"date": "2019-01-02", "books": [book],
+                "candidate_books": 3, "candidate_contracts": 10}
+    attempt = stress._attempt_evidence(
+        study, book, "2019-01-03",
+        {"price_fraction": 0.25, "half_size": False})
+    daily = [{"date": "2019-01-03", "cash": 849.35,
+              "attempts": [attempt], "expiries": []}]
+    closed = {**filled, "pnl": 849.35, "close_date": "2019-02-01"}
+    incomplete = {
+        "failure": {"date": "2019-02-01", "cash": 1849.35,
+                    "attempts": [], "reason": "later invariant"},
+        "closed_trades": [closed], "open_books": [], "rejected": []}
+    rows = stress._dispositions(
+        "limited36", "expiry_up_15", "synthetic", None, daily,
+        decisions=[decision], incomplete=incomplete)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "filled"
+    assert rows[0]["realized_pnl"] == 849.35
+    assert rows[0]["cash_after_expiry_day"] == 1849.35
+
+    refusal = {**filled, "reason": "repriced_shared_cap", "status": "unfilled"}
+    complete = {"decisions": [decision], "trades": [], "rejected": [refusal]}
+    rows = stress._dispositions(
+        "limited36", "adverse_price", "synthetic", complete, daily)
+    assert rows[0]["status"] == "refused"
+    assert rows[0]["preflight_fees"] == 0.65
+    assert rows[0]["preflight_reserve"] == filled["reserve"]
+    assert rows[0]["fill_fees"] is None

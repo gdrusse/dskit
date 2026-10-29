@@ -366,7 +366,7 @@ class FrozenMIOReplay:
                 ("daily-account.csv", result["curve"], "date")):
             expected = {item[key]: item for item in objects}
             observed = rows(name)
-            if len(observed) != len(expected) or {row[key] for row in observed} != set(expected):
+            if [row[key] for row in observed] != [item[key] for item in objects]:
                 raise ValueError("control CSV row identity mismatch: " + name + "/" + method)
             for row in observed:
                 item = expected[row[key]]
@@ -385,7 +385,7 @@ class FrozenMIOReplay:
             if key in keys:
                 raise ValueError("duplicate original order leg")
             keys[key] = row
-        expected_count = 0
+        expected_keys = []
         trades = {book["id"]: book for book in result["trades"]}
         rejected = {book["id"]: book for book in result["rejected"]}
         for decision in result["decisions"]:
@@ -393,10 +393,10 @@ class FrozenMIOReplay:
                 trade = trades.get(book["id"])
                 refusal = rejected.get(book["id"])
                 for leg in book["legs"]:
-                    expected_count += 1
                     side = "buy" if leg["sign"] > 0 else "sell"
                     key = (decision["date"], book["id"], leg["right"],
                            float(leg["strike"]), side)
+                    expected_keys.append(key)
                     row = keys.get(key)
                     if row is None:
                         raise ValueError("control order leg missing from CSV")
@@ -415,8 +415,8 @@ class FrozenMIOReplay:
                     if any(not self._csv_equal(row[field], value)
                            for field, value in fields.items()):
                         raise ValueError("control order/fill CSV mismatch: " + book["id"])
-        if len(observed) != expected_count:
-            raise ValueError("control order/fill CSV leg count mismatch: " + method)
+        if list(keys) != expected_keys:
+            raise ValueError("control order/fill CSV leg order mismatch: " + method)
 
     def close(self):
         """Verify and close every original read-only quote index."""
@@ -535,7 +535,11 @@ class FrozenMIOReplay:
                 "cash_change": account.cash - before_cash,
                 "cash": account.cash, "funding": account.funding,
                 "contributions": account.contributions, "open_ids": sorted(account.open),
-                "reserve": snapshot["reserve"]})
+                "reserve": snapshot["reserve"],
+                "reserve_breach":
+                    snapshot["reserve"] > max(0.0, account.funding) + 1e-5,
+                "negative_cash": account.cash < 0,
+                "negative_funding": account.funding < 0})
         if pending is not None:
             raise ValueError("unprocessed final selection")
         if scenario["id"] == "control":
@@ -661,28 +665,58 @@ def _metrics(result, daily, selected):
     }
 
 
-def _dispositions(cohort, scenario, method, result, daily):
-    """One auditable outcome for each frozen selected book."""
-    if result is None:
+def _dispositions(cohort, scenario, method, result, daily, *,
+                  decisions=None, incomplete=None):
+    """One auditable outcome per attempted selected book, including prefixes."""
+    if result is None and incomplete is None:
         return []
     attempts = {item["id"]: (row, item) for row in daily
                 for item in row["attempts"]}
+    if incomplete is not None:
+        failure = incomplete["failure"]
+        for item in failure["attempts"]:
+            attempts.setdefault(item["id"], (failure, item))
     expiries = {item["id"]: (row, item) for row in daily
                 for item in row["expiries"]}
-    trades = {book["id"]: book for book in result["trades"]}
-    rejected = {book["id"]: book for book in result["rejected"]}
+    closed = {book["id"]: book for book in (
+        result["trades"] if result is not None else incomplete["closed_trades"])}
+    open_books = ({book["id"]: book for book in incomplete["open_books"]}
+                  if incomplete is not None else {})
+    rejected = {book["id"]: book for book in (
+        result["rejected"] if result is not None else incomplete["rejected"])}
+    decisions = result["decisions"] if result is not None else decisions
     rows = []
-    for decision in result["decisions"]:
+    for decision in decisions:
         for selected in decision.get("books", []):
             key = selected["id"]
             if key not in attempts:
+                if incomplete is not None:
+                    continue
                 raise ValueError("selected book lacks fill attempt: " + key)
             fill_day, attempt = attempts[key]
-            trade = trades.get(key)
+            settled = closed.get(key)
+            trade = settled or open_books.get(key)
             refusal = rejected.get(key)
-            if (trade is None) == (refusal is None):
+            if result is not None and (trade is None) == (refusal is None):
                 raise ValueError("selected book lacks unique disposition: " + key)
-            expiry_day, expiry = expiries[key] if trade is not None else (None, None)
+            expiry_day, expiry = expiries.get(key, (None, None))
+            preflight = (refusal if refusal is not None
+                         and "fees" in refusal else None)
+            if settled is not None:
+                status = "filled"
+            elif trade is not None:
+                status = "open_at_failure"
+            elif refusal is not None:
+                status = "refused"
+            else:
+                status = "undetermined_at_failure"
+            payoff = (settled["pnl"] - settled["credit"]
+                      if settled is not None else None)
+            expiry_date = (settled["close_date"] if settled is not None else None)
+            cash_after_expiry = (
+                expiry_day["cash"] if expiry_day is not None else
+                incomplete["failure"]["cash"] if incomplete is not None
+                and expiry_date == incomplete["failure"]["date"] else None)
             rows.append({
                 "cohort": cohort, "scenario": scenario, "method": method,
                 "id": key, "symbol": selected["symbol"],
@@ -690,11 +724,16 @@ def _dispositions(cohort, scenario, method, result, daily):
                 "expiry": selected["expiry"],
                 "possible_books": decision["candidate_books"],
                 "possible_option_contracts": decision["candidate_contracts"],
-                "status": "filled" if trade is not None else "refused",
-                "reason": refusal["reason"] if refusal is not None else None,
+                "status": status,
+                "reason": (refusal["reason"] if refusal is not None else
+                           incomplete["failure"]["reason"]
+                           if status == "undetermined_at_failure" else None),
                 "selected_credit": selected["credit"],
                 "selected_reserve": selected["reserve"],
                 "attempt_legs": attempt["legs"],
+                "preflight_credit": preflight["credit"] if preflight is not None else None,
+                "preflight_fees": preflight["fees"] if preflight is not None else None,
+                "preflight_reserve": preflight["reserve"] if preflight is not None else None,
                 "fill_legs": ([{"side": "buy" if leg["sign"] > 0 else "sell",
                                "right": leg["right"], "strike": leg["strike"],
                                "quantity": leg["quantity"],
@@ -705,23 +744,20 @@ def _dispositions(cohort, scenario, method, result, daily):
                 "fill_reserve": trade["reserve"] if trade is not None else None,
                 "cash_delta_at_fill": trade["credit"] if trade is not None else 0.0,
                 "cash_after_fill_day": fill_day["cash"],
-                "expiry_date": expiry_day["date"] if expiry_day is not None else None,
+                "expiry_date": expiry_date,
                 "original_expiry_underlying":
                     expiry["original_underlying"] if expiry is not None else None,
                 "stressed_expiry_underlying":
                     expiry["stressed_underlying"] if expiry is not None else None,
-                "expiry_payoff": (trade["pnl"] - trade["credit"]
-                                  if trade is not None else None),
-                "realized_pnl": trade["pnl"] if trade is not None else None,
-                "cash_delta_at_expiry":
-                    (trade["pnl"] - trade["credit"] if trade is not None else None),
-                "cash_after_expiry_day":
-                    expiry_day["cash"] if expiry_day is not None else None,
+                "expiry_payoff": payoff,
+                "realized_pnl": settled["pnl"] if settled is not None else None,
+                "cash_delta_at_expiry": payoff,
+                "cash_after_expiry_day": cash_after_expiry,
             })
     return rows
 
 
-def _unsupported_metrics(selected, reason):
+def _unsupported_metrics(selected, reason, rejected):
     """Keep an incomplete stress visible without inventing a profit."""
     keys = ("filled", "refused", "fill_rate", "final_profit_usd",
             "final_equity_usd", "contributions_usd", "twr", "max_drawdown",
@@ -730,7 +766,7 @@ def _unsupported_metrics(selected, reason):
             "worst_expiry_day_usd", "minimum_cash_usd", "peak_reserve_usd")
     return {"status": "unsupported", "unsupported_reason": reason,
             "selected": selected, **{key: None for key in keys},
-            "refusal_reasons": {}}
+            "refusal_reasons": dict(Counter(book["reason"] for book in rejected))}
 
 
 def execute(document_path):
@@ -789,15 +825,22 @@ def execute(document_path):
                                       for book in account.open.values()),
                        "open_ids": sorted(account.open),
                        "attempted_ids": list(progress["attempted_ids"]),
-                       "attempts": list(progress["attempts"])}
+                       "attempts": list(progress["attempts"]),
+                       "reserve_breach":
+                           sum(book["reserve"] for book in account.open.values())
+                           > max(0.0, account.funding) + 1e-5,
+                       "negative_cash": account.cash < 0,
+                       "negative_funding": account.funding < 0}
             incomplete[cohort, scenario["id"], packet["id"]] = {
                 "failure": failure,
                 "closed_trades": list(account.closed),
                 "rejected": list(progress["rejected"]),
                 "open_books": list(account.open.values())}
-            metrics = _unsupported_metrics(selected, str(exc))
+            metrics = _unsupported_metrics(selected, str(exc), progress["rejected"])
         dispositions = _dispositions(
-            cohort, scenario["id"], packet["id"], result, daily)
+            cohort, scenario["id"], packet["id"], result, daily,
+            decisions=packet["result"]["decisions"],
+            incomplete=incomplete.get((cohort, scenario["id"], packet["id"])))
         # Decisions are preserved in the pinned original result. Repeating its
         # large solver arrays in every sensitivity would add no new evidence.
         concise_result = ({k: v for k, v in result.items() if k != "decisions"}
