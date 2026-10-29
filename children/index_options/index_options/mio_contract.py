@@ -148,6 +148,8 @@ class MIOStudyContract(StudyContract):
         selection = d["predictive"]
         if not isinstance(selection, dict):
             raise ValueError("predictive selection object required")
+        if selection.get("policy") == "owner_selected_pinned_forecasts":
+            return MIOStudyContract._pinned_selection(study, selection)
         if selection.get("policy") == "owner_selected_saved_zoo_outputs":
             return MIOStudyContract._owner_selected_selection(study, selection)
         if set(selection) != {"run_dir", "document_hash", "node", "port", "sha256"}:
@@ -184,17 +186,7 @@ class MIOStudyContract(StudyContract):
     def _owner_selected_selection(study, selection):
         """Bind explicitly selected saved outputs without score-based ranking."""
         d = study["domain"]
-        if set(selection) != {"policy", "receipt"}:
-            raise ValueError("owner-selected receipt reference required")
-        ref = selection["receipt"]
-        if not isinstance(ref, dict) or set(ref) != {"source", "file", "sha256"}:
-            raise ValueError("invalid owner-selected receipt reference")
-        source = PinnedPayloadSource(ref["source"])
-        if source.pin != d["sources"]["forecasts"]["pin"] or source.pin != d["sources"]["contexts"]["pin"]:
-            raise ValueError("receipt and stitched sources must share one pinned manifest")
-        if source.pin["files"].get(ref["file"]) != ref["sha256"]:
-            raise ValueError("owner-selected receipt digest differs from source manifest")
-        receipt = json.loads(open(source.file(ref["file"], verify=True)).read())
+        source, receipt = MIOStudyContract._receipt_source(study, selection)
         keys = {"policy", "selection_basis", "development_window", "bridge_fold",
                 "stitched", "sources", "preparation"}
         if (not isinstance(receipt, dict) or set(receipt) != keys
@@ -208,18 +200,7 @@ class MIOStudyContract(StudyContract):
                 or packet["end_before"] != "2020-01-01"
                 or d["params"]["bridge"]["fold"] != receipt["bridge_fold"]):
             raise ValueError("owner-selected outputs are development-only for full 2019")
-        stitched = receipt["stitched"]
-        if not isinstance(stitched, dict) or set(stitched) != {"forecast", "context"}:
-            raise ValueError("stitched forecast/context pins required")
-        for role, name in (("forecasts", "forecast"), ("contexts", "context")):
-            item = stitched[name]
-            binding = d["sources"][role]
-            relpath = binding["files"]["shared"]
-            digest = binding["pin"]["files"].get(relpath)
-            if (not isinstance(item, dict) or set(item) != {"relpath", "sha256"}
-                    or item != {"relpath": relpath, "sha256": digest}
-                    or source.pin["files"].get(relpath) != digest):
-                raise ValueError("stitched source does not match receipt manifest")
+        MIOStudyContract._stitched_sources(study, source, receipt)
         halves = receipt["sources"]
         if not isinstance(halves, list) or len(halves) != 2:
             raise ValueError("exact H1/H2 saved source records required")
@@ -233,58 +214,104 @@ class MIOStudyContract(StudyContract):
                     or item["quote_start"] != start or item["quote_end_before"] != end
                     or item["source_fold"] != 2 or item["ranked_folds"] != [2]):
                 raise ValueError("saved source intervals and fold must cover H1/H2 fold 2")
-            for role in ("forecast", "context"):
-                pin = item[role]
-                if (not isinstance(pin, dict) or set(pin) != {"relpath", "sha256"}
-                        or source.pin["files"].get(pin["relpath"]) != pin["sha256"]):
-                    raise ValueError("saved source file is not bound by receipt manifest")
-            producer = item["producer"]
-            if (not isinstance(producer, dict) or set(producer) != {"run", "resolved"}
-                    or not isinstance(producer["run"], str) or not isinstance(producer["resolved"], dict)):
-                raise ValueError("saved producer run identity required")
-            run = RunAttestation(producer["run"])
-            resolved = json.loads(open(producer["run"]+"/resolved.json").read())
-            config = json.loads(open(producer["run"]+"/config.json").read())
-            document_hash = producer["resolved"].get("document_hash")
-            node = config.get("pipeline", {}).get("method", {})
-            recipe = node.get("params", {})
-            if (resolved != producer["resolved"] or not document_hash
-                    or not run.node_output_for_document("method", document_hash)
-                    or node.get("uses") != "dskit.pipeline.libs.cdf_grid_methods:GridCDFMethod"
-                    or not isinstance(recipe, dict) or not isinstance(item["recipe_params"], dict)
-                    or recipe != item["recipe_params"]
-                    or recipe.get("source_sha256") != item["context"]["sha256"]
-                    or recipe.get("ranked_folds") != item["ranked_folds"]):
-                raise ValueError("saved M53 producer config or run attestation differs")
-            method = {k: copy.deepcopy(v) for k, v in recipe.items()
-                      if k not in {"source", "source_sha256", "end_before", "output", "tables", "periods", "notes"}}
-            expected_method = {"by": "disp", "components": ["model", "market_cal", "pooled", "baseline"],
-                               "kind": "quantile_average", "learn": "rolling", "levels": 199,
-                               "max_learning_rows": 100000, "min_rows": 5000, "refit_days": 21}
-            if method.get("method") != expected_method:
-                raise ValueError("saved source does not use the pinned M53 rolling-dispersion method")
+            method = MIOStudyContract._saved_source_method(source, item)
             if method_params is None:
                 method_params = method
             elif method != method_params:
                 raise ValueError("saved H1/H2 M53 method parameters differ")
+        MIOStudyContract._preparation(source, receipt, {"H1", "H2"}, "halves", "half_bounds")
+        return receipt
+
+    @staticmethod
+    def _receipt_source(study, selection):
+        """Read the receipt through its shared forecast/context manifest."""
+        d = study["domain"]
+        if set(selection) != {"policy", "receipt"}:
+            raise ValueError("owner-selected receipt reference required")
+        ref = selection["receipt"]
+        if not isinstance(ref, dict) or set(ref) != {"source", "file", "sha256"}:
+            raise ValueError("invalid owner-selected receipt reference")
+        source = PinnedPayloadSource(ref["source"])
+        if source.pin != d["sources"]["forecasts"]["pin"] or source.pin != d["sources"]["contexts"]["pin"]:
+            raise ValueError("receipt and stitched sources must share one pinned manifest")
+        if source.pin["files"].get(ref["file"]) != ref["sha256"]:
+            raise ValueError("owner-selected receipt digest differs from source manifest")
+        receipt = json.loads(open(source.file(ref["file"], verify=True)).read())
+        return source, receipt
+
+    @staticmethod
+    def _stitched_sources(study, source, receipt):
+        """Bind the prepared forecast/context files to the same receipt manifest."""
+        d = study["domain"]
+        stitched = receipt["stitched"]
+        if not isinstance(stitched, dict) or set(stitched) != {"forecast", "context"}:
+            raise ValueError("stitched forecast/context pins required")
+        for role, name in (("forecasts", "forecast"), ("contexts", "context")):
+            item = stitched[name]
+            binding = d["sources"][role]
+            relpath = binding["files"]["shared"]
+            digest = binding["pin"]["files"].get(relpath)
+            if (not isinstance(item, dict) or set(item) != {"relpath", "sha256"}
+                    or item != {"relpath": relpath, "sha256": digest}
+                    or source.pin["files"].get(relpath) != digest):
+                raise ValueError("stitched source does not match receipt manifest")
+
+    @staticmethod
+    def _saved_source_method(source, item):
+        """Verify the saved producer and return its pinned M53 behavior."""
+        for role in ("forecast", "context"):
+            pin = item[role]
+            if (not isinstance(pin, dict) or set(pin) != {"relpath", "sha256"}
+                    or source.pin["files"].get(pin["relpath"]) != pin["sha256"]):
+                raise ValueError("saved source file is not bound by receipt manifest")
+        producer = item["producer"]
+        if (not isinstance(producer, dict) or set(producer) != {"run", "resolved"}
+                or not isinstance(producer["run"], str) or not isinstance(producer["resolved"], dict)):
+            raise ValueError("saved producer run identity required")
+        run = RunAttestation(producer["run"])
+        resolved = json.loads(open(producer["run"]+"/resolved.json").read())
+        config = json.loads(open(producer["run"]+"/config.json").read())
+        document_hash = producer["resolved"].get("document_hash")
+        node = config.get("pipeline", {}).get("method", {})
+        recipe = node.get("params", {})
+        if (resolved != producer["resolved"] or not document_hash
+                or not run.node_output_for_document("method", document_hash)
+                or node.get("uses") != "dskit.pipeline.libs.cdf_grid_methods:GridCDFMethod"
+                or not isinstance(recipe, dict) or not isinstance(item["recipe_params"], dict)
+                or recipe != item["recipe_params"]
+                or recipe.get("source_sha256") != item["context"]["sha256"]
+                or recipe.get("ranked_folds") != item["ranked_folds"]):
+            raise ValueError("saved M53 producer config or run attestation differs")
+        method = {k: copy.deepcopy(v) for k, v in recipe.items()
+                  if k not in {"source", "source_sha256", "end_before", "output", "tables", "periods", "notes"}}
+        expected_method = {"by": "disp", "components": ["model", "market_cal", "pooled", "baseline"],
+                           "kind": "quantile_average", "learn": "rolling", "levels": 199,
+                           "max_learning_rows": 100000, "min_rows": 5000, "refit_days": 21}
+        if method.get("method") != expected_method:
+            raise ValueError("saved source does not use the pinned M53 rolling-dispersion method")
+        return method
+
+    @staticmethod
+    def _preparation(source, receipt, source_ids, coverage_key, bounds_check):
+        """Validate pinned preparation checks and per-source cohort partitions."""
         prep_ref = receipt["preparation"]
         if (not isinstance(prep_ref, dict) or set(prep_ref) != {"file", "sha256"}
                 or source.pin["files"].get(prep_ref["file"]) != prep_ref["sha256"]):
             raise ValueError("preparation receipt is not bound by source manifest")
         preparation = json.loads(open(source.file(prep_ref["file"], verify=True)).read())
         required_checks = {"exact_source_row_equality", "unique_forecast_keys", "unique_context_keys",
-                           "matching_forecast_context_keys", "half_bounds", "label_maturity",
+                           "matching_forecast_context_keys", bounds_check, "label_maturity",
                            "declared_universe_inventory"}
         checks = preparation.get("checks", {}) if isinstance(preparation, dict) else {}
         if (not isinstance(checks, dict) or not required_checks <= set(checks)
                 or any(checks[key] is not True for key in required_checks)):
             raise ValueError("preparation checks are missing or failed")
         cohort = preparation.get("declared_cohort")
-        half_data = preparation.get("halves")
+        half_data = preparation.get(coverage_key)
         if (not isinstance(cohort, list) or not cohort or not all(isinstance(x, str) for x in cohort)
                 or len(cohort) != len(set(cohort))):
             raise ValueError("unique declared preparation cohort required")
-        if not isinstance(half_data, dict) or set(half_data) != {"H1", "H2"}:
+        if not isinstance(half_data, dict) or set(half_data) != source_ids:
             raise ValueError("per-half preparation coverage required")
         for detail in half_data.values():
             if (not isinstance(detail, dict) or set(detail) != {"row_count", "expected_names", "missing_names"}
@@ -297,7 +324,153 @@ class MIOStudyContract(StudyContract):
                     or set(detail["expected_names"]) & set(detail["missing_names"])
                     or set(detail["expected_names"]) | set(detail["missing_names"]) != set(cohort)):
                 raise ValueError("preparation half coverage does not partition declared cohort")
+        return preparation
+
+    @staticmethod
+    def _date(value):
+        """Require one canonical ISO calendar date."""
+        if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value:
+            raise ValueError("canonical forecast/training date required")
+        return value
+
+    @staticmethod
+    def _pinned_selection(study, selection):
+        """Bind owner-selected saved forecasts to their explicit nonsealed window."""
+        source, receipt = MIOStudyContract._receipt_source(study, selection)
+        keys = {"policy", "selection_basis", "forecast_window", "bridge_fold", "stitched",
+                "sources", "preparation", "training_protocol"}
+        if (not isinstance(receipt, dict) or set(receipt) != keys
+                or receipt["policy"] != "owner_selected_pinned_forecasts"
+                or receipt["selection_basis"] != "owner_selected_no_score_ranking"):
+            raise ValueError("invalid pinned forecast receipt")
+        window, fold = receipt["forecast_window"], receipt["bridge_fold"]
+        if not isinstance(window, dict) or set(window) != {"start", "end_before"}:
+            raise ValueError("explicit forecast window required")
+        start, end = (MIOStudyContract._date(window[k]) for k in ("start", "end_before"))
+        packet, bridge = MIOStudyContract.packet(study), study["domain"]["params"]["bridge"]
+        if (start >= end or type(fold) is not int or fold < 1 or type(bridge["fold"]) is not int
+                or bridge["fold"] != fold or bridge["start"] != start or bridge["end_before"] != end
+                or packet["start"] != start or packet["end_before"] != end
+                or packet["purpose"] not in {"development", "adaptation", "confirmation"}
+                or end > MIOStudyContract._date(bridge["protected_end_before"])):
+            raise ValueError("forecast window/fold differs from nonsealed packet")
+        MIOStudyContract._stitched_sources(study, source, receipt)
+        records = receipt["sources"]
+        if not isinstance(records, list) or not records:
+            raise ValueError("saved forecast source records required")
+        required = {"id", "quote_start", "quote_end_before", "source_fold", "ranked_folds",
+                    "forecast", "context", "producer", "recipe_params"}
+        cursor, ids, behavior = start, set(), None
+        for item in records:
+            if (not isinstance(item, dict) or set(item) != required
+                    or not isinstance(item["id"], str) or not item["id"] or item["id"] in ids
+                    or type(item["source_fold"]) is not int or item["source_fold"] != fold
+                    or item["ranked_folds"] != [fold]
+                    or any(type(k) is not int for k in item["ranked_folds"])):
+                raise ValueError("invalid saved forecast source identity/fold")
+            lo, hi = (MIOStudyContract._date(item[k]) for k in ("quote_start", "quote_end_before"))
+            if lo != cursor or not lo < hi <= end:
+                raise ValueError("saved forecast intervals must exactly cover packet")
+            method = MIOStudyContract._saved_source_method(source, item)
+            producer_end = MIOStudyContract._date(item["recipe_params"].get("end_before"))
+            if not hi <= producer_end <= bridge["protected_end_before"]:
+                raise ValueError("producer bound does not cover the nonprotected forecast interval")
+            if behavior is not None and method != behavior:
+                raise ValueError("saved forecast method parameters differ")
+            behavior, cursor = method, hi
+            ids.add(item["id"])
+        if cursor != end:
+            raise ValueError("saved forecast intervals do not finish packet")
+        prep = MIOStudyContract._preparation(source, receipt, ids, "sources", "source_bounds")
+        if prep["declared_cohort"] != study["domain"]["params"]["symbols"]:
+            raise ValueError("prepared cohort differs from requested symbols")
+        MIOStudyContract._pinned_training(source, receipt)
         return receipt
+
+    @staticmethod
+    def _pinned_training(source, receipt):
+        """Bind training summaries to reviewed, byte-pinned fit and fold evidence."""
+        training = receipt["training_protocol"]
+        keys = {"components", "folds", "artifacts", "label_maturity", "seed", "monitor"}
+        if not isinstance(training, dict) or set(training) != keys:
+            raise ValueError("full pinned training protocol required")
+        artifacts, components = training["artifacts"], training["components"]
+        if (not isinstance(artifacts, dict) or not artifacts or not isinstance(components, dict)
+                or set(components) != {"model", "market_cal", "pooled", "baseline", "combination"}):
+            raise ValueError("nonempty pinned training components/artifacts required")
+        for relative, digest in artifacts.items():
+            if source.pin["files"].get(relative) != digest:
+                raise ValueError("training artifact pin differs")
+            source.file(relative, verify=True)
+        model, combination = components["model"], components["combination"]
+        if (not isinstance(model, dict) or set(model) != {"config", "fold_file", "verification"}
+                or not isinstance(combination, dict) or set(combination) != {"method", "evidence"}):
+            raise ValueError("explicit training artifact roles required")
+        def metadata(relative, lines=False):
+            if not isinstance(relative, str) or relative not in artifacts:
+                raise ValueError("training role is not a pinned artifact")
+            text = open(source.file(relative, verify=True)).read()
+            return [json.loads(line) for line in text.splitlines() if line.strip()] if lines else json.loads(text)
+        config, proof = metadata(model["config"]), metadata(model["verification"])
+        folds = metadata(model["fold_file"], lines=True)
+        if (not isinstance(config, dict) or not isinstance(proof, dict)
+                or proof.get("config_sha256") != artifacts[model["config"]]
+                or config.get("study", {}).get("fold_table", {}).get("sha256") != artifacts[model["fold_file"]]
+                or training["folds"] != folds or len(folds) != 1 or not isinstance(folds[0], dict)
+                or type(folds[0].get("fold")) is not int or folds[0]["fold"] != receipt["bridge_fold"]
+                or folds[0].get("role") != "scored" or type(training["seed"]) is not int
+                or training["monitor"] != config.get("training")
+                or not isinstance(training["monitor"], dict)
+                or training["monitor"].get("seeds") != [training["seed"]]):
+            raise ValueError("training summary differs from pinned fit/fold evidence")
+        fold = folds[0]
+        dates = {k: MIOStudyContract._date(fold.get(k)) for k in
+                 ("train_start", "train_end", "val_start", "val_end")}
+        train_end = (date.fromisoformat(dates["train_end"])+timedelta(days=1)).isoformat()
+        val_end = (date.fromisoformat(dates["val_end"])+timedelta(days=1)).isoformat()
+        window = receipt["forecast_window"]
+        if (not dates["train_start"] < train_end <= dates["val_start"] <= window["start"]
+                or not window["end_before"] <= val_end
+                or training["label_maturity"] != {"training_end_before": train_end,
+                    "validation_end_before": val_end, "rolling": "strictly_settled_prior_validation"}):
+            raise ValueError("training/validation maturity boundary differs")
+        bands, counts = proof.get("band_dates"), proof.get("band_counts")
+        if (not isinstance(bands, list) or len(bands) != 3 or not isinstance(counts, list) or len(counts) != 3
+                or any(type(n) is not int or n < 1 for n in counts)):
+            raise ValueError("completed fit/calibration/validation evidence required")
+        for i, band in enumerate(bands):
+            if not isinstance(band, dict) or set(band) != {"quote_date", "settlement_date"}:
+                raise ValueError("actual band date evidence required")
+            for bounds in band.values():
+                if not isinstance(bounds, list) or len(bounds) != 2:
+                    raise ValueError("actual band date bounds required")
+                lo, hi = map(MIOStudyContract._date, bounds)
+                if not (dates["train_start"] if i < 2 else dates["val_start"]) <= lo <= hi < (train_end if i < 2 else val_end):
+                    raise ValueError("actual labels or origins cross training/validation boundary")
+        evidence = combination["evidence"]
+        if not isinstance(evidence, dict) or set(evidence) != {item["id"] for item in receipt["sources"]}:
+            raise ValueError("per-source training evidence required")
+        for item in receipt["sources"]:
+            refs = evidence[item["id"]]
+            if not isinstance(refs, dict) or set(refs) != {"provenance", "verification"}:
+                raise ValueError("combination evidence roles required")
+            provenance, verified = metadata(refs["provenance"]), metadata(refs["verification"])
+            recipe = item["recipe_params"]
+            specs = recipe.get("components", [])
+            if not isinstance(specs, list) or any(not isinstance(c, dict) for c in specs):
+                raise ValueError("producer component specifications required")
+            by_name = {c.get("name"): c for c in specs}
+            if (len(by_name) != len(specs) or any(components[k] != by_name.get(k) for k in
+                    ("market_cal", "pooled", "baseline")) or combination["method"] != recipe["method"]
+                    or not isinstance(provenance, dict) or not isinstance(verified, dict)
+                    or provenance.get("rows_sha256") != item["context"]["sha256"]
+                    or provenance.get("neural_fit_verification_sha256") != artifacts[model["verification"]]
+                    or provenance.get("all_columns_exact_readback") is not True
+                    or verified.get("document_hash") != item["producer"]["resolved"]["document_hash"]
+                    or verified.get("files", {}).get("forecasts.parquet", {}).get("sha256") != item["forecast"]["sha256"]
+                    or any(verified.get(k) is not True for k in
+                           ("identity_rows_exact", "pit_maps_exact_reproduction", "rolling_masks_verified", "fitted_flags_exact"))):
+                raise ValueError("saved forecast training/combination evidence differs")
 
     def resolve(self, study):
         """Resolve all clocks and source pins without reading market payloads."""

@@ -768,3 +768,353 @@ def test_available_size_packet_downsizes_and_replays_like_the_direct_study(study
             for certificate in decision.get("certificates", []):
                 certificate.pop("seconds", None)
     assert actual == expected
+
+
+
+def _pinned_forecast_study(tmp_path, monkeypatch, mutate=None):
+    """Pinned metadata fixture with a fixed neural fit and one completed Q1 producer."""
+    import hashlib
+    study = _owner_selected_study(tmp_path, monkeypatch)
+    pin = study["domain"]["predictive"]["receipt"]["source"]
+    selection_file = "receipt/selection.json"
+    receipt = json.loads((tmp_path/selection_file).read_text())
+    def save(relative, value):
+        path = tmp_path/relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value if isinstance(value, str) else json.dumps(value))
+        pin["files"][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return pin["files"][relative]
+    # The legacy source fixture's verifier uses this shared directory for all files.
+    import index_options.mio_contract as contract
+    class Source:
+        def __init__(self, source_pin):
+            self.pin = source_pin
+        def file(self, relative, *, verify=False):
+            path = tmp_path/relative
+            if verify and hashlib.sha256(path.read_bytes()).hexdigest() != self.pin["files"][relative]:
+                raise ValueError("payload drift")
+            return path
+    monkeypatch.setattr(contract, "PinnedPayloadSource", Source)
+    fold = {"fold": 3, "role": "scored", "train_start": "2017-01-03", "train_end": "2019-12-31",
+            "val_start": "2021-01-04", "val_end": "2021-03-31"}
+    fold_sha = save("training/folds.jsonl", json.dumps(fold)+"\n")
+    monitor = {"seeds": [29], "losses": [{"kind": "crps", "weight": 1.0}], "epochs": 2}
+    fit_config = {"study": {"fold_table": {"sha256": fold_sha}}, "training": monitor,
+                  "candidates": [{"id": "fixed_model"}]}
+    fit_sha = save("training/config.json", fit_config)
+    fit_proof = {"config_sha256": fit_sha, "band_counts": [10, 2, 3], "band_dates": [
+        {"quote_date": ["2017-01-03", "2019-08-22"], "settlement_date": ["2017-01-06", "2019-08-23"]},
+        {"quote_date": ["2019-08-30", "2019-12-26"], "settlement_date": ["2019-09-06", "2019-12-27"]},
+        {"quote_date": ["2021-01-04", "2021-03-25"], "settlement_date": ["2021-01-08", "2021-03-26"]}]}
+    fit_proof_sha = save("training/verified.json", fit_proof)
+    item = receipt["sources"][0]
+    item.update(id="Q1", quote_start="2021-01-04", quote_end_before="2021-04-01", source_fold=3, ranked_folds=[3])
+    components = [{"name": name, "columns": [name+"_cdf"]} for name in ("model", "market_cal", "pooled", "baseline")]
+    recipe = item["recipe_params"]
+    recipe.update(ranked_folds=[3], end_before="2021-04-01", components=components)
+    run = Path(item["producer"]["run"])
+    (run/"config.json").write_text(json.dumps({"pipeline": {"method": {
+        "uses": "dskit.pipeline.libs.cdf_grid_methods:GridCDFMethod", "params": recipe}}}))
+    m53_proof = {"document_hash": item["producer"]["resolved"]["document_hash"],
+                 "files": {"forecasts.parquet": {"sha256": item["forecast"]["sha256"]}},
+                 "identity_rows_exact": True, "pit_maps_exact_reproduction": True,
+                 "rolling_masks_verified": True, "fitted_flags_exact": True}
+    save("training/m53-verified.json", m53_proof)
+    save("training/m53-provenance.json", {"rows_sha256": item["context"]["sha256"],
+          "neural_fit_verification_sha256": fit_proof_sha, "all_columns_exact_readback": True})
+    training = {"components": {"model": {"config": "training/config.json", "fold_file": "training/folds.jsonl",
+                "verification": "training/verified.json"},
+                **{c["name"]: c for c in components if c["name"] != "model"},
+                "combination": {"method": recipe["method"], "evidence": {"Q1": {
+                    "provenance": "training/m53-provenance.json", "verification": "training/m53-verified.json"}}}},
+                "folds": [fold], "seed": 29, "monitor": monitor,
+                "artifacts": {k: v for k, v in pin["files"].items() if k.startswith("training/")},
+                "label_maturity": {"training_end_before": "2020-01-01", "validation_end_before": "2021-04-01",
+                                   "rolling": "strictly_settled_prior_validation"}}
+    receipt.pop("development_window")
+    receipt.update(policy="owner_selected_pinned_forecasts", forecast_window={"start": "2021-01-04", "end_before": "2021-04-01"},
+                   bridge_fold=3, sources=[item], training_protocol=training)
+    prep = {"checks": {key: True for key in ("exact_source_row_equality", "unique_forecast_keys", "unique_context_keys",
+            "matching_forecast_context_keys", "source_bounds", "label_maturity", "declared_universe_inventory")},
+            "declared_cohort": ["A", "B"], "sources": {"Q1": {"row_count": 3, "expected_names": ["A"], "missing_names": ["B"]}}}
+    receipt["preparation"]["sha256"] = save("receipt/preparation.json", prep)
+    study["packets"][0].update(purpose="confirmation", start="2021-01-04", end_before="2021-04-01")
+    study["domain"]["params"].update(symbols=["A", "B"])
+    study["domain"]["params"]["bridge"].update(fold=3, start="2021-01-04", end_before="2021-04-01", protected_end_before="2024-01-01")
+    study["domain"]["predictive"]["policy"] = receipt["policy"]
+    if mutate:
+        mutate(study, receipt, prep, fit_proof)
+        receipt["preparation"]["sha256"] = save("receipt/preparation.json", prep)
+        training["artifacts"]["training/verified.json"] = save("training/verified.json", fit_proof)
+    study["domain"]["predictive"]["receipt"]["sha256"] = save(selection_file, receipt)
+    return study
+
+
+def test_pinned_forecast_window_accepts_q1_and_keeps_missing_names(tmp_path, monkeypatch):
+    from index_options.mio_contract import MIOStudyContract
+    study = _pinned_forecast_study(tmp_path, monkeypatch)
+    receipt = MIOStudyContract.selection(study)
+    assert receipt["forecast_window"] == {"start": "2021-01-04", "end_before": "2021-04-01"}
+    assert receipt["bridge_fold"] == 3
+    assert study["domain"]["params"]["symbols"] == ["A", "B"]
+
+
+@pytest.mark.parametrize("case", ["bool_fold", "zero_fold", "bad_date", "gap", "outside_packet", "wrong_source_fold",
+    "wrong_rank", "duplicate_source", "empty_sources", "missing_name", "extra_source_coverage", "failed_maturity",
+    "empty_training", "empty_artifacts", "seed", "monitor", "fold_summary", "train_label_boundary", "val_label_boundary",
+    "negative_fold", "zero_interval", "incomplete_interval", "protected", "source_bool", "unknown_policy",
+    "cohort_partition", "training_roles", "combination_identity", "producer_bound", "producer_config", "producer_resolved"])
+def test_pinned_forecast_window_refuses_inconsistent_evidence(tmp_path, monkeypatch, case):
+    from index_options.mio_contract import MIOStudyContract
+    def mutate(study, receipt, prep, fit_proof):
+        training = receipt["training_protocol"]
+        if case == "bool_fold":
+            receipt["bridge_fold"] = True
+        elif case == "zero_fold":
+            receipt["bridge_fold"] = 0
+        elif case == "bad_date":
+            receipt["forecast_window"]["start"] = "20210104"
+        elif case == "gap":
+            receipt["sources"][0]["quote_start"] = "2021-01-05"
+        elif case == "outside_packet":
+            receipt["forecast_window"]["end_before"] = "2021-04-02"
+        elif case == "wrong_source_fold":
+            receipt["sources"][0]["source_fold"] = 2
+        elif case == "wrong_rank":
+            receipt["sources"][0]["ranked_folds"] = [2]
+        elif case == "duplicate_source":
+            receipt["sources"].append(copy.deepcopy(receipt["sources"][0]))
+        elif case == "empty_sources":
+            receipt["sources"] = []
+        elif case == "missing_name":
+            prep["declared_cohort"] = ["A"]
+        elif case == "extra_source_coverage":
+            prep["sources"]["extra"] = prep["sources"]["Q1"]
+        elif case == "failed_maturity":
+            prep["checks"]["label_maturity"] = False
+        elif case == "empty_training":
+            training["components"] = {}
+        elif case == "empty_artifacts":
+            training["artifacts"] = {}
+        elif case == "seed":
+            training["seed"] = 30
+        elif case == "monitor":
+            training["monitor"] = {"seeds": [30]}
+        elif case == "fold_summary":
+            training["folds"] = [{**training["folds"][0], "train_end": "2020-12-31"}]
+        elif case == "train_label_boundary":
+            fit_proof["band_dates"][1]["settlement_date"][1] = "2020-01-01"
+        elif case == "val_label_boundary":
+            fit_proof["band_dates"][2]["settlement_date"][1] = "2021-04-01"
+        elif case == "negative_fold":
+            receipt["bridge_fold"] = -3
+        elif case == "zero_interval":
+            receipt["sources"][0]["quote_end_before"] = "2021-01-04"
+        elif case == "incomplete_interval":
+            receipt["sources"][0]["quote_end_before"] = "2021-03-31"
+        elif case == "protected":
+            study["domain"]["params"]["bridge"]["protected_end_before"] = "2021-03-31"
+        elif case == "source_bool":
+            receipt["sources"][0]["source_fold"] = True
+        elif case == "unknown_policy":
+            study["domain"]["predictive"]["policy"] = "guess"
+        elif case == "cohort_partition":
+            prep["sources"]["Q1"]["missing_names"] = []
+        elif case == "training_roles":
+            training["components"]["model"]["config"] = "not-pinned.json"
+        elif case == "combination_identity":
+            training["components"]["combination"]["method"] = {}
+        elif case in ("producer_bound", "producer_config", "producer_resolved"):
+            item = receipt["sources"][0]
+            run = Path(item["producer"]["run"])
+            if case == "producer_bound":
+                item["recipe_params"]["end_before"] = "2026-01-01"
+                config = json.loads((run/"config.json").read_text())
+                config["pipeline"]["method"]["params"] = item["recipe_params"]
+                (run/"config.json").write_text(json.dumps(config))
+            elif case == "producer_config":
+                config = json.loads((run/"config.json").read_text())
+                config["pipeline"]["method"]["uses"] = "other:Node"
+                (run/"config.json").write_text(json.dumps(config))
+            else:
+                (run/"resolved.json").write_text("{}")
+    study = _pinned_forecast_study(tmp_path, monkeypatch, mutate)
+    with pytest.raises(ValueError):
+        MIOStudyContract.selection(study)
+
+
+def test_pinned_q1_real_onboarding_producer_and_packet(study, tmp_path, monkeypatch):
+    """A completed synthetic producer and acquired receipt drive the unchanged packet spine."""
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from datetime import date, timedelta
+    from dskit.onboarding.artifacts import PinnedPayloadSource
+    from index_options.mio_contract import MIOStudyContract
+
+    # Reuse metadata construction only; restore both evidence owners before any execution.
+    metadata_root = tmp_path/"metadata"
+    with monkeypatch.context() as patch:
+        _pinned_forecast_study(metadata_root, patch)
+    receipt_path = metadata_root/"receipt/selection.json"
+    receipt = json.loads(receipt_path.read_text())
+    def save(relative, value):
+        path = metadata_root/relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+        return path_hash(str(path))
+    def shifted(value):
+        return (date.fromisoformat(value)+timedelta(days=733)).isoformat()
+
+    params, data = _packet_clock_fixture()
+    clocks, pairs = params.pop("clocks"), params.pop("selected_pairs")
+    for rows in data["X"].values():
+        for row in rows:
+            for key in ("date", "quote_date", "expiry", "expiration", "settlement_date"):
+                if key in row:
+                    row[key] = shifted(row[key])
+            if "fold" in row:
+                row["fold"] = 3
+    start, end = shifted(clocks["entry_start"]), shifted(clocks["entry_end_before"])
+    bridge = params["bridge"]
+    bridge.update(start=start, end_before=end, fold=3, protected_end_before="2024-01-01")
+    source_rows = []
+    for i, (forecast, context) in enumerate(zip(data["X"]["forecasts"], data["X"]["contexts"])):
+        source_rows.append({**context, "row_id": i, "y": 0.0, "disp": 0.2, "market_eligible": True,
+            "actual_calendar_dte": (date.fromisoformat(context["expiry"])-date.fromisoformat(context["quote_date"])).days,
+            **{key.replace("method_", "mdl_"): value for key, value in forecast.items() if "_cdf_" in key}})
+    frame = pd.DataFrame(source_rows)
+    historical = frame.iloc[[0]].copy()
+    historical["quote_date"], historical["settlement_date"], historical["expiry"], historical["band"] = (
+        "2019-01-02", "2019-02-01", "2019-02-01", "fit")
+    historical["row_id"] = 2
+    frame = pd.concat([historical, frame], ignore_index=True)
+    context = metadata_root/"original/H1/context.parquet"
+    frame.to_parquet(context, index=False)
+    item = receipt["sources"][0]
+    recipe = {**item["recipe_params"], "source": str(context), "source_sha256": path_hash(str(context)),
+        "output": str(tmp_path/"producer-output"), "end_before": "2021-04-01", "periods": {},
+        "columns": {"identity": ["row_id", "symbol", "quote_date", "expiry"], "date": "quote_date",
+                    "settlement": "settlement_date", "fold": "fold", "band": "band", "outcome": "y",
+                    "dte": "actual_calendar_dte", "group": "symbol", "eligible": "market_eligible"},
+        "z_grid": bridge["z_grid"], "grid_labels": bridge["grid_labels"], "score_weights": [1.0]*13,
+        "pit_tail": 4.0, "fallback": "model", "comparators": ["model"],
+        "components": [{"name": name, "source": "mdl"} for name in ("model", "market_cal", "pooled", "baseline")]}
+    producer = _document(tmp_path, "q1-producer", {
+        "method": {"uses": "dskit.pipeline.libs.cdf_grid_methods:GridCDFMethod", "params": recipe}})
+    produced = run_document(producer, asof="2021-04-01", journal=False)
+    assert produced.state == "ran"
+    configured = json.loads((Path(produced.run_dir)/"config.json").read_text())["pipeline"]["method"]["params"]
+    resolved = json.loads((Path(produced.run_dir)/"resolved.json").read_text())
+    forecast = metadata_root/"original/H1/forecast.parquet"
+    forecast.write_bytes((tmp_path/"producer-output/forecasts.parquet").read_bytes())
+    item.update(quote_start=start, quote_end_before=end, recipe_params=configured,
+                producer={"run": str(produced.run_dir), "resolved": resolved})
+    for role, path in (("forecast", forecast), ("context", context)):
+        item[role]["sha256"] = path_hash(str(path))
+        output = metadata_root/receipt["stitched"][role]["relpath"]
+        selected = pd.read_parquet(path).query("band == 'val'")
+        selected.to_parquet(output, index=False)
+        receipt["stitched"][role]["sha256"] = path_hash(str(output))
+    receipt["forecast_window"] = {"start": start, "end_before": end}
+    training = receipt["training_protocol"]
+    for spec in configured["components"]:
+        if spec["name"] != "model":
+            training["components"][spec["name"]] = spec
+    training["artifacts"]["training/m53-provenance.json"] = save("training/m53-provenance.json", {
+        "rows_sha256": item["context"]["sha256"],
+        "neural_fit_verification_sha256": training["artifacts"]["training/verified.json"],
+        "all_columns_exact_readback": True})
+    training["artifacts"]["training/m53-verified.json"] = save("training/m53-verified.json", {
+        "document_hash": producer.hash, "files": {"forecasts.parquet": {"sha256": item["forecast"]["sha256"]}},
+        "identity_rows_exact": True, "pit_maps_exact_reproduction": True,
+        "rolling_masks_verified": True, "fitted_flags_exact": True})
+    prep_path = metadata_root/"receipt/preparation.json"
+    prep = json.loads(prep_path.read_text())
+    prep.update(declared_cohort=["X"], sources={"Q1": {
+        "row_count": 2, "expected_names": ["X"], "missing_names": []}})
+    receipt["preparation"]["sha256"] = save("receipt/preparation.json", prep)
+    save("receipt/selection.json", receipt)
+    save("admission.json", {"pairs": pairs, "quote_start": "2019-01-02",
+         "quote_end_before": "2020-01-01", "settlement_end_before": "2020-01-01"})
+    for role in ("chain", "bars"):
+        pq.write_table(pa.Table.from_pylist(data["X"][role]), metadata_root/(role+".parquet"))
+    pq.write_table(pa.table({"date": [shifted(d) for d in clocks["sessions"]]}), metadata_root/"sessions.parquet")
+    root = OnboardingRoot.create(str(tmp_path/"q1-ob"))
+    sources = root.registry()
+    vid = sources.register("source_config", {"name": "q1-fixture", "catalog_source": "synthetic",
+        "connector": "localblobs", "config": {"path": str(metadata_root),
+        "as_of": "2021-04-01T00:00:00+00:00"}}, origin="test")
+    sources.transition(vid, "active", origin="test")
+    run_acquisition(root, sources, "q1-fixture", "files", "backfill")
+    acquired = payload_files(root, "q1-fixture", "files")
+    pin = {"root": root.root, "source": "q1-fixture", "stream": "files", "snapshot": acquired["snapshot"],
+           "manifest_sha256": acquired["manifest_sha256"], "files": acquired["sha256"]}
+    study["packets"][0].update(start=start, end_before=end, purpose="confirmation")
+    domain = study["domain"]
+    domain.update(params=params, pairs=pairs, history_start=shifted(clocks["history_start"]), synthetic=False,
+        predictive={"policy": receipt["policy"], "receipt": {"source": pin, "file": "receipt/selection.json",
+                    "sha256": pin["files"]["receipt/selection.json"]}},
+        admission={"mode": "externally_admitted_2019", "evidence": {
+            "source": pin, "file": "admission.json", "pair_sha256": value_hash(pairs)}})
+    for role in domain["sources"]:
+        relative = receipt["stitched"][{"forecasts": "forecast", "contexts": "context"}[role]]["relpath"] if role in {
+            "forecasts", "contexts"} else role+".parquet"
+        domain["sources"][role] = {"pin": pin, "files": {("X" if role in {"bars", "chain"} else "shared"): relative}}
+    assert MIOStudyContract.selection(study)["bridge_fold"] == 3
+    assert not MIOStudyContract().resolve(study)["missing"]
+    plan = StudyContract.build(study)
+    assert plan["runnable"]
+    registry = ExposureRegistry(study["registry"])
+    registry.initialize(study["packets"], [], "2024-01-01")
+    request = registry.freeze(plan)
+    pipeline = {
+        "open_packet": {"uses": "dskit.pipeline.study_protocol:StudyPacketOpen",
+            "params": {"study": study, "frozen_plan": plan, "claim_request": request}},
+        "intake": {"uses": "index_options.observations:MIOPacketInputs", "params": {"study": study},
+            "inputs": {"permit": "$open_packet.permit"}},
+        "study": {"uses": "index_options.ledger_studies:MIOPacketStudy", "params": {"study": study},
+            "inputs": {"permit": "$open_packet.permit", "bounded_inputs": "$intake.bounded_inputs",
+                       "provenance": "$intake.provenance"}},
+        "close": {"uses": "dskit.pipeline.study_protocol:StudyPacketClose", "params": {"study": study},
+            "inputs": {"permit": "$open_packet.permit", "results": "$study.results",
+                       "audit": "$study.audit", "provenance": "$intake.provenance"}}}
+    doc = _document(tmp_path, "q1-packet", pipeline)
+    ran = run_document(doc, asof="2021-04-01", journal=False)
+    assert ran.state == "ran"
+    manifest = RunAttestation(ran.run_dir).attested_output("close", "receipt", doc.hash)
+    result = resolve_json_artifact(ran.run_dir, manifest)
+    assert result["complete"] and result["results"][0]["replay_parity"]
+    actual = result["results"][0]["result"]
+    assert len(actual["trades"]) == 1
+    assert actual["final_equity"] == pytest.approx(actual["contributions"]+actual["pnl"])
+    assert actual["trades"][0]["decision_date"] == start
+    # Receipt drift must fail through each public facade before a second claim or payload access.
+    receipt_file = Path(PinnedPayloadSource(pin).file("receipt/selection.json"))
+    receipt_file.write_text(receipt_file.read_text()+" ")
+    snapshot = registry.snapshot()
+    for call in (lambda: MIOStudyContract.selection(study), lambda: MIOStudyContract().resolve(study),
+                 lambda: StudyContract.build(study),
+                 lambda: MIOPacketInputs("input", {"study": study}).run(None, {"permit": result["permit"]}),
+                 lambda: MIOPacketStudy("study", {"study": study}).run(None, {"permit": result["permit"]})):
+        with pytest.raises(ValueError):
+            call()
+    assert registry.snapshot() == snapshot
+
+
+@pytest.mark.parametrize("case", ["training_bytes", "receipt_digest", "manifest_substitution", "producer_completion"])
+def test_pinned_forecast_window_rechecks_bound_artifacts(tmp_path, monkeypatch, case):
+    import index_options.mio_contract as contract
+    study = _pinned_forecast_study(tmp_path, monkeypatch)
+    if case == "training_bytes":
+        (tmp_path/"training/config.json").write_text("{}")
+    elif case == "receipt_digest":
+        study["domain"]["predictive"]["receipt"]["sha256"] = "0"*64
+    elif case == "manifest_substitution":
+        pin = copy.deepcopy(study["domain"]["sources"]["contexts"]["pin"])
+        pin["manifest_sha256"] = "0"*64
+        study["domain"]["sources"]["contexts"]["pin"] = pin
+    else:
+        monkeypatch.setattr(contract.RunAttestation, "node_output_for_document", lambda *args: False)
+    with pytest.raises(ValueError):
+        contract.MIOStudyContract.selection(study)
