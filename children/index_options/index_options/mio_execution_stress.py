@@ -124,8 +124,43 @@ def _missing_expiry_factors(binding, symbols, needed, factors):
             factors[symbol][day] = values.pop()
 
 
+def _proportional_fill(study, book, day, method, scenario):
+    """Fill the largest whole multiple of the book's primitive ratio shown at side depth."""
+    legacy = {key: value for key, value in scenario.items() if key != "proportional_fill"}
+    units = math.gcd(*(leg["quantity"] for leg in book["legs"]))
+    if units == 0:
+        return _scenario_fill(study, book, day, method, legacy)
+    symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
+    node = study._nodes[symbol]
+    if day >= expiry or not math.isclose(study._factors[symbol].get(day, math.nan),
+                                         factor, rel_tol=1e-9):
+        return None, "fill_basis_or_session"
+    multiple = units
+    for leg in book["legs"]:
+        row = study._quotes[symbol].get((day, expiry, leg["right"], leg["strike"]))
+        if node._usable_quote(row, factor) is None:
+            return None, "missing_fill_quote"
+        if leg["quantity"] == 0:
+            continue
+        side = "ask_size" if leg["sign"] > 0 else "bid_size"
+        fits = effective_size(row[side], scenario["half_size"]) // (leg["quantity"] // units)
+        if fits < 1:
+            return None, "insufficient_fill_size"
+        multiple = min(multiple, fits)
+    if multiple == units:
+        return _scenario_fill(study, book, day, method, legacy)
+    downsized = copy.deepcopy(book)
+    for leg in downsized["legs"]:
+        leg["selected_quantity"] = leg["quantity"]
+        leg["quantity"] = leg["quantity"] // units * multiple
+    downsized["contracts"] = sum(leg["quantity"] for leg in downsized["legs"])
+    return _scenario_fill(study, downsized, day, method, legacy)
+
+
 def _scenario_fill(study, book, day, method, scenario):
     """Apply changed price/depth, then the existing payoff and reserve owners."""
+    if scenario.get("proportional_fill", False):
+        return _proportional_fill(study, book, day, method, scenario)
     if scenario["price_fraction"] == 0 and not scenario["half_size"]:
         active = [leg for leg in book["legs"] if leg["quantity"] != 0]
         if not scenario.get("single_leg_fill", False) or len(active) != 1:
@@ -601,7 +636,8 @@ def _daybook(cohort, scenario, method, metrics, daily, incomplete=None):
         "2019 development diagnostic. Chosen orders are decided after the named",
         "close; fills appear on the next session. Expiry P&L is realized;",
         "marked daily change is interim equity change after deposits.",
-        "Executed-leg quantities are shown as filled/selected.", "",
+        "Executed-leg quantities are shown as filled/selected; fills are",
+        "simulated at end-of-day displayed depth, never broker fills.", "",
         (f"Selected {metrics['selected']}; filled {metrics['filled']}; "
          f"refused {metrics['refused']}; final profit "
          f"{_money(metrics['final_profit_usd'])}; "
@@ -829,19 +865,14 @@ def _unsupported_metrics(selected, reason, rejected):
             "refusal_reasons": dict(Counter(book["reason"] for book in rejected))}
 
 
-def execute(document_path):
-    """Validate one JSON contract, replay all methods, then pin fresh outputs."""
-    doc_path = Path(document_path).resolve()
-    document = _load_json(doc_path)
-    required = {"schema", "repository_root", "original_root", "results_pins",
-                "results_pins_sha256", "cohorts", "scenarios", "output_root"}
-    if set(document) != required or document["schema"] not in (
-            "mio-execution-stress/v1", "mio-execution-stress/v2"):
+_SCHEMA_VERSIONS = ("mio-execution-stress/v1", "mio-execution-stress/v2",
+                    "mio-execution-stress/v3")
+
+
+def _approved_scenarios(schema):
+    """Return the exact approved scenario list for one document version."""
+    if schema not in _SCHEMA_VERSIONS:
         raise ValueError("invalid execution-stress document")
-    if _sha(document["results_pins"]) != document["results_pins_sha256"]:
-        raise ValueError("results pins identity drift")
-    pins = _load_json(document["results_pins"])
-    scenarios = document["scenarios"]
     expected = [
         ("control", 0, False, 1), ("adverse_price", 0.25, False, 1),
         ("half_size", 0, True, 1), ("expiry_down_15", 0, False, 0.85),
@@ -852,7 +883,7 @@ def execute(document_path):
         {"id": name, "price_fraction": price, "half_size": half,
          "expiry_multiplier": expiry}
         for name, price, half, expiry in expected]
-    if document["schema"] == "mio-execution-stress/v2":
+    if schema != "mio-execution-stress/v1":
         expected += [
             {"id": "single_leg_available_size", "price_fraction": 0,
              "half_size": False, "expiry_multiplier": 1,
@@ -860,7 +891,27 @@ def execute(document_path):
             {"id": "single_leg_half_size", "price_fraction": 0,
              "half_size": True, "expiry_multiplier": 1,
              "single_leg_fill": True}]
-    if scenarios != expected:
+    if schema == "mio-execution-stress/v3":
+        expected.append(
+            {"id": "proportional_available_size", "price_fraction": 0,
+             "half_size": False, "expiry_multiplier": 1,
+             "proportional_fill": True})
+    return expected
+
+
+def execute(document_path):
+    """Validate one JSON contract, replay all methods, then pin fresh outputs."""
+    doc_path = Path(document_path).resolve()
+    document = _load_json(doc_path)
+    required = {"schema", "repository_root", "original_root", "results_pins",
+                "results_pins_sha256", "cohorts", "scenarios", "output_root"}
+    if set(document) != required or document["schema"] not in _SCHEMA_VERSIONS:
+        raise ValueError("invalid execution-stress document")
+    if _sha(document["results_pins"]) != document["results_pins_sha256"]:
+        raise ValueError("results pins identity drift")
+    pins = _load_json(document["results_pins"])
+    scenarios = document["scenarios"]
+    if scenarios != _approved_scenarios(document["schema"]):
         raise ValueError("scenario values differ from approved contract")
     if set(document["cohorts"]) != {"limited36", "broad212"}:
         raise ValueError("missing exact cohort")
@@ -981,7 +1032,8 @@ def execute(document_path):
     lines = ["# 2019 MIO fixed-selection execution and expiry stress", "",
              "Each daily row names decision-day possibilities and selected orders; fills are",
              "attempted at the next session's observed NBBO. Expiries show realized P&L.",
-             "The seven scenarios are conditional on frozen future selections.",
+             "The scenarios are conditional on frozen future selections. Fills are",
+             "simulated at end-of-day displayed depth, never broker fills.",
              "See dispositions.csv for each attempted selected book, with quotes, fills,",
              "reserves, expiry payoff and cash impact; daily.csv gives every session.",
              "Unsupported cases stop at the failing session; later frozen choices are unattempted.", "",

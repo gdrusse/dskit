@@ -344,3 +344,121 @@ def test_single_leg_half_size_zero_refuses_and_partial_reserve_changes_cap():
     limited.advance('2019-01-03', {})
     assert not limited.admit('2019-01-03', [full],
                              [{'members': ['ABC'], 'upper': 300}])
+
+
+PROPORTIONAL = {'price_fraction': 0, 'half_size': False,
+                'proportional_fill': True}
+
+
+def _two_leg(quantities, depths, *, legacy=True):
+    """A buy/sell call pair with the given quantities and side depths."""
+    study, book = _case(quantity=quantities[0], size=depths[0])
+    book['legs'].append({**book['legs'][0], 'strike': 105.0, 'sign': -1,
+                         'quantity': quantities[1]})
+    book['contracts'] = sum(quantities)
+    study._quotes['ABC'][('2019-01-03', '2019-02-01', 'call', 105.0)] = {
+        'bid': 0.5, 'ask': 0.7, 'bid_size': depths[1], 'ask_size': 0,
+        'basis_factor': 1.0}
+    if legacy:
+        study._fill = lambda book, day, charge: WeeklyOptionPortfolioStudy._fill(
+            study, book, day, charge)
+    return study, book
+
+
+def test_proportional_fill_keeps_ratio_at_largest_depth_multiple():
+    study, book = _two_leg((6, 4), (4, 3))
+    selected = deepcopy(book)
+    filled, reason = stress._scenario_fill(
+        study, book, '2019-01-03', {}, PROPORTIONAL)
+    assert reason is None
+    assert book == selected
+    assert [leg['quantity'] for leg in filled['legs']] == [3, 2]
+    assert [leg['selected_quantity'] for leg in filled['legs']] == [6, 4]
+    assert filled['contracts'] == 5
+    assert filled['fees'] == pytest.approx(3.25)
+    assert filled['credit'] == pytest.approx(-3 * 140 + 2 * 50 - 3.25)
+    assert filled['reserve'] == pytest.approx(max(0.0, filled['max_loss'],
+                                                  -filled['credit']))
+    legacy, _ = stress._scenario_fill(
+        *_two_leg((6, 4), (6, 4)), '2019-01-03', {}, PROPORTIONAL)
+    for key in ('premium', 'fees', 'credit', 'max_loss', 'reserve'):
+        assert filled[key] * 2 == pytest.approx(legacy[key])
+
+
+def test_proportional_primitive_ratio_short_of_one_unit_refuses_whole():
+    study, book = _two_leg((3, 2), (2, 2))
+    assert stress._scenario_fill(study, book, '2019-01-03', {},
+                                 PROPORTIONAL) == (None, 'insufficient_fill_size')
+
+
+def test_proportional_never_exceeds_selection_and_full_depth_is_legacy():
+    study, book = _two_leg((2, 2), (100, 100))
+    legacy = {'price_fraction': 0, 'half_size': False}
+    assert stress._scenario_fill(study, book, '2019-01-03', {}, PROPORTIONAL) == (
+        stress._scenario_fill(study, book, '2019-01-03', {}, legacy))
+    study, book = _two_leg((6, 4), (4, 3))
+    assert stress._scenario_fill(study, book, '2019-01-03', {},
+                                 legacy) == (None, 'insufficient_fill_size')
+
+
+def test_proportional_single_leg_is_available_size_and_zero_refuses():
+    study, book = _two_leg((11, 0), (7, 0))
+    filled, reason = stress._scenario_fill(
+        study, book, '2019-01-03', {}, PROPORTIONAL)
+    assert reason is None
+    assert [leg['quantity'] for leg in filled['legs']] == [7, 0]
+    assert filled['contracts'] == 7
+    study, book = _two_leg((11, 0), (0, 0))
+    assert stress._scenario_fill(study, book, '2019-01-03', {},
+                                 PROPORTIONAL)[1] == 'insufficient_fill_size'
+
+
+def test_proportional_placeholder_leg_keeps_quote_rule():
+    study, book = _two_leg((6, 0), (4, 0))
+    del study._quotes['ABC'][('2019-01-03', '2019-02-01', 'call', 105.0)]
+    study._nodes['ABC']._usable_quote = (
+        lambda row, factor: None if row is None else (row['bid'], row['ask']))
+    assert stress._scenario_fill(study, book, '2019-01-03', {},
+                                 PROPORTIONAL)[1] == 'missing_fill_quote'
+
+
+def test_proportional_downsized_batch_still_faces_atomic_cap():
+    study, book = _two_leg((6, 4), (4, 3))
+    other = deepcopy(book)
+    other['id'] = 'other'
+    first, _ = stress._scenario_fill(study, book, '2019-01-03', {}, PROPORTIONAL)
+    second, _ = stress._scenario_fill(study, other, '2019-01-03', {}, PROPORTIONAL)
+    account = FundedOptionAccount(1000, 0, 14, '2019-01-02')
+    account.advance('2019-01-03', {})
+    upper = first['reserve'] * 1.5
+    assert not account.admit('2019-01-03', [first, second],
+                             [{'members': ['ABC'], 'upper': upper}])
+    assert account.open == {}
+
+
+def test_approved_scenarios_extend_without_changing_earlier_schemas():
+    v1 = stress._approved_scenarios('mio-execution-stress/v1')
+    v2 = stress._approved_scenarios('mio-execution-stress/v2')
+    v3 = stress._approved_scenarios('mio-execution-stress/v3')
+    assert len(v1) == 7 and v2[:7] == v1 and v3[:9] == v2
+    assert v3[9:] == [{'id': 'proportional_available_size',
+                       'price_fraction': 0, 'half_size': False,
+                       'expiry_multiplier': 1, 'proportional_fill': True}]
+    with pytest.raises(ValueError):
+        stress._approved_scenarios('mio-execution-stress/v4')
+
+
+def test_v3_document_is_the_approved_contract_with_a_distinct_root():
+    from pathlib import Path
+    configs = Path(__file__).resolve().parents[1] / 'configs'
+    docs = {name: json.loads((configs / name).read_text()) for name in (
+        'mio-2019-execution-stress.json',
+        'mio-2019-execution-stress-single-leg.json',
+        'mio-2019-execution-stress-multileg.json')}
+    v3 = docs['mio-2019-execution-stress-multileg.json']
+    assert v3['scenarios'] == stress._approved_scenarios(v3['schema'])
+    assert v3['schema'] == 'mio-execution-stress/v3'
+    assert len({doc['output_root'] for doc in docs.values()}) == 3
+    v2 = docs['mio-2019-execution-stress-single-leg.json']
+    assert {k: v for k, v in v3.items() if k not in ('schema', 'scenarios', 'output_root')} == {
+        k: v for k, v in v2.items() if k not in ('schema', 'scenarios', 'output_root')}
