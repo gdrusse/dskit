@@ -1,6 +1,6 @@
 {
   "name": "mio-2021q1-top3-exact-expiry-tables",
-  "notes": "Owner-authorized2021Q1 MIO preparation and through2019 predictor refresh. Existing converter only. All quote/bar reads end before2021-04-01;2016 warmup and2020 feature history never extend the2019 fit boundary. The214 training names and212 MIO names are frozen from accepted2019 inputs. Onboard derived outputs before cross-run consumption. No provider pull, model fit or MIO execution in this document.",
+  "notes": "Owner-authorized2021Q1 MIO preparation. Reuse the original byte-pinned2017-2019 panel for the neural refresh. This converter emits only2020-09-01..2021-03-31 surface/archive rows for Q1 feature history. Lifecycle listings and bars scan from2016-01-04; all reads end before2021-04-01. No2020 rows enter fitting. The214 predictive names and212 MIO names remain frozen from accepted2019 inputs. Onboard derived outputs before cross-run consumption. No provider pull, model fit or MIO execution in this document.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/mio-2021q1-top3-20261029/runs/converter"
   },
@@ -707,7 +707,7 @@
       "params": {
         "output_root": "/home/russell/data/index_options/mio-2021q1-top3-20261029/exact-expiry-tables",
         "max_dte": 60,
-        "start": "2017-01-03",
+        "start": "2020-09-01",
         "end_before": "2021-04-01",
         "atm_band": 0.025,
         "wing_delta": 0.25,
