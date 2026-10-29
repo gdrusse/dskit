@@ -747,6 +747,17 @@ def test_available_size_packet_downsizes_and_replays_like_the_direct_study(study
     assert [(leg["quantity"], leg["selected_quantity"]) for leg in trade["legs"]] == [(3, 4), (3, 4)]
     assert trade["contracts"] == 6 and trade["fees"] == pytest.approx(6*.65)
     assert actual["rejected"] == []
+    # Hand-computed 3x3 of the 4x4 put spread: sell 100P at 4.00, buy 90P at 0.12.
+    # Premium 1200 - 36 = 1164; credit 1164 - 3.90 = 1160.10 (selected 1546.80);
+    # reserve 10 x 100 x 3 - 1160.10 = 1839.90; stress 0.25 x (0.02 + 0.20) x 300.
+    for key, value in (("premium", 1164.), ("credit", 1160.1), ("decision_credit", 1546.8),
+                       ("reserve", 1839.9), ("max_loss", 1839.9), ("stress_extra", 16.5),
+                       ("pnl", 1160.1)):
+        assert trade[key] == pytest.approx(value, abs=1e-9), key
+    by_day = {point["date"]: point for point in actual["curve"]}
+    assert by_day["2019-01-03"]["cash"] == pytest.approx(10000.+1160.1, abs=1e-9)
+    assert by_day["2019-01-03"]["reserve"] == pytest.approx(1839.9, abs=1e-9)
+    assert actual["final_equity"] == pytest.approx(actual["contributions"]+1160.1, abs=1e-9)
     bounded, d = intake["bounded_inputs"], study["domain"]
     direct = WeeklyOptionPortfolioStudy(
         {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}, bounded["inputs"])
