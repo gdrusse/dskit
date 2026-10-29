@@ -264,15 +264,15 @@ def _trades():
     return [TRADES[0], young, TRADES[2], after]
 
 
-@pytest.fixture
-def sandbox(tmp_path, monkeypatch):
+def _set_up(tmp_path, monkeypatch, strategy):
     """The script and the shipped configs beside a fresh onboarding root, set up as the README does.
 
     ``schwab`` is a registered ``localfiles`` source holding both snapshots, NOT yet acquired
     (the script's own pull does that). The README's step 3 pulls are done: the trades, the daily
     bars (sessions up to the day before the PLACEHOLDER day, so a later session than the run day
-    exists and must not be read) and the active series (52 weekly returns meet the shipped
-    document's floor of one year).
+    exists and must not be read) and, when ``strategy``, the active series (52 weekly returns meet
+    the shipped document's floor of one year). Without it no ``active`` source is registered at
+    all, as for an owner who has no strategy yet.
     """
     assert WEEK_DAY != SHIPPED_DAY
     assert len(ACTIVE) == 12
@@ -286,9 +286,10 @@ def sandbox(tmp_path, monkeypatch):
            [row for day, (vti, aapl) in VALUES.items() for row in _snapshot(day, vti, aapl)])
     _jsonl(history / "trades.jsonl", _trades())
     start = date(2025, 1, 6)
-    _jsonl(active / "returns.jsonl", [
-        {"period": f"week-{i:02d}", "net_return": value, "day": (start + timedelta(days=7 * i)).isoformat()}
-        for i, value in enumerate((ACTIVE * 5)[:52])])
+    if strategy:
+        _jsonl(active / "returns.jsonl", [
+            {"period": f"week-{i:02d}", "net_return": value, "day": (start + timedelta(days=7 * i)).isoformat()}
+            for i, value in enumerate((ACTIVE * 5)[:52])])
     _cli(tmp_path, "init", "--root", "./ob")
     _cli(tmp_path, "register-source", "schwab", "--root", "./ob",
          "--catalog-source", "schwab-src", "--connector", "localfiles",
@@ -300,12 +301,25 @@ def sandbox(tmp_path, monkeypatch):
     _cli(tmp_path, "acquire", "--root", "./ob", "--source", "schwab_trades",
          "--stream", "trades", "--mode", "backfill")
     _register_bars(tmp_path, "schwab_daily", "daily", _daily_bars())
-    _cli(tmp_path, "register-source", "active", "--root", "./ob",
-         "--catalog-source", "active-src", "--connector", "localfiles",
-         "--config", json.dumps({"path": str(active), "effective_field": "day"}), "--activate")
-    _cli(tmp_path, "acquire", "--root", "./ob", "--source", "active",
-         "--stream", "returns", "--mode", "backfill")
+    if strategy:
+        _cli(tmp_path, "register-source", "active", "--root", "./ob",
+             "--catalog-source", "active-src", "--connector", "localfiles",
+             "--config", json.dumps({"path": str(active), "effective_field": "day"}), "--activate")
+        _cli(tmp_path, "acquire", "--root", "./ob", "--source", "active",
+             "--stream", "returns", "--mode", "backfill")
     return tmp_path
+
+
+@pytest.fixture
+def sandbox(tmp_path, monkeypatch):
+    """The README's setup, the active strategy's backtest included (see :func:`_set_up`)."""
+    return _set_up(tmp_path, monkeypatch, strategy=True)
+
+
+@pytest.fixture
+def bare_sandbox(tmp_path, monkeypatch):
+    """The README's setup with no ``active`` source: an owner with no strategy yet."""
+    return _set_up(tmp_path, monkeypatch, strategy=False)
 
 
 def _weekly(sandbox, *args, script=None, cwd=None, python=None):
@@ -461,6 +475,67 @@ def test_weekly_script_asks_for_the_day(sandbox):
     assert done.returncode != 0 and "usage: bash weekly.sh" in done.stderr
 
 
+def test_weekly_script_runs_with_no_strategy_declared(bare_sandbox):
+    """``--no-strategy`` with no ``active`` source registered at all (ADR-0279 amendment,
+    2026-10-29): every lot is valued and taxed as usual, nothing is redeployed, and the page reads
+    the break-even with ``n/a`` where an opportunity cost and a verdict would be. The same day
+    without the flag still needs the strategy, so the flag is what made the run possible."""
+    sandbox = bare_sandbox
+    shipped = (sandbox / "configs" / "run-hold-vs-redeploy.json").read_bytes()
+    done = _weekly(sandbox, WEEK_DAY, "--no-strategy")
+    assert done.returncode == 0, (done.stdout, done.stderr)
+
+    _, rows = _decisions(sandbox)
+    by_lot = {row["lot_id"]: row for row in rows}
+    assert set(by_lot) == set(RUN_LOTS)
+    tax = _shipped(RUN_DOC, "tax")
+    for lot_id, (symbol, value, basis, holding) in RUN_LOTS.items():
+        row = by_lot[lot_id]
+        assert (row["symbol"], row["market_value"], row["liq_holding"]) == (symbol, value, holding)
+        assert row["liq_tax"] == pytest.approx((value - basis) * tax[f"{holding}_term_rate"])
+        assert row["decision"] == "hold"
+        assert row["redeploy_net"] is None and row["advantage"] is None
+
+    page = done.stdout.strip().splitlines()[-1]
+    with open(sandbox / page, encoding="utf-8") as fh:
+        text = fh.read()
+    table = _lines_of_the_table(text)
+    assert len(table) == len(RUN_LOTS)
+    for line in table:
+        cells = _cells(line)
+        assert re.fullmatch(r"-?\d+\.\d%", cells[7]), "the break-even needs no alternative"
+        assert cells[8:] == ["—", "n/a — no admissible alternative"]
+    assert "- Verdicts: n/a — no admissible alternative\n" in text
+    assert (sandbox / "configs" / "run-hold-vs-redeploy.json").read_bytes() == shipped
+
+    again = _weekly(sandbox, WEEK_DAY)
+    assert again.returncode != 0, "without the flag the shipped document reads the active source"
+    assert "no observations directory for source 'active'" in again.stderr, again.stderr
+
+
+def test_weekly_script_stops_before_the_pull_when_it_cannot_drop_the_strategy(bare_sandbox):
+    """A shipped document --no-strategy does not recognise stops the whole script, before the
+    positions pull and before any output directory exists."""
+    doc_path = bare_sandbox / "configs" / "run-hold-vs-redeploy.json"
+    doc = _shipped_json(doc_path)
+    del doc["pipeline"]["hurdle"]
+    with open(doc_path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    done = _weekly(bare_sandbox, WEEK_DAY, "--no-strategy")
+    assert done.returncode != 0
+    assert "weekly.sh: --no-strategy: the document has no hurdle node" in done.stderr
+    assert not (bare_sandbox / "decisions").exists(), "nothing was created"
+    assert not (bare_sandbox / "ob" / "observations" / "schwab").exists(), "nothing was pulled"
+
+
+@pytest.mark.parametrize("extra", [["--nostrategy"], ["--no-strategy", "--no-strategy"], ["-n"]])
+def test_weekly_script_refuses_an_unknown_or_extra_argument(bare_sandbox, extra):
+    done = _weekly(bare_sandbox, WEEK_DAY, *extra)
+    assert done.returncode != 0
+    assert "usage: bash weekly.sh <snapshot day YYYY-MM-DD> [--no-strategy]" in done.stderr
+    assert not (bare_sandbox / "decisions").exists(), "nothing was pulled or decided"
+
+
 # --------------------------------------------------------------------- weekly.sh, the derive step
 
 def _derive(source, target, day, stream="", env=None):
@@ -568,3 +643,63 @@ def test_derive_reads_and_writes_utf_8_whatever_the_locale(tmp_path):
     assert derived["pipeline"]["hurdle"]["notes"] == (
         _shipped_json(RUN_DOC)["pipeline"]["hurdle"]["notes"])
     assert "—" in derived["pipeline"]["hurdle"]["notes"]
+
+
+# --------------------------------------------------------------------- weekly.sh, no strategy
+
+def _drop_strategy(path):
+    """Run ``weekly.sh``'s own ``drop_strategy`` function (cut out of the script) on one file."""
+    script = ('py="$1"; eval "$(sed -n \'/^drop_strategy() {/,/^}/p\' "$2")"; shift 2; '
+              'drop_strategy "$@"')
+    return subprocess.run(["bash", "-c", script, "drop_strategy", sys.executable, WEEKLY,
+                           str(path)], capture_output=True, text=True)
+
+
+def test_dropping_the_strategy_removes_exactly_its_two_nodes_and_its_wire(tmp_path):
+    target = tmp_path / "decide.json"
+    shutil.copy(RUN_DOC, target)
+    done = _drop_strategy(target)
+    assert done.returncode == 0, done.stderr
+    expected = _shipped_json(RUN_DOC)
+    del expected["pipeline"]["active_returns"], expected["pipeline"]["hurdle"]
+    del expected["pipeline"]["decide"]["inputs"]["redeploy_return"]
+    expected["pipeline"]["decide"]["params"]["redeploy_return"] = None
+    assert _shipped_json(target) == expected, "nothing else of the document moves"
+    pipeline = load_document(str(target)).pipeline
+    assert "hurdle" not in pipeline and pipeline["decide"].params["redeploy_return"] is None
+
+
+def _strategy_cases():
+    """Documents ``drop_strategy`` must refuse: the strategy's shape is not the one it removes."""
+    no_hurdle = _shipped_json(RUN_DOC)
+    del no_hurdle["pipeline"]["hurdle"]
+    no_returns = _shipped_json(RUN_DOC)
+    del no_returns["pipeline"]["active_returns"]
+    other_wire = _shipped_json(RUN_DOC)
+    other_wire["pipeline"]["decide"]["inputs"]["redeploy_return"] = "$market.rate"
+    read_elsewhere = _shipped_json(RUN_DOC)
+    read_elsewhere["pipeline"]["summary"]["inputs"]["hurdle"] = "$hurdle.summary"
+    read_before = _shipped_json(RUN_DOC)
+    read_before["pipeline"]["summary"]["inputs"]["hurdle"] = {"$prev": "hurdle.rate", "default": 0}
+    read_returns = _shipped_json(RUN_DOC)
+    read_returns["pipeline"]["summary"]["inputs"]["active"] = "$active_returns.records"
+    read_in_list = _shipped_json(RUN_DOC)
+    read_in_list["pipeline"]["summary"]["params"]["extra"] = [["$hurdle.summary"]]
+    return [(no_hurdle, "no hurdle node"), (no_returns, "no active_returns node"),
+            (read_before, "summary still reads"), (read_returns, "summary still reads"),
+            (read_in_list, "summary still reads"),
+            (other_wire, "decide.inputs.redeploy_return is not '\\$hurdle.rate'"),
+            (read_elsewhere, "summary still reads")]
+
+
+@pytest.mark.parametrize("doc, match", _strategy_cases())
+def test_dropping_the_strategy_refuses_a_document_it_does_not_recognise(tmp_path, doc, match):
+    target = tmp_path / "decide.json"
+    with open(target, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    before = target.read_bytes()
+    done = _drop_strategy(target)
+    assert done.returncode != 0
+    assert re.search(match, done.stderr), done.stderr
+    assert "weekly.sh: --no-strategy:" in done.stderr
+    assert target.read_bytes() == before, "a refused document is left as it was"

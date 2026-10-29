@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The weekly hold verdict (ADR-0279 amendment, 2026-10-28), from anywhere:
 #
-#   bash weekly.sh <snapshot day YYYY-MM-DD>
+#   bash weekly.sh <snapshot day YYYY-MM-DD> [--no-strategy]
 #
 # Pull today's Schwab positions, decide hold vs redeploy on that day's snapshot, publish the
 # decisions and the risk file back through onboarding, render report/<run>.md (one line per lot)
@@ -12,6 +12,9 @@
 # declared decision day wherever it appears (snapshot.where[as_of], lots.as_of, tax.as_of,
 # risk_day.where[ts], risk_latest.reference_date: pinned equal by a test) in a temporary copy,
 # so the shipped document is never edited and the run's identity hash records the day.
+# --no-strategy (ADR-0279 amendment, 2026-10-29) is for an owner with no strategy backtest yet:
+# the copy also drops the active strategy's two nodes and declares no alternative, so no active
+# source is needed, every lot holds, and the page reads n/a where a verdict would be.
 # A workflow manifest (ADR-0227) is deferred: the report's streams are named by the decision run,
 # which is known only after it runs, and the decision document is not a template.
 #
@@ -24,7 +27,17 @@
 set -euo pipefail
 
 py="${PYTHON:-python}"
-day="${1:?usage: bash weekly.sh <snapshot day YYYY-MM-DD>}"
+usage="usage: bash weekly.sh <snapshot day YYYY-MM-DD> [--no-strategy]"
+day="${1:?$usage}"
+# the one optional flag; anything else after the day is refused, never ignored
+no_strategy=""
+if [[ $# -gt 2 || ( $# -eq 2 && "$2" != "--no-strategy" ) ]]; then
+    echo "$usage" >&2
+    exit 1
+fi
+if [[ $# -eq 2 ]]; then
+    no_strategy=1
+fi
 
 # every step runs from the child root, so the day is checked from there too: the same interpreter
 # path, the same dskit, not whichever dskit the caller's directory happens to hold
@@ -86,10 +99,58 @@ with open(target, "w", encoding="utf-8") as fh:
 PY
 }
 
+# --no-strategy: the derived decision document $1 without the active strategy's two nodes and with
+# decide's rate wire replaced by an explicit null (no alternative declared: every lot holds). Only
+# the shipped shape is changed: both nodes present, decide's redeploy_return wired to $hurdle.rate
+# and no other node reading either; anything else refuses and the file is left as it was.
+drop_strategy() {
+    "$py" - "$@" <<'PY'
+import json, sys
+path = sys.argv[1]
+strategy = ("active_returns", "hurdle")
+with open(path, encoding="utf-8") as fh:
+    doc = json.load(fh)
+nodes = doc["pipeline"]
+def refuse(why):
+    sys.exit(f"weekly.sh: --no-strategy: {why}")
+for key in strategy:
+    if key not in nodes:
+        refuse(f"the document has no {key} node")
+decide = nodes.get("decide", {})
+if decide.get("inputs", {}).get("redeploy_return") != "$hurdle.rate":
+    refuse("decide.inputs.redeploy_return is not '$hurdle.rate'")
+for key in strategy:
+    del nodes[key]
+del decide["inputs"]["redeploy_return"]
+# a wire ("$node.output") or a $prev reference ("node.output") to either node would now dangle
+def reads(value):
+    if isinstance(value, dict):
+        prev = value.get("$prev")
+        if isinstance(prev, str) and prev.split(".")[0] in strategy:
+            return True
+        return any(reads(v) for k, v in value.items() if k != "notes")
+    if isinstance(value, list):
+        return any(reads(v) for v in value)
+    return isinstance(value, str) and value.split(".")[0] in tuple("$" + k for k in strategy)
+for key, node in nodes.items():
+    if reads(node):
+        refuse(f"{key} still reads the strategy's nodes")
+decide["params"]["redeploy_return"] = None
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+PY
+}
+
+# the decision document is derived before anything is pulled or created, so a document
+# --no-strategy does not recognise stops the script with nothing touched
+derive configs/run-hold-vs-redeploy.json "$work/run-hold-vs-redeploy.json" "$day" ""
+if [[ -n "$no_strategy" ]]; then
+    drop_strategy "$work/run-hold-vs-redeploy.json"
+fi
+
 mkdir -p decisions summary risk report
 "$py" -m dskit.onboarding acquire --root ./ob --source schwab --stream positions --mode backfill
 
-derive configs/run-hold-vs-redeploy.json "$work/run-hold-vs-redeploy.json" "$day" ""
 decision_run="$(run "$work/run-hold-vs-redeploy.json")" || exit $?
 
 "$py" -m dskit.onboarding register-source decisions --root ./ob \

@@ -628,6 +628,11 @@ BAD_DECIDE = [
     ({"redeploy_return": -1.01}, "redeploy_return must be a number in"),
     ({"redeploy_return": True}, "redeploy_return must be a number in"),
     ({"redeploy_return": "x"}, "redeploy_return must be a number in"),
+    ({"redeploy_return": [None]}, "redeploy_return must be a number in"),
+    # falsy non-nulls are not "no alternative": false would otherwise run as a silent 0%
+    ({"redeploy_return": False}, "redeploy_return must be a number in"),
+    ({"redeploy_return": ""}, "redeploy_return must be a number in"),
+    ({"redeploy_return": []}, "redeploy_return must be a number in"),
     ({"redeploy_cost": -0.01}, "redeploy_cost must be a number in"),
     ({"redeploy_cost": 2.01}, "redeploy_cost must be a number in"),
     ({"redeploy_cost": True}, "redeploy_cost must be a number in"),
@@ -671,6 +676,43 @@ def test_the_two_returns_may_be_absent_from_the_declaration_because_a_wire_can_s
     bare = {k: v for k, v in DECIDE.items() if k not in ("hold_return", "redeploy_return")}
     assert HoldVsRedeploy.validate_params(bare) == []
     HoldVsRedeploy("d", {**DECIDE, "hold_return": {"A": 0.0, "B": -1.0}})   # a mapping is valid
+
+
+def test_a_null_redeploy_return_declares_no_alternative_and_holds_every_row(ctx):
+    # ADR-0279 amendment 2026-10-29: an owner with no strategy yet declares none. The rows take
+    # the withheld-hurdle path (every row holds, nothing is redeployed) and the summary says the
+    # null was declared, not withheld by a hurdle.
+    rows = [
+        {"symbol": "A", "market_value": 2500.0, "liq_net": 2400.0},
+        {"symbol": "B", "market_value": 600.0, "liq_net": 540.0},
+    ]
+    assert HoldVsRedeploy.validate_params({**DECIDE, "redeploy_return": None}) == []
+    priced = _decide(ctx, rows)
+    out = _decide(ctx, rows, redeploy_return=None)
+    assert priced["records"][0]["decision"] == "exit", "the null, not the rows, holds A"
+    for row, before in zip(out["records"], priced["records"]):
+        assert row["decision"] == "hold"
+        assert (row["redeploy_value"], row["redeploy_terminal_tax"], row["redeploy_net"],
+                row["advantage"]) == (None, None, None, None)
+        # the hold path never reads the alternative: the same numbers either way
+        assert row["hold_value"] == pytest.approx(before["hold_value"])
+        assert row["hold_net"] == pytest.approx(before["hold_net"])
+    summary = out["summary"]
+    assert summary["redeploy_return_source"] == "none"
+    assert summary["decisions"] == {"hold": 2, "exit": 0}
+    assert (summary["redeploy_value"], summary["redeploy_net"], summary["redeploy_rate"]) == (
+        None, None, None)
+
+
+def test_a_wired_redeploy_return_still_replaces_a_null_declaration(ctx):
+    # the input port wins over the param as it always has; a null param only fills an unwired port
+    rows = [{"symbol": "A", "market_value": 2500.0, "liq_net": 2400.0}]
+    node = HoldVsRedeploy("d", {**DECIDE, "redeploy_return": None})
+    out = node.run(ctx, {"records": rows, "redeploy_return": 0.15})
+    assert out["summary"]["redeploy_return_source"] == "wired"
+    assert out["records"][0]["decision"] == "exit"
+    held = node.run(ctx, {"records": rows, "redeploy_return": None})
+    assert held["summary"]["redeploy_return_source"] == "inadmissible"
 
 
 def test_wired_hold_returns_and_redeploy_return_are_type_checked_at_run(ctx):

@@ -34977,3 +34977,19 @@ gate a real verdict.
 Root cause: path mapping is cross-cutting (writers, readers, sync) with no single seam. Next approach, if resumed: inventory every recorded-path reader and writer first, add one reader rule, sync through the job map, pull only names created during the batch, and run the tests with the PC tree absent. Branch `docs/adr-two-host-runner` is unmerged.
 
 **Parked at wrap (2026-10-29).** The owner wrapped the session without a redesign round. The code stays on the unmerged branch `docs/adr-two-host-runner` (head 4e2a338e); only this entry is on main. Resume or drop is an open owner decision.
+
+#### ADR-0279 amendment: a hold verdict with no alternative declared (approved by owner 2026-10-29, "Yes")
+
+**Problem.** The owner has no active strategy yet. `decide.redeploy_return` is wired to `hurdle`, which refuses a backtest shorter than `min_periods`, so the first real run cannot happen at all. Yet the tax cost, break-even, expected return and risk of each holding need no alternative.
+
+**Decision.**
+
+1. `HoldVsRedeploy` (`dskit/pipeline/liquidation.py`): the `redeploy_return` param may be `null`, meaning no alternative is declared. Rows take the existing withheld-hurdle path: every row holds, the redeploy fields and `opportunity_cost` are null, and `redeploy_return_source` reads `none`. A number keeps its bounds; any other type refuses.
+2. `bash weekly.sh <day> --no-strategy` (child): the temporary copy the script already derives drops `active_returns` and `hurdle` and sets `decide.params.redeploy_return` to null. The shipped document is unchanged and there is no new config file; without the flag nothing changes.
+3. Once a strategy has a year of weekly net returns, register `active` (README step 2) and run without the flag.
+
+**Limits.** Every row reads `hold`. The useful numbers are value, tax to sell, break-even, expected return, volatility and beta. The derived copy's identity hash differs from the shipped document's, as every derived copy's already does.
+
+**Tests.** A null param holds every row, with source `none` and null redeploy fields. A string or boolean param refuses. `weekly.sh --no-strategy` runs end to end with no `active` source registered, and the run without the flag is unchanged.
+
+**As built (2026-10-29).** `weekly.sh` refuses any argument after the day other than the flag. `drop_strategy` changes only the shipped shape: both nodes present, `decide.inputs.redeploy_return` wired to `$hurdle.rate` (that wire is removed), and no other node reading either node by wire or `$prev`. Anything else refuses and leaves the file untouched. Review: two lenses, no Critical or Major; doc and test Minors fixed.
