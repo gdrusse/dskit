@@ -546,7 +546,7 @@
         "events": "$nominal_lp_gate.events"
       },
       "params": {
-        "out_dir": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029/broad212/nominal_lp",
+        "out_dir": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029-v2/broad212/nominal_lp",
         "sections": [
           "summary",
           "overview",
@@ -601,7 +601,7 @@
               "realized": "pnl",
               "equity": "money"
             },
-            "note": "One row per account session. Cash, reserve, funding, equity, nav and drawdown are the run's saved MARKED daily curve; the other columns join that day's attempted, filled and refused books and the books expiring."
+            "note": "One row per account session. Cash, reserve, funding, equity, nav and drawdown are the run's saved MARKED daily curve; the other columns join that day's attempted, filled and refused books and the books expiring. Selection columns are grouped by attempted fill date. For rejected books, selected_contracts may reflect a reduced fill-stage quantity. Original optimizer requests and actual fills are in the exact orders-and-fills.csv selected_quantity and filled_quantity columns; filter its method column. Source/download: https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/broad212/orders-and-fills.csv"
           },
           "marked-figures": {
             "title": "Saved marked figures (authoritative)",
@@ -727,6 +727,14 @@
               {
                 "field": "source runtime candidate",
                 "value": "922b53d00dc0a49797f350fa0f300343a3ddf717"
+              },
+              {
+                "field": "exact order-leg quantities CSV",
+                "value": "https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/broad212/orders-and-fills.csv"
+              },
+              {
+                "field": "exact order-leg quantities SHA256",
+                "value": "c469aca9f8367efdc3d058631a9e955eb0d65d5e403d5d48508334e4c05fcec0"
               }
             ],
             "note": "Predictive identity is inherited from the accepted source MIO configuration and saved input pins. This report does not select or refit a predictive model. The recorded upstream provenance limitation remains: current forecast bytes are pinned separately from original producer receipts."
@@ -740,7 +748,8 @@
           "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
           "Optimizer gap is relative; the run document's MIO solve accepts solutions by an absolute gap limit (mip_abs_gap, USD) with mip_rel_gap 0, so a large relative gap beside 'optimal' is not a failure.",
           "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md.",
-          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times."
+          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times.",
+          "Ledger selected_contracts can include reduced quantities for refused orders; use the linked report index orders-and-fills.csv selected_quantity for exact optimizer demand."
         ],
         "statistic_labels": {
           "twr": "twr (at cost)",
@@ -1386,7 +1395,7 @@
         "events": "$w1_003_lp_gate.events"
       },
       "params": {
-        "out_dir": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029/broad212/w1_003_lp",
+        "out_dir": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029-v2/broad212/w1_003_lp",
         "sections": [
           "summary",
           "overview",
@@ -1441,7 +1450,7 @@
               "realized": "pnl",
               "equity": "money"
             },
-            "note": "One row per account session. Cash, reserve, funding, equity, nav and drawdown are the run's saved MARKED daily curve; the other columns join that day's attempted, filled and refused books and the books expiring."
+            "note": "One row per account session. Cash, reserve, funding, equity, nav and drawdown are the run's saved MARKED daily curve; the other columns join that day's attempted, filled and refused books and the books expiring. Selection columns are grouped by attempted fill date. For rejected books, selected_contracts may reflect a reduced fill-stage quantity. Original optimizer requests and actual fills are in the exact orders-and-fills.csv selected_quantity and filled_quantity columns; filter its method column. Source/download: https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/broad212/orders-and-fills.csv"
           },
           "marked-figures": {
             "title": "Saved marked figures (authoritative)",
@@ -1567,6 +1576,14 @@
               {
                 "field": "source runtime candidate",
                 "value": "922b53d00dc0a49797f350fa0f300343a3ddf717"
+              },
+              {
+                "field": "exact order-leg quantities CSV",
+                "value": "https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/broad212/orders-and-fills.csv"
+              },
+              {
+                "field": "exact order-leg quantities SHA256",
+                "value": "c469aca9f8367efdc3d058631a9e955eb0d65d5e403d5d48508334e4c05fcec0"
               }
             ],
             "note": "Predictive identity is inherited from the accepted source MIO configuration and saved input pins. This report does not select or refit a predictive model. The recorded upstream provenance limitation remains: current forecast bytes are pinned separately from original producer receipts."
@@ -1580,7 +1597,8 @@
           "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
           "Optimizer gap is relative; the run document's MIO solve accepts solutions by an absolute gap limit (mip_abs_gap, USD) with mip_rel_gap 0, so a large relative gap beside 'optimal' is not a failure.",
           "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md.",
-          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times."
+          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times.",
+          "Ledger selected_contracts can include reduced quantities for refused orders; use the linked report index orders-and-fills.csv selected_quantity for exact optimizer demand."
         ],
         "statistic_labels": {
           "twr": "twr (at cost)",
@@ -2226,7 +2244,7 @@
         "events": "$w1_003_shock10_lp_gate.events"
       },
       "params": {
-        "out_dir": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029/broad212/w1_003_shock10_lp",
+        "out_dir": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029-v2/broad212/w1_003_shock10_lp",
         "sections": [
           "summary",
           "overview",
@@ -2281,7 +2299,7 @@
               "realized": "pnl",
               "equity": "money"
             },
-            "note": "One row per account session. Cash, reserve, funding, equity, nav and drawdown are the run's saved MARKED daily curve; the other columns join that day's attempted, filled and refused books and the books expiring."
+            "note": "One row per account session. Cash, reserve, funding, equity, nav and drawdown are the run's saved MARKED daily curve; the other columns join that day's attempted, filled and refused books and the books expiring. Selection columns are grouped by attempted fill date. For rejected books, selected_contracts may reflect a reduced fill-stage quantity. Original optimizer requests and actual fills are in the exact orders-and-fills.csv selected_quantity and filled_quantity columns; filter its method column. Source/download: https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/broad212/orders-and-fills.csv"
           },
           "marked-figures": {
             "title": "Saved marked figures (authoritative)",
@@ -2407,6 +2425,14 @@
               {
                 "field": "source runtime candidate",
                 "value": "922b53d00dc0a49797f350fa0f300343a3ddf717"
+              },
+              {
+                "field": "exact order-leg quantities CSV",
+                "value": "https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/broad212/orders-and-fills.csv"
+              },
+              {
+                "field": "exact order-leg quantities SHA256",
+                "value": "c469aca9f8367efdc3d058631a9e955eb0d65d5e403d5d48508334e4c05fcec0"
               }
             ],
             "note": "Predictive identity is inherited from the accepted source MIO configuration and saved input pins. This report does not select or refit a predictive model. The recorded upstream provenance limitation remains: current forecast bytes are pinned separately from original producer receipts."
@@ -2420,7 +2446,8 @@
           "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
           "Optimizer gap is relative; the run document's MIO solve accepts solutions by an absolute gap limit (mip_abs_gap, USD) with mip_rel_gap 0, so a large relative gap beside 'optimal' is not a failure.",
           "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md.",
-          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times."
+          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times.",
+          "Ledger selected_contracts can include reduced quantities for refused orders; use the linked report index orders-and-fills.csv selected_quantity for exact optimizer demand."
         ],
         "statistic_labels": {
           "twr": "twr (at cost)",
@@ -3066,7 +3093,7 @@
         "events": "$w1_003_component25_lp_gate.events"
       },
       "params": {
-        "out_dir": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029/broad212/w1_003_component25_lp",
+        "out_dir": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029-v2/broad212/w1_003_component25_lp",
         "sections": [
           "summary",
           "overview",
@@ -3121,7 +3148,7 @@
               "realized": "pnl",
               "equity": "money"
             },
-            "note": "One row per account session. Cash, reserve, funding, equity, nav and drawdown are the run's saved MARKED daily curve; the other columns join that day's attempted, filled and refused books and the books expiring."
+            "note": "One row per account session. Cash, reserve, funding, equity, nav and drawdown are the run's saved MARKED daily curve; the other columns join that day's attempted, filled and refused books and the books expiring. Selection columns are grouped by attempted fill date. For rejected books, selected_contracts may reflect a reduced fill-stage quantity. Original optimizer requests and actual fills are in the exact orders-and-fills.csv selected_quantity and filled_quantity columns; filter its method column. Source/download: https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/broad212/orders-and-fills.csv"
           },
           "marked-figures": {
             "title": "Saved marked figures (authoritative)",
@@ -3247,6 +3274,14 @@
               {
                 "field": "source runtime candidate",
                 "value": "922b53d00dc0a49797f350fa0f300343a3ddf717"
+              },
+              {
+                "field": "exact order-leg quantities CSV",
+                "value": "https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/broad212/orders-and-fills.csv"
+              },
+              {
+                "field": "exact order-leg quantities SHA256",
+                "value": "c469aca9f8367efdc3d058631a9e955eb0d65d5e403d5d48508334e4c05fcec0"
               }
             ],
             "note": "Predictive identity is inherited from the accepted source MIO configuration and saved input pins. This report does not select or refit a predictive model. The recorded upstream provenance limitation remains: current forecast bytes are pinned separately from original producer receipts."
@@ -3260,7 +3295,8 @@
           "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
           "Optimizer gap is relative; the run document's MIO solve accepts solutions by an absolute gap limit (mip_abs_gap, USD) with mip_rel_gap 0, so a large relative gap beside 'optimal' is not a failure.",
           "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md.",
-          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times."
+          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times.",
+          "Ledger selected_contracts can include reduced quantities for refused orders; use the linked report index orders-and-fills.csv selected_quantity for exact optimizer demand."
         ],
         "statistic_labels": {
           "twr": "twr (at cost)",
@@ -3375,6 +3411,6 @@
     }
   },
   "outputs": {
-    "run_root": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029/broad212/runs"
+    "run_root": "/home/russell/data/index_options/mio-standard-2019-available-size-20261029-v2/broad212/runs"
   }
 }

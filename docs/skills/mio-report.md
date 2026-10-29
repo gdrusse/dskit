@@ -141,7 +141,11 @@ Inspect actual generated HTML, Markdown and CSVs, not just tests or exit status:
 Bind existing stress outputs only when their source methods/results match. Inspect
 ArtifactLinks hashes and every grid cell; pending, mismatch, unverified or
 unsupported stays visible. Link detailed daybooks for each executed leg if the
-standard ledger is aggregate. Do not launch stress scenarios merely to fill links;
+standard ledger is aggregate. At ADR-0283, the ledger groups selections by
+attempted fill date; refused rows may carry reduced quantities. Disclose this
+next to the ledger and link the exact saved orders-and-fills.csv selected_quantity
+and filled_quantity fields for original demand versus fills. Do not launch stress
+scenarios merely to fill links;
 run them only when requested under an approved scenario contract. Preserve v4's
 all-eight-exact-controls gate before48 stressed cases.
 
