@@ -1042,10 +1042,10 @@ class SchwabPositionsConnector(_SchwabConnector):
 
     Limits, disclosed rather than modelled. The account's ``type`` (cash, margin,
     IRA) is not read, so every linked account is treated as taxable downstream.
-    ``asset_type`` is the instrument's ``assetType`` as Schwab sends it; whether
-    an ETF or a mutual fund arrives as ``EQUITY`` is unverified until a real pull,
-    so a consumer that filters ``asset_type == "EQUITY"`` may drop them without
-    saying so.
+    ``asset_type`` is the instrument's ``assetType`` as Schwab sends it; the first
+    real pull (2026-10-29) typed ETFs ``COLLECTIVE_INVESTMENT`` and mutual funds
+    ``MUTUAL_FUND``, so a consumer that filters ``asset_type == "EQUITY"`` drops
+    them without saying so.
 
     Parameters
     ----------

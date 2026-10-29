@@ -327,8 +327,8 @@ def _shipped(path, node):
 
 
 def _shipped_where(path, node, day, field="as_of"):
-    """A shipped filter with only its date replaced, so every other clause (equities only,
-    longs only) runs exactly as shipped."""
+    """A shipped filter with only its date replaced, so every other clause (the asset-type
+    allowlist, longs only) runs exactly as shipped."""
     where = _shipped(path, node)["where"]
     return [{**clause, "value": day} if clause["field"] == field else clause for clause in where]
 
@@ -560,7 +560,7 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
     assert [r["basis_gap"] for r in joined["reconciled"]] == [0.0, 0.0, 0.0]
     assert joined["basis_gap_max"] == 0.0
     rows = {row["lot_id"]: row for row in result.outputs["decide"]["records"]}
-    assert set(rows) == set(WORKED_LOTS), "one row per lot, equities only, no short XYZ"
+    assert set(rows) == set(WORKED_LOTS), "one row per lot, no option, no short XYZ"
     # each lot by its own holding period, measured to the snapshot day: the 2023 VTI lot and
     # the AAPL lot are long, the July 2025 VTI lot short (91 days); tax = gain x its rate
     assert result.outputs["tax"]["summary"]["as_of"] == DECIDED
@@ -648,7 +648,8 @@ def test_a_holding_bought_before_the_history_falls_back_unless_disallowed(tmp_pa
 
 
 # Schwab types ETFs COLLECTIVE_INVESTMENT and mutual funds MUTUAL_FUND (first real pull,
-# 2026-10-29). A third account holds one of each, bought before the trades history begins.
+# 2026-10-29). A third account holds one of each: SWPPX bought before the trades history begins,
+# VGT bought inside it (a COLLECTIVE_INVESTMENT trade, the trades source's widened asset_types).
 FUND_ACCOUNT = "FEEDFACE5EED1234"
 FUNDS = [
     {"account": FUND_ACCOUNT, "symbol": "SWPPX", "asset_type": "MUTUAL_FUND", "as_of": DECIDED,
@@ -658,35 +659,48 @@ FUNDS = [
      "as_of": DECIDED, "long_quantity": 4.0, "short_quantity": 0.0, "average_price": 300.0,
      "cost_basis": 1200.0, "market_value": 2000.0},
 ]
+VGT_TRADE = {"account": FUND_ACCOUNT, "transaction_id": 2001, "trade_date": "2025-06-02",
+             "time": "2025-06-02T14:00:00+0000", "symbol": "VGT",
+             "asset_type": "COLLECTIVE_INVESTMENT", "quantity": 4.0, "price": 300.0,
+             "amount": -1200.0, "position_effect": "OPENING"}
+VGT_LOT = f"{FUND_ACCOUNT}:VGT:2025-06-02:1"
 
 
-def test_funds_and_etfs_are_decided_from_their_aggregate_rows(tmp_path, monkeypatch):
-    """As shipped, a mutual fund and an ETF the trades never bought are decided: each passes the
-    snapshot filter, falls back to its aggregate row (Schwab's basis, no date) and is taxed as
-    default_holding, beside the equity lots exactly as before. The option row is still filtered
-    out. The funds' bars copy SPY's and VTI's closes (an index fund and a sector ETF)."""
+def test_funds_and_etfs_are_decided_by_lot_or_aggregate_row(tmp_path, monkeypatch):
+    """As shipped, both fund types pass the snapshot filter beside the equity lots, the option row
+    still filtered out. VGT, bought inside the history, gets its own lot and is short-term (147
+    days); SWPPX, which the history never bought, falls back to its aggregate row (Schwab's basis,
+    no date) taxed as default_holding. Each is priced by its OWN wired beta: SWPPX's bars copy
+    SPY's closes and VGT's copy AAPL's, so a symbol mix-up changes a rate."""
     bars = _daily_bars()
-    copies = [{**row, "symbol": fund} for fund, source in (("SWPPX", "SPY"), ("VGT", "VTI"))
+    copies = [{**row, "symbol": fund} for fund, source in (("SWPPX", "SPY"), ("VGT", "AAPL"))
               for row in bars if row["symbol"] == source]
-    root = _build(tmp_path, TRADES, positions=THEN + LATER + FUNDS, bars=bars + copies)
+    root = _build(tmp_path, TRADES + [VGT_TRADE], positions=THEN + LATER + FUNDS,
+                  bars=bars + copies)
     monkeypatch.chdir(root)
     result = _decide(root)
     rows = {row["lot_id"]: row for row in result.outputs["decide"]["records"]}
-    fund_ids = {f"{FUND_ACCOUNT}:{fund['symbol']}:aggregate" for fund in FUNDS}
-    assert set(rows) == set(WORKED_LOTS) | fund_ids
+    swppx_id = f"{FUND_ACCOUNT}:SWPPX:aggregate"
+    assert set(rows) == set(WORKED_LOTS) | {swppx_id, VGT_LOT}
     assert {row["symbol"] for row in rows.values()} == {"VTI", "AAPL", "SWPPX", "VGT"}
     tax = _shipped(RUN_DOC, "tax")
-    rate = tax[f"{tax['default_holding']}_term_rate"]
-    for fund in FUNDS:
-        row = rows[f"{FUND_ACCOUNT}:{fund['symbol']}:aggregate"]
-        assert row["acquired"] is None and row["liq_holding"] == tax["default_holding"]
-        assert (row["long_quantity"], row["market_value"], row["cost_basis"]) == (
-            fund["long_quantity"], fund["market_value"], fund["cost_basis"])
-        assert row["liq_tax"] == pytest.approx((fund["market_value"] - fund["cost_basis"]) * rate)
-    fallback = result.outputs["lot_positions"]["summary"]["fallback"]
-    assert sorted(fallback, key=lambda f: f["symbol"]) == [
-        {"account": FUND_ACCOUNT, "symbol": "SWPPX", "reason": "no lots"},
-        {"account": FUND_ACCOUNT, "symbol": "VGT", "reason": "no lots"}]
+    swppx, vgt = rows[swppx_id], rows[VGT_LOT]
+    assert swppx["acquired"] is None and swppx["liq_holding"] == tax["default_holding"]
+    assert (swppx["long_quantity"], swppx["market_value"], swppx["cost_basis"]) == (
+        100.0, 1500.0, 1000.0)
+    assert swppx["liq_tax"] == pytest.approx(
+        500.0 * tax[f"{tax['default_holding']}_term_rate"])
+    assert vgt["acquired"] == "2025-06-02" and vgt["liq_holding"] == "short"
+    assert vgt["liq_tax"] == pytest.approx(800.0 * tax["short_term_rate"])
+    assert result.outputs["lot_positions"]["summary"]["fallback"] == [
+        {"account": FUND_ACCOUNT, "symbol": "SWPPX", "reason": "no lots"}]
+    # the hold rates come from each fund's own bars, recomputed in plain Python
+    plain = _plain_risk(root, DECIDED)
+    _, expected = _expected_rates({s: plain[s]["beta"] for s in ("SWPPX", "VGT")})
+    rates = result.outputs["betas"]["rates"]
+    assert rates["SWPPX"] == pytest.approx(expected["SWPPX"])
+    assert rates["VGT"] == pytest.approx(expected["VGT"])
+    assert rates["VGT"] != pytest.approx(rates["SWPPX"])
 
 
 def test_a_sale_the_history_never_bought_refuses_at_the_lots_unless_allowed(tmp_path, monkeypatch):
@@ -837,7 +851,7 @@ def test_outcomes_score_the_decision_run_a_year_later(root, monkeypatch):
                      later={"where": _shipped_where(OUTCOMES_DOC, "later", LATER_DAY)})
     result = run_document(document, asof=LATER_DAY, journal=False)
     assert result.state == "ran", (result.state, result.error)
-    # the shipped later filter keeps the equity longs and drops the short XYZ and the option
+    # the shipped later filter keeps the listed longs and drops the short XYZ and the option
     assert {row["symbol"] for row in result.outputs["later"]["records"]} == {"VTI", "AAPL"}
     rows = {row["lot_id"]: row for row in result.outputs["outcomes"]["records"]}
     assert set(rows) == set(WORKED_LOTS), "every decided lot is scored against its holding"
@@ -893,7 +907,8 @@ def test_an_undecided_zero_quantity_row_never_refuses_the_scoring_run(root, monk
     assert {row["symbol"] for row in result.outputs["outcomes"]["records"]} == {"VTI", "AAPL"}
 
 
-def test_a_sale_the_other_accounts_shares_could_cover_refuses_at_the_lots(tmp_path, monkeypatch):
+def test_a_sale_the_other_accounts_shares_could_cover_refuses_at_the_lots_unless_allowed(
+        tmp_path, monkeypatch):
     """The second account sells 9 VTI in February 2025 with 8 open in it; the first account's 6
     shares would cover the 1 short if lots were pooled by symbol. They are not: the sale refuses
     by account, at the lots (declared allow_incomplete false; as shipped the second account's VTI

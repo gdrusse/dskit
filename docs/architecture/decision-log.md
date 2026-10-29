@@ -34874,8 +34874,9 @@ Evidence from the first real pull (2026-10-29):
    pinned equal. A holding whose purchases predate the history passes through as its aggregate
    row, with Schwab's average-cost basis and a null acquired date. `default_holding` (`long`)
    then prices its tax.
-3. **Notes and README.** The daily-bars symbols include the funds. The trades `asset_types`
-   stays `EQUITY`: with history from 2024 only, fund lots fall back either way.
+3. **Notes and README.** The daily-bars symbols include the funds. The trades source is
+   registered with `asset_types` `EQUITY`, `COLLECTIVE_INVESTMENT` and `MUTUAL_FUND` (README step 2;
+   see the review corrections below).
 
 **Why EQUITY-only no longer fits.** It existed to keep option rows out, because `cost_basis`
 applies no contract multiplier. Funds and ETFs have none, so `averagePrice x quantity` is
@@ -34900,3 +34901,20 @@ their basis.
 
 **Not in scope.** The owner's placeholders (tax rates, horizon, the active backtest) still
 gate a real verdict.
+
+**Review corrections (two Sonnet lenses, 2026-10-29).** No Critical.
+
+- **Major (correctness).** With trades kept `EQUITY`-only, a fund bought wholly inside the
+  history never got lots, so it was taxed as long-term. The probe had found fund `TRADE` items in
+  2025-26, so the "fall back either way" premise was false. The trades `asset_types` now lists the
+  three types, and the fund test gives VGT a purchase inside the history: its own lot, short-term.
+- **Minors (tests).** Fund betas were untested, and copied bars made a symbol mix-up invisible.
+  Now SWPPX copies SPY and VGT copies AAPL, and each rate is checked against its own plain-Python
+  beta.
+- **Minors (docs).** Stale "equities only" and "refuses at the reconciliation" text is fixed in the
+  README, the trades note, three test comments and the positions connector docstring.
+- **Disclosed, not fixed.** No shipped test runs the report or outcomes document over fund rows
+  (the test lens ran both in scratch: rendered and scored, none unmatched). A fund with
+  `averagePrice` 0 would read as a 100% gain (unverified). The `in` clause does not validate that
+  its value is a list (pre-existing in `kinds_flow`). The lane note still lists the ETF and
+  `allow_incomplete` checks; `/wrap` rewrites it.

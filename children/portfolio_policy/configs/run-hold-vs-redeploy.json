@@ -32,7 +32,7 @@
         "stream": "trades",
         "key_fields": ["account", "transaction_id", "symbol"]
       },
-      "notes": "Role 'data': every trade acquired through dskit.onboarding (connector schwab_transactions, source alias schwab_trades: one alias is one connector), one row per account x transaction x symbol: execution time, signed quantity, price, signed net cash. Only VALID transactions arrive (the connector refuses a PENDING or INVALID one). The pull's start must reach back to the earliest purchase still held, or the reconciliation in lot_positions refuses."
+      "notes": "Role 'data': every trade acquired through dskit.onboarding (connector schwab_transactions, source alias schwab_trades: one alias is one connector), one row per account x transaction x symbol: execution time, signed quantity, price, signed net cash. Only VALID transactions arrive (the connector refuses a PENDING or INVALID one). The pull's start must reach back to the earliest purchase still held, or that holding fails the reconciliation in lot_positions and falls back to its aggregate row (allow_incomplete)."
     },
     "lots": {
       "uses": "dskit.pipeline.tax_lots:TaxLots",

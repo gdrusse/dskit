@@ -36,7 +36,8 @@ python -m dskit.onboarding register-source schwab --root ./ob \
 # still held (lower it later and the next acquire re-pulls from the new start)
 python -m dskit.onboarding register-source schwab_trades --root ./ob \
     --catalog-source schwab-trades-src --connector schwab_transactions \
-    --config '{"start": "2015-01-01"}' --activate
+    --config '{"start": "2015-01-01", "asset_types": ["EQUITY", "COLLECTIVE_INVESTMENT", "MUTUAL_FUND"]}' \
+    --activate
 # symbols = every held symbol, funds and ETFs included, plus SPY (the benchmark); start >= 400 days before
 # today (a year of returns needs 253 closes, with holidays to spare)
 python -m dskit.onboarding register-source schwab_daily --root ./ob \
@@ -99,9 +100,10 @@ the `schwab_daily` bars (`bars` -> `risk_features` -> `risk_day` -> `risk_latest
 backtest's mean by what `trials` variants of nothing would have found and
 withholds it below `min_dsr`, in which case every holding holds. The hold
 path is taxed once at the horizon (`terminal_tax_rate`); the active path pays
-its short-term rate every year (`redeploy_tax_rate`, `annual`). Equities
-only, and long only: the `snapshot` filter drops option rows (their basis
-carries no multiplier) and short positions (`long_quantity > 0`), because the
+its short-term rate every year (`redeploy_tax_rate`, `annual`). Stocks, ETFs
+and mutual funds only, and long only: the `snapshot` filter drops option rows
+(their basis carries no multiplier), any unlisted asset type, and short
+positions (`long_quantity > 0`), because the
 kinds refuse a short or zero-value row by index rather than decide on it.
 `hurdle.min_periods` (52, a year of weekly returns) is the fewest backtest
 periods it will accept, and returns are fractions (0.01 = 1%), never percent.
@@ -175,17 +177,21 @@ delete `outcomes.match_fields`. `tests/test_hold_vs_redeploy.py` runs this recip
   refuses by index (a pending trade must not become a lot). A pending one clears
   when it settles; an INVALID (cancelled) one stays in Schwab's history and stops
   every pull whose window reaches it. Raising `start` past it is the only way round
-  today (lots bought before it then fail the reconciliation); a skip is an owner
+  today (holdings bought before it then fall back to their aggregate rows); a skip is an owner
   decision (lane note).
 - Schwab's transactions endpoint served nothing before 2024 on the first real
   pull, so most holdings fall back to their aggregate rows (`allow_incomplete`)
   until a lot export is onboarded.
-- The trades pull keeps `EQUITY` items (the connector's default `asset_types`).
-  Fund and ETF purchases also predate the history, so they fall back either way;
-  widen `asset_types` when the history covers them.
+- The trades source is registered with `asset_types` `EQUITY`,
+  `COLLECTIVE_INVESTMENT` and `MUTUAL_FUND` (step 2), so a fund or ETF bought
+  wholly inside the history gets its own lots and holding period. One whose
+  shares predate the history, or whose shares also moved outside `TRADE` (the
+  first pull showed fund `RECEIVE_AND_DELIVER` items), falls back whole and is
+  taxed as `default_holding`.
 - `long_term_days` 366 is "more than one year" except when the year spans 29
   February (then the lot's 366th day is still short-term); short sales and
-  splits are not modelled (each refuses at the reconciliation).
+  splits are not modelled (each fails the reconciliation, so the holding falls
+  back to its aggregate row, or refuses with `allow_incomplete` false).
 - Whether Schwab's daily closes are split- or dividend-adjusted is undocumented: an
   unadjusted split would read as one huge daily return and inflate that holding's
   volatility and beta for a year. Check a holding with a recent split on the first pull.
