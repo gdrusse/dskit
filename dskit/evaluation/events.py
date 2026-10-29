@@ -398,6 +398,8 @@ class RunStart(Event):
     ``tz`` is the IANA zone the report RENDERS in; every instant stays UTC
     epoch ms. ``criteria`` are validated as :class:`Criterion` objects,
     and ``trials`` (configurations tried) feeds the deflated Sharpe.
+    ``signed_prices`` (a flag, default false) lets a ``fill`` carry a
+    negative price, e.g. a spread bought for a credit (ADR-0283).
 
     Examples
     --------
@@ -425,6 +427,7 @@ class RunStart(Event):
         _mapping("units", required=False),
         _mapping("sources", required=False),
         _mapping("diagnostics", required=False),
+        _flag("signed_prices", required=False),
     )
 
     #: The keys ``units`` may declare.
@@ -716,6 +719,11 @@ class Skip(_Rejection):
 class Fill(Event):
     """An execution: quantity at a price, with its fee.
 
+    The price is a finite number: an option that expires worthless closes
+    at 0, and a spread can trade for a credit. A NEGATIVE price is refused
+    by the log unless ``run_start.signed_prices`` is true (ADR-0283), so an
+    ordinary log's sign bug is still caught.
+
     Examples
     --------
     ::
@@ -734,7 +742,7 @@ class Fill(Event):
         _id("order_id", required=False, nullable=True),
         _choice("side", SIDES),
         _positive("qty"),
-        _positive("price"),
+        _number("price"),
         _number("fee", required=False),
         _positive("ref_price", required=False, nullable=True),
         _text("tag", required=False),
@@ -1364,6 +1372,11 @@ class EventLog:
     def _reference_problems(self, event, where):
         """Check unique ids, earlier-logged references, outcomes strictly after their decision."""
         problems = []
+        if isinstance(event, Fill) and event.get("price") < 0:
+            start = self.run_start
+            if start is None or not start.get("signed_prices", False):
+                problems.append(f"{where}.price {event.get('price')!r} is negative; a log "
+                                f"declares run_start.signed_prices to allow it")
         identity = _IDENTITIES.get(event.kind)
         if identity is not None and event.get(identity) in self._ids[event.kind]:
             problems.append(f"{where}.{identity} {event.get(identity)!r} is already logged")

@@ -40,11 +40,11 @@ Unknown fields are refused, every problem listed at once.
 
 | kind | body |
 |---|---|
-| `run_start` | `run_id`, `tz` (IANA, display only); optional `title`, `project`, `config_hash`, `config`, `code`, `data`, `env` (`RunStart.capture_env()`), `criteria`, `trials`, `units` (`{"score": "return" \| "log_return" \| "bp" \| "prob" \| "usd" \| "z" \| "raw", "money": "USD"}`), `sources` (where filled provenance came from) |
+| `run_start` | `run_id`, `tz` (IANA, display only); optional `title`, `project`, `config_hash`, `config`, `code`, `data`, `env` (`RunStart.capture_env()`), `criteria`, `trials`, `units` (`{"score": "return" \| "log_return" \| "bp" \| "prob" \| "usd" \| "z" \| "raw", "money": "USD"}`), `sources` (where filled provenance came from), `signed_prices` (flag: a fill may carry a negative price) |
 | `decision` | `decision_id`, `action` (`enter/exit/hold/skip/refuse`), `reason`; optional `candidates` (`instrument, score, rank, eligible, reason`), `chosen`, `threshold`, `edge`, `detail`, `model` |
 | `order` | `order_id`, `side`, `qty`; optional `decision_id`, `ref_price`, `legs`, `findings` (guard checks: `guard, measure, value, bound, verdict, reason, window, scope_key` — shown in the decision log) |
 | `refusal` / `skip` | `reason` plus `decision_id` and/or `order_id`; optional `detail` |
-| `fill` | `fill_id`, `side`, `qty`, `price`; optional `order_id`, `fee`, `ref_price`, `tag` |
+| `fill` | `fill_id`, `side`, `qty`, `price` (0 is allowed: an option that expires worthless closes at 0; negative only under `run_start.signed_prices`); optional `order_id`, `fee`, `ref_price`, `tag` |
 | `mark` | `price` |
 | `cashflow` | `amount` (+ in, - out); optional `rule`, `detail` |
 | `outcome` | `decision_id`, `realized`, per candidate `instrument`; optional `horizon` (read only by `InferenceSection`, never beside its decision) |
@@ -115,11 +115,92 @@ Declare `units` in `run_start`: scores (forecasts, edges, thresholds) then
 print in their unit — a return in basis points — and money with its
 currency sign. The CSVs keep raw values and a `score_unit` column.
 
+## Gating a report on its totals
+
+`dskit.evaluation.gate:EventTotalsGate` (role `transform`) sits between the
+events and `EvaluationReport`. It folds the events through the one P&L fold
+and compares `net_pnl`, `final_equity`, `contributions`, `realised` or `fees`
+to values wired on its `expected` input (for instance a pinned file's own
+numbers, never typed into the document), each within a tolerance the
+document declares; `fill_count`, `refusal_count` and `decision_count`
+compare event counts the same way. A miss raises with every miss listed, so the report node
+never runs and no file is written (a `GateRefusal`, under its own header, not
+an "invalid event log"); otherwise `events` pass through
+untouched and `comparison` lists each check.
+
+```json
+"gate": {
+  "uses": "dskit.evaluation.gate:EventTotalsGate",
+  "inputs": {"events": "$events.events", "expected": "$rows.expected"},
+  "params": {"checks": {
+    "net_pnl": {"expected": "pnl", "tolerance": 0.005},
+    "final_equity": {"expected": "final_equity", "tolerance": 0.005}}}
+}
+```
+
+**Tables.** `EvaluationReport` takes an optional `tables` param,
+`{anchor: {title, columns, rows, formats?, note?}}`; `rows` is usually a
+`"$node.port"` reference to rows an upstream node computed (a `groupby` of
+fills by ticker and DTE band, say). Each table is a `TableSection` shown
+before provenance and written as `<anchor>.csv`.
+
+**Zero and negative fill prices.** A `fill` price is any finite number: an
+option expiring worthless closes at 0. A NEGATIVE price (a spread bought for
+a credit) is refused by the log unless `run_start.signed_prices` is true, so
+an ordinary log's sign bug is still caught.
+
+## Linking another run's outputs
+
+`dskit.evaluation.links:ArtifactLinks` (role `report`) lists the expected
+files of a different run in a finished report. Wire it after
+`EvaluationReport` with `"inputs": {"paths": "$report.paths"}`:
+
+```json
+"stress_links": {
+  "uses": "dskit.evaluation.links:ArtifactLinks",
+  "inputs": {"paths": "$report.paths"},
+  "params": {"root": "/abs/other-run",
+             "files": [{"id": "report", "path": "report.md"},
+                       {"id": "daybook", "path": "{case}/{unit}.md",
+                        "axes": {"case": ["a", "b"], "unit": ["x"]}}],
+             "pins": {"file": "pins.json", "files_key": "files"},
+             "table": {"file": "summary.csv", "where": {"cohort": "c1"},
+                       "case": "scenario", "unit": "method",
+                       "cases": ["control"], "units": ["m1"],
+                       "ok": {"column": "status", "equals": "complete"},
+                       "checks": {"gate": ["control"]}}}}
+```
+
+- **Pending, never made up.** Each link shows its path, SHA-256 and byte
+  count when the file exists and `pending` (no hash, no size) when it does not;
+  a broken symlink is pending too.
+- **Read-only on the root.** Files there are only opened for reading. A
+  report directory inside the root (or the root inside it), a symlink that
+  resolves outside the root, a `csv_name` that is not a bare `<name>.csv`, or
+  one that collides with a report file, is refused.
+- **Pins.** With `pins`, each link says `match`, `mismatch`, `unpinned` or
+  `pending` against the pins file's `files_key` mapping.
+- **Table checks.** `table` reads one CSV grid; each named check is
+  `complete` (every cell ok, and the pins file confirms the table file),
+  `incomplete`, `unverified` (pins contradict or omit the table file) or
+  `pending` (table or pins file not written yet).
+- **Output.** A marked block in `summary.md` and `report.html`, then
+  `<csv_name>` (default `artifact-links.csv`) and `<csv_name>-cells.csv`
+  beside the report. The node splices into the report files that
+  `EvaluationReport` wrote in the same run, so a rerun needs a new asof or run
+  directory (the report node rewrites its own files; the block would
+  otherwise be replaced, never stacked).
+
 ## Extending
 
 - A new section: subclass `sections.Section`, set `title`/`anchor`,
   implement `html(context)` (optionally `markdown(context)`), and pass the
   list to `BacktestReport(log, sections=[...])`.
+- A table a document computed upstream (a `groupby` of fills by ticker and
+  DTE bucket, say): `sections.TableSection.from_obj(anchor, {"title",
+  "columns", "rows", "formats"})` in `BacktestReport(sections=[...])`
+  shows it in `report.html` and writes `<anchor>.csv` beside the report
+  (any section may add files through `Section.files`).
 - A new chart: subclass `svg.XYChart` and implement `path(...)`, or
   `svg.Chart` and implement `body()`.
 - A new estimator belongs in `dskit/pipeline/stats.py`, then a row in
@@ -150,10 +231,15 @@ dskit/evaluation/
 │                  downsample; CSS-variable palette, light/dark
 ├── sections.py    Section ABC + Overview, Summary, Equity, TradesOnPrice,
 │                  DecisionLog (+ guard findings), Optimizer, Cash,
-│                  Distribution, Inference, Period, Provenance
-├── report.py      BacktestReport -> the five files, atomically
-├── nodes.py       EvaluationReport (role report, `sections`) + RowsToEvents
+│                  Distribution, Inference, Period, Provenance;
+│                  TableSection (rows -> HTML table + <anchor>.csv)
+├── report.py      BacktestReport -> the five files (+ section files), atomically
+├── nodes.py       EvaluationReport (role report, `sections`, `tables`) + RowsToEvents
 │                  (role transform) pipeline nodes
+├── gate.py        EventTotalsGate node (role transform): events' totals vs expected,
+│                  or refuse before any report is written
+├── links.py       ArtifactLinks node (role report): another run's files by path +
+│                  SHA-256, `pending` if absent, read-only on that root
 ├── README.md      this file
 ├── AGENTS.md      agent orientation
 └── CLAUDE.md      identical to AGENTS.md

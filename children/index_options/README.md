@@ -662,6 +662,7 @@ fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md; technical-design.json + .html (TDD)
 docs/explanations/README.md # glossary and worked synthetic payoff
                             # robust-condor-selection.md (+ .svg): robust selection by hand
+                            # mio-glossary.md: plain-language MIO run-report terms (ADR-0283)
 docs/plans/README.md        # gated research stages
 docs/plans/mio-json/       # study.json + plan/run/compare.template.json (proposed; not executable)
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout

@@ -40,6 +40,7 @@ from dskit.evaluation.sections import (
 )
 from dskit.evaluation.statistics import DEFAULT_MIN_N, StatisticsTable
 from dskit.evaluation.svg import CHART_CSS
+from dskit.pipeline.base import ConfigError
 from dskit.pipeline.kinds_report import csv_text
 from dskit.pipeline.node import atomic_write
 from dskit.pipeline.runs import render_cell
@@ -108,7 +109,8 @@ class BacktestReport:
     Raises
     ------
     ConfigError
-        When a pre-registered criterion names an unknown statistic.
+        When a pre-registered criterion names an unknown statistic, or two
+        sections share an anchor.
 
     Examples
     --------
@@ -125,6 +127,11 @@ class BacktestReport:
         self.log = log
         chosen = DEFAULT_SECTIONS if sections is None else sections
         self.sections = tuple(s() if isinstance(s, type) else s for s in chosen)
+        anchors = [section.anchor for section in self.sections]
+        repeated = sorted({a for a in anchors if anchors.count(a) > 1})
+        if repeated:
+            raise ConfigError([f"section anchor(s) {repeated} are used twice — an anchor is "
+                               f"the HTML id and must be unique"])
         start = log.run_start
         book = EvaluationBook(log)
         table = StatisticsTable(book, min_n=min_n)
@@ -205,18 +212,26 @@ class BacktestReport:
         return out
 
     def write(self, out_dir):
-        """Write the five report files into ``out_dir``, creating it if needed.
+        """Write the five report files, plus each section's own, into ``out_dir``.
 
         Parameters
         ----------
         out_dir : str
+            Created if needed — after every section's file names are checked, so
+            a refused write creates nothing.
 
         Returns
         -------
         dict
-            ``{name: path}`` over :data:`FILENAMES`.
+            ``{name: path}`` over :data:`FILENAMES`, then ``{file name: path}``
+            for each file a section adds (:meth:`Section.files`).
+
+        Raises
+        ------
+        ConfigError
+            When two files share a name, or a section's file name is empty
+            or not a bare name.
         """
-        os.makedirs(out_dir, exist_ok=True)
         payloads = {
             "events": self.log.to_jsonl(),
             "summary": self.summary_markdown().encode("utf-8"),
@@ -224,8 +239,23 @@ class BacktestReport:
             "decisions": self.decisions_csv().encode("utf-8"),
             "trades": self.trades_csv().encode("utf-8"),
         }
+        names = {name: FILENAMES[name] for name in payloads}
+        seen = set(names) | set(names.values())
+        for section in self.sections:
+            for filename, text in section.files(self.context).items():
+                if (not isinstance(filename, str) or not filename
+                        or filename in (".", "..") or os.path.basename(filename) != filename):
+                    raise ConfigError([f"section {section.anchor!r} file name {filename!r} must "
+                                       f"be a bare file name"])
+                if filename in seen:
+                    raise ConfigError([f"section {section.anchor!r} file {filename!r} collides "
+                                       f"with another file of the report"])
+                seen.add(filename)
+                names[filename] = filename
+                payloads[filename] = text.encode("utf-8")
+        os.makedirs(out_dir, exist_ok=True)
         paths = {}
         for name, raw in payloads.items():
-            paths[name] = os.path.join(out_dir, FILENAMES[name])
+            paths[name] = os.path.join(out_dir, names[name])
             atomic_write(paths[name], raw)
         return paths

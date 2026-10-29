@@ -235,3 +235,31 @@ def test_local_time_renders_in_the_zone():
     assert local.stamp(DAY1) == "2026-09-01 10:30:00"
     assert local.day(DAY1) == "2026-09-01"
     assert local.offset_ms(DAY1) == -4 * 3_600_000
+
+
+def _fill(price):
+    return {"schema": SCHEMA, "seq": 1, "kind": "fill", "ts_ms": 5, "known_ms": 5,
+            "instrument": "AAA", "fill_id": "f1", "side": "sell", "qty": 1, "price": price}
+
+
+def test_a_fill_may_close_at_zero_and_a_negative_price_needs_the_declaration():
+    """A worthless expiry closes at 0; a credit spread's price is negative only when declared."""
+    assert Fill.from_obj(_fill(0)).get("price") == 0
+    assert Fill.from_obj(_fill(-0.5)).get("price") == -0.5       # the event alone is a number
+    with pytest.raises(EvaluationError, match=r"price must be a finite number"):
+        Fill.from_obj(_fill(float("nan")))
+
+    def log(signed, price):
+        b = Builder()
+        extra = {"signed_prices": True} if signed else {}
+        b.add("run_start", 0, run_id="r", tz="UTC", **extra)
+        b.add("fill", 5, "AAA", fill_id="f1", side="buy", qty=1, price=price)
+        return EventLog(b.events)
+
+    assert log(False, 0.0) and log(True, 0.0) and log(True, -300.0)
+    with pytest.raises(EvaluationError, match=r"price -300.0 is negative.*signed_prices"):
+        log(False, -300.0)
+    with pytest.raises(EvaluationError, match=r"signed_prices"):
+        Event.from_obj({"schema": SCHEMA, "seq": 0, "kind": "run_start", "ts_ms": 0,
+                        "known_ms": 0, "instrument": None, "run_id": "r", "tz": "UTC",
+                        "signed_prices": "yes"})

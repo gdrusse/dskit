@@ -512,3 +512,20 @@ def test_a_plain_log_records_each_instant_once_and_lands_the_eager_points(monkey
     assert EvaluationBook(log).points == eager
     if hasattr(EvaluationBook, "_READS"):  # the same-instant shortcut, where present
         assert calls == [DAY1, DAY1, DAY1 + MIN]
+
+
+def test_a_worthless_close_realises_the_whole_premium_and_the_fee_once():
+    """A long closed at 0 loses premium + fee; a short closed at 0 keeps premium - fee (ADR-0283)."""
+    b = Builder()
+    b.add("run_start", 0, run_id="r", tz="UTC")
+    b.add("cashflow", 1, amount=1000.0)
+    b.add("fill", 2, "LONG", fill_id="a", side="buy", qty=1, price=300.0, fee=2.0)
+    b.add("fill", 3, "LONG", fill_id="b", side="sell", qty=1, price=0.0)
+    b.add("fill", 4, "SHORT", fill_id="c", side="sell", qty=1, price=50.0, fee=1.0)
+    b.add("fill", 5, "SHORT", fill_id="d", side="buy", qty=1, price=0.0)
+    b.add("run_end", 6, status="ok")
+    book = EvaluationBook(EventLog(b.events))
+    last = book.points[-1]
+    assert last.trading_pnl == Fraction(-302) + Fraction(49)
+    assert last.equity == Fraction(1000) - Fraction(253)
+    assert [t.pnl for t in book.round_trips] == [-302.0, 49.0]

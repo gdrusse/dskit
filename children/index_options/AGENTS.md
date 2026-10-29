@@ -148,6 +148,8 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258)
+                           # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the
+                           # report document is configs/mio-report-limited36-available-size-20261029.json)
                            # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate);
                            # theta_hypotheses.py (ADR-0265 Amendment 5: generates the H0-H7 documents, their validation twins and the
                            # index-panel document from configs/theta-hypothesis-inputs.json; write | check | set-pin | freeze-universe)
@@ -223,6 +225,7 @@ docs/decisioning/           # actions.csv, owner path.csv, generated README.md; 
 docs/RE-ENTRY.md            # the lane note: Now / Next / Blocked; rewritten whole at /wrap
 docs/explanations/README.md # glossary and worked synthetic payoff
                             # robust-condor-selection.md (+ .svg): robust selection by hand
+                            # mio-glossary.md: plain-language MIO run-report terms (ADR-0283)
 docs/plans/README.md        # gated research stages
 docs/plans/mio-json/       # study.json (future schedule design); executable plan/run/compare templates
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout

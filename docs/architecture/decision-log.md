@@ -34807,7 +34807,9 @@ A test pins `required` to the rendered sections.
 
 The ticker x DTE table uses an existing node or a minimal generic fix, test-first. The report writes to a fresh report-only directory, never to a run or evidence root.
 
-**Exact-match gate.** Before rendering, net P&L and final equity are recomputed from the events. Each must equal the method's `result.json` `pnl` and `final_equity` to the cent (|difference| < $0.005, since float summation order differs). Otherwise the document refuses and writes no report. The marked daily curve stays in the ledger table; event equity between fills is at cost and is labelled so.
+**Exact-match gate.** Before rendering, net P&L and final equity are recomputed from the events. Each must equal the method's `result.json` `pnl` and `final_equity` to the cent (|difference| <= the declared tolerance, $0.005, since float summation order differs); contributions and fees are compared the same way. Expected values come from the pinned `result.json`, never typed into the document. Otherwise the document refuses and writes no report. The marked daily curve, and the method's marked TWR and drawdown, appear as their own tables. Event-based statistics value open books at cost between fills, and the report labels them so.
+
+**As built.** `index_options.mio_run_events.MioRunRows` (child) selects one method, converts dates and checks premium/credit identities. Generic additions in `dskit.evaluation`: `EventTotalsGate`, `TableSection` plus the `EvaluationReport` `tables` param, and `ArtifactLinks` for the stress links. A fill price may be zero (worthless expiry). It may be signed only when `run_start.signed_prices` is declared, because one book is one unit priced at its net premium; an undeclared log still refuses negative prices.
 
 **Stress.** The report links each v4 stress `report.md`, daybook and `pins.json` by path and SHA-256 without changing stress bytes. A referenced stress output that does not exist yet is shown as `pending`, never filled in.
 

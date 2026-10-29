@@ -28,6 +28,7 @@ from __future__ import annotations
 import bisect
 import html
 import json
+import re
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ from dskit.evaluation.svg import (
 )
 from dskit.evaluation.units import DASH, Units, count, percent, ratio, sig
 from dskit.pipeline.base import ConfigError
+from dskit.pipeline.kinds_report import csv_text
 from dskit.pipeline.runs import render_cell
 from dskit.production.guards import max_verdict
 
@@ -54,6 +56,7 @@ __all__ = [
     "DEFAULT_MAX_MARKERS",
     "DEFAULT_MAX_PANELS",
     "DEFAULT_SECTIONS",
+    "DISPLAY_KINDS",
     "PINNED_SECTIONS",
     "SECTIONS",
     "DECISION_COLUMNS",
@@ -70,6 +73,7 @@ __all__ = [
     "ReportContext",
     "Section",
     "SummarySection",
+    "TableSection",
     "TradesOnPriceSection",
     "chosen_sections",
     "section_problems",
@@ -177,6 +181,22 @@ class ReportContext:
 # ---------------------------------------------------------------------------
 
 
+#: How each display kind formats a non-text value: ``kind -> f(value, units)``.
+DISPLAY_KINDS = {
+    "money": lambda v, units: units.money(v),
+    "pnl": lambda v, units: units.money(v, signed=True),
+    "count": lambda v, units: count(v),
+    "ratio": lambda v, units: ratio(v),
+    "percent": lambda v, units: percent(v),
+    "minutes": lambda v, units: f"{sig(v, 3)} min",
+    "score": lambda v, units: units.score(v),
+    "edge": lambda v, units: units.score(v, signed=True),
+    "bp": lambda v, units: f"{sig(v, 3)} bp",
+    "number": lambda v, units: count(v) if float(v).is_integer() else ratio(v),
+    "text": lambda v, units: str(v),
+}
+
+
 def display(kind, value, units):
     """Return ``value`` as display text of ``kind``, a dash for None.
 
@@ -197,21 +217,8 @@ def display(kind, value, units):
         return DASH
     if isinstance(value, bool):
         return "yes" if value else "no"
-    formats = {
-        "money": lambda v: units.money(v),
-        "pnl": lambda v: units.money(v, signed=True),
-        "count": count,
-        "ratio": ratio,
-        "percent": percent,
-        "minutes": lambda v: f"{sig(v, 3)} min",
-        "score": lambda v: units.score(v),
-        "edge": lambda v: units.score(v, signed=True),
-        "bp": lambda v: f"{sig(v, 3)} bp",
-        "number": lambda v: count(v) if float(v).is_integer() else ratio(v),
-        "text": str,
-    }
-    if kind in formats and not isinstance(value, str):
-        return formats[kind](value)
+    if kind in DISPLAY_KINDS and not isinstance(value, str):
+        return DISPLAY_KINDS[kind](value, units)
     if isinstance(value, int):
         return count(value)
     if isinstance(value, float):
@@ -395,6 +402,21 @@ class Section(ABC):
         list of str
         """
         return []
+
+    def files(self, context):
+        """Return the extra files this section writes beside the report; most write none.
+
+        Parameters
+        ----------
+        context : ReportContext
+
+        Returns
+        -------
+        dict
+            ``{file name: text}``; a name may not be one of the report's own
+            files or another section's (``BacktestReport.write`` refuses).
+        """
+        return {}
 
     def render(self, context):
         """Return the section wrapped with its heading.
@@ -1407,6 +1429,155 @@ class ProvenanceSection(Section):
         """Return the provenance table."""
         return ["## Provenance", "",
                 *_md_table(("field", "value", "source"), self.rows(context)), ""]
+
+
+class TableSection(Section):
+    """A table a document computed upstream, shown in the report and written as a CSV.
+
+    Built from rows rather than from events, so it is not a default
+    section: pass instances to ``BacktestReport(sections=[...])``. The
+    rows come from any node (a ``groupby`` over ticker and DTE bucket, say)
+    and the section only displays them: one HTML table, one summary line
+    naming the row count and the CSV, and ``<anchor>.csv`` beside the
+    report with every raw value.
+
+    Parameters
+    ----------
+    title : str
+        The heading.
+    anchor : str
+        The HTML id and the CSV's stem: lower case letters, digits, ``_``, ``-``.
+    columns : sequence of str
+        The columns shown and written, in order; distinct.
+    rows : sequence of dict
+        One object per row; a missing column displays as a dash.
+    formats : dict, optional
+        ``{column: kind}`` over :data:`DISPLAY_KINDS`; an unnamed column
+        formats by its value's type.
+    note : str, optional
+        A line of text under the table (what the rows are, how they were cut).
+
+    Examples
+    --------
+    ::
+
+        section = TableSection.from_obj("by-ticker", {
+            "title": "By ticker", "columns": ["symbol", "net_pnl"],
+            "rows": [{"symbol": "AAA", "net_pnl": 6.0}], "formats": {"net_pnl": "pnl"}})
+        BacktestReport(log, sections=[section]).write("out")  # also out/by-ticker.csv
+    """
+
+    #: The shape of an anchor: it becomes an HTML id and a file stem.
+    ANCHOR = re.compile(r"[a-z0-9][a-z0-9_-]*")
+    #: The keys a spec may carry.
+    KEYS = ("title", "columns", "rows", "formats", "note")
+    #: What an empty table says.
+    EMPTY = "No rows."
+
+    def __init__(self, title, anchor, columns, rows, *, formats=None, note=None):
+        problems = self.problems(anchor, {"title": title, "columns": columns, "rows": rows,
+                                          "formats": formats or {}, "note": note or ""})
+        if problems:
+            raise ConfigError(problems)
+        self.title, self.anchor = title, anchor
+        self.columns, self.rows = tuple(columns), list(rows)
+        self.formats, self.note = dict(formats or {}), note
+
+    @classmethod
+    def problems(cls, anchor, spec):
+        """Return every problem with a table spec; empty when acceptable.
+
+        Parameters
+        ----------
+        anchor : object
+        spec : object
+            ``title``, ``columns``, ``rows`` and optional ``formats``, ``note``.
+
+        Returns
+        -------
+        list of str
+        """
+        problems = []
+        if not isinstance(anchor, str) or not cls.ANCHOR.fullmatch(anchor):
+            problems.append(f"table anchor must match {cls.ANCHOR.pattern}, got {anchor!r}")
+        where = f"table {anchor!r}"
+        if not isinstance(spec, dict):
+            return problems + [f"{where} must be an object, got {spec!r}"]
+        problems += [f"{where}: unknown key {key!r} — allowed: {list(cls.KEYS)}"
+                    for key in sorted(set(spec) - set(cls.KEYS))]
+        title, columns, rows = spec.get("title"), spec.get("columns"), spec.get("rows")
+        if not isinstance(title, str) or not title.strip():
+            problems.append(f"{where}.title must be a non-empty string, got {title!r}")
+        if (not isinstance(columns, (list, tuple)) or not columns
+                or not all(isinstance(c, str) and c for c in columns)):
+            problems.append(f"{where}.columns must be a non-empty list of column names, "
+                            f"got {columns!r}")
+            columns = []
+        elif len(set(columns)) != len(columns):
+            problems.append(f"{where}.columns must be distinct, got {list(columns)}")
+        if not isinstance(rows, (list, tuple)):
+            problems.append(f"{where}.rows must be a list of objects, got {rows!r}")
+        else:
+            problems.extend(f"{where}.rows[{i}] must be an object, got {row!r}"
+                            for i, row in enumerate(rows) if not isinstance(row, dict))
+        formats = spec.get("formats", {})
+        if not isinstance(formats, dict):
+            problems.append(f"{where}.formats must be an object of column -> kind, "
+                            f"got {formats!r}")
+        else:
+            problems.extend(f"{where}.formats: {col!r} -> {kind!r} — columns "
+                            f"{list(columns)}, kinds {sorted(DISPLAY_KINDS)}"
+                            for col, kind in formats.items()
+                            if col not in columns or kind not in DISPLAY_KINDS)
+        if not isinstance(spec.get("note", ""), str):
+            problems.append(f"{where}.note must be a string, got {spec['note']!r}")
+        return problems
+
+    @classmethod
+    def from_obj(cls, anchor, spec):
+        """Build a section from a JSON-shaped spec, refusing with every problem listed.
+
+        Parameters
+        ----------
+        anchor : str
+        spec : dict
+            ``title``, ``columns``, ``rows`` and optional ``formats``, ``note``.
+
+        Returns
+        -------
+        TableSection
+
+        Raises
+        ------
+        ConfigError
+            On any problem :meth:`problems` finds.
+        """
+        problems = cls.problems(anchor, spec)
+        if problems:
+            raise ConfigError(problems)
+        return cls(spec["title"], anchor, spec["columns"], spec["rows"],
+                   formats=spec.get("formats"), note=spec.get("note"))
+
+    @property
+    def filename(self):
+        """The CSV's name: ``<anchor>.csv``."""
+        return f"{self.anchor}.csv"
+
+    def html(self, context):
+        """Return the table (or that it is empty), then the note."""
+        body = (_html_table(self.columns, self.rows, formats=self.formats, units=context.units)
+                if self.rows else _note(self.EMPTY))
+        return body + (_note(self.note) if self.note else "")
+
+    def markdown(self, context):
+        """Return one line: the row count and where the full table lives."""
+        noun = "row" if len(self.rows) == 1 else "rows"
+        return ["", f"**{render_cell(self.title)}:** {count(len(self.rows))} {noun} "
+                    f"in `{self.filename}`.", ""]
+
+    def files(self, context):
+        """Return ``{<anchor>.csv: raw values over the columns}``."""
+        return {self.filename: csv_text(self.columns, self.rows)}
 
 
 #: The default section order — the reader's order.

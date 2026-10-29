@@ -60,6 +60,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/mio-2019-limited36.json", "configs/mio-2019-broad212.json", "configs/mio-2019-pins.json",
         # Owner-authorized final result evidence; original study JSONs remain unchanged.
         "configs/mio-2019-results-pins.json",
+        # ADR-0283: the per-run MIO report standard (limited36 document, its row shaper, its tests).
+        "configs/mio-report-limited36-available-size-20261029.json",
+        "index_options/mio_run_events.py", "tests/test_mio_run_report.py",
         "docs/memos/2026-10-28-mio-2019-comparison.md",
         "docs/memos/2026-10-28-mio-2019-comparison.csv",
         # The future schedule reference remains unadopted.

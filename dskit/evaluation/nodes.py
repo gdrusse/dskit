@@ -24,7 +24,8 @@ from dskit.evaluation.events import EventLog
 from dskit.evaluation.mapping import CANDIDATES_PORT, PORTS, EventMapping
 from dskit.evaluation.provenance import fill_provenance, run_dir_provenance
 from dskit.evaluation.report import BacktestReport
-from dskit.evaluation.sections import chosen_sections, section_problems
+from dskit.evaluation.sections import TableSection, chosen_sections, section_problems
+from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import Node, reject_unknown_params
 
 __all__ = ["RUNS_DIR_NAME", "EvaluationReport", "RowsToEvents"]
@@ -47,6 +48,14 @@ class EvaluationReport(Node):
         ``pipeline_runs`` is refused because it would nest a second runs
         directory inside the run. An absolute (or ``~``) path is used as
         given. ``title`` (str, optional) — overrides ``run_start.title``.
+        ``tables`` (object, optional) — ``{anchor: {title, columns, rows,
+        formats?, note?}}``: each becomes a
+        :class:`~dskit.evaluation.sections.TableSection`, shown before the
+        provenance section and written as ``<anchor>.csv`` beside the
+        report. ``rows`` is usually a ``"$node.port"`` reference to rows an
+        upstream node computed (a node-map input must be a plain
+        reference, so tables travel as a param, whose nested references
+        resolve before the run).
         ``sections`` (list of str, optional) — which sections to render, by
         anchor (:data:`~dskit.evaluation.sections.SECTIONS`); ``summary``
         and ``provenance`` always render; omitted renders all of them.
@@ -61,7 +70,8 @@ class EvaluationReport(Node):
     ``metrics``
         ``verdict``, ``census_ok`` and the key statistics.
     ``paths``
-        ``{events, summary, html, decisions, trades}`` -> file path.
+        ``{events, summary, html, decisions, trades}`` -> file path, then
+        ``{<anchor>.csv}`` for each table.
 
     Examples
     --------
@@ -74,7 +84,7 @@ class EvaluationReport(Node):
 
     role = "report"
     outputs = ("metrics", "paths")
-    _PARAMS = ("out_dir", "title", "sections", "notes")
+    _PARAMS = ("out_dir", "title", "sections", "tables", "notes")
 
     @classmethod
     def validate_params(cls, params):
@@ -104,6 +114,23 @@ class EvaluationReport(Node):
             problems.append(f"title must be a string, got {params['title']!r}")
         if "sections" in params:
             problems.extend(section_problems(params["sections"]))
+        if "tables" in params:
+            problems.extend(cls._table_problems(params["tables"]))
+        return problems
+
+    @staticmethod
+    def _table_problems(tables):
+        """Problems with the ``tables`` param; a ``$`` reference for ``rows`` defers its check."""
+        if is_node_ref(tables):
+            return []
+        if not isinstance(tables, dict):
+            return [f"tables must be an object of anchor -> table spec, "
+                    f"got {type(tables).__name__}"]
+        problems = []
+        for anchor, spec in tables.items():
+            if isinstance(spec, dict) and is_node_ref(spec.get("rows")):
+                spec = {**spec, "rows": []}
+            problems.extend(TableSection.problems(anchor, spec))
         return problems
 
     def validate_inputs(self, inputs):
@@ -137,12 +164,26 @@ class EvaluationReport(Node):
         """
         run_dir = getattr(ctx, "run_dir", None)
         log = EventLog(fill_provenance(inputs["events"], run_dir))
-        report = BacktestReport(log, chosen_sections(self.params.get("sections")),
-                                title=self.params.get("title"))
+        sections = self._with_tables(chosen_sections(self.params.get("sections")),
+                                     self.params.get("tables"))
+        report = BacktestReport(log, sections, title=self.params.get("title"))
         out_dir = os.path.expanduser(self.params["out_dir"])
         if not os.path.isabs(out_dir):
             out_dir = os.path.join(run_dir, out_dir)
         return {"metrics": report.metrics(), "paths": report.write(out_dir)}
+
+
+    @staticmethod
+    def _with_tables(chosen, tables):
+        """Return the chosen sections with one table section per wired table.
+
+        The tables sit after the other sections and before ``provenance``,
+        which stays last.
+        """
+        extra = [TableSection.from_obj(anchor, spec) for anchor, spec in (tables or {}).items()]
+        last = [cls for cls in chosen if getattr(cls, "anchor", None) == "provenance"]
+        head = [cls for cls in chosen if cls not in last]
+        return [*head, *extra, *last]
 
 
 class RowsToEvents(Node):

@@ -73,9 +73,11 @@ dskit/evaluation/
 ├── narrative.py   Narrative ("What happened" by explicit rules) + HOW_TO_READ
 ├── provenance.py  git_revision, fill_provenance, run_dir_provenance
 ├── svg.py         stdlib SVG charts + SessionScale + CHART_CSS + downsample
-├── sections.py    Section ABC + the eleven default sections
-├── report.py      BacktestReport -> events.jsonl, summary.md, report.html, CSVs
+├── sections.py    Section ABC + the eleven default sections + TableSection (rows -> table + CSV)
+├── report.py      BacktestReport -> events.jsonl, summary.md, report.html, CSVs (+ Section.files)
 ├── nodes.py       EvaluationReport (+ sections) and RowsToEvents nodes
+├── gate.py        EventTotalsGate node: events' totals vs expected values, or refuse (no report)
+├── links.py       ArtifactLinks node: another run's files by path + SHA-256 (pending if absent), read-only on that root
 ├── README.md
 ├── AGENTS.md      this file
 └── CLAUDE.md      identical
