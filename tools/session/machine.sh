@@ -34,13 +34,13 @@ machine_os() {
 }
 
 # The label says what the host IS; the note says which repo instructions
-# do and do not apply on it. Neither names a user or a path, so the same
-# line is true for anyone who clones the repo.
+# do and do not apply on it. Neither names a user or a personal path, so
+# the same line is true for anyone who clones the repo.
 machine_text() {
     case "$(machine_os)" in
         macos)
             label="macOS"
-            note="No WSL or Windows here: skip any wsl.exe step and steps that say to work in WSL (they assume the Windows PC); run repo tools directly. Absolute paths written on another machine (/home/..., /mnt/...) will not exist here; check before running a config that names one." ;;
+            note="No WSL or Windows here: where a step says to use wsl.exe or to work in WSL, drop only that part and do the rest of the step here (fetch, worktree from origin/main and so on still apply); run repo tools directly. Absolute paths written on another machine (/home/..., /mnt/...) will not exist here; check before running a config that names one." ;;
         wsl)
             label="WSL (Linux on a Windows PC)"
             note="Run repo tools directly; Windows drives are under /mnt/<letter>." ;;
@@ -49,7 +49,7 @@ machine_text() {
             note="Run repo tools directly; skip any wsl.exe step." ;;
         windows)
             label="Windows (Git Bash/MSYS)"
-            note="Run repo tools inside WSL: wsl.exe -e bash -lc 'cd <worktree> && <command>'." ;;
+            note="Run repo tools inside WSL: wsl.exe -e bash -lc 'cd <the worktree's WSL-side path> && <command>'; the Windows-form repo path above is not valid inside WSL." ;;
         *)
             label="an unrecognised OS"
             note="Verify paths and tooling before running anything." ;;
@@ -58,15 +58,18 @@ machine_text() {
     host=$(uname -n 2>/dev/null)
     user=${USER:-$(id -un 2>/dev/null)}
     root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-    # One line, always: a newline smuggled in through a hostname or path
-    # would split the hook's context string.
+    # One line, always: a newline or other control byte smuggled in through
+    # a hostname or path would split the context or break the hook JSON.
+    # LC_ALL=C because BSD tr in a UTF-8 locale aborts mid-stream on an
+    # invalid byte and silently drops everything after it, the note included.
     printf 'Machine: %s (%s) on host %s, user %s, repo %s. %s' \
-        "$label" "$kernel" "$host" "$user" "$root" "$note" | tr '\n\r\t' '   '
+        "$label" "$kernel" "$host" "$user" "$root" "$note" |
+        LC_ALL=C tr '\001-\037\177' '[ *]'
     printf '\n'
 }
 
 json_escape() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+    printf '%s' "$1" | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
 case "${1:-SessionStart}" in

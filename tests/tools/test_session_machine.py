@@ -9,6 +9,7 @@ the suite -- including a WSL box, whose real ``uname -r`` must not leak in.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -43,7 +44,12 @@ EXPECTED_OS = {
 
 
 def _fake_uname(tmp_path, sysname, release, node="box-1", machine="arm64"):
-    """Put a ``uname`` that answers -s/-r/-n/-m first on a fresh PATH dir."""
+    """Put a ``uname`` that answers -s/-r/-n/-m first on a fresh PATH dir.
+
+    ``node`` goes through ``printf '%b'``, so ``\\0ddd`` in it becomes that
+    raw byte -- the only way to hand the script an invalid-UTF-8 or control
+    byte deterministically across shells.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     script = bin_dir / "uname"
@@ -52,7 +58,7 @@ def _fake_uname(tmp_path, sysname, release, node="box-1", machine="arm64"):
         'case "$1" in\n'
         f"  -s) echo '{sysname}' ;;\n"
         f"  -r) echo '{release}' ;;\n"
-        f"  -n) echo '{node}' ;;\n"
+        f"  -n) printf '%b\\n' '{node}' ;;\n"
         f"  -m) echo '{machine}' ;;\n"
         "  *) exit 1 ;;\n"
         "esac\n"
@@ -61,15 +67,18 @@ def _fake_uname(tmp_path, sysname, release, node="box-1", machine="arm64"):
     return str(bin_dir)
 
 
-def _run(tmp_path, host, *args, node="box-1", user="tester", cwd=None):
+def _run(tmp_path, host, *args, node="box-1", user="tester", cwd=None,
+         extra_env=None):
     sysname, release, extra = HOSTS[host]
     bin_dir = _fake_uname(tmp_path, sysname, release, node=node)
     env = {k: v for k, v in os.environ.items() if k != "WSL_DISTRO_NAME"}
     env.update(extra)
+    env.update(extra_env or {})
     env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
     env["USER"] = user
     return subprocess.run(["sh", MACHINE, *args], capture_output=True,
-                          text=True, env=env, cwd=cwd or REPO_ROOT)
+                          env=env, cwd=cwd or REPO_ROOT,
+                          text=True, errors="replace")
 
 
 @pytest.mark.parametrize("host", sorted(HOSTS))
@@ -113,10 +122,36 @@ def test_hook_json_survives_quotes_and_backslashes(tmp_path):
     assert 'we"ird\\host' in out["additionalContext"]
 
 
+def test_control_bytes_in_a_hostname_cannot_break_the_json(tmp_path):
+    proc = _run(tmp_path, "macos", node="ho%st\\0001x\\0033[31m")
+    out = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "ho%st" in out
+    assert not re.search(r"[\x00-\x1f\x7f]", out)
+
+
+def test_invalid_utf8_in_a_hostname_keeps_the_note(tmp_path):
+    # BSD tr in a UTF-8 locale aborts on an invalid byte and drops the rest
+    # of the line -- the whole note -- unless the script pins LC_ALL=C.
+    out = _run(tmp_path, "macos", "--text", node="caf\\0351",
+               extra_env={"LC_ALL": "en_US.UTF-8"}).stdout
+    assert "Absolute paths written on another machine" in out
+
+
+def test_mac_note_drops_only_the_wsl_part_of_a_step(tmp_path):
+    # "skip steps that say to work in WSL" would let a Mac agent skip a
+    # whole mandated step (fetch + worktree from origin/main). Pin that the
+    # note keeps the rest of the step.
+    out = _run(tmp_path, "macos", "--text").stdout
+    assert "drop only that part" in out
+    assert "worktree from origin/main" in out
+
+
 def test_outside_a_git_repo_falls_back_to_the_cwd(tmp_path):
     outside = tmp_path / "plain"
     outside.mkdir()
-    out = _run(tmp_path, "linux", "--text", cwd=str(outside)).stdout
+    # A tmp dir that happens to sit inside some repo must not find it.
+    out = _run(tmp_path, "linux", "--text", cwd=str(outside),
+               extra_env={"GIT_CEILING_DIRECTORIES": str(tmp_path)}).stdout
     assert str(outside.resolve()) in out or str(outside) in out
 
 
@@ -151,8 +186,22 @@ def test_sweep_reminder_gives_the_wsl_hint_only_on_windows(tmp_path, host,
     json.loads(out)  # still one valid hook payload
 
 
+def test_sweep_reminder_differs_across_hosts_only_by_the_hint(tmp_path):
+    windows = _remind(tmp_path, "windows_mingw")
+    mac = _remind(tmp_path, "macos")
+    hint = " (WSL: wsl.exe -e bash -lc 'cd ~/wt/<your-worktree> && " \
+           "tools/sweep/sweep <term>')"
+    assert hint in windows
+    assert windows.replace(hint, "") == mac
+
+
 def test_claude_session_start_hook_runs_the_script():
     with open(os.path.join(REPO_ROOT, ".claude", "settings.json")) as fh:
         hooks = json.load(fh)["hooks"]["SessionStart"]
-    commands = [h["command"] for group in hooks for h in group["hooks"]]
-    assert any("tools/session/machine.sh" in c for c in commands)
+    entries = [h for group in hooks for h in group["hooks"]
+               if "tools/session/machine.sh" in h["command"]]
+    assert len(entries) == 1
+    # A SessionStart hook that hangs delays every session, and one passed a
+    # flag instead of the event name would print text, not hook JSON.
+    assert entries[0]["command"].endswith(" SessionStart")
+    assert entries[0]["timeout"] == 5
