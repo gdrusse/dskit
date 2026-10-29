@@ -23,6 +23,13 @@ class FixtureContract(StudyContract):
     def validate_result(self, study, results, audit, provenance):
         return True
 
+    @classmethod
+    def validate_amendment(cls, old_study, new_study):
+        old = copy.deepcopy(old_study)
+        old["domain"]["precision"] = 6
+        if old_study["domain"].get("precision") != 8 or old != new_study:
+            raise ValueError("unsupported fixture amendment")
+
 
 def _implementation_pins(*objects):
     import importlib
@@ -357,6 +364,48 @@ def test_same_identity_retry_preserves_failed_publication(study):
         registry.verify(plan, permit)
     registry.verify(plan, next_permit)
 
+
+def test_amended_retry_requires_published_failure_and_preserves_old_claim(study, monkeypatch):
+    from dskit.pipeline.study_protocol import _seal
+    registry = _initialize(study)
+    old = copy.deepcopy(study)
+    old["domain"]["precision"] = 8
+    old_plan, permit = _claim(old, registry)
+    provenance = {"source": "pinned"}
+    results, audit = {"status": "failed"}, {"error": "roundoff"}
+    registry.bind(old_plan, permit, "inputs", provenance)
+    registry.bind(old_plan, permit, "execution",
+                  {"results": results, "audit": audit, "provenance": provenance})
+    artifact = {"plan": old_plan, "permit": permit, "results": results, "audit": audit,
+                "provenance": provenance, "complete": False}
+    receipt = {"run_dir": "/attested", "document_hash": "doc", "node": "close_packet", "port": "receipt"}
+    manifest = {"sha256": "a" * 64}
+    monkeypatch.setattr(registry, "_attested_result", lambda value: (artifact, manifest))
+    new = copy.deepcopy(old)
+    new["domain"]["precision"] = 6
+    new_plan = StudyContract.build(new)
+    revision = registry.snapshot()["revision"]
+    with pytest.raises(ValueError, match="published failed"):
+        registry.amend_retry(new_plan, permit, revision, receipt, "numerical retry")
+    assert registry.snapshot()["revision"] == revision
+    registry.publish(old_plan, permit, receipt)
+    revision = registry.snapshot()["revision"]
+    bad = copy.deepcopy(new)
+    bad["domain"]["unrelated"] = True
+    with pytest.raises(ValueError, match="unsupported fixture"):
+        registry.amend_retry(StudyContract.build(bad), permit, revision, receipt, "numerical retry")
+    with pytest.raises(ValueError, match="revision"):
+        registry.amend_retry(new_plan, permit, revision-1, receipt, "numerical retry")
+    amended = registry.amend_retry(new_plan, permit, revision, receipt, "numerical retry")
+    assert amended["classification"] == "amended_replay"
+    assert amended["amended_from"]["claim"] == permit["id"]
+    assert amended["amended_from"]["failed_manifest_sha256"] == manifest["sha256"]
+    snapshot = registry.snapshot()
+    assert snapshot["claims"][permit["id"]]["status"] == "retry_superseded_exposed"
+    assert snapshot["claims"][permit["id"]]["publication"]["receipt"] == receipt
+    registry.verify(new_plan, amended)
+    with pytest.raises(ValueError, match="published failed"):
+        registry.amend_retry(new_plan, permit, snapshot["revision"], receipt, "duplicate")
 
 def test_schedule_extension_cannot_rewrite_history(study):
     registry = _initialize(study)

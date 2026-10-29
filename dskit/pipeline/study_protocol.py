@@ -67,6 +67,11 @@ class StudyContract(ABC):
         """Refuse a result that cannot close the entire declared cohort."""
 
     @classmethod
+    def validate_amendment(cls, old_study, new_study):
+        """Domain owners must explicitly constrain changed economics on a replay."""
+        raise ValueError("this study contract does not allow amended replay")
+
+    @classmethod
     def validate_implementation(cls, pins, modules):
         """Bind complete package source pins to the actually imported modules."""
         roots, expected = set(), set()
@@ -520,6 +525,70 @@ class ExposureRegistry:
             self._save(connection, state, "same_identity_retry")
             return new
 
+    def amend_retry(self, plan, permit, expected_revision, result_receipt, reason):
+        """Replay a published failed result under one domain-approved amended plan."""
+        plan = self._validate_plan(plan)
+        if type(expected_revision) is not int or not isinstance(reason, str) or not reason.strip():
+            raise ValueError("amended retry requires current revision and reason")
+        artifact, manifest = self._attested_result(result_receipt)
+        old_plan = artifact["plan"]
+        _unseal(old_plan)
+        _unseal(permit)
+        if (artifact["complete"] is not False or artifact["permit"] != permit
+                or old_plan["sha256"] != permit["plan_sha256"]
+                or old_plan["packet"] != plan["packet"]
+                or old_plan["cohort_sha256"] != plan["cohort_sha256"]
+                or old_plan["source_pins"] != plan["source_pins"]
+                or old_plan["read_bounds"] != plan["read_bounds"]
+                or old_plan["study"]["registry"] != self.config
+                or old_plan["study"]["contract"] != plan["study"]["contract"]
+                or old_plan["study"]["packets"] != plan["study"]["packets"]
+                or old_plan["study"]["selected_packet"] != plan["study"]["selected_packet"]
+                or old_plan["study"]["dependencies"] != plan["study"]["dependencies"]):
+            raise ValueError("amended retry changes protected plan identity")
+        hook = import_ref(plan["study"]["contract"])
+        hook.validate_amendment(old_plan["study"], plan["study"])
+        with self._transaction() as (connection, state):
+            old = state["claims"].get(permit["id"])
+            publication = {"receipt": result_receipt, "artifact_sha256": manifest["sha256"]}
+            if (state["revision"] != expected_revision or state["active"] != permit["id"]
+                    or old is None or old["permit"] != permit
+                    or old["status"] != "failed_exposed_pending_review"
+                    or old.get("publication") != publication
+                    or old["result"] != value_hash(artifact)
+                    or old["inputs"] != value_hash(artifact["provenance"])
+                    or old["execution"] != value_hash({k: artifact[k] for k in ("results", "audit", "provenance")})
+                    or state["packets"] != plan["study"]["packets"]):
+                raise ValueError("amended retry requires exact published failed claim and current revision")
+            predecessor = state["dispositions"].get(plan["packet"]["predecessor"])
+            if predecessor != permit["freeze"]["predecessor"]:
+                raise ValueError("amended retry predecessor changed")
+            frozen = _seal({"plan_sha256": plan["sha256"],
+                            "cohort_sha256": plan["cohort_sha256"],
+                            "predecessor": predecessor,
+                            "classification": "amended_replay",
+                            "registry_revision": state["revision"],
+                            "registry": self.config})
+            body = {k: copy.deepcopy(v) for k, v in permit.items() if k != "sha256"}
+            body.update(id=str(uuid.uuid4()), plan_sha256=plan["sha256"],
+                        freeze=frozen, classification="amended_replay",
+                        source_pins_sha256=value_hash(plan["source_pins"]),
+                        read_bounds=plan["read_bounds"],
+                        registry_revision_before=state["revision"],
+                        registry_revision_after=state["revision"]+1,
+                        amended_from={"claim": permit["id"],
+                                      "failed_receipt": result_receipt,
+                                      "failed_manifest_sha256": manifest["sha256"],
+                                      "reason": reason})
+            new = _seal(body)
+            old["status"] = "retry_superseded_exposed"
+            state["freezes"][frozen["sha256"]] = frozen
+            state["claims"][new["id"]] = {"permit": new, "status": "claimed_exposed",
+                                          "inputs": None, "execution": None, "result": None}
+            state["active"] = new["id"]
+            self._save(connection, state, "published_failure_amended_replay")
+            return new
+
     def extend(self, plan, reason):
         """Append future schedule entries without changing any existing packet."""
         plan = self._validate_plan(plan)
@@ -649,7 +718,9 @@ class StudyProtocolControl(StudyNode):
         required = {
             "initialize": {"prior_exposure", "end_before"}, "freeze": set(),
             "review": {"reason", "result_receipt"}, "abandon": {"reason"}, "retire": {"reason"},
-            "retry": {"permit", "expected_revision"}, "extend": {"reason"},
+            "retry": {"permit", "expected_revision"},
+            "amend_retry": {"permit", "expected_revision", "result_receipt", "reason"},
+            "extend": {"reason"},
             "import_development": {"prior_exposure", "expected_revision", "reason"}}.get(action)
         if required is None:
             errors.append("explicit supported control action required")
@@ -665,6 +736,10 @@ class StudyProtocolControl(StudyNode):
             result = registry.initialize(p["study"]["packets"], p["prior_exposure"], p["end_before"])
         elif action == "retry":
             result = {"permit": registry.retry(self.plan(), p["permit"], p["expected_revision"])}
+        elif action == "amend_retry":
+            result = {"permit": registry.amend_retry(
+                self.plan(), p["permit"], p["expected_revision"],
+                p["result_receipt"], p["reason"])}
         elif action == "extend":
             result = registry.extend(self.plan(), p["reason"])
         elif action == "import_development":

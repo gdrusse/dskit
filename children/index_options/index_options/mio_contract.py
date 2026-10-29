@@ -127,6 +127,37 @@ class MIOStudyContract(StudyContract):
     resolved = MIOStudyContract().resolve(study)
     """
 
+    @classmethod
+    def validate_amendment(cls, old_study, new_study):
+        """Allow only the Q1 projection integration precision remediation."""
+        old = copy.deepcopy(old_study)
+        new = copy.deepcopy(new_study)
+        packet_id = "confirmation_2021q1_top3_train2019"
+        if (old["selected_packet"] != packet_id or new["selected_packet"] != packet_id
+                or next(p for p in old["packets"] if p["id"] == packet_id) != {
+                    "id": packet_id, "start": "2021-01-04", "end_before": "2021-04-01",
+                    "purpose": "confirmation", "predecessor": "dev_2019_full_year_weekly"}):
+            raise ValueError("amended replay is limited to the reviewed Q1 packet")
+        if set(old["code"]) != set(new["code"]):
+            raise ValueError("amended replay code pin set changed")
+        changed_code = {path for path in old["code"] if old["code"][path] != new["code"][path]}
+        allowed_code = {path for path in old["code"] if path.endswith(
+            ("/dskit/pipeline/study_protocol.py", "/children/index_options/index_options/mio_contract.py"))}
+        if len(allowed_code) != 2 or changed_code != allowed_code:
+            raise ValueError("amended replay changes unreviewed code pins")
+        if (old["domain"]["params"]["bridge"]["projection"]["quadrature_tolerance"] != 1e-8
+                or new["domain"]["params"]["bridge"]["projection"]["quadrature_tolerance"] != 1e-6):
+            raise ValueError("amended replay requires the reviewed projection precision change")
+        old["domain"]["params"]["bridge"]["projection"]["quadrature_tolerance"] = 1e-6
+        if (old["domain"] != new["domain"]
+                or old["registry"] != new["registry"]
+                or old["packets"] != new["packets"]
+                or old["selected_packet"] != new["selected_packet"]
+                or old["dependencies"] != new["dependencies"]
+                or old["contract"] != new["contract"]):
+            raise ValueError("amended replay changes unrelated study settings")
+
+
     _KEYS = {"params", "pairs", "history_start", "tail_padding_days", "sources",
              "predictive", "admission", "report", "synthetic"}
 
