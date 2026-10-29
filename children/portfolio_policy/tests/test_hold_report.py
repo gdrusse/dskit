@@ -175,7 +175,7 @@ def test_hold_report_end_to_end(root, monkeypatch):  # noqa: F811  (the imported
     aapl_risk = _plain_risk(root, DECIDED)["AAPL"]
     assert (aapl[3], aapl[4]) == (_pct(aapl_risk["annual_vol"]), f"{aapl_risk['beta']:.2f}")
     assert aapl[3] != cells[3] and aapl[4] != cells[4]
-    assert f"- Total value (listed equity longs): {ours['metrics']['total_value']:,.2f}\n" in text
+    assert f"- Total value (stock, ETF and mutual fund longs): {ours['metrics']['total_value']:,.2f}\n" in text
     assert "- Verdicts: " in text
     assert text.rstrip().endswith("unless loss_offset is true.")
     assert result.outputs["verdict"]["metrics"]["rows"] == len(rows)
@@ -391,7 +391,7 @@ def test_weekly_script_runs_a_day_other_than_the_shipped_placeholder(sandbox):
         assert line[5:7] == [_pct((value - basis) / value), _pct(liq_tax / value)]
         assert line[9] in ("EXIT", "HOLD")
     assert cells[OLD_LOT][1] == "48.7%" and cells[OLD_LOT][5] == "34.5%", "1650 / 3390; 570 / 1650"
-    assert f"- Total value (listed equity longs): {3390.0:,.2f}\n" in text
+    assert f"- Total value (stock, ETF and mutual fund longs): {3390.0:,.2f}\n" in text
 
     # the shipped documents are never edited: the day is substituted in temporary copies
     for name, before in configs.items():

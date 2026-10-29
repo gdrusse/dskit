@@ -72,7 +72,8 @@ def test_decision_day_is_declared_once_per_document():
     where = {c["field"]: c["value"] for c in document.pipeline["snapshot"].params["where"]}
     assert document.pipeline["tax"].params["as_of"] == where["as_of"]
     assert document.pipeline["lots"].params["as_of"] == where["as_of"]
-    assert where["asset_type"] == "EQUITY"
+    # stocks, ETFs and mutual funds (Schwab's types, first real pull 2026-10-29); options stay out
+    assert where["asset_type"] == ["EQUITY", "COLLECTIVE_INVESTMENT", "MUTUAL_FUND"]
     (risk_day,) = document.pipeline["risk_day"].params["where"]
     # <=: a pull on the decision day has no closed bar for it, so the latest earlier session
     assert risk_day == {"field": "ts", "op": "<=", "value": where["as_of"]}
@@ -153,6 +154,8 @@ def test_the_tax_reads_lots_and_the_lot_policy_is_declared_once():
     assert lots["method"] == "fifo"
     assert lots["key_fields"] == join["key_fields"]
     assert lots["allow_incomplete"] == join["allow_incomplete"]
+    # Schwab's trades history starts in 2024 (first real pull): an older holding falls back
+    assert lots["allow_incomplete"] is True
     assert (join["value_field"], join["basis_field"]) == (tax["value_field"], tax["basis_field"])
     assert set(lots["key_fields"]) < set(nodes["trades"].params["key_fields"])
     assert join["tolerance"] == 0.0, "any slack hides a missing lot: raise it only on purpose"
@@ -301,11 +304,13 @@ def test_the_verdict_reads_each_summary_output_by_its_own_name():
 
 
 def test_the_report_states_the_universe_the_decision_snapshot_keeps():
-    """The total's label says "listed equity longs"; the decision document's filter is that, in
-    clauses. Words and clauses are one fact written twice, so a change to either fails here."""
+    """The total's label says "stock, ETF and mutual fund longs"; the decision document's filter
+    is that, in clauses. Words and clauses are one fact written twice, so a change to either fails
+    here."""
     decide = load_document(_path("run-hold-vs-redeploy.json"))
     clauses = decide.pipeline["snapshot"].params["where"]
-    assert clauses[1:] == [{"field": "asset_type", "op": "==", "value": "EQUITY"},
+    assert clauses[1:] == [{"field": "asset_type", "op": "in",
+                            "value": ["EQUITY", "COLLECTIVE_INVESTMENT", "MUTUAL_FUND"]},
                            {"field": "long_quantity", "op": ">", "value": 0}]
     report = load_document(_path("run-hold-report.json"))
-    assert report.pipeline["verdict"].params["universe"] == "listed equity longs"
+    assert report.pipeline["verdict"].params["universe"] == "stock, ETF and mutual fund longs"

@@ -34852,3 +34852,51 @@ nothing (here an emptied margin account, every `currentBalances` field zero); it
   order and a non-mapping `currentBalances` were untested, now tested with their own message;
   `moneyMarketFund` added to the proof (a fund is held as a position; present and zero on both
   CASH and MARGIN accounts in the real pull). Nit kept: `_not_empty` returns `""` for empty.
+
+#### ADR-0279 amendment: the hold verdict covers mutual funds and ETFs (approved by owner 2026-10-29, "Approve, build it")
+
+Evidence from the first real pull (2026-10-29):
+
+- **What the filter drops.** Schwab types ETFs `COLLECTIVE_INVESTMENT` and mutual funds
+  `MUTUAL_FUND`. Together they are 83% of the portfolio by value, and the `asset_type == EQUITY`
+  filter drops all of it.
+- **Bars.** Schwab serves daily bars for every held fund and ETF (275-277 sessions in 400 days).
+- **History.** The transactions endpoint returns nothing before 2024, so the purchases behind
+  most holdings are not in it.
+
+**Change** (child configs, tests and docs; no dskit code):
+
+1. **Filter.** `run-hold-vs-redeploy.json` `snapshot.where` and `run-decision-outcomes.json`
+   `later.where` become the allowlist `asset_type in ["EQUITY", "COLLECTIVE_INVESTMENT",
+   "MUTUAL_FUND"]`, so options and any unlisted type stay out. `tests/test_configs.py` pins
+   the two lists equal.
+2. **Lots.** `lots.allow_incomplete` and `lot_positions.allow_incomplete` become `true`, still
+   pinned equal. A holding whose purchases predate the history passes through as its aggregate
+   row, with Schwab's average-cost basis and a null acquired date. `default_holding` (`long`)
+   then prices its tax.
+3. **Notes and README.** The daily-bars symbols include the funds. The trades `asset_types`
+   stays `EQUITY`: with history from 2024 only, fund lots fall back either way.
+
+**Why EQUITY-only no longer fits.** It existed to keep option rows out, because `cost_basis`
+applies no contract multiplier. Funds and ETFs have none, so `averagePrice x quantity` is
+their basis.
+
+**Limits:**
+
+- **Mixed holdings.** A holding that mixes pre-2024 shares with later buys does not reconcile,
+  so the whole holding falls back and is taxed as long-term. A share bought within the year is
+  then under-taxed on exit.
+- **Concentration.** It is measured by symbol, with no look-through. SWPPX at 53% reads as one
+  concentrated position, though it is an S&P 500 fund that overlaps VFIAX and SWTSX.
+- **Liquidity.** A mutual fund trades once a day at NAV; the decision treats it as liquid at
+  the snapshot value.
+
+**Tests:**
+
+- The config pins move to the list.
+- A whole run with one `MUTUAL_FUND` and one `COLLECTIVE_INVESTMENT` holding and no trades
+  decides both through the aggregate path.
+- An `OPTION` row is still filtered out.
+
+**Not in scope.** The owner's placeholders (tax rates, horizon, the active backtest) still
+gate a real verdict.

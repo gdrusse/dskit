@@ -262,14 +262,15 @@ def _register_bars(root, source, folder, rows):
          "--stream", "bars", "--mode", "backfill")
 
 
-def _build(tmp_path, trades):
+def _build(tmp_path, trades, positions=None, bars=None):
     """An onboarding root under ``tmp_path/ob``: two positions snapshots, the trades, the active
-    series and the daily bars."""
+    series and the daily bars. ``positions`` and ``bars`` replace the shipped THEN + LATER rows
+    and the one-factor bars when a test needs other holdings."""
     data, active, history = tmp_path / "data", tmp_path / "active", tmp_path / "history"
     data.mkdir()
     active.mkdir()
     history.mkdir()
-    _jsonl(data / "positions.jsonl", THEN + LATER)
+    _jsonl(data / "positions.jsonl", THEN + LATER if positions is None else positions)
     _jsonl(history / "trades.jsonl", trades)
     _jsonl(active / "returns.jsonl", [
         {"period": f"2025-W{i + 1:02d}", "net_return": v,
@@ -294,7 +295,7 @@ def _build(tmp_path, trades):
          "--activate")
     _cli(tmp_path, "acquire", "--root", "./ob", "--source", "schwab_trades",
          "--stream", "trades", "--mode", "backfill")
-    _register_bars(tmp_path, "schwab_daily", "daily", _daily_bars())
+    _register_bars(tmp_path, "schwab_daily", "daily", _daily_bars() if bars is None else bars)
     return tmp_path
 
 
@@ -621,18 +622,19 @@ def test_hold_vs_redeploy_end_to_end(root, monkeypatch):
     assert all(line["run_id"] == os.path.basename(result.run_dir) for line in lines)
 
 
-def test_a_holding_bought_before_the_history_refuses_unless_allowed(tmp_path, monkeypatch):
-    """AAPL was bought before the trades begin. The shipped document refuses by holding at the
-    reconciliation; declared allow_incomplete, AAPL passes through as its aggregate row with no
-    date, so the tax's default_holding applies to it exactly as before lots existed, while VTI
-    keeps its two lots. An AAPL sale with no purchase behind it refuses at the lots instead."""
+def test_a_holding_bought_before_the_history_falls_back_unless_disallowed(tmp_path, monkeypatch):
+    """AAPL was bought before the trades begin. Declared allow_incomplete false, the document
+    refuses by holding at the reconciliation. As shipped (true: Schwab's history starts in 2024),
+    AAPL passes through as its aggregate row with no date, so the tax's default_holding applies to
+    it exactly as before lots existed, while VTI keeps its two lots. An AAPL sale with no purchase
+    behind it refuses at the lots instead."""
     root = _build(tmp_path, [t for t in TRADES if t["symbol"] != "AAPL"])
     monkeypatch.chdir(root)
-    refused = _decide(root, expect="error")
+    refused = _decide(root, expect="error", lots={"allow_incomplete": False},
+                      lot_positions={"allow_incomplete": False})
     assert refused.halted_at == "lot_positions"
     assert f"('{ACCOUNT}', 'AAPL') has no lots" in refused.error
-    allowed = _decide(root, lots={"allow_incomplete": True},
-                      lot_positions={"allow_incomplete": True})
+    allowed = _decide(root)
     rows = {row["lot_id"]: row for row in allowed.outputs["decide"]["records"]}
     assert set(rows) == {OLD_VTI, YOUNG_VTI, f"{ACCOUNT}:AAPL:aggregate", A2_VTI}
     aapl = rows[f"{ACCOUNT}:AAPL:aggregate"]
@@ -645,15 +647,63 @@ def test_a_holding_bought_before_the_history_refuses_unless_allowed(tmp_path, mo
     assert rows[YOUNG_VTI]["liq_holding"] == "short"
 
 
-def test_a_sale_the_history_never_bought_refuses_at_the_lots(tmp_path, monkeypatch):
+# Schwab types ETFs COLLECTIVE_INVESTMENT and mutual funds MUTUAL_FUND (first real pull,
+# 2026-10-29). A third account holds one of each, bought before the trades history begins.
+FUND_ACCOUNT = "FEEDFACE5EED1234"
+FUNDS = [
+    {"account": FUND_ACCOUNT, "symbol": "SWPPX", "asset_type": "MUTUAL_FUND", "as_of": DECIDED,
+     "long_quantity": 100.0, "short_quantity": 0.0, "average_price": 10.0,
+     "cost_basis": 1000.0, "market_value": 1500.0},
+    {"account": FUND_ACCOUNT, "symbol": "VGT", "asset_type": "COLLECTIVE_INVESTMENT",
+     "as_of": DECIDED, "long_quantity": 4.0, "short_quantity": 0.0, "average_price": 300.0,
+     "cost_basis": 1200.0, "market_value": 2000.0},
+]
+
+
+def test_funds_and_etfs_are_decided_from_their_aggregate_rows(tmp_path, monkeypatch):
+    """As shipped, a mutual fund and an ETF the trades never bought are decided: each passes the
+    snapshot filter, falls back to its aggregate row (Schwab's basis, no date) and is taxed as
+    default_holding, beside the equity lots exactly as before. The option row is still filtered
+    out. The funds' bars copy SPY's and VTI's closes (an index fund and a sector ETF)."""
+    bars = _daily_bars()
+    copies = [{**row, "symbol": fund} for fund, source in (("SWPPX", "SPY"), ("VGT", "VTI"))
+              for row in bars if row["symbol"] == source]
+    root = _build(tmp_path, TRADES, positions=THEN + LATER + FUNDS, bars=bars + copies)
+    monkeypatch.chdir(root)
+    result = _decide(root)
+    rows = {row["lot_id"]: row for row in result.outputs["decide"]["records"]}
+    fund_ids = {f"{FUND_ACCOUNT}:{fund['symbol']}:aggregate" for fund in FUNDS}
+    assert set(rows) == set(WORKED_LOTS) | fund_ids
+    assert {row["symbol"] for row in rows.values()} == {"VTI", "AAPL", "SWPPX", "VGT"}
+    tax = _shipped(RUN_DOC, "tax")
+    rate = tax[f"{tax['default_holding']}_term_rate"]
+    for fund in FUNDS:
+        row = rows[f"{FUND_ACCOUNT}:{fund['symbol']}:aggregate"]
+        assert row["acquired"] is None and row["liq_holding"] == tax["default_holding"]
+        assert (row["long_quantity"], row["market_value"], row["cost_basis"]) == (
+            fund["long_quantity"], fund["market_value"], fund["cost_basis"])
+        assert row["liq_tax"] == pytest.approx((fund["market_value"] - fund["cost_basis"]) * rate)
+    fallback = result.outputs["lot_positions"]["summary"]["fallback"]
+    assert sorted(fallback, key=lambda f: f["symbol"]) == [
+        {"account": FUND_ACCOUNT, "symbol": "SWPPX", "reason": "no lots"},
+        {"account": FUND_ACCOUNT, "symbol": "VGT", "reason": "no lots"}]
+
+
+def test_a_sale_the_history_never_bought_refuses_at_the_lots_unless_allowed(tmp_path, monkeypatch):
+    """Declared allow_incomplete false, an AAPL sale with no purchase behind it refuses at the
+    lots by name. As shipped (true), the holding withholds its lots and falls back whole."""
     sale = {**TRADES[2], "transaction_id": 999, "trade_date": "2024-01-02",
             "time": "2024-01-02T14:00:00+0000", "quantity": -1.0, "amount": 150.0,
             "position_effect": "CLOSING"}
     root = _build(tmp_path, TRADES + [sale])
     monkeypatch.chdir(root)
-    refused = _decide(root, expect="error")
+    refused = _decide(root, expect="error", lots={"allow_incomplete": False},
+                      lot_positions={"allow_incomplete": False})
     assert refused.halted_at == "lots"
     assert f"sells 1.0 of '{ACCOUNT}:AAPL' on 2024-01-02 but 0.0 share(s) are open" in refused.error
+    shipped = _decide(root)
+    rows = {row["lot_id"] for row in shipped.outputs["decide"]["records"]}
+    assert f"{ACCOUNT}:AAPL:aggregate" in rows and AAPL_LOT not in rows
 
 
 def _break_even(net, hold_net):
@@ -846,13 +896,19 @@ def test_an_undecided_zero_quantity_row_never_refuses_the_scoring_run(root, monk
 def test_a_sale_the_other_accounts_shares_could_cover_refuses_at_the_lots(tmp_path, monkeypatch):
     """The second account sells 9 VTI in February 2025 with 8 open in it; the first account's 6
     shares would cover the 1 short if lots were pooled by symbol. They are not: the sale refuses
-    by account, at the lots."""
+    by account, at the lots (declared allow_incomplete false; as shipped the second account's VTI
+    falls back whole and the first account's lots are untouched)."""
     sale = {**TRADES[4], "transaction_id": 1007, "trade_date": "2025-02-01",
             "time": "2025-02-01T16:00:00+0000", "quantity": -9.0, "price": 200.0,
             "amount": 1800.0, "position_effect": "CLOSING"}
     root = _build(tmp_path, TRADES + [sale])
     monkeypatch.chdir(root)
-    refused = _decide(root, expect="error")
+    shipped = _decide(root)
+    rows = {row["lot_id"] for row in shipped.outputs["decide"]["records"]}
+    assert f"{ACCOUNT2}:VTI:aggregate" in rows and A2_VTI not in rows
+    assert {OLD_VTI, YOUNG_VTI} <= rows
+    refused = _decide(root, expect="error", lots={"allow_incomplete": False},
+                      lot_positions={"allow_incomplete": False})
     assert refused.halted_at == "lots"
     assert (f"sells 9.0 of '{ACCOUNT2}:VTI' on 2025-02-01 but 8.0 share(s) are open "
             "(oversold by 1.0)") in refused.error

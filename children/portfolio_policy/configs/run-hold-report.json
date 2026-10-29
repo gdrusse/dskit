@@ -64,7 +64,7 @@
         "source": "hold verdict per lot, with the portfolio block",
         "overwrite": false,
         "title": "What holding is worth",
-        "universe": "listed equity longs",
+        "universe": "stock, ETF and mutual fund longs",
         "key_fields": ["symbol", "lot_id"],
         "as_of_field": "as_of",
         "weight_field": "weight",

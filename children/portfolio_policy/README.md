@@ -37,7 +37,7 @@ python -m dskit.onboarding register-source schwab --root ./ob \
 python -m dskit.onboarding register-source schwab_trades --root ./ob \
     --catalog-source schwab-trades-src --connector schwab_transactions \
     --config '{"start": "2015-01-01"}' --activate
-# symbols = every held symbol plus SPY (the benchmark); start >= 400 calendar days before
+# symbols = every held symbol, funds and ETFs included, plus SPY (the benchmark); start >= 400 days before
 # today (a year of returns needs 253 closes, with holidays to spare)
 python -m dskit.onboarding register-source schwab_daily --root ./ob \
     --catalog-source schwab-daily-src --connector schwab_daily \
@@ -126,10 +126,13 @@ VTI's tax rises from 119 (aggregate, all long) to 132.60 (99.96 on the 2023 lot,
 share for share: its lots' shares equal the snapshot's `long_quantity`. One that
 does not (bought before `start` or before the history Schwab serves,
 transferred in, split, a reinvestment outside `TRADE`), or a sale the history
-never bought, refuses by name. Set `allow_incomplete: true` on BOTH `lots` and
-`lot_positions` (a test pins them equal) to let such a holding pass as its
-aggregate row instead (null `acquired`, so `default_holding` applies, listed in
-the `lot_positions` summary `fallback`). That summary's `basis_gap` per holding
+never bought, passes as its aggregate row instead: `allow_incomplete` is `true` on
+BOTH `lots` and `lot_positions` as shipped (a test pins them equal), because the
+first real pull (2026-10-29) found Schwab's transactions history starting in 2024.
+Such a holding has a null `acquired`, so `default_holding` applies, and it is listed
+in the `lot_positions` summary `fallback`. One that mixes older shares with later
+buys falls back whole, so its recent shares are taxed as `default_holding` too. Set
+both to `false` to refuse such a holding by name instead. That summary's `basis_gap` per holding
 (lot basis minus Schwab's cost basis) is zero when FIFO matches Schwab's books.
 A day's trades replay in execution-time order (then transaction id), so a buy and
 the sale that closes it the same day work whatever the ids; a trade dated ON the
@@ -151,8 +154,12 @@ delete `outcomes.match_fields`. `tests/test_hold_vs_redeploy.py` runs this recip
   favours holding.
 - A split or spin-off between a decision and its scoring corrupts the
   per-share growth `DecisionOutcomes` reads; it is taken for a return.
-- The `EQUITY` filter's reach for ETFs and mutual funds is unverified until a
-  real pull: if Schwab labels them otherwise they are dropped silently.
+- The snapshot keeps `EQUITY`, `COLLECTIVE_INVESTMENT` (ETFs) and `MUTUAL_FUND`, as
+  Schwab typed them on the first real pull (2026-10-29). A mutual fund trades once a
+  day at NAV; the decision treats it as liquid at the snapshot value.
+- Concentration is by symbol, with no look-through: an S&P 500 fund at half the
+  portfolio reads as one concentrated position, and overlapping index funds
+  (SWPPX, VFIAX, SWTSX) count as separate holdings.
 - Rows the filters drop (options, shorts, other asset types) are not counted or
   reported yet (the transactions pull does count the items it skips).
 - Lots assume FIFO. Schwab's default is FIFO for stocks, but funds and some ETFs
@@ -170,12 +177,12 @@ delete `outcomes.match_fields`. `tests/test_hold_vs_redeploy.py` runs this recip
   every pull whose window reaches it. Raising `start` past it is the only way round
   today (lots bought before it then fail the reconciliation); a skip is an owner
   decision (lane note).
-- How far back Schwab's transactions endpoint serves history is unverified (one
-  client documents one year). A holding older than the history refuses until
-  `allow_incomplete` (aggregate fallback) or a lot export is onboarded.
-- The trades pull keeps `EQUITY` items; ETFs may arrive as
-  `COLLECTIVE_INVESTMENT` (the first pull's skipped census says so): widen the
-  connector's `asset_types` and the snapshot filter together.
+- Schwab's transactions endpoint served nothing before 2024 on the first real
+  pull, so most holdings fall back to their aggregate rows (`allow_incomplete`)
+  until a lot export is onboarded.
+- The trades pull keeps `EQUITY` items (the connector's default `asset_types`).
+  Fund and ETF purchases also predate the history, so they fall back either way;
+  widen `asset_types` when the history covers them.
 - `long_term_days` 366 is "more than one year" except when the year spans 29
   February (then the lot's 366th day is still short-term); short sales and
   splits are not modelled (each refuses at the reconciliation).
@@ -248,7 +255,7 @@ mkdir -p outcomes
 python -m dskit.pipeline run configs/run-decision-outcomes.json --asof <that day>
 ```
 
-`later` keeps the same equity longs the decision did (a test pins the clauses
+`later` keeps the same stock, ETF and mutual fund longs the decision did (a test pins the clauses
 equal), but only decided positions are read: an undecided short or option row
 in the snapshot is never scored and cannot stop the run, and a decided position
 the filter no longer sees is listed `unmatched`.
@@ -492,7 +499,7 @@ zero: the after-tax alternative beats holding by that much a year. Break-even: t
 return an alternative must earn, before its own cost and tax (the hurdle's basis), for
 exiting to tie holding. Expected return is before tax. Embedded gain is a share of value,
 not of cost. Tax to sell is a share of value; "tax to sell all" ignores loss offsets unless
-`loss_offset` is true. The portfolio block gives the total (labelled "listed equity longs":
+`loss_offset` is true. The portfolio block gives the total (labelled "stock, ETF and mutual fund longs":
 the decision document's snapshot filter, not the whole account), weighted return, volatility
 and beta, concentration (HHI, top holding; lots merge by symbol), tax to sell everything and
 selling all against holding all. The title day is the decisions' own `as_of`. A step that

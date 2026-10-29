@@ -28,11 +28,11 @@
       "params": {
         "where": [
           { "field": "as_of", "op": "==", "value": "2027-10-27" },
-          { "field": "asset_type", "op": "==", "value": "EQUITY" },
+          { "field": "asset_type", "op": "in", "value": ["EQUITY", "COLLECTIVE_INVESTMENT", "MUTUAL_FUND"] },
           { "field": "long_quantity", "op": ">", "value": 0 }
         ]
       },
-      "notes": "The observation date, declared: one snapshot, so the elapsed time is one number. Set it to a day a positions pull exists for. The two other clauses restate the decision document's snapshot filter (equity longs; tests/test_configs.py pins them equal) so the scored universe is the decided one. They are not what keeps the run alive: DecisionOutcomes reads only the rows a decision matches, so an undecided short or option row is simply not scored. A decided position the filter can no longer see (sold, or no longer EQUITY) is listed as unmatched. Rows dropped here are not counted yet."
+      "notes": "The observation date, declared: one snapshot, so the elapsed time is one number. Set it to a day a positions pull exists for. The two other clauses restate the decision document's snapshot filter (stock, ETF and mutual fund longs; tests/test_configs.py pins them equal) so the scored universe is the decided one. They are not what keeps the run alive: DecisionOutcomes reads only the rows a decision matches, so an undecided short or option row is simply not scored. A decided position the filter can no longer see (sold, or no longer one of the listed types) is listed as unmatched. Rows dropped here are not counted yet."
     },
     "outcomes": {
       "uses": "dskit.pipeline.decision_outcomes:DecisionOutcomes",
