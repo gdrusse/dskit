@@ -588,7 +588,27 @@
     "zero_trade_variant": "retain_zero_return_and_coverage_status",
     "pooling": "do_not_splice_reset_accounts_into_one_equity_curve",
     "adaptive_results": "label_each_new_variant_as_development_on_previously_opened_packets",
-    "notes": "Leave scoring and pass/fail thresholds unset. Show every declared variant, failures and coverage. Pair attribution needs an explicit shared-cost allocation or must label book-level results as unallocated; it must not double-count joint portfolio PnL."
+    "notes": "Leave scoring and pass/fail thresholds unset. Show every declared variant, failures and coverage. Pair attribution needs an explicit shared-cost allocation or must label book-level results as unallocated; it must not double-count joint portfolio PnL.",
+    "run_report": {
+      "adr": "ADR-0283",
+      "required": [
+        "day_by_day_ledger",
+        "refusal_reasons",
+        "ticker_dte",
+        "optimizer_certificates",
+        "charts",
+        "glossary",
+        "stress_gate0",
+        "stress_grid"
+      ],
+      "glossary": "children/index_options/docs/explanations/mio-glossary.md",
+      "renderer": "table-file(result.json, sha256) -> dskit.evaluation RowsToEvents -> exact-match gate -> EvaluationReport",
+      "expiry": "closing_fill_at_settlement_value_payoff_equals_saved_pnl_minus_saved_credit",
+      "exact_match": "refuse_unless_event_net_pnl_and_final_equity_equal_result_json_pnl_and_final_equity_to_the_cent",
+      "stress": "link_v4_report_daybooks_and_pins_by_path_and_sha256_unchanged_missing_outputs_shown_pending",
+      "output": "fresh_report_only_directory_never_a_run_or_evidence_root",
+      "notes": "Renders saved outputs only. Event equity between fills is at cost; the marked daily curve stays in the ledger table."
+    }
   },
   "templates": {
     "plan": "plan.template.json",

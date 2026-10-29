@@ -34784,3 +34784,31 @@ Independent pinned-input and boundary numeric validation is complete.
 - **Run document.** Each v4 cohort must name its run document in `config`: a plain file name that resolves inside the child's `configs` directory. Its SHA-256 must match the hash-attested results pins, and `pins.json` records it. v1-v3 keep `mio-2019-<cohort>.json` and refuse the key.
 - **Presentation.** v4 carries the v3 proxy wording and the selected/filled contract headline; v1/v2 bytes are unchanged.
 - **Non-goals.** No quote-policy, margin, exit, strategy, scenario or year changes, and no alternate runner. The v2 single-leg cases keep their own legacy clip. Results are simulated EOD displayed-depth capacity, not broker fills.
+
+## ADR-0283 - MIO run-report standard: one per-run evaluation report with an exact-match gate (owner approved, 2026-10-29)
+
+**Scope.** The owner approved (2026-10-29, session_01YFrQuuWBDAJzpMefVrpSEt, 15:15-15:28Z) a standard, readable report for each ordinary MIO run and its fixed-selection stress replay. It renders saved outputs only: no new runs, fits, provider pulls, economic or sizing rule changes. Path A0002 keeps P&L out of forecast evaluation; A0003/A0008 keep this 2019 development evidence over frozen recipes and selections. Existing configs, pins, stress outputs and daybook columns, `MIOPacketCompare`, Path and TDD stay byte-identical. The TDD's `mio-study` pin keeps the pre-ADR study.json digest as history.
+
+**Contract.** `children/index_options/docs/plans/mio-json/study.json` `report` gains `run_report`. Its `required` list adds:
+
+- the day-by-day ledger: deposits, attempted books, fills with legs, selected and filled quantities, prices and fees, refusals with reasons, expiries with realized P&L, cash, reserve, marked equity;
+- refusal reasons, a ticker x DTE breakdown, optimizer certificates and timeouts, and charts;
+- a link to the plain-language glossary `children/index_options/docs/explanations/mio-glossary.md`;
+- stress Gate 0 (all eight zero-shock controls reproduce the run exactly) and the seven-case grid.
+
+A test pins `required` to the rendered sections.
+
+**Renderer.** One JSON document per run, in the child's `configs/`: `table-file` reads the hash-pinned `result.json`, `dskit.evaluation` `RowsToEvents` maps it to events, and `EvaluationReport` renders `summary.md`, `report.html` and CSVs.
+
+- Each book is one instrument. Its entry is a fill at its net premium with its fees.
+- An expiry is a closing fill at settlement value: payoff = saved `pnl` minus saved `credit`.
+- Each deposit is a cashflow; each refusal is a `refusal` with its saved reason.
+- Each `decisions[].certificates` entry is a `solve` (objective, bound, gap, seconds, status, termination).
+
+The ticker x DTE table uses an existing node or a minimal generic fix, test-first. The report writes to a fresh report-only directory, never to a run or evidence root.
+
+**Exact-match gate.** Before rendering, net P&L and final equity are recomputed from the events. Each must equal the method's `result.json` `pnl` and `final_equity` to the cent (|difference| < $0.005, since float summation order differs). Otherwise the document refuses and writes no report. The marked daily curve stays in the ledger table; event equity between fills is at cost and is labelled so.
+
+**Stress.** The report links each v4 stress `report.md`, daybook and `pins.json` by path and SHA-256 without changing stress bytes. A referenced stress output that does not exist yet is shown as `pending`, never filled in.
+
+**Evidence.** Dry render on the verified limited36 outputs only; broad212 waits for the parent's verification. Results remain simulated EOD displayed-depth fills, not broker liquidity or proof of profitability.
