@@ -34835,12 +34835,20 @@ The first real positions pull refused. Schwab omits `positions` for an account t
 nothing (here an emptied margin account, every `currentBalances` field zero); it does not send `[]`.
 
 - **Change.** `SchwabPositionsConnector._rows` only. An account without the key emits no rows
-  when its `currentBalances` has every one of the six position-value fields, `longMarketValue`,
-  `shortMarketValue`, `longOptionMarketValue`, `shortOptionMarketValue`, `mutualFundValue` and
-  `bondValue`, each a finite non-bool number equal to zero.
+  when its `currentBalances` has every one of the seven position-value fields, `longMarketValue`,
+  `shortMarketValue`, `longOptionMarketValue`, `shortOptionMarketValue`, `mutualFundValue`,
+  `bondValue` and `moneyMarketFund`, each a finite non-bool number equal to zero.
 - **Still refuses.** Any other account without the key, and the message names the first failing
   field. An explicit `positions` list is read exactly as before.
-- **Limit.** Cash and a money-market sweep are balances, not positions, so a cash-only account
-  is also zero rows. Account cash and totals are a separate proposal.
-- **Tests.** An empty account next to a funded one emits only the funded rows. Each field
-  missing, a bool, non-finite or nonzero refuses. No balances at all still refuses.
+- **Limit.** Cash is a balance, not a position, so a cash-only account is also zero rows, and an
+  emptied account leaves no row, indistinguishable from an unlinked one. Account cash and totals
+  are a separate proposal. `longNonMarginableMarketValue` is not in the proof (unobserved on a
+  CASH account).
+- **Tests.** An empty account before or after a funded one emits only the funded rows. Each field
+  missing, a bool, non-finite or nonzero refuses; two bad fields name the first. No balances, or
+  balances that are not a mapping, still refuse.
+- **Review corrections (two Sonnet lenses, 2026-10-29).** No Critical. Major: `continue` mutated to
+  `break` survived (the empty account was always last), now killed. Minors: first-failing-field
+  order and a non-mapping `currentBalances` were untested, now tested with their own message;
+  `moneyMarketFund` added to the proof (a fund is held as a position; present and zero on both
+  CASH and MARGIN accounts in the real pull). Nit kept: `_not_empty` returns `""` for empty.

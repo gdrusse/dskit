@@ -276,10 +276,10 @@ def test_an_account_without_a_positions_key_refuses_without_balances_proving_it_
 
 
 # Schwab omits `positions` for an account holding nothing (seen on the first real pull,
-# 2026-10-29): these six balances, all present and exactly zero, prove it is empty. Listed
+# 2026-10-29): these seven balances, all present and exactly zero, prove it is empty. Listed
 # here literally, so a change to the connector's own list must change this one too.
 EMPTY_FIELDS = ("longMarketValue", "shortMarketValue", "longOptionMarketValue",
-                "shortOptionMarketValue", "mutualFundValue", "bondValue")
+                "shortOptionMarketValue", "mutualFundValue", "bondValue", "moneyMarketFund")
 
 EMPTY_HASH = {"accountNumber": "87654321", "hashValue": "E3E3E3E3E3E3E3E3"}
 
@@ -299,6 +299,9 @@ def test_an_account_whose_balances_prove_it_empty_emits_nothing_beside_a_funded_
     # the funded account's two holdings, nothing invented for the empty one
     assert [r["data"]["symbol"] for r in records] == ["AAPL", "VTI"]
     assert {r["data"]["account"] for r in records} == {"F00DBEEFCAFE4C0DE"}
+    # the empty account FIRST: skipping it must not stop the accounts after it being read
+    Stub.bodies[ACCOUNTS_URL] = [_empty_account()] + ACCOUNTS
+    assert [r["data"]["symbol"] for r in _read()[0]] == ["AAPL", "VTI"]
     # JSON integer zeros prove it as well as float zeros
     Stub.bodies[ACCOUNTS_URL] = ACCOUNTS + [_empty_account(**{name: 0 for name in EMPTY_FIELDS})]
     assert len(_read()[0]) == 2
@@ -337,6 +340,21 @@ def test_an_account_without_positions_refuses_unless_every_value_balance_is_zero
         f"Schwab account 1 has no positions and its currentBalances do not show it empty: "
         f"{field} {reason}"
     ]
+
+
+def test_the_refusal_names_the_first_failing_field_and_a_non_mapping_balance():
+    Stub.bodies[NUMBERS_URL] = [EMPTY_HASH]
+    # two bad fields: the message names the first in the declared order, not the last
+    Stub.bodies[ACCOUNTS_URL] = [_empty_account(shortMarketValue=1.0, bondValue="x")]
+    with pytest.raises(AssetError, match="empty: shortMarketValue is not zero$"):
+        _read()
+    # balances present but not a mapping refuse as such, never as a bare TypeError
+    for balances in ([], "x", list(EMPTY_FIELDS), None):
+        account = _empty_account()
+        account["securitiesAccount"]["currentBalances"] = balances
+        Stub.bodies[ACCOUNTS_URL] = [account]
+        with pytest.raises(AssetError, match="empty: currentBalances is not a mapping$"):
+            _read()
 
 
 def test_check_probes_accounts_and_transient_failures_retry_then_refuse(monkeypatch):

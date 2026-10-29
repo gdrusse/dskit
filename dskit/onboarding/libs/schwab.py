@@ -88,10 +88,11 @@ _POSITION_NUMBERS = ("longQuantity", "shortQuantity", "averagePrice", "marketVal
 # Schwab omits ``positions`` (rather than sending ``[]``) for an account that holds nothing,
 # as the first real pull showed (ADR-0279 amendment, 2026-10-29). These ``currentBalances``
 # fields, every one present and exactly zero, are the proof an account without the key is
-# empty; cash and a money-market sweep are balances, not positions, so they are not listed.
+# empty. A money-market fund is held as a position, so its value is listed; cash is a
+# balance, not a position, so ``cashBalance`` is not.
 _EMPTY_ACCOUNT_VALUES = (
     "longMarketValue", "shortMarketValue", "longOptionMarketValue",
-    "shortOptionMarketValue", "mutualFundValue", "bondValue",
+    "shortOptionMarketValue", "mutualFundValue", "bondValue", "moneyMarketFund",
 )
 TRANSACTION_STREAM = "trades"
 TRANSACTION_FIELDS = (
@@ -1102,9 +1103,11 @@ class SchwabPositionsConnector(_SchwabConnector):
         as a non-bool number equal to zero; NaN and infinity are not zero. The first failing
         field names the reason.
         """
-        balances = account.get("currentBalances")
-        if not isinstance(balances, dict):
+        if "currentBalances" not in account:
             return "no currentBalances"
+        balances = account["currentBalances"]
+        if not isinstance(balances, dict):
+            return "currentBalances is not a mapping"
         for name in _EMPTY_ACCOUNT_VALUES:
             if name not in balances:
                 return f"{name} is missing"
