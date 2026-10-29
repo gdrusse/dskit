@@ -1,0 +1,6 @@
+{
+  "path": "/home/russell/data/index_options/mio-2021q1-top3-20261029/exact-expiry-tables/own_iv",
+  "layout": "directory",
+  "effective_field": "date",
+  "stamp_stem_as": "symbol"
+}
