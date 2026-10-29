@@ -462,3 +462,56 @@ def test_v3_document_is_the_approved_contract_with_a_distinct_root():
     v2 = docs['mio-2019-execution-stress-single-leg.json']
     assert {k: v for k, v in v3.items() if k not in ('schema', 'scenarios', 'output_root')} == {
         k: v for k, v in v2.items() if k not in ('schema', 'scenarios', 'output_root')}
+
+
+@pytest.mark.parametrize('depths, executed', [
+    ((9, 2), [3, 2]), ((5, 4), [3, 2]), ((6, 2), [3, 2]), ((9, 4), [6, 4])])
+def test_proportional_multiple_is_bound_by_the_shallowest_leg(depths, executed):
+    study, book = _two_leg((6, 4), depths)
+    filled, reason = stress._scenario_fill(
+        study, book, '2019-01-03', {}, PROPORTIONAL)
+    assert reason is None
+    assert [leg['quantity'] for leg in filled['legs']] == executed
+
+
+@pytest.mark.parametrize('depths, reason', [
+    ((2, 2), 'insufficient_fill_size'), ((3, 1), 'insufficient_fill_size')])
+def test_proportional_any_leg_short_of_one_unit_refuses(depths, reason):
+    study, book = _two_leg((3, 2), depths)
+    assert stress._scenario_fill(study, book, '2019-01-03', {},
+                                 PROPORTIONAL) == (None, reason)
+
+
+def test_proportional_three_legs_with_common_divisor():
+    study, book = _two_leg((9, 6), (7, 6))
+    book['legs'].append({**book['legs'][0], 'strike': 110.0, 'quantity': 3})
+    book['contracts'] = 18
+    study._quotes['ABC'][('2019-01-03', '2019-02-01', 'call', 110.0)] = {
+        'bid': 0.1, 'ask': 0.2, 'bid_size': 0, 'ask_size': 4,
+        'basis_factor': 1.0}
+    filled, reason = stress._scenario_fill(
+        study, book, '2019-01-03', {}, PROPORTIONAL)
+    assert reason is None
+    assert [leg['quantity'] for leg in filled['legs']] == [6, 4, 2]
+    assert filled['contracts'] == 12
+
+
+def test_proportional_downsized_reserve_admits_where_full_size_breaches():
+    study, book = _two_leg((6, 4), (4, 3))
+    downsized, _ = stress._scenario_fill(study, book, '2019-01-03', {}, PROPORTIONAL)
+    full, _ = stress._scenario_fill(
+        *_two_leg((6, 4), (6, 4)), '2019-01-03', {}, PROPORTIONAL)
+    upper = downsized['reserve'] * 1.5
+    assert full['reserve'] > upper
+    for books, admitted in (([full], False), ([downsized], True)):
+        account = FundedOptionAccount(1000, 0, 14, '2019-01-02')
+        account.advance('2019-01-03', {})
+        assert account.admit('2019-01-03', books,
+                             [{'members': ['ABC'], 'upper': upper}]) is admitted
+
+
+def test_proportional_refuses_combination_with_other_shocks():
+    study, book = _two_leg((6, 4), (4, 3))
+    with pytest.raises(ValueError, match='zero-shock'):
+        stress._scenario_fill(study, book, '2019-01-03', {},
+                              {**PROPORTIONAL, 'half_size': True})

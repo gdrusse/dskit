@@ -127,6 +127,8 @@ def _missing_expiry_factors(binding, symbols, needed, factors):
 def _proportional_fill(study, book, day, method, scenario):
     """Fill the largest whole multiple of the book's primitive ratio shown at side depth."""
     legacy = {key: value for key, value in scenario.items() if key != "proportional_fill"}
+    if scenario["price_fraction"] != 0 or scenario["half_size"]:
+        raise ValueError("proportional fill is approved only as a zero-shock case")
     units = math.gcd(*(leg["quantity"] for leg in book["legs"]))
     if units == 0:
         return _scenario_fill(study, book, day, method, legacy)
@@ -143,7 +145,7 @@ def _proportional_fill(study, book, day, method, scenario):
         if leg["quantity"] == 0:
             continue
         side = "ask_size" if leg["sign"] > 0 else "bid_size"
-        fits = effective_size(row[side], scenario["half_size"]) // (leg["quantity"] // units)
+        fits = row[side] // (leg["quantity"] // units)
         if fits < 1:
             return None, "insufficient_fill_size"
         multiple = min(multiple, fits)
