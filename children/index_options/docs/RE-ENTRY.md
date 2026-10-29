@@ -1,36 +1,35 @@
-# RE-ENTRY — index_options
+# RE-ENTRY - index_options
 
-Updated: 2026-10-28 by ChatGPT. Historical execution and stress-scope memo wrapped; prior note archived in docs/archive/re-entry/index_options.md.
+Updated: 2026-10-28 by GPT-6 Astra. The 2019 fixed-selection execution and expiry replay is complete; previous note archived.
 
 ## Now
 
-- Standalone memo `docs/memos/2026-10-28-mio-execution-and-stress-scope.md` explains the eight ordinary 2019 runs, their fill/refusal and expiry accounting, what the 813 later pricing-only jobs did, and the missing stressed-execution replay. Memo candidate `96f8ce01`, factual correction `9d43f61d`.
-- Two independent GPT-6 Luna final lenses on `96f8ce01`: no Critical/Major; one narrow Minor in the copyable CSV check was fixed in `9d43f61d`. The corrected read-only command was run and reproduced all eight method rows, 224 fills and 691 refusals. Four focused docs checks and diff checks passed; no full suite.
-- Eight original MIO method results are complete with saved replay parity. A fresh read-only check matched filled/rejected IDs, next-session dates, capacity, final daily accounts and profit. This supports the ordinary historical path but is not a raw-quote reconstruction.
-- The 813 new `stable_tail_v1` attempts only repriced already held books; they did not rerun selection, fills, cash or expiry settlement. Existing extra-spread results also keep the original fills. End-to-end execution under changed fill and expiry conditions remains **unrun**.
-- Original 2019 results pins SHA-256 `2bbd7e9247bf46c016745dde8436e9a7394e770e52031f9024baebd049fbf7d2`; original data, new coverage pins, checkouts, bundles and private viewer remain preserved. Path A0003/A0008 and TDD are unchanged.
+- ADR-0280's seven-case contract ran for four saved methods in each of limited36 and broad212: 56/56 cases complete, 252 daily sessions each. New output: /home/russell/data/index_options/mio-execution-stress-2019-20261028-v1.
+- Eight zero-shock controls exactly matched pinned selections, fills, refusals, prices, fees, daily account rows and profits; original census 915 selected, 224 filled, 691 refused. Stress output has 14,112 daily rows and 6,405 selected-book dispositions.
+- Every case has a readable daybook showing possible books/contracts, selected orders, next-session fills/refusals, expiry profit or loss, cash and equity. report.md links all daybooks; summary.csv, daily.csv, dispositions.csv and pins.json provide machine-readable evidence. All 121 output-file pins and account reconciliations passed.
+- Candidate 1035e1c812c203851f71e1d675dc6ac3b186f366 had 14 focused tests pass and two independent final skeptic lenses, each C0/M0/m0/n0. Full suite deliberately unrun. New pins.json SHA-256 391206b77fb7a1e3c75f26873c6da4d6a9069f4af3c4f2c667e8faed2d84cedc.
+- Original data, eight results, viewer, Path A0003/A0008 and TDD remain intact. This is 2019 development evidence; saved future selections are fixed while stressed cash and eligibility change.
 
 ## Next
 
-1. Draft an owner-approvable ADR for a fixed-selection execution-and-expiry stress replay using the memo's copyable prompt. Start with an exact unperturbed control for all eight runs; specify adverse fill-price/size and ±15% expiry shocks, account propagation, outputs and limits.
-2. Stop for owner approval of exact scenario choices before code or any new run. After approval, use focused tests, two independent reviews and distinct pinned 2019 attempts.
+1. Read the execution memo and report. Interpret profit together with filled/selected counts, refusals, expiry losses and drawdown; the joint downside is not necessarily the worst result for a mixed option book.
+2. Any adaptive reselection, coherent market path or 2020+ validation needs its own authorized design and run.
 
 ## Blocked / owner decisions
 
-- The proposed 25% adverse-spread magnitude, half-size capacity sensitivity, expiry shocks and joint cases are **not approved**; no stressed-execution run exists.
-- The fixed-selection design would hold future selected orders constant while stressed cash/holdings diverge; it is conditional execution evidence, not an adaptively reoptimized strategy test.
-- 2019 is development evidence. No 2020+ window, promotion or live trading is authorized.
+- No blocker remains for this 2019 replay. This run does not authorize 2020+, live execution, promotion or a new scenario.
+- End-of-day bid/ask quotes are execution proxies; pointwise 15% expiry outcomes are conditional shocks, not predictions.
 
 ## Read first
 
-- docs/memos/2026-10-28-mio-execution-and-stress-scope.md — complete explanation, evidence, limitations and next-task prompt.
-- configs/mio-2019-results-pins.json — original exact source/run/output pins.
-- docs/memos/2026-10-28-mio-2019-comparison.md — the eight 2019 outcome runs.
-- docs/memos/2026-10-28-mio-2019-stress-diagnosis.md — original and opt-in pricing stress pins.
-- docs/architecture/decision-log.md — existing ADR-0278 context; a new ADR is needed for the proposed replay.
+- docs/memos/2026-10-28-mio-execution-expiry-stress-replay.md - run contract, verification, results and limits.
+- /home/russell/data/index_options/mio-execution-stress-2019-20261028-v1/report.md - all 56 cases and daybooks.
+- configs/mio-2019-execution-stress.json - exact seven-case input and source pins.
+- configs/mio-2019-results-pins.json - original eight-run evidence identity.
+- docs/architecture/decision-log.md - ADR-0280.
 
 ## Do not
 
-- Present price-only stress as order-execution stress or an incomplete model mark as a failed fill.
-- Rerun identical MIO/stress JSONs, invent IV or quotes, open 2020+, retrain, pull providers, resume optional broad hindsight or edit Path/TDD.
+- Treat price-only held-book repricing as this execution replay, or a selected but refused order as filled.
+- Open 2020+, retrain, pull providers, run live trading, reselect under stress, or edit Path/TDD without a separate decision.
 - Remove the viewer, original checkout, artifacts or data.
