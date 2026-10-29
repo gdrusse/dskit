@@ -245,3 +245,102 @@ def test_failed_settlement_reports_book_level_reserve_breach():
     assert failure["settlement_reserve_breaches"] == [{
         "id": "short", "attempted_pnl": -150.0,
         "reserved_loss": 100.0, "excess_loss": 50.0}]
+
+
+@pytest.mark.parametrize('sign', [1, -1])
+def test_single_leg_available_size_recomputes_executed_contracts(sign):
+    study, book = _case(sign=sign, size=2, quantity=3)
+    selected = deepcopy(book)
+    scenario = {'price_fraction': 0, 'half_size': False,
+                'single_leg_fill': True}
+    filled, reason = stress._scenario_fill(
+        study, book, '2019-01-03', {}, scenario)
+    assert reason is None
+    assert book == selected
+    assert filled['legs'][0]['quantity'] == 2
+    assert filled['contracts'] == 2
+    assert filled['fees'] == 1.30
+    assert filled['credit'] == pytest.approx(
+        -281.30 if sign == 1 else 198.70)
+    evidence = stress._attempt_evidence(
+        study, book, '2019-01-03', scenario)
+    assert evidence['legs'][0]['quantity'] == 3
+    assert evidence['legs'][0]['effective_depth'] == 2
+
+
+def test_single_leg_zero_size_refuses_and_multi_leg_stays_atomic():
+    study, book = _case(size=0, quantity=3)
+    scenario = {'price_fraction': 0, 'half_size': False,
+                'single_leg_fill': True}
+    assert stress._scenario_fill(study, book, '2019-01-03', {},
+                                 scenario)[1] == 'insufficient_fill_size'
+    study, book = _case(size=2, quantity=3)
+    book['legs'].append({**book['legs'][0], 'strike': 101.0})
+    study._fill = lambda book, day, charge: WeeklyOptionPortfolioStudy._fill(
+        study, book, day, charge)
+    study._quotes['ABC'][('2019-01-03', '2019-02-01', 'call', 101.0)] = (
+        study._quotes['ABC'][('2019-01-03', '2019-02-01', 'call', 100.0)])
+    assert stress._scenario_fill(study, book, '2019-01-03', {},
+                                 scenario)[1] == 'insufficient_fill_size'
+
+
+def test_single_leg_full_depth_matches_legacy_fill():
+    study, book = _case(size=4, quantity=3)
+    study._fill = lambda book, day, charge: WeeklyOptionPortfolioStudy._fill(
+        study, book, day, charge)
+    legacy = {'price_fraction': 0, 'half_size': False}
+    partial = {**legacy, 'single_leg_fill': True}
+    assert stress._scenario_fill(study, book, '2019-01-03', {}, partial) == (
+        stress._scenario_fill(study, book, '2019-01-03', {}, legacy))
+
+
+def test_one_nonzero_leg_ignores_zero_quantity_placeholder():
+    study, book = _case(size=2, quantity=3)
+    book['legs'].append({**book['legs'][0], 'strike': 101.0,
+                         'quantity': 0})
+    filled, reason = stress._scenario_fill(
+        study, book, '2019-01-03', {},
+        {'price_fraction': 0, 'half_size': False,
+         'single_leg_fill': True})
+    assert reason is None
+    assert filled['contracts'] == 2
+    assert len(filled['legs']) == 1
+
+
+def test_single_leg_half_size_zero_refuses_and_partial_reserve_changes_cap():
+    study, book = _case(size=1, quantity=3)
+    scenario = {'price_fraction': 0, 'half_size': True,
+                'single_leg_fill': True}
+    assert stress._scenario_fill(study, book, '2019-01-03', {},
+                                 scenario)[1] == 'insufficient_fill_size'
+
+    study, book = _case(size=2, quantity=3)
+    filled, reason = stress._scenario_fill(
+        study, book, '2019-01-03', {},
+        {'price_fraction': 0, 'half_size': False,
+         'single_leg_fill': True})
+    assert reason is None
+    account = FundedOptionAccount(300, 0, 14, '2019-01-02')
+    account.advance('2019-01-03', {})
+    assert account.admit('2019-01-03', [filled],
+                         [{'members': ['ABC'], 'upper': 300}])
+    assert account.cash == pytest.approx(18.7)
+    assert account.open[book['id']]['reserve'] == pytest.approx(281.3)
+    study.params = {'bridge': {'solver': {'multiplier': 100}}}
+    study._factors['ABC']['2019-02-01'] = 1.0
+    study._bars = {'ABC': {'2019-02-01': 110.0}}
+    account.advance('2019-02-01', WeeklyOptionPortfolioStudy._settlements(
+        study, account, '2019-02-01'))
+    assert account.closed[0]['pnl'] == pytest.approx(1718.7)
+    assert account.cash == pytest.approx(2018.7)
+
+    full_study, full_book = _case(size=4, quantity=3)
+    full_study._fill = lambda book, day, charge: WeeklyOptionPortfolioStudy._fill(
+        full_study, book, day, charge)
+    full, _ = stress._scenario_fill(
+        full_study, full_book, '2019-01-03', {},
+        {'price_fraction': 0, 'half_size': False})
+    limited = FundedOptionAccount(300, 0, 14, '2019-01-02')
+    limited.advance('2019-01-03', {})
+    assert not limited.admit('2019-01-03', [full],
+                             [{'members': ['ABC'], 'upper': 300}])

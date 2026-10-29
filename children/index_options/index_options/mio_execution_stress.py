@@ -127,13 +127,26 @@ def _missing_expiry_factors(binding, symbols, needed, factors):
 def _scenario_fill(study, book, day, method, scenario):
     """Apply changed price/depth, then the existing payoff and reserve owners."""
     if scenario["price_fraction"] == 0 and not scenario["half_size"]:
-        return study._fill(book, day, study._charge(method))
+        active = [leg for leg in book["legs"] if leg["quantity"] != 0]
+        if not scenario.get("single_leg_fill", False) or len(active) != 1:
+            return study._fill(book, day, study._charge(method))
+        leg = active[0]
+        row = study._quotes[book["symbol"]].get(
+            (day, book["expiry"], leg["right"], leg["strike"]))
+        side = "ask_size" if leg["sign"] > 0 else "bid_size"
+        if (row is not None and type(row.get(side)) is int
+                and row[side] >= leg["quantity"]):
+            return study._fill(book, day, study._charge(method))
     filled = copy.deepcopy(book)
     symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
     node = study._nodes[symbol]
     if day >= expiry or not math.isclose(study._factors[symbol].get(day, math.nan),
                                          factor, rel_tol=1e-9):
         return None, "fill_basis_or_session"
+    single_leg = (scenario.get("single_leg_fill", False)
+                  and sum(leg["quantity"] != 0 for leg in book["legs"]) == 1)
+    if single_leg:
+        filled["legs"] = [leg for leg in filled["legs"] if leg["quantity"] != 0]
     premium = stress_extra = 0.0
     mult = node.params["solver"]["multiplier"]
     for leg in filled["legs"]:
@@ -144,7 +157,10 @@ def _scenario_fill(study, book, day, method, scenario):
         side = "ask_size" if leg["sign"] > 0 else "bid_size"
         depth = effective_size(row[side], scenario["half_size"])
         if depth < leg["quantity"]:
-            return None, "insufficient_fill_size"
+            if not single_leg or depth < 1:
+                return None, "insufficient_fill_size"
+            leg["selected_quantity"] = leg["quantity"]
+            leg["quantity"] = depth
         bid, ask = market
         price = adverse_side(bid, ask, leg["sign"], scenario["price_fraction"])
         if not math.isfinite(price) or price <= 0:
@@ -153,7 +169,9 @@ def _scenario_fill(study, book, day, method, scenario):
         leg["effective_capacity"] = depth
         premium -= leg["sign"] * price * mult * leg["quantity"]
         stress_extra += (ask - bid) * mult * leg["quantity"] * node.params["stress_spread_fraction"]
-    fees = book["contracts"] * node.params["solver"]["fee_per_contract_usd"]
+    if single_leg:
+        filled["contracts"] = sum(leg["quantity"] for leg in filled["legs"])
+    fees = filled["contracts"] * node.params["solver"]["fee_per_contract_usd"]
     credit = premium - fees
     loss = structure_max_loss(
         [(leg["right"], leg["sign"] * leg["quantity"]) for leg in filled["legs"]],
@@ -523,6 +541,8 @@ class FrozenMIOReplay:
                 "fills": [{"id": book["id"], "symbol": book["symbol"], "expiry": book["expiry"],
                            "legs": [{"side": "buy" if leg["sign"] > 0 else "sell",
                                      "right": leg["right"], "strike": leg["strike"],
+                                     "selected_quantity": leg.get(
+                                         "selected_quantity", leg["quantity"]),
                                      "quantity": leg["quantity"], "price": leg["fill_price"]}
                                     for leg in book["legs"]],
                            "fees": book["fees"], "credit": book["credit"]} for book in fills],
@@ -580,7 +600,8 @@ def _daybook(cohort, scenario, method, metrics, daily, incomplete=None):
         f"# {cohort} / {method} / {scenario}", "",
         "2019 development diagnostic. Chosen orders are decided after the named",
         "close; fills appear on the next session. Expiry P&L is realized;",
-        "marked daily change is interim equity change after deposits.", "",
+        "marked daily change is interim equity change after deposits.",
+        "Executed-leg quantities are shown as filled/selected.", "",
         (f"Selected {metrics['selected']}; filled {metrics['filled']}; "
          f"refused {metrics['refused']}; final profit "
          f"{_money(metrics['final_profit_usd'])}; "
@@ -600,7 +621,7 @@ def _daybook(cohort, scenario, method, metrics, daily, incomplete=None):
         chosen = ", ".join(row["selected_ids"]) or "-"
         filled = "; ".join(
             item["id"] + ": " + ", ".join(
-                f"{leg['side']} {leg['quantity']} {leg['right']} "
+                f"{leg['side']} {leg['quantity']}/{leg['selected_quantity']} {leg['right']} "
                 f"{leg['strike']:g} at {chr(36)}{leg['price']:.4f}"
                 for leg in item["legs"])
             for item in row["fills"]) or "-"
@@ -627,7 +648,7 @@ def _daybook(cohort, scenario, method, metrics, daily, incomplete=None):
     lines.extend(["", "## Executed legs", ""])
     for row in daily:
         for book in row["fills"]:
-            legs = "; ".join(f"{leg['side']} {leg['quantity']} {leg['right']} "
+            legs = "; ".join(f"{leg['side']} {leg['quantity']}/{leg['selected_quantity']} {leg['right']} "
                              f"{leg['strike']:g} at ${leg['price']:.4f}"
                              for leg in book["legs"])
             lines.append(f"- {row['date']} {book['id']}: {legs}; "
@@ -731,6 +752,8 @@ def _dispositions(cohort, scenario, method, result, daily, *,
                 "reason": (refusal["reason"] if refusal is not None else
                            incomplete["failure"]["reason"]
                            if status == "undetermined_at_failure" else None),
+                "selected_contracts": selected["contracts"],
+                "filled_contracts": trade["contracts"] if trade is not None else 0,
                 "selected_credit": selected["credit"],
                 "selected_reserve": selected["reserve"],
                 "attempt_legs": attempt["legs"],
@@ -740,6 +763,8 @@ def _dispositions(cohort, scenario, method, result, daily, *,
                 "fill_legs": ([{"side": "buy" if leg["sign"] > 0 else "sell",
                                "right": leg["right"], "strike": leg["strike"],
                                "quantity": leg["quantity"],
+                               "selected_quantity": leg.get(
+                                   "selected_quantity", leg["quantity"]),
                                "price": leg["fill_price"]}
                               for leg in trade["legs"]] if trade is not None else None),
                 "fill_credit": trade["credit"] if trade is not None else None,
@@ -810,27 +835,33 @@ def execute(document_path):
     document = _load_json(doc_path)
     required = {"schema", "repository_root", "original_root", "results_pins",
                 "results_pins_sha256", "cohorts", "scenarios", "output_root"}
-    if set(document) != required or document["schema"] != "mio-execution-stress/v1":
+    if set(document) != required or document["schema"] not in (
+            "mio-execution-stress/v1", "mio-execution-stress/v2"):
         raise ValueError("invalid execution-stress document")
     if _sha(document["results_pins"]) != document["results_pins_sha256"]:
         raise ValueError("results pins identity drift")
     pins = _load_json(document["results_pins"])
     scenarios = document["scenarios"]
-    if [s["id"] for s in scenarios] != [
-            "control", "adverse_price", "half_size", "expiry_down_15",
-            "expiry_up_15", "joint_down_15", "joint_up_15"]:
-        raise ValueError("scenario identity/order differs from approved contract")
     expected = [
         ("control", 0, False, 1), ("adverse_price", 0.25, False, 1),
         ("half_size", 0, True, 1), ("expiry_down_15", 0, False, 0.85),
         ("expiry_up_15", 0, False, 1.15),
         ("joint_down_15", 0.25, True, 0.85),
         ("joint_up_15", 0.25, True, 1.15)]
-    for item, (name, price, half, expiry) in zip(scenarios, expected, strict=True):
-        if (set(item) != {"id", "price_fraction", "half_size", "expiry_multiplier"}
-                or item != {"id": name, "price_fraction": price,
-                            "half_size": half, "expiry_multiplier": expiry}):
-            raise ValueError("scenario values differ from approved contract")
+    expected = [
+        {"id": name, "price_fraction": price, "half_size": half,
+         "expiry_multiplier": expiry}
+        for name, price, half, expiry in expected]
+    if document["schema"] == "mio-execution-stress/v2":
+        expected += [
+            {"id": "single_leg_available_size", "price_fraction": 0,
+             "half_size": False, "expiry_multiplier": 1,
+             "single_leg_fill": True},
+            {"id": "single_leg_half_size", "price_fraction": 0,
+             "half_size": True, "expiry_multiplier": 1,
+             "single_leg_fill": True}]
+    if scenarios != expected:
+        raise ValueError("scenario values differ from approved contract")
     if set(document["cohorts"]) != {"limited36", "broad212"}:
         raise ValueError("missing exact cohort")
     output = Path(document["output_root"])

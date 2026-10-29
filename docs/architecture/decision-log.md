@@ -34753,3 +34753,13 @@ Independent pinned-input and boundary numeric validation is complete.
 **Limits.** The exercise does not establish executable broker fills, assignment, margin, a consistent shocked price path, 2020+ validation, promotion or live profitability. Preserve original data, runs, stress evidence, bundles, private viewer, checkouts, Path and TDD. No provider pull, retraining, optional hindsight or identical original MIO rerun belongs in this packet.
 
 **Authorized execution gate.** The seven cases, 25%-spread buy/sell rule and invalid-price refusal, floor-half displayed size, pointwise 0.85/1.15 expiry values, exact control gate, and reserve-breach handling are the frozen bounded contract. No additional scenarios or year are authorized.
+
+## ADR-0281 - Opt-in single-leg available-size fills (owner authorized, 2026-10-28)
+
+**Scope.** The owner authorized a separate 2019 diagnostic using the same pinned selections, quotes, account chronology and expiry rules as ADR-0280. Path A0003 confines it to 2019 development; A0008 freezes recipes and selected orders. The original seven-case document, exact eight-method control, result pins, output, viewer, Path and TDD remain immutable.
+
+**Rule.** In a distinct versioned scenario, only a selected book with exactly one nonzero leg may fill fewer contracts. After the original next-session basis/session and executable side-quote validation, set executed quantity to min(frozen selected quantity, effective displayed ask size for a buy or bid size for a sale). A zero effective size refuses as insufficient_fill_size. A valid positive size fills at least one contract. The selected quantity remains visible beside the executed quantity and side depth. All multi-leg books and legacy scenarios retain all-or-none behavior.
+
+**Accounting.** Recompute executed contracts, premium, per-contract fees, net credit, maximum loss and reserve from the actual fill. Apply the same method and shared-cap admission to the changed batch atomically. Settlements, marked holdings, cash, deposits, later eligibility and realized P&L use executed quantity in chronological order. A cap refusal stays unfilled, even after quantity reduction. Keep the old control exact; do not replace frozen future selections.
+
+**Cases and evidence.** A versioned document adds single_leg_available_size (observed next-session depth) and single_leg_half_size (floor-half depth), both with unchanged prices and expiry values, after the seven ADR-0280 cases. Use a distinct output root and pins. Test buy/sell partial fills, zero size, full-depth identity, fees/reserve, caps, expiry and multi-leg atomicity. This is an execution proxy, never broker evidence or decision eligibility.
