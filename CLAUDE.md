@@ -46,7 +46,9 @@ One line per rule; the rationale is `docs/standards/working-agreement.md`.
 ## Session workflow
 
 - **Start**: the `SessionStart` hook fetches (`.claude/settings.json`,
-  `.cursor/hooks.json`, `.opencode/plugin/session-pull.ts`). Then read
+  `.cursor/hooks.json`, `.opencode/plugin/session-pull.ts`); Claude's also
+  names the machine. Without that line, run `tools/session/machine.sh
+  --text`: a Mac or Linux host has no WSL. Then read
   `docs/RE-ENTRY.md` (one screen) and ONLY the note of the lane you will work,
   `children/<child>/docs/RE-ENTRY.md`. Never the archive at session start.
 - **Path first**: before designing, proposing or running anything in a child,

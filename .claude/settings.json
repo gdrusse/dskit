@@ -9,6 +9,11 @@
           },
           {
             "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/tools/session/machine.sh\" SessionStart",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "sh \"$CLAUDE_PROJECT_DIR/tools/sweep/remind.sh\" session SessionStart",
             "timeout": 5
           }
