@@ -234,7 +234,8 @@ tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
                            # quote_backtest, debit_backtest, ledger_studies, theta_hypotheses (+ theta_synthetic.py, its
-                           # synthetic world), theta_exact_expiry, strike_screen_panel_source, strike_screen_fits, strike_region_scores (.py)
+                           # synthetic world), theta_exact_expiry, strike_screen_panel_source, strike_screen_fits, strike_region_scores,
+                           # mio_run_report, mio_run_report_contract (ADR-0283) (.py)
 ```
 
 2026-10-27 owner-approved executable MIO packet: use mio_contract.py plus the

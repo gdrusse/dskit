@@ -20,7 +20,7 @@ from dskit.evaluation.svg import LineChart, Marker, MarkerLayer, SessionScale, S
 from dskit.evaluation.units import Units, count, money, percent, ratio, sig
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.node import NodeContext
-from tests.evaluation.conftest import DAY1, DAY2, MIN, Builder, build_scenario
+from tests.evaluation.conftest import DAY1, DAY2, MIN, Builder, build_scenario, candidates
 
 UNITS = {"score": "return", "money": "USD"}
 
@@ -130,6 +130,8 @@ def test_the_narrative_names_costs_as_the_driver_of_a_fee_loss():
           criteria=[{"name": "net", "stat": "net_pnl", "op": ">", "value": 0, "min_n": 1},
                     {"name": "t", "stat": "trade_t", "op": ">=", "value": 2, "min_n": 1}])
     b.add("cashflow", DAY1, amount=1000, rule="initial")
+    b.add("decision", DAY1, decision_id="d0", action="hold", reason="watching",
+          candidates=candidates("AAA", "BBB"))   # the log carries forecasts
     for i in range(3):
         at = DAY1 + (2 * i + 1) * MIN
         b.add("fill", at, "AAA", fill_id=f"b{i}", side="buy", qty=1, price=100.0, fee=1.0)
@@ -361,3 +363,39 @@ def test_a_relative_out_dir_may_not_nest_pipeline_runs():
     with pytest.raises(ConfigError, match="would nest pipeline_runs/"):
         EvaluationReport("report", {"out_dir": "pipeline_runs/replay"})
     EvaluationReport("report", {"out_dir": "/abs/pipeline_runs/replay"})
+
+
+def _fills_only(sell_price):
+    """One round trip, no decision and no forecast anywhere in the log."""
+    b = Builder()
+    b.add("run_start", 0, run_id="bare", tz="UTC", units=UNITS)
+    b.add("cashflow", DAY1, amount=1000, rule="initial")
+    b.add("fill", DAY1 + MIN, "AAA", fill_id="b", side="buy", qty=1, price=100.0, fee=1.0)
+    b.add("fill", DAY1 + 2 * MIN, "AAA", fill_id="s", side="sell", qty=1, price=sell_price,
+          fee=1.0)
+    return " ".join(Narrative(BacktestReport(EventLog(b.events)).context).sentences())
+
+
+@pytest.mark.parametrize("sell_price", [100.5, 110.0, 99.0])
+def test_the_driver_never_credits_forecasts_when_the_log_carries_none(sell_price):
+    """No decision, no candidate score: say net = gross - fees, claim no edge."""
+    text = _fills_only(sell_price)
+    assert "Biggest driver" not in text and "forecasts' edge" not in text
+    assert "forecasts earned" not in text and "forecasts lost" not in text
+    assert "net is gross less fees" in text.lower()
+
+
+def test_the_driver_still_credits_forecasts_when_candidates_carry_scores(declared):
+    assert "Biggest driver: the forecasts' edge" in " ".join(
+        Narrative(declared.context).sentences())
+
+
+def test_a_decision_without_candidate_scores_is_not_a_forecast():
+    b = Builder()
+    b.add("run_start", 0, run_id="bare", tz="UTC", units=UNITS)
+    b.add("cashflow", DAY1, amount=1000, rule="initial")
+    b.add("decision", DAY1, decision_id="d0", action="hold", reason="watching")
+    b.add("fill", DAY1 + MIN, "AAA", fill_id="b", side="buy", qty=1, price=100.0, fee=1.0)
+    b.add("fill", DAY1 + 2 * MIN, "AAA", fill_id="s", side="sell", qty=1, price=110.0, fee=1.0)
+    text = " ".join(Narrative(BacktestReport(EventLog(b.events)).context).sentences())
+    assert "forecasts' edge" not in text and "net is gross less fees" in text.lower()

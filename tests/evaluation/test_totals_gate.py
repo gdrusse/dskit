@@ -156,3 +156,28 @@ def test_event_counts_are_measures_with_a_zero_tolerance_available():
     with pytest.raises(GateRefusal, match=r"fill_count: expected 3, got 2"):
         _gate(counts).run(None, {"events": events, "expected": {
             "fills": 3, "refusals": 0, "decisions": 0}})
+
+
+def test_the_realised_measure_is_the_books_average_cost_realised_net_of_fees():
+    """Buy 1 @ 100 (fee 2), sell 1 @ 130: realised = 30 - 2 = 28, the position closed."""
+    check = {"realised": {"expected": "realised", "tolerance": 0.005}}
+    out = _gate(check).run(None, {"events": _events(), "expected": {"realised": 28.0}})
+    assert out["comparison"][0]["measure"] == "realised"
+    assert out["comparison"][0]["actual"] == pytest.approx(28.0) and out["comparison"][0]["ok"]
+    with pytest.raises(GateRefusal, match=r"realised: expected 30\.0, got 28\.0"):
+        _gate(check).run(None, {"events": _events(), "expected": {"realised": 30.0}})
+
+
+def test_the_realised_measure_excludes_unrealised_open_pnl():
+    """An open long marked up is unrealised: net_pnl moves, realised does not."""
+    b = Builder()
+    b.add("run_start", 0, run_id="r", tz="UTC")
+    b.add("cashflow", 1, amount=1000.0)
+    b.add("fill", 2, "AAA", fill_id="a", side="buy", qty=1, price=100.0, fee=2.0)
+    b.add("mark", 3, "AAA", price=150.0)
+    b.add("run_end", 4, status="ok")
+    checks = {"realised": {"expected": "realised", "tolerance": 0.005},
+              "net_pnl": {"expected": "pnl", "tolerance": 0.005}}
+    out = _gate(checks).run(None, {"events": b.events,
+                                   "expected": {"realised": -2.0, "pnl": 48.0}})
+    assert [r["actual"] for r in out["comparison"]] == [pytest.approx(-2.0), pytest.approx(48.0)]

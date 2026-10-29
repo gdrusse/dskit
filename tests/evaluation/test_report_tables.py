@@ -355,3 +355,95 @@ def test_a_wired_reference_for_rows_defers_and_a_malformed_table_is_refused():
                                                                      rows="nope")},
                 {"t": {"title": "x"}}):
         assert EvaluationReport.validate_params({"out_dir": "r", "tables": bad}), bad
+
+
+# ---------------------------------------------------------------------------
+# review round 3: section-vs-section collisions, no directory on a refusal, anchors, specs
+# ---------------------------------------------------------------------------
+
+
+class _Named(_Files):
+    """A section with its own anchor, so two of them can sit in one report."""
+
+    def __init__(self, anchor, *names):
+        super().__init__(*names)
+        self.anchor = anchor
+
+
+def test_two_sections_writing_one_file_name_collide_and_nothing_is_created(tmp_path):
+    out = tmp_path / "out"
+    with pytest.raises(ConfigError, match="collides"):
+        _report(_Named("one", "shared.csv"), _Named("two", "shared.csv")).write(str(out))
+    assert not out.exists()
+
+
+def test_two_sections_with_distinct_file_names_both_land(tmp_path):
+    paths = _report(_Named("one", "a.csv"), _Named("two", "b.csv")).write(str(tmp_path / "out"))
+    assert {"a.csv", "b.csv"} <= set(paths)
+
+
+@pytest.mark.parametrize("name", ["a\\b.csv", "dir/x.csv", ""])
+def test_a_refused_write_creates_no_directory_even_when_nested(tmp_path, name):
+    out = tmp_path / "deep" / "out"
+    with pytest.raises(ConfigError):
+        _report(_Files(name)).write(str(out))
+    assert not (tmp_path / "deep").exists()
+
+
+@pytest.mark.parametrize("anchor", ["a b", "A", "a/b", "-a", "a.b", "a\n", "", "ab "])
+def test_an_anchor_must_fullmatch_the_pattern(anchor):
+    assert TableSection.problems(anchor, {"title": "T", "columns": ["a"], "rows": []})
+    with pytest.raises(ConfigError, match="anchor"):
+        TableSection(anchor=anchor, title="T", columns=["a"], rows=[])
+
+
+@pytest.mark.parametrize("anchor", ["a", "a-b_c", "0x", "ticker-dte"])
+def test_a_conforming_anchor_is_accepted(anchor):
+    assert TableSection.problems(anchor, {"title": "T", "columns": ["a"], "rows": []}) == []
+
+
+def _spec(**changes):
+    return {"title": "T", "columns": ["a", "b"], "rows": [], **changes}
+
+
+def test_a_format_naming_a_column_not_in_columns_is_a_problem():
+    problems = TableSection.problems("t", _spec(formats={"z": "money"}))
+    assert len(problems) == 1 and "'z'" in problems[0] and "formats" in problems[0]
+
+
+def test_an_unknown_format_kind_is_a_problem():
+    problems = TableSection.problems("t", _spec(formats={"a": "furlongs"}))
+    assert len(problems) == 1 and "'furlongs'" in problems[0]
+
+
+@pytest.mark.parametrize("title", ["", "   ", None, 3])
+def test_a_blank_or_non_string_title_is_a_problem(title):
+    problems = TableSection.problems("t", _spec(title=title))
+    assert len(problems) == 1 and "title" in problems[0]
+
+
+def test_a_valid_format_is_not_a_problem():
+    assert TableSection.problems("t", _spec(formats={"a": "money", "b": "text"})) == []
+
+
+# ---------------------------------------------------------------------------
+# the one owner of the bare-file-name rule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name, ok", [
+    ("a.csv", True), ("a b.csv", True), ("..x", True),
+    ("", False), (".", False), ("..", False), ("a/b", False), ("/a", False), ("../a", False),
+    ("a\\b", False), ("a/", False), (None, False), (3, False),
+])
+def test_is_bare_file_name(name, ok):
+    from dskit.evaluation.names import is_bare_file_name
+    assert is_bare_file_name(name) is ok
+
+
+def test_reports_and_links_share_the_one_rule():
+    import dskit.evaluation.links as links
+    import dskit.evaluation.report as report
+    from dskit.evaluation import names
+    assert links.is_bare_file_name is names.is_bare_file_name
+    assert report.is_bare_file_name is names.is_bare_file_name

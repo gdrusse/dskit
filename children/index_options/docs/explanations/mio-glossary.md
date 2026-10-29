@@ -120,7 +120,9 @@ using that session's quotes (a decision on Monday fills on Tuesday).
   drawdown, Sharpe from `dskit.evaluation`) value open books AT COST between
   fills (see Report mechanics), so they differ from the marked figures. Per
   ADR-0283 the report headline is built from events; the marked figures are
-  the MIO result's and stay in the ledger table. Every figure is labelled.
+  the MIO result's and stay in the saved-figures and ledger tables. The report
+  carries a basis banner, and its at-cost statistics (TWR, drawdown, Sharpe,
+  exposure) are labelled "(at cost)".
 
 ## Performance statistics
 

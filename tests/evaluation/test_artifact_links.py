@@ -455,3 +455,65 @@ def test_the_rows_and_the_checks_agree_on_the_tables_pin(root, report_dir):
     row = _by_path(out["rows"])[str(root / "summary.csv")]
     assert row["pinned"] == "mismatch"
     assert {c["pinned"] for c in out["checks"]} == {row["pinned"]}
+
+
+# --- review round 3: duplicate rows, sibling prefixes, byte-count pins ----------------------
+
+
+@pytest.mark.parametrize("statuses", [("complete", "unsupported"), ("unsupported", "complete")])
+def test_duplicate_rows_for_one_cell_read_not_ok_if_any_row_is_not_ok(root, report_dir, statuses):
+    rows = [row for row in _full_rows() if (row["scenario"], row["method"]) != ("control", "a")]
+    rows += [{"cohort": "cohort", "scenario": "control", "method": "a", "status": s}
+             for s in statuses]
+    _summary(root, rows)
+    out = _run(root, report_dir, table=TABLE)
+    cells = {(c["case"], c["unit"]): c["status"] for c in out["cells"]}
+    assert cells[("control", "a")] == "not ok (unsupported)"
+    assert _checks(out)["gate"]["status"] == "incomplete"
+
+
+def test_duplicate_rows_that_all_pass_stay_ok(root, report_dir):
+    _summary(root, _full_rows() + _full_rows())
+    out = _run(root, report_dir, table=TABLE)
+    assert {c["status"] for c in out["cells"]} == {"ok"}
+
+
+def test_a_symlink_to_a_sibling_directory_sharing_the_roots_prefix_is_refused(
+        tmp_path, report_dir):
+    """/x/root2 starts with the string /x/root but is not inside it (commonpath, not startswith)."""
+    root = tmp_path / "root"
+    sibling = tmp_path / "root2"
+    root.mkdir()
+    sibling.mkdir()
+    (sibling / "secret.md").write_text("secret")
+    os.symlink(str(sibling / "secret.md"), str(root / "escape.md"))
+    with pytest.raises(ValueError, match="outside"):
+        _run(root, report_dir, files=[{"id": "x", "path": "escape.md"}])
+
+
+def test_inside_is_component_wise_not_a_string_prefix(tmp_path):
+    from dskit.evaluation.links import _inside
+    (tmp_path / "root").mkdir()
+    (tmp_path / "root2").mkdir()
+    assert _inside(tmp_path / "root", tmp_path / "root")
+    assert _inside(tmp_path / "root" / "a" / "b", tmp_path / "root")
+    assert not _inside(tmp_path / "root2", tmp_path / "root")
+    assert not _inside(tmp_path / "root", tmp_path / "root2")
+
+
+def test_a_pin_whose_sha_matches_but_bytes_differ_is_a_mismatch(root, report_dir):
+    import json
+    raw = (root / "report.md").read_bytes()
+    pins = {"files": {"report.md": {"sha256": _sha(raw), "bytes": len(raw) + 1}}}
+    (root / "pins.json").write_text(json.dumps(pins))
+    out = _run(root, report_dir, pins={"file": "pins.json", "files_key": "files"})
+    assert _by_path(out["rows"])[str(root / "report.md")]["pinned"] == "mismatch"
+
+
+def test_a_pin_whose_bytes_match_but_sha_differs_is_a_mismatch(root, report_dir):
+    import json
+    raw = (root / "report.md").read_bytes()
+    pins = {"files": {"report.md": {"sha256": "0" * 64, "bytes": len(raw)}}}
+    (root / "pins.json").write_text(json.dumps(pins))
+    out = _run(root, report_dir, pins={"file": "pins.json", "files_key": "files"})
+    assert _by_path(out["rows"])[str(root / "report.md")]["pinned"] == "mismatch"

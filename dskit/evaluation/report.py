@@ -37,8 +37,11 @@ from dskit.evaluation.sections import (
     DEFAULT_SECTIONS,
     DecisionLogSection,
     ReportContext,
+    caveats_html,
+    caveats_markdown,
 )
-from dskit.evaluation.statistics import DEFAULT_MIN_N, StatisticsTable
+from dskit.evaluation.names import is_bare_file_name
+from dskit.evaluation.statistics import DEFAULT_MIN_N, STAT_NAMES, StatisticsTable
 from dskit.evaluation.svg import CHART_CSS
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.kinds_report import csv_text
@@ -105,12 +108,24 @@ class BacktestReport:
         The trades-on-price panel cap.
     max_markers : int
         The fill-marker cap per trades-on-price panel.
+    caveats : sequence of str
+        Non-empty labels for a report whose figures differ in basis from the
+        authoritative source. Each prints in a banner under the title (page
+        and ``summary.md``) and again above the Statistics table. Default
+        ``()`` prints nothing and leaves every file unchanged.
+    statistic_labels : dict or None
+        ``{name in STAT_NAMES: label}``: the label replaces the statistic's
+        name in the Statistics table (display only; criteria, metrics and
+        CSVs keep the name).
+    narrative_driver : bool
+        False drops the "Biggest driver" clause from "What happened".
+        Default True.
 
     Raises
     ------
     ConfigError
-        When a pre-registered criterion names an unknown statistic, or two
-        sections share an anchor.
+        When a pre-registered criterion names an unknown statistic, two
+        sections share an anchor, or an option fails :meth:`option_problems`.
 
     Examples
     --------
@@ -123,7 +138,11 @@ class BacktestReport:
     """
 
     def __init__(self, log, sections=None, *, title=None, min_n=DEFAULT_MIN_N,
-                 max_panels=DEFAULT_MAX_PANELS, max_markers=DEFAULT_MAX_MARKERS):
+                 max_panels=DEFAULT_MAX_PANELS, max_markers=DEFAULT_MAX_MARKERS,
+                 caveats=(), statistic_labels=None, narrative_driver=True):
+        problems = self.option_problems(caveats, statistic_labels, narrative_driver)
+        if problems:
+            raise ConfigError(problems)
         self.log = log
         chosen = DEFAULT_SECTIONS if sections is None else sections
         self.sections = tuple(s() if isinstance(s, type) else s for s in chosen)
@@ -144,7 +163,51 @@ class BacktestReport:
             census=log.census(),
             max_panels=max_panels,
             max_markers=max_markers,
+            caveats=tuple(caveats),
+            statistic_labels=dict(statistic_labels or {}),
+            narrative_driver=narrative_driver,
         )
+
+    @staticmethod
+    def option_problems(caveats=(), statistic_labels=None, narrative_driver=True):
+        """Return every problem with the display options; empty when acceptable.
+
+        Parameters
+        ----------
+        caveats : object
+            A list of non-blank strings.
+        statistic_labels : object
+            None, or an object of ``STAT_NAMES`` member -> non-blank label.
+        narrative_driver : object
+            A bool.
+
+        Returns
+        -------
+        list of str
+        """
+        problems = []
+        if not isinstance(caveats, (list, tuple)):
+            problems.append(f"caveats must be a list of strings, got {caveats!r}")
+        else:
+            problems.extend(f"caveats[{i}] must be a non-empty string, got {text!r}"
+                            for i, text in enumerate(caveats)
+                            if not isinstance(text, str) or not text.strip())
+        if statistic_labels is not None:
+            if not isinstance(statistic_labels, dict):
+                problems.append(f"statistic_labels must be an object of statistic -> label, "
+                                f"got {statistic_labels!r}")
+            else:
+                unknown = sorted(str(name) for name in statistic_labels
+                                 if name not in STAT_NAMES)
+                if unknown:
+                    problems.append(f"statistic_labels names unknown statistic(s) {unknown} — "
+                                    f"allowed: {list(STAT_NAMES)}")
+                problems.extend(f"statistic_labels.{name} must be a non-empty string, got "
+                                f"{label!r}" for name, label in statistic_labels.items()
+                                if not isinstance(label, str) or not label.strip())
+        if not isinstance(narrative_driver, bool):
+            problems.append(f"narrative_driver must be a boolean, got {narrative_driver!r}")
+        return problems
 
     def html(self):
         """Return the self-contained HTML report.
@@ -161,7 +224,7 @@ class BacktestReport:
             "<!DOCTYPE html>\n<html lang=en><head><meta charset=utf-8>"
             '<meta name=viewport content="width=device-width, initial-scale=1">'
             f"<title>{title}</title><style>{CHART_CSS}{PAGE_CSS}</style></head>"
-            f"<body><h1>{title}</h1><nav>{nav}</nav><main>{body}</main></body></html>\n"
+            f"<body><h1>{title}</h1>{caveats_html(self.context)}<nav>{nav}</nav><main>{body}</main></body></html>\n"
         )
 
     def summary_markdown(self):
@@ -171,7 +234,7 @@ class BacktestReport:
         -------
         str
         """
-        lines = [f"# {render_cell(self.context.title)}", ""]
+        lines = [f"# {render_cell(self.context.title)}", "", *caveats_markdown(self.context)]
         for section in self.sections:
             lines.extend(section.markdown(self.context))
         return "\n".join(lines).rstrip() + "\n"
@@ -243,8 +306,7 @@ class BacktestReport:
         seen = set(names) | set(names.values())
         for section in self.sections:
             for filename, text in section.files(self.context).items():
-                if (not isinstance(filename, str) or not filename
-                        or filename in (".", "..") or os.path.basename(filename) != filename):
+                if not is_bare_file_name(filename):
                     raise ConfigError([f"section {section.anchor!r} file name {filename!r} must "
                                        f"be a bare file name"])
                 if filename in seen:

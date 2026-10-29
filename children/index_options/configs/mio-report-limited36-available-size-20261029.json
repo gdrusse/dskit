@@ -623,6 +623,31 @@
             "note": "Books selected by a decision but refused at the next session's fill. Decision-stage refusals have no DTE and sit in the decision log."
           }
         },
+        "narrative_driver": false,
+        "caveats": [
+          "Simulated end-of-day fills against displayed depth: 2019 development evidence, not broker liquidity and not proof of profitability.",
+          "Statistics below come from the event book, which values open books at cost between fills (TWR, drawdown, Sharpe, exposure). The MIO result's marked figures are authoritative: see 'Saved marked figures' and the day-by-day ledger.",
+          "Each book is one unit at its net premium; a credit book appears as a buy at a negative price. Totals are exact; direction and notional statistics are not meaningful per book.",
+          "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
+          "Optimizer gap is relative; the run document's MIO solve accepts solutions by an absolute gap limit (mip_abs_gap, USD) with mip_rel_gap 0, so a large relative gap beside 'optimal' is not a failure.",
+          "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md."
+        ],
+        "statistic_labels": {
+          "twr": "twr (at cost)",
+          "max_drawdown": "max_drawdown (at cost)",
+          "max_drawdown_pct": "max_drawdown_pct (at cost)",
+          "max_drawdown_minutes": "max_drawdown_minutes (at cost)",
+          "daily_mean_return": "daily_mean_return (at cost)",
+          "daily_sharpe": "daily_sharpe (at cost)",
+          "daily_sharpe_ci_low": "daily_sharpe_ci_low (at cost)",
+          "daily_sharpe_ci_high": "daily_sharpe_ci_high (at cost)",
+          "psr": "psr (at cost)",
+          "dsr": "dsr (at cost)",
+          "turnover_per_day": "turnover_per_day (at cost)",
+          "avg_exposure": "avg_exposure (at cost)",
+          "refusal_rate": "refusal_rate (decisions)",
+          "skip_rate": "skip_rate (decisions)"
+        },
         "title": "MIO limited36 available-size: nominal_lp"
       },
       "notes": "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md. Simulated EOD displayed-depth fills, not broker liquidity or proof of profitability."
@@ -1327,6 +1352,31 @@
             },
             "note": "Books selected by a decision but refused at the next session's fill. Decision-stage refusals have no DTE and sit in the decision log."
           }
+        },
+        "narrative_driver": false,
+        "caveats": [
+          "Simulated end-of-day fills against displayed depth: 2019 development evidence, not broker liquidity and not proof of profitability.",
+          "Statistics below come from the event book, which values open books at cost between fills (TWR, drawdown, Sharpe, exposure). The MIO result's marked figures are authoritative: see 'Saved marked figures' and the day-by-day ledger.",
+          "Each book is one unit at its net premium; a credit book appears as a buy at a negative price. Totals are exact; direction and notional statistics are not meaningful per book.",
+          "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
+          "Optimizer gap is relative; the run document's MIO solve accepts solutions by an absolute gap limit (mip_abs_gap, USD) with mip_rel_gap 0, so a large relative gap beside 'optimal' is not a failure.",
+          "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md."
+        ],
+        "statistic_labels": {
+          "twr": "twr (at cost)",
+          "max_drawdown": "max_drawdown (at cost)",
+          "max_drawdown_pct": "max_drawdown_pct (at cost)",
+          "max_drawdown_minutes": "max_drawdown_minutes (at cost)",
+          "daily_mean_return": "daily_mean_return (at cost)",
+          "daily_sharpe": "daily_sharpe (at cost)",
+          "daily_sharpe_ci_low": "daily_sharpe_ci_low (at cost)",
+          "daily_sharpe_ci_high": "daily_sharpe_ci_high (at cost)",
+          "psr": "psr (at cost)",
+          "dsr": "dsr (at cost)",
+          "turnover_per_day": "turnover_per_day (at cost)",
+          "avg_exposure": "avg_exposure (at cost)",
+          "refusal_rate": "refusal_rate (decisions)",
+          "skip_rate": "skip_rate (decisions)"
         },
         "title": "MIO limited36 available-size: w1_003_lp"
       },
@@ -2033,6 +2083,31 @@
             "note": "Books selected by a decision but refused at the next session's fill. Decision-stage refusals have no DTE and sit in the decision log."
           }
         },
+        "narrative_driver": false,
+        "caveats": [
+          "Simulated end-of-day fills against displayed depth: 2019 development evidence, not broker liquidity and not proof of profitability.",
+          "Statistics below come from the event book, which values open books at cost between fills (TWR, drawdown, Sharpe, exposure). The MIO result's marked figures are authoritative: see 'Saved marked figures' and the day-by-day ledger.",
+          "Each book is one unit at its net premium; a credit book appears as a buy at a negative price. Totals are exact; direction and notional statistics are not meaningful per book.",
+          "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
+          "Optimizer gap is relative; the run document's MIO solve accepts solutions by an absolute gap limit (mip_abs_gap, USD) with mip_rel_gap 0, so a large relative gap beside 'optimal' is not a failure.",
+          "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md."
+        ],
+        "statistic_labels": {
+          "twr": "twr (at cost)",
+          "max_drawdown": "max_drawdown (at cost)",
+          "max_drawdown_pct": "max_drawdown_pct (at cost)",
+          "max_drawdown_minutes": "max_drawdown_minutes (at cost)",
+          "daily_mean_return": "daily_mean_return (at cost)",
+          "daily_sharpe": "daily_sharpe (at cost)",
+          "daily_sharpe_ci_low": "daily_sharpe_ci_low (at cost)",
+          "daily_sharpe_ci_high": "daily_sharpe_ci_high (at cost)",
+          "psr": "psr (at cost)",
+          "dsr": "dsr (at cost)",
+          "turnover_per_day": "turnover_per_day (at cost)",
+          "avg_exposure": "avg_exposure (at cost)",
+          "refusal_rate": "refusal_rate (decisions)",
+          "skip_rate": "skip_rate (decisions)"
+        },
         "title": "MIO limited36 available-size: w1_003_shock10_lp"
       },
       "notes": "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md. Simulated EOD displayed-depth fills, not broker liquidity or proof of profitability."
@@ -2737,6 +2812,31 @@
             },
             "note": "Books selected by a decision but refused at the next session's fill. Decision-stage refusals have no DTE and sit in the decision log."
           }
+        },
+        "narrative_driver": false,
+        "caveats": [
+          "Simulated end-of-day fills against displayed depth: 2019 development evidence, not broker liquidity and not proof of profitability.",
+          "Statistics below come from the event book, which values open books at cost between fills (TWR, drawdown, Sharpe, exposure). The MIO result's marked figures are authoritative: see 'Saved marked figures' and the day-by-day ledger.",
+          "Each book is one unit at its net premium; a credit book appears as a buy at a negative price. Totals are exact; direction and notional statistics are not meaningful per book.",
+          "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
+          "Optimizer gap is relative; the run document's MIO solve accepts solutions by an absolute gap limit (mip_abs_gap, USD) with mip_rel_gap 0, so a large relative gap beside 'optimal' is not a failure.",
+          "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md."
+        ],
+        "statistic_labels": {
+          "twr": "twr (at cost)",
+          "max_drawdown": "max_drawdown (at cost)",
+          "max_drawdown_pct": "max_drawdown_pct (at cost)",
+          "max_drawdown_minutes": "max_drawdown_minutes (at cost)",
+          "daily_mean_return": "daily_mean_return (at cost)",
+          "daily_sharpe": "daily_sharpe (at cost)",
+          "daily_sharpe_ci_low": "daily_sharpe_ci_low (at cost)",
+          "daily_sharpe_ci_high": "daily_sharpe_ci_high (at cost)",
+          "psr": "psr (at cost)",
+          "dsr": "dsr (at cost)",
+          "turnover_per_day": "turnover_per_day (at cost)",
+          "avg_exposure": "avg_exposure (at cost)",
+          "refusal_rate": "refusal_rate (decisions)",
+          "skip_rate": "skip_rate (decisions)"
         },
         "title": "MIO limited36 available-size: w1_003_component25_lp"
       },

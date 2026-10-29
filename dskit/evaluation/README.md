@@ -144,6 +144,16 @@ untouched and `comparison` lists each check.
 fills by ticker and DTE band, say). Each table is a `TableSection` shown
 before provenance and written as `<anchor>.csv`.
 
+**Labelling a report whose basis differs.** `EvaluationReport` (and
+`BacktestReport`) take three optional display params; absent, every file is
+byte-identical to before. `caveats` (list of non-empty str) prints a banner
+under the title of `summary.md` and `report.html` and again above the
+Statistics table. `statistic_labels` (`{name in STAT_NAMES: label}`; an
+unknown name is refused) replaces the name shown in the Statistics table
+only. `narrative_driver` (bool, default true) false drops "Biggest driver"
+from "What happened"; with no candidate score in the log that clause never
+credits "the forecasts" and says net = gross less fees instead.
+
 **Zero and negative fill prices.** A `fill` price is any finite number: an
 option expiring worthless closes at 0. A NEGATIVE price (a spread bought for
 a credit) is refused by the log unless `run_start.signed_prices` is true, so
@@ -222,6 +232,7 @@ dskit/evaluation/
 ├── diagnostics.py ForecastDiagnostics: candidate score x outcome pairs, deciles,
 │                  hit rate by bucket, rank IC (pipeline.ordering)
 ├── criteria.py    Criterion / Verdict / Scorecard (PASS, FAIL, INCONCLUSIVE)
+├── names.py       is_bare_file_name: the one bare-file-name rule (report, links)
 ├── units.py       number display: money, counts, ratios, declared score units
 ├── narrative.py   Narrative: the rule-written "What happened"; HOW_TO_READ
 ├── provenance.py  git_revision, fill_provenance (code/env/wall_s + sources),

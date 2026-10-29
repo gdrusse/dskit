@@ -31,7 +31,7 @@ import json
 import re
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 
 from dskit.evaluation.diagnostics import ForecastDiagnostics
@@ -75,6 +75,8 @@ __all__ = [
     "SummarySection",
     "TableSection",
     "TradesOnPriceSection",
+    "caveats_html",
+    "caveats_markdown",
     "chosen_sections",
     "section_problems",
 ]
@@ -132,6 +134,14 @@ class ReportContext:
         The trades-on-price panel cap.
     max_markers : int
         The fill-marker cap per trades-on-price panel.
+    caveats : tuple of str
+        Reader-visible labels for a report whose figures differ in basis
+        from the authoritative source; empty (the default) prints nothing.
+    statistic_labels : dict
+        ``{statistic name: display label}`` for the Statistics table; an
+        unnamed statistic keeps its name.
+    narrative_driver : bool
+        False drops the "Biggest driver" clause from "What happened".
 
     Examples
     --------
@@ -149,6 +159,9 @@ class ReportContext:
     census: object
     max_panels: int = DEFAULT_MAX_PANELS
     max_markers: int = DEFAULT_MAX_MARKERS
+    caveats: tuple = ()
+    statistic_labels: dict = field(default_factory=dict)
+    narrative_driver: bool = True
 
     @property
     def local(self):
@@ -258,6 +271,43 @@ def _md_table(columns, rows, formats=None, units=None):
 def _note(text):
     """Render a muted paragraph."""
     return f"<p class=note>{html.escape(text)}</p>"
+
+
+def caveats_html(context):
+    """Return the caveat banner as HTML, or ``""`` when the report declares none.
+
+    Parameters
+    ----------
+    context : ReportContext
+
+    Returns
+    -------
+    str
+    """
+    if not context.caveats:
+        return ""
+    items = "".join(f"<li>{html.escape(text)}</li>" for text in context.caveats)
+    return ('<div class="caveats" role=note style="border-left:4px solid var(--ev-rej);'
+            f'padding:4px 10px;margin:8px 0"><b>Caveats</b><ul>{items}</ul></div>')
+
+
+def caveats_markdown(context):
+    """Return the caveat banner as ``summary.md`` lines, or ``[]`` when none are declared.
+
+    Parameters
+    ----------
+    context : ReportContext
+
+    Returns
+    -------
+    list of str
+        A blockquote, each caveat on one line (inner whitespace collapsed),
+        then a blank line.
+    """
+    if not context.caveats:
+        return []
+    return ["> **Caveats**", ">", *(f"> - {' '.join(text.split())}" for text in context.caveats),
+            ""]
 
 
 def _top_reasons(log, limit=_TOP_REASONS):
@@ -534,6 +584,7 @@ class SummarySection(Section):
         else:
             parts.append(_note("No criteria were pre-registered in run_start."))
         parts.append("<h3>Statistics</h3>")
+        parts.append(caveats_html(context))
         parts.append(self._stats_html(context))
         parts.append("<h3>Census</h3>")
         parts.append(self._census_html(context.census))
@@ -542,8 +593,8 @@ class SummarySection(Section):
     @staticmethod
     def _stat_rows(context):
         """Statistic rows, the value formatted, with an ``insufficient n`` flag."""
-        return [{**row.to_obj(), "value": context.format(STAT_FORMATS.get(row.name, "ratio"),
-                                                         row.value),
+        return [{**row.to_obj(), "name": context.statistic_labels.get(row.name, row.name),
+                 "value": context.format(STAT_FORMATS.get(row.name, "ratio"), row.value),
                  "flag": "" if row.sufficient else "insufficient n"}
                 for row in context.table.rows]
 
@@ -582,6 +633,7 @@ class SummarySection(Section):
             lines += _md_table(("name", "stat", "op", "value", "min_n", "observed", "n",
                                 "status", "reason"), verdicts) + [""]
         lines += ["## Statistics", ""]
+        lines += caveats_markdown(context)
         lines += _md_table(("name", "value", "n", "min_n", "flag"),
                            self._stat_rows(context)) + [""]
         lines += ["## Census", ""]

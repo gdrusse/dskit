@@ -235,3 +235,69 @@ def test_the_report_directory_is_not_inside_or_above_the_stress_root(document):
         if os.path.isabs(out):
             assert not (out == root or out.startswith(root + os.sep)
                         or root.startswith(out + os.sep)), (key, out)
+
+
+# --- the gate wiring, tolerances and the report's basis disclosure ------------------------
+
+#: The accepted cent-level discrepancy in dollars: float summation order differs, so exact
+#: equality is not asked of money; counts are exact.
+MONEY_TOLERANCE = 0.005
+COUNT_CHECKS = {"fill_count", "refusal_count", "decision_count"}
+#: Every report discloses these in its own words (substring, case-insensitive).
+CAVEAT_NEEDLES = ("at cost", "not broker liquidity")
+AT_COST_STATS = {"twr", "max_drawdown", "max_drawdown_pct", "daily_sharpe"}
+DECISION_STATS = {"refusal_rate", "skip_rate"}
+
+
+def _methods(document):
+    return [key[:-len("_report")] for key, _spec in _nodes(document, REPORT_KIND)]
+
+
+def test_each_report_reads_the_events_its_own_gate_passed_on(document):
+    methods = _methods(document)
+    assert len(methods) == 4
+    for method in methods:
+        assert document["pipeline"][f"{method}_report"]["inputs"] == {
+            "events": f"${method}_gate.events"}
+
+
+def test_gate_tolerances_are_zero_for_counts_and_half_a_cent_for_money(document):
+    for method in _methods(document):
+        checks = document["pipeline"][f"{method}_gate"]["params"]["checks"]
+        assert {name for name, c in checks.items() if name in COUNT_CHECKS} == COUNT_CHECKS
+        for name, check in checks.items():
+            want = 0 if name in COUNT_CHECKS else MONEY_TOLERANCE
+            assert check["tolerance"] == want, (method, name)
+
+
+def test_the_shaper_tolerance_is_the_same_half_cent(document):
+    for method in _methods(document):
+        assert document["pipeline"][f"{method}_rows"]["params"]["tolerance"] == MONEY_TOLERANCE
+
+
+def test_every_report_states_its_basis_and_drops_the_driver_sentence(document):
+    from dskit.evaluation.statistics import STAT_NAMES
+    for method in _methods(document):
+        params = document["pipeline"][f"{method}_report"]["params"]
+        assert params["narrative_driver"] is False, method
+        caveats = params["caveats"]
+        assert caveats and all(isinstance(c, str) and c for c in caveats), method
+        for needle in CAVEAT_NEEDLES:
+            assert any(needle in c.lower() for c in caveats), (method, needle)
+        assert any(_run_report()["glossary"] in c for c in caveats), method
+        labels = params["statistic_labels"]
+        assert set(labels) <= set(STAT_NAMES), sorted(set(labels) - set(STAT_NAMES))
+        for name in AT_COST_STATS:
+            assert labels[name].endswith("(at cost)"), (method, name)
+        for name in DECISION_STATS:
+            assert labels[name].endswith("(decisions)"), (method, name)
+        # a label that says "at cost" belongs to an at-cost statistic: nothing else is tagged
+        assert {n for n, v in labels.items() if v.endswith("(at cost)")} | DECISION_STATS \
+            == set(labels)
+
+
+def test_the_four_reports_carry_identical_basis_params(document):
+    keys = ("caveats", "statistic_labels", "narrative_driver")
+    seen = [{k: document["pipeline"][f"{m}_report"]["params"].get(k) for k in keys}
+            for m in _methods(document)]
+    assert all(entry == seen[0] for entry in seen)

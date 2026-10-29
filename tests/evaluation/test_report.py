@@ -263,7 +263,7 @@ def test_the_node_class_is_well_formed():
     ({"out_dir": "x", "title": 3}, "title must be"),
 ])
 def test_node_params_are_default_deny(params, needle):
-    with pytest.raises(ConfigError, match=needle):
+    with pytest.raises(ConfigError, match=re.escape(needle)):
         EvaluationReport("report", params)
 
 
@@ -427,3 +427,96 @@ def test_the_cli_takes_sections(tmp_path, scenario):
     assert re.findall(r'<section id="([a-z]+)"', page) == ["summary", "decisions", "provenance"]
     bad = _cli("render", str(source), "--out", str(tmp_path / "b"), "--sections", "nope")
     assert bad.returncode == 1 and "unknown section(s) ['nope']" in bad.stderr
+
+
+# --- report options: caveats, statistic labels, narrative driver (ADR-0283 review) ----------
+
+CAVEATS = ["Event statistics are on a booked basis, not the pinned total.",
+           "Two <rows> differ."]
+LABELS = {"net_pnl": "net_pnl (booked basis)", "fees": "fees (booked)"}
+
+
+def _stats_block(text):
+    """The part of ``text`` after the Statistics heading (md or html)."""
+    return text[text.index("Statistics"):]
+
+
+def test_default_options_leave_every_file_byte_identical(report, scenario):
+    explicit = BacktestReport(EventLog(scenario), caveats=(), statistic_labels={},
+                              narrative_driver=True)
+    assert explicit.html() == report.html()
+    assert explicit.summary_markdown() == report.summary_markdown()
+    assert "caveat" not in report.html().lower() and "caveat" not in report.summary_markdown().lower()
+
+
+def test_caveats_head_the_summary_and_repeat_above_the_statistics_table(scenario):
+    text = BacktestReport(EventLog(scenario), caveats=CAVEATS).summary_markdown()
+    title, story, stats = (text.index("# Synthetic"), text.index("## What happened"),
+                           text.index("## Statistics"))
+    assert title < text.index(CAVEATS[0]) < story
+    assert text[stats:].index(CAVEATS[0]) < text[stats:].index("| name | value")
+    assert text.count(CAVEATS[0]) == 2 and text.count(CAVEATS[1]) == 2
+
+
+def test_caveats_head_the_html_escaped_and_repeat_above_the_statistics_table(scenario):
+    page = BacktestReport(EventLog(scenario), caveats=CAVEATS).html()
+    assert page.index("<h1>") < page.index(CAVEATS[0]) < page.index('id="overview"')
+    assert "Two &lt;rows&gt; differ." in page and "<rows>" not in page
+    stats = page[page.index("<h3>Statistics</h3>"):]
+    assert stats.index(CAVEATS[0]) < stats.index("<table")
+    assert page.count(CAVEATS[0]) == 2
+    assert "http" not in page.lower() and "<script" not in page.lower()
+
+
+def test_a_multiline_caveat_stays_one_markdown_quote_line(scenario):
+    text = BacktestReport(EventLog(scenario), caveats=["a\nb  c"]).summary_markdown()
+    assert "> - a b c" in text
+
+
+def test_statistic_labels_replace_the_displayed_name_in_md_and_html(scenario):
+    plain = BacktestReport(EventLog(scenario))
+    labelled = BacktestReport(EventLog(scenario), statistic_labels=LABELS)
+    md, page = labelled.summary_markdown(), labelled.html()
+    assert "| net_pnl (booked basis) | 16.90 |" in md and "| fees (booked) | 2.50 |" in md
+    assert "| gross_pnl | 19.40 |" in md           # an unlabelled stat keeps its name
+    assert "| net_pnl | 16.90 |" not in md
+    assert "<td>net_pnl (booked basis)</td>" in page and "<td>net_pnl</td>" not in _stats_block(page)
+    assert labelled.metrics() == plain.metrics()    # labels are display only
+
+
+@pytest.mark.parametrize("options, needle", [
+    ({"caveats": "one string"}, "caveats must be a list"),
+    ({"caveats": [""]}, "caveats[0]"),
+    ({"caveats": ["ok", "  "]}, "caveats[1]"),
+    ({"caveats": [3]}, "caveats[0]"),
+    ({"statistic_labels": ["net_pnl"]}, "statistic_labels must be an object"),
+    ({"statistic_labels": {"nope": "x"}}, "unknown statistic"),
+    ({"statistic_labels": {"net_pnl": ""}}, "statistic_labels.net_pnl"),
+    ({"statistic_labels": {"net_pnl": 3}}, "statistic_labels.net_pnl"),
+    ({"narrative_driver": "no"}, "narrative_driver must be a boolean"),
+])
+def test_report_options_are_refused_when_malformed(scenario, options, needle):
+    with pytest.raises(ConfigError, match=re.escape(needle)):
+        BacktestReport(EventLog(scenario), **options)
+    assert any(needle in p for p in BacktestReport.option_problems(**options))
+
+
+def test_narrative_driver_false_drops_the_driver_clause(scenario):
+    on = BacktestReport(EventLog(scenario)).summary_markdown()
+    off = BacktestReport(EventLog(scenario), narrative_driver=False).summary_markdown()
+    assert "Biggest driver" in on and "Biggest driver" not in off
+    assert "Before costs the strategy made" in off      # the money sentence stays
+
+
+def test_the_node_takes_the_options_and_validates_them(tmp_path, scenario):
+    params = {"out_dir": "r", "caveats": CAVEATS, "statistic_labels": LABELS,
+              "narrative_driver": False}
+    assert EvaluationReport.validate_params(params) == []
+    ctx = NodeContext(name="t", asof="2026-09-02", run_dir=str(tmp_path))
+    EvaluationReport("report", params).run(ctx, {"events": scenario})
+    text = (tmp_path / "r" / "summary.md").read_text(encoding="utf-8")
+    assert CAVEATS[0] in text and "net_pnl (booked basis)" in text
+    assert "Biggest driver" not in text
+    for bad in ({"caveats": [""]}, {"statistic_labels": {"nope": "x"}},
+                {"narrative_driver": 1}):
+        assert EvaluationReport.validate_params({"out_dir": "r", **bad}), bad

@@ -610,6 +610,8 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258);
+                           # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the
+                           # report document is configs/mio-report-limited36-available-size-20261029.json)
                            # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate);
                            # theta_exact_expiry.py (ADR-0270: ThetaExactExpiryTables, the frozen Theta chains -> the
                            # exact-expiry surface, lifecycle, chain archive and own_iv series; no model)
@@ -670,7 +672,8 @@ docs/research/              # README.md, .gitkeep; distribution-modeling/, real-
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
-                           # quote_backtest, debit_backtest, ledger_studies, theta_exact_expiry, strike_screen_panel_source, strike_screen_fits, strike_region_scores (.py)
+                           # quote_backtest, debit_backtest, ledger_studies, theta_exact_expiry, strike_screen_panel_source, strike_screen_fits, strike_region_scores,
+                           # mio_run_report, mio_run_report_contract (ADR-0283) (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or

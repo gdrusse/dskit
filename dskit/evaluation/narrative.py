@@ -9,7 +9,8 @@ sentence can be traced to the row it came from.
 
 The rules, in order: the activity (round trips, sessions, decisions,
 window); the money (gross, fees, net, and how costs compare with gross);
-the biggest driver (costs vs the forecasts' edge); when scores are
+the biggest driver (costs vs the forecasts' edge, only when the log carries
+forecasts; otherwise net = gross less fees, and optionally omitted); when scores are
 returns, the mean chosen forecast against the round-trip fee in basis
 points; the hit rate and the win/loss sizes; the best and worst instrument; the drawdown; external
 cash (never profit); refusals and skips by reason; the census; the
@@ -82,8 +83,11 @@ class Narrative:
         list of str
         """
         rules = (self._activity, self._money, self._driver, self._forecast_vs_cost, self._hits,
-                 self._instruments, self._drawdown, self._flows, self._rejections, self._census, self._verdict)
-        return [sentence for rule in rules for sentence in rule()]
+                 self._instruments, self._drawdown, self._flows, self._rejections, self._census,
+                 self._verdict)
+        wanted = [rule for rule in rules
+                  if rule != self._driver or self.context.narrative_driver]
+        return [sentence for rule in wanted for sentence in rule()]
 
     # -- rules ---------------------------------------------------------------
 
@@ -119,12 +123,26 @@ class Narrative:
             text += f" (costs were {ratio(fees / gross)}x gross)"
         return [text + "."]
 
+    def _has_forecasts(self):
+        """Whether any decision carries a candidate score: the only evidence of a forecast."""
+        return any(row.get("score") is not None
+                   for decision in self.context.log.of_kind("decision")
+                   for row in decision.candidates)
+
     def _driver(self):
-        """Name the biggest driver: costs, the forecasts, or neither."""
+        """Name the biggest driver: costs, the forecasts, or neither.
+
+        Attributing money to "the forecasts" needs a forecast in the log; a log
+        with no candidate score says only that net is gross less fees.
+        """
         gross, fees, net = (self.stat.get(k) for k in ("gross_pnl", "fees", "net_pnl"))
         if gross is None or net is None:
             return []
         money = self.units.money
+        if not self._has_forecasts():
+            return [f"Net is gross less fees ({money(gross, signed=True)} - {money(fees)} = "
+                    f"{money(net, signed=True)}); the log records no forecasts, so none is "
+                    f"credited or blamed."]
         if net >= 0:
             if gross > 0 and fees:
                 return [f"Biggest driver: the forecasts' edge; fees took "

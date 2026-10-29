@@ -69,6 +69,7 @@ dskit/evaluation/
 ├── mapping.py     EventMapping / RowMap: rows -> events from a JSON field map
 ├── diagnostics.py ForecastDiagnostics (score x outcome: deciles, hit rate, rank IC)
 ├── criteria.py    Criterion / Verdict / Scorecard
+├── names.py       is_bare_file_name: the one bare-file-name rule (report, links)
 ├── units.py       money / count / ratio / percent / declared score units
 ├── narrative.py   Narrative ("What happened" by explicit rules) + HOW_TO_READ
 ├── provenance.py  git_revision, fill_provenance, run_dir_provenance

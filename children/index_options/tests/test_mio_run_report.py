@@ -18,6 +18,7 @@ import copy
 import csv
 import hashlib
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -120,6 +121,29 @@ def test_a_book_is_one_unit_bought_at_its_net_premium_and_sold_at_its_settlement
     assert len(rows["fills"]) == 4
 
 
+def _local_ms(day, clock):
+    """Epoch ms of ``day`` at the SHAPE time ``clock`` slot, computed independently of the node."""
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+    moment = datetime.combine(datetime.fromisoformat(day).date(),
+                              time.fromisoformat(SHAPE["times"][clock]),
+                              tzinfo=ZoneInfo(SHAPE["tz"]))
+    return int(moment.timestamp() * 1000)
+
+
+def test_each_fill_is_dated_by_its_own_date_at_its_own_time_of_day():
+    rows = _rows()
+    fills = {f["fill_id"]: f for f in rows["fills"]}
+    trades = {t["id"]: t for t in _result()["result"]["trades"]}
+    assert len(fills) == 4
+    for book_id, trade in trades.items():
+        assert fills[f"{book_id}:open"]["asof_ms"] == _local_ms(trade["fill_date"], "fill")
+        assert fills[f"{book_id}:close"]["asof_ms"] == _local_ms(trade["close_date"], "expiry")
+    # the two clocks and the two dates differ, so a swap of either cannot hide
+    assert trades[BOOK_A]["fill_date"] != trades[BOOK_A]["close_date"]
+    assert SHAPE["times"]["fill"] != SHAPE["times"]["expiry"]
+
+
 def test_the_other_ports_carry_orders_refusals_cashflows_decisions_and_expected_values():
     rows = _rows()
     assert [o["order_id"] for o in rows["orders"]] == [BOOK_A, BOOK_B, BOOK_R]
@@ -177,11 +201,54 @@ def test_the_saved_premium_must_agree_with_its_legs_and_its_credit():
         MioRunRows("rows", SHAPE).run(None, {"table": {"results": [bad]}})
 
 
+def _shift_premium(result, delta):
+    """Move book A's saved premium by ``delta`` and keep its credit consistent with it."""
+    trade = result["result"]["trades"][0]
+    trade["premium"] = round(trade["premium"] + delta, 6)
+    trade["credit"] = round(trade["premium"] - trade["fees"], 6)
+
+
+@pytest.mark.parametrize("delta", [0.02, -0.02])
+def test_a_premium_off_its_legs_either_way_refuses_alone(delta):
+    result = _result()
+    _shift_premium(result, delta)
+    with pytest.raises(ValueError) as caught:
+        MioRunRows("rows", SHAPE).run(None, {"table": {"results": [result]}})
+    assert re.search(r"premium.*legs", str(caught.value))
+    assert "differs from premium - fees" not in str(caught.value)
+
+
+@pytest.mark.parametrize("delta", [0.02, -0.02])
+def test_a_credit_off_premium_less_fees_either_way_refuses_alone(delta):
+    result = _result()
+    result["result"]["trades"][1]["credit"] = round(
+        result["result"]["trades"][1]["credit"] + delta, 6)
+    with pytest.raises(ValueError) as caught:
+        MioRunRows("rows", SHAPE).run(None, {"table": {"results": [result]}})
+    assert re.search(r"credit.*premium - fees", str(caught.value))
+    assert "differs from its legs" not in str(caught.value)
+
+
+@pytest.mark.parametrize("delta", [0.004, -0.004])
+def test_a_premium_or_credit_inside_the_half_cent_passes(delta):
+    result = _result()
+    _shift_premium(result, delta)
+    result["result"]["trades"][1]["credit"] += delta
+    assert MioRunRows("rows", SHAPE).run(None, {"table": {"results": [result]}})["fills"]
+
+
 @pytest.mark.parametrize("edit, needle", [
     (lambda r: r["result"]["decisions"][0].update(status="mystery"), "status 'mystery'"),
     (lambda r: r["result"]["trades"][0].update(decision_date="2019-06-06"), "no decision"),
     (lambda r: r["result"]["trades"].append(copy.deepcopy(r["result"]["trades"][0])), "twice"),
     (lambda r: r["result"]["curve"].pop(1), "outside the curve"),
+    # each date the curve must hold, one at a time (the curve is the account's session list)
+    (lambda r: r["result"]["trades"][0].update(close_date="2019-01-17"),
+     f"book '{BOOK_A}' close_date 2019-01-17 is outside the curve"),
+    (lambda r: r["result"]["trades"][0].update(fill_date="2019-01-04"),
+     f"book '{BOOK_A}' fill_date 2019-01-04 is outside the curve"),
+    (lambda r: r["result"]["rejected"][0].update(fill_date="2019-01-04"),
+     f"refused book '{BOOK_R}' fill_date 2019-01-04 is outside the curve"),
     # the order of dates: decision < fill <= close; a refused book's fill follows its decision
     (lambda r: r["result"]["trades"][0].update(fill_date="2019-01-02"), "after its decision"),
     (lambda r: r["result"]["rejected"][0].update(fill_date="2019-01-02"), "after its decision"),

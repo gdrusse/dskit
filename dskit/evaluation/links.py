@@ -32,6 +32,7 @@ import json
 import os
 import string
 
+from dskit.evaluation.names import is_bare_file_name
 from dskit.pipeline.kinds_report import csv_text
 from dskit.pipeline.node import Node, atomic_write, reject_unknown_params
 from dskit.pipeline.runs import render_cell
@@ -168,8 +169,7 @@ class ArtifactLinks(Node):
             problems.append(f"title must be a non-empty string, got {params['title']!r}")
         if "csv_name" in params:
             name = params["csv_name"]
-            if (not isinstance(name, str) or os.path.basename(name) != name or "\\" in name
-                    or name in ("", ".", "..") or not name.endswith(".csv")):
+            if not is_bare_file_name(name) or not name.endswith(".csv"):
                 problems.append(f"csv_name must be a bare '<name>.csv' file name (it is written "
                                 f"beside the report, never elsewhere), got {name!r}")
         return problems
@@ -206,8 +206,7 @@ class ArtifactLinks(Node):
                 continue
             for axis, values in axes.items():
                 bad = (not isinstance(values, list) or not values
-                       or any(not isinstance(v, str) or not v or "/" in v or "\\" in v or v in (".", "..")
-                              for v in values))
+                       or not all(is_bare_file_name(v) for v in values))
                 if bad:
                     problems.append(f"{label}.axes.{axis} must be a non-empty list of plain strings")
         return problems

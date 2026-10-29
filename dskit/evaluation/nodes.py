@@ -59,6 +59,15 @@ class EvaluationReport(Node):
         ``sections`` (list of str, optional) — which sections to render, by
         anchor (:data:`~dskit.evaluation.sections.SECTIONS`); ``summary``
         and ``provenance`` always render; omitted renders all of them.
+        ``caveats`` (list of non-empty str, optional) — labels for a report
+        whose event statistics differ in basis from the authoritative
+        source: a banner under the title of ``summary.md`` and
+        ``report.html``, repeated above the Statistics table.
+        ``statistic_labels`` (object, optional) — ``{name in
+        statistics.STAT_NAMES: label}``, replacing the name shown in the
+        Statistics table; an unknown name is refused.
+        ``narrative_driver`` (bool, default true) — false drops the
+        "Biggest driver" clause from "What happened".
 
     Inputs
     ------
@@ -84,7 +93,8 @@ class EvaluationReport(Node):
 
     role = "report"
     outputs = ("metrics", "paths")
-    _PARAMS = ("out_dir", "title", "sections", "tables", "notes")
+    _PARAMS = ("out_dir", "title", "sections", "tables", "caveats", "statistic_labels",
+               "narrative_driver", "notes")
 
     @classmethod
     def validate_params(cls, params):
@@ -116,6 +126,9 @@ class EvaluationReport(Node):
             problems.extend(section_problems(params["sections"]))
         if "tables" in params:
             problems.extend(cls._table_problems(params["tables"]))
+        problems.extend(BacktestReport.option_problems(
+            params.get("caveats", ()), params.get("statistic_labels"),
+            params.get("narrative_driver", True)))
         return problems
 
     @staticmethod
@@ -166,7 +179,11 @@ class EvaluationReport(Node):
         log = EventLog(fill_provenance(inputs["events"], run_dir))
         sections = self._with_tables(chosen_sections(self.params.get("sections")),
                                      self.params.get("tables"))
-        report = BacktestReport(log, sections, title=self.params.get("title"))
+        report = BacktestReport(
+            log, sections, title=self.params.get("title"),
+            caveats=self.params.get("caveats", ()),
+            statistic_labels=self.params.get("statistic_labels"),
+            narrative_driver=self.params.get("narrative_driver", True))
         out_dir = os.path.expanduser(self.params["out_dir"])
         if not os.path.isabs(out_dir):
             out_dir = os.path.join(run_dir, out_dir)
