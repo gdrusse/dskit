@@ -631,15 +631,44 @@ def _money(value):
     return f"${value:,.2f}"
 
 
-def _daybook(cohort, scenario, method, metrics, daily, incomplete=None):
-    """Readable daily opportunities, fills, expiries and losses."""
+_PROXY_NOTE = ("Fills are simulated at end-of-day displayed depth, never broker fills; "
+               "this is a depth proxy, not fill probability or decision evidence.")
+
+
+def _depth_proxy(schema, decisions):
+    """v3 only: the selected contract total that turns on proxy wording."""
+    if schema != "mio-execution-stress/v3":
+        return None
+    return sum(book["contracts"] for item in decisions for book in item.get("books", []))
+
+
+def _contract_headline(metrics, daily, selected_contracts):
+    """Book counts plus selected/filled contract totals and downsized books."""
+    fills = [book for row in daily for book in row["fills"]]
+    downsized = sum(any(leg["quantity"] != leg["selected_quantity"] for leg in book["legs"])
+                    for book in fills)
+    filled = sum(leg["quantity"] for book in fills for leg in book["legs"])
+    return (f"Books: selected {metrics['selected']}; filled {len(fills)} "
+            f"({downsized} downsized); refused {metrics['refused']}. "
+            f"Contracts: selected {selected_contracts}; filled {filled}.")
+
+
+def _daybook(cohort, scenario, method, metrics, daily, incomplete=None,
+             selected_contracts=None):
+    """Readable daily opportunities, fills, expiries and losses.
+
+    ``selected_contracts`` (v3 only, from ``_depth_proxy``) adds the depth-proxy
+    note and the contract headline; ``None`` keeps v1/v2 bytes unchanged.
+    """
+    proxy = selected_contracts is not None
     lines = [
         f"# {cohort} / {method} / {scenario}", "",
         "2019 development diagnostic. Chosen orders are decided after the named",
         "close; fills appear on the next session. Expiry P&L is realized;",
         "marked daily change is interim equity change after deposits.",
-        "Executed-leg quantities are shown as filled/selected; fills are",
-        "simulated at end-of-day displayed depth, never broker fills.", "",
+        "Executed-leg quantities are shown as filled/selected.",
+        *([_PROXY_NOTE] if proxy else []), "",
+        *([_contract_headline(metrics, daily, selected_contracts), ""] if proxy else []),
         (f"Selected {metrics['selected']}; filled {metrics['filled']}; "
          f"refused {metrics['refused']}; final profit "
          f"{_money(metrics['final_profit_usd'])}; "
@@ -922,11 +951,14 @@ def execute(document_path):
         raise FileExistsError("fresh output root required: " + str(output))
     completed = []
     incomplete = {}
+    selected_contracts = {}
     source_indexes = {}
 
     def collect(replay, cohort, packet, scenario, *, control):
         selected = sum(len(d.get("books", []))
                        for d in packet["result"]["decisions"])
+        selected_contracts[cohort, packet["id"]] = _depth_proxy(
+            document["schema"], packet["result"]["decisions"])
         try:
             result, daily = replay.run_method(packet, scenario)
             metrics = _metrics(result, daily, selected)
@@ -996,7 +1028,8 @@ def execute(document_path):
             "incomplete": incomplete.get((cohort, scenario, method))})
         (folder / (method + ".md")).write_text(
             _daybook(cohort, scenario, method, metrics, daily,
-                     incomplete.get((cohort, scenario, method))))
+                     incomplete.get((cohort, scenario, method)),
+                     selected_contracts[cohort, method]))
         summary.append({"cohort": cohort, "scenario": scenario, "method": method, **metrics})
         for row in daily:
             all_daily.append({"cohort": cohort, "scenario": scenario, "method": method, **row})
@@ -1031,11 +1064,13 @@ def execute(document_path):
         for row in all_dispositions:
             writer.writerow({k: json.dumps(v, separators=(",", ":"))
                              if isinstance(v, (dict, list)) else v for k, v in row.items()})
+    proxy = _depth_proxy(document["schema"], []) is not None
     lines = ["# 2019 MIO fixed-selection execution and expiry stress", "",
              "Each daily row names decision-day possibilities and selected orders; fills are",
              "attempted at the next session's observed NBBO. Expiries show realized P&L.",
-             "The scenarios are conditional on frozen future selections. Fills are",
-             "simulated at end-of-day displayed depth, never broker fills.",
+             *(("The scenarios are conditional on frozen future selections.", _PROXY_NOTE)
+               if proxy else
+               ("The seven scenarios are conditional on frozen future selections.",)),
              "See dispositions.csv for each attempted selected book, with quotes, fills,",
              "reserves, expiry payoff and cash impact; daily.csv gives every session.",
              "Unsupported cases stop at the failing session; later frozen choices are unattempted.", "",
@@ -1082,6 +1117,8 @@ def execute(document_path):
                 "replay_code_sha256": _sha(Path(__file__)),
                 "files": {str(path.relative_to(output)): {"sha256": _sha(path), "bytes": path.stat().st_size}
                           for path in sorted(output.rglob("*")) if path.is_file()}}
+    if proxy:
+        manifest["evidence_kind"] = _PROXY_NOTE
     _write_json(output / "pins.json", manifest)
     return output
 

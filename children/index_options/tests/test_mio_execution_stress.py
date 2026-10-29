@@ -515,3 +515,49 @@ def test_proportional_refuses_combination_with_other_shocks():
     with pytest.raises(ValueError, match='zero-shock'):
         stress._scenario_fill(study, book, '2019-01-03', {},
                               {**PROPORTIONAL, 'half_size': True})
+
+
+def _daybook_case():
+    """Two filled books, one downsized, and complete metrics."""
+    def leg(quantity, selected):
+        return {'side': 'buy', 'right': 'call', 'strike': 100.0, 'price': 1.0,
+                'quantity': quantity, 'selected_quantity': selected}
+    fills = [{'id': 'a', 'legs': [leg(3, 6), leg(2, 4)], 'fees': 1.0, 'credit': -1.0},
+             {'id': 'b', 'legs': [leg(5, 5)], 'fees': 1.0, 'credit': -1.0}]
+    daily = [{'date': '2019-01-03', 'candidate_books': 3, 'possible_option_contracts': 9,
+              'selected_ids': ['a', 'b', 'c'], 'fills': fills, 'expiries': [],
+              'refusals': [{'id': 'c', 'reason': 'insufficient_fill_size'}],
+              'expiry_losses': 0.0, 'cash': 10.0, 'candidate_refusals': []}]
+    metrics = {'status': 'complete', 'selected': 3, 'filled': 2, 'refused': 1,
+               'final_profit_usd': 1.0, 'max_drawdown': 0.0,
+               'refusal_reasons': {'insufficient_fill_size': 1}}
+    return metrics, daily
+
+
+def test_legacy_daybook_keeps_v1_v2_wording():
+    metrics, daily = _daybook_case()
+    lines = stress._daybook('c', 's', 'm', metrics, daily).split('\n')
+    assert lines[2:8] == [
+        '2019 development diagnostic. Chosen orders are decided after the named',
+        'close; fills appear on the next session. Expiry P&L is realized;',
+        'marked daily change is interim equity change after deposits.',
+        'Executed-leg quantities are shown as filled/selected.', '',
+        'Selected 3; filled 2; refused 1; final profit $1.00; max drawdown 0.0%.']
+    assert 'depth' not in '\n'.join(lines[:10])
+
+
+def test_v3_daybook_headline_counts_books_contracts_and_downsized():
+    metrics, daily = _daybook_case()
+    lines = stress._daybook('c', 's', 'm', metrics, daily, None, 19).split('\n')
+    assert lines[6:11] == [
+        stress._PROXY_NOTE, '',
+        'Books: selected 3; filled 2 (1 downsized); refused 1. '
+        'Contracts: selected 19; filled 10.', '',
+        'Selected 3; filled 2; refused 1; final profit $1.00; max drawdown 0.0%.']
+
+
+def test_depth_proxy_is_v3_only_and_sums_selected_contracts():
+    decisions = [{'books': [{'contracts': 10}, {'contracts': 4}]}, {'date': 'x'}]
+    for schema in ('mio-execution-stress/v1', 'mio-execution-stress/v2'):
+        assert stress._depth_proxy(schema, decisions) is None
+    assert stress._depth_proxy('mio-execution-stress/v3', decisions) == 14
