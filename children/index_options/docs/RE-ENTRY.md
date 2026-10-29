@@ -1,6 +1,6 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-10-29 by GPT-6 Astra. Both available-size MIO cohorts and all 56 v4 stress cases verified; report published in this wrap.
+Updated: 2026-10-29 by Claude Opus 5.5. ADR-0283 MIO run-report standard merged; GPT-6 Astra's available-size MIO and v4 stress verification below is unchanged.
 
 ## Now
 
@@ -16,14 +16,19 @@ Updated: 2026-10-29 by GPT-6 Astra. Both available-size MIO cohorts and all 56 v
 - Durable state: /home/russell/data/index_options/mio-2019-available-size-20261029/state.json. Full stress JSONs: /home/russell/data/index_options/mio-execution-stress-2019-available-size-20261029-v4.
 - Preserve originals, viewer, Path A0003/A0008 and TDD. Original source lookback/tail-padding metadata retained; account decisions stay 2019.
 
+- ADR-0283 run-report standard (locked 3b802f8c; two fresh Sonnet final lenses C0/M0; 504 focused tests). The study.json `report.run_report` contract is pinned by tests/test_mio_run_report_contract.py.
+- configs/mio-report-limited36-available-size-20261029.json renders one report per method from the pinned result.json. It refuses unless event net P&L, final equity, fees and counts match to the cent. Each report has a day-by-day marked ledger, refusal reasons, ticker x DTE, optimizer certificates, charts, a basis banner ("(at cost)" event statistics) and the glossary docs/explanations/mio-glossary.md.
+- Limited36 dry render: /home/russell/data/index_options/mio-run-report-limited36-20261029. Its v4 stress links rendered `pending` because the v4 root was not yet named when it ran.
+
 ## Next
 
 - Owner interpretation of the completed evidence. No further market run, economic change or optional hindsight is authorized by this wrap.
-- The user owns the separate Claude report-standardization session. Do not inspect, message, poll or manage it. Preserve claude/mio-report-standard-20261029 and /home/russell/wt-index-options-report-standard-20261029.
+- Report: set the ArtifactLinks `root` in the report config to /home/russell/data/index_options/mio-execution-stress-2019-available-size-20261029-v4, re-render limited36, and add a broad212 report document. These are config changes and need focused review.
 
 ## Blocked / owner decisions
 
 - No unresolved in-scope Critical/Major or execution blocker.
+- ADR-0283 deferred Minors are listed in its Amendment 1.
 - Previously deferred Minor test coverage: legacy invalid sizing typo, explicit56-row execute assertion, additional shocked multi-leg numeric oracles. Actual56-case accounting/output checks passed; locked implementation stays closed.
 
 ## Read first
@@ -31,7 +36,7 @@ Updated: 2026-10-29 by GPT-6 Astra. Both available-size MIO cohorts and all 56 v
 - memos/2026-10-29-mio-available-size-rerun.md - results, rules, limits and reproduction.
 - ../configs/mio-2019-available-size-results-pins-20261029.json - both fresh receipts and CSV hashes.
 - ../configs/mio-2019-execution-stress-available-size-20261029.json - exact scenario/source identities.
-- ../../../docs/architecture/decision-log.md - ADR-0281/0282 Amendment 1.
+- ../../../docs/architecture/decision-log.md - ADR-0281/0282 Amendment 1; ADR-0283 run-report standard.
 
 ## Do not
 
