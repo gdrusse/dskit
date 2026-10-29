@@ -733,3 +733,220 @@ def test_one_sizing_owner_serves_ordinary_and_stressed_fills(monkeypatch):
     calls.clear()
     _ordinary(*_sized((6, 4), (4, 3)))
     assert calls == [(6, 2, 4), (4, 2, 3)]
+
+
+# Review Major (test quality): construct FrozenMIOReplay and execute on a tmp tree.
+def _weekdays(n=252):
+    from datetime import date, timedelta
+    day, days = date(2019, 1, 2), []
+    while len(days) < n:
+        if day.weekday() < 5:
+            days.append(day.isoformat())
+        day += timedelta(days=1)
+    return days
+
+
+CALENDAR = _weekdays()
+EXPIRY = CALENDAR[20]
+
+
+class _Quotes(dict):
+    """An in-memory stand-in for the pinned SQLite quote view."""
+
+    def close(self, verify=False):
+        pass
+
+
+def _quote_rows():
+    rows = _Quotes()
+    for day in CALENDAR[1:21]:
+        for strike, bid, ask, bid_size, ask_size in ((100.0, 4.0, 4.2, 10, 3),
+                                                     (105.0, 2.0, 2.1, 10, 10)):
+            rows[day, EXPIRY, 'call', strike] = {
+                'bid': bid, 'ask': ask, 'bid_size': bid_size,
+                'ask_size': ask_size, 'basis_factor': 1.0}
+    return rows
+
+
+def _domain(fill_sizing):
+    from pathlib import Path
+    real = json.loads((Path(__file__).resolve().parents[1] / 'configs/mio-2019-limited36.json')
+                      .read_text())['pipeline']['plan']['params']['study']['domain']
+    params = {**real['params'], 'symbols': ['ABC'], 'methods': [
+        {'id': 'm' + str(i), 'rho': 0, 'portfolio_fraction': 1, 'name_fraction': 1,
+         'component_fraction': None} for i in range(4)]}
+    if fill_sizing is not None:
+        params['fill_sizing'] = fill_sizing
+    return {'params': params, 'pairs': [{'id': 'p', 'symbol': 'ABC', 'dte_min': 1, 'dte_max': 60}],
+            'sources': {'bars': {}, 'chain': {}}}
+
+
+def _draft_packets(domain):
+    legs = [{'right': 'call', 'strike': 100.0, 'sign': 1, 'quantity': 4, 'price': 4.2},
+            {'right': 'call', 'strike': 105.0, 'sign': -1, 'quantity': 4, 'price': 2.0}]
+    book = {'id': CALENDAR[0] + ':ABC:' + EXPIRY, 'symbol': 'ABC', 'expiry': EXPIRY,
+            'decision_date': CALENDAR[0], 'factor': 1.0, 'contracts': 8, 'legs': legs,
+            'credit': -885.2, 'reserve': 885.2, 'max_loss': 885.2}
+    decision = {'date': CALENDAR[0], 'status': 'selected', 'candidate_books': 1,
+                'candidate_contracts': 2, 'refusals': [], 'components': {'groups': []},
+                'books': [book]}
+    return [{'id': m['id'], 'status': 'completed',
+             'result': {'method': m, 'decisions': [decision]}}
+            for m in domain['params']['methods']]
+
+
+def _csvs(results, partial_csv_quantity=None):
+    """Write the four control extracts the way the original packet does."""
+    def text(header, rows):
+        import io
+        stream = io.StringIO()
+        writer = __import__('csv').DictWriter(stream, fieldnames=header)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: '' if v is None else v for k, v in row.items()})
+        return stream.getvalue()
+
+    trades, rejected, daily, orders = [], [], [], []
+    for packet in results:
+        result, method = packet['result'], packet['id']
+        for t in result.get('trades', []):
+            trades.append({'method': method, 'id': t['id'], 'contracts': t['contracts'],
+                           'pnl': repr(t['pnl'])})
+        for r in result.get('rejected', []):
+            rejected.append({'method': method, 'id': r['id'], 'reason': r['reason']})
+        for p in result.get('curve', []):
+            daily.append({'method': method, 'date': p['date'], 'equity': repr(p['equity'])})
+        filled = {t['id']: t for t in result.get('trades', [])}
+        for decision in result['decisions']:
+            for book in decision['books']:
+                trade = filled.get(book['id'])
+                for leg, actual in zip(book['legs'], trade['legs'] if trade else book['legs']):
+                    orders.append({
+                        'method': method, 'date': decision['date'], 'group_id': book['id'],
+                        'right': leg['right'], 'strike': leg['strike'],
+                        'side': 'buy' if leg['sign'] > 0 else 'sell',
+                        'selected_by_optimizer': 1, 'selected_quantity': leg['quantity'],
+                        'filled_quantity': (partial_csv_quantity or actual['quantity'])
+                        if trade else 0,
+                        'fill_price': repr(actual['fill_price']) if trade else None,
+                        'fill_date': trade['fill_date'] if trade else None,
+                        'rejection_reason': None})
+    return {'trades.csv': text(['method', 'id', 'contracts', 'pnl'], trades),
+            'rejected-orders.csv': text(['method', 'id', 'reason'], rejected),
+            'daily-account.csv': text(['method', 'date', 'equity'], daily),
+            'orders-and-fills.csv': text(
+                ['method', 'date', 'group_id', 'right', 'strike', 'side',
+                 'selected_by_optimizer', 'selected_quantity', 'filled_quantity',
+                 'fill_price', 'fill_date', 'rejection_reason'], orders)}
+
+
+def _tree(tmp_path, *, schema, fill_sizing='available_size', config='fresh-run.json',
+          pinned=True, wrong_sha=False, results=None, partial_csv_quantity=None):
+    """A repository root, original packets, pins and a stress document."""
+    import subprocess
+    sha = stress._sha
+    repo, evidence = tmp_path / 'repo', tmp_path / 'evidence'
+    configs = repo / 'children/index_options/configs'
+    configs.mkdir(parents=True, exist_ok=True)
+    domain = _domain(fill_sizing)
+    name = config if schema == V4 else None
+    config_path = configs / (name or 'mio-2019-limited36.json')
+    config_path.write_text(json.dumps(
+        {'pipeline': {'plan': {'params': {'study': {'domain': domain}}}}}))
+    if not (repo / '.git').exists():
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    subprocess.run(['git', '-C', str(repo), 'add', '-A'], check=True)
+    subprocess.run(['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@t',
+                    'commit', '-q', '--allow-empty', '-m', 'fixture'], check=True)
+    results = results if results is not None else _draft_packets(domain)
+    index = {}
+    for cohort in ('limited36', 'broad212'):
+        folder = evidence / cohort
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'result.json').write_text(json.dumps(
+            {'complete': True, 'results': results, 'audit': {'calendar': CALENDAR}}))
+        for csv_name, body in _csvs(results, partial_csv_quantity).items():
+            (folder / csv_name).write_text(body)
+            index[cohort + '/' + csv_name] = {'sha256': sha(folder / csv_name)}
+    (evidence / 'artifact-index.json').write_text(json.dumps({'csv_files': index}))
+    pins = {'evidence': {'artifact-index.json': {
+                'path': str(evidence / 'artifact-index.json'),
+                'sha256': sha(evidence / 'artifact-index.json')}},
+            'original_configs': {} if not pinned else {config_path.name: {
+                'sha256': '0' * 64 if wrong_sha else sha(config_path)}},
+            'runs': {c: {'run_dir': str(evidence), 'run_hash': 'r', 'sha256': 's',
+                         'document_hash': 'd'} for c in ('limited36', 'broad212')},
+            'sources': {}}
+    (evidence / 'pins.json').write_text(json.dumps(pins))
+    cohort_entry = {'quote_index_sha256': {'ABC': 'q'}}
+    if name:
+        cohort_entry['config'] = name
+    document = {
+        'schema': schema, 'repository_root': str(repo), 'original_root': str(evidence),
+        'results_pins': str(evidence / 'pins.json'),
+        'results_pins_sha256': sha(evidence / 'pins.json'),
+        'cohorts': {c: {**cohort_entry, 'result_sha256': sha(evidence / c / 'result.json')}
+                    for c in ('limited36', 'broad212')},
+        'scenarios': stress._approved_scenarios(schema),
+        'output_root': str(tmp_path / 'out')}
+    (evidence / 'document.json').write_text(json.dumps(document))
+    return document, pins
+
+
+@pytest.fixture
+def loaders(monkeypatch):
+    """Replace only the pinned parquet/SQLite readers with in-memory data."""
+    monkeypatch.setattr(stress, '_bar_rows', lambda binding, symbols, calendar: {
+        s: {d: 100.0 for d in calendar} for s in symbols})
+    monkeypatch.setattr(stress, '_index_view', lambda path, symbol, expected: (
+        _Quotes(_quote_rows()), {'sha256': expected, 'rows': 40}))
+    monkeypatch.setattr(stress, '_index_factors', lambda view, calendar: {
+        d: 1.0 for d in calendar})
+    monkeypatch.setattr(stress, '_missing_expiry_factors', lambda *args: None)
+
+
+@pytest.mark.parametrize('schema, fill_sizing', [
+    ('mio-execution-stress/v3', 'available_size'), (V4, None), (V4, 'all_or_none')])
+def test_replay_refuses_mismatched_sizing_and_schema(tmp_path, loaders, schema, fill_sizing):
+    document, pins = _tree(tmp_path, schema=schema, fill_sizing=fill_sizing)
+    with pytest.raises(ValueError, match='schema v4 require each other'):
+        stress.FrozenMIOReplay('limited36', document, pins)
+
+
+@pytest.mark.parametrize('pinned, wrong_sha', [(False, False), (True, True)])
+def test_replay_refuses_unpinned_or_drifted_v4_run_document(tmp_path, loaders, pinned, wrong_sha):
+    document, pins = _tree(tmp_path, schema=V4, pinned=pinned, wrong_sha=wrong_sha)
+    with pytest.raises(ValueError, match='run document drift'):
+        stress.FrozenMIOReplay('limited36', document, pins)
+
+
+def _original_results(tmp_path):
+    """Recompute the control once from draft packets: it becomes the pinned original."""
+    document, pins = _tree(tmp_path / 'draft', schema=V4)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(stress.FrozenMIOReplay, '_verify_control_csv_rows', lambda self, r: None)
+        replay = stress.FrozenMIOReplay('limited36', document, pins)
+        results = []
+        for packet in replay.original['results']:
+            result, _daily = replay.run_method(packet, stress._approved_scenarios(V4)[0])
+            results.append({**packet, 'result': json.loads(json.dumps(result))})
+    return results
+
+
+def test_v4_execute_pins_run_document_and_compares_partial_fill_rows(tmp_path, loaders):
+    results = _original_results(tmp_path)
+    trade = results[0]['result']['trades'][0]
+    assert [(leg['quantity'], leg['selected_quantity']) for leg in trade['legs']] == [(3, 4), (3, 4)]
+    document, _pins = _tree(tmp_path / 'bad', schema=V4, results=results, partial_csv_quantity=4)
+    with pytest.raises(ValueError, match='control order/fill CSV mismatch'):
+        stress.execute(tmp_path / 'bad/evidence/document.json')
+    document, _pins = _tree(tmp_path / 'good', schema=V4, results=results)
+    output = stress.execute(tmp_path / 'good/evidence/document.json')
+    manifest = json.loads((output / 'pins.json').read_text())
+    config = tmp_path / 'good/repo/children/index_options/configs/fresh-run.json'
+    assert manifest['original_run_documents'] == {
+        c: {'name': 'fresh-run.json', 'sha256': stress._sha(config)}
+        for c in ('limited36', 'broad212')}
+    assert manifest['evidence_kind'] == stress._PROXY_NOTE
+    summary = (output / 'report.md').read_text()
+    assert '| limited36 | control | m0 | complete | 1 | 1 | 0 |' in summary
