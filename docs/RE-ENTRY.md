@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-26: main synced; 37 local/2 remote contained branches purged; unmerged/dirty work retained; sweep receipt below |
-| index_options | children/index_options/docs/RE-ENTRY.md | 2026-10-29: ordinary MIO available-size wiring locked 922b53d0; four C0/M0 reviews, 334 focused tests; limited36 verified/exported; broad212 running; seven-case stress follow-up configured |
+| index_options | children/index_options/docs/RE-ENTRY.md | 2026-10-29: available-size MIO reruns complete; eight exact controls and48 stresses verified;56 daily trade/expiry books published; runtime922b53d0 C0/M0 with334 focused tests |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |
