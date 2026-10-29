@@ -458,15 +458,18 @@ class FrozenMIOReplay:
         rejected, snapshots, daily = [], [], []
         self.last_progress = {"daily": daily, "rejected": rejected,
                               "account": account, "date": None,
-                              "attempted_ids": [], "attempts": []}
+                              "attempted_ids": [], "attempts": [],
+                              "settlements": {}}
         for day in self.calendar:
             attempts, fills, refusals = [], [], []
             attempt_evidence = []
             self.last_progress.update(date=day, attempted_ids=attempts,
-                                      attempts=attempt_evidence)
+                                      attempts=attempt_evidence, settlements={})
             before_cash = account.cash
             before_closed = len(account.closed)
-            deposit = account.advance(day, study._settlements(account, day))
+            settlements = study._settlements(account, day)
+            self.last_progress["settlements"] = settlements
+            deposit = account.advance(day, settlements)
             expiries = account.closed[before_closed:]
             if pending is not None:
                 survivors = []
@@ -757,6 +760,38 @@ def _dispositions(cohort, scenario, method, result, daily, *,
     return rows
 
 
+def _failure_state(progress, reason):
+    """Expose the attempted settlement and account state at a failed session."""
+    account = progress["account"]
+    reserve = sum(book["reserve"] for book in account.open.values())
+    attempts = []
+    breaches = []
+    for key, pnl in progress["settlements"].items():
+        book = account.open.get(key)
+        if book is None:
+            continue
+        row = {"id": key, "attempted_pnl": pnl,
+               "reserved_loss": book["reserve"],
+               "excess_loss": max(0.0, -pnl - book["reserve"])}
+        attempts.append(row)
+        if pnl < -book["reserve"] - 1e-5:
+            breaches.append(row)
+    aggregate_breach = reserve > max(0.0, account.funding) + 1e-5
+    return {"date": progress["date"], "reason": reason,
+            "cash": account.cash, "funding": account.funding,
+            "contributions": account.contributions,
+            "realized": account.realized, "reserve": reserve,
+            "open_ids": sorted(account.open),
+            "attempted_ids": list(progress["attempted_ids"]),
+            "attempts": list(progress["attempts"]),
+            "settlement_attempts": attempts,
+            "settlement_reserve_breaches": breaches,
+            "aggregate_reserve_breach": aggregate_breach,
+            "reserve_breach": bool(breaches) or aggregate_breach,
+            "negative_cash": account.cash < 0,
+            "negative_funding": account.funding < 0}
+
+
 def _unsupported_metrics(selected, reason, rejected):
     """Keep an incomplete stress visible without inventing a profit."""
     keys = ("filled", "refused", "fill_rate", "final_profit_usd",
@@ -817,20 +852,7 @@ def execute(document_path):
             progress = replay.last_progress
             account = progress["account"]
             result, daily = None, list(progress["daily"])
-            failure = {"date": progress["date"], "reason": str(exc),
-                       "cash": account.cash, "funding": account.funding,
-                       "contributions": account.contributions,
-                       "realized": account.realized,
-                       "reserve": sum(book["reserve"]
-                                      for book in account.open.values()),
-                       "open_ids": sorted(account.open),
-                       "attempted_ids": list(progress["attempted_ids"]),
-                       "attempts": list(progress["attempts"]),
-                       "reserve_breach":
-                           sum(book["reserve"] for book in account.open.values())
-                           > max(0.0, account.funding) + 1e-5,
-                       "negative_cash": account.cash < 0,
-                       "negative_funding": account.funding < 0}
+            failure = _failure_state(progress, str(exc))
             incomplete[cohort, scenario["id"], packet["id"]] = {
                 "failure": failure,
                 "closed_trades": list(account.closed),
@@ -929,8 +951,9 @@ def execute(document_path):
              "Each daily row names decision-day possibilities and selected orders; fills are",
              "attempted at the next session's observed NBBO. Expiries show realized P&L.",
              "The seven scenarios are conditional on frozen future selections.",
-             "See dispositions.csv for each selected book, with quotes, fills,",
-             "reserves, expiry payoff and cash impact; daily.csv gives every session.", "",
+             "See dispositions.csv for each attempted selected book, with quotes, fills,",
+             "reserves, expiry payoff and cash impact; daily.csv gives every session.",
+             "Unsupported cases stop at the failing session; later frozen choices are unattempted.", "",
              "| Cohort | Scenario | Method | Status | Selected | Filled | Refused | Final profit | Max drawdown |",
              "|---|---|---|---|---:|---:|---:|---:|---:|"]
     for row in summary:

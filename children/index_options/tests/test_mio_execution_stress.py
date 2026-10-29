@@ -230,3 +230,18 @@ def test_partial_disposition_keeps_closed_trade_and_cap_refusal_details():
     assert rows[0]["preflight_fees"] == 0.65
     assert rows[0]["preflight_reserve"] == filled["reserve"]
     assert rows[0]["fill_fees"] is None
+
+
+def test_failed_settlement_reports_book_level_reserve_breach():
+    account = SimpleNamespace(
+        open={"short": {"reserve": 100.0}}, cash=1100.0,
+        funding=1000.0, contributions=1000.0, realized=0.0)
+    progress = {"account": account, "date": "2019-02-01",
+                "attempted_ids": [], "attempts": [],
+                "settlements": {"short": -150.0}}
+    failure = stress._failure_state(progress, "settlements exceed reserved losses")
+    assert failure["reserve_breach"] is True
+    assert failure["aggregate_reserve_breach"] is False
+    assert failure["settlement_reserve_breaches"] == [{
+        "id": "short", "attempted_pnl": -150.0,
+        "reserved_loss": 100.0, "excess_loss": 50.0}]
