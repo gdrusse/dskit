@@ -1,6 +1,7 @@
 """Focused fixed-selection stress controls."""
 
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -163,3 +164,34 @@ def test_shared_cap_refuses_batch_atomically_and_reserve_breach_is_explicit():
         "2019-01-03", [short], [{"members": ["ABC"], "upper": 1000}])
     with pytest.raises(ValueError, match="within reserved losses"):
         account.advance("2019-02-01", {"short": -150.0})
+
+
+def test_nonfinite_proposed_price_is_a_pinned_invalid_refusal():
+    study, book = _case(bid=1.1e308, ask=1.7e308)
+    scenario = {"price_fraction": 0.25, "half_size": False}
+    evidence = stress._attempt_evidence(study, book, "2019-01-03", scenario)
+    assert evidence["legs"][0]["proposed_fill_price"] is None
+    assert evidence["legs"][0]["proposed_price_valid"] is False
+    assert stress._scenario_fill(study, book, "2019-01-03", {}, scenario)[1] == "invalid_stressed_fill_price"
+    json.dumps(evidence, allow_nan=False)
+
+
+def test_failed_session_preserves_prior_daily_account_and_failure_state():
+    replay = stress.FrozenMIOReplay.__new__(stress.FrozenMIOReplay)
+    replay.calendar = ["2019-01-02", "2019-01-03"]
+    replay.params = {
+        "initial": 1000, "deposit": 0, "deposit_every_days": 14,
+        "bridge": {"end_before": "2020-01-01"}}
+    def settlements(account, day):
+        if day == "2019-01-03":
+            raise ValueError("synthetic reserve breach")
+        return {}
+    replay.study = lambda scenario: SimpleNamespace(_settlements=settlements)
+    packet = {"result": {"method": {"id": "synthetic"}, "decisions": []}}
+    with pytest.raises(ValueError, match="synthetic reserve breach"):
+        replay.run_method(packet, {"id": "expiry_down_15"})
+    progress = replay.last_progress
+    assert progress["date"] == "2019-01-03"
+    assert len(progress["daily"]) == 1
+    assert progress["daily"][0]["cash"] == 1000
+    assert progress["account"].cash == 1000

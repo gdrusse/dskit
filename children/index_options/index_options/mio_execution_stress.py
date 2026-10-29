@@ -181,11 +181,16 @@ def _attempt_evidence(study, book, day, scenario):
         original_price = (ask if leg["sign"] > 0 else bid) if market else None
         proposed_price = (adverse_side(bid, ask, leg["sign"],
                                        scenario["price_fraction"]) if market else None)
+        price_valid = (proposed_price is not None
+                       and math.isfinite(proposed_price) and proposed_price > 0)
+        if proposed_price is not None and not math.isfinite(proposed_price):
+            proposed_price = None
         legs.append({"side": "buy" if leg["sign"] > 0 else "sell",
                      "right": leg["right"], "strike": leg["strike"],
                      "quantity": leg["quantity"], "bid": bid, "ask": ask,
                      "original_side_price": original_price,
                      "proposed_fill_price": proposed_price,
+                     "proposed_price_valid": price_valid,
                      "original_depth": original_depth,
                      "effective_depth": effective_depth})
     return {"id": book["id"], "symbol": symbol, "expiry": expiry,
@@ -235,7 +240,7 @@ def _scenario_curve(study, account, snapshots):
         equity = snap["funding"] + sum(mark for mark, _carried in held)
         denominator = previous + snap["deposit"]
         if denominator <= 0 or equity <= 0:
-            raise ValueError("nonpositive marked equity under scenario")
+            raise ValueError("nonpositive marked equity under scenario on " + snap["date"])
         nav *= equity / denominator
         peak = max(peak, nav)
         drawdown = nav / peak - 1.0
@@ -335,6 +340,84 @@ class FrozenMIOReplay:
             if _sha(source) != index[relative]["sha256"]:
                 raise ValueError("original control CSV identity drift: " + relative)
 
+    @staticmethod
+    def _csv_equal(cell, value):
+        if value is None:
+            return cell == ""
+        if isinstance(value, (dict, list)):
+            return json.loads(cell) == value
+        if isinstance(value, bool):
+            return cell == str(value)
+        if isinstance(value, (int, float)):
+            return float(cell) == float(value)
+        return cell == str(value)
+
+    def _verify_control_csv_rows(self, result):
+        """Match recomputed books and account rows to four pinned extracts."""
+        method = result["method"]["id"]
+
+        def rows(name):
+            with (self.original_dir / name).open(newline="") as stream:
+                return [row for row in csv.DictReader(stream) if row["method"] == method]
+
+        for name, objects, key in (
+                ("trades.csv", result["trades"], "id"),
+                ("rejected-orders.csv", result["rejected"], "id"),
+                ("daily-account.csv", result["curve"], "date")):
+            expected = {item[key]: item for item in objects}
+            observed = rows(name)
+            if len(observed) != len(expected) or {row[key] for row in observed} != set(expected):
+                raise ValueError("control CSV row identity mismatch: " + name + "/" + method)
+            for row in observed:
+                item = expected[row[key]]
+                for field, cell in row.items():
+                    if field in ("cohort", "method"):
+                        continue
+                    if not self._csv_equal(cell, item.get(field)):
+                        raise ValueError("control CSV value mismatch: " +
+                                         name + "/" + method + "/" + row[key] + "/" + field)
+
+        observed = rows("orders-and-fills.csv")
+        keys = {}
+        for row in observed:
+            key = (row["date"], row["group_id"], row["right"],
+                   float(row["strike"]), row["side"])
+            if key in keys:
+                raise ValueError("duplicate original order leg")
+            keys[key] = row
+        expected_count = 0
+        trades = {book["id"]: book for book in result["trades"]}
+        rejected = {book["id"]: book for book in result["rejected"]}
+        for decision in result["decisions"]:
+            for book in decision.get("books", []):
+                trade = trades.get(book["id"])
+                refusal = rejected.get(book["id"])
+                for leg in book["legs"]:
+                    expected_count += 1
+                    side = "buy" if leg["sign"] > 0 else "sell"
+                    key = (decision["date"], book["id"], leg["right"],
+                           float(leg["strike"]), side)
+                    row = keys.get(key)
+                    if row is None:
+                        raise ValueError("control order leg missing from CSV")
+                    actual_leg = (next((item for item in trade["legs"]
+                                        if item["right"] == leg["right"]
+                                        and item["strike"] == leg["strike"]
+                                        and item["sign"] == leg["sign"]), None)
+                                  if trade is not None else None)
+                    fields = {
+                        "selected_by_optimizer": 1,
+                        "selected_quantity": leg["quantity"],
+                        "filled_quantity": actual_leg["quantity"] if actual_leg else 0,
+                        "fill_price": actual_leg["fill_price"] if actual_leg else None,
+                        "fill_date": trade["fill_date"] if trade is not None else None,
+                        "rejection_reason": refusal["reason"] if refusal else None}
+                    if any(not self._csv_equal(row[field], value)
+                           for field, value in fields.items()):
+                        raise ValueError("control order/fill CSV mismatch: " + book["id"])
+        if len(observed) != expected_count:
+            raise ValueError("control order/fill CSV leg count mismatch: " + method)
+
     def close(self):
         """Verify and close every original read-only quote index."""
         for view in self.quotes.values():
@@ -373,13 +456,18 @@ class FrozenMIOReplay:
         study = self.study(scenario)
         pending = None
         rejected, snapshots, daily = [], [], []
+        self.last_progress = {"daily": daily, "rejected": rejected,
+                              "account": account, "date": None,
+                              "attempted_ids": [], "attempts": []}
         for day in self.calendar:
+            attempts, fills, refusals = [], [], []
+            attempt_evidence = []
+            self.last_progress.update(date=day, attempted_ids=attempts,
+                                      attempts=attempt_evidence)
             before_cash = account.cash
             before_closed = len(account.closed)
             deposit = account.advance(day, study._settlements(account, day))
             expiries = account.closed[before_closed:]
-            attempts, fills, refusals = [], [], []
-            attempt_evidence = []
             if pending is not None:
                 survivors = []
                 for book in pending["books"]:
@@ -464,6 +552,7 @@ class FrozenMIOReplay:
                 if result.get(key) != value:
                     raise ValueError("zero-shock control mismatch: " + self.cohort +
                                      "/" + method["id"] + "/" + key)
+            self._verify_control_csv_rows(result)
         previous_equity = account.initial
         for row, point in zip(daily, result["curve"], strict=True):
             row.update(equity=point["equity"], drawdown=point["drawdown"],
@@ -478,17 +567,20 @@ def _money(value):
     return f"${value:,.2f}"
 
 
-def _daybook(cohort, scenario, method, metrics, daily):
+def _daybook(cohort, scenario, method, metrics, daily, incomplete=None):
     """Readable daily opportunities, fills, expiries and losses."""
     lines = [
         f"# {cohort} / {method} / {scenario}", "",
         "2019 development diagnostic. Chosen orders are decided after the named",
         "close; fills appear on the next session. Expiry P&L is realized;",
         "marked daily change is interim equity change after deposits.", "",
-        f"Selected {metrics['selected']}; filled {metrics['filled']}; "
-        f"refused {metrics['refused']}; final profit "
-        f"{_money(metrics['final_profit_usd'])}; "
-        f"max drawdown {metrics['max_drawdown']:.1%}.", "",
+        (f"Selected {metrics['selected']}; filled {metrics['filled']}; "
+         f"refused {metrics['refused']}; final profit "
+         f"{_money(metrics['final_profit_usd'])}; "
+         f"max drawdown {metrics['max_drawdown']:.1%}."
+         if metrics["status"] == "complete" else
+         f"UNSUPPORTED after {len(daily)} completed sessions: "
+         f"{metrics['unsupported_reason']}. No final profit is reported."), "",
         "Fill refusals by reason: " + (", ".join(
             f"{key} {value}" for key, value in sorted(metrics["refusal_reasons"].items()))
             or "none"), "",
@@ -513,8 +605,18 @@ def _daybook(cohort, scenario, method, metrics, daily):
             row["date"], str(row["candidate_books"]) + " / " +
             str(row["possible_option_contracts"]), chosen, filled, expired,
             refused, _money(row["expiry_losses"]),
-            _money(row["marked_day_change"]), _money(row["cash"]),
-            _money(row["equity"])]) + " |")
+            (_money(row["marked_day_change"])
+             if "marked_day_change" in row else "-"),
+            _money(row["cash"]),
+            (_money(row["equity"]) if "equity" in row else "-")]) + " |")
+    if incomplete is not None:
+        failure = incomplete["failure"]
+        lines.extend(["", "## Unsupported state", "",
+                      f"Failed on {failure['date']}: {failure['reason']}.",
+                      f"Cash {_money(failure['cash'])}; funding "
+                      f"{_money(failure['funding'])}; reserve "
+                      f"{_money(failure['reserve'])}; open books "
+                      f"{', '.join(failure['open_ids']) or 'none'}."])
     lines.extend(["", "## Executed legs", ""])
     for row in daily:
         for book in row["fills"]:
@@ -664,6 +766,7 @@ def execute(document_path):
     if output.exists():
         raise FileExistsError("fresh output root required: " + str(output))
     completed = []
+    incomplete = {}
     source_indexes = {}
     replays = {}
     try:
@@ -696,7 +799,23 @@ def execute(document_path):
                               "filled", metrics["filled"], "profit",
                               round(metrics["final_profit_usd"], 2), flush=True)
                     except ValueError as exc:
-                        result, daily = None, []
+                        progress = replay.last_progress
+                        account = progress["account"]
+                        result, daily = None, list(progress["daily"])
+                        failure = {"date": progress["date"], "reason": str(exc),
+                                   "cash": account.cash, "funding": account.funding,
+                                   "contributions": account.contributions,
+                                   "realized": account.realized,
+                                   "reserve": sum(book["reserve"]
+                                                  for book in account.open.values()),
+                                   "open_ids": sorted(account.open),
+                                   "attempted_ids": list(progress["attempted_ids"]),
+                                   "attempts": list(progress["attempts"])}
+                        incomplete[cohort, scenario["id"], packet["id"]] = {
+                            "failure": failure,
+                            "closed_trades": list(account.closed),
+                            "rejected": list(progress["rejected"]),
+                            "open_books": list(account.open.values())}
                         metrics = _unsupported_metrics(selected, str(exc))
                         print(cohort, scenario["id"], packet["id"],
                               "unsupported:", exc, flush=True)
@@ -715,13 +834,11 @@ def execute(document_path):
         _write_json(folder / (method + ".json"), {
             "cohort": cohort, "scenario": scenario, "method": method,
             "metrics": metrics, "result": result, "daily": daily,
-            "dispositions": dispositions})
+            "dispositions": dispositions,
+            "incomplete": incomplete.get((cohort, scenario, method))})
         (folder / (method + ".md")).write_text(
-            _daybook(cohort, scenario, method, metrics, daily)
-            if metrics["status"] == "complete" else
-            f"# {cohort} / {method} / {scenario}\n\n"
-            f"Unsupported sensitivity: {metrics['unsupported_reason']}\n"
-            "No final profit is reported for this incomplete case.\n")
+            _daybook(cohort, scenario, method, metrics, daily,
+                     incomplete.get((cohort, scenario, method))))
         summary.append({"cohort": cohort, "scenario": scenario, "method": method, **metrics})
         for row in daily:
             all_daily.append({"cohort": cohort, "scenario": scenario, "method": method, **row})
