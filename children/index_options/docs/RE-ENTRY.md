@@ -1,39 +1,41 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-10-28 by GPT-6 Astra. Single- and multi-leg sizing fixes complete; previous note archived.
+Updated: 2026-10-29 by GPT-6 Astra. Ordinary MIO sizing wiring reviewed and integrated; fresh 2019 reruns authorized.
 
 ## Now
 
-- ADR-0281: opt-in single-leg fills use the smaller of selected quantity and available traded-side depth; accounting uses the executed quantity.
-- ADR-0282: the Fable solution scales every leg by one whole-number multiplier of the original primitive ratio, atomically. No complete unit means refusal. Quotes, caps, prices, expiry rules and frozen future selections keep their existing behavior.
-- Locked code candidate: 0984881137ba223d8dcaf9eb4b5175df73d057a5, based on a0aeaed290dec25767aecd33d710a2b030d70527. Single-leg build 3948a845 by GPT-6 Sol; multi-leg commits 7cfb841e, a43762e3 and 09848811 by Claude Opus 5.5, governed by GPT-6 Sol.
-- Single-leg final lenses: GPT-6 Luna single_leg_code_skeptic and single_leg_integrity_skeptic, both C0/M0 on 3948a845. Multi-leg final lenses: two independent Claude Sonnet 5.5 sessions, both C0/M0 on 09848811. Reviewer transcripts remain retained.
-- Focused validation: 40/40 tests in children/index_options/tests/test_mio_execution_stress.py, using /home/russell/dskit/.venv/bin/python with PYTHONPATH pointing to the reviewed checkout. The four wrap-document checks also pass. No broad-suite pass is claimed.
-- The already authorized v3 replay completed locally at /home/russell/data/index_options/mio-execution-stress-2019-multileg-20261028-v3: 80/80 cases complete, eight exact original controls. The run pins code commit 09848811 and SHA-256 f5fee71e98abfc439420f67a39313adb2f0887e81a566f923e153841ba651ddb; pins.json SHA-256 88782a964c68df23dbcce4305cd0da352ac173cf37fdb427ca069607781e61b6. All output-file hashes verified.
-- Empirical count correction only: 105 formerly size-refused books pass depth/quote preflight; 93 are actually admitted downsized after caps (61 single-leg, 32 multi-leg). ADR-0282 wording corrected at wrap; its rule/accounting/cases remain unchanged.
-- Original evidence, published v1 report, viewer, Path A0003/A0008 and TDD remain intact. No new report mirror is added in this closeout. These are simulated EOD-depth fills in 2019 development data.
-- Wrap changes only evidence/editorial text. Code, tests, configs and dependencies remain the reviewed candidate blobs.
+- ADR-0281/0282 Amendment 1: domain.params.fill_sizing=available_size enables single-leg depth clipping and atomic whole-number multi-leg ratio scaling in ordinary MIO and stress v4. Missing knob retains legacy. Quote, cap, exit and expiry policies remain fixed.
+- Locked candidate: 922b53d00dc0a49797f350fa0f300343a3ddf717, based on 05b6ff23. Runtime wiring 3b5164bc and test-only corrections ed55dc1f/922b53d0 by Claude Opus 5.5; GPT-5.6 Sol governed actual remote-control sessions. Original single-leg build 3948a845 was by GPT-6 Sol; Fable 5.1 supplied the multi-leg approach.
+- Four fresh final reviews on 922b53d0 report C0/M0: two Claude Sonnet 5.5 lenses plus GPT-6 Luna wiring_final_luna_correctness_r3 and wiring_final_luna_integrity_r3. Actual Sonnet outputs are retained at the links below; Luna outputs are retained in the task.
+- Independent focused validation: 334 passed in 21.30s using /home/russell/dskit/.venv/bin/python. Each fresh final lens also ran 91 focused tests. A demonstrated selected-credit cash mutant is now rejected by independent hand-calculated fill/expiry cash, fees and reserve oracles. No full-suite claim.
+- The earlier v3 diagnostic did not wire sizing into fresh MIO or joint stress. This amendment closes that gap; the v3 result remains immutable and is not this new rerun.
+- New JSONs: configs/mio-2019-{limited36,broad212}-available-size-20261029.json. All six study copies are identical; normalized JSONs exactly match originals except the approved sizing knob, refreshed 266 imported-source pins, name, notes and output root. Dependency versions and data/model parameters remain unchanged.
+- Both metadata plans are runnable with no missing inputs; shared registry last observed rev 47, inactive. Fresh market jobs have not started at this checkpoint.
+- Durable execution state: /home/russell/data/index_options/mio-2019-available-size-20261029/state.json. It records current jobs, reviews, config hashes, exact receipts and next stages. Native thread follow-up finish-2019-mio-sizing-rerun checks every 30 minutes.
+- Preserve original results, published v1 report, v3 diagnostic, private viewer, Path A0003/A0008 and TDD. This remains 2019 development evidence with original lookback/tail-padding metadata bounds and saved forecasts.
 
 ## Next
 
-- No further implementation is part of this packet. The available-size rules are opt-in through the two versioned JSON documents; the original seven-case document remains available.
+- Push this accepted code/config checkpoint, then run limited36 and broad212 serially through the existing pipeline and shared registry. Verify all four methods, recorded-decision replay and complete attestation before each claim disposition.
+- Export the new saved trades, refusals, selected/executed legs and daily accounts. Pin source results/configs/quote indexes/CSVs in a distinct results-pins document.
+- Run v4's seven existing scenarios against fresh saved selections. All eight zero-shock controls must exactly reproduce the new MIO results before the 48 stressed cases. Verify 56 total cases and preserve unsupported outcomes visibly.
+- Publish a distinct readable report/daybooks/CSV mirror after verification. Do not overwrite earlier reports. Follow state.json rather than launching duplicate jobs.
 
 ## Blocked / owner decisions
 
-- No unresolved Critical/Major finding in either sizing fix.
-- Deferred Minor/Nit: main report headings count books; unsupported-case daybook headline can show refused None; commit/code identity remains procedural (verified correct for this run); no dedicated execute-output regression or explicit gcd/k fields.
-- The manifest-list test has existing unlisted stress files and the new config adds one. A reviewer attempted a broad child suite: interrupted at 11 failures/3243 passes, without a valid baseline; this is not acceptance evidence.
+- No unresolved in-scope Critical/Major. Owner authorized the reruns and autonomous follow-through; no further approval is pending.
+- Deferred Minor coverage: legacy v1-v3 invalid fill_sizing typo handling; explicit 56-row execute assertion; further shocked multi-leg numeric stress_extra/reserve-floor and summary-output assertions. Required real control/output verification remains in the run gate.
 
 ## Read first
 
-- ../../../docs/architecture/decision-log.md - ADR-0281/0282; exact opt-in contracts.
-- ../configs/mio-2019-execution-stress-single-leg.json and ../configs/mio-2019-execution-stress-multileg.json - versioned inputs.
-- https://claude.ai/code/session_01YFrQusXhg8fXLdyDNPV5q5 - Fable 5.1 research; integer-ratio approach.
-- https://claude.ai/code/session_01YFrQutMrsNBkvPe22WeXaJ - final Sonnet correctness review, 2026-10-29 02:51 UTC, C0/M0/m3/n2 before the editorial count correction.
-- https://claude.ai/code/session_01YFrQuuTkMNZ7gwTUCtohgv - final Sonnet integration review, 2026-10-29 02:54 UTC, C0/M0/m6/n0 before the editorial count correction.
+- ../../../docs/architecture/decision-log.md - ADR-0281/0282 Amendment 1.
+- ../configs/mio-2019-limited36-available-size-20261029.json and ../configs/mio-2019-broad212-available-size-20261029.json.
+- https://claude.ai/code/session_01YFrQurSeJW9SRjF5Y9auyx - Opus implementation and test corrections.
+- https://claude.ai/code/session_01YFrQut91TKthQtucn9V6oT - final Sonnet correctness, C0/M0/m1/n1.
+- https://claude.ai/code/session_01YFrQuvLQsA3PqPWgjEta8H - final Sonnet integration, C0/M0/m3/n2.
 
 ## Do not
 
-- Expand into quote-screen changes, selling held positions early, adaptive reselection, new scenarios or new years.
-- Change Path/TDD or remove original evidence, data, viewer, checkouts or reviewer transcripts.
-- Present displayed-depth proxy capacity as proven broker liquidity or profitability.
+- Expand quote screens, caps, early exits, strategies, scenarios or years; refit models or pull providers.
+- Change Path/TDD or remove original evidence, data, viewer, checkouts or transcripts.
+- Present simulated displayed-depth fills as broker liquidity or proven profitability.
