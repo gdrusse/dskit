@@ -768,72 +768,81 @@ def execute(document_path):
     completed = []
     incomplete = {}
     source_indexes = {}
-    replays = {}
-    try:
-        for cohort in ("limited36", "broad212"):
-            replay = FrozenMIOReplay(cohort, document, pins)
-            replays[cohort] = replay
+
+    def collect(replay, cohort, packet, scenario, *, control):
+        selected = sum(len(d.get("books", []))
+                       for d in packet["result"]["decisions"])
+        try:
+            result, daily = replay.run_method(packet, scenario)
+            metrics = _metrics(result, daily, selected)
+        except ValueError as exc:
+            if control:
+                raise
+            progress = replay.last_progress
+            account = progress["account"]
+            result, daily = None, list(progress["daily"])
+            failure = {"date": progress["date"], "reason": str(exc),
+                       "cash": account.cash, "funding": account.funding,
+                       "contributions": account.contributions,
+                       "realized": account.realized,
+                       "reserve": sum(book["reserve"]
+                                      for book in account.open.values()),
+                       "open_ids": sorted(account.open),
+                       "attempted_ids": list(progress["attempted_ids"]),
+                       "attempts": list(progress["attempts"])}
+            incomplete[cohort, scenario["id"], packet["id"]] = {
+                "failure": failure,
+                "closed_trades": list(account.closed),
+                "rejected": list(progress["rejected"]),
+                "open_books": list(account.open.values())}
+            metrics = _unsupported_metrics(selected, str(exc))
+        dispositions = _dispositions(
+            cohort, scenario["id"], packet["id"], result, daily)
+        # Decisions are preserved in the pinned original result. Repeating its
+        # large solver arrays in every sensitivity would add no new evidence.
+        concise_result = ({k: v for k, v in result.items() if k != "decisions"}
+                          if result is not None else None)
+        completed.append((cohort, scenario["id"], packet["id"],
+                          concise_result, daily, metrics, dispositions))
+        print(cohort, scenario["id"], packet["id"], metrics["status"],
+              "filled", metrics["filled"], "profit",
+              round(metrics["final_profit_usd"], 2)
+              if metrics["final_profit_usd"] is not None else "-",
+              flush=True)
+
+    # Gate 0: all eight controls pass before any stressed case runs.
+    # Open one cohort at a time so the 917 MB broad original is not duplicated.
+    for cohort in ("limited36", "broad212"):
+        replay = FrozenMIOReplay(cohort, document, pins)
+        try:
             source_indexes[cohort] = {
                 symbol: {"sha256": descriptor["sha256"], "rows": descriptor["rows"]}
                 for symbol, descriptor in replay.index_descriptors.items()}
-        # Gate 0: all eight controls pass before any stressed case runs.
-        for cohort in ("limited36", "broad212"):
-            replay = replays[cohort]
             for packet in replay.original["results"]:
-                result, daily = replay.run_method(packet, scenarios[0])
-                selected = sum(len(d.get("books", []))
-                               for d in packet["result"]["decisions"])
-                metrics = _metrics(result, daily, selected)
-                completed.append((cohort, "control", packet["id"], result, daily, metrics))
-                print(cohort, "control", packet["id"], "gate passed", flush=True)
-        for scenario in scenarios[1:]:
-            for cohort in ("limited36", "broad212"):
-                replay = replays[cohort]
+                collect(replay, cohort, packet, scenarios[0], control=True)
+        finally:
+            replay.close()
+    for cohort in ("limited36", "broad212"):
+        replay = FrozenMIOReplay(cohort, document, pins)
+        try:
+            for scenario in scenarios[1:]:
                 for packet in replay.original["results"]:
-                    selected = sum(len(d.get("books", []))
-                                   for d in packet["result"]["decisions"])
-                    try:
-                        result, daily = replay.run_method(packet, scenario)
-                        metrics = _metrics(result, daily, selected)
-                        print(cohort, scenario["id"], packet["id"],
-                              "filled", metrics["filled"], "profit",
-                              round(metrics["final_profit_usd"], 2), flush=True)
-                    except ValueError as exc:
-                        progress = replay.last_progress
-                        account = progress["account"]
-                        result, daily = None, list(progress["daily"])
-                        failure = {"date": progress["date"], "reason": str(exc),
-                                   "cash": account.cash, "funding": account.funding,
-                                   "contributions": account.contributions,
-                                   "realized": account.realized,
-                                   "reserve": sum(book["reserve"]
-                                                  for book in account.open.values()),
-                                   "open_ids": sorted(account.open),
-                                   "attempted_ids": list(progress["attempted_ids"]),
-                                   "attempts": list(progress["attempts"])}
-                        incomplete[cohort, scenario["id"], packet["id"]] = {
-                            "failure": failure,
-                            "closed_trades": list(account.closed),
-                            "rejected": list(progress["rejected"]),
-                            "open_books": list(account.open.values())}
-                        metrics = _unsupported_metrics(selected, str(exc))
-                        print(cohort, scenario["id"], packet["id"],
-                              "unsupported:", exc, flush=True)
-                    completed.append((cohort, scenario["id"], packet["id"],
-                                      result, daily, metrics))
-    finally:
-        for replay in replays.values():
+                    collect(replay, cohort, packet, scenario, control=False)
+        finally:
             replay.close()
     output.mkdir(parents=True)
     summary, all_daily, all_attempts, all_dispositions = [], [], [], []
-    for cohort, scenario, method, result, daily, metrics in completed:
+    for cohort, scenario, method, result, daily, metrics, dispositions in completed:
         folder = output / cohort / scenario
         folder.mkdir(parents=True, exist_ok=True)
-        dispositions = _dispositions(cohort, scenario, method, result, daily)
         all_dispositions.extend(dispositions)
         _write_json(folder / (method + ".json"), {
             "cohort": cohort, "scenario": scenario, "method": method,
             "metrics": metrics, "result": result, "daily": daily,
+            "decision_reference": {
+                "path": str(Path(document["original_root"]) / cohort / "result.json"),
+                "sha256": document["cohorts"][cohort]["result_sha256"],
+                "method": method},
             "dispositions": dispositions,
             "incomplete": incomplete.get((cohort, scenario, method))})
         (folder / (method + ".md")).write_text(
