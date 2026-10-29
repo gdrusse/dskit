@@ -1,0 +1,19 @@
+field,value
+MIO method,w1_003_lp
+cohort,limited36
+account window,2019-01-02 through2019-12-31;252 sessions
+decision dates,53
+coverage action,reused252 sessions; new MIO sessions0
+source MIO result SHA256,df911d4c89ba65ff9b858ce28d3726cf886ceba16ebdb9534c49bd2a81f351ed
+source MIO run hash,02f7f29562541824e884f1c6d9c6d39d46d0b40f2b48ce1173abbf41ab451824
+source MIO config,mio-2019-limited36-available-size-20261029.json
+source MIO config SHA256,67e96323a0e7f291cd2dfd7fa2e9924a82f7d4021e102613f58cd5bfa087b850
+predictive default,"prior accepted saved selected_mlp64_s29 outputs, H1/H2 pinned producer schedule"
+forecast manifest SHA256,9c2a6ed5d0db549a8b8d6d0a7d18a7e1db893b169c1ddafebad470e31fff436a
+combined forecasts SHA256,afc420a270d908f51b1f43adfaa575ce2f8d8e22adf051b060e66306d6175ae4
+predictive provenance path,/home/russell/data/index_options/mio-broad-2019-20261027/upstream-model-pins.json
+predictive provenance SHA256,0085e29580e3b2cf59adea85262add316440ddf7e50e09aec08b727e18a98966
+report renderer commit,63949a8ad441263851e9a89fe85da0c7679da72f
+source runtime candidate,922b53d00dc0a49797f350fa0f300343a3ddf717
+exact order-leg quantities CSV,https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2019-available-size-20261029/limited36/orders-and-fills.csv
+exact order-leg quantities SHA256,2a1eeb02bf461ba7a66bf8a52f5abd1b6a6d95fb04e5448f235d4e28a216f5a4

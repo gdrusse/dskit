@@ -1,45 +1,44 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-10-29 by Claude Opus 5.5. ADR-0283 MIO run-report standard merged; GPT-6 Astra's available-size MIO and v4 stress verification below is unchanged.
+Updated: 2026-10-29 by GPT-6 Astra. Standardized reports and reusable MIO skill complete.
 
 ## Now
 
-- ADR-0281/0282 Amendment 1 is complete: available_size clips single-leg quantity and scales multi-leg orders in intact whole-number ratios. Quote screens, caps, exits and expiry policy are unchanged.
-- Locked runtime candidate: 922b53d00dc0a49797f350fa0f300343a3ddf717. Two fresh Sonnet and two fresh Luna final lenses C0/M0; 334 focused tests passed. No runtime or test edits in this run/publication phase.
-- Both fresh 2019 cohorts completed four methods each, with exact recorded replay, 53 decisions and 252 account days. Independent cash/holdings/reserve/fees and expiry-profit checks passed. Direct CSVs include selected/executed quantities.
-- Limited36 attested result SHA-256: df911d4c89ba65ff9b858ce28d3726cf886ceba16ebdb9534c49bd2a81f351ed. Broad212: 9ed7b614b71a06bae7b297df85673ac51a9aa79858a689b005cf4b86d2a21a4b.
-- Existing comparison/publication and registry review nodes completed for both cohorts. Shared exposure registry revision 59 is inactive. Do not rerun or repeat either disposition.
-- Source/evidence pins and exact v4 contract committed at c0c44033d7ddde76f507603f8cdad31a7ab921af. Seven original scenario values; each cohort explicitly names its new config.
-- All eight exact zero-shock controls passed before 48 stressed cases. All 56 completed; no unsupported cases. All 121 output hashes and 14,112 daily rows verified. Independent checks covered fill sizes/prices/fees, expiry intrinsic, daily cash/holdings/reserves and all selected dispositions.
-- Report: reports/mio-execution-stress-2019-available-size-20261029-v4/report.md; 56 daily trade/expiry books, summary/daily/attempts/dispositions CSVs and pins are mirrored byte-identically.
-- Control nominal profit: limited36 $259.05 (45/127 books filled), broad212 $67,911.40 (163/433). Joint lower-expiry losses: $23,860.30 and $29,525.40. These are conditional 2019 development results, not promotion or broker evidence.
-- Durable state: /home/russell/data/index_options/mio-2019-available-size-20261029/state.json. Full stress JSONs: /home/russell/data/index_options/mio-execution-stress-2019-available-size-20261029-v4.
-- Preserve originals, viewer, Path A0003/A0008 and TDD. Original source lookback/tail-padding metadata retained; account decisions stay 2019.
-
-- ADR-0283 run-report standard (locked 3b802f8c; two fresh Sonnet final lenses C0/M0; 504 focused tests). The study.json `report.run_report` contract is pinned by tests/test_mio_run_report_contract.py.
-- configs/mio-report-limited36-available-size-20261029.json renders one report per method from the pinned result.json. It refuses unless event net P&L, final equity, fees and counts match to the cent. Each report has a day-by-day marked ledger, refusal reasons, ticker x DTE, optimizer certificates, charts, a basis banner ("(at cost)" event statistics) and the glossary docs/explanations/mio-glossary.md.
-- Limited36 dry render: /home/russell/data/index_options/mio-run-report-limited36-20261029. Its v4 stress links rendered `pending` because the v4 root was not yet named when it ran.
+- ADR-0281/0282 sizing runtime remains locked at 922b53d0: single-leg capacity clipping and intact whole-ratio multi-leg sizing; no economic/runtime edits in this follow-through.
+- Both 2019 available-size cohorts completed four methods, 53 decisions and 252 account days each with exact recorded replay. Original accounting verification and registry disposition are complete; registry revision 59 inactive. Never repeat disposition.
+- Eight exact zero-shock controls and 48 stressed cases completed; 56 cases and 14,112 daily rows published at 71f9b8a9. Original v4 source/config/output pins remain unchanged.
+- Claude ADR-0283 reporter wrapped/merged at 63949a8a. Its user-owned worktree/branch/session are preserved.
+- Report/skill candidate 84eb370c has fresh correctness/authority and integration/test-quality reviews at C0/M0; skill validator and four documentation checks pass.
+- Two v2 report-only JSONs reuse the completed results. All 82 nodes and eight totals gates passed. All 2,016 daily rows, 53 decisions/account, authoritative figures, individual trade totals and stress links were independently checked. No new MIO/stress/refit/provider runs.
+- Reports: reports/mio-standard-2019-available-size-20261029/README.md. Eight summaries/HTML, daily ledgers, decisions, refusal detail and 113 byte-identical generated/source files, plus artifact index. Every control's detailed option legs/expiries are linked.
+- Canonical skill: docs/skills/mio-report.md at repository root. Installed byte-identically at C:/Users/russe/.codex/skills/mio-report/SKILL.md. Accepts MIO method(s), cohort and date ranges; explicit predictive override wins, otherwise prior accepted selected model/fold pins.
+- Current predictive example: saved selected_mlp64_s29 H1/H2 outputs. No new ranking, fit or claim that original producer receipts attested output bytes.
+- Durable state: /home/russell/data/index_options/mio-2019-available-size-20261029/state.json.report_skill_followup. Render roots end mio-standard-2019-available-size-20261029-v2; first render preserved.
 
 ## Next
 
-- Owner interpretation of the completed evidence. No further market run, economic change or optional hindsight is authorized by this wrap.
-- Report: set the ArtifactLinks `root` in the report config to /home/russell/data/index_options/mio-execution-stress-2019-available-size-20261029-v4, re-render limited36, and add a broad212 report document. These are config changes and need focused review.
+- Use $mio-report for a bounded report/run request. Fully covered compatible dates reuse results; no new market run is implied by this wrap.
+- Owner interpretation of the completed evidence; report index provides GitHub-accessible trade/daybook links.
 
 ## Blocked / owner decisions
 
-- No unresolved in-scope Critical/Major or execution blocker.
-- ADR-0283 deferred Minors are listed in its Amendment 1.
-- Previously deferred Minor test coverage: legacy invalid sizing typo, explicit56-row execute assertion, additional shocked multi-leg numeric oracles. Actual56-case accounting/output checks passed; locked implementation stays closed.
+- No unresolved in-scope Major/Critical finding.
+- Current MIO has no cross-interval account checkpoint input. A continuous missing interval needs an explicit independent-account or wider-replay choice; never stitch reset accounts or silently rerun covered dates.
+- Current reporter has no bounded subrange view; identify requested rows within a labelled full-source report.
+- Existing Minor: four refused-order daily ledger rows understate original selected contracts by 30 total because rejected rows carry reduced quantities. Each ledger discloses this and links exact orders-and-fills.csv selected_quantity/filled_quantity. Financial totals are unaffected; runtime unchanged.
+- Event run_start.data is overwritten by framework fingerprints; identity tables/config retain custom source pins. Other ADR-0283 disclosed Minors remain deferred.
+- Actual HTML content/structure, Markdown and CSV inspected; browser startup unavailable, so no pixel-level check claimed. Event charts value open books at cost; saved marked figures are authoritative.
 
 ## Read first
 
-- memos/2026-10-29-mio-available-size-rerun.md - results, rules, limits and reproduction.
-- ../configs/mio-2019-available-size-results-pins-20261029.json - both fresh receipts and CSV hashes.
-- ../configs/mio-2019-execution-stress-available-size-20261029.json - exact scenario/source identities.
-- ../../../docs/architecture/decision-log.md - ADR-0281/0282 Amendment 1; ADR-0283 run-report standard.
+- memos/2026-10-29-mio-report-skill.md - report/skill lock, checks, limits and reproduction.
+- reports/mio-standard-2019-available-size-20261029/README.md - standardized report navigation and exact orders.
+- memos/2026-10-29-mio-available-size-rerun.md - original sizing rerun and stress evidence.
+- ../configs/mio-2019-available-size-results-pins-20261029.json - both original source receipts/CSV hashes.
+- ../../../docs/skills/mio-report.md - canonical skill (repository root docs/skills).
 
 ## Do not
 
-- Change quote screens, caps, early exits, strategies, scenarios or years; refit models or pull providers.
-- Remove original evidence, data, viewer, checkouts, transcripts, Path/TDD or unrelated branches.
-- Present displayed-depth fills as broker fills or the pointwise shocks as a coherent market path.
+- Rerun completed 2019 MIO/stress, refit, pull providers or change quote screens, caps, exits, scenarios, methods or years implicitly.
+- Change Path A0003/A0008, TDD, original evidence or viewer. Remove no checkouts/transcripts or other sessions' branches.
+- Present event at-cost statistics as marked risk, expiry closing events as early sales, or pointwise shocks as a coherent market path.

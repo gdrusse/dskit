@@ -1,0 +1,7 @@
+symbol,dte_band,reason,refusals
+CIEN,8-14,insufficient_fill_size,2
+CIEN,8-14,repriced_shared_cap,1
+JPM,22-28,repriced_shared_cap,1
+QCOM,15-21,insufficient_fill_size,1
+TGT,36-42,missing_fill_quote,1
+TGT,36-42,repriced_shared_cap,1
