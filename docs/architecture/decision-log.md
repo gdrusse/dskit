@@ -34814,3 +34814,17 @@ The ticker x DTE table uses an existing node or a minimal generic fix, test-firs
 **Stress.** The report links each v4 stress `report.md`, daybook and `pins.json` by path and SHA-256 without changing stress bytes. A referenced stress output that does not exist yet is shown as `pending`, never filled in.
 
 **Evidence.** Dry render on the verified limited36 outputs only; broad212 waits for the parent's verification. Results remain simulated EOD displayed-depth fills, not broker liquidity or proof of profitability.
+
+**Amendment 1 (2026-10-29, final-lens fixes; as built).** `EvaluationReport` gains three optional params; when all three are absent, a log with candidate scores renders exactly as before. `caveats` is a banner at the top of summary.md/report.html and again above Statistics. `statistic_labels` renames displayed statistics; the MIO report marks event-book statistics "(at cost)" and refusal/skip rates "(decisions)". `narrative_driver: false` omits the "Biggest driver" clause. The generic narrative no longer credits or blames forecasts when no decision carries a candidate score; a re-render of such a log changes that sentence. `dskit.evaluation.names.is_bare_file_name` is the one evaluation owner of the bare-file-name rule.
+
+- **Locked candidate.** 3b802f8c, base 75d354a8, by Claude Opus 5.5 with Sonnet builders.
+- **Reviews.** Every task had a Sonnet skeptic review. The first final pair on 27cef070 found three Majors: unlabelled at-cost statistics, an unsupported driver claim, and unpinned expiry dates. All three were fixed. The fresh final pair on 3b802f8c returned C0/M0 (correctness m5/n3; tests and integration m4/n2).
+- **Checks.** 504 passed / 3 skipped (tests/evaluation, tests/docs, the child report, contract and study-template tests). The child manifest test fails on base for the same pre-existing extras, and this branch adds none.
+- **Dry render.** Limited36, gate all ok, output in `/home/russell/data/index_options/mio-run-report-limited36-20261029/`. Every v4 stress link is `pending` because no v4 output root has been named.
+- **Deferred Minors.**
+  - The narrative drawdown sentence lacks an inline "(at cost)".
+  - The marked-figures table needs money/ratio formats.
+  - "Sessions" wording.
+  - A golden-bytes default test, a node-level default-driver test and a score-0.0 forecast test.
+  - A test tying the gap caveat to solver_options.
+  - The bare-name rule restated in `libs/matplotlib.py` and `production/ledger.py`.
