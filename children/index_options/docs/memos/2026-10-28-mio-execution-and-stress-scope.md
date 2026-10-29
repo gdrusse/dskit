@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-The eight 2019 historical simulations placed and settled their selected option books. Their saved independent replays and a fresh read-only ledger check agree on filled books, rejected books, fill dates and final profit. The 813 recent stress jobs only calculated hypothetical values for positions already held; they did **not** run trading under stressed conditions. The next bounded task is an execution-and-expiry replay with the original historical run as an exact control.
+The eight 2019 historical simulations selected 915 option books: 224 filled and settled, while 691 were rejected. Their saved independent replays and a fresh read-only ledger check agree on fills, refusals, fill dates and final profit. The 813 recent stress jobs only calculated hypothetical values for positions already held; they did **not** run trading under stressed conditions. The next bounded task is an execution-and-expiry replay with the original historical run as an exact control.
 
 ## Purpose, scope and words used here
 
@@ -53,6 +53,53 @@ On 2026-10-28 I made a separate, read-only WSL2 reconciliation from each pinned 
 
 This checks important ledger and export identities. It is **not** a new independent reconstruction of every raw quote, forecast, optimizer choice or expiry settlement. The saved independent replay and packaging checks are separate evidence. No ordinary MIO run was repeated for this memo.
 
+The one-off reconciliation had no saved script or receipt. This equivalent, read-only WSL2 command reproduces its assertions from the pinned files; its eight lines end in totals of 224 filled and 691 rejected. It does not rerun the MIO engine:
+
+```bash
+python3 - <<'PY'
+import csv, json, math
+from collections import defaultdict, Counter
+from pathlib import Path
+root = Path("/home/russell/data/index_options/mio-broad-2019-20261027")
+totals = Counter()
+for cohort in ("limited36", "broad212"):
+    saved = json.loads((root/cohort/"result.json").read_text())
+    rows = {name: list(csv.DictReader((root/cohort/f"{name}.csv").open()))
+            for name in ("trades", "rejected-orders", "daily-account")}
+    by = {name: defaultdict(list) for name in rows}
+    for name, data in rows.items():
+        for row in data:
+            by[name][row["method"]].append(row)
+    for packet in saved["results"]:
+        result = packet["result"]
+        method = result["method"]["id"]
+        trades, rejected, daily = (by[name][method] for name in rows)
+        dates = sorted(row["date"] for row in daily)
+        next_date = dict(zip(dates, dates[1:]))
+        filled_ids = {row["id"] for row in trades}
+        refused_ids = {row["id"] for row in rejected}
+        assert packet["status"] == "completed" and packet["replay_parity"]
+        assert filled_ids == {row["id"] for row in result["trades"]}
+        assert refused_ids == {row["id"] for row in result["rejected"]}
+        assert not filled_ids & refused_ids
+        assert all(next_date.get(row["decision_date"]) == row["fill_date"] for row in trades)
+        assert all(all(int(leg["capacity"]) >= abs(int(leg["quantity"]))
+                       for leg in row["legs"]) for row in result["trades"])
+        assert all(row["status"] == "unfilled" for row in result["rejected"])
+        assert math.isclose(math.fsum(float(row["pnl"]) for row in trades),
+                            result["pnl"], abs_tol=1e-6)
+        assert math.isclose(result["final_equity"] - result["contributions"],
+                            result["pnl"], abs_tol=1e-6)
+        assert len(daily) == 252 and daily[-1]["open_ids"] == "[]"
+        assert math.isclose(float(daily[-1]["equity"]), result["final_equity"], abs_tol=1e-6)
+        assert math.isclose(float(daily[-1]["contributions"]),
+                            result["contributions"], abs_tol=1e-6)
+        totals.update(filled=len(trades), rejected=len(rejected))
+        print(cohort, method, len(trades), len(rejected), round(result["pnl"], 2))
+print("totals", dict(totals))
+PY
+```
+
 ## What the stress work actually executed
 
 The original stress packet ran 5,645 **book/date/scenario calculations** on actual filled books at entry and while held. Its five cases are: no change; a one-day underlying −5% and option-implied-volatility +5 percentage points; a one-day −12%/+15 points; a one-day +10%/−5 points; and an expiry payoff with underlying −15%. "Implied volatility" (IV) is an input derived from an option quote for estimating its value before expiry. At expiry, the payoff instead follows the final underlying price, strike, option right and signed quantity; no IV is needed for that payoff.
@@ -74,7 +121,7 @@ The next task should be a **fixed-selection execution-and-expiry replay** on the
 The proposed first scenario contract, to be approved in an ADR before any code or run, is:
 
 1. **Control:** original selected orders, quotes, displayed sizes and actual expiry settlements. Require exact filled/rejected book IDs, reasons, fill prices, fees, daily cash and final profit to reproduce all eight original runs. A control mismatch stops stress interpretation.
-2. **Worse fill price:** use the actual next-session bid/ask quote and move each executable side adversely by an additional 25% of its observed spread, the same increment as the existing fixed-trade diagnostic. Recheck premium, fees, funding, reserve and shared caps at the altered prices; keep all-or-none books.
+2. **Worse fill price:** use the actual next-session bid/ask quote and move each executable side adversely by an additional 25% of its observed spread, the same increment as the existing fixed-trade diagnostic. Recheck premium, fees, funding, reserve and shared caps at the altered prices; keep all-or-none books. The ADR must pin buy/sell price arithmetic, rounding, and refusal of invalid or nonpositive prices before implementation.
 3. **Less fill size:** as a proposed sensitivity, reduce each observed next-session displayed capacity to the integer floor of half its value. Recheck every leg and shared cap; refuse rather than partially fill or replace a book. The half-size choice is **proposed, not approved**.
 4. **Expiry price shocks:** re-settle each surviving book using its actual underlying expiry settlement multiplied by 0.85 and, separately, 1.15. This tests losses on both option directions without IV. These are pointwise terminal counterfactuals at different expiries, not a probability forecast or a single coherent historical price path.
 5. **Joint cases:** combine adverse fill price and lower size with each expiry direction, carrying their effects on cash, holdings, later fill eligibility and final profit.
@@ -89,6 +136,12 @@ Original evidence root: `/home/russell/data/index_options/mio-broad-2019-2026102
 
 The limited original `result.json` hashes to `d2e569dc83fc1234063d57db78ea63d61a6e33cd8ce0a5cfc63ed5557a417596`; its `trades.csv`, `rejected-orders.csv` and `daily-account.csv` hash to `5ea517c6f17d8edc4d6a6acf2d3205db52f04d4ef3629efe2ab67690120be058`, `f8a9d84d0abd3ba49e2ea8b920a9311db8e6eb90acd2ec8550259acd8af1778a` and `a3aa2a5e25a800eb8089cf5c5b1bbfe53f1394263a63eb51ab2cedd5e2f6da53`, respectively. The broad originals hash to `581ec30666a7d8b59107b80970f8cbe88e86d2a93fb932398dc0f92ad524904e`, `2e33345d8e78a237cf14db45a5662569335609114fd0ec7a57e48d5028f68c32`, `eb2c5a3d35e10209ecdbc550d9ab703448d87c6a30d9b0dbd56da05b18989d4e` and `244f188199dcfd9932441aebea04fe5572757fe6dfe69b3e16762a3aa2f60086` in the same order.
 
-The opt-in pricing packet used reviewed code candidate `5df492c4c3386559d20a3e2579fcda000d75350e` and `python -m index_options.mio_stress_coverage` with `prepare`, `execute` and `aggregate` stages for each cohort, verified against the original results-pins hash. Its distinct outputs are under `stress-coverage-v2` inside the evidence root. The new `limited36/coverage-pins.json` SHA-256 is `2f921b98610347d33bcd13a5ed7dbcdb6f46e4385e1fc383d595146f37bbfc3d`; the broad equivalent is `b9df054182ff3c6de919ae586da41a96f35e86735b14f4c5bd637db0c3b18468`. Each pin file hashes all new attempt records and account/book JSON/CSV. The detailed original and new stress JSON/CSV hashes are in `docs/memos/2026-10-28-mio-2019-stress-diagnosis.md`.
+The opt-in pricing packet used reviewed code candidate `5df492c4c3386559d20a3e2579fcda000d75350e` and `python -m index_options.mio_stress_coverage` with `prepare`, `execute` and `aggregate` stages for each cohort, verified against the original results-pins hash. Its distinct outputs are under `stress-coverage-v2` inside the evidence root. The exact new pin files are `/home/russell/data/index_options/mio-broad-2019-20261027/stress-coverage-v2/limited36/coverage-pins.json` (SHA-256 `2f921b98610347d33bcd13a5ed7dbcdb6f46e4385e1fc383d595146f37bbfc3d`) and `/home/russell/data/index_options/mio-broad-2019-20261027/stress-coverage-v2/broad212/coverage-pins.json` (SHA-256 `b9df054182ff3c6de919ae586da41a96f35e86735b14f4c5bd637db0c3b18468`). Each hashes all new attempt records and account/book JSON/CSV. The detailed original and new stress JSON/CSV hashes are in the [stress diagnosis](2026-10-28-mio-2019-stress-diagnosis.md).
 
 This memo is a read-only explanation and proposed next contract. It did not launch another MIO, stress, replay, training or provider job. The original WSL2 data, private viewer and prior checkouts were retained. The next authorized action is drafting the fixed-selection execution-stress ADR for owner review; code and scenario execution follow only after that approval.
+
+## Next task prompt
+
+Copy this into a new task:
+
+> Continue DSKit `index_options` in WSL2 from current remote main. Read `AGENTS.md`, locked Path A0003/A0008, this memo, `children/index_options/configs/mio-2019-results-pins.json` (SHA-256 `2bbd7e9247bf46c016745dde8436e9a7394e770e52031f9024baebd049fbf7d2`) and the original evidence at `/home/russell/data/index_options/mio-broad-2019-20261027`. Draft an owner-approvable ADR for a **fixed-selection execution-and-expiry stress replay**, with no code or run yet. Specify an exact zero-shock control that reproduces all eight original runs’ selected, filled and rejected books, their reasons, fill prices, fees, daily cash and final profits. Define proposed adverse fill-price and capacity rules, including buy/sell arithmetic, rounding, invalid-price refusal and shared-cap treatment; define pointwise ±15% shocks to actual expiry settlements and joint cases. Require chronological all-or-none filling, account cash/reserve and settlement, distinct pinned outputs, focused tests and two independent Luna reviews. State that frozen future selections make this a conditional execution diagnostic, not a reoptimized strategy backtest. Preserve original runs, viewer, data, Path and TDD; do not open 2020+, retrain, pull providers, resume optional hindsight, run the full suite or rerun identical MIO. Stop after the ADR is concrete and ask the owner to approve its exact scenario choices before implementation.
