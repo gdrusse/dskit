@@ -34918,3 +34918,62 @@ gate a real verdict.
   `averagePrice` 0 would read as a 100% gain (unverified). The `in` clause does not validate that
   its value is a list (pre-existing in `kinds_flow`). The lane note still lists the ETF and
   `allow_incomplete` checks; `/wrap` rewrites it.
+
+## ADR-0284 - Two-host dispatch: run independent jobs on a second machine over SSH (owner approved 2026-10-29, "Whatever is easiest")
+
+**Context.** The owner has two machines on Tailscale: the PC (WSL2, every onboarded snapshot, CUDA) and a Mac (M4, 32 GB); `ssh desktop` reaches WSL2 directly. Every dskit parallel runner is single-host: `BoundedFoldRunner` (ADR-0093), `workflow-batch` lanes, and `BenchmarkRun` (ADR-0097), which runs model-zoo candidates serially in-process. Two gaps stop a job from simply running on the Mac:
+
+- 565 of 998 child configs name data by absolute PC path (`/home/russell/data/...`) inside node params (`path`, `root`, `run_root`). The path is part of the identity hash, so rewriting it for the Mac re-hashes the config and orphans its runs.
+- A run records nothing about the host that produced it, yet CPU, CUDA and MPS give different floating-point results under one hash.
+
+**Decision (proposed).**
+
+1. **Hosts are strategy objects.** New `dskit/pipeline/hosts.py`: abstract `Host.wrap(argv, cwd)` returns the argv to execute. `LocalHost` returns it unchanged; `SshHost(alias, checkout, python)` returns `ssh <alias> -- cd <checkout> && <python> ...`, quoted with `shlex`. `HostPool` assigns jobs to hosts by a declared width per host. `BoundedFoldRunner.spawn` and `workflow_batch`'s lane launch take a pool instead of branching on host. The default pool is one `LocalHost`, so nothing changes until a pool is declared.
+2. **A per-machine path map, outside identity.** A JSON file named by `DSKIT_PATH_MAP` maps absolute prefixes to local ones, e.g. `{"/home/russell/data": "/Users/<user>/pcdata"}`. It is applied to string params AFTER the identity hash is computed, on whole path segments only. No file means no mapping, so every existing hash and run stays put. The map applied is recorded with the run.
+3. **Data is mirrored, not mounted.** The second host holds an rsync mirror of only the onboarded snapshots its jobs read, checked with `python -m dskit.onboarding verify`. A preflight refuses a job whose mapped inputs are missing on its host; content pins in configs still check bytes there.
+4. **Results come home.** A remote job writes its run dir on its own host. After exit 0 the dispatcher rsyncs that dir back to the unmapped path in the PC's run root; `{name}-{asof}-{hash8}` names cannot collide. A failed copy fails the job.
+5. **Every run is stamped with its host.** `host.json` in the run dir (placement, never identity) holds the OS family, hostname, accelerator used, git commit, the path map and `RuntimeFingerprint` from `dskit.production.release`, imported, never restated. A test pins the Python OS rule to `tools/session/machine.sh --os` on the running host.
+6. **Parity preflight.** Before dispatch, every host in the pool must report the same git commit and the same `RuntimeFingerprint` distributions. A mismatch refuses unless the pool declares `allow_env_drift`.
+7. **Cross-host comparisons are explicit.** `BenchmarkCompare` refuses to pair candidates run on different hosts unless `allow_cross_host` is declared. The recommended zoo split is by model family (tree/sklearn on the Mac, torch on the PC), so each family is compared on one kind of hardware.
+
+**First consumer.** `BenchmarkRun` gains an opt-in subprocess mode: one `walkforward` per candidate, sent through the pool, keeping its approval recheck and checkpoint. In-process remains the default.
+
+**Files, approved with this ADR.** New: `dskit/pipeline/hosts.py`, `tests/pipeline/test_hosts.py`. Edited: `folds.py`, `workflow_batch.py`, `benchmarks.py`, `driver.py` (path map and `host.json`), the package README/CLAUDE trees, and `docs/standards/configuration.md` (the path map is placement).
+
+**Rejected.**
+
+- `${root}` templates in configs: re-hashes all 565 configs and orphans their runs.
+- SMB/sshfs mounts: parquet scans over Wi-Fi would eat the speedup.
+- Ray/Dask: a heavy dependency plus cluster operations, for two machines.
+
+**Non-goals.** Automatic load balancing, GPU-memory guards, native Windows hosts, remote onboarding or acquisition, anything production or live.
+
+**Open questions for the owner.**
+
+- Q1 Data on the Mac: (a) rsync mirror of the needed snapshots (recommended); (b) a network mount.
+- Q2 First runner: (a) `BenchmarkRun` model zoo (recommended); (b) `BoundedFoldRunner` folds; (c) `workflow-batch` lanes.
+- Q3 Cross-host zoo pairs: (a) refuse unless declared (recommended); (b) allow, labelled.
+
+**Owner answers (2026-10-29, "Whatever is easiest"; the agent chose the easiest option for each).** Q1 (a) rsync mirror. Q2 (b) `BoundedFoldRunner` first: its jobs are single `run`/`walkforward` documents, so only the driver must honour the path map. Workflow lanes would also need it inside `workflow.py`, so they wait for a later slice. A zoo runs through it as one `walkforward` command per candidate. Q3 (b) allow cross-host pairs, labelled by a `host` column; this replaces item 7's refusal.
+
+**First slice.** `hosts.py` (`PathMap`, `Host`, `LocalHost`, `SshHost`, `HostPool`, `host_stamp`); `BoundedFoldRunner` takes an optional pool. `SshHost` pushes argv files to their mapped paths before a job and pulls declared `sync_back` roots after it. The pool sends the map to the remote job as `DSKIT_PATH_MAP`, so the map has one source. The driver applies the map after hashing and writes `host.json`. `BenchmarkRun` subprocess mode and `workflow-batch` lanes are later slices.
+
+**Amendment 1 (2026-10-29, as built after two review lenses).** Departures from items 1-7, each forced by a review finding or a repo rule:
+
+- **Sync is per batch, not per job.** Each `sync_back` root is pushed out (`--ignore-existing`) before the first fold, so the remote's `$prev` and occupied-dir refusal see home's runs. Every entry home lacks is pulled whole only after ALL folds have exited, failed ones included, as a local crash's partial dir would stay. An entry home already has is never touched. Per-job pulls let one fold's pull freeze a sibling's half-written run.
+- **Records hold paths as written.** The driver restores the map in `resolved.json`, `result.json`, `carry.json` and `walkforward.json`, so pulled runs read like home runs. `runs.resolve_run_root` is the one run-root rule; benchmarks and stages use it. The planner and the search `SubgraphRunner` receive the run's map; serving's runner gets none.
+- **The map is one-to-one and lives in the environment.** `DSKIT_PATH_MAP` holds inline JSON, not a file path. No source or target may overlap another, and a target must be its real path.
+- **The preflight probes from the job's cwd**, in a fresh interpreter. It compares commit, Python, uncommitted or untracked `.py` files, and versions of packages installed on both sides, and it checks that the remote job imports dskit from `checkout`. It runs for every batch. Item 5's `RuntimeFingerprint` is not imported, because the pipeline core may not import `dskit.production` (the purity gate); `host.json` carries a digest of name-to-version from `importlib.metadata` instead. There is no accelerator field: knowing it would mean importing torch.
+- **macOS takes no memory cap.** It refuses `RLIMIT_AS`, so the preflight refuses a capped batch for a macOS host. Locally, the 9 cap tests in `test_folds.py` already fail on the Mac at base.
+- **Known limits.** A data node whose fingerprint HASHES a path gets a host-specific run hash under a map, though `document_hash` never moves. A remote job journals into the remote checkout's child journal, merged like any session's (ADR-0109). Q3's `host` column in rollups is a later slice; `host.json` labels each run today.
+
+**Review checkpoint (2026-10-29; implementation parked pending owner decision).** Candidate 083af0e9 (base db39f872), Claude Opus 5.5. Round 1 (ddc3caea) found 11 Majors, fixed in one batch. Round 2 found 4 Majors (2 lenses; 0 Critical), and the convergence rule triggered early on a repeated family and a widening scope:
+
+- Readers on the mapped host open the home-coordinate paths that records now hold (BenchmarkRun seal, `walk_fold_dirs`). The write-side fix had no read-side inventory.
+- `sync_back` roots use the data map, not the job's map, so a run root inside the checkout never comes home.
+- `end()` pulls entries the batch did not create: round 1's pull family again.
+- A test defect: the fake remote shares the PC filesystem, so an unmapped build site passes.
+
+Root cause: path mapping is cross-cutting (writers, readers, sync) with no single seam. Next approach, if resumed: inventory every recorded-path reader and writer first, add one reader rule, sync through the job map, pull only names created during the batch, and run the tests with the PC tree absent. Branch `docs/adr-two-host-runner` is unmerged.
+
+**Parked at wrap (2026-10-29).** The owner wrapped the session without a redesign round. The code stays on the unmerged branch `docs/adr-two-host-runner` (head 4e2a338e); only this entry is on main. Resume or drop is an open owner decision.
