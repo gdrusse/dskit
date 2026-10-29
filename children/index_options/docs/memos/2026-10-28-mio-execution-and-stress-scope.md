@@ -53,7 +53,7 @@ On 2026-10-28 I made a separate, read-only WSL2 reconciliation from each pinned 
 
 This checks important ledger and export identities. It is **not** a new independent reconstruction of every raw quote, forecast, optimizer choice or expiry settlement. The saved independent replay and packaging checks are separate evidence. No ordinary MIO run was repeated for this memo.
 
-The one-off reconciliation had no saved script or receipt. This equivalent, read-only WSL2 command reproduces its assertions from the pinned files; its eight lines end in totals of 224 filled and 691 rejected. It does not rerun the MIO engine:
+The one-off reconciliation had no saved script or receipt. This equivalent, read-only WSL2 command reproduces its assertions from the pinned files; it prints eight method rows followed by totals of 224 filled and 691 rejected. It does not rerun the MIO engine:
 
 ```bash
 python3 - <<'PY'
@@ -86,6 +86,7 @@ for cohort in ("limited36", "broad212"):
         assert all(all(int(leg["capacity"]) >= abs(int(leg["quantity"]))
                        for leg in row["legs"]) for row in result["trades"])
         assert all(row["status"] == "unfilled" for row in result["rejected"])
+        assert all(row["status"] == "unfilled" for row in rejected)
         assert math.isclose(math.fsum(float(row["pnl"]) for row in trades),
                             result["pnl"], abs_tol=1e-6)
         assert math.isclose(result["final_equity"] - result["contributions"],
