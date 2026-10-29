@@ -772,9 +772,10 @@ class MIOPacketInputs(StudyNode):
             quote_factors = {}
             quote_columns = ["symbol", "date", "expiration", "type", "strike_raw", "strike", "bid", "ask",
                              "bid_size", "ask_size", "basis_factor", "underlying_price"]
+            expiry_filter = ds.field("expiration").isin(expiries) if expiries else ds.scalar(False)
             quote_index = SQLiteParquetIndex.build(path, quote_path, quote_columns,
                 {"date": bounds["chain"], "expiration": {"end_before": tail}},
-                where=(ds.field("symbol") == symbol) & ds.field("expiration").isin(expiries),
+                where=(ds.field("symbol") == symbol) & expiry_filter,
                 unique_by=("symbol", "date", "expiration", "type", "strike_raw"),
                 partition_by=("date", "expiration"), float_keys=("strike_raw",),
                 validator=lambda row: quote_node._validate_quote_row(row, quote_factors))

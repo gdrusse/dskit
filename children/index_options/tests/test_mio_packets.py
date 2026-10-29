@@ -943,7 +943,8 @@ def test_pinned_forecast_window_refuses_inconsistent_evidence(tmp_path, monkeypa
         MIOStudyContract.selection(study)
 
 
-def test_pinned_q1_real_onboarding_producer_and_packet(study, tmp_path, monkeypatch):
+@pytest.mark.parametrize("missing_symbol", [False, True])
+def test_pinned_q1_real_onboarding_producer_and_packet(study, tmp_path, monkeypatch, missing_symbol):
     """A completed synthetic producer and acquired receipt drive the unchanged packet spine."""
     import pandas as pd
     import pyarrow as pa
@@ -975,6 +976,11 @@ def test_pinned_q1_real_onboarding_producer_and_packet(study, tmp_path, monkeypa
                     row[key] = shifted(row[key])
             if "fold" in row:
                 row["fold"] = 3
+    if missing_symbol:
+        params["symbols"].append("Y")
+        pairs.append({**pairs[0], "id": "Y30", "symbol": "Y"})
+        data["Y"] = {role: [{**row, "symbol": "Y"} for row in data["X"][role]]
+                     for role in ("chain", "bars")}
     start, end = shifted(clocks["entry_start"]), shifted(clocks["entry_end_before"])
     bridge = params["bridge"]
     bridge.update(start=start, end_before=end, fold=3, protected_end_before="2024-01-01")
@@ -1031,14 +1037,16 @@ def test_pinned_q1_real_onboarding_producer_and_packet(study, tmp_path, monkeypa
         "rolling_masks_verified": True, "fitted_flags_exact": True})
     prep_path = metadata_root/"receipt/preparation.json"
     prep = json.loads(prep_path.read_text())
-    prep.update(declared_cohort=["X"], sources={"Q1": {
-        "row_count": 2, "expected_names": ["X"], "missing_names": []}})
+    prep.update(declared_cohort=params["symbols"], sources={"Q1": {
+        "row_count": 2, "expected_names": ["X"],
+        "missing_names": ["Y"] if missing_symbol else []}})
     receipt["preparation"]["sha256"] = save("receipt/preparation.json", prep)
     save("receipt/selection.json", receipt)
     save("admission.json", {"pairs": pairs, "quote_start": "2019-01-02",
          "quote_end_before": "2020-01-01", "settlement_end_before": "2020-01-01"})
     for role in ("chain", "bars"):
-        pq.write_table(pa.Table.from_pylist(data["X"][role]), metadata_root/(role+".parquet"))
+        rows = [row for rows in data.values() for row in rows[role]]
+        pq.write_table(pa.Table.from_pylist(rows), metadata_root/(role+".parquet"))
     pq.write_table(pa.table({"date": [shifted(d) for d in clocks["sessions"]]}), metadata_root/"sessions.parquet")
     root = OnboardingRoot.create(str(tmp_path/"q1-ob"))
     sources = root.registry()
@@ -1060,7 +1068,8 @@ def test_pinned_q1_real_onboarding_producer_and_packet(study, tmp_path, monkeypa
     for role in domain["sources"]:
         relative = receipt["stitched"][{"forecasts": "forecast", "contexts": "context"}[role]]["relpath"] if role in {
             "forecasts", "contexts"} else role+".parquet"
-        domain["sources"][role] = {"pin": pin, "files": {("X" if role in {"bars", "chain"} else "shared"): relative}}
+        keys = params["symbols"] if role in {"bars", "chain"} else ["shared"]
+        domain["sources"][role] = {"pin": pin, "files": dict.fromkeys(keys, relative)}
     assert MIOStudyContract.selection(study)["bridge_fold"] == 3
     assert not MIOStudyContract().resolve(study)["missing"]
     plan = StudyContract.build(study)
@@ -1089,6 +1098,16 @@ def test_pinned_q1_real_onboarding_producer_and_packet(study, tmp_path, monkeypa
     assert len(actual["trades"]) == 1
     assert actual["final_equity"] == pytest.approx(actual["contributions"]+actual["pnl"])
     assert actual["trades"][0]["decision_date"] == start
+    if missing_symbol:
+        intake = json.loads((Path(ran.run_dir)/"carry.json").read_text())["intake"]["bounded_inputs"]
+        missing = intake["inputs"]["Y"]
+        assert missing["forecasts"] == missing["contexts"] == []
+        assert missing["chain_index"]["selected_rows"] == 0
+        assert missing["chain_index"]["forecast_expiries"] == []
+        assert missing["bars"] and missing["chain_index"]["basis_factors"]
+        assert [row["date"] for row in actual["curve"]] == [
+            d for d in intake["clocks"]["sessions"]
+            if start <= d < intake["clocks"]["tail_end_before"]]
     # Receipt drift must fail through each public facade before a second claim or payload access.
     receipt_file = Path(PinnedPayloadSource(pin).file("receipt/selection.json"))
     receipt_file.write_text(receipt_file.read_text()+" ")
