@@ -10,13 +10,13 @@ Updated: 2026-10-29 by GPT-6 Astra. Ordinary MIO sizing wiring reviewed and inte
 - Independent focused validation: 334 passed in 21.30s using /home/russell/dskit/.venv/bin/python. Each fresh final lens also ran 91 focused tests. A demonstrated selected-credit cash mutant is now rejected by independent hand-calculated fill/expiry cash, fees and reserve oracles. No full-suite claim.
 - The earlier v3 diagnostic did not wire sizing into fresh MIO or joint stress. This amendment closes that gap; the v3 result remains immutable and is not this new rerun.
 - New JSONs: configs/mio-2019-{limited36,broad212}-available-size-20261029.json. All six study copies are identical; normalized JSONs exactly match originals except the approved sizing knob, refreshed 266 imported-source pins, name, notes and output root. Dependency versions and data/model parameters remain unchanged.
-- Both metadata plans are runnable with no missing inputs; shared registry last observed rev 47, inactive. Fresh market jobs have not started at this checkpoint.
+- Both metadata plans are runnable with no missing inputs; shared registry last observed rev 47, inactive. Code and JSONs are published at aa46736146845f9b5cd9ea493099da0b29366fac. Limited36 started at 2026-10-29 00:02 EDT and is processing decisions under dskit-mio-2019-available-size-limited36-20261029.service; broad212 and stress follow serially.
 - Durable execution state: /home/russell/data/index_options/mio-2019-available-size-20261029/state.json. It records current jobs, reviews, config hashes, exact receipts and next stages. Native thread follow-up finish-2019-mio-sizing-rerun checks every 30 minutes.
 - Preserve original results, published v1 report, v3 diagnostic, private viewer, Path A0003/A0008 and TDD. This remains 2019 development evidence with original lookback/tail-padding metadata bounds and saved forecasts.
 
 ## Next
 
-- Push this accepted code/config checkpoint, then run limited36 and broad212 serially through the existing pipeline and shared registry. Verify all four methods, recorded-decision replay and complete attestation before each claim disposition.
+- Verify the running limited36 packet, then run broad212 serially through the existing pipeline and shared registry. Verify all four methods, recorded-decision replay and complete attestation before each claim disposition.
 - Export the new saved trades, refusals, selected/executed legs and daily accounts. Pin source results/configs/quote indexes/CSVs in a distinct results-pins document.
 - Run v4's seven existing scenarios against fresh saved selections. All eight zero-shock controls must exactly reproduce the new MIO results before the 48 stressed cases. Verify 56 total cases and preserve unsupported outcomes visibly.
 - Publish a distinct readable report/daybooks/CSV mirror after verification. Do not overwrite earlier reports. Follow state.json rather than launching duplicate jobs.
