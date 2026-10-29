@@ -1317,7 +1317,11 @@ class WeeklyOptionPortfolioStudy:
         research-only), adds every open book at its fill credit and the
         day's close to the same budget at the signal, and at the next-session
         fill recomputes it for the open books plus the surviving fills before
-        admission: a breach declines every surviving new book.
+        admission: a breach declines every surviving new book. Optional
+        fill_sizing (ADR-0282 Amendment 1) is "all_or_none" (the default
+        when absent) or "available_size": every leg then executes k times
+        its primitive share of the selection, k the largest whole multiple
+        the next session's side depth shows, at most the selection's gcd.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1338,6 +1342,9 @@ class WeeklyOptionPortfolioStudy:
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
     _FILLED_ACCOUNT = "filled_account"
+    _OPTIONAL_PARAMS = ("fill_sizing",)
+    _FILL_SIZINGS = ("all_or_none", "available_size")
+    _AVAILABLE_SIZE = "available_size"
 
     def __init__(self, params, inputs):
         import copy
@@ -1461,10 +1468,13 @@ class WeeklyOptionPortfolioStudy:
         from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
         from dskit.pipeline.libs.option_ledger import FundedOptionAccount
 
-        if (not isinstance(params, dict) or set(params)-{"clocks", "selected_pairs"} != set(cls._PARAMS)
+        if (not isinstance(params, dict)
+                or set(params)-{"clocks", "selected_pairs", *cls._OPTIONAL_PARAMS} != set(cls._PARAMS)
                 or ("clocks" in params) != ("selected_pairs" in params)):
             raise ValueError("explicit study configuration required")
         p = params
+        if "fill_sizing" in p and p["fill_sizing"] not in cls._FILL_SIZINGS:
+            raise ValueError("unsupported fill sizing")
         defects = TransportPortfolioSolve.validate_params(p["solver"])
         if defects:
             raise ValueError("; ".join(defects))
@@ -1859,8 +1869,41 @@ class WeeklyOptionPortfolioStudy:
                             status="selected")
         return books
 
+    @staticmethod
+    def _units(legs):
+        """Return g, the gcd of the legs' quantities (0 when every leg is zero)."""
+        return math.gcd(*(leg["quantity"] for leg in legs))
+
+    @staticmethod
+    def _depth_multiple(quantity, units, depth):
+        """Return how many primitive units one leg's side depth shows, None when short.
+
+        units 0 is all-or-none: the leg needs its whole quantity and returns 0.
+        Otherwise the leg needs quantity/units per unit; a zero leg never binds.
+        """
+        if not units:
+            return None if depth < quantity else 0
+        unit = quantity//units
+        if not unit:
+            return units
+        return depth//unit if depth >= unit else None
+
+    @staticmethod
+    def _resize(book, units, multiple):
+        """Execute every leg at multiple primitive units, keeping its selected quantity."""
+        for leg in book["legs"]:
+            leg["selected_quantity"] = leg["quantity"]
+            leg["quantity"] = leg["quantity"]//units*multiple
+        book["contracts"] = sum(leg["quantity"] for leg in book["legs"])
+
     def _fill(self, book, day, charge=None):
-        """Preflight one frozen book at the next session without seeing maturity."""
+        """Preflight one frozen book at the next session without seeing maturity.
+
+        All-or-none by default. With fill_sizing "available_size" each leg
+        needs side depth for one primitive unit q_i/g (g the gcd of the
+        quantities) and every leg executes k*q_i/g, k = min(g, the depth
+        multiples); k = g is the all-or-none fill unchanged.
+        """
         import copy
 
         filled = copy.deepcopy(book)
@@ -1869,22 +1912,30 @@ class WeeklyOptionPortfolioStudy:
         if (day >= expiry or not math.isclose(self._factors[symbol].get(day, math.nan),
                                              factor, rel_tol=1e-9)):
             return None, "fill_basis_or_session"
-        premium, stress = 0., 0.
-        mult = node.params["solver"]["multiplier"]
+        units = (WeeklyOptionPortfolioStudy._units(filled["legs"])
+                 if self.params.get("fill_sizing") == WeeklyOptionPortfolioStudy._AVAILABLE_SIZE else 0)
+        multiple, markets = units, []
         for leg in filled["legs"]:
             row = self._quotes[symbol].get((day, expiry, leg["right"], leg["strike"]))
             market = node._usable_quote(row, factor)
             if market is None:
                 return None, "missing_fill_quote"
             side = "ask_size" if leg["sign"] > 0 else "bid_size"
-            if row[side] < leg["quantity"]:
+            fits = WeeklyOptionPortfolioStudy._depth_multiple(leg["quantity"], units, row[side])
+            if fits is None:
                 return None, "insufficient_fill_size"
-            bid, ask = market
+            multiple = min(multiple, fits)
+            markets.append(market)
+        if multiple < units:
+            WeeklyOptionPortfolioStudy._resize(filled, units, multiple)
+        premium, stress = 0., 0.
+        mult = node.params["solver"]["multiplier"]
+        for leg, (bid, ask) in zip(filled["legs"], markets):
             price = ask if leg["sign"] > 0 else bid
             leg["fill_price"] = price
             premium -= leg["sign"]*price*mult*leg["quantity"]
             stress += (ask-bid)*mult*leg["quantity"]*node.params["stress_spread_fraction"]
-        fees = book["contracts"]*node.params["solver"]["fee_per_contract_usd"]
+        fees = filled["contracts"]*node.params["solver"]["fee_per_contract_usd"]
         credit = premium-fees
         loss = structure_max_loss([(leg["right"], leg["sign"]*leg["quantity"]) for leg in filled["legs"]],
                                   [leg["strike"] for leg in filled["legs"]], credit, mult)

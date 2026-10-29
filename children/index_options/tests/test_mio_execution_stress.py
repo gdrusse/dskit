@@ -35,7 +35,7 @@ def _case(sign=1, bid=1.0, ask=1.4, size=5, quantity=1):
                 "stress_spread_fraction": 0.25},
         _usable_quote=lambda row, factor: (row["bid"], row["ask"]))
     study = SimpleNamespace(
-        _nodes={"ABC": node}, _factors={"ABC": {"2019-01-03": 1.0}},
+        params={}, _nodes={"ABC": node}, _factors={"ABC": {"2019-01-03": 1.0}},
         _quotes={"ABC": {("2019-01-03", "2019-02-01", "call", 100.0): row}},
         _charge=lambda method: {}, _floor=lambda reserve, charge, legs, mult: reserve)
     return study, book
@@ -444,8 +444,9 @@ def test_approved_scenarios_extend_without_changing_earlier_schemas():
     assert v3[9:] == [{'id': 'proportional_available_size',
                        'price_fraction': 0, 'half_size': False,
                        'expiry_multiplier': 1, 'proportional_fill': True}]
+    assert stress._approved_scenarios('mio-execution-stress/v4') == v1
     with pytest.raises(ValueError):
-        stress._approved_scenarios('mio-execution-stress/v4')
+        stress._approved_scenarios('mio-execution-stress/v5')
 
 
 def test_v3_document_is_the_approved_contract_with_a_distinct_root():
@@ -561,3 +562,174 @@ def test_depth_proxy_is_v3_only_and_sums_selected_contracts():
     for schema in ('mio-execution-stress/v1', 'mio-execution-stress/v2'):
         assert stress._depth_proxy(schema, decisions) is None
     assert stress._depth_proxy('mio-execution-stress/v3', decisions) == 14
+
+
+# ADR-0282 Amendment 1: the opt-in domain knob in the ordinary fill owner.
+AVAILABLE = {'fill_sizing': 'available_size'}
+
+
+def _sized(quantities, depths, params=AVAILABLE):
+    study, book = _two_leg(quantities, depths)
+    study.params = dict(params)
+    return study, book
+
+
+def _ordinary(study, book):
+    return WeeklyOptionPortfolioStudy._fill(study, book, '2019-01-03', {})
+
+
+def test_ordinary_fill_available_size_keeps_gcd_ratio():
+    study, book = _sized((6, 4), (4, 3))
+    selected = deepcopy(book)
+    filled, reason = _ordinary(study, book)
+    assert reason is None and book == selected
+    assert [leg['quantity'] for leg in filled['legs']] == [3, 2]
+    assert [leg['selected_quantity'] for leg in filled['legs']] == [6, 4]
+    assert filled['contracts'] == 5
+    assert filled['fees'] == pytest.approx(3.25)
+    assert filled['credit'] == pytest.approx(-3 * 140 + 2 * 50 - 3.25)
+    assert filled['reserve'] == pytest.approx(max(0.0, filled['max_loss'], -filled['credit']))
+    frozen, _ = stress._scenario_fill(*_two_leg((6, 4), (4, 3)), '2019-01-03', {}, PROPORTIONAL)
+    assert filled == frozen
+
+
+@pytest.mark.parametrize('params', [{}, {'fill_sizing': 'all_or_none'}])
+def test_ordinary_fill_default_stays_all_or_none(params):
+    assert _ordinary(*_sized((6, 4), (4, 3), params)) == (None, 'insufficient_fill_size')
+    full = _ordinary(*_sized((6, 4), (6, 4), params))
+    assert full == _ordinary(*_sized((6, 4), (6, 4)))
+    assert 'selected_quantity' not in full[0]['legs'][0]
+
+
+def test_ordinary_fill_single_leg_clip_and_primitive_refusal():
+    filled, reason = _ordinary(*_sized((11, 0), (7, 0)))
+    assert reason is None and [leg['quantity'] for leg in filled['legs']] == [7, 0]
+    assert filled['contracts'] == 7 and filled['fees'] == pytest.approx(7 * 0.65)
+    assert _ordinary(*_sized((11, 0), (0, 0))) == (None, 'insufficient_fill_size')
+    assert _ordinary(*_sized((3, 2), (2, 2))) == (None, 'insufficient_fill_size')
+
+
+@pytest.mark.parametrize('case', ['half_size', 'adverse_price', 'joint_down_15'])
+def test_available_size_domain_sizes_every_shocked_case(case):
+    scenario = next(s for s in stress._approved_scenarios('mio-execution-stress/v1')
+                    if s['id'] == case)
+    depths = (8, 6) if scenario['half_size'] else (4, 3)
+    study, book = _sized((6, 4), depths)
+    selected = deepcopy(book)
+    filled, reason = stress._scenario_fill(study, book, '2019-01-03', {}, scenario)
+    assert reason is None and book == selected
+    assert [leg['quantity'] for leg in filled['legs']] == [3, 2]
+    assert [leg['selected_quantity'] for leg in filled['legs']] == [6, 4]
+    assert filled['contracts'] == 5
+    expected = [stress.adverse_side(1.0, 1.4, 1, scenario['price_fraction']),
+                stress.adverse_side(0.5, 0.7, -1, scenario['price_fraction'])]
+    assert [leg['fill_price'] for leg in filled['legs']] == expected
+    assert stress._scenario_fill(*_two_leg((6, 4), depths), '2019-01-03', {},
+                                 scenario) == (None, 'insufficient_fill_size')
+
+
+@pytest.mark.parametrize('case', ['control', 'expiry_down_15', 'expiry_up_15'])
+def test_available_size_unshocked_fill_is_the_ordinary_owner(case):
+    scenario = next(s for s in stress._approved_scenarios('mio-execution-stress/v1')
+                    if s['id'] == case)
+    study, book = _sized((6, 4), (4, 3))
+    filled = stress._scenario_fill(study, book, '2019-01-03', {}, scenario)
+    assert filled[1] is None and filled[0]['contracts'] == 5
+    assert filled == _ordinary(*_sized((6, 4), (4, 3)))
+
+
+def test_available_size_shocked_refusal_precedence_per_leg():
+    joint = {'price_fraction': 0.25, 'half_size': True, 'expiry_multiplier': 1}
+    study, book = _sized((6, 4), (1, 6))
+    assert stress._scenario_fill(study, book, '2019-01-03', {}, joint)[1] == (
+        'insufficient_fill_size')
+    study, book = _sized((6, 4), (8, 6))
+    study._quotes['ABC'][('2019-01-03', '2019-02-01', 'call', 105.0)]['bid'] = 0.04
+    study._quotes['ABC'][('2019-01-03', '2019-02-01', 'call', 105.0)]['ask'] = 0.24
+    assert stress._scenario_fill(study, book, '2019-01-03', {}, joint)[1] == (
+        'invalid_stressed_fill_price')
+
+
+V4 = 'mio-execution-stress/v4'
+
+
+def test_available_size_requires_v4_and_v4_requires_available_size():
+    for schema in ('mio-execution-stress/v1', 'mio-execution-stress/v2',
+                   'mio-execution-stress/v3'):
+        with pytest.raises(ValueError, match='v4'):
+            stress.FrozenMIOReplay._sizing_schema(AVAILABLE, schema)
+        stress.FrozenMIOReplay._sizing_schema({}, schema)
+        stress.FrozenMIOReplay._sizing_schema({'fill_sizing': 'all_or_none'}, schema)
+    stress.FrozenMIOReplay._sizing_schema(AVAILABLE, V4)
+    for legacy in ({}, {'fill_sizing': 'all_or_none'}):
+        with pytest.raises(ValueError, match='v4'):
+            stress.FrozenMIOReplay._sizing_schema(legacy, V4)
+
+
+def _cohort_document(tmp_path, schema, entry):
+    (tmp_path / 'children/index_options/configs').mkdir(parents=True, exist_ok=True)
+    return {'schema': schema, 'repository_root': str(tmp_path),
+            'cohorts': {'limited36': entry}}
+
+
+def test_v4_cohort_run_document_is_explicit_and_inside_configs(tmp_path):
+    configs = tmp_path / 'children/index_options/configs'
+    document = _cohort_document(tmp_path, V4, {'config': 'fresh-limited36.json'})
+    assert stress.FrozenMIOReplay._run_document(document, 'limited36') == (
+        configs / 'fresh-limited36.json')
+    for entry in ({}, {'config': '../x.json'}, {'config': 'a/b.json'}, {'config': ''},
+                  {'config': '..'}, {'config': 7}):
+        with pytest.raises(ValueError, match='config'):
+            stress.FrozenMIOReplay._run_document(
+                _cohort_document(tmp_path, V4, entry), 'limited36')
+    (tmp_path / 'outside.json').write_text('{}')
+    (configs / 'link.json').symlink_to(tmp_path / 'outside.json')
+    with pytest.raises(ValueError, match='config'):
+        stress.FrozenMIOReplay._run_document(
+            _cohort_document(tmp_path, V4, {'config': 'link.json'}), 'limited36')
+
+
+@pytest.mark.parametrize('schema', ['mio-execution-stress/v1', 'mio-execution-stress/v2',
+                                    'mio-execution-stress/v3'])
+def test_legacy_cohort_run_document_keeps_its_default(tmp_path, schema):
+    document = _cohort_document(tmp_path, schema, {})
+    assert stress.FrozenMIOReplay._run_document(document, 'limited36') == (
+        tmp_path / 'children/index_options/configs/mio-2019-limited36.json')
+    with pytest.raises(ValueError, match='v4'):
+        stress.FrozenMIOReplay._run_document(
+            _cohort_document(tmp_path, schema, {'config': 'x.json'}), 'limited36')
+
+
+def test_v4_keeps_v3_proxy_wording_and_contract_headline():
+    decisions = [{'books': [{'contracts': 10}, {'contracts': 4}]}]
+    assert stress._depth_proxy(V4, decisions) == 14
+    metrics, daily = _daybook_case()
+    selected = stress._depth_proxy(V4, [{'books': [{'contracts': 19}]}])
+    lines = stress._daybook('c', 's', 'm', metrics, daily, None, selected).split('\n')
+    assert lines[6:9] == [
+        stress._PROXY_NOTE, '',
+        'Books: selected 3; filled 2 (1 downsized); refused 1. '
+        'Contracts: selected 19; filled 10.']
+
+
+def test_one_sizing_owner_serves_ordinary_and_stressed_fills(monkeypatch):
+    W = WeeklyOptionPortfolioStudy
+    assert W._units([{'quantity': 6}, {'quantity': 4}]) == 2
+    assert W._units([{'quantity': 11}, {'quantity': 0}]) == 11
+    assert W._depth_multiple(4, 2, 7) == 3 and W._depth_multiple(4, 2, 1) is None
+    assert W._depth_multiple(0, 2, 0) == 2
+    assert W._depth_multiple(4, 0, 4) == 0 and W._depth_multiple(4, 0, 3) is None
+    book = {'contracts': 10, 'legs': [{'quantity': 6}, {'quantity': 4}]}
+    W._resize(book, 2, 1)
+    assert book == {'contracts': 5, 'legs': [{'quantity': 3, 'selected_quantity': 6},
+                                             {'quantity': 2, 'selected_quantity': 4}]}
+    calls = []
+    owner = W._depth_multiple
+    monkeypatch.setattr(W, '_depth_multiple', staticmethod(
+        lambda *args: calls.append(args) or owner(*args)))
+    joint = {'price_fraction': 0.25, 'half_size': True, 'expiry_multiplier': 1}
+    stress._scenario_fill(*_sized((6, 4), (8, 6)), '2019-01-03', {}, joint)
+    assert calls[:2] == [(6, 2, 4), (4, 2, 3)]
+    calls.clear()
+    _ordinary(*_sized((6, 4), (4, 3)))
+    assert calls == [(6, 2, 4), (4, 2, 3)]

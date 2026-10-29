@@ -124,14 +124,33 @@ def _missing_expiry_factors(binding, symbols, needed, factors):
             factors[symbol][day] = values.pop()
 
 
+_AVAILABLE_SIZE_SCHEMA = "mio-execution-stress/v4"
+
+
+def _fill_shocked(scenario):
+    """Tell whether a case changes the fill price or the displayed depth."""
+    return scenario["price_fraction"] != 0 or scenario["half_size"]
+
+
+def _available_size(study):
+    """Tell whether the frozen domain opted into ADR-0282 Amendment 1 sizing."""
+    return study.params.get("fill_sizing") == WeeklyOptionPortfolioStudy._AVAILABLE_SIZE
+
+
 def _proportional_fill(study, book, day, method, scenario):
-    """Fill the largest whole multiple of the book's primitive ratio shown at side depth."""
+    """Fill the largest whole multiple of the book's primitive ratio shown at side depth.
+
+    The study's sizing owner chooses the multiple; this adapter only feeds it
+    effective (half) depth. The v3 case stays zero-shock; a v4 available-size
+    domain also sizes the half-depth and adverse-price cases, checking each
+    leg's quote, unit depth and stressed price in order.
+    """
     legacy = {key: value for key, value in scenario.items() if key != "proportional_fill"}
-    if scenario["price_fraction"] != 0 or scenario["half_size"]:
+    if scenario.get("proportional_fill", False) and _fill_shocked(scenario):
         raise ValueError("proportional fill is approved only as a zero-shock case")
-    units = math.gcd(*(leg["quantity"] for leg in book["legs"]))
+    units = WeeklyOptionPortfolioStudy._units(book["legs"])
     if units == 0:
-        return _scenario_fill(study, book, day, method, legacy)
+        return _scenario_fill(study, book, day, method, legacy, resized=True)
     symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
     node = study._nodes[symbol]
     if day >= expiry or not math.isclose(study._factors[symbol].get(day, math.nan),
@@ -140,28 +159,35 @@ def _proportional_fill(study, book, day, method, scenario):
     multiple = units
     for leg in book["legs"]:
         row = study._quotes[symbol].get((day, expiry, leg["right"], leg["strike"]))
-        if node._usable_quote(row, factor) is None:
+        market = node._usable_quote(row, factor)
+        if market is None:
             return None, "missing_fill_quote"
-        if leg["quantity"] == 0:
-            continue
-        side = "ask_size" if leg["sign"] > 0 else "bid_size"
-        fits = row[side] // (leg["quantity"] // units)
-        if fits < 1:
-            return None, "insufficient_fill_size"
-        multiple = min(multiple, fits)
+        if leg["quantity"] != 0:
+            side = "ask_size" if leg["sign"] > 0 else "bid_size"
+            fits = WeeklyOptionPortfolioStudy._depth_multiple(
+                leg["quantity"], units, effective_size(row[side], scenario["half_size"]))
+            if fits is None:
+                return None, "insufficient_fill_size"
+            multiple = min(multiple, fits)
+        if scenario["price_fraction"] != 0:
+            price = adverse_side(*market, leg["sign"], scenario["price_fraction"])
+            if not math.isfinite(price) or price <= 0:
+                return None, "invalid_stressed_fill_price"
     if multiple == units:
-        return _scenario_fill(study, book, day, method, legacy)
+        return _scenario_fill(study, book, day, method, legacy, resized=True)
     downsized = copy.deepcopy(book)
-    for leg in downsized["legs"]:
-        leg["selected_quantity"] = leg["quantity"]
-        leg["quantity"] = leg["quantity"] // units * multiple
-    downsized["contracts"] = sum(leg["quantity"] for leg in downsized["legs"])
-    return _scenario_fill(study, downsized, day, method, legacy)
+    WeeklyOptionPortfolioStudy._resize(downsized, units, multiple)
+    return _scenario_fill(study, downsized, day, method, legacy, resized=True)
 
 
-def _scenario_fill(study, book, day, method, scenario):
-    """Apply changed price/depth, then the existing payoff and reserve owners."""
-    if scenario.get("proportional_fill", False):
+def _scenario_fill(study, book, day, method, scenario, *, resized=False):
+    """Apply changed price/depth, then the existing payoff and reserve owners.
+
+    ``resized`` marks a book whose quantities the proportional rule already
+    fixed, so it is not sized twice.
+    """
+    if not resized and (scenario.get("proportional_fill", False)
+                        or (_available_size(study) and _fill_shocked(scenario))):
         return _proportional_fill(study, book, day, method, scenario)
     if scenario["price_fraction"] == 0 and not scenario["half_size"]:
         active = [leg for leg in book["legs"] if leg["quantity"] != 0]
@@ -347,12 +373,14 @@ class FrozenMIOReplay:
         self._verify_original_csvs(pins)
         if not self.original["complete"] or len(self.original["results"]) != 4:
             raise ValueError("incomplete original method packet")
-        config_path = Path(document["repository_root"]) / "children/index_options/configs" / (
-            "mio-2019-" + cohort + ".json")
-        if _sha(config_path) != pins["original_configs"][config_path.name]["sha256"]:
+        config_path = self._run_document(document, cohort)
+        pinned = pins["original_configs"].get(config_path.name)
+        if pinned is None or _sha(config_path) != pinned["sha256"]:
             raise ValueError("original run document drift")
+        self.config = {"name": config_path.name, "sha256": pinned["sha256"]}
         config = _load_json(config_path)
         self.domain = config["pipeline"]["plan"]["params"]["study"]["domain"]
+        self._sizing_schema(self.domain["params"], document["schema"])
         self.calendar = self.original["audit"]["calendar"]
         self.symbols = self.domain["params"]["symbols"]
         if len(self.calendar) != 252 or max(self.calendar) >= "2020-01-01":
@@ -380,6 +408,33 @@ class FrozenMIOReplay:
         _missing_expiry_factors(self.domain["sources"]["chain"], self.symbols,
                                 needed, self.factors)
         self.params = {**self.domain["params"], "selected_pairs": self.domain["pairs"]}
+
+    @staticmethod
+    def _run_document(document, cohort):
+        """Return the cohort's run document under the child configs directory.
+
+        v4 names it explicitly (a plain file name that resolves inside the
+        directory); v1-v3 keep mio-2019-<cohort>.json and refuse the key.
+        """
+        configs = Path(document["repository_root"]) / "children/index_options/configs"
+        entry = document["cohorts"][cohort]
+        if document["schema"] != _AVAILABLE_SIZE_SCHEMA:
+            if "config" in entry:
+                raise ValueError("cohort config requires schema v4: " + cohort)
+            return configs / ("mio-2019-" + cohort + ".json")
+        name = entry.get("config")
+        if (not isinstance(name, str) or not name or Path(name).name != name
+                or name in (".", "..")
+                or (configs / name).resolve().parent != configs.resolve()):
+            raise ValueError("v4 cohort config must be a file inside the child configs: " + cohort)
+        return configs / name
+
+    @staticmethod
+    def _sizing_schema(params, schema):
+        """Bind available-size fills to schema v4, and v4 to available-size fills."""
+        available = params.get("fill_sizing") == WeeklyOptionPortfolioStudy._AVAILABLE_SIZE
+        if available != (schema == _AVAILABLE_SIZE_SCHEMA):
+            raise ValueError("available-size fill sizing and schema v4 require each other")
 
     def _verify_original_csvs(self, pins):
         """Keep the four human-facing control extracts bound to original pins."""
@@ -636,8 +691,8 @@ _PROXY_NOTE = ("Fills are simulated at end-of-day displayed depth, never broker 
 
 
 def _depth_proxy(schema, decisions):
-    """v3 only: the selected contract total that turns on proxy wording."""
-    if schema != "mio-execution-stress/v3":
+    """v3/v4 only: the selected contract total that turns on proxy wording."""
+    if schema not in ("mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA):
         return None
     return sum(book["contracts"] for item in decisions for book in item.get("books", []))
 
@@ -657,7 +712,7 @@ def _daybook(cohort, scenario, method, metrics, daily, incomplete=None,
              selected_contracts=None):
     """Readable daily opportunities, fills, expiries and losses.
 
-    ``selected_contracts`` (v3 only, from ``_depth_proxy``) adds the depth-proxy
+    ``selected_contracts`` (v3/v4 only, from ``_depth_proxy``) adds the depth-proxy
     note and the contract headline; ``None`` keeps v1/v2 bytes unchanged.
     """
     proxy = selected_contracts is not None
@@ -897,7 +952,7 @@ def _unsupported_metrics(selected, reason, rejected):
 
 
 _SCHEMA_VERSIONS = ("mio-execution-stress/v1", "mio-execution-stress/v2",
-                    "mio-execution-stress/v3")
+                    "mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA)
 
 
 def _approved_scenarios(schema):
@@ -914,7 +969,7 @@ def _approved_scenarios(schema):
         {"id": name, "price_fraction": price, "half_size": half,
          "expiry_multiplier": expiry}
         for name, price, half, expiry in expected]
-    if schema != "mio-execution-stress/v1":
+    if schema in ("mio-execution-stress/v2", "mio-execution-stress/v3"):
         expected += [
             {"id": "single_leg_available_size", "price_fraction": 0,
              "half_size": False, "expiry_multiplier": 1,
@@ -953,6 +1008,7 @@ def execute(document_path):
     incomplete = {}
     selected_contracts = {}
     source_indexes = {}
+    run_documents = {}
 
     def collect(replay, cohort, packet, scenario, *, control):
         selected = sum(len(d.get("books", []))
@@ -996,6 +1052,8 @@ def execute(document_path):
     for cohort in ("limited36", "broad212"):
         replay = FrozenMIOReplay(cohort, document, pins)
         try:
+            if document["schema"] == _AVAILABLE_SIZE_SCHEMA:
+                run_documents[cohort] = replay.config
             source_indexes[cohort] = {
                 symbol: {"sha256": descriptor["sha256"], "rows": descriptor["rows"]}
                 for symbol, descriptor in replay.index_descriptors.items()}
@@ -1119,6 +1177,8 @@ def execute(document_path):
                           for path in sorted(output.rglob("*")) if path.is_file()}}
     if proxy:
         manifest["evidence_kind"] = _PROXY_NOTE
+    if run_documents:
+        manifest["original_run_documents"] = run_documents
     _write_json(output / "pins.json", manifest)
     return output
 

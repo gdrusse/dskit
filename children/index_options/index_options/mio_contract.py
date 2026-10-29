@@ -309,7 +309,7 @@ class MIOStudyContract(StudyContract):
         if set(d["report"]) != {"primary_metric"} or d["report"]["primary_metric"] is not None:
             raise ValueError("MIO primary metric remains undecided; descriptive reports only")
         p = d["params"]
-        if set(p) != set(WeeklyOptionPortfolioStudy._PARAMS):
+        if set(p)-set(WeeklyOptionPortfolioStudy._OPTIONAL_PARAMS) != set(WeeklyOptionPortfolioStudy._PARAMS):
             raise ValueError("explicit weekly study params required")
         if not d["pairs"]:
             return {"missing": ["selected_pairs"], "read_bounds": {},

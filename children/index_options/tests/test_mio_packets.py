@@ -55,6 +55,8 @@ def study(tmp_path, request):
         data["X"]["contexts"] = data["X"]["contexts"][:1]
         data["X"]["chain"] = [r for r in data["X"]["chain"]
                               if not (r["date"] == "2019-02-01" and r["expiration"] == "2019-02-01")]
+    if getattr(request, "param", None) == "shallow_long_leg":
+        _shallow_long_leg(data["X"])
     for key, rows in data["X"].items():
         # A protected row in the same file must never materialize.
         future = copy.deepcopy(rows[0])
@@ -704,3 +706,54 @@ def test_stress_coverage_selection_rejects_duplicate_and_missing(tmp_path, monke
     (out / "selection.json").write_text(json.dumps(selection))
     with pytest.raises(ValueError, match="duplicate selection"):
         driver._selection("limited36")
+
+
+def _shallow_long_leg(data, depth=3):
+    """Show only `depth` contracts on the bought 90 put at the first fill session."""
+    for row in data["chain"]:
+        if row["date"] == "2019-01-03" and row["strike"] == 90.:
+            row["ask_size"] = depth
+
+
+def test_weekly_fill_sizing_is_validated_and_defaults_to_all_or_none():
+    """ADR-0282 Amendment 1: an absent knob keeps the legacy all-or-none refusal."""
+    params, inputs = _packet_clock_fixture()
+    _shallow_long_leg(inputs["X"])
+    legacy = WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    assert [(b["reason"], b["contracts"]) for b in legacy["rejected"]] == [("insufficient_fill_size", 8)]
+    explicit = WeeklyOptionPortfolioStudy({**params, "fill_sizing": "all_or_none"}, inputs).run()["methods"][0]
+    for result in (legacy, explicit):
+        for decision in result["decisions"]:
+            for certificate in decision.get("certificates", []):
+                certificate.pop("seconds", None)
+    assert explicit == legacy
+    for bad in ("partial", None, 1):
+        with pytest.raises(ValueError, match="fill sizing"):
+            WeeklyOptionPortfolioStudy.validate_configuration({
+                **{k: v for k, v in params.items() if k not in ("clocks", "selected_pairs")},
+                "fill_sizing": bad})
+
+
+@pytest.mark.parametrize("study", ["shallow_long_leg"], indirect=True)
+def test_available_size_packet_downsizes_and_replays_like_the_direct_study(study):
+    """The packet fills the gcd-downsized book and matches the direct study."""
+    study["domain"]["params"]["fill_sizing"] = "available_size"
+    registry, plan, permit = _open(study)
+    intake = MIOPacketInputs("intake", {"study": study}).run(None, {"permit": permit})
+    packet = MIOPacketStudy("study", {"study": study}).run(None, {"permit": permit, **intake})
+    assert [(r["status"], r["replay_parity"]) for r in packet["results"]] == [("completed", True)]
+    actual = packet["results"][0]["result"]
+    trade = actual["trades"][0]
+    assert [(leg["quantity"], leg["selected_quantity"]) for leg in trade["legs"]] == [(3, 4), (3, 4)]
+    assert trade["contracts"] == 6 and trade["fees"] == pytest.approx(6*.65)
+    assert actual["rejected"] == []
+    bounded, d = intake["bounded_inputs"], study["domain"]
+    direct = WeeklyOptionPortfolioStudy(
+        {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}, bounded["inputs"])
+    expected = direct._method(d["params"]["methods"][0], None)
+    direct.close_quote_indexes()
+    for result in (actual, expected):
+        for decision in result["decisions"]:
+            for certificate in decision.get("certificates", []):
+                certificate.pop("seconds", None)
+    assert actual == expected
