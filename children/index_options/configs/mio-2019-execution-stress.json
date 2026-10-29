@@ -1,0 +1,60 @@
+{
+  "schema": "mio-execution-stress/v1",
+  "repository_root": "/home/russell/dskit-index-options-stress-adr",
+  "original_root": "/home/russell/data/index_options/mio-broad-2019-20261027",
+  "results_pins": "/home/russell/dskit-index-options-stress-adr/children/index_options/configs/mio-2019-results-pins.json",
+  "results_pins_sha256": "2bbd7e9247bf46c016745dde8436e9a7394e770e52031f9024baebd049fbf7d2",
+  "cohorts": {
+    "limited36": {
+      "result_sha256": "d2e569dc83fc1234063d57db78ea63d61a6e33cd8ce0a5cfc63ed5557a417596"
+    },
+    "broad212": {
+      "result_sha256": "581ec30666a7d8b59107b80970f8cbe88e86d2a93fb932398dc0f92ad524904e"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "control",
+      "price_fraction": 0,
+      "half_size": false,
+      "expiry_multiplier": 1
+    },
+    {
+      "id": "adverse_price",
+      "price_fraction": 0.25,
+      "half_size": false,
+      "expiry_multiplier": 1
+    },
+    {
+      "id": "half_size",
+      "price_fraction": 0,
+      "half_size": true,
+      "expiry_multiplier": 1
+    },
+    {
+      "id": "expiry_down_15",
+      "price_fraction": 0,
+      "half_size": false,
+      "expiry_multiplier": 0.85
+    },
+    {
+      "id": "expiry_up_15",
+      "price_fraction": 0,
+      "half_size": false,
+      "expiry_multiplier": 1.15
+    },
+    {
+      "id": "joint_down_15",
+      "price_fraction": 0.25,
+      "half_size": true,
+      "expiry_multiplier": 0.85
+    },
+    {
+      "id": "joint_up_15",
+      "price_fraction": 0.25,
+      "half_size": true,
+      "expiry_multiplier": 1.15
+    }
+  ],
+  "output_root": "/home/russell/data/index_options/mio-execution-stress-2019-20261028-v1"
+}
