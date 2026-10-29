@@ -1,0 +1,2110 @@
+{
+  "name": "mio-2021q1-top3-train2019",
+  "owner": "Russell",
+  "authorization": "2026-10-29 user requested mio report for 3 best methods on 2021Q1; refresh training on 2019 if needed; user confirmed broad212 ranked by 2019 net profit.",
+  "base_commit": "b540c38a5192d7e350ab5aeae0a52af50af0c7a5",
+  "methods": [
+    "w1_003_shock10_lp",
+    "nominal_lp",
+    "w1_003_lp"
+  ],
+  "ranking": {
+    "cohort": "broad212",
+    "metric": "2019 net profit",
+    "values_usd": [
+      96028.3,
+      67911.4,
+      34930.55
+    ],
+    "prior_results_pins": "/home/russell/dskit-index-options-stress-adr/children/index_options/configs/mio-2019-available-size-results-pins-20261029.json"
+  },
+  "requested_dates": {
+    "start": "2021-01-01",
+    "end_inclusive": "2021-03-31"
+  },
+  "account_dates": {
+    "start": "2021-01-04",
+    "end_before": "2021-04-01",
+    "sessions": [
+      "2021-01-04",
+      "2021-01-05",
+      "2021-01-06",
+      "2021-01-07",
+      "2021-01-08",
+      "2021-01-11",
+      "2021-01-12",
+      "2021-01-13",
+      "2021-01-14",
+      "2021-01-15",
+      "2021-01-19",
+      "2021-01-20",
+      "2021-01-21",
+      "2021-01-22",
+      "2021-01-25",
+      "2021-01-26",
+      "2021-01-27",
+      "2021-01-28",
+      "2021-01-29",
+      "2021-02-01",
+      "2021-02-02",
+      "2021-02-03",
+      "2021-02-04",
+      "2021-02-05",
+      "2021-02-08",
+      "2021-02-09",
+      "2021-02-10",
+      "2021-02-11",
+      "2021-02-12",
+      "2021-02-16",
+      "2021-02-17",
+      "2021-02-18",
+      "2021-02-19",
+      "2021-02-22",
+      "2021-02-23",
+      "2021-02-24",
+      "2021-02-25",
+      "2021-02-26",
+      "2021-03-01",
+      "2021-03-02",
+      "2021-03-03",
+      "2021-03-04",
+      "2021-03-05",
+      "2021-03-08",
+      "2021-03-09",
+      "2021-03-10",
+      "2021-03-11",
+      "2021-03-12",
+      "2021-03-15",
+      "2021-03-16",
+      "2021-03-17",
+      "2021-03-18",
+      "2021-03-19",
+      "2021-03-22",
+      "2021-03-23",
+      "2021-03-24",
+      "2021-03-25",
+      "2021-03-26",
+      "2021-03-29",
+      "2021-03-30",
+      "2021-03-31"
+    ]
+  },
+  "cohort": {
+    "id": "broad212",
+    "symbols": [
+      "AAPL",
+      "ABBV",
+      "ABT",
+      "ABUS",
+      "ACN",
+      "ADBE",
+      "ADI",
+      "AEO",
+      "AG",
+      "AGNC",
+      "AKAM",
+      "ALB",
+      "ALLY",
+      "AMAT",
+      "AMC",
+      "AMD",
+      "AMGN",
+      "AMKR",
+      "AMZN",
+      "ANET",
+      "APA",
+      "APH",
+      "APO",
+      "AVAV",
+      "AVGO",
+      "AXP",
+      "BA",
+      "BAC",
+      "BB",
+      "BBY",
+      "BIDU",
+      "BLK",
+      "BMY",
+      "BP",
+      "BSX",
+      "BTG",
+      "BX",
+      "C",
+      "CAG",
+      "CAT",
+      "CCJ",
+      "CCL",
+      "CDE",
+      "CHTR",
+      "CIEN",
+      "CLF",
+      "CLS",
+      "CMCSA",
+      "CME",
+      "CMG",
+      "CNC",
+      "COF",
+      "COP",
+      "COST",
+      "CPB",
+      "CRM",
+      "CSCO",
+      "CVE",
+      "CVNA",
+      "CVS",
+      "CVX",
+      "DAL",
+      "DE",
+      "DHR",
+      "DHT",
+      "DIS",
+      "DKS",
+      "DUK",
+      "DVN",
+      "EIX",
+      "ENPH",
+      "EOG",
+      "EPD",
+      "EQT",
+      "EXPE",
+      "F",
+      "FCEL",
+      "FCX",
+      "FDX",
+      "FISV",
+      "FRO",
+      "FSLR",
+      "FTNT",
+      "GE",
+      "GEO",
+      "GILD",
+      "GIS",
+      "GLW",
+      "GM",
+      "GME",
+      "GOOG",
+      "GOOGL",
+      "GPRO",
+      "GS",
+      "HAL",
+      "HD",
+      "HL",
+      "HON",
+      "HPE",
+      "HPQ",
+      "HUM",
+      "IBM",
+      "INTC",
+      "INTU",
+      "IOVA",
+      "ISRG",
+      "JBLU",
+      "JNJ",
+      "JPM",
+      "KGC",
+      "KHC",
+      "KKR",
+      "KLAC",
+      "KMI",
+      "KO",
+      "KR",
+      "KSS",
+      "KTOS",
+      "LLY",
+      "MDT",
+      "MGM",
+      "MO",
+      "MOS",
+      "MPC",
+      "MRK",
+      "NAT",
+      "NEE",
+      "NEM",
+      "NLY",
+      "NOK",
+      "NOW",
+      "NRG",
+      "NVO",
+      "O",
+      "OKTA",
+      "ON",
+      "ORCL",
+      "OXY",
+      "PAAS",
+      "PACB",
+      "PANW",
+      "PBF",
+      "PBR",
+      "PCG",
+      "PEP",
+      "PFE",
+      "PG",
+      "PLAY",
+      "PLUG",
+      "PM",
+      "PNC",
+      "PSX",
+      "PYPL",
+      "QCOM",
+      "RARE",
+      "RCL",
+      "REGN",
+      "RIG",
+      "RIOT",
+      "RUN",
+      "SBUX",
+      "SCHW",
+      "SEDG",
+      "SHOP",
+      "SIRI",
+      "SLB",
+      "SMCI",
+      "SNAP",
+      "SNPS",
+      "SO",
+      "STM",
+      "T",
+      "TEAM",
+      "TER",
+      "TEVA",
+      "TGT",
+      "TJX",
+      "TMO",
+      "TMUS",
+      "TRIP",
+      "TSLA",
+      "TSM",
+      "TTD",
+      "TTWO",
+      "TWLO",
+      "TXN",
+      "UAA",
+      "UAL",
+      "UAMY",
+      "UEC",
+      "UMC",
+      "UNH",
+      "UPS",
+      "USB",
+      "UUUU",
+      "V",
+      "VALE",
+      "VFC",
+      "VLO",
+      "VRTX",
+      "VST",
+      "VZ",
+      "W",
+      "WDC",
+      "WEN",
+      "WFC",
+      "WHR",
+      "WMB",
+      "WMT",
+      "WU",
+      "WYNN",
+      "XOM"
+    ],
+    "pairs": [
+      {
+        "id": "AAPL_1_60",
+        "symbol": "AAPL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ABBV_1_60",
+        "symbol": "ABBV",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ABT_1_60",
+        "symbol": "ABT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ABUS_1_60",
+        "symbol": "ABUS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ACN_1_60",
+        "symbol": "ACN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ADBE_1_60",
+        "symbol": "ADBE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ADI_1_60",
+        "symbol": "ADI",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AEO_1_60",
+        "symbol": "AEO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AG_1_60",
+        "symbol": "AG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AGNC_1_60",
+        "symbol": "AGNC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AKAM_1_60",
+        "symbol": "AKAM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ALB_1_60",
+        "symbol": "ALB",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ALLY_1_60",
+        "symbol": "ALLY",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AMAT_1_60",
+        "symbol": "AMAT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AMC_1_60",
+        "symbol": "AMC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AMD_1_60",
+        "symbol": "AMD",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AMGN_1_60",
+        "symbol": "AMGN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AMKR_1_60",
+        "symbol": "AMKR",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AMZN_1_60",
+        "symbol": "AMZN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ANET_1_60",
+        "symbol": "ANET",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "APA_1_60",
+        "symbol": "APA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "APH_1_60",
+        "symbol": "APH",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "APO_1_60",
+        "symbol": "APO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AVAV_1_60",
+        "symbol": "AVAV",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AVGO_1_60",
+        "symbol": "AVGO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "AXP_1_60",
+        "symbol": "AXP",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BA_1_60",
+        "symbol": "BA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BAC_1_60",
+        "symbol": "BAC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BB_1_60",
+        "symbol": "BB",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BBY_1_60",
+        "symbol": "BBY",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BIDU_1_60",
+        "symbol": "BIDU",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BLK_1_60",
+        "symbol": "BLK",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BMY_1_60",
+        "symbol": "BMY",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BP_1_60",
+        "symbol": "BP",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BSX_1_60",
+        "symbol": "BSX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BTG_1_60",
+        "symbol": "BTG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "BX_1_60",
+        "symbol": "BX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "C_1_60",
+        "symbol": "C",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CAG_1_60",
+        "symbol": "CAG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CAT_1_60",
+        "symbol": "CAT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CCJ_1_60",
+        "symbol": "CCJ",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CCL_1_60",
+        "symbol": "CCL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CDE_1_60",
+        "symbol": "CDE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CHTR_1_60",
+        "symbol": "CHTR",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CIEN_1_60",
+        "symbol": "CIEN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CLF_1_60",
+        "symbol": "CLF",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CLS_1_60",
+        "symbol": "CLS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CMCSA_1_60",
+        "symbol": "CMCSA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CME_1_60",
+        "symbol": "CME",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CMG_1_60",
+        "symbol": "CMG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CNC_1_60",
+        "symbol": "CNC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "COF_1_60",
+        "symbol": "COF",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "COP_1_60",
+        "symbol": "COP",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "COST_1_60",
+        "symbol": "COST",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CPB_1_60",
+        "symbol": "CPB",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CRM_1_60",
+        "symbol": "CRM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CSCO_1_60",
+        "symbol": "CSCO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CVE_1_60",
+        "symbol": "CVE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CVNA_1_60",
+        "symbol": "CVNA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CVS_1_60",
+        "symbol": "CVS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "CVX_1_60",
+        "symbol": "CVX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "DAL_1_60",
+        "symbol": "DAL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "DE_1_60",
+        "symbol": "DE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "DHR_1_60",
+        "symbol": "DHR",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "DHT_1_60",
+        "symbol": "DHT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "DIS_1_60",
+        "symbol": "DIS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "DKS_1_60",
+        "symbol": "DKS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "DUK_1_60",
+        "symbol": "DUK",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "DVN_1_60",
+        "symbol": "DVN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "EIX_1_60",
+        "symbol": "EIX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ENPH_1_60",
+        "symbol": "ENPH",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "EOG_1_60",
+        "symbol": "EOG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "EPD_1_60",
+        "symbol": "EPD",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "EQT_1_60",
+        "symbol": "EQT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "EXPE_1_60",
+        "symbol": "EXPE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "F_1_60",
+        "symbol": "F",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "FCEL_1_60",
+        "symbol": "FCEL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "FCX_1_60",
+        "symbol": "FCX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "FDX_1_60",
+        "symbol": "FDX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "FISV_1_60",
+        "symbol": "FISV",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "FRO_1_60",
+        "symbol": "FRO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "FSLR_1_60",
+        "symbol": "FSLR",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "FTNT_1_60",
+        "symbol": "FTNT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GE_1_60",
+        "symbol": "GE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GEO_1_60",
+        "symbol": "GEO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GILD_1_60",
+        "symbol": "GILD",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GIS_1_60",
+        "symbol": "GIS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GLW_1_60",
+        "symbol": "GLW",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GM_1_60",
+        "symbol": "GM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GME_1_60",
+        "symbol": "GME",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GOOG_1_60",
+        "symbol": "GOOG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GOOGL_1_60",
+        "symbol": "GOOGL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GPRO_1_60",
+        "symbol": "GPRO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "GS_1_60",
+        "symbol": "GS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "HAL_1_60",
+        "symbol": "HAL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "HD_1_60",
+        "symbol": "HD",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "HL_1_60",
+        "symbol": "HL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "HON_1_60",
+        "symbol": "HON",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "HPE_1_60",
+        "symbol": "HPE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "HPQ_1_60",
+        "symbol": "HPQ",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "HUM_1_60",
+        "symbol": "HUM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "IBM_1_60",
+        "symbol": "IBM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "INTC_1_60",
+        "symbol": "INTC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "INTU_1_60",
+        "symbol": "INTU",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "IOVA_1_60",
+        "symbol": "IOVA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ISRG_1_60",
+        "symbol": "ISRG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "JBLU_1_60",
+        "symbol": "JBLU",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "JNJ_1_60",
+        "symbol": "JNJ",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "JPM_1_60",
+        "symbol": "JPM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KGC_1_60",
+        "symbol": "KGC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KHC_1_60",
+        "symbol": "KHC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KKR_1_60",
+        "symbol": "KKR",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KLAC_1_60",
+        "symbol": "KLAC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KMI_1_60",
+        "symbol": "KMI",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KO_1_60",
+        "symbol": "KO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KR_1_60",
+        "symbol": "KR",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KSS_1_60",
+        "symbol": "KSS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "KTOS_1_60",
+        "symbol": "KTOS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "LLY_1_60",
+        "symbol": "LLY",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "MDT_1_60",
+        "symbol": "MDT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "MGM_1_60",
+        "symbol": "MGM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "MO_1_60",
+        "symbol": "MO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "MOS_1_60",
+        "symbol": "MOS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "MPC_1_60",
+        "symbol": "MPC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "MRK_1_60",
+        "symbol": "MRK",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "NAT_1_60",
+        "symbol": "NAT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "NEE_1_60",
+        "symbol": "NEE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "NEM_1_60",
+        "symbol": "NEM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "NLY_1_60",
+        "symbol": "NLY",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "NOK_1_60",
+        "symbol": "NOK",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "NOW_1_60",
+        "symbol": "NOW",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "NRG_1_60",
+        "symbol": "NRG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "NVO_1_60",
+        "symbol": "NVO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "O_1_60",
+        "symbol": "O",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "OKTA_1_60",
+        "symbol": "OKTA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ON_1_60",
+        "symbol": "ON",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "ORCL_1_60",
+        "symbol": "ORCL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "OXY_1_60",
+        "symbol": "OXY",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PAAS_1_60",
+        "symbol": "PAAS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PACB_1_60",
+        "symbol": "PACB",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PANW_1_60",
+        "symbol": "PANW",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PBF_1_60",
+        "symbol": "PBF",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PBR_1_60",
+        "symbol": "PBR",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PCG_1_60",
+        "symbol": "PCG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PEP_1_60",
+        "symbol": "PEP",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PFE_1_60",
+        "symbol": "PFE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PG_1_60",
+        "symbol": "PG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PLAY_1_60",
+        "symbol": "PLAY",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PLUG_1_60",
+        "symbol": "PLUG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PM_1_60",
+        "symbol": "PM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PNC_1_60",
+        "symbol": "PNC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PSX_1_60",
+        "symbol": "PSX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "PYPL_1_60",
+        "symbol": "PYPL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "QCOM_1_60",
+        "symbol": "QCOM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "RARE_1_60",
+        "symbol": "RARE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "RCL_1_60",
+        "symbol": "RCL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "REGN_1_60",
+        "symbol": "REGN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "RIG_1_60",
+        "symbol": "RIG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "RIOT_1_60",
+        "symbol": "RIOT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "RUN_1_60",
+        "symbol": "RUN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SBUX_1_60",
+        "symbol": "SBUX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SCHW_1_60",
+        "symbol": "SCHW",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SEDG_1_60",
+        "symbol": "SEDG",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SHOP_1_60",
+        "symbol": "SHOP",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SIRI_1_60",
+        "symbol": "SIRI",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SLB_1_60",
+        "symbol": "SLB",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SMCI_1_60",
+        "symbol": "SMCI",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SNAP_1_60",
+        "symbol": "SNAP",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SNPS_1_60",
+        "symbol": "SNPS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "SO_1_60",
+        "symbol": "SO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "STM_1_60",
+        "symbol": "STM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "T_1_60",
+        "symbol": "T",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TEAM_1_60",
+        "symbol": "TEAM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TER_1_60",
+        "symbol": "TER",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TEVA_1_60",
+        "symbol": "TEVA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TGT_1_60",
+        "symbol": "TGT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TJX_1_60",
+        "symbol": "TJX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TMO_1_60",
+        "symbol": "TMO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TMUS_1_60",
+        "symbol": "TMUS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TRIP_1_60",
+        "symbol": "TRIP",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TSLA_1_60",
+        "symbol": "TSLA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TSM_1_60",
+        "symbol": "TSM",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TTD_1_60",
+        "symbol": "TTD",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TTWO_1_60",
+        "symbol": "TTWO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TWLO_1_60",
+        "symbol": "TWLO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "TXN_1_60",
+        "symbol": "TXN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "UAA_1_60",
+        "symbol": "UAA",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "UAL_1_60",
+        "symbol": "UAL",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "UAMY_1_60",
+        "symbol": "UAMY",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "UEC_1_60",
+        "symbol": "UEC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "UMC_1_60",
+        "symbol": "UMC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "UNH_1_60",
+        "symbol": "UNH",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "UPS_1_60",
+        "symbol": "UPS",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "USB_1_60",
+        "symbol": "USB",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "UUUU_1_60",
+        "symbol": "UUUU",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "V_1_60",
+        "symbol": "V",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "VALE_1_60",
+        "symbol": "VALE",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "VFC_1_60",
+        "symbol": "VFC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "VLO_1_60",
+        "symbol": "VLO",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "VRTX_1_60",
+        "symbol": "VRTX",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "VST_1_60",
+        "symbol": "VST",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "VZ_1_60",
+        "symbol": "VZ",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "W_1_60",
+        "symbol": "W",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "WDC_1_60",
+        "symbol": "WDC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "WEN_1_60",
+        "symbol": "WEN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "WFC_1_60",
+        "symbol": "WFC",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "WHR_1_60",
+        "symbol": "WHR",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "WMB_1_60",
+        "symbol": "WMB",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "WMT_1_60",
+        "symbol": "WMT",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "WU_1_60",
+        "symbol": "WU",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "WYNN_1_60",
+        "symbol": "WYNN",
+        "dte_min": 1,
+        "dte_max": 60
+      },
+      {
+        "id": "XOM_1_60",
+        "symbol": "XOM",
+        "dte_min": 1,
+        "dte_max": 60
+      }
+    ],
+    "selection": "Frozen from prior broad212; no 2021 outcome-based eligibility selection."
+  },
+  "predictor": {
+    "name": "selected_mlp64_s29",
+    "training_start": "2017-01-03",
+    "training_end_inclusive": "2019-12-31",
+    "cal_n": 82,
+    "prediction_start": "2021-01-04",
+    "prediction_end_before": "2021-04-01",
+    "refresh_required": true,
+    "reason": "Accepted 65-input broad H2 fit ends training 2019-06-28; older through-2019 fits differ in features/universe.",
+    "fold_policy": "Explicit owner cutoff for this request; frozen through2019 for2021Q1. A0003 boundary rules apply; A0008 default annual through2020 schedule is not applied to this explicitly requested2019 fit. Path/TDD untouched.",
+    "recipe_source": "/home/russell/data/index_options/mio-broad-2019-20261027/upstream-fit-h2.json",
+    "recipe_source_sha256": "74cfe5675786f7974ddfbaf165d837da3ee04446b4291f4232c38dfa137c1500",
+    "upstream_model_pins_sha256": "0085e29580e3b2cf59adea85262add316440ddf7e50e09aec08b727e18a98966",
+    "fit_tickers": [
+      "AAPL",
+      "ABBV",
+      "ABT",
+      "ABUS",
+      "ACN",
+      "ADBE",
+      "ADI",
+      "AEO",
+      "AG",
+      "AGNC",
+      "AKAM",
+      "ALB",
+      "ALLY",
+      "AMAT",
+      "AMC",
+      "AMD",
+      "AMGN",
+      "AMKR",
+      "AMZN",
+      "ANET",
+      "APA",
+      "APH",
+      "APO",
+      "AVAV",
+      "AVGO",
+      "AXP",
+      "BA",
+      "BAC",
+      "BB",
+      "BBY",
+      "BIDU",
+      "BLK",
+      "BMY",
+      "BP",
+      "BSX",
+      "BTG",
+      "BX",
+      "C",
+      "CAG",
+      "CAT",
+      "CCJ",
+      "CCL",
+      "CDE",
+      "CHTR",
+      "CIEN",
+      "CLF",
+      "CLS",
+      "CMCSA",
+      "CME",
+      "CMG",
+      "CNC",
+      "COF",
+      "COHR",
+      "COP",
+      "COST",
+      "CPB",
+      "CRM",
+      "CSCO",
+      "CVE",
+      "CVNA",
+      "CVS",
+      "CVX",
+      "DAL",
+      "DE",
+      "DHR",
+      "DHT",
+      "DIS",
+      "DKS",
+      "DUK",
+      "DVN",
+      "ECHO",
+      "EIX",
+      "ENPH",
+      "EOG",
+      "EPD",
+      "EQT",
+      "EXPE",
+      "F",
+      "FCEL",
+      "FCX",
+      "FDX",
+      "FISV",
+      "FRO",
+      "FSLR",
+      "FTNT",
+      "GE",
+      "GEO",
+      "GILD",
+      "GIS",
+      "GLW",
+      "GM",
+      "GME",
+      "GOOG",
+      "GOOGL",
+      "GPRO",
+      "GS",
+      "HAL",
+      "HD",
+      "HL",
+      "HON",
+      "HPE",
+      "HPQ",
+      "HUM",
+      "IBM",
+      "INTC",
+      "INTU",
+      "IOVA",
+      "ISRG",
+      "JBLU",
+      "JNJ",
+      "JPM",
+      "KGC",
+      "KHC",
+      "KKR",
+      "KLAC",
+      "KMI",
+      "KO",
+      "KR",
+      "KSS",
+      "KTOS",
+      "LLY",
+      "MDT",
+      "MGM",
+      "MO",
+      "MOS",
+      "MPC",
+      "MRK",
+      "NAT",
+      "NEE",
+      "NEM",
+      "NLY",
+      "NOK",
+      "NOW",
+      "NRG",
+      "NVO",
+      "O",
+      "OKTA",
+      "ON",
+      "ORCL",
+      "OXY",
+      "PAAS",
+      "PACB",
+      "PANW",
+      "PBF",
+      "PBR",
+      "PCG",
+      "PEP",
+      "PFE",
+      "PG",
+      "PLAY",
+      "PLUG",
+      "PM",
+      "PNC",
+      "PSX",
+      "PYPL",
+      "QCOM",
+      "RARE",
+      "RCL",
+      "REGN",
+      "RIG",
+      "RIOT",
+      "RUN",
+      "SBUX",
+      "SCHW",
+      "SEDG",
+      "SHOP",
+      "SIRI",
+      "SLB",
+      "SMCI",
+      "SNAP",
+      "SNPS",
+      "SO",
+      "STM",
+      "T",
+      "TEAM",
+      "TER",
+      "TEVA",
+      "TGT",
+      "TJX",
+      "TMO",
+      "TMUS",
+      "TRIP",
+      "TSLA",
+      "TSM",
+      "TTD",
+      "TTWO",
+      "TWLO",
+      "TXN",
+      "UAA",
+      "UAL",
+      "UAMY",
+      "UEC",
+      "UMC",
+      "UNH",
+      "UPS",
+      "USB",
+      "UUUU",
+      "V",
+      "VALE",
+      "VFC",
+      "VLO",
+      "VRTX",
+      "VST",
+      "VZ",
+      "W",
+      "WDC",
+      "WEN",
+      "WFC",
+      "WHR",
+      "WMB",
+      "WMT",
+      "WU",
+      "WYNN",
+      "XOM"
+    ],
+    "fixed_arms": {
+      "context_chain": {
+        "context_indices": [
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64
+        ],
+        "features": [
+          "ret_lag_21",
+          "ret_lag_20",
+          "ret_lag_19",
+          "ret_lag_18",
+          "ret_lag_17",
+          "ret_lag_16",
+          "ret_lag_15",
+          "ret_lag_14",
+          "ret_lag_13",
+          "ret_lag_12",
+          "ret_lag_11",
+          "ret_lag_10",
+          "ret_lag_9",
+          "ret_lag_8",
+          "ret_lag_7",
+          "ret_lag_6",
+          "ret_lag_5",
+          "ret_lag_4",
+          "ret_lag_3",
+          "ret_lag_2",
+          "ret_lag_1",
+          "ret_lag_0",
+          "log_sessions_to_expiry",
+          "calendar_days_per_session",
+          "momentum_5",
+          "momentum_22",
+          "rv_1",
+          "rv_5",
+          "rv_22",
+          "rv_66",
+          "down_rv_5",
+          "down_rv_22",
+          "up_rv_5",
+          "up_rv_22",
+          "vl_log_volume_ratio_66",
+          "vl_log_volume_ratio",
+          "vl_log_dollar_volume",
+          "vl_amihud",
+          "rn_q_0100",
+          "rn_q_0250",
+          "rn_q_0500",
+          "rn_q_1000",
+          "rn_q_1500",
+          "rn_q_2000",
+          "rn_q_2500",
+          "rn_q_3000",
+          "rn_q_4000",
+          "rn_q_5000",
+          "rn_q_6000",
+          "rn_q_7000",
+          "rn_q_7500",
+          "rn_q_8000",
+          "rn_q_8500",
+          "rn_q_9000",
+          "rn_q_9500",
+          "rn_q_9750",
+          "rn_q_9900",
+          "rn_interior_mass",
+          "chain_log_atm_iv",
+          "chain_log_skew25",
+          "chain_log_curvature25",
+          "chain_log_rel_spread",
+          "chain_log_contracts",
+          "chain_log_atm_iv_change_5",
+          "chain_log_skew25_change_5"
+        ],
+        "min_cal": 1,
+        "min_disjoint": 0,
+        "min_fit": 40,
+        "observed_columns": [],
+        "sequence_indices": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ],
+          [
+            4
+          ],
+          [
+            5
+          ],
+          [
+            6
+          ],
+          [
+            7
+          ],
+          [
+            8
+          ],
+          [
+            9
+          ],
+          [
+            10
+          ],
+          [
+            11
+          ],
+          [
+            12
+          ],
+          [
+            13
+          ],
+          [
+            14
+          ],
+          [
+            15
+          ],
+          [
+            16
+          ],
+          [
+            17
+          ],
+          [
+            18
+          ],
+          [
+            19
+          ],
+          [
+            20
+          ],
+          [
+            21
+          ]
+        ]
+      }
+    },
+    "fixed_candidates": [
+      {
+        "adapters": {
+          "pooled": [
+            {
+              "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+              "params": {
+                "arch": "mlp",
+                "arch_params": {
+                  "hidden_size": 64
+                },
+                "width": 16
+              }
+            }
+          ],
+          "unpooled": [
+            {
+              "class": "dskit.pipeline.libs.torch_ts:ArchSequenceEncoder",
+              "params": {
+                "arch": "mlp",
+                "arch_params": {
+                  "hidden_size": 64
+                },
+                "width": 16
+              }
+            }
+          ]
+        },
+        "name": "selected_mlp64_s29",
+        "skip_reason": null
+      }
+    ],
+    "fixed_training": {
+      "components": 3,
+      "deterministic": true,
+      "dropout": 0.3,
+      "epochs": 150,
+      "learning_rate": 0.0003,
+      "losses": [
+        {
+          "kind": "crps",
+          "weight": 1.0
+        },
+        {
+          "kind": "tail_crps",
+          "weight": 1.0
+        }
+      ],
+      "patience": 50,
+      "seeds": [
+        29
+      ],
+      "weight_decay": 0.3
+    },
+    "fixed_capacity": {
+      "pooled": {
+        "absolute": 100000,
+        "batch_size": 512,
+        "device": "cuda",
+        "head_per_row": 4,
+        "head_widths": [
+          8
+        ],
+        "per_row": 0.25,
+        "ticker_heads": false
+      },
+      "unpooled": {
+        "absolute": 8192,
+        "batch_size": 64,
+        "device": "cpu",
+        "head_widths": [
+          2
+        ],
+        "per_row": 4
+      }
+    },
+    "mode": "pooled only; one fixed recipe and seed, no search/ranking",
+    "training_label_boundary": "All fit and early-stop labels settle before 2020-01-01. 2020 is feature-history only. 2021Q1 is prediction/evaluation only."
+  },
+  "account": {
+    "lineage": "New independent Q1 account per method; no carry from2019 and no stitching.",
+    "initial_cash": 10000,
+    "deposit_amount": 1000,
+    "deposit_every_days": 14,
+    "economic_template": "/home/russell/dskit-index-options-stress-adr/children/index_options/configs/mio-2019-broad212-available-size-20261029.json",
+    "economic_template_sha256": "19d2ae1e47176eef92f4b9f3c4a9a2058cd4271784cb01b4b5e560d7f4ef0483",
+    "sizing": "available_size; intact whole-ratio multi-leg; existing fees/caps/slippage/hold-to-expiry unchanged",
+    "expiry_boundary": "Preserve prior full-period bridge behavior; admitted expiries settle inside the requested account period."
+  },
+  "allowed_paths": [
+    "/home/russell/dskit-index-options-stress-adr/children/index_options/configs/mio-2021q1-top3-20261029",
+    "/home/russell/data/index_options/mio-2021q1-top3-20261029",
+    "child memo/re-entry/report mirror at wrap"
+  ],
+  "non_goals": [
+    "No runtime code",
+    "No HPO or predictor competition",
+    "No provider acquisition",
+    "No 2024+ row reads",
+    "No 2020 fitting",
+    "No new stress scenarios or stress runs",
+    "No mutation of original evidence, Path, TDD, viewer, Claude sessions or other checkouts"
+  ],
+  "exit_criteria": [
+    "Pinned preflight and two fresh independent reviews at zero Major/Critical for substantive run configs",
+    "Attested completed three-method Q1 MIO with exact recorded replay and chronological accounting",
+    "Three standardized evaluation reports with money gates, exact CSVs, coverage/predictor provenance and readable links",
+    "Authorized wrap/push and bounded cleanup"
+  ]
+}
