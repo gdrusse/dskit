@@ -14,13 +14,13 @@ import hashlib
 import json
 import math
 import sqlite3
+import subprocess
 from collections import Counter
 from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.libs.option_ledger import FundedOptionAccount
 from dskit.pipeline.option_structures import quote_defect, structure_max_loss
-from dskit.pipeline.workflow import path_hash
 from index_options.ledger_studies import (
     WeeklyOptionPortfolioStudy,
     _AllQuotedOptionContext,
@@ -76,12 +76,15 @@ def _bar_rows(binding, symbols, calendar):
     return bars
 
 
-def _index_view(path, symbol):
+def _index_view(path, symbol, expected_sha):
+    actual_sha = _sha(path)
+    if actual_sha != expected_sha:
+        raise ValueError("original quote-index identity drift: " + symbol)
     with sqlite3.connect(path) as conn:
         row = conn.execute("SELECT value FROM metadata WHERE name='descriptor'").fetchone()
     if row is None:
         raise ValueError("missing quote-index descriptor: " + symbol)
-    descriptor = {**json.loads(row[0]), "path": str(path), "sha256": path_hash(str(path))}
+    descriptor = {**json.loads(row[0]), "path": str(path), "sha256": actual_sha}
     view = _SQLiteQuoteView(descriptor)
     view.symbol = symbol
     return view, descriptor
@@ -160,6 +163,34 @@ def _scenario_fill(study, book, day, method, scenario):
         reserve=study._floor(max(0.0, loss, -credit), study._charge(method), filled["legs"], mult),
         max_loss=loss, premium=premium, fees=fees, stress_extra=stress_extra, status="filled")
     return filled, None
+
+
+def _attempt_evidence(study, book, day, scenario):
+    """Record the observed and stressed sides/depths for every attempted leg."""
+    symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
+    node = study._nodes[symbol]
+    legs = []
+    for leg in book["legs"]:
+        row = study._quotes[symbol].get((day, expiry, leg["right"], leg["strike"]))
+        market = node._usable_quote(row, factor)
+        side = "ask_size" if leg["sign"] > 0 else "bid_size"
+        original_depth = row.get(side) if row is not None else None
+        effective_depth = (effective_size(original_depth, scenario["half_size"])
+                           if type(original_depth) is int else None)
+        bid, ask = market if market is not None else (None, None)
+        original_price = (ask if leg["sign"] > 0 else bid) if market else None
+        proposed_price = (adverse_side(bid, ask, leg["sign"],
+                                       scenario["price_fraction"]) if market else None)
+        legs.append({"side": "buy" if leg["sign"] > 0 else "sell",
+                     "right": leg["right"], "strike": leg["strike"],
+                     "quantity": leg["quantity"], "bid": bid, "ask": ask,
+                     "original_side_price": original_price,
+                     "proposed_fill_price": proposed_price,
+                     "original_depth": original_depth,
+                     "effective_depth": effective_depth})
+    return {"id": book["id"], "symbol": symbol, "expiry": expiry,
+            "decision_date": book["decision_date"], "fill_date": day,
+            "legs": legs, "outcome": None}
 
 
 def _scenario_curve(study, account, snapshots):
@@ -253,6 +284,7 @@ class FrozenMIOReplay:
         if _sha(result_path) != expected:
             raise ValueError("original result identity drift: " + cohort)
         self.original = _load_json(result_path)
+        self._verify_original_csvs(pins)
         if not self.original["complete"] or len(self.original["results"]) != 4:
             raise ValueError("incomplete original method packet")
         config_path = Path(document["repository_root"]) / "children/index_options/configs" / (
@@ -268,9 +300,12 @@ class FrozenMIOReplay:
         self.bars = _bar_rows(self.domain["sources"]["bars"], self.symbols, self.calendar)
         run_dir = Path(pins["runs"][cohort]["run_dir"])
         self.quotes, self.factors, self.index_descriptors = {}, {}, {}
+        expected_indexes = document["cohorts"][cohort]["quote_index_sha256"]
+        if set(expected_indexes) != set(self.symbols):
+            raise ValueError("quote-index pin coverage drift: " + cohort)
         for symbol in self.symbols:
             path = run_dir / "artifacts/mio-quotes" / (symbol + ".sqlite")
-            view, descriptor = _index_view(path, symbol)
+            view, descriptor = _index_view(path, symbol, expected_indexes[symbol])
             self.quotes[symbol] = view
             self.factors[symbol] = _index_factors(view, self.calendar)
             self.index_descriptors[symbol] = descriptor
@@ -285,6 +320,20 @@ class FrozenMIOReplay:
         _missing_expiry_factors(self.domain["sources"]["chain"], self.symbols,
                                 needed, self.factors)
         self.params = {**self.domain["params"], "selected_pairs": self.domain["pairs"]}
+
+    def _verify_original_csvs(self, pins):
+        """Keep the four human-facing control extracts bound to original pins."""
+        item = pins["evidence"]["artifact-index.json"]
+        path = Path(item["path"])
+        if _sha(path) != item["sha256"]:
+            raise ValueError("original artifact-index identity drift")
+        index = _load_json(path)["csv_files"]
+        for name in ("trades.csv", "rejected-orders.csv",
+                     "orders-and-fills.csv", "daily-account.csv"):
+            relative = self.cohort + "/" + name
+            source = self.original_dir / name
+            if _sha(source) != index[relative]["sha256"]:
+                raise ValueError("original control CSV identity drift: " + relative)
 
     def close(self):
         """Verify and close every original read-only quote index."""
@@ -330,17 +379,22 @@ class FrozenMIOReplay:
             deposit = account.advance(day, study._settlements(account, day))
             expiries = account.closed[before_closed:]
             attempts, fills, refusals = [], [], []
+            attempt_evidence = []
             if pending is not None:
                 survivors = []
                 for book in pending["books"]:
                     attempts.append(book["id"])
+                    evidence = _attempt_evidence(study, book, day, scenario)
+                    attempt_evidence.append(evidence)
                     filled, reason = _scenario_fill(study, book, day, method, scenario)
                     if filled is None:
                         refusal = {**book, "status": "unfilled", "fill_date": day, "reason": reason}
                         rejected.append(refusal)
+                        evidence["outcome"] = reason
                         refusals.append({"id": book["id"], "reason": reason})
                     else:
                         survivors.append(filled)
+                        evidence["outcome"] = "preflight_pass"
                 # The pinned eight methods do not declare the opt-in filled-account gate.
                 if method.get("shock", {}).get("scope") == study._FILLED_ACCOUNT:
                     raise ValueError("unexpected filled-account gate in frozen method")
@@ -349,8 +403,13 @@ class FrozenMIOReplay:
                     for book in survivors:
                         rejected.append({**book, "status": "unfilled", "reason": "repriced_shared_cap"})
                         refusals.append({"id": book["id"], "reason": "repriced_shared_cap"})
+                        next(item for item in attempt_evidence if item["id"] == book["id"])[
+                            "outcome"] = "repriced_shared_cap"
                 else:
                     fills = survivors
+                    for book in fills:
+                        next(item for item in attempt_evidence if item["id"] == book["id"])[
+                            "outcome"] = "filled"
                 pending = None
             decision = by_day.get(day)
             if decision is not None and decision.get("books"):
@@ -369,6 +428,7 @@ class FrozenMIOReplay:
                 "selected_ids": [book["id"] for book in decision.get("books", [])] if decision else [],
                 "candidate_refusals": decision["refusals"] if decision else [],
                 "attempted_ids": attempts,
+                "attempts": attempt_evidence,
                 "fills": [{"id": book["id"], "symbol": book["symbol"], "expiry": book["expiry"],
                            "legs": [{"side": "buy" if leg["sign"] > 0 else "sell",
                                      "right": leg["right"], "strike": leg["strike"],
@@ -376,7 +436,11 @@ class FrozenMIOReplay:
                                     for leg in book["legs"]],
                            "fees": book["fees"], "credit": book["credit"]} for book in fills],
                 "refusals": refusals,
-                "expiries": [{"id": book["id"], "symbol": book["symbol"], "pnl": book["pnl"]}
+                "expiries": [{"id": book["id"], "symbol": book["symbol"], "pnl": book["pnl"],
+                              "original_underlying":
+                                  self.bars[book["symbol"]][day] / book["factor"],
+                              "stressed_underlying":
+                                  study._bars[book["symbol"]][day] / book["factor"]}
                              for book in expiries],
                 "expiry_profit": sum(book["pnl"] for book in expiries),
                 "expiry_losses": sum(min(0.0, book["pnl"]) for book in expiries),
@@ -435,7 +499,12 @@ def _daybook(cohort, scenario, method, metrics, daily):
     ]
     for row in daily:
         chosen = ", ".join(row["selected_ids"]) or "-"
-        filled = ", ".join(item["id"] for item in row["fills"]) or "-"
+        filled = "; ".join(
+            item["id"] + ": " + ", ".join(
+                f"{leg['side']} {leg['quantity']} {leg['right']} "
+                f"{leg['strike']:g} at {chr(36)}{leg['price']:.4f}"
+                for leg in item["legs"])
+            for item in row["fills"]) or "-"
         expired = ", ".join(item["id"] + " (" + _money(item["pnl"]) + ")"
                             for item in row["expiries"]) or "-"
         refused = ", ".join(item["id"] + ": " + item["reason"]
@@ -470,6 +539,7 @@ def _metrics(result, daily, selected):
     losses = sorted(x for x in profits if x < 0)
     n_tail = max(1, math.ceil(len(profits) * 0.05)) if profits else 0
     return {
+        "status": "complete", "unsupported_reason": None,
         "selected": selected, "filled": len(trades), "refused": len(result["rejected"]),
         "fill_rate": len(trades) / selected if selected else None,
         "final_profit_usd": result["pnl"], "final_equity_usd": result["final_equity"],
@@ -487,6 +557,78 @@ def _metrics(result, daily, selected):
         "peak_reserve_usd": result["peak_reserve"],
         "refusal_reasons": dict(Counter(book["reason"] for book in result["rejected"])),
     }
+
+
+def _dispositions(cohort, scenario, method, result, daily):
+    """One auditable outcome for each frozen selected book."""
+    if result is None:
+        return []
+    attempts = {item["id"]: (row, item) for row in daily
+                for item in row["attempts"]}
+    expiries = {item["id"]: (row, item) for row in daily
+                for item in row["expiries"]}
+    trades = {book["id"]: book for book in result["trades"]}
+    rejected = {book["id"]: book for book in result["rejected"]}
+    rows = []
+    for decision in result["decisions"]:
+        for selected in decision.get("books", []):
+            key = selected["id"]
+            if key not in attempts:
+                raise ValueError("selected book lacks fill attempt: " + key)
+            fill_day, attempt = attempts[key]
+            trade = trades.get(key)
+            refusal = rejected.get(key)
+            if (trade is None) == (refusal is None):
+                raise ValueError("selected book lacks unique disposition: " + key)
+            expiry_day, expiry = expiries[key] if trade is not None else (None, None)
+            rows.append({
+                "cohort": cohort, "scenario": scenario, "method": method,
+                "id": key, "symbol": selected["symbol"],
+                "decision_date": decision["date"], "fill_date": fill_day["date"],
+                "expiry": selected["expiry"],
+                "possible_books": decision["candidate_books"],
+                "possible_option_contracts": decision["candidate_contracts"],
+                "status": "filled" if trade is not None else "refused",
+                "reason": refusal["reason"] if refusal is not None else None,
+                "selected_credit": selected["credit"],
+                "selected_reserve": selected["reserve"],
+                "attempt_legs": attempt["legs"],
+                "fill_legs": ([{"side": "buy" if leg["sign"] > 0 else "sell",
+                               "right": leg["right"], "strike": leg["strike"],
+                               "quantity": leg["quantity"],
+                               "price": leg["fill_price"]}
+                              for leg in trade["legs"]] if trade is not None else None),
+                "fill_credit": trade["credit"] if trade is not None else None,
+                "fill_fees": trade["fees"] if trade is not None else None,
+                "fill_reserve": trade["reserve"] if trade is not None else None,
+                "cash_delta_at_fill": trade["credit"] if trade is not None else 0.0,
+                "cash_after_fill_day": fill_day["cash"],
+                "expiry_date": expiry_day["date"] if expiry_day is not None else None,
+                "original_expiry_underlying":
+                    expiry["original_underlying"] if expiry is not None else None,
+                "stressed_expiry_underlying":
+                    expiry["stressed_underlying"] if expiry is not None else None,
+                "expiry_payoff": (trade["pnl"] - trade["credit"]
+                                  if trade is not None else None),
+                "realized_pnl": trade["pnl"] if trade is not None else None,
+                "cash_delta_at_expiry":
+                    (trade["pnl"] - trade["credit"] if trade is not None else None),
+                "cash_after_expiry_day":
+                    expiry_day["cash"] if expiry_day is not None else None,
+            })
+    return rows
+
+
+def _unsupported_metrics(selected, reason):
+    """Keep an incomplete stress visible without inventing a profit."""
+    keys = ("filled", "refused", "fill_rate", "final_profit_usd",
+            "final_equity_usd", "contributions_usd", "twr", "max_drawdown",
+            "fees_usd", "gross_gains_usd", "gross_losses_usd",
+            "profit_factor", "win_rate", "worst_trade_usd", "trade_cvar5_usd",
+            "worst_expiry_day_usd", "minimum_cash_usd", "peak_reserve_usd")
+    return {"status": "unsupported", "unsupported_reason": reason,
+            "selected": selected, **{key: None for key in keys},
+            "refusal_reasons": {}}
 
 
 def execute(document_path):
@@ -523,40 +665,73 @@ def execute(document_path):
         raise FileExistsError("fresh output root required: " + str(output))
     completed = []
     source_indexes = {}
-    for cohort in ("limited36", "broad212"):
-        replay = FrozenMIOReplay(cohort, document, pins)
-        source_indexes[cohort] = {
-            symbol: {"sha256": descriptor["sha256"], "rows": descriptor["rows"]}
-            for symbol, descriptor in replay.index_descriptors.items()}
-        try:
-            # All zero-shock controls pass before the stressed packet is published.
-            packets = replay.original["results"]
-            for scenario in scenarios:
-                for packet in packets:
-                    result, daily = replay.run_method(packet, scenario)
-                    selected = sum(len(d.get("books", [])) for d in packet["result"]["decisions"])
-                    metrics = _metrics(result, daily, selected)
-                    completed.append((cohort, scenario["id"], packet["id"], result, daily, metrics))
-                    print(cohort, scenario["id"], packet["id"],
-                          "filled", metrics["filled"], "profit", round(metrics["final_profit_usd"], 2),
-                          flush=True)
-        finally:
+    replays = {}
+    try:
+        for cohort in ("limited36", "broad212"):
+            replay = FrozenMIOReplay(cohort, document, pins)
+            replays[cohort] = replay
+            source_indexes[cohort] = {
+                symbol: {"sha256": descriptor["sha256"], "rows": descriptor["rows"]}
+                for symbol, descriptor in replay.index_descriptors.items()}
+        # Gate 0: all eight controls pass before any stressed case runs.
+        for cohort in ("limited36", "broad212"):
+            replay = replays[cohort]
+            for packet in replay.original["results"]:
+                result, daily = replay.run_method(packet, scenarios[0])
+                selected = sum(len(d.get("books", []))
+                               for d in packet["result"]["decisions"])
+                metrics = _metrics(result, daily, selected)
+                completed.append((cohort, "control", packet["id"], result, daily, metrics))
+                print(cohort, "control", packet["id"], "gate passed", flush=True)
+        for scenario in scenarios[1:]:
+            for cohort in ("limited36", "broad212"):
+                replay = replays[cohort]
+                for packet in replay.original["results"]:
+                    selected = sum(len(d.get("books", []))
+                                   for d in packet["result"]["decisions"])
+                    try:
+                        result, daily = replay.run_method(packet, scenario)
+                        metrics = _metrics(result, daily, selected)
+                        print(cohort, scenario["id"], packet["id"],
+                              "filled", metrics["filled"], "profit",
+                              round(metrics["final_profit_usd"], 2), flush=True)
+                    except ValueError as exc:
+                        result, daily = None, []
+                        metrics = _unsupported_metrics(selected, str(exc))
+                        print(cohort, scenario["id"], packet["id"],
+                              "unsupported:", exc, flush=True)
+                    completed.append((cohort, scenario["id"], packet["id"],
+                                      result, daily, metrics))
+    finally:
+        for replay in replays.values():
             replay.close()
     output.mkdir(parents=True)
-    summary, all_daily = [], []
+    summary, all_daily, all_attempts, all_dispositions = [], [], [], []
     for cohort, scenario, method, result, daily, metrics in completed:
         folder = output / cohort / scenario
         folder.mkdir(parents=True, exist_ok=True)
+        dispositions = _dispositions(cohort, scenario, method, result, daily)
+        all_dispositions.extend(dispositions)
         _write_json(folder / (method + ".json"), {
             "cohort": cohort, "scenario": scenario, "method": method,
-            "metrics": metrics, "result": result, "daily": daily})
+            "metrics": metrics, "result": result, "daily": daily,
+            "dispositions": dispositions})
         (folder / (method + ".md")).write_text(
-            _daybook(cohort, scenario, method, metrics, daily))
+            _daybook(cohort, scenario, method, metrics, daily)
+            if metrics["status"] == "complete" else
+            f"# {cohort} / {method} / {scenario}\n\n"
+            f"Unsupported sensitivity: {metrics['unsupported_reason']}\n"
+            "No final profit is reported for this incomplete case.\n")
         summary.append({"cohort": cohort, "scenario": scenario, "method": method, **metrics})
         for row in daily:
             all_daily.append({"cohort": cohort, "scenario": scenario, "method": method, **row})
+            for attempt in row["attempts"]:
+                all_attempts.append({"cohort": cohort, "scenario": scenario,
+                                     "method": method, "date": row["date"], **attempt})
     _write_json(output / "summary.json", summary)
     _write_json(output / "daily.json", all_daily)
+    _write_json(output / "attempts.json", all_attempts)
+    _write_json(output / "dispositions.json", all_dispositions)
     with (output / "summary.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(summary[0]))
         writer.writeheader()
@@ -569,17 +744,35 @@ def execute(document_path):
         for row in all_daily:
             writer.writerow({k: json.dumps(v, separators=(",", ":")) if isinstance(v, (dict, list))
                              else v for k, v in row.items()})
+    with (output / "attempts.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(all_attempts[0]))
+        writer.writeheader()
+        for row in all_attempts:
+            writer.writerow({k: json.dumps(v, separators=(",", ":"))
+                             if isinstance(v, (dict, list)) else v for k, v in row.items()})
+    with (output / "dispositions.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(all_dispositions[0]))
+        writer.writeheader()
+        for row in all_dispositions:
+            writer.writerow({k: json.dumps(v, separators=(",", ":"))
+                             if isinstance(v, (dict, list)) else v for k, v in row.items()})
     lines = ["# 2019 MIO fixed-selection execution and expiry stress", "",
              "Each daily row names decision-day possibilities and selected orders; fills are",
              "attempted at the next session's observed NBBO. Expiries show realized P&L.",
-             "The seven scenarios are conditional on frozen future selections.", "",
-             "| Cohort | Scenario | Method | Selected | Filled | Refused | Final profit | Max drawdown |",
-             "|---|---|---|---:|---:|---:|---:|---:|"]
+             "The seven scenarios are conditional on frozen future selections.",
+             "See dispositions.csv for each selected book, with quotes, fills,",
+             "reserves, expiry payoff and cash impact; daily.csv gives every session.", "",
+             "| Cohort | Scenario | Method | Status | Selected | Filled | Refused | Final profit | Max drawdown |",
+             "|---|---|---|---|---:|---:|---:|---:|---:|"]
     for row in summary:
+        profit = (f"{chr(36)}{row['final_profit_usd']:,.2f}"
+                  if row["final_profit_usd"] is not None else "-")
+        drawdown = (f"{row['max_drawdown']:.1%}"
+                    if row["max_drawdown"] is not None else "-")
         lines.append("| " + " | ".join([
-            row["cohort"], row["scenario"], row["method"], str(row["selected"]),
-            str(row["filled"]), str(row["refused"]),
-            f'${row["final_profit_usd"]:,.2f}', f'{row["max_drawdown"]:.1%}']) + " |")
+            row["cohort"], row["scenario"], row["method"], row["status"],
+            str(row["selected"]), str(row["filled"]), str(row["refused"]),
+            profit, drawdown]) + " |")
     lines += ["", "Open a daybook for all 252 daily opportunities, selections,",
               "fills, expiries and losses. The matching JSON and daily.csv",
               "retain complete machine-readable rows.", "", "## Daybooks", ""]
@@ -589,9 +782,25 @@ def execute(document_path):
                      row["scenario"] + "](" + relative + ")")
     lines.append("")
     (output / "report.md").write_text("\n".join(lines))
+    repository_root = document["repository_root"]
+    replay_commit = subprocess.check_output(
+        ["git", "-C", repository_root, "rev-parse", "HEAD"], text=True).strip()
+    if subprocess.check_output(["git", "-C", repository_root, "status", "--porcelain"],
+                               text=True).strip():
+        raise ValueError("replay source worktree must be clean for pinned publication")
     manifest = {"schema": "mio-execution-stress-pins/v1",
                 "document_sha256": _sha(doc_path),
+                "replay_commit": replay_commit,
                 "original_results_pins_sha256": document["results_pins_sha256"],
+                "original_artifact_index_sha256":
+                    pins["evidence"]["artifact-index.json"]["sha256"],
+                "original_source_manifests": pins["sources"],
+                "original_runs": {
+                    cohort: {"result_sha256": document["cohorts"][cohort]["result_sha256"],
+                             "run_hash": pins["runs"][cohort]["run_hash"],
+                             "receipt_sha256": pins["runs"][cohort]["sha256"],
+                             "document_hash": pins["runs"][cohort]["document_hash"]}
+                    for cohort in ("limited36", "broad212")},
                 "source_quote_indexes": source_indexes,
                 "replay_code_sha256": _sha(Path(__file__)),
                 "files": {str(path.relative_to(output)): {"sha256": _sha(path), "bytes": path.stat().st_size}
