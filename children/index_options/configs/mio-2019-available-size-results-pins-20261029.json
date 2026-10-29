@@ -1,0 +1,203 @@
+{
+  "comparisons": {
+    "broad212": {
+      "document_hash": "6f074927de51f8a0cfa0e6e9612f7bd5d1b8a2a12b15ffd35f4d98515f06a71a",
+      "run_dir": "/home/russell/data/index_options/mio-2019-available-size-20261029/broad212/comparison/mio-2019-broad212-available-size-20261029-compare-2020-03-08-a2a97784",
+      "run_hash": "a2a9778438bfbe18ea55133126d99eafb236ad96c9b6eeba4b2402c7d9d96a4c",
+      "sha256": "d61f818d7faa240ad651f3b130dc82321b99afc2ef47dac1121539affffc7044",
+      "state": "ran"
+    },
+    "limited36": {
+      "document_hash": "f96b0dc56a172fb649e5374acadf8b355f3a178539c504ea39376e2d80e6d167",
+      "run_dir": "/home/russell/data/index_options/mio-2019-available-size-20261029/limited36/comparison/mio-2019-limited36-available-size-20261029-compare-2020-03-08-bd29ea4f",
+      "run_hash": "bd29ea4fbe8fb873d36575ce6f826ac606582f5a1319acfcc3d1e8fc9977d6ed",
+      "sha256": "0c157601d0b8add7cd8b05f6cd346d4a1e1f33c7a6c0019428cffd5ae8eeb2fa",
+      "state": "ran"
+    }
+  },
+  "dispositions": {
+    "broad212": {
+      "document_hash": "44cbd3514820afcea8679a1614a487efb31eef5897955fc110ad36a4726e3496",
+      "run_dir": "/home/russell/data/index_options/mio-2019-available-size-20261029/broad212/disposition/mio-2019-broad212-available-size-20261029-review-2026-10-29-52d76850",
+      "run_hash": "52d768509d74f32c57384ec3dbeaab124be09960cab692b7e2578e2cdc80b6ef",
+      "state": "ran"
+    },
+    "limited36": {
+      "document_hash": "fe630628f143e54bcd9f70d881012e0beb3e72d907e32813e26769bc1b70a2da",
+      "run_dir": "/home/russell/data/index_options/mio-2019-available-size-20261029/limited36/disposition/mio-2019-limited36-available-size-20261029-review-2026-10-29-56590049",
+      "run_hash": "5659004972383c1d7a2e2324586231b8645a88b60118c4484ae8033f25ee8b80",
+      "state": "ran"
+    }
+  },
+  "evidence": {
+    "artifact-index.json": {
+      "bytes": 4092,
+      "path": "/home/russell/data/index_options/mio-2019-available-size-20261029/artifact-index.json",
+      "sha256": "de4c064c14d829fb335bc198d158dd34b4fd4b580507ac6b887ce122b902da27"
+    }
+  },
+  "focused_tests": {
+    "candidate": "922b53d00dc0a49797f350fa0f300343a3ddf717",
+    "passed": 334,
+    "reported_by": "Sol governor; independent candidate verification",
+    "seconds": 21.3
+  },
+  "kind": "index_options_2019_mio_available_size_results",
+  "limits": [
+    "2019 development evidence; no validation or promotion claim.",
+    "Saved forecasts and original lookback/tail-padding metadata retained.",
+    "Displayed-depth sizing is a simulation; American assignment remains unmodeled.",
+    "Original results, viewer, Path and TDD remain unchanged."
+  ],
+  "original_configs": {
+    "mio-2019-broad212-available-size-20261029.json": {
+      "bytes": 1591180,
+      "path": "/home/russell/dskit-index-options-stress-adr/children/index_options/configs/mio-2019-broad212-available-size-20261029.json",
+      "sha256": "19d2ae1e47176eef92f4b9f3c4a9a2058cd4271784cb01b4b5e560d7f4ef0483"
+    },
+    "mio-2019-limited36-available-size-20261029.json": {
+      "bytes": 1301622,
+      "path": "/home/russell/dskit-index-options-stress-adr/children/index_options/configs/mio-2019-limited36-available-size-20261029.json",
+      "sha256": "67e96323a0e7f291cd2dfd7fa2e9924a82f7d4021e102613f58cd5bfa087b850"
+    }
+  },
+  "review_gate": "CLOSED: four independent fresh final lenses C0/M0 on922b53d;334 focused tests passed",
+  "runs": {
+    "broad212": {
+      "document_hash": "2c1c550694a5d11a239f44379c37d8258dbb5c735be0451696d29798af3d6cf0",
+      "receipt": {
+        "document_hash": "2c1c550694a5d11a239f44379c37d8258dbb5c735be0451696d29798af3d6cf0",
+        "node": "close_packet",
+        "port": "receipt",
+        "run_dir": "/home/russell/data/index_options/mio-2019-available-size-20261029/broad212/runs/mio-2019-broad212-available-size-20261029-2020-03-08-2622edee"
+      },
+      "result_path": "/home/russell/data/index_options/mio-2019-available-size-20261029/broad212/result.json",
+      "result_sha256": "9ed7b614b71a06bae7b297df85673ac51a9aa79858a689b005cf4b86d2a21a4b",
+      "run_dir": "/home/russell/data/index_options/mio-2019-available-size-20261029/broad212/runs/mio-2019-broad212-available-size-20261029-2020-03-08-2622edee",
+      "run_hash": "2622edee13530ab32bd8b7398e791b2ab58398c022723472a582b33394bfb1f6",
+      "sha256": "9ed7b614b71a06bae7b297df85673ac51a9aa79858a689b005cf4b86d2a21a4b",
+      "state": "ran"
+    },
+    "limited36": {
+      "document_hash": "bddde41b51091bfece2c1b95a6379ebca5bb3ccb37b058500113b8b780ec2e66",
+      "receipt": {
+        "document_hash": "bddde41b51091bfece2c1b95a6379ebca5bb3ccb37b058500113b8b780ec2e66",
+        "node": "close_packet",
+        "port": "receipt",
+        "run_dir": "/home/russell/data/index_options/mio-2019-available-size-20261029/limited36/runs/mio-2019-limited36-available-size-20261029-2020-03-08-02f7f295"
+      },
+      "result_path": "/home/russell/data/index_options/mio-2019-available-size-20261029/limited36/result.json",
+      "result_sha256": "df911d4c89ba65ff9b858ce28d3726cf886ceba16ebdb9534c49bd2a81f351ed",
+      "run_dir": "/home/russell/data/index_options/mio-2019-available-size-20261029/limited36/runs/mio-2019-limited36-available-size-20261029-2020-03-08-02f7f295",
+      "run_hash": "02f7f29562541824e884f1c6d9c6d39d46d0b40f2b48ce1173abbf41ab451824",
+      "sha256": "df911d4c89ba65ff9b858ce28d3726cf886ceba16ebdb9534c49bd2a81f351ed",
+      "state": "ran"
+    }
+  },
+  "runtime_candidate": "922b53d00dc0a49797f350fa0f300343a3ddf717",
+  "schema_version": 1,
+  "scope": "Fresh four-method MIO runs for limited36 and broad212 in 2019 using the existing single-leg available-size and Fable atomic-ratio multi-leg rules, then the existing seven execution/expiry stress conditions on the fresh saved decisions. Preserve all original evidence; no model refit, providers, new years or economic policy changes.",
+  "sources": {
+    "admission_manifest": {
+      "manifest_sha256": "cec1bfd2711822ed14797a6c7cd06d68242429704a4f4985632144d2a8bb53cb",
+      "root": "/home/russell/data/index_options/ob",
+      "snapshot": "20261028T031200Z-backfill-cec1bfd2",
+      "source": "mio-broad-2019-admission-20261027",
+      "stream": "files"
+    },
+    "input_manifest": {
+      "manifest_sha256": "9c2a6ed5d0db549a8b8d6d0a7d18a7e1db893b169c1ddafebad470e31fff436a",
+      "root": "/home/russell/data/index_options/ob",
+      "snapshot": "20261028T031020Z-backfill-9c2a6ed5",
+      "source": "mio-broad-2019-inputs-full-20261027",
+      "stream": "files"
+    }
+  },
+  "status": "completed_development_evidence",
+  "verification": {
+    "broad212": [
+      {
+        "account_days": 252,
+        "all_closed_in_2019": true,
+        "cash_identity_max_abs_error": 7.275957614183426e-12,
+        "daily_cash_flows_reconciled": true,
+        "decisions": 53,
+        "expiry_intrinsic_independently_recomputed": true,
+        "method": "nominal_lp",
+        "recorded_replay_exact": true,
+        "source_plan_exact": true
+      },
+      {
+        "account_days": 252,
+        "all_closed_in_2019": true,
+        "cash_identity_max_abs_error": 2.9103830456733704e-11,
+        "daily_cash_flows_reconciled": true,
+        "decisions": 53,
+        "expiry_intrinsic_independently_recomputed": true,
+        "method": "w1_003_lp",
+        "recorded_replay_exact": true,
+        "source_plan_exact": true
+      },
+      {
+        "account_days": 252,
+        "all_closed_in_2019": true,
+        "cash_identity_max_abs_error": 2.9103830456733704e-11,
+        "daily_cash_flows_reconciled": true,
+        "decisions": 53,
+        "expiry_intrinsic_independently_recomputed": true,
+        "method": "w1_003_shock10_lp",
+        "recorded_replay_exact": true,
+        "source_plan_exact": true
+      },
+      {
+        "account_days": 252,
+        "all_closed_in_2019": true,
+        "cash_identity_max_abs_error": 1.4551915228366852e-11,
+        "daily_cash_flows_reconciled": true,
+        "decisions": 53,
+        "expiry_intrinsic_independently_recomputed": true,
+        "method": "w1_003_component25_lp",
+        "recorded_replay_exact": true,
+        "source_plan_exact": true
+      }
+    ],
+    "limited36": [
+      {
+        "account_days": 252,
+        "all_closed_in_2019": true,
+        "cash_identity_max_abs_error": 7.275957614183426e-12,
+        "decisions": 53,
+        "method": "nominal_lp",
+        "recorded_replay_exact": true,
+        "source_plan_exact": true
+      },
+      {
+        "account_days": 252,
+        "all_closed_in_2019": true,
+        "cash_identity_max_abs_error": 7.275957614183426e-12,
+        "decisions": 53,
+        "method": "w1_003_lp",
+        "recorded_replay_exact": true,
+        "source_plan_exact": true
+      },
+      {
+        "account_days": 252,
+        "all_closed_in_2019": true,
+        "cash_identity_max_abs_error": 3.637978807091713e-12,
+        "decisions": 53,
+        "method": "w1_003_shock10_lp",
+        "recorded_replay_exact": true,
+        "source_plan_exact": true
+      },
+      {
+        "account_days": 252,
+        "all_closed_in_2019": true,
+        "cash_identity_max_abs_error": 7.275957614183426e-12,
+        "decisions": 53,
+        "method": "w1_003_component25_lp",
+        "recorded_replay_exact": true,
+        "source_plan_exact": true
+      }
+    ]
+  }
+}
