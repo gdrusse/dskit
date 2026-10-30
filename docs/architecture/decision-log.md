@@ -35005,6 +35005,8 @@ Root cause: path mapping is cross-cutting (writers, readers, sync) with no singl
 3. `amount_fallbacks` keeps counting null amounts only; the log line names both counts.
 4. The child's `lots` node declares `allow_zero_cash: true`, with `notes` saying why.
 
-**Limits.** The lot's holding period starts at the row's date. A transfer between one's own accounts or a gift keeps the earlier holding period, and an inheritance is always long-term, so such a lot may read short-term when it is long-term (its tax overstated). Quantity x price may differ from the true carried-over basis; `LotPositions`' `basis_gap` shows any difference against the broker's books.
+**Limits.** The lot's holding period starts at the row's date. A transfer between one's own accounts or a gift keeps the earlier holding period, and an inheritance is always long-term, so such a lot may read short-term when it is long-term (its tax overstated). Quantity x price is the value on the day the shares arrived, not the carried-over basis: shares bought long ago at a lower price get an overstated basis, so their embedded gain and tax to sell are understated. `LotPositions`' `basis_gap` shows the difference only when the broker's books carry the true basis.
+
+**As built (2026-10-29).** A zero-cash buy at price 0.0 with the flag off refuses with "nothing values it" rather than advertising the param. Review lens 1 (Sonnet, correctness): no code defect; a Major privacy finding (a real holding named in a test docstring, near-real test prices) and the two-sided limit above, fixed before push.
 
 **Tests.** Allowed: a zero-cash buy opens a lot at quantity x price, is counted under `zero_cash_buys`, and a later sell consumes it FIFO. Not declared, or false: it refuses naming `allow_zero_cash`. A positive amount refuses even when allowed. Price 0.0 with zero cash refuses. A non-bool value refuses validation. The child's e2e run with a zero-cash row reconciles with `basis_gap` 0.
