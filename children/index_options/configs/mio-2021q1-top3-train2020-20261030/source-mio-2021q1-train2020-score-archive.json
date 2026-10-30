@@ -1,0 +1,8 @@
+{
+  "path": "/home/russell/data/index_options/mio-2021q1-top3-train2020-20261030/score-archive",
+  "as_of": "2026-10-30T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "*.parquet"
+  ]
+}
