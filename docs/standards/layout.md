@@ -50,6 +50,7 @@ dskit/
 ├── tools/
 │   ├── merge/                 # ADR-0109 merge drivers + install.sh
 │   ├── sweep/                 # the sweep tool + its commit-msg hook
+│   ├── session/               # machine.sh: names the host at session start
 │   └── docs/                  # mirror_pairs.py: every AGENTS.md from its CLAUDE.md
 ├── children/                  # child projects (ADR-0021): incubated at repo root,
 │   ├── README.md              #   never imported by dskit; the guide

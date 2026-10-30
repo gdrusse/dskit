@@ -843,7 +843,8 @@ they register only into private registries, never the default one.
   redeploying is strictly ahead. Optional
   inputs `hold_returns` (`{symbol: rate}`) and `redeploy_return` (a number,
   or `None` = no admissible alternative, every row holds) replace the matching
-  params. Taxes are declared per path: `terminal_tax_rate` + `basis_field`
+  params; a `null` `redeploy_return` param declares no alternative at all (the
+  same path, source `none`). Taxes are declared per path: `terminal_tax_rate` + `basis_field`
   tax the hold path's gain once at the horizon; `redeploy_tax_rate` +
   `redeploy_tax_timing` tax the redeploy path either `annual` (a strategy that
   turns over) or `terminal`. The redeploy rate is `net = redeploy_return -

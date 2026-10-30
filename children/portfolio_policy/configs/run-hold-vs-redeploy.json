@@ -18,11 +18,11 @@
       "params": {
         "where": [
           { "field": "as_of", "op": "==", "value": "2026-10-27" },
-          { "field": "asset_type", "op": "==", "value": "EQUITY" },
+          { "field": "asset_type", "op": "in", "value": ["EQUITY", "COLLECTIVE_INVESTMENT", "MUTUAL_FUND"] },
           { "field": "long_quantity", "op": ">", "value": 0 }
         ]
       },
-      "notes": "The decision date, declared: one snapshot, so a holding appears once; lots.as_of, tax.as_of, risk_day and risk_latest.reference_date below are pinned to the same day (tests/test_configs.py). Set all five to the day of the pull. EQUITY only: cost_basis is average price x shares, and an option contract's multiplier is not applied, so option rows would get nonsense gains. long_quantity > 0 drops short positions: a short row has a negative market value and basis, and LiquidationTax and HoldVsRedeploy REFUSE such a row by index rather than decide on it, so the owner filters here (a hold-vs-exit decision is about a long holding)."
+      "notes": "The decision date, declared: one snapshot, so a holding appears once; lots.as_of, tax.as_of, risk_day and risk_latest.reference_date below are pinned to the same day (tests/test_configs.py). Set all five to the day of the pull. Stocks (EQUITY), ETFs (COLLECTIVE_INVESTMENT) and mutual funds (MUTUAL_FUND), as Schwab typed them on the first real pull (2026-10-29): cost_basis is average price x shares, right for all three, while an option contract's multiplier is not applied, so options, and any type not listed, stay out. long_quantity > 0 drops short positions: a short row has a negative market value and basis, and LiquidationTax and HoldVsRedeploy REFUSE such a row by index rather than decide on it, so the owner filters here (a hold-vs-exit decision is about a long holding)."
     },
     "trades": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
@@ -32,7 +32,7 @@
         "stream": "trades",
         "key_fields": ["account", "transaction_id", "symbol"]
       },
-      "notes": "Role 'data': every trade acquired through dskit.onboarding (connector schwab_transactions, source alias schwab_trades: one alias is one connector), one row per account x transaction x symbol: execution time, signed quantity, price, signed net cash. Only VALID transactions arrive (the connector refuses a PENDING or INVALID one). The pull's start must reach back to the earliest purchase still held, or the reconciliation in lot_positions refuses."
+      "notes": "Role 'data': every trade acquired through dskit.onboarding (connector schwab_transactions, source alias schwab_trades: one alias is one connector), one row per account x transaction x symbol: execution time, signed quantity, price, signed net cash. Only VALID transactions arrive (the connector refuses a PENDING or INVALID one). The pull's start must reach back to the earliest purchase still held, or that holding fails the reconciliation in lot_positions and falls back to its aggregate row (allow_incomplete)."
     },
     "lots": {
       "uses": "dskit.pipeline.tax_lots:TaxLots",
@@ -46,9 +46,9 @@
         "price_field": "price",
         "amount_field": "amount",
         "order_fields": ["time", "transaction_id"],
-        "allow_incomplete": false
+        "allow_incomplete": true
       },
-      "notes": "Open lots per account x symbol as of the snapshot day (pinned equal to snapshot.where[as_of] and tax.as_of by tests/test_configs.py): every trade up to it, that day's included, replayed in day, execution time, transaction id order (order_fields: a same-day buy precedes the sell that closes it whatever the ids), a sell taking the earliest lots first (fifo, the rule when no lot is identified; Schwab's default for stocks, while funds and some ETFs in accounts opened before October 2024 default to average cost: confirm the account's election). A buy's basis is the cash it paid (amount, fees included) or quantity x price when the amount is null (a transaction with several kept items; the summary's amount_fallbacks counts them). Wash sales are not modelled (a disallowed loss would raise the new lot's basis and tack the old holding period); they, average cost and specific-lot elections show as a lot_positions basis_gap. allow_incomplete false: a sell of shares the history never bought (bought before the pull's start, transferred in, sold short) refuses by name; true withholds that holding's lots and lot_positions falls back to its aggregate row. Pinned equal to lot_positions.allow_incomplete."
+      "notes": "Open lots per account x symbol as of the snapshot day (pinned equal to snapshot.where[as_of] and tax.as_of by tests/test_configs.py): every trade up to it, that day's included, replayed in day, execution time, transaction id order (order_fields: a same-day buy precedes the sell that closes it whatever the ids), a sell taking the earliest lots first (fifo, the rule when no lot is identified; Schwab's default for stocks, while funds and some ETFs in accounts opened before October 2024 default to average cost: confirm the account's election). A buy's basis is the cash it paid (amount, fees included) or quantity x price when the amount is null (a transaction with several kept items; the summary's amount_fallbacks counts them). Wash sales are not modelled (a disallowed loss would raise the new lot's basis and tack the old holding period); they, average cost and specific-lot elections show as a lot_positions basis_gap. allow_incomplete true: Schwab's transactions history began in 2024 on the first real pull, so most holdings predate it; a holding the history cannot account for (bought before the pull's start, transferred in, sold short) withholds its lots and lot_positions falls back to its aggregate row (Schwab's basis, a null acquired date, taxed as default_holding). A holding mixing older shares with later buys falls back whole, so its recent shares are taxed as default_holding too. false refuses by name instead. Pinned equal to lot_positions.allow_incomplete."
     },
     "lot_positions": {
       "uses": "dskit.pipeline.tax_lots:LotPositions",
@@ -60,7 +60,7 @@
         "basis_field": "cost_basis",
         "carry_fields": ["as_of", "asset_type"],
         "tolerance": 0.0,
-        "allow_incomplete": false
+        "allow_incomplete": true
       },
       "notes": "Each lot becomes a position row: long_quantity = the lot's shares, market_value = its share of the position's value at the snapshot's price, cost_basis = the lot's basis, plus lot_id and acquired. Every snapshot holding must reconcile: its lots' shares equal its long_quantity within tolerance (0.0 shares; raise it to a few thousandths only if dividend reinvestment rounding differs between the two endpoints). A holding that does not reconcile, or has no lots, refuses unless allow_incomplete, when it passes through as its aggregate row with a null acquired date (default_holding applies). The summary's basis_gap per holding is lot basis - Schwab's cost basis: zero when fifo matches the account's books, and basis_gap_max (the largest |gap|, logged as a warning when beyond float noise) is the one number to check on the first real run."
     },

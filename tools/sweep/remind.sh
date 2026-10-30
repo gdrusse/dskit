@@ -36,7 +36,15 @@ if [ "$mode" = write ]; then
     [ -e "$path" ] && exit 0
 fi
 
-msg="dskit owner rule -- SWEEP THE REPO BEFORE BUILDING: we keep redoing work that already exists. Before writing a new file, public class/function, node kind or config in dskit, run tools/sweep/sweep <name> <synonyms> from a dskit worktree (WSL: wsl.exe -e bash -lc 'cd ~/wt/<your-worktree> && tools/sweep/sweep <term>'). It searches origin/main, every branch and every worktree. Extend what exists instead of rebuilding it. Commits that add new files/symbols/kinds need a trailer: Sweep: <what you searched; why this is not a duplicate> -- the commit-msg hook refuses them otherwise."
+# The wsl.exe hint only helps an agent whose shell is Windows; on the Mac,
+# in WSL or on plain Linux it is a wrong instruction. The host rule lives
+# in tools/session/machine.sh; a checkout without it simply gets no hint.
+hint=""
+if [ "$(sh "$(dirname "$0")/../session/machine.sh" --os 2>/dev/null)" = windows ]; then
+    hint=" (WSL: wsl.exe -e bash -lc 'cd ~/wt/<your-worktree> && tools/sweep/sweep <term>')"
+fi
+
+msg="dskit owner rule -- SWEEP THE REPO BEFORE BUILDING: we keep redoing work that already exists. Before writing a new file, public class/function, node kind or config in dskit, run tools/sweep/sweep <name> <synonyms> from a dskit worktree${hint}. It searches origin/main, every branch and every worktree. Extend what exists instead of rebuilding it. Commits that add new files/symbols/kinds need a trailer: Sweep: <what you searched; why this is not a duplicate> -- the commit-msg hook refuses them otherwise."
 
 printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "$event" "$msg"
 exit 0

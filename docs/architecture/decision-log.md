@@ -34828,3 +34828,168 @@ The ticker x DTE table uses an existing node or a minimal generic fix, test-firs
   - A golden-bytes default test, a node-level default-driver test and a score-0.0 forecast test.
   - A test tying the gap caveat to solver_options.
   - The bare-name rule restated in `libs/matplotlib.py` and `production/ledger.py`.
+
+#### ADR-0279 amendment: an empty Schwab account is zero rows, proved by its balances (approved by owner 2026-10-29, "Approve, build it")
+
+The first real positions pull refused. Schwab omits `positions` for an account that holds
+nothing (here an emptied margin account, every `currentBalances` field zero); it does not send `[]`.
+
+- **Change.** `SchwabPositionsConnector._rows` only. An account without the key emits no rows
+  when its `currentBalances` has every one of the seven position-value fields, `longMarketValue`,
+  `shortMarketValue`, `longOptionMarketValue`, `shortOptionMarketValue`, `mutualFundValue`,
+  `bondValue` and `moneyMarketFund`, each a finite non-bool number equal to zero.
+- **Still refuses.** Any other account without the key, and the message names the first failing
+  field. An explicit `positions` list is read exactly as before.
+- **Limit.** Cash is a balance, not a position, so a cash-only account is also zero rows, and an
+  emptied account leaves no row, indistinguishable from an unlinked one. Account cash and totals
+  are a separate proposal. `longNonMarginableMarketValue` is not in the proof (unobserved on a
+  CASH account).
+- **Tests.** An empty account before or after a funded one emits only the funded rows. Each field
+  missing, a bool, non-finite or nonzero refuses; two bad fields name the first. No balances, or
+  balances that are not a mapping, still refuse.
+- **Review corrections (two Sonnet lenses, 2026-10-29).** No Critical. Major: `continue` mutated to
+  `break` survived (the empty account was always last), now killed. Minors: first-failing-field
+  order and a non-mapping `currentBalances` were untested, now tested with their own message;
+  `moneyMarketFund` added to the proof (a fund is held as a position; present and zero on both
+  CASH and MARGIN accounts in the real pull). Nit kept: `_not_empty` returns `""` for empty.
+
+#### ADR-0279 amendment: the hold verdict covers mutual funds and ETFs (approved by owner 2026-10-29, "Approve, build it")
+
+Evidence from the first real pull (2026-10-29):
+
+- **What the filter drops.** Schwab types ETFs `COLLECTIVE_INVESTMENT` and mutual funds
+  `MUTUAL_FUND`. Together they are 83% of the portfolio by value, and the `asset_type == EQUITY`
+  filter drops all of it.
+- **Bars.** Schwab serves daily bars for every held fund and ETF (275-277 sessions in 400 days).
+- **History.** The transactions endpoint returns nothing before 2024, so the purchases behind
+  most holdings are not in it.
+
+**Change** (child configs, tests and docs; no dskit code):
+
+1. **Filter.** `run-hold-vs-redeploy.json` `snapshot.where` and `run-decision-outcomes.json`
+   `later.where` become the allowlist `asset_type in ["EQUITY", "COLLECTIVE_INVESTMENT",
+   "MUTUAL_FUND"]`, so options and any unlisted type stay out. `tests/test_configs.py` pins
+   the two lists equal.
+2. **Lots.** `lots.allow_incomplete` and `lot_positions.allow_incomplete` become `true`, still
+   pinned equal. A holding whose purchases predate the history passes through as its aggregate
+   row, with Schwab's average-cost basis and a null acquired date. `default_holding` (`long`)
+   then prices its tax.
+3. **Notes and README.** The daily-bars symbols include the funds. The trades source is
+   registered with `asset_types` `EQUITY`, `COLLECTIVE_INVESTMENT` and `MUTUAL_FUND` (README step 2;
+   see the review corrections below).
+
+**Why EQUITY-only no longer fits.** It existed to keep option rows out, because `cost_basis`
+applies no contract multiplier. Funds and ETFs have none, so `averagePrice x quantity` is
+their basis.
+
+**Limits:**
+
+- **Mixed holdings.** A holding that mixes pre-2024 shares with later buys does not reconcile,
+  so the whole holding falls back and is taxed as long-term. A share bought within the year is
+  then under-taxed on exit.
+- **Concentration.** It is measured by symbol, with no look-through. SWPPX at 53% reads as one
+  concentrated position, though it is an S&P 500 fund that overlaps VFIAX and SWTSX.
+- **Liquidity.** A mutual fund trades once a day at NAV; the decision treats it as liquid at
+  the snapshot value.
+
+**Tests:**
+
+- The config pins move to the list.
+- A whole run with one `MUTUAL_FUND` and one `COLLECTIVE_INVESTMENT` holding and no trades
+  decides both through the aggregate path.
+- An `OPTION` row is still filtered out.
+
+**Not in scope.** The owner's placeholders (tax rates, horizon, the active backtest) still
+gate a real verdict.
+
+**Review corrections (two Sonnet lenses, 2026-10-29).** No Critical.
+
+- **Major (correctness).** With trades kept `EQUITY`-only, a fund bought wholly inside the
+  history never got lots, so it was taxed as long-term. The probe had found fund `TRADE` items in
+  2025-26, so the "fall back either way" premise was false. The trades `asset_types` now lists the
+  three types, and the fund test gives VGT a purchase inside the history: its own lot, short-term.
+- **Minors (tests).** Fund betas were untested, and copied bars made a symbol mix-up invisible.
+  Now SWPPX copies SPY and VGT copies AAPL, and each rate is checked against its own plain-Python
+  beta.
+- **Minors (docs).** Stale "equities only" and "refuses at the reconciliation" text is fixed in the
+  README, the trades note, three test comments and the positions connector docstring.
+- **Disclosed, not fixed.** No shipped test runs the report or outcomes document over fund rows
+  (the test lens ran both in scratch: rendered and scored, none unmatched). A fund with
+  `averagePrice` 0 would read as a 100% gain (unverified). The `in` clause does not validate that
+  its value is a list (pre-existing in `kinds_flow`). The lane note still lists the ETF and
+  `allow_incomplete` checks; `/wrap` rewrites it.
+
+## ADR-0284 - Two-host dispatch: run independent jobs on a second machine over SSH (owner approved 2026-10-29, "Whatever is easiest")
+
+**Context.** The owner has two machines on Tailscale: the PC (WSL2, every onboarded snapshot, CUDA) and a Mac (M4, 32 GB); `ssh desktop` reaches WSL2 directly. Every dskit parallel runner is single-host: `BoundedFoldRunner` (ADR-0093), `workflow-batch` lanes, and `BenchmarkRun` (ADR-0097), which runs model-zoo candidates serially in-process. Two gaps stop a job from simply running on the Mac:
+
+- 565 of 998 child configs name data by absolute PC path (`/home/russell/data/...`) inside node params (`path`, `root`, `run_root`). The path is part of the identity hash, so rewriting it for the Mac re-hashes the config and orphans its runs.
+- A run records nothing about the host that produced it, yet CPU, CUDA and MPS give different floating-point results under one hash.
+
+**Decision (proposed).**
+
+1. **Hosts are strategy objects.** New `dskit/pipeline/hosts.py`: abstract `Host.wrap(argv, cwd)` returns the argv to execute. `LocalHost` returns it unchanged; `SshHost(alias, checkout, python)` returns `ssh <alias> -- cd <checkout> && <python> ...`, quoted with `shlex`. `HostPool` assigns jobs to hosts by a declared width per host. `BoundedFoldRunner.spawn` and `workflow_batch`'s lane launch take a pool instead of branching on host. The default pool is one `LocalHost`, so nothing changes until a pool is declared.
+2. **A per-machine path map, outside identity.** A JSON file named by `DSKIT_PATH_MAP` maps absolute prefixes to local ones, e.g. `{"/home/russell/data": "/Users/<user>/pcdata"}`. It is applied to string params AFTER the identity hash is computed, on whole path segments only. No file means no mapping, so every existing hash and run stays put. The map applied is recorded with the run.
+3. **Data is mirrored, not mounted.** The second host holds an rsync mirror of only the onboarded snapshots its jobs read, checked with `python -m dskit.onboarding verify`. A preflight refuses a job whose mapped inputs are missing on its host; content pins in configs still check bytes there.
+4. **Results come home.** A remote job writes its run dir on its own host. After exit 0 the dispatcher rsyncs that dir back to the unmapped path in the PC's run root; `{name}-{asof}-{hash8}` names cannot collide. A failed copy fails the job.
+5. **Every run is stamped with its host.** `host.json` in the run dir (placement, never identity) holds the OS family, hostname, accelerator used, git commit, the path map and `RuntimeFingerprint` from `dskit.production.release`, imported, never restated. A test pins the Python OS rule to `tools/session/machine.sh --os` on the running host.
+6. **Parity preflight.** Before dispatch, every host in the pool must report the same git commit and the same `RuntimeFingerprint` distributions. A mismatch refuses unless the pool declares `allow_env_drift`.
+7. **Cross-host comparisons are explicit.** `BenchmarkCompare` refuses to pair candidates run on different hosts unless `allow_cross_host` is declared. The recommended zoo split is by model family (tree/sklearn on the Mac, torch on the PC), so each family is compared on one kind of hardware.
+
+**First consumer.** `BenchmarkRun` gains an opt-in subprocess mode: one `walkforward` per candidate, sent through the pool, keeping its approval recheck and checkpoint. In-process remains the default.
+
+**Files, approved with this ADR.** New: `dskit/pipeline/hosts.py`, `tests/pipeline/test_hosts.py`. Edited: `folds.py`, `workflow_batch.py`, `benchmarks.py`, `driver.py` (path map and `host.json`), the package README/CLAUDE trees, and `docs/standards/configuration.md` (the path map is placement).
+
+**Rejected.**
+
+- `${root}` templates in configs: re-hashes all 565 configs and orphans their runs.
+- SMB/sshfs mounts: parquet scans over Wi-Fi would eat the speedup.
+- Ray/Dask: a heavy dependency plus cluster operations, for two machines.
+
+**Non-goals.** Automatic load balancing, GPU-memory guards, native Windows hosts, remote onboarding or acquisition, anything production or live.
+
+**Open questions for the owner.**
+
+- Q1 Data on the Mac: (a) rsync mirror of the needed snapshots (recommended); (b) a network mount.
+- Q2 First runner: (a) `BenchmarkRun` model zoo (recommended); (b) `BoundedFoldRunner` folds; (c) `workflow-batch` lanes.
+- Q3 Cross-host zoo pairs: (a) refuse unless declared (recommended); (b) allow, labelled.
+
+**Owner answers (2026-10-29, "Whatever is easiest"; the agent chose the easiest option for each).** Q1 (a) rsync mirror. Q2 (b) `BoundedFoldRunner` first: its jobs are single `run`/`walkforward` documents, so only the driver must honour the path map. Workflow lanes would also need it inside `workflow.py`, so they wait for a later slice. A zoo runs through it as one `walkforward` command per candidate. Q3 (b) allow cross-host pairs, labelled by a `host` column; this replaces item 7's refusal.
+
+**First slice.** `hosts.py` (`PathMap`, `Host`, `LocalHost`, `SshHost`, `HostPool`, `host_stamp`); `BoundedFoldRunner` takes an optional pool. `SshHost` pushes argv files to their mapped paths before a job and pulls declared `sync_back` roots after it. The pool sends the map to the remote job as `DSKIT_PATH_MAP`, so the map has one source. The driver applies the map after hashing and writes `host.json`. `BenchmarkRun` subprocess mode and `workflow-batch` lanes are later slices.
+
+**Amendment 1 (2026-10-29, as built after two review lenses).** Departures from items 1-7, each forced by a review finding or a repo rule:
+
+- **Sync is per batch, not per job.** Each `sync_back` root is pushed out (`--ignore-existing`) before the first fold, so the remote's `$prev` and occupied-dir refusal see home's runs. Every entry home lacks is pulled whole only after ALL folds have exited, failed ones included, as a local crash's partial dir would stay. An entry home already has is never touched. Per-job pulls let one fold's pull freeze a sibling's half-written run.
+- **Records hold paths as written.** The driver restores the map in `resolved.json`, `result.json`, `carry.json` and `walkforward.json`, so pulled runs read like home runs. `runs.resolve_run_root` is the one run-root rule; benchmarks and stages use it. The planner and the search `SubgraphRunner` receive the run's map; serving's runner gets none.
+- **The map is one-to-one and lives in the environment.** `DSKIT_PATH_MAP` holds inline JSON, not a file path. No source or target may overlap another, and a target must be its real path.
+- **The preflight probes from the job's cwd**, in a fresh interpreter. It compares commit, Python, uncommitted or untracked `.py` files, and versions of packages installed on both sides, and it checks that the remote job imports dskit from `checkout`. It runs for every batch. Item 5's `RuntimeFingerprint` is not imported, because the pipeline core may not import `dskit.production` (the purity gate); `host.json` carries a digest of name-to-version from `importlib.metadata` instead. There is no accelerator field: knowing it would mean importing torch.
+- **macOS takes no memory cap.** It refuses `RLIMIT_AS`, so the preflight refuses a capped batch for a macOS host. Locally, the 9 cap tests in `test_folds.py` already fail on the Mac at base.
+- **Known limits.** A data node whose fingerprint HASHES a path gets a host-specific run hash under a map, though `document_hash` never moves. A remote job journals into the remote checkout's child journal, merged like any session's (ADR-0109). Q3's `host` column in rollups is a later slice; `host.json` labels each run today.
+
+**Review checkpoint (2026-10-29; implementation parked pending owner decision).** Candidate 083af0e9 (base db39f872), Claude Opus 5.5. Round 1 (ddc3caea) found 11 Majors, fixed in one batch. Round 2 found 4 Majors (2 lenses; 0 Critical), and the convergence rule triggered early on a repeated family and a widening scope:
+
+- Readers on the mapped host open the home-coordinate paths that records now hold (BenchmarkRun seal, `walk_fold_dirs`). The write-side fix had no read-side inventory.
+- `sync_back` roots use the data map, not the job's map, so a run root inside the checkout never comes home.
+- `end()` pulls entries the batch did not create: round 1's pull family again.
+- A test defect: the fake remote shares the PC filesystem, so an unmapped build site passes.
+
+Root cause: path mapping is cross-cutting (writers, readers, sync) with no single seam. Next approach, if resumed: inventory every recorded-path reader and writer first, add one reader rule, sync through the job map, pull only names created during the batch, and run the tests with the PC tree absent. Branch `docs/adr-two-host-runner` is unmerged.
+
+**Parked at wrap (2026-10-29).** The owner wrapped the session without a redesign round. The code stays on the unmerged branch `docs/adr-two-host-runner` (head 4e2a338e); only this entry is on main. Resume or drop is an open owner decision.
+
+#### ADR-0279 amendment: a hold verdict with no alternative declared (approved by owner 2026-10-29, "Yes")
+
+**Problem.** The owner has no active strategy yet. `decide.redeploy_return` is wired to `hurdle`, which refuses a backtest shorter than `min_periods`, so the first real run cannot happen at all. Yet the tax cost, break-even, expected return and risk of each holding need no alternative.
+
+**Decision.**
+
+1. `HoldVsRedeploy` (`dskit/pipeline/liquidation.py`): the `redeploy_return` param may be `null`, meaning no alternative is declared. Rows take the existing withheld-hurdle path: every row holds, the redeploy fields and `opportunity_cost` are null, and `redeploy_return_source` reads `none`. A number keeps its bounds; any other type refuses.
+2. `bash weekly.sh <day> --no-strategy` (child): the temporary copy the script already derives drops `active_returns` and `hurdle` and sets `decide.params.redeploy_return` to null. The shipped document is unchanged and there is no new config file; without the flag nothing changes.
+3. Once a strategy has a year of weekly net returns, register `active` (README step 2) and run without the flag.
+
+**Limits.** Every row reads `hold`. The useful numbers are value, tax to sell, break-even, expected return, volatility and beta. The derived copy's identity hash differs from the shipped document's, as every derived copy's already does.
+
+**Tests.** A null param holds every row, with source `none` and null redeploy fields. A string or boolean param refuses. `weekly.sh --no-strategy` runs end to end with no `active` source registered, and the run without the flag is unchanged.
+
+**As built (2026-10-29).** `weekly.sh` refuses any argument after the day other than the flag. `drop_strategy` changes only the shipped shape: both nodes present, `decide.inputs.redeploy_return` wired to `$hurdle.rate` (that wire is removed), and no other node reading either node by wire or `$prev`. Anything else refuses and leaves the file untouched. Review: two lenses, no Critical or Major; doc and test Minors fixed.

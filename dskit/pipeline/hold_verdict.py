@@ -15,8 +15,8 @@ The page: a title line with the decisions' as-of day, read from the rows themsel
 row carries ``as_of_field``; several days refuse, and the run's own ``asof`` is never used);
 one table, one row per holding, sorted by opportunity cost descending (a null opportunity
 cost sorts last, ties keep input order); a portfolio block; a key. A holding whose
-opportunity cost is null (the active hurdle was withheld, so the decision run had no
-admissible alternative) reads ``n/a — no admissible alternative`` instead of HOLD or EXIT,
+opportunity cost is null (the active hurdle was withheld, or the decision run declared no
+alternative at all, so it had no admissible alternative) reads ``n/a — no admissible alternative`` instead of HOLD or EXIT,
 and so do the portfolio's sell-all comparison and its verdict counts. A row's decision must
 agree with the sign of its opportunity cost (exit needs more than zero; hold needs zero, less
 or null, so a tie holds): a disagreement refuses by index, because the page prints both.
@@ -69,7 +69,7 @@ NULLABLE_FIELDS = ("volatility_field", "beta_field", "opportunity_cost_field")
 _HOLD, _EXIT = "hold", "exit"
 #: The decision vocabulary and how each reads (a test pins it to PositionSummary's).
 VERDICTS = {_HOLD: "HOLD", _EXIT: "EXIT"}
-#: What a holding with no admissible alternative reads instead of a verdict.
+#: What a holding with no admissible alternative (withheld or none declared) reads instead of a verdict.
 NO_ALTERNATIVE = "n/a — no admissible alternative"
 
 #: The PositionSummary ``metrics`` keys the portfolio block reads, and those that may be null.

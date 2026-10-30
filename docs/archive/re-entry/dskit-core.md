@@ -6,6 +6,33 @@ read at session start. Older history: `2026-10-10-consolidated-history.md`.
 
 ---
 
+# Core note - 2026-10-26 (replaced 2026-10-29 by the machine hook and ADR-0284 parking)
+
+## Core (dskit itself)
+
+**Now.** 2026-10-26: local main caught up 166 commits to published `8e14281c`.
+The completed Fable and scenario work is included. Removed 37 contained local
+branches and two contained remote branches; all 88 worktree directories remain.
+The 12 unmerged branches, two unmerged detached histories and 20 dirty checkouts
+are preserved (overlapping counts). No additional candidate with verified current
+two-lens approval was established. No runtime or study changes in this sweep.
+
+**Next.** Reconcile retained work one bounded candidate at a time, then obtain
+current required reviews before merging. Dirty checkouts need their owner's
+closeout; do not reset or discard them. Prior ADR-0268 performance follow-ups
+and known baseline test failures remain historical open work, not retested here.
+
+**Blocked / owner decisions.** No additional merge-ready candidate established;
+see the exact retained heads and review gaps in the sweep memo.
+
+**Read first.** [Branch sweep receipt](memos/2026-10-26-repository-branch-sweep.md).
+
+**Do not.** Delete unmerged/dirty work or worktree artifacts; reopen protected
+data windows or run studies as part of cleanup. Historical core state is in
+`docs/archive/re-entry/dskit-core.md` when needed.
+
+---
+
 # Core note - 2026-10-16 (replaced 2026-10-26 by repository branch sweep)
 
 ## Core (dskit itself)

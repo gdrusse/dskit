@@ -36,14 +36,16 @@ python -m dskit.onboarding register-source schwab --root ./ob \
 # still held (lower it later and the next acquire re-pulls from the new start)
 python -m dskit.onboarding register-source schwab_trades --root ./ob \
     --catalog-source schwab-trades-src --connector schwab_transactions \
-    --config '{"start": "2015-01-01"}' --activate
-# symbols = every held symbol plus SPY (the benchmark); start >= 400 calendar days before
+    --config '{"start": "2015-01-01", "asset_types": ["EQUITY", "COLLECTIVE_INVESTMENT", "MUTUAL_FUND"]}' \
+    --activate
+# symbols = every held symbol, funds and ETFs included, plus SPY (the benchmark); start >= 400 days before
 # today (a year of returns needs 253 closes, with holidays to spare)
 python -m dskit.onboarding register-source schwab_daily --root ./ob \
     --catalog-source schwab-daily-src --connector schwab_daily \
     --config '{"symbols": ["VTI", "AAPL", "SPY"], "start": "2025-09-01"}' --activate
 # the active strategy's backtest: ./inputs/active/returns.jsonl (the file stem is the
 # stream name), one row per period: {"period": ..., "day": "YYYY-MM-DD", "net_return": ...}
+# No strategy yet? Skip this and its acquire below, and run step 6 with --no-strategy.
 python -m dskit.onboarding register-source active --root ./ob \
     --catalog-source active-src --connector localfiles \
     --config '{"path": "./inputs/active", "effective_field": "day"}' --activate
@@ -67,7 +69,8 @@ mkdir -p decisions summary risk
 python -m dskit.pipeline run configs/run-hold-vs-redeploy.json --asof <that day>
 
 # 6. Or, in place of 4-5, the one command that also writes the verdict page ("Reading the
-#    verdict" below). It needs steps 1-3 done first: it repeats the positions pull itself (the
+#    verdict" below). It needs steps 1-3 done first (the active source only without
+#    --no-strategy): it repeats the positions pull itself (the
 #    day is that pull's UTC day), and reads the trades and the daily bars as step 3 left them.
 #    It sets the five days in a temporary copy of the document and prints report/<run>.md.
 #    One or the other for a day: a run's name is its day and hash, and a repeat refuses.
@@ -97,11 +100,15 @@ the hold return from dividend yield + real growth + inflation + CAPE drift and
 the `schwab_daily` bars (`bars` -> `risk_features` -> `risk_day` -> `risk_latest`
 -> `risk`, research A0003; no beta is typed; a bars pull more than 5 days stale is refused); `hurdle` deflates the active
 backtest's mean by what `trials` variants of nothing would have found and
-withholds it below `min_dsr`, in which case every holding holds. The hold
+withholds it below `min_dsr`, in which case every holding holds. With no strategy
+yet, `weekly.sh <day> --no-strategy` drops `active_returns` and `hurdle` from its copy
+and declares no alternative (`decide.redeploy_return` null): no `active` source is
+needed and every holding holds. The hold
 path is taxed once at the horizon (`terminal_tax_rate`); the active path pays
-its short-term rate every year (`redeploy_tax_rate`, `annual`). Equities
-only, and long only: the `snapshot` filter drops option rows (their basis
-carries no multiplier) and short positions (`long_quantity > 0`), because the
+its short-term rate every year (`redeploy_tax_rate`, `annual`). Stocks, ETFs
+and mutual funds only, and long only: the `snapshot` filter drops option rows
+(their basis carries no multiplier), any unlisted asset type, and short
+positions (`long_quantity > 0`), because the
 kinds refuse a short or zero-value row by index rather than decide on it.
 `hurdle.min_periods` (52, a year of weekly returns) is the fewest backtest
 periods it will accept, and returns are fractions (0.01 = 1%), never percent.
@@ -126,10 +133,13 @@ VTI's tax rises from 119 (aggregate, all long) to 132.60 (99.96 on the 2023 lot,
 share for share: its lots' shares equal the snapshot's `long_quantity`. One that
 does not (bought before `start` or before the history Schwab serves,
 transferred in, split, a reinvestment outside `TRADE`), or a sale the history
-never bought, refuses by name. Set `allow_incomplete: true` on BOTH `lots` and
-`lot_positions` (a test pins them equal) to let such a holding pass as its
-aggregate row instead (null `acquired`, so `default_holding` applies, listed in
-the `lot_positions` summary `fallback`). That summary's `basis_gap` per holding
+never bought, passes as its aggregate row instead: `allow_incomplete` is `true` on
+BOTH `lots` and `lot_positions` as shipped (a test pins them equal), because the
+first real pull (2026-10-29) found Schwab's transactions history starting in 2024.
+Such a holding has a null `acquired`, so `default_holding` applies, and it is listed
+in the `lot_positions` summary `fallback`. One that mixes older shares with later
+buys falls back whole, so its recent shares are taxed as `default_holding` too. Set
+both to `false` to refuse such a holding by name instead. That summary's `basis_gap` per holding
 (lot basis minus Schwab's cost basis) is zero when FIFO matches Schwab's books.
 A day's trades replay in execution-time order (then transaction id), so a buy and
 the sale that closes it the same day work whatever the ids; a trade dated ON the
@@ -151,8 +161,12 @@ delete `outcomes.match_fields`. `tests/test_hold_vs_redeploy.py` runs this recip
   favours holding.
 - A split or spin-off between a decision and its scoring corrupts the
   per-share growth `DecisionOutcomes` reads; it is taken for a return.
-- The `EQUITY` filter's reach for ETFs and mutual funds is unverified until a
-  real pull: if Schwab labels them otherwise they are dropped silently.
+- The snapshot keeps `EQUITY`, `COLLECTIVE_INVESTMENT` (ETFs) and `MUTUAL_FUND`, as
+  Schwab typed them on the first real pull (2026-10-29). A mutual fund trades once a
+  day at NAV; the decision treats it as liquid at the snapshot value.
+- Concentration is by symbol, with no look-through: an S&P 500 fund at half the
+  portfolio reads as one concentrated position, and overlapping index funds
+  (SWPPX, VFIAX, SWTSX) count as separate holdings.
 - Rows the filters drop (options, shorts, other asset types) are not counted or
   reported yet (the transactions pull does count the items it skips).
 - Lots assume FIFO. Schwab's default is FIFO for stocks, but funds and some ETFs
@@ -168,17 +182,21 @@ delete `outcomes.match_fields`. `tests/test_hold_vs_redeploy.py` runs this recip
   refuses by index (a pending trade must not become a lot). A pending one clears
   when it settles; an INVALID (cancelled) one stays in Schwab's history and stops
   every pull whose window reaches it. Raising `start` past it is the only way round
-  today (lots bought before it then fail the reconciliation); a skip is an owner
+  today (holdings bought before it then fall back to their aggregate rows); a skip is an owner
   decision (lane note).
-- How far back Schwab's transactions endpoint serves history is unverified (one
-  client documents one year). A holding older than the history refuses until
-  `allow_incomplete` (aggregate fallback) or a lot export is onboarded.
-- The trades pull keeps `EQUITY` items; ETFs may arrive as
-  `COLLECTIVE_INVESTMENT` (the first pull's skipped census says so): widen the
-  connector's `asset_types` and the snapshot filter together.
+- Schwab's transactions endpoint served nothing before 2024 on the first real
+  pull, so most holdings fall back to their aggregate rows (`allow_incomplete`)
+  until a lot export is onboarded.
+- The trades source is registered with `asset_types` `EQUITY`,
+  `COLLECTIVE_INVESTMENT` and `MUTUAL_FUND` (step 2), so a fund or ETF bought
+  wholly inside the history gets its own lots and holding period. One whose
+  shares predate the history, or whose shares also moved outside `TRADE` (the
+  first pull showed fund `RECEIVE_AND_DELIVER` items), falls back whole and is
+  taxed as `default_holding`.
 - `long_term_days` 366 is "more than one year" except when the year spans 29
   February (then the lot's 366th day is still short-term); short sales and
-  splits are not modelled (each refuses at the reconciliation).
+  splits are not modelled (each fails the reconciliation, so the holding falls
+  back to its aggregate row, or refuses with `allow_incomplete` false).
 - Whether Schwab's daily closes are split- or dividend-adjusted is undocumented: an
   unadjusted split would read as one huge daily return and inflate that holding's
   volatility and beta for a year. Check a holding with a recent split on the first pull.
@@ -230,7 +248,8 @@ holdings: a holding of three lots is three positions. The
 summary restates `decide`'s tax and cost terms, pinned equal by a test; betas
 and volatilities are wired from the daily bars. When the hurdle is withheld,
 `opportunity_cost` is null and `break_even_return` is still the bar a strategy
-would have to clear.
+would have to clear. The same holds when the run declared no alternative
+(`weekly.sh --no-strategy`).
 
 ### Scoring a past decision run
 
@@ -248,7 +267,7 @@ mkdir -p outcomes
 python -m dskit.pipeline run configs/run-decision-outcomes.json --asof <that day>
 ```
 
-`later` keeps the same equity longs the decision did (a test pins the clauses
+`later` keeps the same stock, ETF and mutual fund longs the decision did (a test pins the clauses
 equal), but only decided positions are read: an undecided short or option row
 in the snapshot is never scored and cannot stop the run, and a decided position
 the filter no longer sees is listed `unmatched`.
@@ -427,7 +446,7 @@ portfolio_policy/
 │   ├── run-hold-vs-redeploy.json   # ADR-0279: positions + trades -> lots -> tax; daily bars -> risk; market x betas, hurdle -> decide -> summary
 │   ├── run-hold-report.json        # ADR-0279 amendment: a decision run's rows + risk -> summary -> the verdict page
 │   └── run-decision-outcomes.json  # ADR-0279: a past decision run scored against a later snapshot
-├── weekly.sh              # bash weekly.sh <day>: pull -> decide -> publish -> report
+├── weekly.sh              # bash weekly.sh <day> [--no-strategy]: pull -> decide -> publish -> report
 ├── decisions/             # hold-vs-redeploy rows, one file per run (gitignored)
 ├── summary/               # the few numbers per holding, one file per run (gitignored)
 ├── risk/                  # volatility and beta per symbol from daily bars, one file per run (gitignored)
@@ -478,7 +497,12 @@ from the child root:
 
 ```bash
 bash weekly.sh <snapshot day YYYY-MM-DD>    # prints report/<run>.md
+bash weekly.sh <snapshot day YYYY-MM-DD> --no-strategy   # no strategy backtest yet
 ```
+
+With `--no-strategy` the page still shows weight, expected return, volatility, beta, embedded
+gain, tax to sell and break-even per lot, and the total value in the portfolio block; opportunity
+cost is blank (—) and the verdict reads n/a, since there is no alternative.
 
 It pulls positions, runs `run-hold-vs-redeploy.json` on that day (in a temporary copy, the day
 set wherever the document pins it), publishes the decisions and the risk file back through
@@ -486,13 +510,14 @@ onboarding and runs `configs/run-hold-report.json` over them. The page lists eve
 opportunity cost first, named symbol / lot id (the lot id is account:symbol:acquired:ordinal):
 weight, expected return, volatility, beta (the decision run's own, from its risk file),
 embedded gain, tax to sell, break-even and opportunity cost a year, then HOLD or EXIT
-(`n/a — no admissible alternative` when the hurdle was withheld). A holding of several lots
+(`n/a — no admissible alternative` when the hurdle was withheld or `--no-strategy` declared
+none). A holding of several lots
 shows once per lot, and a young lot may hold while an old one exits. Opportunity cost above
 zero: the after-tax alternative beats holding by that much a year. Break-even: the annual
 return an alternative must earn, before its own cost and tax (the hurdle's basis), for
 exiting to tie holding. Expected return is before tax. Embedded gain is a share of value,
 not of cost. Tax to sell is a share of value; "tax to sell all" ignores loss offsets unless
-`loss_offset` is true. The portfolio block gives the total (labelled "listed equity longs":
+`loss_offset` is true. The portfolio block gives the total (labelled "stock, ETF and mutual fund longs":
 the decision document's snapshot filter, not the whole account), weighted return, volatility
 and beta, concentration (HHI, top holding; lots merge by symbol), tax to sell everything and
 selling all against holding all. The title day is the decisions' own `as_of`. A step that

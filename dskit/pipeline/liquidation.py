@@ -23,7 +23,9 @@ the redeploy path is strictly ahead; a tie holds. Two optional inputs replace
 the matching params so estimates are wired, never pasted: ``hold_returns``
 (``{symbol: rate}``, from :mod:`dskit.pipeline.hold_return`) and
 ``redeploy_return`` (a number from :mod:`dskit.pipeline.active_hurdle`, or
-``None`` when that hurdle was inadmissible, which holds every row).
+``None`` when that hurdle was inadmissible, which holds every row). A ``null``
+``redeploy_return`` param declares that there is no alternative at all and takes
+the same path, its summary source ``none`` rather than ``inadmissible``.
 
 Taxes on the two paths are declared separately because they are paid
 differently. The hold path realizes its gain once, at the horizon, over the
@@ -380,7 +382,8 @@ class HoldVsRedeploy(Node):
         ``[-1, 2]`` or ``{symbol: number}``): the annual return of holding,
         per symbol when a mapping (a row whose symbol is absent refuses);
         required unless ``hold_returns`` is wired; ``redeploy_return``
-        (number in ``[-1, 2]``): the annual return of the alternative;
+        (number in ``[-1, 2]``, or ``null``): the annual return of the alternative,
+        ``null`` declaring that there is none (every row holds, source ``none``);
         required unless the ``redeploy_return`` input is wired;
         ``redeploy_cost`` / ``risk_premium`` (numbers in ``[0, 2]``,
         REQUIRED): its annual cost and the premium charged for the
@@ -445,7 +448,8 @@ class HoldVsRedeploy(Node):
                     check_rate_param(problems, f"hold_return[{symbol!r}]", value)
             else:
                 check_rate_param(problems, "hold_return", hold)
-        if "redeploy_return" in params:
+        # null declares no alternative (every row holds); anything else keeps the rate bounds
+        if params.get("redeploy_return") is not None:
             check_rate_param(problems, "redeploy_return", params["redeploy_return"])
         check_redeploy_params(problems, params)
         check_name_params(problems, params,
@@ -494,12 +498,18 @@ class HoldVsRedeploy(Node):
         return wired, "wired"
 
     def _redeploy_source(self, inputs):
-        """Return ``(annual rate or None, source)`` for the redeploy path."""
+        """Return ``(annual rate or None, source)`` for the redeploy path.
+
+        The source is ``wired`` or ``inadmissible`` (a ``None`` input) when the port is wired,
+        else ``param``, or ``none`` for a ``null`` param: no alternative declared.
+        """
         if "redeploy_return" not in inputs:
             if "redeploy_return" not in self.params:
                 raise ValueError(
                     f"{self.key}: no redeploy_return param and no redeploy_return input"
                 )
+            if self.params["redeploy_return"] is None:
+                return None, "none"
             return self.params["redeploy_return"], "param"
         wired = inputs["redeploy_return"]
         if wired is None:
