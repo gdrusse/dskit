@@ -148,6 +148,7 @@ dskit/pipeline/
 │                      (`fifo`; a `LotOrder` per method), an oversell refuses or withholds the key (`allow_incomplete`); lots joined to a positions
 │                      snapshot, each a position row valued pro rata, reconciled share for share (else refuse or the aggregate row), `basis_gap` (+ `basis_gap_max`,
 │                      a warning beyond `BASIS_RTOL`); a day replays by `order_fields` (time, id); a null buy amount falls back to quantity x price, counted
+│                      (`amount_fallbacks`); a zero-cash buy refuses unless `allow_zero_cash`, then quantity x price too (`zero_cash_buys`)
 ├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS
