@@ -731,6 +731,18 @@ def test_a_buy_that_moved_no_cash_is_a_lot_at_quantity_times_price(tmp_path, mon
     row = {r["lot_id"]: r for r in result.outputs["decide"]["records"]}[VGT_LOT]
     assert row["acquired"] == "2025-06-02" and row["liq_holding"] == "short"
     assert row["cost_basis"] == 1200.0
+    # the lot's tax follows, worked by hand at the shipped placeholders (short-term 0.408; the
+    # guard makes a changed rate fail here by name, not as a puzzling arithmetic mismatch):
+    #   gain = 2000 market value - 1200 basis (4 x 300) = 800
+    #   liq_tax = 800 x 0.408 = 326.4, held 147 days (2025-06-02 to 2025-10-27), so short-term
+    #   summary row: embedded_gain = 800 / 2000 = 0.4; tax_cost = 326.4 / 2000 = 0.1632
+    assert _shipped(RUN_DOC, "tax")["short_term_rate"] == 0.408
+    assert (row["market_value"], row["liq_gain"]) == (2000.0, 800.0)
+    assert row["liq_tax"] == pytest.approx(326.4)
+    summarized = {r["lot_id"]: r for r in result.outputs["summary"]["records"]}[VGT_LOT]
+    assert summarized["value"] == 2000.0
+    assert summarized["embedded_gain"] == pytest.approx(0.4)
+    assert summarized["tax_cost"] == pytest.approx(0.1632)
     refused = _decide(root, expect="error", lots={"allow_zero_cash": False})
     assert refused.halted_at == "lots"
     assert "trade" in refused.error and "allow_zero_cash" in refused.error

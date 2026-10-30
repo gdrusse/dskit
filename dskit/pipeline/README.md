@@ -902,7 +902,9 @@ they register only into private registries, never the default one.
   exactly 0.0 moved no cash (a transfer in, a gift, an award) and refuses unless
   `allow_zero_cash` (optional, default false) values it at `quantity x price`, counted
   under `zero_cash_buys` (a positive amount, or price 0.0 on such a buy, still
-  refuses); the last lot a sell touches splits pro rata. A day's trades replay by `order_fields` (an execution
+  refuses; `quantity x price` is the value on arrival, not the basis carried over,
+  and the holding period starts at the row's date); the last lot a sell touches
+  splits pro rata. A day's trades replay by `order_fields` (an execution
   time, then a transaction id); a trade ON `as_of` is replayed, a later one counted. A sell beyond the open shares (history before the
   trades, a transfer in, a short) refuses, or with `allow_incomplete` withholds the
   key's lots and lists it. `LotPositions` joins lots to a positions snapshot: each

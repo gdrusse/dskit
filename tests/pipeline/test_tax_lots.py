@@ -423,20 +423,31 @@ def test_a_zero_cash_buy_refuses_unless_allowed_and_names_the_param(ctx, declare
         _lots(ctx, rows, **declared)
 
 
-def test_a_positive_amount_on_a_buy_refuses_even_when_zero_cash_is_allowed(ctx):
-    """A buy that RECEIVED cash is a sign error, not a buy without cash."""
+@pytest.mark.parametrize("declared", [{}, {"allow_zero_cash": False}, {"allow_zero_cash": True}])
+def test_a_positive_amount_on_a_buy_refuses_whatever_zero_cash_is_declared(ctx, declared):
+    """A buy that RECEIVED cash is a sign error, not a buy without cash: no param admits it, so
+    the refusal must not advertise allow_zero_cash under any declaration of it."""
     with pytest.raises(ValueError, match=r"lots: trade 0 buys 10.0 'A1:VTI' but its 'amount' "
-                                         r"is 5.0; a buy pays cash"):
-        _lots(ctx, [_trade(1, "2024-01-10", 10.0, 100.0, amount=5.0)], allow_zero_cash=True)
+                                         r"is 5.0; a buy pays cash") as refused:
+        _lots(ctx, [_trade(1, "2024-01-10", 10.0, 100.0, amount=5.0)], **declared)
+    assert "allow_zero_cash" not in str(refused.value)
+
+
+def _priced_in_px(row):
+    """Return the trade with its price under ``px``: a refusal must name the DECLARED price field,
+    which a message with the default name 'price' hardcoded would not."""
+    return {**{k: v for k, v in row.items() if k != "price"}, "px": row["price"]}
 
 
 def test_a_zero_cash_buy_at_price_zero_refuses_even_when_allowed(ctx):
     """Quantity x price is the basis of a buy without cash; at price 0.0 nothing values it."""
     with pytest.raises(ValueError, match=r"lots: trade 0 buys 3.0 'A1:VTI' with no cash and a "
-                                         r"'price' of 0.0; nothing values it"):
-        _lots(ctx, [_trade(1, "2024-01-10", 3.0, 0.0, amount=0.0)], allow_zero_cash=True)
+                                         r"'px' of 0.0; nothing values it"):
+        _lots(ctx, [_priced_in_px(_trade(1, "2024-01-10", 3.0, 0.0, amount=0.0))],
+              allow_zero_cash=True, price_field="px")
     # a price above zero is what lets the same row through
-    out = _lots(ctx, [_trade(1, "2024-01-10", 3.0, 0.01, amount=0.0)], allow_zero_cash=True)
+    out = _lots(ctx, [_priced_in_px(_trade(1, "2024-01-10", 3.0, 0.01, amount=0.0))],
+                allow_zero_cash=True, price_field="px")
     assert out["records"][0]["basis"] == pytest.approx(0.03)
 
 
@@ -445,9 +456,10 @@ def test_a_zero_cash_buy_at_price_zero_does_not_advertise_the_param_when_not_all
     """allow_zero_cash would only refuse this row again (nothing values it), so the refusal
     must not point at it."""
     with pytest.raises(ValueError, match=r"lots: trade 0 buys 3.0 'A1:VTI' but its 'amount' is "
-                                         r"0.0; a buy pays cash.*'price' is 0.0 too, "
+                                         r"0.0; a buy pays cash.*'px' is 0.0 too, "
                                          r"so nothing values it") as refused:
-        _lots(ctx, [_trade(1, "2024-01-10", 3.0, 0.0, amount=0.0)], **declared)
+        _lots(ctx, [_priced_in_px(_trade(1, "2024-01-10", 3.0, 0.0, amount=0.0))],
+              price_field="px", **declared)
     assert "allow_zero_cash" not in str(refused.value)
 
 
