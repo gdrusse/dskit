@@ -1,0 +1,13 @@
+symbol,dte_band,reason,refusals
+AMC,22-28,insufficient_fill_size,1
+AMC,36-42,insufficient_fill_size,1
+AMC,36-42,missing_fill_quote,2
+AMC,43-49,insufficient_fill_size,1
+AMC,43-49,missing_fill_quote,1
+AMC,50-60,insufficient_fill_size,2
+GME,15-21,missing_fill_quote,1
+GME,15-21,repriced_shared_cap,1
+GME,22-28,missing_fill_quote,1
+GME,22-28,repriced_shared_cap,1
+GME,8-14,missing_fill_quote,1
+RIOT,43-49,missing_fill_quote,1

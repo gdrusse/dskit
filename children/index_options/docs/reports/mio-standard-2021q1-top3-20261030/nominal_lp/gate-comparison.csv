@@ -1,0 +1,8 @@
+measure,expected,actual,diff,tolerance,ok
+net_pnl,-3827.8500000000004,-3827.85,4.547473508864641e-13,0.005,True
+final_equity,12172.15,12172.15,0.0,0.005,True
+contributions,16000.0,16000.0,0.0,0.005,True
+fees,70.85000000000001,70.85,1.4210854715202004e-14,0.005,True
+fill_count,26,26,0,0,True
+refusal_count,27,27,0,0,True
+decision_count,13,13,0,0,True

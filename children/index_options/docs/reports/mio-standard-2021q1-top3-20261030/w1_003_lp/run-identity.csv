@@ -1,0 +1,21 @@
+field,value
+MIO method,w1_003_lp
+cohort,broad212 prior universe; top three chosen by 2019 net profit
+account window,2021-01-04 through 2021-03-31; 61 sessions; new independent account
+decision dates,13
+coverage action,new 61 sessions; prior Q1 coverage 0
+permit,amended_replay; original failed attempt preserved
+source MIO result SHA256,ce39e2062c378d6576af97f673f795df04b724b4f696729c677a43cdd94399ac
+source MIO run hash,b926c031c5ce2662de2d12c1738c90ac7b1643e33cd949dc9772299f9389da0c
+source MIO config,run-mio-top3-2021q1-amended-replay.json
+source MIO config SHA256,29dd5f077ed92de4ad9c9fbae8ed778b629c098e0586936f16171b65a027856c
+source receipt SHA256,ce39e2062c378d6576af97f673f795df04b724b4f696729c677a43cdd94399ac
+predictive model,fixed selected_mlp64_s29 fit/early-stop through 2019; causal M53 rolling blend
+neural weights SHA256,b70152e1e5e260c65c572d42e09f04470386a7baedb0738db4bf550f993db878
+M53 forecast SHA256,e4a464e44edc17fc30e9fa8b490ce2659242a7e2ffae13bb7b22afc128c2fdef
+Q1 source manifest SHA256,a0bbfb0476eabe9e2feb2d0d77667824596a571e96aa124bd32ee60218becda2
+quote-index manifest SHA256,49675f405241cf2ce3a65dbeac286baa0376e0ed58a716fe9c44218deb344ca5
+report renderer commit,c0e5bc6df820984dd6947e7a9e62a8dbf1cbc505
+Q1 execution stress,unrun
+exact order-leg quantities CSV,https://github.com/gdrusse/dskit/blob/main/children/index_options/docs/reports/mio-standard-2021q1-top3-20261030/orders-and-fills.csv
+exact order-leg quantities SHA256,7c57ff3c5d95964b9ee2cf9477ac080c65913c211348824c6818235b8df8fd76

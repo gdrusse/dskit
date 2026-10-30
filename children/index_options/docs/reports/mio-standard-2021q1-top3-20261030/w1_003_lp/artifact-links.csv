@@ -1,0 +1,7 @@
+id,key,path,status,sha256,bytes,pinned
+result_json,,/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/result.json,present,ce39e2062c378d6576af97f673f795df04b724b4f696729c677a43cdd94399ac,19750290,match
+artifact-index_json,,/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/artifact-index.json,present,8c86b718337975ff05c05bee20b385c987a5cbde18e02b595296f67e5288d364,1923,n/a
+trades_csv,,/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/trades.csv,present,fbd4709da08ea6654b26e6b3b27199aed54079e7861ad501910f6fc43b26b0ce,22686,match
+rejected-orders_csv,,/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/rejected-orders.csv,present,65f4ea8f111bdc6f3d8885f7f1eb14b40de7ed19952f8cde8a8588b7319bd8d9,58677,match
+orders-and-fills_csv,,/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/orders-and-fills.csv,present,7c57ff3c5d95964b9ee2cf9477ac080c65913c211348824c6818235b8df8fd76,30945,match
+daily-account_csv,,/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/daily-account.csv,present,049ddcdd7e40ae9ce811c866c18419f13fc0f3289c7f4c5e0c4b7273f444b5ea,37365,match
