@@ -139,7 +139,8 @@ from types import MappingProxyType
 
 from dskit.pipeline.node import class_ref
 from dskit.pipeline.records import cluster_ok, number_ok
-from dskit.pipeline.stats import cluster_bootstrap_t, newey_west_mean, student_t_sf
+from dskit.pipeline.stats import cluster_bootstrap_t, newey_west_mean
+from dskit.pipeline.stats import student_t_critical as _student_t_critical
 
 __all__ = [
     "DEFAULT_LEVEL",
@@ -190,17 +191,6 @@ DEFAULT_SEED = 0
 #: ``minimum_units``.
 MIN_INDEPENDENT_UNITS = 8
 
-#: Bisection depth for the Student-t inversion — far past float64's ~53
-#: bits, so the returned critical value is exact to representation and
-#: does not depend on a tolerance anyone picked.
-_BISECTION_STEPS = 100
-
-#: The largest critical value the inversion will bracket. A confidence so
-#: extreme that the t quantile exceeds this is refused rather than
-#: silently clamped to a finite bound.
-_QUANTILE_CEILING = 1e8
-
-
 def _check_open_unit(value, name):
     """Refuse anything that is not a finite number strictly inside (0, 1)."""
     if not number_ok(value) or not 0.0 < value < 1.0:
@@ -211,34 +201,6 @@ def _check_count(value, name, minimum):
     """Refuse anything that is not a plain int at or above ``minimum``."""
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ValueError(f"{name} must be an int >= {minimum}, got {value!r}")
-
-
-def _student_t_critical(level, df):
-    """Invert the Student tail for the two-sided ``level`` critical value."""
-    target = 0.5 * (1.0 - level)
-    high = 1.0
-    while student_t_sf(high, df) > target:
-        high *= 2.0
-        if high > _QUANTILE_CEILING:
-            raise ValueError(
-                f"level {level!r} needs a Student-t critical value above "
-                f"{_QUANTILE_CEILING:g} at df={df} — ask for a lower level or "
-                "bring more independent units"
-            )
-    low = 0.0
-    for _ in range(_BISECTION_STEPS):
-        mid = 0.5 * (low + high)
-        # A step that leaves (low, high) unchanged is a fixed point: every
-        # later step repeats it exactly, so stopping returns the same bits.
-        if student_t_sf(mid, df) > target:
-            if mid == low:
-                break
-            low = mid
-        else:
-            if mid == high:
-                break
-            high = mid
-    return 0.5 * (low + high)
 
 
 @dataclass(frozen=True)

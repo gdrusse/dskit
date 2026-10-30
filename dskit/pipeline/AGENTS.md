@@ -60,7 +60,8 @@ dskit/pipeline/
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
 ├── predictions.py     every scored validation row -> one parquet per run (ADR-0064)
 ├── ordering.py        calibration slope + per-timestamp cross-sectional IC,
-│                      with the <5-name usability refusal (ADR-0068, `ordering` verb)
+│                      with the <5-name usability refusal (ADR-0068, `ordering` verb);
+│                      clustered_calibration_slope (one-/two-way cluster-robust band)
 ├── study_protocol.py  StudyContract/ExposureRegistry: metadata plan, explicit packet controls, atomic exposure and attested results
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
@@ -88,7 +89,8 @@ dskit/pipeline/
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085),
 │                      horizon-pairs (dated close paired with the close H days later, ADR-0228;
 │                      one series or one per `symbol_field`, ADR-0259)
-├── kinds_stats.py     owned validate + stat_test; CrossSectionIC (by import path, ADR-0259):
+├── kinds_stats.py     owned validate + stat_test; ClusteredCalibrationSlope (by import path);
+│                      CrossSectionIC (by import path, ADR-0259):
 │                      per-instant rank IC of named measures across names, a benchmark
 │                      partialled out, split/month summaries, drop census; QuantileSortBook (by import
 │                      path, ADR-0265): per-stamp quantile long-short book, cost per side, NW + bootstrap + BH
@@ -123,6 +125,7 @@ dskit/pipeline/
 │                      CalendarBlockBootstrap + EdgePaddedCalendarBlockBootstrap:
 │                      calendar-day block resampling, one `_blocks_for` hook (ADR-0258)
 │                      sample_quantile: interpolated quantile of a whole sample (ADR-0265)
+│                      student_t_critical / student_t_sf: the one Student-t quantile and tail
 ├── binary_pricing.py  AveragedLognormal law, Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
 ├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)
 ├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds; per-edge proven float error, EDGE_MAX_ERROR, PRICE_FLOOR) + quote_problems (by import path, ADR-0257)

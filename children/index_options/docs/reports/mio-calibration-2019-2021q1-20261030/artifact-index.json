@@ -1,0 +1,16 @@
+{
+  "run_name": "mio-expected-calibration-2019-2021q1-20261030",
+  "document_hash": "963a76b2f067a784f569a4c6dee4a46e7946b605731cf89780b419c4ca018289",
+  "run_hash": "c261541f",
+  "run_hash_full": "c261541fc75e51d82565332e9c5cb77ad4fc586d70ce4bdb53ba5dc5b8b858fa",
+  "files": {
+    "books.csv": {
+      "sha256": "1b3ff7537c1329e7c82df4dfbe02e166f396d10102e4922d5f866ef88e402078",
+      "bytes": 327967
+    },
+    "summary.md": {
+      "sha256": "53ad56e14a8c351490b13be7926596887700d16cc7fcb220c5082faadba29f91",
+      "bytes": 4299
+    }
+  }
+}

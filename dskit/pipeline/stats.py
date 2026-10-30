@@ -108,6 +108,7 @@ __all__ = [
     "sample_quantile",
     "sharpe_ratio",
     "skill_vs_mean",
+    "student_t_critical",
     "student_t_sf",
     "weighted_benjamini_hochberg",
 ]
@@ -903,11 +904,10 @@ def regularized_incomplete_beta(a, b, x):
 def student_t_sf(t, df):
     """Compute the upper tail ``P(T > t)`` of a Student t distribution.
 
-    The one owner of the Student tail in this package. It is public
-    because the inversion a confidence interval needs lives in the module
-    that needs it (:mod:`~dskit.pipeline.mean_interval` bisects on this),
-    and a second copy of the continued fraction underneath would be the
-    duplication this repo forbids rather than a convenience.
+    The one owner of the Student tail in this package; its inverse,
+    :func:`student_t_critical`, bisects on it, and a second copy of the
+    continued fraction underneath would be the duplication this repo
+    forbids rather than a convenience.
 
     Parameters
     ----------
@@ -945,6 +945,79 @@ def student_t_sf(t, df):
         raise ValueError(f"student_t_sf needs a finite t, got {t!r}")
     tail = 0.5 * regularized_incomplete_beta(df / 2.0, 0.5, df / (df + t * t))
     return tail if t > 0.0 else 1.0 - tail
+
+
+#: Bisection depth for the Student-t inversion — far past float64's ~53
+#: bits, so the returned critical value is exact to representation and
+#: does not depend on a tolerance anyone picked.
+_BISECTION_STEPS = 100
+
+#: The largest critical value the inversion will bracket. A confidence so
+#: extreme that the t quantile exceeds this is refused rather than
+#: silently clamped to a finite bound.
+_QUANTILE_CEILING = 1e8
+
+
+def student_t_critical(level, df):
+    """Two-sided Student-t critical value: ``c`` with ``P(|T| > c) = 1 - level``.
+
+    The one owner of the Student-t inversion (moved here from
+    :mod:`~dskit.pipeline.mean_interval`, which imports it, so the tail
+    and its inverse live together). Bisection on :func:`student_t_sf`,
+    exact to float representation.
+
+    Parameters
+    ----------
+    level : float
+        Two-sided confidence level, strictly inside (0, 1).
+    df : float
+        Degrees of freedom, a finite number > 0.
+
+    Returns
+    -------
+    float
+        The critical value, > 0.
+
+    Raises
+    ------
+    ValueError
+        On a level outside (0, 1), a bad ``df``, or a level so extreme its
+        critical value exceeds ``_QUANTILE_CEILING``.
+
+    Examples
+    --------
+    The familiar 95% value on 12 degrees of freedom::
+
+        round(student_t_critical(0.95, 12), 4)  # 2.1788
+    """
+    if isinstance(level, bool) or not number_ok(level) or not 0.0 < level < 1.0:
+        raise ValueError(f"student_t_critical needs a level in (0, 1), got {level!r}")
+    if isinstance(df, bool) or not number_ok(df) or df <= 0.0:
+        raise ValueError(f"student_t_critical needs a finite df > 0, got {df!r}")
+    target = 0.5 * (1.0 - level)
+    high = 1.0
+    while student_t_sf(high, df) > target:
+        high *= 2.0
+        if high > _QUANTILE_CEILING:
+            raise ValueError(
+                f"level {level!r} needs a Student-t critical value above "
+                f"{_QUANTILE_CEILING:g} at df={df} — ask for a lower level or "
+                "bring more independent units"
+            )
+    low = 0.0
+    for _ in range(_BISECTION_STEPS):
+        mid = 0.5 * (low + high)
+        # A step that leaves (low, high) unchanged is a fixed point: every
+        # later step repeats it exactly, so stopping returns the same bits.
+        if student_t_sf(mid, df) > target:
+            if mid == low:
+                break
+            low = mid
+        else:
+            if mid == high:
+                break
+            high = mid
+    return 0.5 * (low + high)
 
 
 def diebold_mariano_test(d, lags=0, h_steps=1):

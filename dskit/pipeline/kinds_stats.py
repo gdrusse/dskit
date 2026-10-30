@@ -31,6 +31,11 @@ document swaps a synthetic registry for the toolkit one without rewiring.
   statistics, a calendar-block bootstrap interval and one BH / Bonferroni
   family across the signals.
 
+* :class:`ClusteredCalibrationSlope` (role ``transform``, by import path) —
+  the calibration slope of an outcome on a forecast per group, with a one-
+  or two-way cluster-robust band
+  (:func:`~dskit.pipeline.ordering.clustered_calibration_slope`).
+
 Registration is deliberate, never an import side effect: the orchestrator
 calls :func:`register` to claim the owned kind names in a registry
 (idempotent — names already present are skipped); ``owned=True`` is what
@@ -55,8 +60,13 @@ from dskit.pipeline.node import (
     check_int_param,
     reject_unknown_params,
 )
-from dskit.pipeline.ordering import cross_section_by_stamp, ic_from_rho, spearman
-from dskit.pipeline.records import number_ok
+from dskit.pipeline.ordering import (
+    clustered_calibration_slope,
+    cross_section_by_stamp,
+    ic_from_rho,
+    spearman,
+)
+from dskit.pipeline.records import cluster_ok, number_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
 from dskit.pipeline.stats import (
     CalendarBlockBootstrap,
@@ -2079,6 +2089,205 @@ class QuantileSortBook(Node):
         self.log.info("%s: %d row(s) in, %d signal(s), %d scored stamp record(s)",
                       self.key, rows_in, len(signals), len(records))
         return {"summary": summary, "records": records}
+
+
+class ClusteredCalibrationSlope(Node):
+    """Calibration slope of an outcome on a forecast, cluster-robust, per group — by import path.
+
+    Role ``transform``. ``uses: "dskit.pipeline.kinds_stats:ClusteredCalibrationSlope"``;
+    never registered. The number is
+    :func:`~dskit.pipeline.ordering.clustered_calibration_slope` over a
+    record stream: does the forecast's SIZE carry over into the outcome
+    (``b ≈ 1``), at the wrong scale (``0 < b < 1``), or not at all (band
+    covers 0)? Rows that are not a time series — books, trades, names —
+    share shocks within one or two ``cluster_fields`` (a date, a name);
+    the band is one- or two-way cluster-robust with Student-t on the
+    fewest clusters minus one.
+
+    Every row must carry a finite ``forecast_field`` and
+    ``outcome_field`` and a non-empty string in each cluster field and
+    group field; anything else REFUSES by row index (filter upstream —
+    a slope over the rows that happened to be well formed is a different
+    number from the one the document declared). A group too small to
+    estimate (fewer than three rows, a constant forecast, a cluster
+    dimension with one cluster) is REPORTED with null statistics and
+    its reason in ``skipped``, so a thin cell is visible rather than
+    silently absent or fatal to its siblings.
+
+    Outputs
+    -------
+    ``records``
+        One row per group, sorted by the group values: the group fields,
+        ``n``, ``slope``, ``intercept``, ``pearson_r``, ``slope_se``,
+        ``variance_rule``, ``se_<field>`` and ``n_clusters_<field>`` per
+        cluster field, ``n_clusters_intersection``, ``df``, ``level``,
+        ``ci_low``, ``ci_high``, ``t_vs_0``, ``t_vs_1``, ``p_vs_0``,
+        ``forecast_sum``, ``outcome_sum`` and ``skipped`` (``None`` when
+        estimated).
+    ``metrics``
+        ``rows_in``, ``groups``, ``skipped``.
+
+    Parameters
+    ----------
+    params : dict
+        ``forecast_field``, ``outcome_field`` (non-empty str, REQUIRED);
+        ``cluster_fields`` (list of one or two distinct non-empty str,
+        REQUIRED); ``group_fields`` (list of distinct non-empty str, none
+        of them a cluster field; default ``[]``, one group);
+        ``level`` (number in (0, 1); default
+        :data:`~dskit.pipeline.mean_interval.DEFAULT_LEVEL`).
+
+    Examples
+    --------
+    Realized book P&L on the optimizer's expected profit, clustered by
+    decision date and symbol, one row per cohort::
+
+        node = ClusteredCalibrationSlope("g1", {
+            "forecast_field": "expected", "outcome_field": "pnl",
+            "cluster_fields": ["decision_date", "symbol"],
+            "group_fields": ["cohort"]})
+        out = node.run(ctx, {"records": books})
+        out["records"][0]["ci_low"]
+    """
+
+    role = "transform"
+    outputs = ("records", "metrics")
+    _PARAMS = ("forecast_field", "outcome_field", "cluster_fields", "group_fields", "level")
+    _REQUIRED = ("forecast_field", "outcome_field", "cluster_fields")
+
+    @staticmethod
+    def _field_list_problems(name, value, minimum, maximum=None):
+        """Problems with a list of distinct non-empty field names."""
+        if (not isinstance(value, list) or len(value) < minimum
+                or (maximum is not None and len(value) > maximum)
+                or any(not isinstance(f, str) or not f for f in value)
+                or len(set(value)) != len(value)):
+            span = f"{minimum}..{maximum}" if maximum is not None else f"{minimum} or more"
+            return [f"{name} must be a list of {span} distinct non-empty field names, got {value!r}"]
+        return []
+
+    @classmethod
+    def validate_params(cls, params):
+        """Default-deny: refuse unknown, missing and malformed knobs.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block.
+
+        Returns
+        -------
+        list of str
+            One message per problem.
+        """
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        for name in cls._REQUIRED:
+            if name not in params:
+                problems.append(f"{name} is required")
+        for name in ("forecast_field", "outcome_field"):
+            if name in params and (not isinstance(params[name], str) or not params[name]):
+                problems.append(f"{name} must be a non-empty string")
+        if "cluster_fields" in params:
+            problems += cls._field_list_problems("cluster_fields", params["cluster_fields"], 1, 2)
+        if "group_fields" in params:
+            groups = params["group_fields"]
+            problems += cls._field_list_problems("group_fields", groups, 0)
+            clusters = params.get("cluster_fields")
+            if isinstance(groups, list) and isinstance(clusters, list) and set(groups) & set(
+                    c for c in clusters if isinstance(c, str)):
+                problems.append("group_fields may not repeat a cluster field — a group "
+                                "holding one cluster has no cluster band")
+        if "level" in params:
+            level = params["level"]
+            if isinstance(level, bool) or not number_ok(level) or not 0 < level < 1:
+                problems.append(f"level must be a number in (0, 1), got {level!r}")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Problems with the wired ``records`` (a materialized list)."""
+        records = inputs.get("records")
+        if not isinstance(records, (list, tuple)):
+            return [f"records must be a list of rows, got {type(records).__name__}"]
+        return []
+
+    def _cells(self, index, row):
+        """``(group key, forecast, outcome, cluster labels)`` of one row, refusing by index."""
+        p = self.params
+        where = f"{self.key}: row {index}"
+        try:
+            forecast, outcome = _field(row, p["forecast_field"]), _field(row, p["outcome_field"])
+            labels = [_field(row, f) for f in p["cluster_fields"]]
+            group = tuple(_field(row, f) for f in p.get("group_fields", []))
+        except ValueError as exc:
+            raise ValueError(f"{where}: {exc}") from None
+        for name, value in ((p["forecast_field"], forecast), (p["outcome_field"], outcome)):
+            if isinstance(value, bool) or not number_ok(value):
+                raise ValueError(f"{where}: {name} {value!r} is not a finite number")
+        for name, value in zip([*p["cluster_fields"], *p.get("group_fields", [])], [*labels, *group]):
+            if not cluster_ok(value):
+                raise ValueError(f"{where}: {name} {value!r} must be a non-empty string")
+        return group, float(forecast), float(outcome), labels
+
+    def run(self, ctx, inputs):
+        """Group the rows and fit each group's clustered calibration slope.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused.
+        inputs : dict
+            ``records``: a list of mapping (or attribute-bearing) rows.
+
+        Returns
+        -------
+        dict
+            ``records`` and ``metrics`` as the class docstring describes.
+
+        Raises
+        ------
+        ValueError
+            On a row missing a field or carrying a bad cell, named by index.
+        """
+        p = self.params
+        clusters = p["cluster_fields"]
+        groups = {}
+        for index, row in enumerate(inputs["records"]):
+            group, forecast, outcome, labels = self._cells(index, row)
+            groups.setdefault(group, []).append((forecast, outcome, labels))
+        out, skipped = [], 0
+        for group in sorted(groups):
+            cells = groups[group]
+            row = dict(zip(p.get("group_fields", []), group))
+            forecasts = [c[0] for c in cells]
+            outcomes = [c[1] for c in cells]
+            row.update(n=len(cells), forecast_sum=math.fsum(forecasts), outcome_sum=math.fsum(outcomes))
+            try:
+                fit = clustered_calibration_slope(
+                    outcomes, forecasts, [[c[2][k] for c in cells] for k in range(len(clusters))],
+                    level=p.get("level"))
+            except ValueError as exc:
+                skipped += 1
+                fit = None
+                row["skipped"] = str(exc)
+            row.update(self._fit_fields(fit, clusters))
+            if fit is not None:
+                row["skipped"] = None
+            out.append(row)
+        return {"records": out,
+                "metrics": {"rows_in": len(inputs["records"]), "groups": len(out), "skipped": skipped}}
+
+    @staticmethod
+    def _fit_fields(fit, clusters):
+        """The flat statistic fields of one group's fit (all None when skipped)."""
+        names = ("slope", "intercept", "pearson_r", "slope_se", "variance_rule",
+                 "n_clusters_intersection", "df", "level", "ci_low", "ci_high",
+                 "t_vs_0", "t_vs_1", "p_vs_0")
+        fields = {k: (None if fit is None else fit[k]) for k in names}
+        for k, name in enumerate(clusters):
+            fields[f"se_{name}"] = None if fit is None else fit["se_by_dimension"][k]
+            fields[f"n_clusters_{name}"] = None if fit is None else fit["n_clusters"][k]
+        return fields
 
 
 def register(registry=None) -> None:
