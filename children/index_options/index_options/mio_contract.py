@@ -245,7 +245,8 @@ class MIOStudyContract(StudyContract):
                     or item["quote_start"] != start or item["quote_end_before"] != end
                     or item["source_fold"] != 2 or item["ranked_folds"] != [2]):
                 raise ValueError("saved source intervals and fold must cover H1/H2 fold 2")
-            method = MIOStudyContract._saved_source_method(source, item)
+            method = MIOStudyContract._saved_source_method(
+                source, item, MIOStudyContract._expected_saved_method(selection))
             if method_params is None:
                 method_params = method
             elif method != method_params:
@@ -257,8 +258,9 @@ class MIOStudyContract(StudyContract):
     def _receipt_source(study, selection):
         """Read the receipt through its shared forecast/context manifest."""
         d = study["domain"]
-        if set(selection) != {"policy", "receipt"}:
+        if set(selection) - {"saved_method"} != {"policy", "receipt"}:
             raise ValueError("owner-selected receipt reference required")
+        MIOStudyContract._expected_saved_method(selection)
         ref = selection["receipt"]
         if not isinstance(ref, dict) or set(ref) != {"source", "file", "sha256"}:
             raise ValueError("invalid owner-selected receipt reference")
@@ -287,8 +289,29 @@ class MIOStudyContract(StudyContract):
                     or source.pin["files"].get(relpath) != digest):
                 raise ValueError("stitched source does not match receipt manifest")
 
+    #: The accepted M53 producer method: a rolling quantile average with dispersion buckets.
+    PINNED_SAVED_METHOD = {"by": "disp", "components": ["model", "market_cal", "pooled", "baseline"],
+                           "kind": "quantile_average", "learn": "rolling", "levels": 199,
+                           "max_learning_rows": 100000, "min_rows": 5000, "refit_days": 21}
+
     @staticmethod
-    def _saved_source_method(source, item):
+    def _expected_saved_method(selection):
+        """Return the producer method the saved forecasts must declare.
+
+        ``predictive.saved_method`` (optional) names an explicitly owner-selected variant of the
+        pinned M53 method (ADR-0285: the level-bands blend); absent, the pinned method binds.
+        """
+        if "saved_method" not in selection:
+            return copy.deepcopy(MIOStudyContract.PINNED_SAVED_METHOD)
+        method = selection["saved_method"]
+        if (not isinstance(method, dict) or method.get("kind") != "quantile_average"
+                or method.get("components") != MIOStudyContract.PINNED_SAVED_METHOD["components"]
+                or method.get("learn") != "rolling"):
+            raise ValueError("predictive.saved_method must be an explicit rolling quantile-average M53 variant")
+        return copy.deepcopy(method)
+
+    @staticmethod
+    def _saved_source_method(source, item, expected_method=None):
         """Verify the saved producer and return its pinned M53 behavior."""
         for role in ("forecast", "context"):
             pin = item[role]
@@ -315,9 +338,8 @@ class MIOStudyContract(StudyContract):
             raise ValueError("saved M53 producer config or run attestation differs")
         method = {k: copy.deepcopy(v) for k, v in recipe.items()
                   if k not in {"source", "source_sha256", "end_before", "output", "tables", "periods", "notes"}}
-        expected_method = {"by": "disp", "components": ["model", "market_cal", "pooled", "baseline"],
-                           "kind": "quantile_average", "learn": "rolling", "levels": 199,
-                           "max_learning_rows": 100000, "min_rows": 5000, "refit_days": 21}
+        if expected_method is None:
+            expected_method = MIOStudyContract.PINNED_SAVED_METHOD
         if method.get("method") != expected_method:
             raise ValueError("saved source does not use the pinned M53 rolling-dispersion method")
         return method
@@ -402,7 +424,8 @@ class MIOStudyContract(StudyContract):
             lo, hi = (MIOStudyContract._date(item[k]) for k in ("quote_start", "quote_end_before"))
             if lo != cursor or not lo < hi <= end:
                 raise ValueError("saved forecast intervals must exactly cover packet")
-            method = MIOStudyContract._saved_source_method(source, item)
+            method = MIOStudyContract._saved_source_method(
+                source, item, MIOStudyContract._expected_saved_method(selection))
             producer_end = MIOStudyContract._date(item["recipe_params"].get("end_before"))
             if not hi <= producer_end <= bridge["protected_end_before"]:
                 raise ValueError("producer bound does not cover the nonprotected forecast interval")
