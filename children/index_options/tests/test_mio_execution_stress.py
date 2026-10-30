@@ -445,8 +445,9 @@ def test_approved_scenarios_extend_without_changing_earlier_schemas():
                        'price_fraction': 0, 'half_size': False,
                        'expiry_multiplier': 1, 'proportional_fill': True}]
     assert stress._approved_scenarios('mio-execution-stress/v4') == v1
+    assert stress._approved_scenarios('mio-execution-stress/v5') == v1  # ADR-0280 amendment
     with pytest.raises(ValueError):
-        stress._approved_scenarios('mio-execution-stress/v5')
+        stress._approved_scenarios('mio-execution-stress/v6')
 
 
 def test_v3_document_is_the_approved_contract_with_a_distinct_root():
@@ -736,9 +737,9 @@ def test_one_sizing_owner_serves_ordinary_and_stressed_fills(monkeypatch):
 
 
 # Review Major (test quality): construct FrozenMIOReplay and execute on a tmp tree.
-def _weekdays(n=252):
+def _weekdays(n=252, start='2019-01-02'):
     from datetime import date, timedelta
-    day, days = date(2019, 1, 2), []
+    day, days = date.fromisoformat(start), []
     while len(days) < n:
         if day.weekday() < 5:
             days.append(day.isoformat())
@@ -757,12 +758,13 @@ class _Quotes(dict):
         pass
 
 
-def _quote_rows():
+def _quote_rows(calendar=None, expiry=None):
+    calendar, expiry = calendar or CALENDAR, expiry or EXPIRY
     rows = _Quotes()
-    for day in CALENDAR[1:21]:
+    for day in calendar[1:21]:
         for strike, bid, ask, bid_size, ask_size in ((100.0, 4.0, 4.2, 10, 3),
                                                      (105.0, 2.0, 2.1, 10, 10)):
-            rows[day, EXPIRY, 'call', strike] = {
+            rows[day, expiry, 'call', strike] = {
                 'bid': bid, 'ask': ask, 'bid_size': bid_size,
                 'ask_size': ask_size, 'basis_factor': 1.0}
     return rows
@@ -782,13 +784,15 @@ def _domain(fill_sizing):
             'sources': {'bars': {}, 'chain': {}}}
 
 
-def _draft_packets(domain):
+def _draft_packets(domain, calendar=None):
+    calendar = calendar or CALENDAR
+    expiry = calendar[20]
     legs = [{'right': 'call', 'strike': 100.0, 'sign': 1, 'quantity': 4, 'price': 4.2},
             {'right': 'call', 'strike': 105.0, 'sign': -1, 'quantity': 4, 'price': 2.0}]
-    book = {'id': CALENDAR[0] + ':ABC:' + EXPIRY, 'symbol': 'ABC', 'expiry': EXPIRY,
-            'decision_date': CALENDAR[0], 'factor': 1.0, 'contracts': 8, 'legs': legs,
+    book = {'id': calendar[0] + ':ABC:' + expiry, 'symbol': 'ABC', 'expiry': expiry,
+            'decision_date': calendar[0], 'factor': 1.0, 'contracts': 8, 'legs': legs,
             'credit': -885.2, 'reserve': 885.2, 'max_loss': 885.2}
-    decision = {'date': CALENDAR[0], 'status': 'selected', 'candidate_books': 1,
+    decision = {'date': calendar[0], 'status': 'selected', 'candidate_books': 1,
                 'candidate_contracts': 2, 'refusals': [], 'components': {'groups': []},
                 'books': [book]}
     return [{'id': m['id'], 'status': 'completed',
@@ -986,3 +990,247 @@ def test_v4_execute_pins_run_document_and_compares_partial_fill_rows(tmp_path, l
     assert manifest['evidence_kind'] == stress._PROXY_NOTE
     summary = (output / 'report.md').read_text()
     assert '| limited36 | control | m0 | complete | 1 | 1 | 0 |' in summary
+
+
+# ADR-0280 amendment (ADR-0285): schema v5 replays any pinned range. The
+# fixture mirrors the Q1 2021 layout: one cohort, three methods, 61 sessions,
+# a run document in a configs subdirectory and the mio/exports result folder.
+V5 = 'mio-execution-stress/v5'
+Q1 = _weekdays(61, '2021-01-04')
+Q1_EXPIRY = Q1[20]
+Q1_COHORT = 'q1_top3'
+Q1_CONFIG = 'mio-q1/run.json'
+Q1_BOUNDS = {'methods': 3, 'sessions': 61, 'end_before': '2021-04-01',
+             'latest_expiry': '2021-03-26'}
+
+
+def _commit(repo):
+    import subprocess
+    if not (repo / '.git').exists():
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    subprocess.run(['git', '-C', str(repo), 'add', '-A'], check=True)
+    subprocess.run(['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@t',
+                    '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null',
+                    'commit', '-q', '--allow-empty', '-m', 'fixture'], check=True)
+
+
+def _q1_domain():
+    domain = _domain('available_size')
+    domain['params']['methods'] = domain['params']['methods'][:3]
+    domain['params']['bridge'] = {  # The pinned Q1 run document's window fields.
+        **domain['params']['bridge'], 'start': '2021-01-04', 'end_before': '2021-04-01',
+        'protected_end_before': '2024-01-01', 'fold': 3}
+    return domain
+
+
+def _v5_tree(tmp_path, *, results=None, overrides=None, config=Q1_CONFIG):
+    """A v5 repository root, the exports folder, results pins and document."""
+    sha = stress._sha
+    repo, evidence = tmp_path / 'repo', tmp_path / 'evidence'
+    domain = _q1_domain()
+    config_path = repo / 'children/index_options/configs' / config
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(
+        {'pipeline': {'plan': {'params': {'study': {'domain': domain}}}}}))
+    _commit(repo)
+    results = results if results is not None else _draft_packets(domain, Q1)
+    exports = evidence / 'mio/exports'
+    exports.mkdir(parents=True, exist_ok=True)
+    (exports / 'result.json').write_text(json.dumps(
+        {'complete': True, 'results': results, 'audit': {'calendar': Q1}}))
+    csv_sha = {}
+    for csv_name, body in _csvs(results).items():
+        (exports / csv_name).write_text(body)
+        csv_sha[csv_name] = sha(exports / csv_name)
+    (exports / 'artifact-index.json').write_text(json.dumps(
+        {'files': {name: {'sha256': value} for name, value in csv_sha.items()}}))
+    pins = {'evidence': {'artifact-index.json': {
+                'path': str(exports / 'artifact-index.json'),
+                'sha256': sha(exports / 'artifact-index.json')}},
+            'original_configs': {config: {'sha256': sha(config_path)}},
+            'runs': {Q1_COHORT: {'run_dir': str(evidence), 'run_hash': 'r', 'sha256': 's',
+                                 'document_hash': 'd'}},
+            'sources': {}}
+    (evidence / 'pins.json').write_text(json.dumps(pins))
+    entry = {'config': config, 'result_dir': str(exports),
+             'result_sha256': sha(exports / 'result.json'), 'csv_sha256': csv_sha,
+             'quote_index_sha256': {'ABC': 'q'}, **Q1_BOUNDS, **(overrides or {})}
+    document = {
+        'schema': V5, 'repository_root': str(repo), 'period_label': '2021 Q1 validation',
+        'results_pins': str(evidence / 'pins.json'),
+        'results_pins_sha256': sha(evidence / 'pins.json'),
+        'cohorts': {Q1_COHORT: entry},
+        'scenarios': stress._approved_scenarios(V5),
+        'output_root': str(tmp_path / 'out')}
+    (evidence / 'document.json').write_text(json.dumps(document))
+    return document, pins
+
+
+@pytest.fixture
+def q1_loaders(loaders, monkeypatch):
+    """The in-memory readers, with quotes on the Q1 calendar."""
+    monkeypatch.setattr(stress, '_index_view', lambda path, symbol, expected: (
+        _Quotes(_quote_rows(Q1, Q1_EXPIRY)), {'sha256': expected, 'rows': 40}))
+
+
+def test_v5_reuses_exactly_the_seven_v4_scenarios():
+    assert stress._approved_scenarios(V5) == stress._approved_scenarios(V4)
+    assert [s['id'] for s in stress._approved_scenarios(V5)] == [
+        'control', 'adverse_price', 'half_size', 'expiry_down_15', 'expiry_up_15',
+        'joint_down_15', 'joint_up_15']
+
+
+def test_v5_and_available_size_require_each_other():
+    stress.FrozenMIOReplay._sizing_schema(AVAILABLE, V5)
+    for legacy in ({}, {'fill_sizing': 'all_or_none'}):
+        with pytest.raises(ValueError, match='v5'):
+            stress.FrozenMIOReplay._sizing_schema(legacy, V5)
+
+
+def test_protected_window_is_the_path_a0003_holdout_start():
+    import csv
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / 'docs/decisioning/path.csv'
+    with path.open(newline='') as stream:
+        row = next(r for r in csv.DictReader(stream) if r['id'] == 'A0003')
+    assert 'holdout ' + stress._PROTECTED_FROM + '..' in ' '.join(row.values())
+
+
+def _q1_original_results(tmp_path):
+    """Recompute the Q1-shaped control once; it becomes the pinned original."""
+    document, pins = _v5_tree(tmp_path / 'draft')
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(stress.FrozenMIOReplay, '_verify_control_csv_rows', lambda self, r: None)
+        replay = stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+        results = []
+        for packet in replay.original['results']:
+            result, _daily = replay.run_method(packet, stress._approved_scenarios(V5)[0])
+            results.append({**packet, 'result': json.loads(json.dumps(result))})
+    return results
+
+
+def test_v5_execute_replays_a_pinned_q1_range_controls_first(tmp_path, q1_loaders, capsys):
+    results = _q1_original_results(tmp_path)
+    assert [p['id'] for p in results] == ['m0', 'm1', 'm2']
+    for packet in results:  # Same hand-computed 3x3 fill as the 2019 known answer.
+        trade, = packet['result']['trades']
+        assert trade['fill_date'] == Q1[1] and trade['close_date'] == Q1_EXPIRY
+        assert trade['pnl'] == pytest.approx(-663.9, abs=1e-9)
+        assert len(packet['result']['curve']) == 61
+    _v5_tree(tmp_path / 'good', results=results)
+    capsys.readouterr()
+    output = stress.execute(tmp_path / 'good/evidence/document.json')
+    cases = [line.split()[:3] for line in capsys.readouterr().out.splitlines()
+             if line.startswith(Q1_COHORT + ' ')]
+    assert len(cases) == 21
+    assert [c[1] for c in cases[:3]] == ['control'] * 3
+    assert all(c[1] != 'control' for c in cases[3:])
+    summary = json.loads((output / 'summary.json').read_text())
+    assert len(summary) == 21 and {r['status'] for r in summary} == {'complete'}
+    assert {(r['scenario'], r['method']) for r in summary} == {
+        (s['id'], m) for s in stress._approved_scenarios(V5) for m in ('m0', 'm1', 'm2')}
+    control = [r for r in summary if r['scenario'] == 'control']
+    assert [r['final_profit_usd'] for r in control] == [
+        p['result']['pnl'] for p in results]
+    report = (output / 'report.md').read_text()
+    assert report.startswith(
+        '# 2021 Q1 validation MIO fixed-selection execution and expiry stress\n')
+    assert '2019' not in report and '252' not in report
+    daybook = (output / Q1_COHORT / 'control/m0.md').read_text()
+    assert '2021 Q1 validation diagnostic.' in daybook and '2019' not in daybook
+    case = json.loads((output / Q1_COHORT / 'half_size/m1.json').read_text())
+    assert case['decision_reference']['path'] == str(
+        tmp_path / 'good/evidence/mio/exports/result.json')
+    assert len(case['daily']) == 61
+    manifest = json.loads((output / 'pins.json').read_text())
+    assert list(manifest['original_runs']) == [Q1_COHORT]
+    config = tmp_path / 'good/repo/children/index_options/configs' / Q1_CONFIG
+    assert manifest['original_run_documents'] == {
+        Q1_COHORT: {'name': Q1_CONFIG, 'sha256': stress._sha(config)}}
+    assert manifest['cohort_bounds'] == {Q1_COHORT: Q1_BOUNDS}
+    assert manifest['period_label'] == '2021 Q1 validation'
+    assert manifest['evidence_kind'] == stress._PROXY_NOTE
+
+
+@pytest.mark.parametrize('overrides, match', [
+    ({'sessions': 60}, 'protected account calendar'),
+    ({'sessions': 62}, 'protected account calendar'),
+    ({'end_before': Q1[-1]}, 'protected account calendar'),
+    ({'latest_expiry': Q1[19]}, 'selected expiry outside the document bounds'),
+    ({'methods': 4}, 'method'),
+    ({'methods': 2}, 'method'),
+    ({'end_before': '2024-01-02'}, 'protected window'),
+    ({'end_before': '2026-01-01', 'latest_expiry': '2024-01-02'}, 'protected window'),
+    ({'end_before': '2021-04-02'}, 'end_before differs from the run document'),
+    ({'latest_expiry': '2021-04-01'}, 'latest_expiry'),
+    ({'end_before': '2021-4-01'}, 'end_before'),
+    ({'end_before': 20210401}, 'end_before'),
+    ({'sessions': True}, 'sessions'),
+    ({'methods': 0}, 'methods'),
+])
+def test_v5_refuses_results_outside_the_document_bounds(tmp_path, q1_loaders, overrides, match):
+    document, pins = _v5_tree(tmp_path, overrides=overrides)
+    with pytest.raises(ValueError, match=match):
+        stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+
+
+@pytest.mark.parametrize('name', ['result.json', 'trades.csv', 'daily-account.csv'])
+def test_v5_refuses_result_or_csv_drift(tmp_path, q1_loaders, name):
+    document, pins = _v5_tree(tmp_path)
+    path = tmp_path / 'evidence/mio/exports' / name
+    path.write_text(path.read_text() + ' ')
+    with pytest.raises(ValueError, match='identity drift'):
+        stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+
+
+def test_v5_run_document_may_sit_in_a_configs_subdirectory(tmp_path):
+    configs = tmp_path / 'children/index_options/configs'
+    for name in ('run.json', 'mio-q1/run.json'):
+        document = _cohort_document(tmp_path, V5, {'config': name})
+        assert stress.FrozenMIOReplay._run_document(document, 'limited36') == configs / name
+    (tmp_path / 'outside.json').write_text('{}')
+    (configs / 'link.json').symlink_to(tmp_path / 'outside.json')
+    for entry in ({}, {'config': '../x.json'}, {'config': 'a/../../x.json'},
+                  {'config': str(configs / 'run.json')}, {'config': ''}, {'config': '.'},
+                  {'config': 'a/..'}, {'config': 7}, {'config': 'link.json'}):
+        with pytest.raises(ValueError, match='config'):
+            stress.FrozenMIOReplay._run_document(
+                _cohort_document(tmp_path, V5, entry), 'limited36')
+
+
+def _rewrite(document, path):
+    path.write_text(json.dumps(document))
+    return path
+
+
+@pytest.mark.parametrize('change, match', [
+    (lambda d: d.update(original_root='/x'), 'invalid execution-stress document'),
+    (lambda d: d.pop('period_label'), 'invalid execution-stress document'),
+    (lambda d: d.update(period_label=''), 'period_label'),
+    (lambda d: d.update(period_label=7), 'period_label'),
+    (lambda d: d.update(cohorts={}), 'cohort'),
+    (lambda d: d.update(cohorts={'../evil': d['cohorts'][Q1_COHORT]}), 'cohort'),
+    (lambda d: d['cohorts'][Q1_COHORT].update(extra=1), 'cohort'),
+    (lambda d: d['cohorts'][Q1_COHORT].pop('csv_sha256'), 'cohort'),
+    (lambda d: d['scenarios'].pop(), 'scenario values differ'),
+    (lambda d: d['cohorts'][Q1_COHORT].update(latest_expiry='2024-06-03',
+                                              end_before='2025-01-01'), 'protected window'),
+])
+def test_v5_execute_refuses_invalid_documents_before_any_output(
+        tmp_path, q1_loaders, change, match):
+    document, _pins = _v5_tree(tmp_path)
+    change(document)
+    path = _rewrite(document, tmp_path / 'evidence/document.json')
+    with pytest.raises(ValueError, match=match):
+        stress.execute(path)
+    assert not (tmp_path / 'out').exists()
+
+
+def test_v4_document_presented_as_v5_refuses_and_v4_refuses_v5_fields(tmp_path, loaders):
+    document, _pins = _tree(tmp_path, schema=V4)
+    path = tmp_path / 'evidence/document.json'
+    with pytest.raises(ValueError, match='invalid execution-stress document'):
+        stress.execute(_rewrite({**document, 'schema': V5}, path))
+    with pytest.raises(ValueError, match='invalid execution-stress document'):
+        stress.execute(_rewrite({**document, 'period_label': '2019'}, path))
+    assert not (tmp_path / 'out').exists()

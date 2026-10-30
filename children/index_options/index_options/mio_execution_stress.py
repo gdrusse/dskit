@@ -1,8 +1,10 @@
 """Pinned fixed-selection MIO execution and expiry stress replay.
 
-This reads the saved 2019 decisions and verified source bars, then delegates
+This reads the saved decisions and verified source bars, then delegates
 fills, reserve admission, settlements and marks to the existing study owners.
-The JSON document declares every sensitivity and a fresh output root.
+The JSON document declares every sensitivity and a fresh output root. v1-v4
+replay the 2019 cohorts; v5 (ADR-0280 amendment) replays any range the
+document pins, below the Path A0003 holdout.
 """
 
 from __future__ import annotations
@@ -13,9 +15,11 @@ import csv
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import subprocess
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
@@ -125,6 +129,70 @@ def _missing_expiry_factors(binding, symbols, needed, factors):
 
 
 _AVAILABLE_SIZE_SCHEMA = "mio-execution-stress/v4"
+_RANGE_SCHEMA = "mio-execution-stress/v5"
+_AVAILABLE_SIZE_SCHEMAS = (_AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA)
+# Path A0003: the holdout opens on this session; no v5 bound may reach it.
+_PROTECTED_FROM = "2024-01-02"
+# v1-v4 keep the 2019 layout ADR-0280 confined the replay to.
+_LEGACY_COHORTS = ("limited36", "broad212")
+_LEGACY_BOUNDS = {"methods": 4, "sessions": 252, "end_before": "2020-01-01",
+                  "latest_expiry": None}
+_CONTROL_CSVS = ("trades.csv", "rejected-orders.csv",
+                 "orders-and-fills.csv", "daily-account.csv")
+_RANGE_ENTRY = frozenset({"config", "result_dir", "result_sha256", "csv_sha256",
+                          "quote_index_sha256", "methods", "sessions",
+                          "end_before", "latest_expiry"})
+_COHORT_NAME = re.compile(r"[a-z0-9][a-z0-9_]*")
+
+
+def _iso_day(value, field):
+    """Return a canonical YYYY-MM-DD string or refuse the v5 field."""
+    try:
+        if isinstance(value, str) and date.fromisoformat(value).isoformat() == value:
+            return value
+    except ValueError:
+        pass
+    raise ValueError("v5 " + field + " must be a YYYY-MM-DD date")
+
+
+def _range_bounds(entry):
+    """Validate one v5 cohort's pinned bounds; refuse the protected window."""
+    bounds = {}
+    for field in ("methods", "sessions"):
+        if type(entry[field]) is not int or entry[field] < 1:
+            raise ValueError("v5 " + field + " must be a positive integer")
+        bounds[field] = entry[field]
+    bounds["end_before"] = _iso_day(entry["end_before"], "end_before")
+    bounds["latest_expiry"] = _iso_day(entry["latest_expiry"], "latest_expiry")
+    if max(bounds["end_before"], bounds["latest_expiry"]) >= _PROTECTED_FROM:
+        raise ValueError("v5 bounds reach the protected window from " + _PROTECTED_FROM)
+    if bounds["latest_expiry"] >= bounds["end_before"]:
+        raise ValueError("v5 latest_expiry must precede end_before")
+    pins = entry["csv_sha256"]
+    if not isinstance(pins, dict) or set(pins) != set(_CONTROL_CSVS):
+        raise ValueError("v5 csv_sha256 must pin exactly the four control extracts")
+    return bounds
+
+
+def _cohort_order(document):
+    """Return the cohorts in replay order after validating their names and fields."""
+    cohorts = document["cohorts"]
+    if document["schema"] != _RANGE_SCHEMA:
+        if set(cohorts) != set(_LEGACY_COHORTS):
+            raise ValueError("missing exact cohort")
+        return _LEGACY_COHORTS
+    label = document["period_label"]
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError("v5 period_label must be a non-empty string")
+    if not isinstance(cohorts, dict) or not cohorts:
+        raise ValueError("v5 requires at least one cohort")
+    for name, entry in cohorts.items():
+        if not _COHORT_NAME.fullmatch(name):
+            raise ValueError("v5 cohort name must be lower-case [a-z0-9_]: " + name)
+        if not isinstance(entry, dict) or set(entry) != _RANGE_ENTRY:
+            raise ValueError("v5 cohort fields differ from the contract: " + name)
+        _range_bounds(entry)
+    return tuple(cohorts)
 
 
 def _fill_shocked(scenario):
@@ -363,28 +431,37 @@ class FrozenMIOReplay:
         self.cohort = cohort
         self.document = document
         self.pins = pins
-        original = Path(document["original_root"]) / cohort
+        self.ranged = document["schema"] == _RANGE_SCHEMA
+        entry = document["cohorts"][cohort]
+        bounds = _range_bounds(entry) if self.ranged else _LEGACY_BOUNDS
+        original = self._result_dir(document, cohort)
         self.original_dir = original
         result_path = original / "result.json"
-        expected = document["cohorts"][cohort]["result_sha256"]
+        expected = entry["result_sha256"]
         if _sha(result_path) != expected:
             raise ValueError("original result identity drift: " + cohort)
         self.original = _load_json(result_path)
         self._verify_original_csvs(pins)
-        if not self.original["complete"] or len(self.original["results"]) != 4:
+        if (not self.original["complete"]
+                or len(self.original["results"]) != bounds["methods"]):
             raise ValueError("incomplete original method packet")
         config_path = self._run_document(document, cohort)
-        pinned = pins["original_configs"].get(config_path.name)
+        key = entry["config"] if self.ranged else config_path.name
+        pinned = pins["original_configs"].get(key)
         if pinned is None or _sha(config_path) != pinned["sha256"]:
             raise ValueError("original run document drift")
-        self.config = {"name": config_path.name, "sha256": pinned["sha256"]}
+        self.config = {"name": key, "sha256": pinned["sha256"]}
         config = _load_json(config_path)
         self.domain = config["pipeline"]["plan"]["params"]["study"]["domain"]
         self._sizing_schema(self.domain["params"], document["schema"])
         self.calendar = self.original["audit"]["calendar"]
         self.symbols = self.domain["params"]["symbols"]
-        if len(self.calendar) != 252 or max(self.calendar) >= "2020-01-01":
+        if (len(self.calendar) != bounds["sessions"]
+                or max(self.calendar) >= bounds["end_before"]):
             raise ValueError("protected account calendar")
+        if (self.ranged and self.domain["params"]["bridge"].get("end_before")
+                != bounds["end_before"]):
+            raise ValueError("v5 end_before differs from the run document: " + cohort)
         self.bars = _bar_rows(self.domain["sources"]["bars"], self.symbols, self.calendar)
         run_dir = Path(pins["runs"][cohort]["run_dir"])
         self.quotes, self.factors, self.index_descriptors = {}, {}, {}
@@ -402,22 +479,41 @@ class FrozenMIOReplay:
             for decision in packet["result"]["decisions"]:
                 for book in decision.get("books", []):
                     needed.setdefault(book["symbol"], set()).add(book["expiry"])
-        if any(day not in self.calendar or day >= "2020-01-01"
+        latest = bounds["latest_expiry"]
+        if any(day not in self.calendar or day >= bounds["end_before"]
+               or (latest is not None and day > latest)
                for days in needed.values() for day in days):
-            raise ValueError("selected expiry outside 2019 account calendar")
+            raise ValueError("selected expiry outside the document bounds" if self.ranged
+                             else "selected expiry outside 2019 account calendar")
         _missing_expiry_factors(self.domain["sources"]["chain"], self.symbols,
                                 needed, self.factors)
         self.params = {**self.domain["params"], "selected_pairs": self.domain["pairs"]}
+
+    @staticmethod
+    def _result_dir(document, cohort):
+        """v5 names each cohort's result folder; v1-v4 use <original_root>/<cohort>."""
+        if document["schema"] == _RANGE_SCHEMA:
+            return Path(document["cohorts"][cohort]["result_dir"])
+        return Path(document["original_root"]) / cohort
 
     @staticmethod
     def _run_document(document, cohort):
         """Return the cohort's run document under the child configs directory.
 
         v4 names it explicitly (a plain file name that resolves inside the
-        directory); v1-v3 keep mio-2019-<cohort>.json and refuse the key.
+        directory); v5 may name a relative path in a subdirectory of it;
+        v1-v3 keep mio-2019-<cohort>.json and refuse the key.
         """
         configs = Path(document["repository_root"]) / "children/index_options/configs"
         entry = document["cohorts"][cohort]
+        if document["schema"] == _RANGE_SCHEMA:
+            name = entry.get("config")
+            if (not isinstance(name, str) or not name
+                    or any(part in ("", ".", "..") for part in name.split("/"))
+                    or not (configs / name).resolve().is_relative_to(configs.resolve())):
+                raise ValueError("v5 cohort config must be a relative file inside the "
+                                 "child configs: " + cohort)
+            return configs / name
         if document["schema"] != _AVAILABLE_SIZE_SCHEMA:
             if "config" in entry:
                 raise ValueError("cohort config requires schema v4: " + cohort)
@@ -431,10 +527,12 @@ class FrozenMIOReplay:
 
     @staticmethod
     def _sizing_schema(params, schema):
-        """Bind available-size fills to schema v4, and v4 to available-size fills."""
+        """Bind available-size fills to schema v4/v5, and v4/v5 to available-size fills."""
         available = params.get("fill_sizing") == WeeklyOptionPortfolioStudy._AVAILABLE_SIZE
-        if available != (schema == _AVAILABLE_SIZE_SCHEMA):
-            raise ValueError("available-size fill sizing and schema v4 require each other")
+        if available != (schema in _AVAILABLE_SIZE_SCHEMAS):
+            version = "v5" if schema == _RANGE_SCHEMA else "v4"
+            raise ValueError("available-size fill sizing and schema " + version
+                             + " require each other")
 
     def _verify_original_csvs(self, pins):
         """Keep the four human-facing control extracts bound to original pins."""
@@ -442,12 +540,16 @@ class FrozenMIOReplay:
         path = Path(item["path"])
         if _sha(path) != item["sha256"]:
             raise ValueError("original artifact-index identity drift")
-        index = _load_json(path)["csv_files"]
-        for name in ("trades.csv", "rejected-orders.csv",
-                     "orders-and-fills.csv", "daily-account.csv"):
+        if self.ranged:
+            expected = self.document["cohorts"][self.cohort]["csv_sha256"]
+        else:
+            index = _load_json(path)["csv_files"]
+            expected = {name: index[self.cohort + "/" + name]["sha256"]
+                        for name in _CONTROL_CSVS}
+        for name in _CONTROL_CSVS:
             relative = self.cohort + "/" + name
             source = self.original_dir / name
-            if _sha(source) != index[relative]["sha256"]:
+            if _sha(source) != expected[name]:
                 raise ValueError("original control CSV identity drift: " + relative)
 
     @staticmethod
@@ -691,8 +793,8 @@ _PROXY_NOTE = ("Fills are simulated at end-of-day displayed depth, never broker 
 
 
 def _depth_proxy(schema, decisions):
-    """v3/v4 only: the selected contract total that turns on proxy wording."""
-    if schema not in ("mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA):
+    """v3-v5 only: the selected contract total that turns on proxy wording."""
+    if schema not in ("mio-execution-stress/v3", *_AVAILABLE_SIZE_SCHEMAS):
         return None
     return sum(book["contracts"] for item in decisions for book in item.get("books", []))
 
@@ -709,16 +811,18 @@ def _contract_headline(metrics, daily, selected_contracts):
 
 
 def _daybook(cohort, scenario, method, metrics, daily, incomplete=None,
-             selected_contracts=None):
+             selected_contracts=None, period=None):
     """Readable daily opportunities, fills, expiries and losses.
 
-    ``selected_contracts`` (v3/v4 only, from ``_depth_proxy``) adds the depth-proxy
+    ``selected_contracts`` (v3-v5, from ``_depth_proxy``) adds the depth-proxy
     note and the contract headline; ``None`` keeps v1/v2 bytes unchanged.
+    ``period`` is the v5 document's label; ``None`` keeps the 2019 wording.
     """
     proxy = selected_contracts is not None
     lines = [
         f"# {cohort} / {method} / {scenario}", "",
-        "2019 development diagnostic. Chosen orders are decided after the named",
+        ("2019 development" if period is None else period)
+        + " diagnostic. Chosen orders are decided after the named",
         "close; fills appear on the next session. Expiry P&L is realized;",
         "marked daily change is interim equity change after deposits.",
         "Executed-leg quantities are shown as filled/selected.",
@@ -952,7 +1056,10 @@ def _unsupported_metrics(selected, reason, rejected):
 
 
 _SCHEMA_VERSIONS = ("mio-execution-stress/v1", "mio-execution-stress/v2",
-                    "mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA)
+                    "mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA)
+_LEGACY_DOCUMENT = frozenset({"schema", "repository_root", "original_root", "results_pins",
+                              "results_pins_sha256", "cohorts", "scenarios", "output_root"})
+_RANGE_DOCUMENT = (_LEGACY_DOCUMENT - {"original_root"}) | {"period_label"}
 
 
 def _approved_scenarios(schema):
@@ -989,9 +1096,10 @@ def execute(document_path):
     """Validate one JSON contract, replay all methods, then pin fresh outputs."""
     doc_path = Path(document_path).resolve()
     document = _load_json(doc_path)
-    required = {"schema", "repository_root", "original_root", "results_pins",
-                "results_pins_sha256", "cohorts", "scenarios", "output_root"}
-    if set(document) != required or document["schema"] not in _SCHEMA_VERSIONS:
+    required = (_RANGE_DOCUMENT if isinstance(document, dict)
+                and document.get("schema") == _RANGE_SCHEMA else _LEGACY_DOCUMENT)
+    if (not isinstance(document, dict) or set(document) != required
+            or document["schema"] not in _SCHEMA_VERSIONS):
         raise ValueError("invalid execution-stress document")
     if _sha(document["results_pins"]) != document["results_pins_sha256"]:
         raise ValueError("results pins identity drift")
@@ -999,8 +1107,8 @@ def execute(document_path):
     scenarios = document["scenarios"]
     if scenarios != _approved_scenarios(document["schema"]):
         raise ValueError("scenario values differ from approved contract")
-    if set(document["cohorts"]) != {"limited36", "broad212"}:
-        raise ValueError("missing exact cohort")
+    cohorts = _cohort_order(document)
+    period = document.get("period_label")
     output = Path(document["output_root"])
     if output.exists():
         raise FileExistsError("fresh output root required: " + str(output))
@@ -1047,12 +1155,12 @@ def execute(document_path):
               if metrics["final_profit_usd"] is not None else "-",
               flush=True)
 
-    # Gate 0: all eight controls pass before any stressed case runs.
+    # Gate 0: every method's control passes before any stressed case runs.
     # Open one cohort at a time so the 917 MB broad original is not duplicated.
-    for cohort in ("limited36", "broad212"):
+    for cohort in cohorts:
         replay = FrozenMIOReplay(cohort, document, pins)
         try:
-            if document["schema"] == _AVAILABLE_SIZE_SCHEMA:
+            if document["schema"] in _AVAILABLE_SIZE_SCHEMAS:
                 run_documents[cohort] = replay.config
             source_indexes[cohort] = {
                 symbol: {"sha256": descriptor["sha256"], "rows": descriptor["rows"]}
@@ -1061,7 +1169,7 @@ def execute(document_path):
                 collect(replay, cohort, packet, scenarios[0], control=True)
         finally:
             replay.close()
-    for cohort in ("limited36", "broad212"):
+    for cohort in cohorts:
         replay = FrozenMIOReplay(cohort, document, pins)
         try:
             for scenario in scenarios[1:]:
@@ -1079,7 +1187,7 @@ def execute(document_path):
             "cohort": cohort, "scenario": scenario, "method": method,
             "metrics": metrics, "result": result, "daily": daily,
             "decision_reference": {
-                "path": str(Path(document["original_root"]) / cohort / "result.json"),
+                "path": str(FrozenMIOReplay._result_dir(document, cohort) / "result.json"),
                 "sha256": document["cohorts"][cohort]["result_sha256"],
                 "method": method},
             "dispositions": dispositions,
@@ -1087,7 +1195,7 @@ def execute(document_path):
         (folder / (method + ".md")).write_text(
             _daybook(cohort, scenario, method, metrics, daily,
                      incomplete.get((cohort, scenario, method)),
-                     selected_contracts[cohort, method]))
+                     selected_contracts[cohort, method], period))
         summary.append({"cohort": cohort, "scenario": scenario, "method": method, **metrics})
         for row in daily:
             all_daily.append({"cohort": cohort, "scenario": scenario, "method": method, **row})
@@ -1123,7 +1231,8 @@ def execute(document_path):
             writer.writerow({k: json.dumps(v, separators=(",", ":"))
                              if isinstance(v, (dict, list)) else v for k, v in row.items()})
     proxy = _depth_proxy(document["schema"], []) is not None
-    lines = ["# 2019 MIO fixed-selection execution and expiry stress", "",
+    lines = ["# " + ("2019" if period is None else period)
+             + " MIO fixed-selection execution and expiry stress", "",
              "Each daily row names decision-day possibilities and selected orders; fills are",
              "attempted at the next session's observed NBBO. Expiries show realized P&L.",
              *(("The scenarios are conditional on frozen future selections.", _PROXY_NOTE)
@@ -1143,7 +1252,9 @@ def execute(document_path):
             row["cohort"], row["scenario"], row["method"], row["status"],
             str(row["selected"]), str(row["filled"]), str(row["refused"]),
             profit, drawdown]) + " |")
-    lines += ["", "Open a daybook for all 252 daily opportunities, selections,",
+    lines += ["", ("Open a daybook for all 252 daily opportunities, selections,"
+                   if period is None else
+                   "Open a daybook for every account session's opportunities, selections,"),
               "fills, expiries and losses. The matching JSON and daily.csv",
               "retain complete machine-readable rows.", "", "## Daybooks", ""]
     for row in summary:
@@ -1170,7 +1281,7 @@ def execute(document_path):
                              "run_hash": pins["runs"][cohort]["run_hash"],
                              "receipt_sha256": pins["runs"][cohort]["sha256"],
                              "document_hash": pins["runs"][cohort]["document_hash"]}
-                    for cohort in ("limited36", "broad212")},
+                    for cohort in cohorts},
                 "source_quote_indexes": source_indexes,
                 "replay_code_sha256": _sha(Path(__file__)),
                 "files": {str(path.relative_to(output)): {"sha256": _sha(path), "bytes": path.stat().st_size}
@@ -1179,6 +1290,10 @@ def execute(document_path):
         manifest["evidence_kind"] = _PROXY_NOTE
     if run_documents:
         manifest["original_run_documents"] = run_documents
+    if period is not None:
+        manifest["period_label"] = period
+        manifest["cohort_bounds"] = {cohort: _range_bounds(document["cohorts"][cohort])
+                                     for cohort in cohorts}
     _write_json(output / "pins.json", manifest)
     return output
 
