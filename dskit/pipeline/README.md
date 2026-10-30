@@ -898,8 +898,11 @@ they register only into private registries, never the default one.
   `key_fields` up to `as_of` into open lots by a declared `method` (`LOT_METHODS`:
   `fifo`; one `LotOrder` subclass per method orders the lots a sell consumes); a
   buy's basis is its cash (`-amount`, fees in) or `quantity x price` (a null amount:
-  counted under `amount_fallbacks`; an absent key refuses); the last lot a
-  sell touches splits pro rata. A day's trades replay by `order_fields` (an execution
+  counted under `amount_fallbacks`; an absent key refuses); a buy whose amount is
+  exactly 0.0 moved no cash (a transfer in, a gift, an award) and refuses unless
+  `allow_zero_cash` (optional, default false) values it at `quantity x price`, counted
+  under `zero_cash_buys` (a positive amount, or price 0.0 on such a buy, still
+  refuses); the last lot a sell touches splits pro rata. A day's trades replay by `order_fields` (an execution
   time, then a transaction id); a trade ON `as_of` is replayed, a later one counted. A sell beyond the open shares (history before the
   trades, a transfer in, a short) refuses, or with `allow_incomplete` withholds the
   key's lots and lists it. `LotPositions` joins lots to a positions snapshot: each
@@ -1231,6 +1234,7 @@ dskit/pipeline/
 │                      (`fifo`; a `LotOrder` per method), an oversell refuses or withholds the key (`allow_incomplete`); lots joined to a positions
 │                      snapshot, each a position row valued pro rata, reconciled share for share (else refuse or the aggregate row), `basis_gap` (+ `basis_gap_max`,
 │                      a warning beyond `BASIS_RTOL`); a day replays by `order_fields` (time, id); a null buy amount falls back to quantity x price, counted
+│                      (`amount_fallbacks`); a zero-cash buy refuses unless `allow_zero_cash`, then quantity x price too (`zero_cash_buys`)
 ├── position_summary.py PositionSummary (by import path, ADR-0279, research A0002): decision rows -> per position weight, expected return,
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS

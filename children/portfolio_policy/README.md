@@ -144,7 +144,15 @@ both to `false` to refuse such a holding by name instead. That summary's `basis_
 A day's trades replay in execution-time order (then transaction id), so a buy and
 the sale that closes it the same day work whatever the ids; a trade dated ON the
 decision day counts. A buy whose cash is null (a transaction with several kept items)
-is basis = quantity x price; the `lots` summary's `amount_fallbacks` counts them.
+is basis = quantity x price; the `lots` summary's `amount_fallbacks` counts them. A buy
+whose cash is exactly 0 (a transfer in, a gift or an award, which Schwab books as a
+`TRADE` with `netAmount` 0) is the same basis under `allow_zero_cash: true`, counted in
+`zero_cash_buys`; its holding period starts at the row's date, so a gift or an own-account
+transfer, which keeps the earlier holding period, may read short-term when it is long-term
+(its tax overstated). The basis errs the other way: quantity x price is the value on the day
+the shares arrived, not the basis they carried over, so shares bought long ago at a lower
+price show an overstated basis and an understated embedded gain and tax to sell;
+`lot_positions`' `basis_gap` shows it only when Schwab's books carry the true basis.
 
 To go back to the aggregate path (no lots), edit `run-hold-vs-redeploy.json`: delete
 `trades`, `lots` and `lot_positions`, point `tax.inputs.records` at `$snapshot.records`,

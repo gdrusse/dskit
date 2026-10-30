@@ -11,7 +11,11 @@ signed share quantity, a price and optionally the signed cash) per declared
 ``key_fields`` (an account and a symbol, say) up to ``as_of``. A buy opens a lot
 whose basis is the cash it paid (``-amount``, fees included) when ``amount_field``
 is declared and the row's amount is not null, else ``quantity x price`` (a fallback the
-summary counts under ``amount_fallbacks``; a row without the declared key refuses). A sell
+summary counts under ``amount_fallbacks``; a row without the declared key refuses). A buy
+whose amount is exactly 0.0 moved no cash (a transfer in, a gift, an award): it refuses
+unless ``allow_zero_cash`` is declared, when it too is valued at ``quantity x price`` and
+counted under ``zero_cash_buys``; a positive amount on a buy refuses either way (a sign
+error), and so does a zero-cash buy at price 0.0 (nothing values it). A sell
 consumes open lots in the order the declared ``method`` gives (:data:`LOT_METHODS`:
 ``fifo``, the rule of 26 CFR 1.1012-1(c)(1) when no lot is identified); the last
 lot it touches is split pro rata, keeping its basis per share. Trades are replayed
@@ -56,7 +60,14 @@ never as a silent number. Average-cost basis (a broker default for some funds) i
 not a method here yet: such an account shows as a basis gap. Wash sales are not
 modelled either (a loss disallowed by a repurchase within 30 days raises the new lot's
 basis and tacks the old holding period onto it), so a wash-sale account also shows as a
-basis gap, and the lot's holding period here starts at its purchase.
+basis gap, and the lot's holding period here starts at its purchase (at the row's date for
+a zero-cash buy: a transfer between one's own accounts or a gift keeps the earlier holding
+period and an inheritance is always long-term, so such a lot may read short-term when it is
+long-term, its tax overstated). Its basis errs the other way: quantity x price is the value
+on the day the shares arrived, not the basis they carried over, so shares transferred in
+after being bought long ago at a lower price show an overstated basis, and the embedded
+gain and the tax to sell are understated; ``basis_gap`` shows it only when the broker's
+books carry the true basis.
 
 Import cost: stdlib + the pipeline core.
 """
@@ -75,8 +86,8 @@ from dskit.pipeline.liquidation import check_name_params, require_number, requir
 from dskit.pipeline.node import Node, check_number_param, reject_unknown_params
 
 __all__ = [
-    "AGGREGATE_LOT", "BASIS_RTOL", "LOT_FIELDS", "LOT_METHODS", "QUANTITY_RTOL", "FifoOrder",
-    "LotOrder", "LotPositions", "TaxLots", "format_lot_id",
+    "AGGREGATE_LOT", "ALLOW_ZERO_CASH_DEFAULT", "BASIS_RTOL", "LOT_FIELDS", "LOT_METHODS",
+    "QUANTITY_RTOL", "FifoOrder", "LotOrder", "LotPositions", "TaxLots", "format_lot_id",
 ]
 
 #: The fields :class:`TaxLots` writes on every lot row, beside the key fields.
@@ -89,10 +100,14 @@ QUANTITY_RTOL = 1e-9
 #: A basis gap smaller than this fraction of the position's basis is float noise, not a lot
 #: method that differs from the broker's: it raises no warning.
 BASIS_RTOL = 1e-9
+#: What ``allow_zero_cash`` means when a document does not declare it: a buy that moved no cash
+#: refuses, so a transfer in or a gift is never silently valued at quantity x price.
+ALLOW_ZERO_CASH_DEFAULT = False
 
 #: One parsed trade row: the replay order is ``(day, order, index)``, ``estimated`` marks a buy
-#: whose cash was declared but null, so its basis is quantity x price.
-_Trade = namedtuple("_Trade", "day order index key quantity basis estimated")
+#: whose cash was declared but null, so its basis is quantity x price; ``zero_cash`` marks a buy
+#: whose cash was exactly 0.0 (allowed by ``allow_zero_cash``), valued the same way.
+_Trade = namedtuple("_Trade", "day order index key quantity basis estimated zero_cash")
 
 _JOIN_FIELDS = ("lot_id", "acquired")
 _TOLERANCE_BOUNDS = (0.0, 1.0)
@@ -181,8 +196,12 @@ class TaxLots(Node):
         orders the trades of a day, in turn (each a str or int on every trade, one type per
         field: an execution time, then a transaction id);
         ``allow_incomplete`` (bool, REQUIRED): withhold an oversold key's lots
-        instead of refusing; ``as_of`` (ISO date, optional): the last trade date
-        replayed, absent means the run's as-of date.
+        instead of refusing; ``allow_zero_cash`` (bool, optional, default
+        :data:`ALLOW_ZERO_CASH_DEFAULT`): value a buy whose amount is exactly 0.0 (a
+        transfer in, a gift, an award) at quantity x price instead of refusing it, counted
+        under the summary's ``zero_cash_buys`` (null without ``amount_field``);
+        ``as_of`` (ISO date, optional): the last trade date replayed, absent means the
+        run's as-of date.
 
     Inputs
     ------
@@ -205,7 +224,7 @@ class TaxLots(Node):
 
     _PARAMS = (
         "as_of", "method", "key_fields", "date_field", "quantity_field", "price_field",
-        "amount_field", "order_fields", "allow_incomplete",
+        "amount_field", "order_fields", "allow_incomplete", "allow_zero_cash",
     )
     _REQUIRED = (
         "method", "key_fields", "date_field", "quantity_field", "price_field", "allow_incomplete",
@@ -230,6 +249,7 @@ class TaxLots(Node):
             "date_field", "quantity_field", "price_field", "amount_field"))
         check_field_list_param(problems, params, "order_fields")
         _bool_param(problems, params, "allow_incomplete")
+        _bool_param(problems, params, "allow_zero_cash")
         return problems
 
     @classmethod
@@ -256,16 +276,39 @@ class TaxLots(Node):
         return tuple(values)
 
     def _basis(self, index, row, key, quantity, price):
-        """Return ``(basis, estimated)`` of a buy: its cash, else quantity x price (estimated)."""
+        """Return ``(basis, estimated, zero_cash)`` of a buy.
+
+        The basis is its cash; when the declared amount is null it is quantity x price
+        (``estimated``); when the amount is exactly 0.0 and ``allow_zero_cash`` is declared
+        true it is quantity x price too (``zero_cash``), unless the price is 0.0 and nothing
+        values the shares. Any other amount that is not negative refuses.
+        """
         field = self.params.get("amount_field")
         if field is None or row[field] is None:
-            return quantity * price, field is not None
+            return quantity * price, field is not None, False
         amount = require_number(self.key, "trade", index, row, field)
+        if amount == 0.0 and self.params.get("allow_zero_cash", ALLOW_ZERO_CASH_DEFAULT):
+            # shares that moved no cash (a transfer in, a gift, an award): the books value
+            # them at quantity x price, so a price of 0.0 would open a lot worth nothing
+            if price == 0.0:
+                raise ValueError(
+                    f"{self.key}: trade {index} buys {quantity!r} {_label(key)!r} with no cash "
+                    f"and a {self.params['price_field']!r} of 0.0; nothing values it")
+            return quantity * price, False, True
         if amount >= 0.0:
+            # a zero amount names the param that would admit it, unless the price is 0.0 too
+            # (the param would only refuse again: nothing values the shares); a positive amount
+            # is a sign error that no param admits
+            hint = ""
+            if amount == 0.0 and price == 0.0:
+                hint = f"; its {self.params['price_field']!r} is 0.0 too, so nothing values it"
+            elif amount == 0.0:
+                hint = ("; allow_zero_cash admits a buy that moved no cash (a transfer in, a gift "
+                        "or an award) at quantity x price")
             raise ValueError(
                 f"{self.key}: trade {index} buys {quantity!r} {_label(key)!r} but its "
-                f"{field!r} is {amount!r}; a buy pays cash, so its amount is negative")
-        return -amount, False
+                f"{field!r} is {amount!r}; a buy pays cash, so its amount is negative{hint}")
+        return -amount, False, False
 
     def _trade(self, index, row):
         """Return one parsed :class:`_Trade`, every field refused by name."""
@@ -291,10 +334,10 @@ class TaxLots(Node):
                 f"{self.key}: trade {index} has no {field!r} key; amount_field declares it on "
                 "every trade (a null amount falls back to quantity x price, an absent key is "
                 "a misspelt field)")
-        basis, estimated = (self._basis(index, row, key, quantity, price)
-                            if quantity > 0.0 else (None, False))
+        basis, estimated, zero_cash = (self._basis(index, row, key, quantity, price)
+                                       if quantity > 0.0 else (None, False, False))
         return _Trade(date.fromisoformat(day), self._order(index, row), index, key, quantity,
-                      basis, estimated)
+                      basis, estimated, zero_cash)
 
     def _ordered(self, records, as_of):
         """Return ``(trades, after)``: the trades up to ``as_of`` in replay order, and the rest's count."""
@@ -376,15 +419,18 @@ class TaxLots(Node):
                             "quantity": lot.quantity, "basis": lot.basis,
                             "basis_per_share": lot.basis / lot.quantity})
         keys = sum(1 for book in books.values() if book["incomplete"] is None and book["lots"])
-        fallbacks = (sum(trade.estimated for trade in trades)
-                     if "amount_field" in self.params else None)
-        self.log.info("%s: %d lot(s) over %d key(s), %d incomplete, %s buy(s) on quantity x price",
-                      self.key, len(out), keys, len(incomplete), fallbacks)
+        # both counts are n/a (None) without an amount_field: no buy has a cash to be null or zero
+        declared = "amount_field" in self.params
+        fallbacks = sum(trade.estimated for trade in trades) if declared else None
+        zero_cash = sum(trade.zero_cash for trade in trades) if declared else None
+        self.log.info("%s: %d lot(s) over %d key(s), %d incomplete, %s buy(s) on quantity x price "
+                      "(null amount), %s zero-cash buy(s)",
+                      self.key, len(out), keys, len(incomplete), fallbacks, zero_cash)
         return {"records": out, "summary": {
             "stage": "tax lots", "method": self.params["method"], "as_of": as_of.isoformat(),
             "trades": len(trades), "after_as_of": after, "lots": len(out), "keys": keys,
             "closed": closed, "incomplete": incomplete, "ignored": ignored,
-            "amount_fallbacks": fallbacks}}
+            "amount_fallbacks": fallbacks, "zero_cash_buys": zero_cash}}
 
 
 class LotPositions(Node):

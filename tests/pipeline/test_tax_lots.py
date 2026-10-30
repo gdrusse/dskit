@@ -377,6 +377,105 @@ def test_a_missing_amount_key_refuses_by_row_and_a_null_falls_back_counted(ctx):
     assert out["summary"]["amount_fallbacks"] is None
 
 
+# ---- a buy that moved no cash (ADR-0279 amendment, 2026-10-29) --------------------------------
+
+
+def test_a_zero_cash_buy_is_a_lot_at_quantity_times_price_when_allowed(ctx):
+    """Schwab books a transfer in, a gift or an award as a TRADE with netAmount 0.0: shares that
+    moved no cash. Declared allow_zero_cash, such a buy opens a lot at quantity x price and is
+    counted under zero_cash_buys; a null amount stays under amount_fallbacks, a cash buy under
+    neither."""
+    rows = [_trade(1, "2024-01-10", 10.0, 100.0, amount=-1001.0),    # cash: its amount is the basis
+            _trade(2, "2024-02-01", 3.0, 120.0, amount=0.0),         # no cash: 3 x 120 = 360
+            _trade(3, "2024-03-01", 2.0, 50.0),                      # null amount: a fallback
+            _trade(4, "2025-12-01", 3.0, 70.0, amount=0.0)]          # after as_of: not replayed
+    out = _lots(ctx, rows, allow_zero_cash=True)
+    assert _brief(out["records"]) == [
+        ("A1:VTI:2024-01-10:1", "2024-01-10", 10.0, 1001.0),
+        ("A1:VTI:2024-02-01:1", "2024-02-01", 3.0, 360.0),
+        ("A1:VTI:2024-03-01:1", "2024-03-01", 2.0, 100.0)]
+    assert out["records"][1]["basis_per_share"] == 120.0
+    assert out["summary"]["zero_cash_buys"] == 1
+    assert out["summary"]["amount_fallbacks"] == 1, "a null amount is still counted on its own"
+
+
+def test_a_later_sell_consumes_a_zero_cash_lot_first_in_first_out(ctx):
+    rows = [_trade(1, "2024-01-10", 10.0, 100.0, amount=0.0),        # lot 1: 10 sh, basis 1000
+            _trade(2, "2025-03-01", 5.0, 120.0, amount=-600.0),      # lot 2: 5 sh, basis 600
+            _trade(3, "2025-06-01", -12.0, 130.0, amount=1560.0)]
+    out = _lots(ctx, rows, allow_zero_cash=True)
+    # FIFO: lot 1 gives all 10, lot 2 gives 2 of its 5: 3 left at 120 a share = 360
+    assert _brief(out["records"]) == [("A1:VTI:2025-03-01:1", "2025-03-01", 3.0, 360.0)]
+    # the count is of buys replayed, not of the lots that survive the sale
+    assert out["summary"]["zero_cash_buys"] == 1
+    # a partial sale splits the zero-cash lot pro rata, like any other
+    rows[2] = _trade(3, "2025-06-01", -4.0, 130.0, amount=520.0)
+    out = _lots(ctx, rows, allow_zero_cash=True)
+    assert _brief(out["records"])[0] == ("A1:VTI:2024-01-10:1", "2024-01-10", 6.0, 600.0)
+
+
+@pytest.mark.parametrize("declared", [{}, {"allow_zero_cash": False}])
+def test_a_zero_cash_buy_refuses_unless_allowed_and_names_the_param(ctx, declared):
+    rows = [_trade(1, "2024-01-10", 10.0, 100.0, amount=-1000.0),
+            _trade(2, "2024-02-01", 3.0, 120.0, amount=0.0)]
+    with pytest.raises(ValueError, match=r"lots: trade 1 buys 3.0 'A1:VTI' but its 'amount' is "
+                                         r"0.0; a buy pays cash.*allow_zero_cash"):
+        _lots(ctx, rows, **declared)
+
+
+def test_a_positive_amount_on_a_buy_refuses_even_when_zero_cash_is_allowed(ctx):
+    """A buy that RECEIVED cash is a sign error, not a buy without cash."""
+    with pytest.raises(ValueError, match=r"lots: trade 0 buys 10.0 'A1:VTI' but its 'amount' "
+                                         r"is 5.0; a buy pays cash"):
+        _lots(ctx, [_trade(1, "2024-01-10", 10.0, 100.0, amount=5.0)], allow_zero_cash=True)
+
+
+def test_a_zero_cash_buy_at_price_zero_refuses_even_when_allowed(ctx):
+    """Quantity x price is the basis of a buy without cash; at price 0.0 nothing values it."""
+    with pytest.raises(ValueError, match=r"lots: trade 0 buys 3.0 'A1:VTI' with no cash and a "
+                                         r"'price' of 0.0; nothing values it"):
+        _lots(ctx, [_trade(1, "2024-01-10", 3.0, 0.0, amount=0.0)], allow_zero_cash=True)
+    # a price above zero is what lets the same row through
+    out = _lots(ctx, [_trade(1, "2024-01-10", 3.0, 0.01, amount=0.0)], allow_zero_cash=True)
+    assert out["records"][0]["basis"] == pytest.approx(0.03)
+
+
+@pytest.mark.parametrize("declared", [{}, {"allow_zero_cash": False}])
+def test_a_zero_cash_buy_at_price_zero_does_not_advertise_the_param_when_not_allowed(ctx, declared):
+    """allow_zero_cash would only refuse this row again (nothing values it), so the refusal
+    must not point at it."""
+    with pytest.raises(ValueError, match=r"lots: trade 0 buys 3.0 'A1:VTI' but its 'amount' is "
+                                         r"0.0; a buy pays cash.*'price' is 0.0 too, "
+                                         r"so nothing values it") as refused:
+        _lots(ctx, [_trade(1, "2024-01-10", 3.0, 0.0, amount=0.0)], **declared)
+    assert "allow_zero_cash" not in str(refused.value)
+
+
+def test_the_zero_cash_count_is_null_without_an_amount_field_and_zero_when_none_occurred(ctx):
+    cash_only = [_trade(1, "2024-01-10", 10.0, 100.0, amount=-1000.0)]
+    assert _lots(ctx, cash_only, allow_zero_cash=True)["summary"]["zero_cash_buys"] == 0
+    assert _lots(ctx, cash_only)["summary"]["zero_cash_buys"] == 0, "absent counts like false"
+    # without amount_field no buy has a cash to be zero: the count is not applicable, and the
+    # amount column is not read at all (so a zero in it opens no zero-cash lot)
+    no_amount = {k: v for k, v in LOTS.items() if k != "amount_field"}
+    zero = [_trade(1, "2024-01-10", 10.0, 100.0, amount=0.0)]
+    for declared in ({}, {"allow_zero_cash": True}):
+        out = TaxLots("lots", {**no_amount, **declared}).run(ctx, {"records": zero})
+        assert out["summary"]["zero_cash_buys"] is None
+        assert out["records"][0]["basis"] == 1000.0
+
+
+def test_the_log_line_names_both_the_fallback_and_the_zero_cash_counts(ctx, caplog):
+    rows = [_trade(1, "2024-02-01", 3.0, 120.0, amount=0.0),
+            _trade(2, "2024-03-01", 2.0, 50.0),
+            _trade(3, "2024-03-02", 3.0, 50.0)]
+    with caplog.at_level("INFO", logger="dskit.pipeline.lots"):
+        _lots(ctx, rows, allow_zero_cash=True)
+    (line,) = [r.getMessage() for r in caplog.records if r.name == "dskit.pipeline.lots"]
+    assert "2 buy(s) on quantity x price (null amount)" in line
+    assert "1 zero-cash buy(s)" in line
+
+
 LOTS_REQUIRED = ("method", "key_fields", "date_field", "quantity_field", "price_field",
                  "allow_incomplete")
 BAD_LOTS = [
@@ -393,6 +492,8 @@ BAD_LOTS = [
       for bad in ([], "time", ["time", "time"], [""], [5], None)],
     ({"allow_incomplete": "no"}, "allow_incomplete must be a bool"),
     ({"allow_incomplete": 0}, "allow_incomplete must be a bool"),
+    *[({"allow_zero_cash": bad}, "allow_zero_cash must be a bool")
+      for bad in ("yes", "false", 1, 0, None)],
 ]
 
 
@@ -400,6 +501,13 @@ BAD_LOTS = [
 def test_each_bad_lots_declaration_is_one_named_problem(over, match):
     problems = TaxLots.validate_params({**LOTS, **over})
     assert len(problems) == 1 and re.search(match, problems[0]), problems
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_allow_zero_cash_is_optional_and_a_bool_validates(declared):
+    assert TaxLots.validate_params({**LOTS, "allow_zero_cash": declared}) == []
+    assert TaxLots.validate_params(LOTS) == [], "absent is valid: the default is false"
+    assert "allow_zero_cash" not in LOTS_REQUIRED
 
 
 @pytest.mark.parametrize("name", LOTS_REQUIRED)

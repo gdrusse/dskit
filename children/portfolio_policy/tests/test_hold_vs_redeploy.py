@@ -703,6 +703,39 @@ def test_funds_and_etfs_are_decided_by_lot_or_aggregate_row(tmp_path, monkeypatc
     assert rates["VGT"] != pytest.approx(rates["SWPPX"])
 
 
+def test_a_buy_that_moved_no_cash_is_a_lot_at_quantity_times_price(tmp_path, monkeypatch):
+    """The first real hold-verdict run stopped at the lots: a broker books a transfer in, a gift
+    or an award as a TRADE with netAmount 0.0 (shares that moved no cash) beside a position of
+    those shares at that same average price. As shipped (allow_zero_cash true) the buy opens a
+    lot at quantity x price, so the fixture's 4 fund shares at 300 reconcile with the books to
+    a basis_gap of 0 and are decided as a lot dated from the row, short-term. Declared false,
+    the run refuses at the lots, naming the param."""
+    gift = {**VGT_TRADE, "amount": 0.0}
+    bars = _daily_bars()
+    copies = [{**row, "symbol": "VGT"} for row in bars if row["symbol"] == "AAPL"]
+    root = _build(tmp_path, TRADES + [gift], positions=THEN + LATER + [FUNDS[1]],
+                  bars=bars + copies)
+    monkeypatch.chdir(root)
+    assert _shipped(RUN_DOC, "lots")["allow_zero_cash"] is True
+    result = _decide(root)
+    lots = result.outputs["lots"]["summary"]
+    assert lots["zero_cash_buys"] == 1, "the gift is counted on its own"
+    assert lots["amount_fallbacks"] == 1, "AAPL's null amount is still the only fallback"
+    assert lots["incomplete"] == []
+    joined = result.outputs["lot_positions"]["summary"]
+    assert joined["fallback"] == [], "the gifted position reconciles instead of falling back"
+    (vgt,) = [r for r in joined["reconciled"] if r["symbol"] == "VGT"]
+    assert (vgt["lots"], vgt["quantity"], vgt["lot_basis"], vgt["position_basis"]) == (
+        1, 4.0, 1200.0, 1200.0)
+    assert vgt["basis_gap"] == 0.0
+    row = {r["lot_id"]: r for r in result.outputs["decide"]["records"]}[VGT_LOT]
+    assert row["acquired"] == "2025-06-02" and row["liq_holding"] == "short"
+    assert row["cost_basis"] == 1200.0
+    refused = _decide(root, expect="error", lots={"allow_zero_cash": False})
+    assert refused.halted_at == "lots"
+    assert "trade" in refused.error and "allow_zero_cash" in refused.error
+
+
 def test_a_sale_the_history_never_bought_refuses_at_the_lots_unless_allowed(tmp_path, monkeypatch):
     """Declared allow_incomplete false, an AAPL sale with no purchase behind it refuses at the
     lots by name. As shipped (true), the holding withholds its lots and falls back whole."""

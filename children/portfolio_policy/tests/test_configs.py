@@ -156,6 +156,8 @@ def test_the_tax_reads_lots_and_the_lot_policy_is_declared_once():
     assert lots["allow_incomplete"] == join["allow_incomplete"]
     # Schwab's trades history starts in 2024 (first real pull): an older holding falls back
     assert lots["allow_incomplete"] is True
+    # Schwab books a transfer in, a gift or an award as a TRADE with netAmount 0 (first real run)
+    assert lots["allow_zero_cash"] is True
     assert (join["value_field"], join["basis_field"]) == (tax["value_field"], tax["basis_field"])
     assert set(lots["key_fields"]) < set(nodes["trades"].params["key_fields"])
     assert join["tolerance"] == 0.0, "any slack hides a missing lot: raise it only on purpose"
