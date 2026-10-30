@@ -34993,3 +34993,18 @@ Root cause: path mapping is cross-cutting (writers, readers, sync) with no singl
 **Tests.** A null param holds every row, with source `none` and null redeploy fields. A string or boolean param refuses. `weekly.sh --no-strategy` runs end to end with no `active` source registered, and the run without the flag is unchanged.
 
 **As built (2026-10-29).** `weekly.sh` refuses any argument after the day other than the flag. `drop_strategy` changes only the shipped shape: both nodes present, `decide.inputs.redeploy_return` wired to `$hurdle.rate` (that wire is removed), and no other node reading either node by wire or `$prev`. Anything else refuses and leaves the file untouched. Review: two lenses, no Critical or Major; doc and test Minors fixed.
+
+#### ADR-0279 amendment: a buy that moved no cash (approved by owner 2026-10-29, "Build the proper fix"; "work autonomously until this is 100% done")
+
+**Problem.** The first real hold-verdict run stopped in `lots`: Schwab books one holding's shares as a VALID `TRADE` with `netAmount` 0.0, a price and no `positionEffect` (a transfer in, a gift or an award: shares that moved no cash). `TaxLots._basis` refuses any buy whose amount is not negative, so one such row stops every run. Schwab's own position for that account holds exactly those shares at an average price equal to the row's price: quantity x price is the broker's basis.
+
+**Decision.**
+
+1. `TaxLots` (`dskit/pipeline/tax_lots.py`) gains an optional bool param `allow_zero_cash` (default false, named once as a module constant). Declared true, a buy whose amount is exactly 0.0 opens a lot at basis quantity x price, like a null amount, and is counted under a new summary field `zero_cash_buys` (null when no `amount_field` is declared). Undeclared or false, it refuses as today, and the message names the param. A positive amount on a buy still refuses either way: that is a sign error, not a buy without cash.
+2. A zero-cash buy at price 0.0 refuses even when allowed: nothing values it.
+3. `amount_fallbacks` keeps counting null amounts only; the log line names both counts.
+4. The child's `lots` node declares `allow_zero_cash: true`, with `notes` saying why.
+
+**Limits.** The lot's holding period starts at the row's date. A transfer between one's own accounts or a gift keeps the earlier holding period, and an inheritance is always long-term, so such a lot may read short-term when it is long-term (its tax overstated). Quantity x price may differ from the true carried-over basis; `LotPositions`' `basis_gap` shows any difference against the broker's books.
+
+**Tests.** Allowed: a zero-cash buy opens a lot at quantity x price, is counted under `zero_cash_buys`, and a later sell consumes it FIFO. Not declared, or false: it refuses naming `allow_zero_cash`. A positive amount refuses even when allowed. Price 0.0 with zero cash refuses. A non-bool value refuses validation. The child's e2e run with a zero-cash row reconciles with `basis_gap` 0.
