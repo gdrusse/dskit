@@ -94,6 +94,19 @@ class StudyContract(ABC):
             if Path(path).resolve().as_posix() != Path(path).as_posix() or path_hash(path) != digest:
                 raise ValueError("code pin drift: " + path)
 
+    @staticmethod
+    def re_exposed(packet, earlier):
+        """Return the id of the earlier non-development packet this development packet repeats.
+
+        A re-exposure repeats one window exactly (equal start and end_before);
+        any partial overlap stays an overlap. None when there is no such twin.
+        """
+        if packet["purpose"] != "development":
+            return None
+        return next((p["id"] for p in earlier
+                     if p["purpose"] != "development" and p["start"] == packet["start"]
+                     and p["end_before"] == packet["end_before"]), None)
+
     @classmethod
     def build(cls, study):
         """Resolve and hash a fully declared study without reading payload values.
@@ -133,8 +146,10 @@ class StudyContract(ABC):
                     or packet["predecessor"] != previous
                     or not _day(packet["start"]) < _day(packet["end_before"])):
                 raise ValueError("invalid packet order or identity")
+            twin = cls.re_exposed(packet, schedule[:len(ids)])
             for prior_packet in schedule[:len(ids)]:
-                if (packet["start"] < prior_packet["end_before"]
+                if (prior_packet["id"] != twin
+                        and packet["start"] < prior_packet["end_before"]
                         and prior_packet["start"] < packet["end_before"]):
                     raise ValueError("overlapping packet entries")
                 if (packet["purpose"] != "development"
@@ -258,6 +273,8 @@ class ExposureRegistry:
     def initialize(self, packets, prior_exposure, end_before):
         """Initialize once with an explicit schedule, prior reads and protected cutoff."""
         _day(end_before)
+        if any(StudyContract.re_exposed(p, packets[:i]) for i, p in enumerate(packets)):
+            raise ValueError("a re-exposure needs a disposed window: import it after disposition")
         if self.path.exists():
             raise ValueError("registry already exists; never initialize over history")
         if not isinstance(prior_exposure, list):
@@ -355,6 +372,9 @@ class ExposureRegistry:
                     or packet["id"] in {p["id"] for p in old_packets}
                     or packet["predecessor"] != old_packets[-1]["id"]):
                 raise ValueError("exactly one new development packet must append to the existing schedule")
+            twin = StudyContract.re_exposed(packet, old_packets)
+            if twin is not None and twin not in state["dispositions"]:
+                raise ValueError("re-exposure requires the original window to be disposed: " + twin)
             cutoff = state["end_before"]
             bounds = list(plan["read_bounds"].values())
             if not bounds:
@@ -378,9 +398,12 @@ class ExposureRegistry:
             state["prior"].extend(copy.deepcopy(prior_exposure))
             state.setdefault("development_imports", []).append(packet["id"])
             state.setdefault("development_import_reasons", {})[packet["id"]] = reason
+            if twin is not None:
+                state.setdefault("development_re_exposes", {})[packet["id"]] = twin
             self._save(connection, state, "import_development")
             return {"revision": state["revision"], "packet": copy.deepcopy(packet),
-                    "frontier": state["frontier"], "reason": reason}
+                    "frontier": state["frontier"], "reason": reason,
+                    **({"re_exposes": twin} if twin is not None else {})}
 
     def preview(self, plan):
         """Report release readiness without any state or payload mutation."""
