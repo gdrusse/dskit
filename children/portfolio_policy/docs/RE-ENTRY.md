@@ -1,56 +1,53 @@
 # RE-ENTRY — portfolio_policy
 
-Updated: 2026-10-28 by Claude Fable 5.1 (wrap after the final convergence lens).
+Updated: 2026-10-30 by Claude Opus 5.5 (wrap after the first real Schwab run).
 Rewritten whole at every `/wrap`; the replaced note goes to `docs/archive/re-entry/portfolio_policy.md`.
 
 ## Now
 
-Everything needed to pull from Schwab and answer "what is it worth to hold
-this" is on `main`, skeptic-reviewed: each slice had its own Sonnet
-review/fix loop closed CLEAN (base 4 rounds; summary 2; risk inputs 2; tax
-lots 2; verdict 3) and a final Sonnet lens on the integrated join returned
-CLEAN (1006 dskit + 118 child tests; one lot hand-verified from trades to
-verdict). Tier 2: `schwab_positions`, `schwab_daily`, `schwab_transactions`
-on one OAuth token. Tier 1 (by import path, `pure` except the writer):
-`liquidation.py`, `hold_return.py`, `active_hurdle.py`,
-`decision_outcomes.py`, `position_summary.py`, `tax_lots.py`,
-`hold_verdict.py`, `kinds_flow.DateOrderedGroupBy`. Child (JSON + one
-script): `run-hold-vs-redeploy.json` (23 nodes: positions + trades → FIFO
-lots → per-lot tax; Schwab daily bars → 252-day vol and Blume beta vs SPY;
-market blocks × beta → hold return; onboarded backtest → deflated hurdle;
-decide per lot → `decisions/`, `risk/`, `summary/`), `run-hold-report.json`
-(→ `report/<run>.md`, one line per lot: HOLD/EXIT with the few numbers),
-`run-decision-outcomes.json` (scores past hold forecasts), `weekly.sh <day>`.
-The decision day lives in five pinned places; `weekly.sh` moves them all.
-No real Schwab pull yet; every rate in the documents is a placeholder.
-Record: `docs/memos/2026-10-27-adr-0279-base-machinery.md`.
+The owner's first real hold verdict ran on 2026-10-30 from the desktop (WSL2,
+`ssh desktop`, worktree `~/wt/portfolio-first-pull-20261029`, root `./ob`):
+`bash weekly.sh 2026-10-30 --no-strategy` -> 46 lot rows, all `hold` (no
+strategy declared), page `report/portfolio_policy-hold-report-2026-10-30-fa7996e1.md`
+(gitignored; the repo is PUBLIC, so no values, symbols or prices in commits).
+Evidence: 5 positions reconciled to lots (max |basis_gap| 4.8e-05), 18 aggregate
+fallbacks, 1 zero-cash buy, risk inputs as of 2026-10-28. Record: the
+"First real run from Schwab" section of
+`docs/memos/2026-10-27-adr-0279-base-machinery.md`.
+Four ADR-0279 amendments made it run, each Sonnet-reviewed to CLEAN and on
+`main`: empty account; funds/ETFs in the verdict; `--no-strategy` (null
+`redeploy_return`, `78102357`); a buy that moved no cash, `TaxLots`
+`allow_zero_cash` (`0fef0fed`, final lens CLEAN, 19 mutants killed).
 
 ## Next
 
-Owner's first real run: README "First real run from Schwab" (Schwab app
-keys → `authorize` once → register and `acquire` positions, trades, daily
-bars → set the placeholders and the day → `bash weekly.sh <day>` → read
-`report/<run>.md`); record it with the memo skill. On that first pull
-check: `lot_positions` `basis_gap_max` (lot method), the trades census
-(`COLLECTIVE_INVESTMENT` for ETFs?), `risk/<run>.jsonl` `as_of`, and a
-holding with a recent split.
+- Each week: README step 3 pulls (positions are repeated by the script), then
+  `bash weekly.sh <UTC day> --no-strategy`. Pull bars in New York daytime
+  (see Blocked).
+- Owner sets the market blocks (the shipped ones give the market ~3%, under the
+  4% risk-free rate, so higher beta reads as lower expected return).
+- Once a strategy has a year of weekly net returns: register `active`
+  (README step 2) and drop `--no-strategy`.
+- A week after a run: score it with `run-decision-outcomes.json`.
 
 ## Blocked / owner decisions
 
-- Placeholders: market blocks, `risk_free`, tax rates, horizon, `trials`,
-  `min_dsr`, `min_periods`, `redeploy_cost`, `risk_premium`, trades `start`.
-- Lot method per account (FIFO ships; average cost shows as a basis gap);
-  `allow_incomplete` if Schwab serves < full history; INVALID transactions.
-- Which child's backtest feeds `active` / `returns`, and its honest `trials`.
-- Open Minors from the final lens: the aggregate-path recipe omits the
-  report document's keys; an empty snapshot day fails late in `weekly.sh`;
-  same-day re-pull is a backfill no-op (use `--mode live`).
-- Cadence: a weekly scheduled `pipeline run` vs a serve document (deferred).
+- `schwab_daily` refuses when, just after midnight New York, Schwab returns the
+  latest session twice (00:00 Central and 00:00 Eastern stamps, same close,
+  different volume). Which candle wins is an open connector decision.
+- Market blocks, `risk_free`, horizon, `redeploy_cost`, `risk_premium`.
+- Lot method per account (FIFO ships; average cost shows as a basis gap).
+- Which child's backtest feeds `active`, and its honest `trials`.
+- Backlog (Minor): a null-amount buy at price 0.0 opens a zero-basis lot;
+  `averagePrice` 0 reads as a 100% gain; the `in` clause value is unvalidated;
+  the page does not tell "none declared" from "withheld"; no shipped test of
+  report/outcomes over fund rows; numpy/pandas runtime deps undeclared (a
+  separate session holds that change, awaiting the owner).
 
 ## Read first
 
 - `README.md` ("First real run from Schwab", "Reading the verdict", Limits)
-- `docs/memos/2026-10-27-adr-0279-base-machinery.md`
+- `docs/memos/2026-10-27-adr-0279-base-machinery.md` (incl. the first real run)
 - `docs/architecture/decision-log.md` § ADR-0279 and amendments
 - `docs/research/` — hold-return (A0001), position-summary (A0002),
   risk-inputs (A0003), tax-lots (A0004)
@@ -58,6 +55,8 @@ holding with a recent split.
 ## Do not
 
 - No live orders, ever (research child; decisions are advisory).
-- No real Schwab pull before the owner sets the document values.
-- Do not type a beta or a return into the document: all arrive wired.
+- No personal figures, symbols with prices, or account facts in commits: the
+  repo is public. Numbers go to the owner in chat.
+- Do not run the Schwab OAuth login for the owner; it is their step (the
+  refresh token lapses after 7 days).
 - Do not change the decision day in one place only (five, pinned by a test).

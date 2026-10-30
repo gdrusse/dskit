@@ -263,6 +263,60 @@ Critical, 0 Major — closing the loop; its Minors, left open and disclosed:
 - Any child backtest to feed `active`/`returns`; the owner picks the child
   and declares its honest `trials`.
 
+## First real run from Schwab (2026-10-29 to 2026-10-30)
+
+**TL;DR.** The first real hold verdict ran on the owner's Schwab accounts on
+2026-10-30: 46 lot rows, all reconciled or passed through as declared, every
+lot `hold` because no strategy is declared yet (`--no-strategy`). The repo is
+public, so this record carries no values, weights, symbols or prices: the
+numbers are in the gitignored `report/portfolio_policy-hold-report-2026-10-30-fa7996e1.md`
+on the desktop. Largest caveat: the market blocks are still placeholders.
+
+**Execution contract.** The desktop (WSL2, `ssh desktop`), worktree
+`~/wt/portfolio-first-pull-20261029`, onboarding root `./ob`. Sources
+`schwab` (positions), `schwab_trades` (start 2015-01-01; `EQUITY`,
+`COLLECTIVE_INVESTMENT`, `MUTUAL_FUND`), `schwab_daily` (held symbols plus
+SPY). Owner answers 2026-10-29: every account taxable, the shipped top-bracket
+rates stand (23.8% long, 40.8% short, no state), no strategy yet. Command:
+`bash weekly.sh 2026-10-30 --no-strategy` after the README step 3 pulls.
+
+**What it took.** Three dskit changes, each its own ADR-0279 amendment and
+review loop, all on `main`: an empty account no longer refuses the positions
+pull; funds and ETFs reach the verdict; `--no-strategy` declares no alternative
+(`78102357`); a buy that moved no cash (a transfer in, a gift or an award,
+booked by Schwab as a `TRADE` with `netAmount` 0.0) is valued at quantity x
+price under `allow_zero_cash` (`0fef0fed`).
+
+**Runs.** 2026-10-29 decision run `...-2026-10-29-776b8512` failed in `lots`
+on that zero-cash row (journal A0012). 2026-10-30: decision run
+`portfolio_policy-hold-vs-redeploy-2026-10-30-d1f7bed4` (A0015), decisions and
+risk published (A0016-A0019), report run `portfolio_policy-hold-report-2026-10-30-fa7996e1`
+(A0020), all nodes ok.
+
+**Evidence.** `lots`: 33 lots over 6 keys, 0 incomplete, 0 null-amount
+fallbacks, 1 zero-cash buy. `lot_positions`: 46 rows from 23 positions, 5
+reconciled share for share to their lots (max |basis_gap| 4.8e-05, float
+noise; the zero-cash holding's broker basis equals quantity x price), 18 passed
+through as aggregate rows (`fallback`: holdings the trades history does not
+account for share for share, such as shares bought before it begins; taxed as
+`default_holding`; the run log gives the count, not each reason), 0 unpositioned. 46 decisions, all `hold`, redeploy
+fields null. Risk inputs are as of 2026-10-28.
+
+**Failures and limits, beside the result.**
+
+- The README step 3 bars pull on 2026-10-30 (04:00 UTC, just after midnight
+  New York) refused: Schwab returned the latest session twice, stamped 00:00
+  Central and 00:00 Eastern, same close, different volume. `schwab_daily`
+  refuses two candles on one session by design, so the run used the bars
+  pulled the evening before (through 2026-10-28). A rule for that duplicate is
+  an open connector decision.
+- Market blocks put the market's expected return near 3%, under the 4%
+  risk-free rate, so higher-beta holdings show lower expected returns. They are
+  placeholders until the owner sets them.
+- 18 of 23 positions carry no lot dates, so their tax uses `default_holding`.
+- A zero-cash lot's holding period starts at its row's date (see the ADR's
+  two-sided limits).
+
 ## Reproducibility and handoff
 
 - Identity: both documents hash at validate (`python -m dskit.pipeline
