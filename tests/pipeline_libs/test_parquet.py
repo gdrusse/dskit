@@ -1022,6 +1022,15 @@ def test_sqlite_index_rejects_swapped_input_manifest(tmp_path):
         pack.SQLiteParquetIndex.build(str(sources[0][0]), str(third), columns, bounds,
             **kwargs, reuse_identity=sources[0][1])
     assert not third.exists()
+    forged = json.loads(second_manifest.read_text())
+    forged["input_sha256"] = first_manifest.stem
+    replacement.write_text(json.dumps(forged))
+    os.replace(replacement, first_manifest)
+    fourth = tmp_path / "run-four.sqlite"
+    with pytest.raises(ValueError, match="input identity"):
+        pack.SQLiteParquetIndex.build(str(sources[0][0]), str(fourth), columns, bounds,
+            **kwargs, reuse_identity=sources[0][1])
+    assert not fourth.exists()
 
 
 def test_sqlite_index_same_input_key_cannot_overwrite_different_manifest(tmp_path):
@@ -1045,6 +1054,15 @@ def test_sqlite_index_same_input_key_cannot_overwrite_different_manifest(tmp_pat
             columns, bounds, **kwargs, validator=lambda row: row.update(price=2.0))
     assert manifest.read_bytes() == original
     assert first["sha256"] == json.loads(manifest.read_text())["sha256"]
+    assert not (tmp_path / "two.sqlite").exists()
+    assert len(list(cache.rglob("*.sqlite"))) == 1
+    occupied = tmp_path / "occupied.sqlite"
+    occupied.write_bytes(b"prior run-local output")
+    with pytest.raises(ValueError, match="identity collision"):
+        pack.SQLiteParquetIndex.build(str(source), str(occupied), columns, bounds,
+            **kwargs, validator=lambda row: row.update(price=2.0))
+    assert occupied.read_bytes() == b"prior run-local output"
+    assert len(list(cache.rglob("*.sqlite"))) == 1
 
 
 def test_sqlite_index_invalid_reuse_root_has_no_filesystem_effect(tmp_path):

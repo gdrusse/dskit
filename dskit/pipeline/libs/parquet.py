@@ -283,8 +283,8 @@ class SQLiteParquetIndex:
         return record
 
     @staticmethod
-    def _verify_cache_blob(blob, digest, metadata):
-        """Verify cached bytes and embedded SQLite metadata before reuse."""
+    def _verify_cache_blob(blob, digest, metadata, input_key=None):
+        """Verify cached bytes, descriptor and source-input provenance."""
         import json
         import sqlite3
         from dskit.pipeline.workflow import path_hash
@@ -298,6 +298,11 @@ class SQLiteParquetIndex:
             row = connection.execute("SELECT value FROM metadata WHERE name='descriptor'").fetchone()
             if row is None or json.loads(row[0]) != metadata:
                 raise ValueError("index cache metadata mismatch")
+            if input_key is not None:
+                row = connection.execute(
+                    "SELECT value FROM metadata WHERE name='reuse_input_sha256'").fetchone()
+                if row is None or row[0] != input_key:
+                    raise ValueError("index cache input identity mismatch")
         except (sqlite3.DatabaseError, json.JSONDecodeError) as exc:
             raise ValueError("index cache metadata mismatch") from exc
         finally:
@@ -368,7 +373,7 @@ class SQLiteParquetIndex:
         blob = cls._cache_blob(root, record["sha256"])
         if not blob.exists():
             return None
-        cls._verify_cache_blob(blob, record["sha256"], metadata)
+        cls._verify_cache_blob(blob, record["sha256"], metadata, key)
         if not cls._link_run(blob, destination, validator, cache_kib):
             return None
         return {**metadata, "path": str(destination), "sha256": record["sha256"]}
@@ -387,10 +392,12 @@ class SQLiteParquetIndex:
         blob.parent.mkdir(parents=True, exist_ok=True)
         if blob.parent.stat().st_dev != destination.stat().st_dev:
             return
+        created_blob = False
         try:
             os.link(destination, blob)
+            created_blob = True
         except FileExistsError:
-            cls._verify_cache_blob(blob, digest, metadata)
+            cls._verify_cache_blob(blob, digest, metadata, key)
             if not cls._link_run(blob, destination):
                 return
         except OSError as exc:
@@ -399,23 +406,32 @@ class SQLiteParquetIndex:
             raise
         if key is None:
             return
-        manifest = cls._cache_manifest(root, key)
-        manifest.parent.mkdir(parents=True, exist_ok=True)
-        record = {"input_sha256": key, "sha256": digest, "metadata": metadata}
-        candidate = manifest.with_name(manifest.name + ".building-" + uuid.uuid4().hex)
+        manifest_accepted = False
         try:
-            with open(candidate, "x") as handle:
-                json.dump(record, handle, sort_keys=True, separators=(",", ":"))
-                handle.flush()
-                os.fsync(handle.fileno())
-            candidate.chmod(0o444)
+            manifest = cls._cache_manifest(root, key)
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            record = {"input_sha256": key, "sha256": digest, "metadata": metadata}
+            candidate = manifest.with_name(manifest.name + ".building-" + uuid.uuid4().hex)
             try:
-                os.link(candidate, manifest)
-            except FileExistsError:
-                if cls._read_manifest(manifest) != record:
-                    raise ValueError("index cache input identity collision")
-        finally:
-            candidate.unlink(missing_ok=True)
+                with open(candidate, "x") as handle:
+                    json.dump(record, handle, sort_keys=True, separators=(",", ":"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                candidate.chmod(0o444)
+                try:
+                    os.link(candidate, manifest)
+                    manifest_accepted = True
+                except FileExistsError:
+                    if cls._read_manifest(manifest) != record:
+                        raise ValueError("index cache input identity collision")
+                    manifest_accepted = True
+            finally:
+                candidate.unlink(missing_ok=True)
+        except BaseException:
+            # A keyed blob cannot serve another input: its own bytes carry key.
+            if created_blob and not manifest_accepted:
+                blob.unlink(missing_ok=True)
+            raise
 
     @classmethod
     def build(cls, source_path, index_path, columns, bounds, *, where=None,
@@ -558,6 +574,8 @@ class SQLiteParquetIndex:
             metadata = {**expected, "rows": count}
             conn.execute("INSERT INTO metadata VALUES('descriptor',?)",
                          (json.dumps(metadata, sort_keys=True, separators=(",", ":")),))
+            if key is not None:
+                conn.execute("INSERT INTO metadata VALUES('reuse_input_sha256',?)", (key,))
             conn.commit()
         except BaseException:
             conn.close()
@@ -566,13 +584,19 @@ class SQLiteParquetIndex:
                     candidate.unlink()
             raise
         conn.close()
-        os.replace(temp, destination)
-        descriptor = {**metadata, "path": str(destination),
-                      "sha256": path_hash(str(destination), evict=root is not None)}
-        if root is not None:
-            destination.chmod(0o444)
-            cls._publish_cache(root, key, destination, descriptor)
-        return descriptor
+        if root is None:
+            os.replace(temp, destination)
+            return {**metadata, "path": str(destination), "sha256": path_hash(str(destination))}
+        try:
+            descriptor = {**metadata, "path": str(destination),
+                          "sha256": path_hash(str(temp), evict=True)}
+            temp.chmod(0o444)
+            cls._publish_cache(root, key, temp, descriptor)
+            os.replace(temp, destination)
+            return descriptor
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
 
     def __init__(self, descriptor, *, cache_kib=16384, fetch_size=2048):
         import json

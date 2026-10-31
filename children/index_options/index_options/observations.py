@@ -684,6 +684,25 @@ class MIOPacketInputs(StudyNode):
     role = "transform"
     outputs = ("bounded_inputs", "provenance")
 
+    @staticmethod
+    def _portable_code_pins(pins):
+        """Keep validated package paths relative so checkout moves reuse indexes."""
+        from pathlib import Path
+
+        portable = {}
+        for name, digest in pins.items():
+            source = Path(name)
+            if not source.is_absolute():
+                raise ValueError("absolute study code pin required")
+            root = source.parent
+            while (root / "__init__.py").is_file():
+                root = root.parent
+            relative = source.relative_to(root).as_posix()
+            if relative in portable:
+                raise ValueError("ambiguous portable study code pin")
+            portable[relative] = digest
+        return portable
+
     def fingerprint(self, ctx=None):
         """Return only configured metadata; never hash market bytes before claim."""
         from dskit.pipeline.base import value_hash
@@ -802,7 +821,7 @@ class MIOPacketInputs(StudyNode):
                 reuse_identity=({"verified_source_sha256": binding["pin"]["files"][relative],
                                  "predicate": {"symbol": symbol, "expiries": expiries},
                                  "validator": quote_node.params,
-                                 "code": self.params["study"]["code"],
+                                 "code": self._portable_code_pins(self.params["study"]["code"]),
                                  "dependencies": self.params["study"]["dependencies"]}
                                 if reuse_root is not None else None),
                 replay_validator=reuse_root is not None)

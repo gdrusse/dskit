@@ -185,12 +185,40 @@ def test_mio_quote_index_reuses_verified_bytes_across_run_dirs(study, tmp_path, 
     repeated["registry"]["path"] = str(tmp_path / "separate-exposure.sqlite")
     _, _, second_permit = _open(repeated)
     second_dir = tmp_path / "second-run"
+    from dskit.pipeline.libs.parquet import DateBoundedParquet
+    original_batches = DateBoundedParquet.batches
+    def no_second_quote_build(self, *args, **kwargs):
+        if "strike_raw" in self.columns:
+            raise AssertionError("quote index rebuilt instead of reusing cache")
+        yield from original_batches(self, *args, **kwargs)
+    monkeypatch.setattr(DateBoundedParquet, "batches", no_second_quote_build)
     second = MIOPacketInputs("intake", {"study": repeated}).run(
         NodeContext(name="intake", asof="2019-02-09", run_dir=str(second_dir)),
         {"permit": second_permit})["bounded_inputs"]["inputs"]["X"]["chain_index"]["index"]
     assert first["sha256"] == second["sha256"] and first["rows"] == second["rows"]
     assert first["path"] != second["path"]
     assert Path(first["path"]).stat().st_ino == Path(second["path"]).stat().st_ino
+
+
+def test_mio_cache_code_pin_identity_is_checkout_portable(tmp_path):
+    portable = []
+    for checkout in ("one", "two"):
+        root = tmp_path / checkout
+        pins = {}
+        for relative, contents in (("dskit/__init__.py", ""),
+                                   ("dskit/pipeline/__init__.py", ""),
+                                   ("dskit/pipeline/study_protocol.py", "study"),
+                                   ("index_options/__init__.py", ""),
+                                   ("index_options/observations.py", "quotes")):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents)
+            pins[str(path.resolve())] = path_hash(str(path))
+        portable.append(MIOPacketInputs._portable_code_pins(pins))
+    assert portable[0] == portable[1]
+    assert set(portable[0]) == {"dskit/__init__.py", "dskit/pipeline/__init__.py",
+                                "dskit/pipeline/study_protocol.py", "index_options/__init__.py",
+                                "index_options/observations.py"}
 
 
 def test_mio_contract_requires_full_imported_code_pins(study):
