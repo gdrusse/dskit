@@ -507,6 +507,13 @@ print under names that cannot be confused. A cross-section thinner than
 `USABLE_NAMES` comes back marked unusable with its name counts attached,
 and can never pass.
 
+`ordering.clustered_calibration_slope` is the same slope for rows that are not
+a time series (books, trades, names): a one- or two-way cluster-robust band
+(CR1, Cameron-Gelbach-Miller two-way, Student-t on the fewest clusters minus
+one). The `ClusteredCalibrationSlope` node (`kinds_stats.py`, by import path)
+runs it per declared group. `stats.student_t_critical` (moved here from
+`mean_interval`) is the one two-sided t quantile.
+
 `bar` raises the mark for the many attempts behind a result: an
 `AttemptRegistry` counts every cell ever scored, and `max_bar`
 resamples every cell in one outcome unit's family together under one
@@ -1139,7 +1146,8 @@ dskit/pipeline/
 ├── predictions.py     PredictionWriter / read_prediction_series: every scored
 │                      validation row, one parquet per run (ADR-0064)
 ├── ordering.py        rank vs magnitude: Mincer-Zarnowitz calibration slope,
-│                      per-timestamp cross-sectional IC + its usability guard (ADR-0068)
+│                      per-timestamp cross-sectional IC + its usability guard (ADR-0068);
+│                      clustered_calibration_slope: one-/two-way cluster-robust slope band
 ├── study_protocol.py  StudyContract/ExposureRegistry: metadata plan, explicit packet controls, atomic exposure and attested results
 ├── attempts.py        the many-attempts bar: AttemptRegistry, session-block
 │                      sign-flip max_bar, the tier-2 scramble seam (ADR-0069)
@@ -1170,6 +1178,8 @@ dskit/pipeline/
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections);
 │                      CrossSectionIC (by import path, ADR-0259): per-instant rank IC of named
 │                      measures across names, a benchmark partialled out, split/month summaries, drop census;
+│                      ClusteredCalibrationSlope (by import path): Mincer-Zarnowitz slope of an outcome on a
+│                      forecast per group with a one-/two-way cluster-robust band;
 │                      QuantileSortBook (by import path, ADR-0265): per-stamp quantile long-short book of
 │                      several signals, cost per side, Newey-West + block-bootstrap + one BH/Bonferroni family
 ├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam);
@@ -1207,6 +1217,7 @@ dskit/pipeline/
 │                      CalendarBlockBootstrap + EdgePaddedCalendarBlockBootstrap:
 │                      calendar-day block resampling, one `_blocks_for` hook (ADR-0258);
 │                      sample_quantile (interpolated quantile of a whole sample, ADR-0265)
+│                      student_t_critical / student_t_sf (the one Student-t quantile and tail)
 ├── binary_pricing.py  fair value of a binary contract that settles on an average: AveragedLognormal law,
 │                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
 ├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; row_key + fields_key, the one id/chain/right key rule: str or non-bool int scalars (by import path, ADR-0257)

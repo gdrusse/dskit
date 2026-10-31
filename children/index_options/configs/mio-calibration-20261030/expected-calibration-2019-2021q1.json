@@ -1,0 +1,509 @@
+{
+  "name": "mio-expected-calibration-2019-2021q1-20261030",
+  "notes": "Test B, expected-profit calibration audit (Stream B of the owner-approved four-stream program). Owner authorization, Russell, 2026-10-30: \"Okay do all of those and max parallel work. Build with opus, review with sonnet. You orchestrate everything. Kick off any runs please asap.\" Question: the MIO objective `expected` (USD expected profit under the forecast) selects books; does it carry MAGNITUDE or RANK information about realized book P&L? Read-only on three saved, attested MIO results; no MIO, fit, solver, provider pull, registry write, 2020 label, 2024+ or holdout read; bars read below each cohort's end_before (2020-01-01 for 2019, 2021-04-01 for Q1 2021). Cohorts are kept separate (every gate is per cohort). PRE-REGISTERED GATES (fixed before any clustered band, IC or counterfactual was computed; disclosed: the orchestrator and the builder had already seen the naive unclustered OLS slope, correlation, realized/expected ratio and win rate of the filled books, e.g. 2019 broad212 slope -0.009, Q1 -0.011). G1: per cohort, over ALL filled books, slope b of realized pnl (`outcome`) on `expected_matched` (saved expected scaled by the filled/selected contract fraction, because available-size fills keep `expected` at selected size), two-way cluster-robust (decision_date, symbol) CR1, Cameron-Gelbach-Miller A+B-AxB (wider one-way if that is not positive, flagged), 95% Student-t band on min(G)-1 df. Read: b >= 0.5 and band excludes 0 -> magnitude usable; 0 < b < 0.5 and band excludes 0 -> over-reaction (a shrink factor repairs it); band includes 0 -> no magnitude information; b < 0 with band excluding 0 -> inverted (reported as such, not usable). G2: the same slope split by method_fitted (fitted M53 cell vs raw-model fallback). G3: per decision date, Spearman IC of expected_matched vs realized pnl across the cohort's filled books (series = method|book id), HAC Newey-West mean over dates (automatic lags, h_steps 1), per-cohort split; t > 2 -> rank usable; dates with < 3 books are skipped and a median cross-section < 5 books is flagged unusable by the ordering owner (ADR-0068). G3b: the same over filled+refused books on the uniform decision basis (saved expected vs decision_basis_pnl: the book as selected, at decision prices, fees in, settled at expiry). G4 (informational, no gate): counterfactual settlement of every refused book, summed by method, reason and fitted flag; settlement = the run's own pinned split-adjusted bar close at expiry / the book's basis factor (MIOPacketStudy._settlements), verified by reproducing every filled book's saved pnl within the tolerance. Sensitivities (reported, never gating): G1 on the raw saved expected; G1 clustered by (expiry, symbol), the A0005 dimensions. Path: A0003 windows respected (2019 development; Q1 2021 is a validation-window period whose MIO run already exists and is only re-read here); A0005's promotion rule is not invoked (no promotion); A0002 governs distribution-evaluation metrics and is not contradicted (this is an owner-requested diagnostic of the MIO objective, not a forecast-evaluation metric); A0008 untouched.",
+  "pipeline": {
+    "result_c2019_broad212": {
+      "uses": "table-file",
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2019-available-size-20261029/broad212/result.json",
+        "source": "attested 2019 broad212 available-size MIO result (results pins mio-2019-available-size-results-pins-20261029.json); read only",
+        "retrieved": "2026-10-30",
+        "sha256": "9ed7b614b71a06bae7b297df85673ac51a9aa79858a689b005cf4b86d2a21a4b",
+        "expect": 6
+      },
+      "notes": "The saved result; table-file verifies the digest before parsing."
+    },
+    "books_c2019_broad212": {
+      "uses": "index_options.mio_run_events:MioBookOutcomes",
+      "inputs": {
+        "table": "$result_c2019_broad212.table"
+      },
+      "params": {
+        "cohort": "c2019_broad212",
+        "methods": [
+          "nominal_lp",
+          "w1_003_shock10_lp",
+          "w1_003_component25_lp",
+          "w1_003_lp"
+        ],
+        "end_before": "2020-01-01",
+        "tolerance": 0.005
+      },
+      "notes": "Every filled and refused book with its realized or counterfactual outcome; refuses unless the pinned bars reproduce every filled pnl within half a cent."
+    },
+    "result_c2019_limited36": {
+      "uses": "table-file",
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2019-available-size-20261029/limited36/result.json",
+        "source": "attested 2019 limited36 available-size MIO result (same results pins); read only",
+        "retrieved": "2026-10-30",
+        "sha256": "df911d4c89ba65ff9b858ce28d3726cf886ceba16ebdb9534c49bd2a81f351ed",
+        "expect": 6
+      },
+      "notes": "The saved result; table-file verifies the digest before parsing."
+    },
+    "books_c2019_limited36": {
+      "uses": "index_options.mio_run_events:MioBookOutcomes",
+      "inputs": {
+        "table": "$result_c2019_limited36.table"
+      },
+      "params": {
+        "cohort": "c2019_limited36",
+        "methods": [
+          "nominal_lp",
+          "w1_003_shock10_lp",
+          "w1_003_component25_lp",
+          "w1_003_lp"
+        ],
+        "end_before": "2020-01-01",
+        "tolerance": 0.005
+      },
+      "notes": "Every filled and refused book with its realized or counterfactual outcome; refuses unless the pinned bars reproduce every filled pnl within half a cent."
+    },
+    "result_c2021q1_top3": {
+      "uses": "table-file",
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/result.json",
+        "source": "byte-identical attested close receipt of the completed Q1 2021 top-three amended replay; read only",
+        "retrieved": "2026-10-30",
+        "sha256": "ce39e2062c378d6576af97f673f795df04b724b4f696729c677a43cdd94399ac",
+        "expect": 6
+      },
+      "notes": "The saved result; table-file verifies the digest before parsing."
+    },
+    "books_c2021q1_top3": {
+      "uses": "index_options.mio_run_events:MioBookOutcomes",
+      "inputs": {
+        "table": "$result_c2021q1_top3.table"
+      },
+      "params": {
+        "cohort": "c2021q1_top3",
+        "methods": [
+          "w1_003_shock10_lp",
+          "nominal_lp",
+          "w1_003_lp"
+        ],
+        "end_before": "2021-04-01",
+        "tolerance": 0.005
+      },
+      "notes": "Every filled and refused book with its realized or counterfactual outcome; refuses unless the pinned bars reproduce every filled pnl within half a cent."
+    },
+    "books": {
+      "uses": "concat",
+      "inputs": {
+        "c2019_broad212": "$books_c2019_broad212.books",
+        "c2019_limited36": "$books_c2019_limited36.books",
+        "c2021q1_top3": "$books_c2021q1_top3.books"
+      },
+      "params": {
+        "shape": "records",
+        "provenance": "cohort"
+      },
+      "notes": "One stream; each row must already carry its port's cohort, so cohorts cannot be swapped."
+    },
+    "books_fitted": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$books.merged"
+      },
+      "params": {
+        "field": "fitted_label",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "fitted",
+                "op": "==",
+                "value": true
+              }
+            ],
+            "value": "fitted"
+          },
+          {
+            "when": [
+              {
+                "field": "fitted",
+                "op": "==",
+                "value": false
+              }
+            ],
+            "value": "fallback"
+          }
+        ]
+      },
+      "notes": "A string label for the fitted flag (group fields are labels); an unmatched row refuses."
+    },
+    "books_band": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$books_fitted.records"
+      },
+      "params": {
+        "field": "dte_band",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 7
+              }
+            ],
+            "value": "01-07"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 8
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 21
+              }
+            ],
+            "value": "08-21"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 22
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 42
+              }
+            ],
+            "value": "22-42"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 43
+              }
+            ],
+            "value": "43+"
+          }
+        ]
+      },
+      "notes": "Pre-registered coarse DTE bands (few books per cell); no catch-all."
+    },
+    "filled": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$books_band.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "status",
+            "op": "==",
+            "value": "filled"
+          }
+        ]
+      }
+    },
+    "settled": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$books_band.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "decision_basis_pnl",
+            "op": "!=",
+            "value": null
+          }
+        ]
+      },
+      "notes": "Books with a pinned expiry close (a null outcome is never invented)."
+    },
+    "refused": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$settled.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "status",
+            "op": "==",
+            "value": "refused"
+          }
+        ]
+      }
+    },
+    "g1_slope": {
+      "uses": "dskit.pipeline.kinds_stats:ClusteredCalibrationSlope",
+      "inputs": {
+        "records": "$filled.records"
+      },
+      "params": {
+        "forecast_field": "expected_matched",
+        "outcome_field": "outcome",
+        "cluster_fields": [
+          "decision_date",
+          "symbol"
+        ],
+        "group_fields": [
+          "cohort"
+        ],
+        "level": 0.95
+      },
+      "notes": "G1 (gate)."
+    },
+    "g2_slope_fitted": {
+      "uses": "dskit.pipeline.kinds_stats:ClusteredCalibrationSlope",
+      "inputs": {
+        "records": "$filled.records"
+      },
+      "params": {
+        "forecast_field": "expected_matched",
+        "outcome_field": "outcome",
+        "cluster_fields": [
+          "decision_date",
+          "symbol"
+        ],
+        "group_fields": [
+          "cohort",
+          "fitted_label"
+        ],
+        "level": 0.95
+      },
+      "notes": "G2 (gate)."
+    },
+    "g1_sens_raw_expected": {
+      "uses": "dskit.pipeline.kinds_stats:ClusteredCalibrationSlope",
+      "inputs": {
+        "records": "$filled.records"
+      },
+      "params": {
+        "forecast_field": "expected",
+        "outcome_field": "outcome",
+        "cluster_fields": [
+          "decision_date",
+          "symbol"
+        ],
+        "group_fields": [
+          "cohort"
+        ],
+        "level": 0.95
+      },
+      "notes": "Sensitivity: the saved expected, not size-matched."
+    },
+    "g1_sens_expiry_symbol": {
+      "uses": "dskit.pipeline.kinds_stats:ClusteredCalibrationSlope",
+      "inputs": {
+        "records": "$filled.records"
+      },
+      "params": {
+        "forecast_field": "expected_matched",
+        "outcome_field": "outcome",
+        "cluster_fields": [
+          "expiry",
+          "symbol"
+        ],
+        "group_fields": [
+          "cohort"
+        ],
+        "level": 0.95
+      },
+      "notes": "Sensitivity: A0005's cluster dimensions."
+    },
+    "g3_ic_filled": {
+      "uses": "dskit.pipeline.kinds_stats:CrossSectionIC",
+      "inputs": {
+        "records": "$filled.records"
+      },
+      "params": {
+        "stamp_field": "decision_date",
+        "series_field": "book_key",
+        "measures": {
+          "expected_vs_realized": {
+            "forecast_field": "expected_matched",
+            "outcome_field": "outcome"
+          }
+        },
+        "lags": null,
+        "h_steps": 1,
+        "splits": [
+          "cohort"
+        ]
+      },
+      "notes": "G3 (gate): read the cohort splits."
+    },
+    "g3b_ic_settled": {
+      "uses": "dskit.pipeline.kinds_stats:CrossSectionIC",
+      "inputs": {
+        "records": "$settled.records"
+      },
+      "params": {
+        "stamp_field": "decision_date",
+        "series_field": "book_key",
+        "measures": {
+          "expected_vs_decision_basis": {
+            "forecast_field": "expected",
+            "outcome_field": "decision_basis_pnl"
+          }
+        },
+        "lags": null,
+        "h_steps": 1,
+        "splits": [
+          "cohort"
+        ]
+      },
+      "notes": "G3b (gate): filled+refused, uniform basis."
+    },
+    "sum_status_fitted": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$settled.records"
+      },
+      "params": {
+        "keys": [
+          "cohort",
+          "status",
+          "fitted_label"
+        ],
+        "aggregates": {
+          "n": {
+            "op": "count"
+          },
+          "expected_matched_sum": {
+            "op": "sum",
+            "field": "expected_matched"
+          },
+          "outcome_sum": {
+            "op": "sum",
+            "field": "outcome"
+          },
+          "wins": {
+            "op": "sum",
+            "field": "win"
+          },
+          "decision_basis_sum": {
+            "op": "sum",
+            "field": "decision_basis_pnl"
+          }
+        }
+      },
+      "notes": "Ratio and win rate by fitted flag."
+    },
+    "sum_status_dte": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$settled.records"
+      },
+      "params": {
+        "keys": [
+          "cohort",
+          "status",
+          "dte_band"
+        ],
+        "aggregates": {
+          "n": {
+            "op": "count"
+          },
+          "expected_matched_sum": {
+            "op": "sum",
+            "field": "expected_matched"
+          },
+          "outcome_sum": {
+            "op": "sum",
+            "field": "outcome"
+          },
+          "wins": {
+            "op": "sum",
+            "field": "win"
+          },
+          "decision_basis_sum": {
+            "op": "sum",
+            "field": "decision_basis_pnl"
+          }
+        }
+      },
+      "notes": "Ratio and win rate by DTE band."
+    },
+    "sum_status_method": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$settled.records"
+      },
+      "params": {
+        "keys": [
+          "cohort",
+          "status",
+          "method"
+        ],
+        "aggregates": {
+          "n": {
+            "op": "count"
+          },
+          "expected_matched_sum": {
+            "op": "sum",
+            "field": "expected_matched"
+          },
+          "outcome_sum": {
+            "op": "sum",
+            "field": "outcome"
+          },
+          "wins": {
+            "op": "sum",
+            "field": "win"
+          },
+          "decision_basis_sum": {
+            "op": "sum",
+            "field": "decision_basis_pnl"
+          }
+        }
+      },
+      "notes": "By method (G4 by method for refused)."
+    },
+    "g4_refused_reason": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$refused.records"
+      },
+      "params": {
+        "keys": [
+          "cohort",
+          "reason",
+          "fitted_label"
+        ],
+        "aggregates": {
+          "n": {
+            "op": "count"
+          },
+          "expected_matched_sum": {
+            "op": "sum",
+            "field": "expected_matched"
+          },
+          "outcome_sum": {
+            "op": "sum",
+            "field": "outcome"
+          },
+          "wins": {
+            "op": "sum",
+            "field": "win"
+          },
+          "decision_basis_sum": {
+            "op": "sum",
+            "field": "decision_basis_pnl"
+          }
+        }
+      },
+      "notes": "G4 by reason and fitted flag."
+    }
+  },
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/mio-calibration-2019-2021q1-20261030/runs"
+  }
+}

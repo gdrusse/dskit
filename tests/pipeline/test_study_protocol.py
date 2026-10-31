@@ -480,3 +480,112 @@ def test_registry_plan_identity_guard_covers_schedule_mutators(study):
     with pytest.raises(ValueError, match="registry|identity"):
         registry.freeze(foreign_plan)
     assert registry.snapshot()["revision"] == revision
+
+
+_RE_EXPOSURE_EVIDENCE = [{"start": "2020-12-01", "end_before": "2021-03-01",
+                          "evidence": "disposed confirmation receipt and inventory"}]
+_UNDISPOSED_EVIDENCE = [{"start": "2021-12-01", "end_before": "2022-03-01",
+                         "evidence": "claimed but never disposed"}]
+
+
+def _re_exposure_study(study, window, packet_id="again", purpose="development"):
+    """The fixture schedule plus one appended packet over the given window."""
+    packet = {"id": packet_id, "start": window[0], "end_before": window[1],
+              "purpose": purpose, "predecessor": study["packets"][-1]["id"]}
+    return {**study, "packets": study["packets"]+[packet], "selected_packet": packet_id}
+
+
+def _dispose_through(registry, study, packet_id):
+    """Claim and abandon packets in frontier order up to and including packet_id."""
+    for packet in study["packets"]:
+        current = {**study, "selected_packet": packet["id"]}
+        _claim(current, registry)
+        registry.dispose(packet["id"], "abandon", "fixture exposure")
+        if packet["id"] == packet_id:
+            return
+
+
+def test_schedule_accepts_equal_window_development_and_refuses_partial_overlap(study):
+    equal = _re_exposure_study(study, ("2021-01-01", "2021-02-01"))
+    assert StudyContract.build(equal)["packet"]["id"] == "again"
+    for window in (("2021-01-01", "2021-01-15"), ("2020-12-15", "2021-02-01"),
+                   ("2021-01-15", "2021-03-01")):
+        with pytest.raises(ValueError, match="overlapping"):
+            StudyContract.build(_re_exposure_study(study, window))
+    # equality does not extend to a non-development packet, nor to a development window
+    with pytest.raises(ValueError, match="overlapping"):
+        StudyContract.build(_re_exposure_study(
+            study, ("2021-01-01", "2021-02-01"), purpose="adaptation"))
+    with pytest.raises(ValueError, match="overlapping"):
+        StudyContract.build(_re_exposure_study(study, ("2020-01-01", "2021-01-01")))
+
+
+def test_initialize_refuses_a_schedule_that_already_holds_a_re_exposure(study):
+    equal = _re_exposure_study(study, ("2021-01-01", "2021-02-01"))
+    registry = ExposureRegistry(equal["registry"])
+    with pytest.raises(ValueError, match="disposed"):
+        registry.initialize(equal["packets"], _RE_EXPOSURE_EVIDENCE, "2024-01-01")
+
+
+def test_re_exposure_import_requires_a_disposed_window_and_records_it(study):
+    registry = _initialize(study)
+    undisposed = _re_exposure_study(study, ("2022-01-01", "2022-02-01"))
+    before = registry.snapshot()
+    with pytest.raises(ValueError, match="disposed"):
+        registry.import_development(StudyContract.build(undisposed), _UNDISPOSED_EVIDENCE,
+                                    before["revision"], "window never read")
+    assert registry.snapshot() == before
+
+    _dispose_through(registry, study, "r1")
+    disposed = _re_exposure_study(study, ("2021-01-01", "2021-02-01"))
+    plan = StudyContract.build(disposed)
+    state = registry.snapshot()
+    result = registry.import_development(plan, _RE_EXPOSURE_EVIDENCE, state["revision"],
+                                         "rerun the disposed window")
+    after = registry.snapshot()
+    assert result["re_exposes"] == "r1" and result["frontier"] == state["frontier"]
+    assert after["development_imports"] == ["again"]
+    assert after["development_import_reasons"] == {"again": "rerun the disposed window"}
+    assert after["development_re_exposes"] == {"again": "r1"}
+    assert after["dispositions"] == state["dispositions"]
+    assert after["packets"] == disposed["packets"]
+    # the same window cannot be re-exposed twice: use the existing development packet
+    second = {**disposed, "packets": disposed["packets"]+[{
+        "id": "twice", "start": "2021-01-01", "end_before": "2021-02-01",
+        "purpose": "development", "predecessor": "again"}], "selected_packet": "twice"}
+    with pytest.raises(ValueError, match="overlapping"):
+        StudyContract.build(second)
+
+
+def test_re_exposure_import_still_requires_covering_prior_exposure(study):
+    registry = _initialize(study)
+    _dispose_through(registry, study, "r1")
+    plan = StudyContract.build(_re_exposure_study(study, ("2021-01-01", "2021-02-01")))
+    before = registry.snapshot()
+    with pytest.raises(ValueError, match="prior exposure"):
+        registry.import_development(
+            plan, [{"start": "2021-01-01", "end_before": "2021-01-15", "evidence": "short"}],
+            before["revision"], "evidence too short")
+    assert registry.snapshot() == before
+
+
+def test_re_exposure_claim_is_development_and_leaves_original_untouched(study):
+    registry = _initialize(study)
+    _dispose_through(registry, study, "r1")
+    disposed = _re_exposure_study(study, ("2021-01-01", "2021-02-01"))
+    state = registry.snapshot()
+    registry.import_development(StudyContract.build(disposed), _RE_EXPOSURE_EVIDENCE,
+                                state["revision"], "rerun the disposed window")
+    plan, permit = _claim(disposed, registry)
+    assert permit["classification"] == "development"
+    claimed = registry.snapshot()
+    assert claimed["frontier"] == state["frontier"]
+    original_claim = next(c for c in claimed["claims"].values()
+                          if c["permit"]["packet_id"] == "r1")
+    registry.dispose("again", "abandon", "re-exposure finished")
+    final = registry.snapshot()
+    assert final["frontier"] == state["frontier"]
+    assert final["dispositions"]["r1"] == state["dispositions"]["r1"]
+    assert final["claims"][original_claim["permit"]["id"]] == original_claim
+    r2 = StudyContract.build({**disposed, "selected_packet": "r2"})
+    assert registry.preview(r2)["classification"] == "fresh"

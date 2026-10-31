@@ -43,14 +43,22 @@ from __future__ import annotations
 import math
 from itertools import repeat
 
-from dskit.pipeline.records import _exact_finite_floats, number_ok
-from dskit.pipeline.stats import across_fold_t, dm_lags, newey_west_mean
+from dskit.pipeline.records import _exact_finite_floats, cluster_ok, number_ok
+from dskit.pipeline.stats import (
+    NO_VARIANCE_RTOL,
+    across_fold_t,
+    dm_lags,
+    newey_west_mean,
+    student_t_critical,
+    student_t_sf,
+)
 
 __all__ = [
     "MIN_CROSS_SECTION_NAMES",
     "USABLE_NAMES",
     "calibration_across_folds",
     "calibration_slope",
+    "clustered_calibration_slope",
     "cross_section_by_stamp",
     "demean_by_series",
     "ic_from_rho",
@@ -297,6 +305,141 @@ def calibration_slope(y, yhat, lags=None, h_steps=1):
         "lags": hac["lags"],
         "h_steps": h_steps,
     }
+
+
+def _cluster_meat(labels, scores):
+    """Sum of squared within-cluster score totals, and the cluster count."""
+    totals = {}
+    for label, score in zip(labels, scores):
+        totals[label] = totals.get(label, 0.0) + score
+    return sum(t * t for t in totals.values()), len(totals)
+
+
+def _cr1_variance(labels, scores, sxx, n):
+    """CR1 cluster-robust slope variance ``G/(G-1)*(n-1)/(n-2) * meat / Sxx^2``."""
+    meat, groups = _cluster_meat(labels, scores)
+    return groups / (groups - 1) * (n - 1) / (n - 2) * meat / (sxx * sxx), groups
+
+
+def clustered_calibration_slope(y, yhat, clusters, level=None):
+    """Mincer–Zarnowitz slope with a one- or two-way cluster-robust band.
+
+    The same fit as :func:`calibration_slope` (``y = a + b*ŷ + e`` by least
+    squares), for rows that are NOT a time series: books, trades or names
+    that share shocks within a date, a name or both. The slope's variance
+    is the cluster sandwich over the score ``u_i = (ŷ_i - ŷ̄) e_i`` with
+    the CR1 small-sample factor ``G/(G-1) · (n-1)/(n-2)`` per clustering.
+
+    With two clusterings A and B the variance is Cameron–Gelbach–Miller's
+    ``V_A + V_B - V_{A∩B}`` (the intersection clusters are the (a, b)
+    pairs, each term with its own factor). That sum can be zero or
+    negative in small samples; the slope then takes the WIDER of the two
+    one-way variances and says so in ``variance_rule``
+    (``"max_one_way"``): the conservative fallback Cameron, Gelbach and Miller
+    (2011) suggest when the two-way estimate is not positive. The band is Student-t on ``min(G) - 1`` degrees of freedom,
+    the fewest clusters of any dimension minus one, so a handful of dates
+    cannot pass for many independent units.
+
+    Parameters
+    ----------
+    y : list or tuple of float
+        Outcomes, at least three, all finite.
+    yhat : list or tuple of float
+        Forecasts, same length, not constant.
+    clusters : list of list of str
+        One or two label sequences, each the length of ``y``; every label a
+        non-empty string (:func:`~dskit.pipeline.records.cluster_ok`) and
+        every dimension at least two distinct clusters.
+    level : float or None
+        Two-sided band level in (0, 1); ``None`` takes
+        :data:`~dskit.pipeline.mean_interval.DEFAULT_LEVEL`.
+
+    Returns
+    -------
+    dict
+        ``n``, ``slope``, ``intercept``, ``pearson_r``, ``slope_se``,
+        ``variance_rule`` (``"one_way"``, ``"two_way"`` or
+        ``"max_one_way"``), ``se_by_dimension`` and ``n_clusters`` (one
+        entry per dimension, in order), ``n_clusters_intersection`` (two-way
+        only, else ``None``), ``df``, ``level``, ``ci_low``, ``ci_high``,
+        ``t_vs_0``, ``t_vs_1`` and ``p_vs_0`` (two-sided). The tests and
+        bounds are ``None`` when the standard error is zero to float noise (a perfect
+        fit; :data:`~dskit.pipeline.stats.NO_VARIANCE_RTOL` of the slope).
+
+    Raises
+    ------
+    ValueError
+        On lengths that disagree, fewer than three rows, a non-finite
+        cell, a constant forecast, a bad level, not one or two cluster
+        dimensions, a bad label, or a dimension with one cluster.
+
+    Examples
+    --------
+    Books clustered by decision date and by symbol::
+
+        out = clustered_calibration_slope(pnl, expected, [dates, symbols])
+        out["slope"], out["ci_low"], out["ci_high"]
+    """
+    from dskit.pipeline.mean_interval import DEFAULT_LEVEL
+
+    level = DEFAULT_LEVEL if level is None else level
+    if isinstance(level, bool) or not number_ok(level) or not 0.0 < level < 1.0:
+        raise ValueError(f"level must be a number in (0, 1), got {level!r}")
+    ys = _as_floats(y, "y")
+    fs = _as_floats(yhat, "yhat")
+    n = len(ys)
+    if len(fs) != n:
+        raise ValueError(f"y has {n} values, yhat has {len(fs)} — must agree")
+    if n < 3:
+        raise ValueError(f"clustered_calibration_slope needs at least 3 pairs, got {n}")
+    if not isinstance(clusters, (list, tuple)) or len(clusters) not in (1, 2):
+        raise ValueError("clusters must be a list of one or two label sequences")
+    dims = []
+    for k, labels in enumerate(clusters):
+        if not isinstance(labels, (list, tuple)) or len(labels) != n:
+            raise ValueError(f"clusters[{k}] must be a sequence of {n} labels")
+        bad = [i for i, label in enumerate(labels) if not cluster_ok(label)]
+        if bad:
+            raise ValueError(f"clusters[{k}] has non-cluster labels at rows {bad[:5]}")
+        if len(set(labels)) < 2:
+            raise ValueError(f"clusters[{k}] has one cluster — a cluster band needs at least two")
+        dims.append(list(labels))
+    fbar = sum(fs) / n
+    ybar = sum(ys) / n
+    sxx = sum((f - fbar) ** 2 for f in fs)
+    if sxx <= 0.0:
+        raise ValueError("yhat is constant — a slope against a constant forecast is undefined")
+    slope = sum((f - fbar) * (v - ybar) for f, v in zip(fs, ys)) / sxx
+    intercept = ybar - slope * fbar
+    scores = [(f - fbar) * (v - intercept - slope * f) for f, v in zip(fs, ys)]
+    one_way = [_cr1_variance(labels, scores, sxx, n) for labels in dims]
+    variances = [v for v, _ in one_way]
+    counts = [g for _, g in one_way]
+    intersection = None
+    if len(dims) == 1:
+        variance, rule = variances[0], "one_way"
+    else:
+        pairs = list(zip(dims[0], dims[1]))
+        both, intersection = (_cr1_variance(pairs, scores, sxx, n)
+                              if len(set(pairs)) > 1 else (0.0, 1))
+        variance, rule = variances[0] + variances[1] - both, "two_way"
+        if not variance > 0.0:
+            variance, rule = max(variances), "max_one_way"
+    se = math.sqrt(max(variance, 0.0))
+    df = min(counts) - 1
+    out = {
+        "n": n, "slope": slope, "intercept": intercept, "pearson_r": pearson(fs, ys),
+        "slope_se": se, "variance_rule": rule,
+        "se_by_dimension": [math.sqrt(v) for v in variances], "n_clusters": counts,
+        "n_clusters_intersection": intersection, "df": df, "level": level,
+        "ci_low": None, "ci_high": None, "t_vs_0": None, "t_vs_1": None, "p_vs_0": None,
+    }
+    if se > NO_VARIANCE_RTOL * abs(slope):
+        crit = student_t_critical(level, df)
+        t0 = slope / se
+        out.update(ci_low=slope - crit * se, ci_high=slope + crit * se, t_vs_0=t0,
+                   t_vs_1=(slope - 1.0) / se, p_vs_0=min(1.0, 2.0 * student_t_sf(abs(t0), df)))
+    return out
 
 
 def calibration_across_folds(slopes):

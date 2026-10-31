@@ -1,0 +1,130 @@
+{
+  "evidence": {
+    "amended-run-verification.json": {
+      "bytes": 2549,
+      "path": "/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/amended-run-verification.json",
+      "sha256": "f8ac0c148f84610c1890164eca5d7045cf0db65185bf5519e8c4b3cc385f92b8"
+    },
+    "artifact-index.json": {
+      "bytes": 1923,
+      "path": "/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/artifact-index.json",
+      "sha256": "8c86b718337975ff05c05bee20b385c987a5cbde18e02b595296f67e5288d364"
+    }
+  },
+  "kind": "index_options_2021q1_mio_top3_results_for_stress",
+  "original_configs": {
+    "mio-2021q1-top3-20261029/run-mio-top3-2021q1-amended-replay.json": {
+      "bytes": 1891336,
+      "path": "/home/russell/dskit/.claude/worktrees/mio-q1-followups-20261030/children/index_options/configs/mio-2021q1-top3-20261029/run-mio-top3-2021q1-amended-replay.json",
+      "sha256": "29dd5f077ed92de4ad9c9fbae8ed778b629c098e0586936f16171b65a027856c"
+    }
+  },
+  "runs": {
+    "q1_top3": {
+      "document_hash": "5c78cccf72ce03e6737f46bc7aae7435f26d0a08a3b02c67fd9679bf755dad7f",
+      "permit": {
+        "amended_from": {
+          "claim": "d57e1d70-b0e6-45d2-8555-d1f79c876877",
+          "failed_manifest_sha256": "1c55060f771e993db3f66dad07f538e51c7cf34dbe1682a4c7ad4d9bc982295c",
+          "failed_receipt": {
+            "document_hash": "178b1224e2eb2dcda47c573acab3a7735600c05eb486ddd45db1b69e5600ea3b",
+            "node": "close_packet",
+            "port": "receipt",
+            "run_dir": "/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/runs/mio-2021q1-top3-fixed2019-2021-06-07-90333113"
+          },
+          "reason": "GME Q1 projection roundoff at 1e-8; full 11196-group 1e-6 numerical sweep passed; preserve original failed close and replay."
+        },
+        "classification": "amended_replay",
+        "cohort_sha256": "6b98c10d30d3aa1851011f90f76c50679ac7e1018c3c6a63a9fb9561df774b4e",
+        "freeze": {
+          "classification": "amended_replay",
+          "cohort_sha256": "6b98c10d30d3aa1851011f90f76c50679ac7e1018c3c6a63a9fb9561df774b4e",
+          "plan_sha256": "5da816d24e96e09184ca5c0b2ca1a53fe6ca00dda98ee48f28814f7b967ed8b2",
+          "predecessor": {
+            "action": "review",
+            "claim": "6802ae7e-8a33-4b65-a916-5e0ce6a06566",
+            "packet_id": "dev_2019_full_year_weekly",
+            "reason": "Verified complete four-method2019 packet, exact recorded replay/config identity,53 decisions/252 account days, cash/holdings/reserve identities, executed fees, settlements/final profits; retained attested result and direct saved-field CSVs. Development only.",
+            "revision": 58,
+            "sha256": "6c37bd5f3baa14d0f78dc8fb96ee3a71d44f8e4f80a2c9bd9e0a4acd8e06286c"
+          },
+          "registry": {
+            "domain": "index_options_MIO",
+            "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+            "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+          },
+          "registry_revision": 65,
+          "sha256": "0981e71cf24408d291b953a1059de44f9185a975f9d8fb5b4e1a49192783b3e4"
+        },
+        "id": "f5f0d436-0aeb-493f-9541-9e80dca1eb38",
+        "packet_id": "confirmation_2021q1_top3_train2019",
+        "plan_sha256": "5da816d24e96e09184ca5c0b2ca1a53fe6ca00dda98ee48f28814f7b967ed8b2",
+        "previous_frontier": 1,
+        "read_bounds": {
+          "bars": {
+            "end_before": "2021-06-07",
+            "start": "2020-10-05"
+          },
+          "chain": {
+            "end_before": "2021-06-07",
+            "start": "2021-01-04"
+          },
+          "contexts": {
+            "end_before": "2021-04-01",
+            "start": "2021-01-04"
+          },
+          "forecasts": {
+            "end_before": "2021-04-01",
+            "start": "2021-01-04"
+          },
+          "sessions": {
+            "end_before": "2021-06-07",
+            "start": "2020-10-05"
+          }
+        },
+        "registry": {
+          "domain": "index_options_MIO",
+          "id": "e81fe70a-2ae9-4c40-b2db-76dcf56e11df",
+          "path": "/home/russell/data/index_options/mio-exposure/registry.sqlite"
+        },
+        "registry_revision_after": 66,
+        "registry_revision_before": 65,
+        "sha256": "e47e27cd693c1d223ac688b88ba26356ab03ab0a68bc15425ef260b92021e922",
+        "source_pins_sha256": "a6c191353ff0df50bd34d6e75f2a9bcb4c674fd6ed9a5f08683ff2646dd02c99"
+      },
+      "result_path": "/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/exports/result.json",
+      "run_dir": "/home/russell/data/index_options/mio-2021q1-top3-20261029/mio/runs/mio-2021q1-top3-fixed2019-amended-replay-2021-06-07-b926c031",
+      "run_hash": "b926c031c5ce2662de2d12c1738c90ac7b1643e33cd949dc9772299f9389da0c",
+      "sha256": "ce39e2062c378d6576af97f673f795df04b724b4f696729c677a43cdd94399ac",
+      "state": "ran"
+    }
+  },
+  "schema_version": 1,
+  "scope": "Pins the attested 2021 Q1 top-three amended replay (permit amended_replay) for the ADR-0280 amendment v5 execution/expiry stress; read-only.",
+  "sources": {
+    "bars": {
+      "manifest_sha256": "a0bbfb0476eabe9e2feb2d0d77667824596a571e96aa124bd32ee60218becda2",
+      "root": "/home/russell/data/index_options/mio-2021q1-top3-20261029/ob",
+      "snapshot": "20261029T205839Z-backfill-a0bbfb04",
+      "source": "mio-2021q1-inputs",
+      "stream": "files"
+    },
+    "chain": {
+      "manifest_sha256": "49675f405241cf2ce3a65dbeac286baa0376e0ed58a716fe9c44218deb344ca5",
+      "root": "/home/russell/data/index_options/mio-2021q1-top3-20261029/ob",
+      "snapshot": "20261029T182926Z-backfill-49675f40",
+      "source": "theta-exact-expiry-archive",
+      "stream": "files"
+    },
+    "mio-inputs-pin.json": {
+      "bytes": 21831,
+      "path": "/home/russell/data/index_options/mio-2021q1-top3-20261029/mio-inputs-pin.json",
+      "sha256": "f6f61b6241626f4d9392502dc26206dab562f0bc7a59aeda7c91a5741fe72f9d"
+    },
+    "source-pins.json": {
+      "bytes": 394362,
+      "path": "/home/russell/data/index_options/mio-2021q1-top3-20261029/source-pins.json",
+      "sha256": "8c468b60c557f5606d0e396b11297e10ee94bcb4fafbc6bcab473ce972bad497"
+    }
+  }
+}

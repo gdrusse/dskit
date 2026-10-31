@@ -1,0 +1,117 @@
+{
+  "document_sha256": "84046a6544f552e090ab111538aee999a5c053e10774f3e76c85314c49174838",
+  "results_pins_sha256": "d4e7843e40d328572be127ea737e92195570076b1a60525253ef5b0a2423bddd",
+  "source_result_sha256": "ce39e2062c378d6576af97f673f795df04b724b4f696729c677a43cdd94399ac",
+  "replay_checkout_commit": "639b1c35f7bcb85fb892aff9632fbde720e5a322",
+  "evidence_kind": "Fills are simulated at end-of-day displayed depth, never broker fills; this is a depth proxy, not fill probability or decision evidence.",
+  "files": {
+    "README.md": {
+      "sha256": "2d5971d2e33f4d94a02ee8481f04bf8c794d3fa5cae546d90cb85d076f39b6e8",
+      "bytes": 3450
+    },
+    "attempts.csv": {
+      "sha256": "31156e6e6621e4fa45069686ee0b8c5864fb7782f4af5dfec5e8e1898f85b038",
+      "bytes": 505713
+    },
+    "daily.csv": {
+      "sha256": "182cb29b6ed92220af00ae32c763e3f446a3eeefd8465aacb28a5ffed613018a",
+      "bytes": 1417921
+    },
+    "dispositions.csv": {
+      "sha256": "dee6c7e3c204eada715cedb1ed38a7c8207db44ef9bafe7fce0cc5105bc15e13",
+      "bytes": 598978
+    },
+    "q1_top3/adverse_price/nominal_lp.md": {
+      "sha256": "d8090edd0db9298794ccaf5bd1f1ce63bdbc191a1f9f30d69672a6a89e7b5e76",
+      "bytes": 25464
+    },
+    "q1_top3/adverse_price/w1_003_lp.md": {
+      "sha256": "70b7e624dc42451bff0e2b20298565b9aae99164556ce4e1cc85a9ed14307843",
+      "bytes": 24032
+    },
+    "q1_top3/adverse_price/w1_003_shock10_lp.md": {
+      "sha256": "b82fefd83223da7d2bc798fd6789df083cf72db43965f66b39c69ff4e7995e55",
+      "bytes": 23686
+    },
+    "q1_top3/control/nominal_lp.md": {
+      "sha256": "c688496232fa11d254b13253e9f9aa8941d48cc452c55519cdc7060618f9d07b",
+      "bytes": 25458
+    },
+    "q1_top3/control/w1_003_lp.md": {
+      "sha256": "16ab80b65b2942ed41dccdc6bb4bead25df4240898124392e0ecb1f02e4705b5",
+      "bytes": 24024
+    },
+    "q1_top3/control/w1_003_shock10_lp.md": {
+      "sha256": "013c2450a54d01835ab5f8679f3aa1fe0b3a1cc24f062be1d3dba4fafeed8277",
+      "bytes": 23680
+    },
+    "q1_top3/expiry_down_15/nominal_lp.md": {
+      "sha256": "efab01dc2a0d5e88596cbe2dc40e9b45ad845e2c606298fd23a46a4d746317d7",
+      "bytes": 25461
+    },
+    "q1_top3/expiry_down_15/w1_003_lp.md": {
+      "sha256": "f934d11a6de2d0950a1595620486721f4925f754683266c0239b1a1d21236931",
+      "bytes": 23719
+    },
+    "q1_top3/expiry_down_15/w1_003_shock10_lp.md": {
+      "sha256": "b0732faff7a2a8c7fb6d52105f64026c5dcb76e32a1fe1af16e7e6f7fb4cfbd4",
+      "bytes": 23687
+    },
+    "q1_top3/expiry_up_15/nominal_lp.md": {
+      "sha256": "4c43065a081dd2b35ad98a6e7fa5a92cb340f8e0d1772609b085f139b9ad3d45",
+      "bytes": 25463
+    },
+    "q1_top3/expiry_up_15/w1_003_lp.md": {
+      "sha256": "34f5c69342ae83755bf6eca9a5bcfc10ff5ec3dbc8fdfe6755d661e90a0fa179",
+      "bytes": 24023
+    },
+    "q1_top3/expiry_up_15/w1_003_shock10_lp.md": {
+      "sha256": "2e4d365f719e3a04781fadc43540d1086a3c6605020f9c416da31af7fa1d1f07",
+      "bytes": 23675
+    },
+    "q1_top3/half_size/nominal_lp.md": {
+      "sha256": "5614260abe23b5aa2ac413e89358b731cc1dd0fa4320f1669aea5176b63f0aaa",
+      "bytes": 25310
+    },
+    "q1_top3/half_size/w1_003_lp.md": {
+      "sha256": "2998215d8a0ccd8ae0aec6347152b0399c38c493e6c08d2ba92da36efa9b7ac0",
+      "bytes": 23201
+    },
+    "q1_top3/half_size/w1_003_shock10_lp.md": {
+      "sha256": "6b3d295158eef78bafd39b0dd5881cb0acbc96af25b5215b0c9475bb3694e214",
+      "bytes": 23172
+    },
+    "q1_top3/joint_down_15/nominal_lp.md": {
+      "sha256": "4a4616a1179dfb9637587fe53c69dd502c6308290785701643deda285b79b28f",
+      "bytes": 25309
+    },
+    "q1_top3/joint_down_15/w1_003_lp.md": {
+      "sha256": "21c9dd99f7838e4f7a11b235e861b6036d470996461b1b97d263d511830fa56e",
+      "bytes": 22884
+    },
+    "q1_top3/joint_down_15/w1_003_shock10_lp.md": {
+      "sha256": "dcc399ddeeb886881bb268a88b99569a5b9c723c886217128d566c8ec73e1e59",
+      "bytes": 23173
+    },
+    "q1_top3/joint_up_15/nominal_lp.md": {
+      "sha256": "e3c148e018430067de29c2aaaae64425d4bbed346ef637fc59b4e1c53570d44d",
+      "bytes": 25313
+    },
+    "q1_top3/joint_up_15/w1_003_lp.md": {
+      "sha256": "ddf0fd7c096e0b785d517772b3e5332c796843c47ff9fd2c16636ef7708498cd",
+      "bytes": 23206
+    },
+    "q1_top3/joint_up_15/w1_003_shock10_lp.md": {
+      "sha256": "73fd4787c14e6a6078e10d3c565bbcc6685dfe921ea9dab67934a19ae071e504",
+      "bytes": 23171
+    },
+    "report.md": {
+      "sha256": "f391cfed77b5497dd0abdd6f12e645cc48777b3d22984a74fb351d8ea877752a",
+      "bytes": 4467
+    },
+    "summary.csv": {
+      "sha256": "5b624d9a86a5a128a2317b1a9ad073eeee06695a29e2a584e6e1a797e988bbac",
+      "bytes": 7982
+    }
+  }
+}

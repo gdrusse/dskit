@@ -1,0 +1,9 @@
+{
+  "path": "/home/russell/data/index_options/mio-2019-m53bands-20261030/inputs",
+  "as_of": "2026-10-30T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "*",
+    "**/*"
+  ]
+}
