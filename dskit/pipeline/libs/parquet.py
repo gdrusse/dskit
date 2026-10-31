@@ -199,7 +199,24 @@ class DateBoundedParquet:
 
 
 class SQLiteParquetIndex:
-    """Run-local source-ordered index over a bounded Parquet row stream."""
+    """Run-local source-ordered index over a bounded Parquet row stream.
+
+    Parameters
+    ----------
+    descriptor : dict
+        Completed run-local index descriptor returned by :meth:`build`.
+    cache_kib : int, optional
+        SQLite reader cache size in KiB.
+    fetch_size : int, optional
+        Maximum rows fetched per SQLite read.
+
+    Examples
+    --------
+    Open a previously built run-local index::
+
+        index = SQLiteParquetIndex(descriptor)
+        index.close(verify=True)
+    """
 
     @staticmethod
     def _ident(name):
@@ -208,15 +225,246 @@ class SQLiteParquetIndex:
             raise ValueError("unsafe row-index column")
         return '"' + name + '"'
 
+    @staticmethod
+    def _reuse_key(identity, columns, bounds, unique_by, partition_by,
+                   float_keys, batch_size, cache_kib):
+        """Bind a caller-verified source/filter/validator identity to index format."""
+        import hashlib
+        import json
+        import re
+        import sqlite3
+        import sys
+        import pyarrow
+        from dskit.pipeline.workflow import path_hash
+
+        source_digest = identity.get("verified_source_sha256") if isinstance(identity, dict) else None
+        if (not isinstance(source_digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", source_digest)):
+            raise ValueError("verified source digest required for index reuse")
+        payload = {"identity": identity, "columns": list(columns), "bounds": bounds,
+                   "unique_by": list(unique_by), "partition_by": list(partition_by),
+                   "float_keys": list(float_keys), "batch_size": batch_size,
+                   "cache_kib": cache_kib, "python": list(sys.version_info[:3]),
+                   "sqlite": sqlite3.sqlite_version, "pyarrow": pyarrow.__version__,
+                   "builder_sha256": path_hash(__file__)}
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _cache_blob(root, digest):
+        """Return one content-addressed SQLite cache path."""
+        return root / "objects" / digest[:2] / (digest + ".sqlite")
+
+    @staticmethod
+    def _cache_manifest(root, key):
+        """Return one verified-input cache manifest path."""
+        return root / "inputs" / key[:2] / (key + ".json")
+
+    @staticmethod
+    def _read_manifest(path):
+        """Read one exact cache mapping without accepting links or partial data."""
+        import json
+        import re
+
+        if not path.exists():
+            return None
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("invalid index cache manifest")
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            raise ValueError("invalid index cache manifest") from exc
+        if (not isinstance(record, dict) or set(record) != {"input_sha256", "sha256", "metadata"}
+                or record["input_sha256"] != path.stem
+                or not isinstance(record["sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
+                or not isinstance(record["metadata"], dict)):
+            raise ValueError("invalid index cache manifest")
+        return record
+
+    @staticmethod
+    def _verify_cache_blob(blob, digest, metadata):
+        """Verify cached bytes and embedded SQLite metadata before reuse."""
+        import json
+        import sqlite3
+        from dskit.pipeline.workflow import path_hash
+
+        if (blob.is_symlink() or not blob.is_file() or blob.stat().st_mode & 0o222
+                or path_hash(str(blob), evict=True) != digest):
+            raise ValueError("index cache digest mismatch")
+        connection = None
+        try:
+            connection = sqlite3.connect(blob.as_uri() + "?mode=ro&immutable=1", uri=True)
+            row = connection.execute("SELECT value FROM metadata WHERE name='descriptor'").fetchone()
+            if row is None or json.loads(row[0]) != metadata:
+                raise ValueError("index cache metadata mismatch")
+        except (sqlite3.DatabaseError, json.JSONDecodeError) as exc:
+            raise ValueError("index cache metadata mismatch") from exc
+        finally:
+            if connection is not None:
+                connection.close()
+
+    @classmethod
+    def _link_run(cls, blob, destination, validator=None, cache_kib=None):
+        """Atomically install a cache inode at the run path; report cross-device misses."""
+        import errno
+        import os
+        import uuid
+
+        candidate = destination.with_name(destination.name + ".link-" + uuid.uuid4().hex)
+        try:
+            try:
+                os.link(blob, candidate)
+            except OSError as exc:
+                if exc.errno == errno.EXDEV:
+                    return False
+                raise
+            cls._replay_validator(blob, validator, cache_kib)
+            os.replace(candidate, destination)
+            return True
+        finally:
+            candidate.unlink(missing_ok=True)
+
+    @staticmethod
+    def _replay_validator(blob, validator, cache_kib):
+        """Replay a row-mutation-free validator in stored source order."""
+        import json
+        import os
+        import sqlite3
+
+        if validator is None:
+            return
+        connection = sqlite3.connect(blob.as_uri() + "?mode=ro&immutable=1", uri=True)
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute(f"PRAGMA cache_size=-{int(cache_kib)}")
+            cursor = connection.execute("SELECT payload FROM rows ORDER BY ordinal")
+            while True:
+                rows = cursor.fetchmany(2048)
+                if not rows:
+                    break
+                for (payload,) in rows:
+                    validator(json.loads(payload))
+        finally:
+            connection.close()
+            if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+                try:
+                    with open(blob, "rb") as handle:
+                        os.posix_fadvise(handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+                except OSError:
+                    pass
+
+    @classmethod
+    def _reuse_hit(cls, root, key, destination, expected, validator, cache_kib):
+        """Verify an input-key hit and install it, or request a source rebuild."""
+        record = cls._read_manifest(cls._cache_manifest(root, key))
+        if record is None:
+            return None
+        metadata = record["metadata"]
+        if (set(metadata) != set(expected) | {"rows"}
+                or any(metadata[k] != value for k, value in expected.items())
+                or type(metadata["rows"]) is not int or metadata["rows"] < 0):
+            raise ValueError("index cache metadata mismatch")
+        blob = cls._cache_blob(root, record["sha256"])
+        if not blob.exists():
+            return None
+        cls._verify_cache_blob(blob, record["sha256"], metadata)
+        if not cls._link_run(blob, destination, validator, cache_kib):
+            return None
+        return {**metadata, "path": str(destination), "sha256": record["sha256"]}
+
+    @classmethod
+    def _publish_cache(cls, root, key, destination, descriptor):
+        """Publish one immutable blob, then an exclusive input-key mapping."""
+        import errno
+        import json
+        import os
+        import uuid
+
+        digest = descriptor["sha256"]
+        metadata = {k: v for k, v in descriptor.items() if k not in {"path", "sha256"}}
+        blob = cls._cache_blob(root, digest)
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        if blob.parent.stat().st_dev != destination.stat().st_dev:
+            return
+        try:
+            os.link(destination, blob)
+        except FileExistsError:
+            cls._verify_cache_blob(blob, digest, metadata)
+            if not cls._link_run(blob, destination):
+                return
+        except OSError as exc:
+            if exc.errno == errno.EXDEV:
+                return
+            raise
+        if key is None:
+            return
+        manifest = cls._cache_manifest(root, key)
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        record = {"input_sha256": key, "sha256": digest, "metadata": metadata}
+        candidate = manifest.with_name(manifest.name + ".building-" + uuid.uuid4().hex)
+        try:
+            with open(candidate, "x") as handle:
+                json.dump(record, handle, sort_keys=True, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            candidate.chmod(0o444)
+            try:
+                os.link(candidate, manifest)
+            except FileExistsError:
+                if cls._read_manifest(manifest) != record:
+                    raise ValueError("index cache input identity collision")
+        finally:
+            candidate.unlink(missing_ok=True)
+
     @classmethod
     def build(cls, source_path, index_path, columns, bounds, *, where=None,
               unique_by=(), partition_by=(), float_keys=(), validator=None,
-              batch_size=8192, cache_kib=16384):
+              batch_size=8192, cache_kib=16384, reuse_root=None,
+              reuse_identity=None, replay_validator=False):
         """Stream bounded Arrow batches to an atomic SQLite index.
 
-        validator(row) runs in source order before unique-key insertion. Numeric
-        identity fields in float_keys are converted to float before key encoding,
-        matching Python tuple-key equality in the legacy quote map.
+        Parameters
+        ----------
+        source_path : str
+            Parquet file to scan; its bytes must match ``reuse_identity`` when set.
+        index_path : str
+            Run-local SQLite destination.
+        columns : sequence of str
+            Exact projected fields in source order.
+        bounds : dict
+            Date bounds passed to the bounded Parquet reader.
+        where : object, optional
+            PyArrow predicate; a reuse identity must cover it completely.
+        unique_by, partition_by, float_keys : sequence of str, optional
+            Index key, partition and normalized float key fields.
+        validator : callable, optional
+            Called on every selected row before insertion in source order.
+        batch_size, cache_kib : int, optional
+            Bounded scan and SQLite cache sizes.
+        reuse_root : str or Path, optional
+            Absolute content-addressed cache root on the run filesystem.
+        reuse_identity : dict, optional
+            Caller-verified source SHA-256 and complete predicate, validator,
+            code and dependency identity for a pre-build hit.
+        replay_validator : bool, optional
+            Certify that ``validator`` does not mutate row values; replay it on
+            cached rows in source order before publishing a hit.
+
+        Returns
+        -------
+        dict
+            Run-local path, byte SHA-256 and embedded index metadata.
+
+        Raises
+        ------
+        ValueError
+            Invalid schema, unverified cache, or conflicting input identity.
+
+        Notes
+        -----
+        Numeric ``float_keys`` match Python tuple-key equality. A cache hit
+        skips the Parquet scan; callers must verify the source bytes first.
         """
         import datetime
         import json
@@ -232,16 +480,36 @@ class SQLiteParquetIndex:
                 or not set(unique_by) <= set(columns)
                 or not set(partition_by) <= set(columns)
                 or not set(float_keys) <= set(unique_by)
-                or not unique_by or not partition_by):
+                or not unique_by or not partition_by
+                or type(replay_validator) is not bool
+                or (reuse_identity is not None and reuse_root is None)
+                or (reuse_identity is not None and not isinstance(reuse_identity, dict))
+                or (replay_validator and reuse_identity is None)):
             raise ValueError("invalid row-index schema")
         for name in (*columns, *unique_by, *partition_by):
             cls._ident(name)
         destination = Path(index_path)
+        root = None
+        key = None
+        expected = {"version": 1, "columns": list(columns), "unique_by": list(unique_by),
+                    "partition_by": list(partition_by), "float_keys": list(float_keys),
+                    "batch_size": int(batch_size), "cache_kib": int(cache_kib)}
+        if reuse_root is not None:
+            root = Path(reuse_root)
+            if not root.is_absolute():
+                raise ValueError("absolute index reuse root required")
+            if reuse_identity is not None:
+                key = cls._reuse_key(reuse_identity, columns, bounds, unique_by,
+                                     partition_by, float_keys, batch_size, cache_kib)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temp = destination.with_name(destination.name + ".building")
         for candidate in (temp, Path(str(temp)+"-journal"), Path(str(temp)+"-wal"), Path(str(temp)+"-shm")):
             if candidate.exists():
                 candidate.unlink()
+        if key is not None and (validator is None or replay_validator):
+            hit = cls._reuse_hit(root, key, destination, expected, validator, cache_kib)
+            if hit is not None:
+                return hit
         conn = sqlite3.connect(str(temp))
         count = 0
         try:
@@ -287,9 +555,7 @@ class SQLiteParquetIndex:
                 count += len(values)
             conn.execute("CREATE INDEX rows_partition_order ON rows("
                          + ",".join(cls._ident(k) for k in (*partition_by, "ordinal")) + ")")
-            metadata = {"version": 1, "columns": list(columns), "unique_by": list(unique_by),
-                        "partition_by": list(partition_by), "float_keys": list(float_keys),
-                        "rows": count, "batch_size": int(batch_size), "cache_kib": int(cache_kib)}
+            metadata = {**expected, "rows": count}
             conn.execute("INSERT INTO metadata VALUES('descriptor',?)",
                          (json.dumps(metadata, sort_keys=True, separators=(",", ":")),))
             conn.commit()
@@ -301,7 +567,12 @@ class SQLiteParquetIndex:
             raise
         conn.close()
         os.replace(temp, destination)
-        return {**metadata, "path": str(destination), "sha256": path_hash(str(destination))}
+        descriptor = {**metadata, "path": str(destination),
+                      "sha256": path_hash(str(destination), evict=root is not None)}
+        if root is not None:
+            destination.chmod(0o444)
+            cls._publish_cache(root, key, destination, descriptor)
+        return descriptor
 
     def __init__(self, descriptor, *, cache_kib=16384, fetch_size=2048):
         import json
@@ -315,7 +586,7 @@ class SQLiteParquetIndex:
         self.descriptor = dict(descriptor)
         self.path = str(Path(descriptor["path"]).resolve())
         self.digest = descriptor["sha256"]
-        if path_hash(self.path) != self.digest:
+        if path_hash(self.path, evict=True) != self.digest:
             raise ValueError("SQLite row index digest mismatch")
         uri = Path(self.path).as_uri() + "?mode=ro&immutable=1"
         self.connection = sqlite3.connect(uri, uri=True)
@@ -369,10 +640,17 @@ class SQLiteParquetIndex:
     def verify_digest(self):
         """Recheck the immutable index file at a study/replay boundary."""
         from dskit.pipeline.workflow import path_hash
-        if path_hash(self.path) != self.digest:
+        if path_hash(self.path, evict=True) != self.digest:
             raise ValueError("SQLite row index drift")
 
     def close(self, *, verify=False):
+        """Close the reader and optionally recheck its byte digest.
+
+        Parameters
+        ----------
+        verify : bool, optional
+            Rehash the index after closing the SQLite connection.
+        """
         self.connection.close()
         if verify:
             self.verify_digest()

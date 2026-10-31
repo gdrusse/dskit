@@ -690,12 +690,28 @@ class MIOPacketInputs(StudyNode):
         return value_hash(self.params["study"]["domain"]["sources"])
 
     def run(self, ctx, inputs):
+        """Read and verify the claimed packet, sharing identical quote indexes.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Current run directory for run-local index evidence.
+        inputs : dict
+            Bound packet permit.
+
+        Returns
+        -------
+        dict
+            Bounded inputs and their source/plan provenance.
+        """
         from dskit.pipeline.base import value_hash
         from dskit.pipeline.libs.parquet import DateBoundedParquet, SQLiteParquetIndex
         from dskit.onboarding.artifacts import PinnedPayloadSource
         from .mio_contract import MIOStudyContract
+        import os
         import pyarrow as pa
         import pyarrow.dataset as ds
+        from pathlib import Path
 
         plan, registry = self.plan(), self.registry()
         permit = inputs["permit"]
@@ -762,10 +778,13 @@ class MIOPacketInputs(StudyNode):
                         raise ValueError("inconsistent daily basis metadata")
                     basis_factors[day] = factor
             if ctx is not None and getattr(ctx, "run_dir", None):
-                quote_root = __import__("pathlib").Path(ctx.run_dir) / "artifacts" / "mio-quotes"
+                quote_root = Path(ctx.run_dir) / "artifacts" / "mio-quotes"
+                cache_home = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+                reuse_root = Path(cache_home) / "dskit" / "sqlite-parquet-index"
             else:
                 import tempfile
-                quote_root = __import__("pathlib").Path(tempfile.mkdtemp(prefix="mio-quote-index-")) / "artifacts" / "mio-quotes"
+                quote_root = Path(tempfile.mkdtemp(prefix="mio-quote-index-")) / "artifacts" / "mio-quotes"
+                reuse_root = None
             quote_path = str(quote_root / (symbol + ".sqlite"))
             from .ledger_studies import _AllQuotedOptionContext
             quote_node = _AllQuotedOptionContext("prepare", {**d["params"]["bridge"], "symbol": symbol})
@@ -778,7 +797,15 @@ class MIOPacketInputs(StudyNode):
                 where=(ds.field("symbol") == symbol) & expiry_filter,
                 unique_by=("symbol", "date", "expiration", "type", "strike_raw"),
                 partition_by=("date", "expiration"), float_keys=("strike_raw",),
-                validator=lambda row: quote_node._validate_quote_row(row, quote_factors))
+                validator=lambda row: quote_node._validate_quote_row(row, quote_factors),
+                reuse_root=reuse_root,
+                reuse_identity=({"verified_source_sha256": binding["pin"]["files"][relative],
+                                 "predicate": {"symbol": symbol, "expiries": expiries},
+                                 "validator": quote_node.params,
+                                 "code": self.params["study"]["code"],
+                                 "dependencies": self.params["study"]["dependencies"]}
+                                if reuse_root is not None else None),
+                replay_validator=reuse_root is not None)
             for row in bars:
                 if row["date"] in basis_factors:
                     row["basis_factor"] = basis_factors[row["date"]]

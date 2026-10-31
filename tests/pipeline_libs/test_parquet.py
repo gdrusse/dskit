@@ -2,7 +2,10 @@
 digest-verified against the manifest, default-deny, pyarrow only inside run()."""
 
 import ast
+import errno
 import itertools
+import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,6 +22,7 @@ from dskit.pipeline.base import ConfigError  # noqa: E402
 from dskit.pipeline.libs import parquet as pack  # noqa: E402
 from dskit.pipeline.libs.parquet import ParquetRows, ParquetStreamRows  # noqa: E402
 from dskit.pipeline.node import NodeContext  # noqa: E402
+from dskit.pipeline.workflow import path_hash  # noqa: E402
 
 SOURCE, STREAM, REL = "blobs", "files", "grp/prices.parquet"
 ROWS = {"d": ["2024-01-02", "2024-01-03"], "c": [10.0, 11.5], "extra": [1, 2]}
@@ -824,3 +828,234 @@ def test_sqlite_parquet_index_cleans_partial_build_and_reads_without_rescanning(
     assert index.get({"symbol": "X", "date": "2019-01-02", "expiration": "2019-02-01",
                       "type": "put", "strike_raw": 10})["price"] == 1.0
     index.close(verify=True)
+
+
+def test_sqlite_index_reuses_verified_input_without_another_large_build(tmp_path, monkeypatch):
+    source = tmp_path / "quotes.parquet"
+    pq.write_table(pa.table({"symbol": ["X", "X"], "date": ["2019-01-02"]*2,
+        "expiration": ["2019-02-01"]*2, "type": ["put", "call"],
+        "strike_raw": [10.0, 11.0], "price": [1.0, 2.0]}), source)
+    kwargs = {"unique_by": ("symbol", "date", "expiration", "type", "strike_raw"),
+              "partition_by": ("date", "expiration"), "float_keys": ("strike_raw",),
+              "reuse_root": tmp_path / "cache",
+              "reuse_identity": {"verified_source_sha256": path_hash(str(source)), "filter": "all",
+                                 "validator": "records-only-v1"},
+              "replay_validator": True}
+    args = (str(source), None,
+            ["symbol", "date", "expiration", "type", "strike_raw", "price"],
+            {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}})
+    seen_first, seen_second = [], []
+    first = tmp_path / "run-one" / "quotes.sqlite"
+    second = tmp_path / "run-two" / "quotes.sqlite"
+    one = pack.SQLiteParquetIndex.build(args[0], str(first), *args[2:],
+        **kwargs, validator=lambda row: seen_first.append(dict(row)))
+    stale = Path(str(second) + ".building")
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"interrupted prior build")
+    advised = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda fd, start, length, advice:
+                        advised.append((start, length, advice)))
+    monkeypatch.setattr(pack.DateBoundedParquet, "batches",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("index rebuilt")))
+    two = pack.SQLiteParquetIndex.build(args[0], str(second), *args[2:],
+        **kwargs, validator=lambda row: seen_second.append(dict(row)))
+    cached = list((tmp_path / "cache").rglob("*.sqlite"))
+    assert len(cached) == 1
+    assert seen_second == seen_first and len(seen_second) == 2
+    assert one["sha256"] == two["sha256"] and one["path"] == str(first)
+    assert two["path"] == str(second)
+    assert not stale.exists()
+    assert any(length == 0 and advice == os.POSIX_FADV_DONTNEED
+               for _, length, advice in advised)
+    assert len({first.stat().st_ino, second.stat().st_ino, cached[0].stat().st_ino}) == 1
+    index = pack.SQLiteParquetIndex(two)
+    try:
+        assert [r["price"] for r in index.iter_partition(
+            date="2019-01-02", expiration="2019-02-01")] == [1.0, 2.0]
+    finally:
+        index.close()
+    refused = tmp_path / "run-refused" / "quotes.sqlite"
+    with pytest.raises(ValueError, match="replayed refusal"):
+        pack.SQLiteParquetIndex.build(args[0], str(refused), *args[2:],
+            **kwargs, validator=lambda row: (_ for _ in ()).throw(
+                ValueError("replayed refusal")) if row["price"] == 2.0 else None)
+    assert not refused.exists()
+
+
+def test_sqlite_index_cache_refuses_corruption_before_publishing_run_path(tmp_path):
+    source = tmp_path / "quotes.parquet"
+    pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],
+                             "expiration": ["2019-02-01"], "price": [1.0]}), source)
+    kwargs = {"unique_by": ("symbol", "date", "expiration"),
+              "partition_by": ("date", "expiration"), "reuse_root": tmp_path / "cache",
+              "reuse_identity": {"verified_source_sha256": path_hash(str(source)), "filter": "all"}}
+    args = (str(source), ["symbol", "date", "expiration", "price"],
+            {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}})
+    first = tmp_path / "one.sqlite"
+    descriptor = pack.SQLiteParquetIndex.build(args[0], str(first), *args[1:], **kwargs)
+    cached = next((tmp_path / "cache").rglob("*.sqlite"))
+    replacement = tmp_path / "corrupt.sqlite"
+    replacement.write_bytes(b"not SQLite")
+    os.replace(replacement, cached)
+    second = tmp_path / "two.sqlite"
+    with pytest.raises(ValueError, match="cache.*digest|digest.*cache"):
+        pack.SQLiteParquetIndex.build(args[0], str(second), *args[1:], **kwargs)
+    assert not second.exists()
+    index = pack.SQLiteParquetIndex(descriptor)
+    try:
+        assert index.get({"symbol": "X", "date": "2019-01-02", "expiration": "2019-02-01"})["price"] == 1.0
+    finally:
+        index.close()
+
+
+def test_sqlite_index_cross_device_hit_builds_locally(tmp_path, monkeypatch):
+    source = tmp_path / "quotes.parquet"
+    pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],
+                             "expiration": ["2019-02-01"], "price": [1.0]}), source)
+    kwargs = {"unique_by": ("symbol", "date", "expiration"),
+              "partition_by": ("date", "expiration"), "reuse_root": tmp_path / "cache",
+              "reuse_identity": {"verified_source_sha256": path_hash(str(source)), "filter": "all"},
+              "replay_validator": True}
+    args = (str(source), ["symbol", "date", "expiration", "price"],
+            {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}})
+    first = tmp_path / "one.sqlite"
+    original = pack.SQLiteParquetIndex.build(args[0], str(first), *args[1:],
+        **kwargs, validator=lambda row: None)
+    cached = next((tmp_path / "cache").rglob("*.sqlite"))
+    original_link = os.link
+    def cross_device(src, dst, *a, **k):
+        if str(src) == str(cached):
+            raise OSError(errno.EXDEV, "different filesystem")
+        return original_link(src, dst, *a, **k)
+    monkeypatch.setattr(os, "link", cross_device)
+    second = tmp_path / "two.sqlite"
+    seen = []
+    descriptor = pack.SQLiteParquetIndex.build(args[0], str(second), *args[1:],
+        **kwargs, validator=lambda row: seen.append(dict(row)))
+    assert second.exists() and second.stat().st_ino != first.stat().st_ino
+    assert descriptor["sha256"] == original["sha256"]
+    assert len(seen) == 1
+
+
+def test_sqlite_index_missing_cache_blob_rebuilds_from_source(tmp_path):
+    source = tmp_path / "quotes.parquet"
+    pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],
+                             "expiration": ["2019-02-01"], "price": [1.0]}), source)
+    kwargs = {"unique_by": ("symbol", "date", "expiration"),
+              "partition_by": ("date", "expiration"), "reuse_root": tmp_path / "cache",
+              "reuse_identity": {"verified_source_sha256": path_hash(str(source)), "filter": "all"}}
+    columns = ["symbol", "date", "expiration", "price"]
+    bounds = {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}}
+    first = tmp_path / "one.sqlite"
+    one = pack.SQLiteParquetIndex.build(str(source), str(first), columns, bounds, **kwargs)
+    cached = next((tmp_path / "cache").rglob("*.sqlite"))
+    cached.unlink()
+    second = tmp_path / "two.sqlite"
+    two = pack.SQLiteParquetIndex.build(str(source), str(second), columns, bounds, **kwargs)
+    assert second.exists() and two["sha256"] == one["sha256"]
+    assert next((tmp_path / "cache").rglob("*.sqlite")).stat().st_ino == second.stat().st_ino
+
+
+def test_sqlite_index_concurrent_cache_publication_verifies_winner(tmp_path, monkeypatch):
+    source = tmp_path / "quotes.parquet"
+    pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],
+                             "expiration": ["2019-02-01"], "price": [1.0]}), source)
+    cache_root = tmp_path / "cache"
+    original_link = os.link
+    collided = []
+    def competing_writer(src, dst, *a, **k):
+        if str(dst).endswith(".sqlite") and str(dst).startswith(str(cache_root)) and not collided:
+            collided.append(True)
+            original_link(src, dst, *a, **k)
+            raise FileExistsError(errno.EEXIST, "peer published", str(dst))
+        return original_link(src, dst, *a, **k)
+    monkeypatch.setattr(os, "link", competing_writer)
+    destination = tmp_path / "run" / "quotes.sqlite"
+    descriptor = pack.SQLiteParquetIndex.build(str(source), str(destination),
+        ["symbol", "date", "expiration", "price"],
+        {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}},
+        unique_by=("symbol", "date", "expiration"), partition_by=("date", "expiration"),
+        reuse_root=cache_root,
+        reuse_identity={"verified_source_sha256": path_hash(str(source)), "filter": "all"})
+    assert collided and destination.exists()
+    assert next(cache_root.rglob("*.sqlite")).stat().st_ino == destination.stat().st_ino
+    assert descriptor["sha256"] == path_hash(str(destination))
+
+
+def test_index_hash_evicts_consumed_pages_without_changing_digest(tmp_path, monkeypatch):
+    file = tmp_path / "large.bin"
+    file.write_bytes(b"x" * (3 << 20))
+    advised = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda fd, start, length, advice:
+                        advised.append((start, length, advice)))
+    assert path_hash(str(file), evict=True) == path_hash(str(file))
+    assert len(advised) >= 3
+    assert advised[0] == (0, 1 << 20, os.POSIX_FADV_DONTNEED)
+
+
+def test_sqlite_index_rejects_swapped_input_manifest(tmp_path):
+    cache = tmp_path / "cache"
+    kwargs = {"unique_by": ("symbol", "date", "expiration"),
+              "partition_by": ("date", "expiration"), "reuse_root": cache}
+    columns = ["symbol", "date", "expiration", "price"]
+    bounds = {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}}
+    sources = []
+    descriptors = []
+    for number in (1, 2):
+        source = tmp_path / f"quotes-{number}.parquet"
+        pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],
+            "expiration": ["2019-02-01"], "price": [float(number)]}), source)
+        identity = {"verified_source_sha256": path_hash(str(source)), "filter": "all"}
+        descriptor = pack.SQLiteParquetIndex.build(str(source), str(tmp_path / f"run-{number}.sqlite"),
+            columns, bounds, **kwargs, reuse_identity=identity)
+        sources.append((source, identity))
+        descriptors.append(descriptor)
+    manifests = list((cache / "inputs").rglob("*.json"))
+    first_manifest = next(p for p in manifests
+        if json.loads(p.read_text())["sha256"] == descriptors[0]["sha256"])
+    second_manifest = next(p for p in manifests if p != first_manifest)
+    replacement = tmp_path / "wrong.json"
+    replacement.write_bytes(second_manifest.read_bytes())
+    os.replace(replacement, first_manifest)
+    third = tmp_path / "run-three.sqlite"
+    with pytest.raises(ValueError, match="manifest"):
+        pack.SQLiteParquetIndex.build(str(sources[0][0]), str(third), columns, bounds,
+            **kwargs, reuse_identity=sources[0][1])
+    assert not third.exists()
+
+
+def test_sqlite_index_same_input_key_cannot_overwrite_different_manifest(tmp_path):
+    source = tmp_path / "quotes.parquet"
+    pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],
+                             "expiration": ["2019-02-01"], "price": [1.0]}), source)
+    cache = tmp_path / "cache"
+    identity = {"verified_source_sha256": path_hash(str(source)), "filter": "all",
+                "validator": "same declared behavior"}
+    kwargs = {"unique_by": ("symbol", "date", "expiration"),
+              "partition_by": ("date", "expiration"), "reuse_root": cache,
+              "reuse_identity": identity}
+    columns = ["symbol", "date", "expiration", "price"]
+    bounds = {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}}
+    first = pack.SQLiteParquetIndex.build(str(source), str(tmp_path / "one.sqlite"),
+        columns, bounds, **kwargs, validator=lambda row: None)
+    manifest = next((cache / "inputs").rglob("*.json"))
+    original = manifest.read_bytes()
+    with pytest.raises(ValueError, match="identity collision"):
+        pack.SQLiteParquetIndex.build(str(source), str(tmp_path / "two.sqlite"),
+            columns, bounds, **kwargs, validator=lambda row: row.update(price=2.0))
+    assert manifest.read_bytes() == original
+    assert first["sha256"] == json.loads(manifest.read_text())["sha256"]
+
+
+def test_sqlite_index_invalid_reuse_root_has_no_filesystem_effect(tmp_path):
+    source = tmp_path / "quotes.parquet"
+    pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],
+                             "expiration": ["2019-02-01"], "price": [1.0]}), source)
+    destination = tmp_path / "absent" / "quotes.sqlite"
+    with pytest.raises(ValueError, match="absolute index reuse root"):
+        pack.SQLiteParquetIndex.build(str(source), str(destination),
+            ["symbol", "date", "expiration", "price"],
+            {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}},
+            unique_by=("symbol", "date", "expiration"), partition_by=("date", "expiration"),
+            reuse_root="relative-cache")
+    assert not destination.parent.exists()

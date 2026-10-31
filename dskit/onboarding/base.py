@@ -379,13 +379,15 @@ def dir_digest(path) -> str:
     return h.hexdigest()
 
 
-def file_digest(path) -> str:
+def file_digest(path, *, evict=False) -> str:
     """sha256 of a file's bytes — a manifest entry's identity anchor.
 
     Parameters
     ----------
     path : str
         The file to digest.
+    evict : bool, optional
+        Drop consumed pages from the OS cache when supported.
 
     Returns
     -------
@@ -404,8 +406,16 @@ def file_digest(path) -> str:
     h = hashlib.sha256()
     try:
         with open(path, "rb") as fh:
+            offset = 0
+            advise = evict and hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED")
             for chunk in iter(lambda: fh.read(1 << 20), b""):
                 h.update(chunk)
+                if advise:
+                    try:
+                        os.posix_fadvise(fh.fileno(), offset, len(chunk), os.POSIX_FADV_DONTNEED)
+                    except OSError:
+                        advise = False
+                offset += len(chunk)
     except OSError as exc:
         raise AssetError([f"cannot read {path!r}: {exc}"]) from exc
     return h.hexdigest()

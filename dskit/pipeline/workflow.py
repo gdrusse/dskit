@@ -558,18 +558,39 @@ def _config_hash(config):
     return _digest(canon.encode(ENCODING))
 
 
-def _file_hash(path):
+def _file_hash(path, *, evict=False):
     hasher = hashlib.new(HASH_ALGORITHM)
     with open(path, "rb") as handle:
+        offset = 0
+        advise = evict and hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED")
         for chunk in iter(lambda: handle.read(READ_CHUNK), b""):
             hasher.update(chunk)
+            if advise:
+                try:
+                    os.posix_fadvise(handle.fileno(), offset, len(chunk), os.POSIX_FADV_DONTNEED)
+                except OSError:
+                    advise = False
+            offset += len(chunk)
     return hasher.hexdigest()
 
 
-def path_hash(path):
-    """Content hash of a file or directory tree; None when absent."""
+def path_hash(path, *, evict=False):
+    """Hash file bytes or a directory tree, optionally evicting consumed pages.
+
+    Parameters
+    ----------
+    path : str
+        File or directory to hash.
+    evict : bool, optional
+        Ask the OS to drop each consumed file chunk from its page cache.
+
+    Returns
+    -------
+    str or None
+        Content SHA-256, or None when the path is absent.
+    """
     if os.path.isfile(path):
-        return _file_hash(path)
+        return _file_hash(path, evict=evict)
     if not os.path.isdir(path):
         return None
     parts = []
@@ -577,7 +598,7 @@ def path_hash(path):
         dirs.sort()
         for name in sorted(files):
             full = os.path.join(base, name)
-            parts.append(f"{os.path.relpath(full, path)}:{_file_hash(full)}")
+            parts.append(f"{os.path.relpath(full, path)}:{_file_hash(full, evict=evict)}")
     return _digest("\n".join(parts).encode(ENCODING))
 
 

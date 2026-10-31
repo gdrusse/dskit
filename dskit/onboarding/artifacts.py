@@ -218,7 +218,8 @@ class PinnedPayloadSource:
         relative : str
             Exact declared relative filename.
         verify : bool
-            Rehash this file; callers must acquire a read permit first.
+            Rehash this file and evict consumed cache pages; callers must
+            acquire a read permit first.
 
         Returns
         -------
@@ -237,6 +238,6 @@ class PinnedPayloadSource:
         path = self.directory/relative
         if not path.resolve().is_relative_to(self.directory.resolve()):
             raise ValueError("payload escaped source")
-        if verify and file_digest(str(path)) != self.pin["files"][relative]:
+        if verify and file_digest(str(path), evict=True) != self.pin["files"][relative]:
             raise ValueError("source payload drift")
         return str(path)

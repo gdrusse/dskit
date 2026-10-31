@@ -2,6 +2,7 @@
 
 import json
 import os
+import hashlib
 
 import pytest
 
@@ -25,6 +26,17 @@ from dskit.onboarding.base import (
 def test_hash_is_the_assets_hash():
     # ADR-0013: reuse, not a copy — the very same function object.
     assert canonical_hash is assets_hash
+
+
+def test_file_digest_can_evict_consumed_pages(tmp_path, monkeypatch):
+    file = tmp_path / "large.bin"
+    file.write_bytes(b"x" * (3 << 20))
+    advised = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda fd, start, length, advice:
+                        advised.append((start, length, advice)))
+    assert file_digest(str(file), evict=True) == hashlib.sha256(file.read_bytes()).hexdigest()
+    assert len(advised) >= 3
+    assert advised[0] == (0, 1 << 20, os.POSIX_FADV_DONTNEED)
 
 
 def test_durable_write_json_round_trip_no_debris(tmp_path):

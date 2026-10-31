@@ -11,6 +11,7 @@ from dskit.onboarding.artifacts import payload_files
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import load_document
 from dskit.pipeline.driver import run_document, resolve_json_artifact, RunAttestation
+from dskit.pipeline.node import NodeContext
 from dskit.pipeline.study_protocol import ExposureRegistry, StudyContract
 from dskit.pipeline.workflow import path_hash
 from index_options.observations import MIOPacketInputs
@@ -110,7 +111,8 @@ def _document(tmp_path, name, pipeline):
 
 
 @pytest.mark.parametrize("study", [None, "expiry_basis"], indirect=True)
-def test_real_json_spine_and_attested_comparison(study, tmp_path, caplog):
+def test_real_json_spine_and_attested_comparison(study, tmp_path, caplog, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
     registry = ExposureRegistry(study["registry"])
     registry.initialize(study["packets"], [{"start": "2019-01-01", "end_before": "2020-01-01",
                                            "evidence": "synthetic prior use"}], "2020-01-01")
@@ -129,6 +131,9 @@ def test_real_json_spine_and_attested_comparison(study, tmp_path, caplog):
                              "provenance": "$intake.provenance"}}})
     ran = run_document(close, asof="2019-02-09", journal=False)
     assert ran.state == "ran", ran
+    run_index = Path(ran.run_dir) / "artifacts/mio-quotes/X.sqlite"
+    cached = list((tmp_path / "cache-home/dskit/sqlite-parquet-index").rglob("*.sqlite"))
+    assert len(cached) == 1 and run_index.stat().st_ino == cached[0].stat().st_ino
     import json
     replay_events = [json.loads(record.getMessage()[len("MIO_EVENT "):])
                      for record in caplog.records
@@ -167,6 +172,25 @@ def test_real_json_spine_and_attested_comparison(study, tmp_path, caplog):
     assert report["packets"][0]["methods"][0]["filled_books"] == 1
     assert registry.snapshot()["active"] is None
     assert registry.snapshot()["frontier"] == 1
+
+
+def test_mio_quote_index_reuses_verified_bytes_across_run_dirs(study, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
+    _, _, first_permit = _open(study)
+    first_dir = tmp_path / "first-run"
+    first = MIOPacketInputs("intake", {"study": study}).run(
+        NodeContext(name="intake", asof="2019-02-09", run_dir=str(first_dir)),
+        {"permit": first_permit})["bounded_inputs"]["inputs"]["X"]["chain_index"]["index"]
+    repeated = copy.deepcopy(study)
+    repeated["registry"]["path"] = str(tmp_path / "separate-exposure.sqlite")
+    _, _, second_permit = _open(repeated)
+    second_dir = tmp_path / "second-run"
+    second = MIOPacketInputs("intake", {"study": repeated}).run(
+        NodeContext(name="intake", asof="2019-02-09", run_dir=str(second_dir)),
+        {"permit": second_permit})["bounded_inputs"]["inputs"]["X"]["chain_index"]["index"]
+    assert first["sha256"] == second["sha256"] and first["rows"] == second["rows"]
+    assert first["path"] != second["path"]
+    assert Path(first["path"]).stat().st_ino == Path(second["path"]).stat().st_ino
 
 
 def test_mio_contract_requires_full_imported_code_pins(study):
