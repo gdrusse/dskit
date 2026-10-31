@@ -61,7 +61,7 @@ from dskit.pipeline.option_structures import (
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = ["CHAIN_FIELDS", "EXIT_ZERO_BID", "FILLS", "NODE_KINDS", "ORDER_FIELDS", "REBALANCES",
-           "OptionStructureLedger", "FundedOptionAccount"]
+           "OptionStructureLedger", "FundedOptionAccount", "StandardSplitAdjustment"]
 
 NODE_KINDS = ()
 
@@ -77,6 +77,90 @@ REBALANCES = ("daily", "every_n", "threshold")
 EXIT_ZERO_BID = ("refuse", "allow")
 _CLOSE_RULES = ("expiry", "exit")
 _RIGHT_NAMES = {"put": "put", "p": "put", "call": "call", "c": "call"}
+
+
+@dataclass(frozen=True)
+class StandardSplitAdjustment:
+    """One same-root integer split of standard option contracts."""
+
+    symbol: str
+    root_before: str
+    root_after: str
+    deliverable_shares: int
+    published: date
+    effective: date
+    ratio: int
+    strike_divisor: int
+    multiplier: int
+    basis_before: float
+    basis_after: float
+
+    _FIELDS = frozenset({"symbol", "root_before", "root_after", "deliverable_shares",
+                         "published", "effective", "ratio", "strike_divisor", "multiplier",
+                         "basis_before", "basis_after"})
+
+    @classmethod
+    def parse(cls, rows, multiplier):
+        """Validate exact event rows and return one event per symbol."""
+        if rows is None:
+            return {}
+        if not isinstance(rows, (list, tuple)):
+            raise ValueError("adjustments must be event rows")
+        events = {}
+        for row in rows:
+            if not isinstance(row, Mapping) or set(row) != cls._FIELDS:
+                raise ValueError("invalid standard split event schema")
+            published, effective = _day(row["published"]), _day(row["effective"])
+            ratio, divisor = row["ratio"], row["strike_divisor"]
+            before, after = row["basis_before"], row["basis_after"]
+            if (not isinstance(row["symbol"], str) or not row["symbol"]
+                    or row["root_before"] != row["symbol"]
+                    or row["root_after"] != row["symbol"]
+                    or type(row["deliverable_shares"]) is not int
+                    or row["deliverable_shares"] != 100
+                    or type(row["published"]) is not str or type(row["effective"]) is not str
+                    or published is None or effective is None
+                    or published.isoformat() != row["published"]
+                    or effective.isoformat() != row["effective"]
+                    or published > effective
+                    or type(ratio) is not int or ratio <= 1
+                    or type(divisor) is not int or divisor != ratio
+                    or type(row["multiplier"]) is not int or row["multiplier"] != multiplier
+                    or not number_ok(before) or before <= 0
+                    or not number_ok(after) or after <= 0
+                    or not math.isclose(float(after), float(before)*ratio, rel_tol=1e-9)
+                    or row["symbol"] in events):
+                raise ValueError("unsupported or duplicate standard split event")
+            events[row["symbol"]] = cls(row["symbol"], row["root_before"],
+                                         row["root_after"], row["deliverable_shares"],
+                                         published, effective, ratio, divisor, multiplier,
+                                         float(before), float(after))
+        return events
+
+    def applies(self, opened, expiration):
+        """Whether an already open position crosses the event's effective date."""
+        return opened < self.effective <= expiration
+
+    def convert(self, legs, strikes):
+        """Return post-split signed legs and strikes without changing dollar value."""
+        converted = tuple((right, sign*self.ratio) for right, sign in legs)
+        levels = tuple(float(strike)/self.strike_divisor for strike in strikes)
+        if not all(price_ok(level) for level in levels):
+            raise ValueError("invalid converted strike")
+        original = {(right, float(strike)) for (right, _sign), strike in zip(legs, strikes, strict=True)}
+        mapped = {(right, level) for (right, _sign), level in zip(converted, levels, strict=True)}
+        if len(original) != len(mapped):
+            raise ValueError("split maps distinct contracts to one quote")
+        return converted, levels
+
+    def record(self):
+        """Return the JSON-safe event identity carried in an adjusted trade."""
+        return {"symbol": self.symbol, "root_before": self.root_before,
+                "root_after": self.root_after, "deliverable_shares": self.deliverable_shares,
+                "published": self.published.isoformat(),
+                "effective": self.effective.isoformat(), "ratio": self.ratio,
+                "strike_divisor": self.strike_divisor, "multiplier": self.multiplier,
+                "basis_before": self.basis_before, "basis_after": self.basis_after}
 
 
 def _day(value):
@@ -247,7 +331,7 @@ class _Hedge:
 class _Trade:
     """One order's life: open, mark, hedge, close. ``run`` returns its record and its mark rows."""
 
-    def __init__(self, ledger, chain, order, tally):
+    def __init__(self, ledger, chain, order, tally, adjustment=None):
         self.p = ledger.params
         self.chain = chain
         self.order = order
@@ -255,9 +339,12 @@ class _Trade:
         self.mult = self.p["multiplier"]
         self.n = int(self.p.get("contracts", 1))
         self.legs = order.legs
+        self.strikes = order.strikes
         self.units = sum(abs(sign) for _right, sign in order.legs)
         self.keys = tuple((order.expiration, k, right)
-                          for (right, _sign), k in zip(order.legs, order.strikes, strict=True))
+                          for (right, _sign), k in zip(self.legs, self.strikes, strict=True))
+        self.adjustment = adjustment if adjustment and adjustment.applies(order.opened, order.expiration) else None
+        self.applied_adjustments = []
         self.hedge = (_Hedge(self.p["hedge"], int(self.p.get("year_days", 365)), self.mult, self.n,
                              chain.dividends.get(order.symbol, ()))
                       if self.p.get("hedge") else None)
@@ -266,6 +353,25 @@ class _Trade:
         self.open_fees = 0.0
         self.last_value = 0.0
         self.carried_days = 0
+
+    def _apply_adjustment(self, day):
+        """Convert a held position on its effective session, requiring live new quotes."""
+        event = self.adjustment
+        if event is None or self.applied_adjustments or day < event.effective:
+            return
+        if day != event.effective:
+            raise ValueError("missing effective split session")
+        legs, strikes = event.convert(self.legs, self.strikes)
+        keys = tuple((self.order.expiration, k, right)
+                     for (right, _sign), k in zip(legs, strikes, strict=True))
+        if not self.chain.has_rows(self.order.symbol, day):
+            raise ValueError("missing effective split quotes")
+        for key in keys:
+            quote = self.chain.quote(self.order.symbol, day, key)
+            if quote is None or quote_defect(*quote, None, locked_ok=True):
+                raise ValueError("missing or unusable converted split quote")
+        self.legs, self.strikes, self.keys = legs, strikes, keys
+        self.applied_adjustments.append(event.record())
 
     # -- quotes ------------------------------------------------------------------------
 
@@ -354,7 +460,7 @@ class _Trade:
         hedge = self.hedge
         mids = None if quotes is None else [(bid + ask) / 2.0 for bid, ask in quotes]
         target, reason = (None, "no_leg_quote") if mids is None else hedge.delta(
-            self.legs, self.order.strikes, self.order.expiration, day, under, mids)
+            self.legs, self.strikes, self.order.expiration, day, under, mids)
         if target is not None and hedge.due(target):
             hedge.rebalance(target)
             self.tally["hedge_rebalances"] += 1
@@ -376,6 +482,9 @@ class _Trade:
             "pnl_usd": option_pnl + hedge_pnl - hedge_fees,
             "underlying": self.chain.underlying(symbol, day),
             "carried": carried, "carry_reason": reason})
+        if self.adjustment is not None:
+            self.marks[-1]["position_strikes"] = list(self.strikes)
+            self.marks[-1]["position_legs"] = [[right, sign*self.n] for right, sign in self.legs]
 
     def _mark_day(self, day):
         """Mark a non-closing day at the mid, carrying the last mark when it cannot."""
@@ -413,8 +522,8 @@ class _Trade:
 
     def _settle(self, level):
         """Settlement cash and fees at the expiration level."""
-        cash = self.mult * self.n * structure_payoff(self.legs, level, self.order.strikes)
-        itm = sum(abs(sign) for (right, sign), k in zip(self.legs, self.order.strikes, strict=True)
+        cash = self.mult * self.n * structure_payoff(self.legs, level, self.strikes)
+        itm = sum(abs(sign) for (right, sign), k in zip(self.legs, self.strikes, strict=True)
                   if leg_intrinsic(right, k, level) > 0)
         return cash, self._fees(self.p.get("settle_fee_per_contract", 0.0), itm)
 
@@ -438,6 +547,7 @@ class _Trade:
         closed, exit_refused = None, False
         wants_exit = self.p.get("close_rule", "expiry") == "exit"
         for day in self.chain.window(o.opened, o.expiration):
+            self._apply_adjustment(day)
             if wants_exit and not exit_refused and day >= o.exit:
                 done = self._try_exit(day) if day == o.exit else self._exit_date_missing()
                 if done is not None:
@@ -468,12 +578,12 @@ class _Trade:
         self.tally[f"closed:{closed[0]}" if closed else (
             f"unsettled:{why}" if why else "open_at_end")] += 1
         credit_usd = self.premium - self.open_fees
-        loss = structure_max_loss(self.legs, o.strikes, credit_usd / self.n, self.mult)
+        loss = structure_max_loss(o.legs, o.strikes, credit_usd / self.n, self.mult)
         record = {
             "order_index": o.index, "symbol": o.symbol, "structure": o.structure,
             "strikes": list(o.strikes), "expiration": o.expiration.isoformat(),
             "option_strategy": classify_option_strategy(
-                [(right, qty*self.n) for right, qty in self.legs], o.strikes),
+                [(right, qty*self.n) for right, qty in o.legs], o.strikes),
             "contracts": self.n, "open_date": o.opened.isoformat(), "close_date": None,
             "reason_closed": None, "status": status, "unsettled_reason": why,
             "premium_usd": self.premium, "credit_usd": credit_usd,
@@ -486,6 +596,8 @@ class _Trade:
             "max_loss_unbounded": math.isinf(loss),
             "marked_pnl_usd": self.marks[-1]["pnl_usd"], "mark_days": len(self.marks) - 1,
             "carried_days": self.carried_days, "exit_refused": exit_refused}
+        if self.applied_adjustments:
+            record["applied_adjustments"] = list(self.applied_adjustments)
         if closed:
             reason, day, cash, fees = closed
             option_pnl = self.premium + cash - self.open_fees - fees
@@ -755,13 +867,19 @@ class OptionStructureLedger(Node):
             raise ValueError(f"{where}: {field!r} must be an ISO date, got {row[field]!r}")
         return value
 
-    def _plan(self, orders):
+    def _plan(self, orders, adjustments=None):
         """Per symbol: the contracts the orders touch and the date window they span."""
+        adjustments = adjustments or {}
         plan = {}
         for o in orders:
             entry = plan.setdefault(o.symbol, {"keys": set(), "lo": o.opened, "hi": o.expiration})
             entry["keys"].update((o.expiration, k, right)
                                  for (right, _s), k in zip(o.legs, o.strikes, strict=True))
+            event = adjustments.get(o.symbol)
+            if event is not None and event.applies(o.opened, o.expiration):
+                legs, strikes = event.convert(o.legs, o.strikes)
+                entry["keys"].update((o.expiration, k, right)
+                                     for (right, _s), k in zip(legs, strikes, strict=True))
             entry["lo"], entry["hi"] = min(entry["lo"], o.opened), max(entry["hi"], o.expiration)
         return plan
 
@@ -877,15 +995,18 @@ class OptionStructureLedger(Node):
             undeclared structure or has a bad date or strikes; a chain row that is not a mapping;
             a needed contract quoted twice on one day.
         """
+        adjustments = StandardSplitAdjustment.parse(inputs.get("adjustments"), self.params["multiplier"])
+        if adjustments and (self.params.get("hedge") or self.params.get("close_rule", "expiry") != "expiry"):
+            raise ValueError("split adjustment supports unhedged expiry close only")
         orders, refused = self._orders(inputs["orders"])
-        plan = self._plan(orders)
+        plan = self._plan(orders, adjustments)
         dividends = self._dividends(inputs.get("dividends"), plan)
         chain = self._chain(inputs["chain"], plan)
         chain.dividends = dividends
         tally = Counter()
         trades, marks = [], []
         for order in orders:
-            done = _Trade(self, chain, order, tally).run()
+            done = _Trade(self, chain, order, tally, adjustments.get(order.symbol)).run()
             if done is not None:
                 trades.append(done[0])
                 marks.extend(done[1])

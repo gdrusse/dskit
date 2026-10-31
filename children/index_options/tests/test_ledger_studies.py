@@ -2585,3 +2585,61 @@ def test_weekly_packet_refuses_calendar_gap_and_overlapping_pairs():
     params["selected_pairs"].append({"id": "overlap", "symbol": "X", "dte_min": 32, "dte_max": 40})
     with pytest.raises(ValueError, match="overlap"):
         ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+def test_weekly_portfolio_standard_split_keeps_frozen_book_economics():
+    """An ex-date conversion preserves the entry and routes later marks to live contracts."""
+    params, inputs = _weekly_portfolio_fixture()
+    baseline = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    effective = "2019-01-30"
+    for row in inputs["X"]["chain"]:
+        if row["date"] >= effective:
+            row["strike_raw"] /= 10
+            row["basis_factor"] = 10.0
+    for row in inputs["X"]["bars"]:
+        row["basis_factor"] = 10.0 if row["date"] >= effective else 1.0
+    event = {"symbol": "X", "root_before": "X", "root_after": "X",
+             "deliverable_shares": 100, "published": "2018-12-31", "effective": effective,
+             "ratio": 10, "strike_divisor": 10, "multiplier": 100,
+             "basis_before": 1.0, "basis_after": 10.0}
+    with pytest.raises(ValueError, match="unsettleable"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs, adjustments=[event])
+    result = study.run()["methods"][0]
+    assert result["pnl"] == pytest.approx(baseline["pnl"])
+    assert result["contracts"] == baseline["contracts"]
+    assert result["fees"] == pytest.approx(baseline["fees"])
+    assert len(result["trades"]) == len(baseline["trades"])
+    assert any(book.get("applied_adjustments") for book in result["trades"])
+    assert result["ledger_summary"]["totals"]["pnl_usd"] == pytest.approx(result["pnl"])
+
+
+def test_standard_split_conversion_is_atomic_across_open_books():
+    """A missing converted quote cannot leave one book converted and the next old."""
+    from types import SimpleNamespace
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    baseline = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    assert len(baseline["trades"]) == 2
+    effective = "2019-01-30"
+    for row in inputs["X"]["chain"]:
+        if row["date"] >= effective:
+            row["strike_raw"] /= 10
+            row["basis_factor"] = 10.
+    for row in inputs["X"]["bars"]:
+        if row["date"] >= effective:
+            row["basis_factor"] = 10.
+    event = {"symbol": "X", "root_before": "X", "root_after": "X",
+             "deliverable_shares": 100, "published": "2018-12-31", "effective": effective,
+             "ratio": 10, "strike_divisor": 10, "multiplier": 100,
+             "basis_before": 1., "basis_after": 10.}
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs, adjustments=[event])
+    books = copy.deepcopy(baseline["trades"])
+    account = SimpleNamespace(open={book["id"]: book for book in books})
+    expiry = books[1]["expiry"]
+    for key in [key for key in study._quotes["X"] if key[0] == effective and key[1] == expiry]:
+        del study._quotes["X"][key]
+    with pytest.raises(ValueError, match="converted split quote"):
+        study._apply_adjustments(account, effective, study._charge(params["methods"][0]))
+    assert all("active_legs" not in book and "applied_adjustments" not in book
+               for book in account.open.values())

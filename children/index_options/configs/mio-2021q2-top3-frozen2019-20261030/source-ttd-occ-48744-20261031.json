@@ -1,0 +1,8 @@
+{
+  "path": "/home/russell/data/index_options/mio-ttd-split-occ-48744-20261031/source",
+  "as_of": "2026-10-31T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "*"
+  ]
+}

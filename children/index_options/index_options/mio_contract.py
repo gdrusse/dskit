@@ -640,8 +640,8 @@ class MIOStudyContract(StudyContract):
         else:
             raise ValueError("unknown admission mode")
         expected = {"forecasts", "contexts", "chain", "bars", "sessions"}
-        if set(d["sources"]) != expected:
-            raise ValueError("all five source roles required")
+        if set(d["sources"]) not in (expected, expected | {"corporate_actions"}):
+            raise ValueError("five market source roles and optional corporate actions required")
         missing, pins = [], {}
         for role, binding in d["sources"].items():
             if binding is None:
@@ -649,7 +649,8 @@ class MIOStudyContract(StudyContract):
                 continue
             if set(binding) != {"pin", "files"}:
                 raise ValueError("invalid source binding")
-            keys = set(p["symbols"]) if role in {"chain", "bars"} else {"shared"}
+            keys = (set(p["symbols"]) if role in {"chain", "bars"} else
+                    {"shared", "memo"} if role == "corporate_actions" else {"shared"})
             if set(binding["files"]) != keys:
                 raise ValueError("source file universe differs")
             source = PinnedPayloadSource(binding["pin"])
@@ -676,6 +677,9 @@ class MIOStudyContract(StudyContract):
             raise ValueError("missing, duplicated or reordered method")
         if audit["inputs_sha256"] != provenance["inputs_sha256"]:
             raise ValueError("result input identity differs")
+        if "corporate_actions" in study["domain"]["sources"] and (
+                audit.get("adjustments_sha256") != provenance.get("adjustments_sha256")):
+            raise ValueError("split event identity differs")
         for method, result in zip(study["domain"]["params"]["methods"], results):
             if result["status"] not in {"completed", "failed"}:
                 raise ValueError("unknown method disposition")

@@ -1346,14 +1346,18 @@ class WeeklyOptionPortfolioStudy:
     _FILL_SIZINGS = ("all_or_none", "available_size")
     _AVAILABLE_SIZE = "available_size"
 
-    def __init__(self, params, inputs):
+    def __init__(self, params, inputs, *, adjustments=None):
         import copy
         from datetime import date
-        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+        from dskit.pipeline.libs.option_ledger import StandardSplitAdjustment
 
         self.validate_configuration(params)
         self.params = copy.deepcopy(params)
         p, symbols = self.params, self.params["symbols"]
+        self.adjustments = StandardSplitAdjustment.parse(adjustments, p["bridge"]["solver"]["multiplier"])
+        if (set(self.adjustments)-set(symbols)
+                or any(m.get("reserve_per_contract", 0.) for m in p["methods"] if self.adjustments)):
+            raise ValueError("unsupported split symbol or per-contract reserve floor")
         if not isinstance(inputs, dict) or set(inputs) != set(symbols):
             raise ValueError("matching symbol inputs required")
         self.clocks = p.get("clocks")
@@ -1438,6 +1442,8 @@ class WeeklyOptionPortfolioStudy:
             entries = self.calendar
         if not self.calendar or not entries:
             raise ValueError("empty common calendar")
+        if any(event.effective.isoformat() not in self.calendar for event in self.adjustments.values()):
+            raise ValueError("split effective date is not a required session")
         self.weeks, seen = [], set()
         for day in entries:
             week = date.fromisoformat(day).isocalendar()[:2]
@@ -1614,6 +1620,55 @@ class WeeklyOptionPortfolioStudy:
                  "upper": upper if held is None else max(0., upper-held[str(move)])}
                 for move in shock["moves"]]
 
+    @staticmethod
+    def _active_position(book):
+        """Return the held terms, leaving entry terms intact for audit and fees."""
+        return book.get("active_legs", book["legs"]), book.get("active_factor", book["factor"])
+
+    def _apply_adjustments(self, account, day, charge):
+        """Convert every affected open book before today's account activity."""
+        mult = self.params["bridge"]["solver"]["multiplier"]
+        tolerance = max(1e-6, self.params["solver"]["parity_tolerance"])
+        for event in self.adjustments.values():
+            if event.effective.isoformat() != day:
+                continue
+            symbol = event.symbol
+            position = [b for b in account.open.values() if b["symbol"] == symbol]
+            if not position:
+                continue
+            prior = self.history_calendar[self.history_calendar.index(day)-1]
+            if (not math.isclose(self._factors[symbol].get(prior, math.nan),
+                                 event.basis_before, rel_tol=1e-9)
+                    or not math.isclose(self._factors[symbol].get(day, math.nan),
+                                        event.basis_after, rel_tol=1e-9)):
+                raise ValueError("split basis transition differs from pinned event")
+            staged = []
+            for book in position:
+                if (book.get("applied_adjustments")
+                        or not math.isclose(book["factor"], event.basis_before, rel_tol=1e-9)):
+                    raise ValueError("split book has incompatible entry basis")
+                original = tuple((leg["right"], leg["sign"]*leg["quantity"]) for leg in book["legs"])
+                signed, strikes = event.convert(original, [leg["strike"] for leg in book["legs"]])
+                active = [{"right": right, "sign": 1 if quantity > 0 else -1,
+                           "quantity": abs(quantity), "strike": strike}
+                          for (right, quantity), strike in zip(signed, strikes, strict=True)]
+                node = self._nodes[symbol]
+                for leg in active:
+                    raw = self._quotes[symbol].get((day, book["expiry"], leg["right"], leg["strike"]))
+                    if node._usable_quote(raw, event.basis_after) is None:
+                        raise ValueError("missing or unusable converted split quote")
+                loss = structure_max_loss(signed, strikes, book["credit"], mult)
+                reserve = self._floor(max(0., loss, -book["credit"]), charge, active, mult)
+                if (not math.isclose(loss, book["max_loss"], rel_tol=1e-9, abs_tol=tolerance)
+                        or not math.isclose(reserve, book["reserve"], rel_tol=1e-9,
+                                            abs_tol=tolerance)):
+                    raise ValueError("split changed economic loss or capital reserve")
+                staged.append((book, active))
+            for book, active in staged:
+                book["active_legs"] = active
+                book["active_factor"] = event.basis_after
+                book["applied_adjustments"] = [event.record()]
+
     def _account_shock(self, books, day, shock):
         """Return the betas and each move's net terminal loss of books at the day's close.
 
@@ -1629,14 +1684,15 @@ class WeeklyOptionPortfolioStudy:
         mult = self.params["bridge"]["solver"]["multiplier"]
         losses = {str(move): 0. for move in shock["moves"]}
         for book in books:
-            symbol, factor = book["symbol"], book["factor"]
+            symbol = book["symbol"]
+            active, factor = self._active_position(book)
             close, observed = self._bars[symbol].get(day), self._factors[symbol].get(day)
             if (not number_ok(close) or close <= 0 or not number_ok(factor) or factor <= 0
                     or not number_ok(book["credit"])
                     or not number_ok(observed) or not math.isclose(observed, factor, rel_tol=1e-9)):
                 return estimate, None
-            legs = [(leg["right"], leg["sign"]*leg["quantity"]) for leg in book["legs"]]
-            strikes = [leg["strike"] for leg in book["legs"]]
+            legs = [(leg["right"], leg["sign"]*leg["quantity"]) for leg in active]
+            strikes = [leg["strike"] for leg in active]
             for move in shock["moves"]:
                 spot = max(0., close/factor*(1.+estimate["betas"][symbol]*move))
                 losses[str(move)] -= book["credit"]+mult*structure_payoff(legs, spot, strikes)
@@ -1954,12 +2010,13 @@ class WeeklyOptionPortfolioStudy:
         for key, book in account.open.items():
             if book["expiry"] != day:
                 continue
-            symbol, factor = book["symbol"], book["factor"]
+            symbol = book["symbol"]
+            active, factor = self._active_position(book)
             if (day not in self._bars[symbol]
                     or not math.isclose(self._factors[symbol].get(day, math.nan), factor, rel_tol=1e-9)):
                 raise ValueError(f"unsettleable selected book: {key}")
-            legs = [(leg["right"], leg["sign"]*leg["quantity"]) for leg in book["legs"]]
-            strikes = [leg["strike"] for leg in book["legs"]]
+            legs = [(leg["right"], leg["sign"]*leg["quantity"]) for leg in active]
+            strikes = [leg["strike"] for leg in active]
             result[key] = book["credit"]+self.params["bridge"]["solver"]["multiplier"]*structure_payoff(
                 legs, self._bars[symbol][day]/factor, strikes)
         return result
@@ -1979,6 +2036,10 @@ class WeeklyOptionPortfolioStudy:
             for day in self.calendar:
                 if not b["fill_date"] <= day <= expiry:
                     continue
+                converted = (b.get("applied_adjustments")
+                             and day >= b["applied_adjustments"][0]["effective"])
+                active = b["active_legs"] if converted else b["legs"]
+                factor = b["active_factor"] if converted else b["factor"]
                 observed = self._factors[symbol].get(day)
                 if observed is not None and not math.isclose(observed, factor, rel_tol=1e-9):
                     raise ValueError(f"basis changed while selected book open: {b['id']}")
@@ -1987,7 +2048,7 @@ class WeeklyOptionPortfolioStudy:
                 rows[marker] = {"symbol": symbol, "date": day, "expiration": expiry,
                                 "strike": None, "right": None, "bid": None, "ask": None,
                                 "underlying": underlying}
-                for leg in b["legs"]:
+                for leg in active:
                     raw = self._quotes[symbol].get((day, expiry, leg["right"], leg["strike"]))
                     if raw is None:
                         continue
@@ -1999,11 +2060,14 @@ class WeeklyOptionPortfolioStudy:
                                  "underlying": underlying}
         fields = ("symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying")
         order_fields = ("date", "symbol", "expiration", "strikes", "structure")
+        ledger_inputs = {"chain": list(rows.values()), "orders": orders}
+        if self.adjustments:
+            ledger_inputs["adjustments"] = [event.record() for event in self.adjustments.values()]
         ledger = OptionStructureLedger("ledger", {
             "chain_fields": {k: k for k in fields}, "order_fields": {k: k for k in order_fields},
             "structures": structures, "multiplier": self.params["bridge"]["solver"]["multiplier"],
             "fee_per_contract": self.params["bridge"]["solver"]["fee_per_contract_usd"],
-            "fill": "nbbo", "close_rule": "expiry"}).run(None, {"chain": list(rows.values()), "orders": orders})
+            "fill": "nbbo", "close_rule": "expiry"}).run(None, ledger_inputs)
         if len(ledger["trades"]) != len(trades):
             raise ValueError("shared ledger refused an admitted book")
         for book, row in zip(trades, ledger["trades"]):
@@ -2099,6 +2163,7 @@ class WeeklyOptionPortfolioStudy:
         charge = self._charge(method)
         decisions, rejected, snapshots, pending = [], [], [], None
         for day in self.calendar:
+            self._apply_adjustments(account, day, charge)
             deposited = account.advance(day, self._settlements(account, day))
             if pending is not None:
                 survivors, refusals = [], []
@@ -2312,6 +2377,13 @@ class MIOPacketStudy(StudyNode):
                 or provenance["read_bounds"] != plan["read_bounds"]):
             raise ValueError("unverified bounded intake")
         d = self.params["study"]["domain"]
+        if "corporate_actions" in d["sources"] and (
+                provenance.get("adjustments_sha256") != value_hash(bounded.get("adjustments"))
+                or not bounded.get("adjustments")):
+            raise ValueError("unverified split event intake")
+        if "corporate_actions" not in d["sources"] and (
+                "adjustments" in bounded or "adjustments_sha256" in provenance):
+            raise ValueError("unbound split event intake")
         import os
         from dskit.pipeline.base import value_hash as _value_hash
         artifact_root = (os.path.realpath(os.path.join(ctx.run_dir, "artifacts", "mio-quotes"))
@@ -2337,7 +2409,8 @@ class MIOPacketStudy(StudyNode):
                     or os.path.commonpath([expected_root, index_path]) != expected_root):
                 raise ValueError("indexed quote descriptor disagrees with canonical plan")
         params = {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}
-        study = WeeklyOptionPortfolioStudy(params, bounded["inputs"])
+        study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
+                                          adjustments=bounded.get("adjustments"))
         results = []
         packet_id = permit.get("packet_id", permit.get("id"))
         def event(payload):
@@ -2351,7 +2424,8 @@ class MIOPacketStudy(StudyNode):
                 progress = lambda mid, done, total, status: self.log.info(
                     "MIO method %s week %d/%d: %s", mid, done, total, status)
                 result = study._method(method, progress, events=event)
-                replay_study = WeeklyOptionPortfolioStudy(params, bounded["inputs"])
+                replay_study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
+                                                         adjustments=bounded.get("adjustments"))
                 try:
                     replay = replay_study._method(method, None, recorded=result)
                     replay_study.close_quote_indexes(verify=True)
@@ -2381,6 +2455,8 @@ class MIOPacketStudy(StudyNode):
                  "inputs_sha256": provenance["inputs_sha256"],
                  "calendar": study.calendar, "decision_dates": study.weeks,
                  "research_only": True, "american_assignment_unmodeled": True}
+        if "corporate_actions" in d["sources"]:
+            audit["adjustments_sha256"] = provenance["adjustments_sha256"]
         registry.bind(plan, permit, "execution",
                       {"results": results, "audit": audit, "provenance": provenance})
         return {"results": results, "audit": audit}

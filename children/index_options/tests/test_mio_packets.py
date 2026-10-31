@@ -58,6 +58,14 @@ def study(tmp_path, request):
                               if not (r["date"] == "2019-02-01" and r["expiration"] == "2019-02-01")]
     if getattr(request, "param", None) == "shallow_long_leg":
         _shallow_long_leg(data["X"])
+    if getattr(request, "param", None) == "split":
+        for row in data["X"]["chain"]:
+            if row["date"] >= "2019-01-09":
+                row["strike_raw"] /= 10
+                row["basis_factor"] = 10.
+        for row in data["X"]["bars"]:
+            if row["date"] >= "2019-01-09":
+                row["basis_factor"] = 10.
     for key, rows in data["X"].items():
         # A protected row in the same file must never materialize.
         future = copy.deepcopy(rows[0])
@@ -1211,3 +1219,87 @@ def test_pinned_forecast_window_rechecks_bound_artifacts(tmp_path, monkeypatch, 
         monkeypatch.setattr(contract.RunAttestation, "node_output_for_document", lambda *args: False)
     with pytest.raises(ValueError):
         contract.MIOStudyContract.selection(study)
+
+def test_mio_packet_binds_and_reads_pinned_split_source(study, tmp_path):
+    """A split event enters through the claim's source pins and bounded intake."""
+    origin = tmp_path / "split-origin"
+    origin.mkdir()
+    event = {"symbol": "X", "root_before": "X", "root_after": "X",
+             "deliverable_shares": 100, "published": "2018-12-31", "effective": "2019-01-07",
+             "ratio": 10, "strike_divisor": 10, "multiplier": 100,
+             "basis_before": 1.0, "basis_after": 10.0}
+    (origin / "adjustments.json").write_text(json.dumps([event]))
+    (origin / "memo.txt").write_text("Synthetic standard split evidence")
+    root = OnboardingRoot.create(str(tmp_path / "split-ob"))
+    registry = root.registry()
+    vid = registry.register("source_config", {
+        "name": "fixture-split", "catalog_source": "synthetic", "connector": "localblobs",
+        "config": {"path": str(origin), "as_of": "2019-01-01T00:00:00+00:00"}}, origin="test")
+    registry.transition(vid, "active", origin="test")
+    run_acquisition(root, registry, "fixture-split", "files", "backfill")
+    acquired = payload_files(root, "fixture-split", "files")
+    pin = {"root": root.root, "source": "fixture-split", "stream": "files",
+           "snapshot": acquired["snapshot"], "manifest_sha256": acquired["manifest_sha256"],
+           "files": acquired["sha256"]}
+    study["domain"]["sources"]["corporate_actions"] = {
+        "pin": pin, "files": {"shared": "adjustments.json", "memo": "memo.txt"}}
+    _, plan, permit = _open(study)
+    assert plan["runnable"] and "corporate_actions" in plan["source_pins"]
+    intake = MIOPacketInputs("intake", {"study": study}).run(None, {"permit": permit})
+    assert intake["bounded_inputs"]["adjustments"] == [event]
+    assert intake["provenance"]["adjustments_sha256"] == value_hash([event])
+
+
+@pytest.mark.parametrize("study", ["split"], indirect=True)
+def test_split_packet_runs_and_replays_with_pinned_source(study, tmp_path, caplog):
+    """The attested packet and replay use the same pinned ex-date conversion."""
+    origin = tmp_path / "split-origin"
+    origin.mkdir()
+    event = {"symbol": "X", "root_before": "X", "root_after": "X",
+             "deliverable_shares": 100, "published": "2018-12-31", "effective": "2019-01-09",
+             "ratio": 10, "strike_divisor": 10, "multiplier": 100,
+             "basis_before": 1., "basis_after": 10.}
+    (origin / "adjustments.json").write_text(json.dumps([event]))
+    (origin / "memo.txt").write_text("Synthetic standard split evidence")
+    root = OnboardingRoot.create(str(tmp_path / "split-ob"))
+    registry = root.registry()
+    vid = registry.register("source_config", {
+        "name": "fixture-split", "catalog_source": "synthetic", "connector": "localblobs",
+        "config": {"path": str(origin), "as_of": "2019-01-01T00:00:00+00:00"}}, origin="test")
+    registry.transition(vid, "active", origin="test")
+    run_acquisition(root, registry, "fixture-split", "files", "backfill")
+    acquired = payload_files(root, "fixture-split", "files")
+    pin = {"root": root.root, "source": "fixture-split", "stream": "files",
+           "snapshot": acquired["snapshot"], "manifest_sha256": acquired["manifest_sha256"],
+           "files": acquired["sha256"]}
+    study["domain"]["sources"]["corporate_actions"] = {
+        "pin": pin, "files": {"shared": "adjustments.json", "memo": "memo.txt"}}
+    exposure = ExposureRegistry(study["registry"])
+    exposure.initialize(study["packets"], [{"start": "2019-01-01", "end_before": "2020-01-01",
+                                            "evidence": "synthetic prior use"}], "2020-01-01")
+    plan = StudyContract.build(study)
+    assert plan["runnable"]
+    doc = _document(tmp_path, "split-packet", {
+        "open_packet": {"uses": "dskit.pipeline.study_protocol:StudyPacketOpen",
+                       "params": {"study": study, "frozen_plan": plan,
+                                  "claim_request": exposure.freeze(plan)}},
+        "intake": {"uses": "index_options.observations:MIOPacketInputs",
+                   "params": {"study": study}, "inputs": {"permit": "$open_packet.permit"}},
+        "study": {"uses": "index_options.ledger_studies:MIOPacketStudy",
+                  "params": {"study": study},
+                  "inputs": {"permit": "$open_packet.permit",
+                             "bounded_inputs": "$intake.bounded_inputs",
+                             "provenance": "$intake.provenance"}},
+        "close": {"uses": "dskit.pipeline.study_protocol:StudyPacketClose",
+                  "params": {"study": study},
+                  "inputs": {"permit": "$open_packet.permit", "results": "$study.results",
+                             "audit": "$study.audit", "provenance": "$intake.provenance"}}})
+    ran = run_document(doc, asof="2019-02-09", journal=False)
+    assert ran.state == "ran", ran
+    receipt = RunAttestation(ran.run_dir).attested_output("close", "receipt", doc.hash)
+    result = resolve_json_artifact(ran.run_dir, receipt)
+    assert result["audit"]["adjustments_sha256"] == value_hash([event])
+    method = result["results"][0]
+    assert method["status"] == "completed"
+    assert any(book.get("applied_adjustments") for book in method["result"]["trades"])
+    assert any('"type":"replay_verified"' in record.getMessage() for record in caplog.records)

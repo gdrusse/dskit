@@ -725,7 +725,9 @@ class MIOPacketInputs(StudyNode):
         """
         from dskit.pipeline.base import value_hash
         from dskit.pipeline.libs.parquet import DateBoundedParquet, SQLiteParquetIndex
+        from dskit.pipeline.libs.option_ledger import StandardSplitAdjustment
         from dskit.onboarding.artifacts import PinnedPayloadSource
+        import json
         from .mio_contract import MIOStudyContract
         import os
         import pyarrow as pa
@@ -772,6 +774,21 @@ class MIOPacketInputs(StudyNode):
                          temporal, allowed)
         contexts = read("contexts", "shared", identity+["spot", "reference_scale", "settlement_date"],
                         {**temporal, "settlement_date": {"end_before": tail}}, allowed)
+        adjustments = None
+        if "corporate_actions" in d["sources"]:
+            binding = d["sources"]["corporate_actions"]
+            source = PinnedPayloadSource(binding["pin"])
+            event_path = source.file(binding["files"]["shared"], verify=True)
+            memo_path = source.file(binding["files"]["memo"], verify=True)
+            checked[event_path] = (source, binding["files"]["shared"])
+            checked[memo_path] = (source, binding["files"]["memo"])
+            with open(event_path, encoding="utf-8") as handle:
+                events = StandardSplitAdjustment.parse(json.load(handle), d["params"]["bridge"]["solver"]["multiplier"])
+            if (not events or set(events)-set(symbols)
+                    or any(not packet["start"] <= event.effective.isoformat() < tail
+                           or event.effective.isoformat() not in calendar for event in events.values())):
+                raise ValueError("split source is empty, outside the packet, or names another symbol")
+            adjustments = [event.record() for event in events.values()]
         data = {}
         for symbol in symbols:
             fs = [r for r in forecasts if r["symbol"] == symbol]
@@ -845,8 +862,12 @@ class MIOPacketInputs(StudyNode):
         bounded = {"inputs": data, "clocks": {
             "sessions": calendar, "history_start": d["history_start"], "entry_start": packet["start"],
             "entry_end_before": packet["end_before"], "tail_end_before": tail}}
+        if adjustments is not None:
+            bounded["adjustments"] = adjustments
         provenance = {"plan_sha256": plan["sha256"], "inputs_sha256": value_hash(bounded),
                       "source_pins_sha256": value_hash(plan["source_pins"]), "read_bounds": bounds,
                       "counts": {s: {k: len(v) for k, v in rows.items()} for s, rows in data.items()}}
+        if adjustments is not None:
+            provenance["adjustments_sha256"] = value_hash(adjustments)
         registry.bind(plan, permit, "inputs", provenance)
         return {"bounded_inputs": bounded, "provenance": provenance}

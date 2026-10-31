@@ -707,3 +707,46 @@ def test_funded_account_invalid_settlement_and_debit_are_atomic():
         account.advance("2019-01-16", {"a": -60.})
     assert account.advance("2019-01-16", {"a": -50.}) == 10.
     assert account.cash == 60.
+
+def test_standard_split_converts_open_contracts_on_effective_date(ctx):
+    """The split changes held contracts, not the original fill or its fee."""
+    chain = [row("ABC", 0, 610, "call", 10.0, 11.0, 600.0)]
+    chain += [row("ABC", i, 61, "call", bid, bid + 0.2, under)
+              for i, bid, under in [(1, 2.0, 62.0), (2, 3.0, 64.0),
+                                    (3, 5.0, 66.0), (4, 8.9, 70.0)]]
+    event = {"symbol": "ABC", "root_before": "ABC", "root_after": "ABC",
+             "deliverable_shares": 100, "published": "2020-02-28",
+             "effective": day(1).isoformat(), "ratio": 10, "strike_divisor": 10,
+             "multiplier": 100, "basis_before": 0.1, "basis_after": 1.0}
+    out = OptionStructureLedger("ledger", BASE).run(
+        ctx, {"chain": chain, "orders": [order(strikes=(610,), structure="naked_call")],
+              "adjustments": [event]})
+    trade = out["trades"][0]
+    assert trade["strikes"] == [610.0] and trade["contracts"] == 2
+    assert trade["premium_usd"] == 2000.0
+    assert trade["open_fees_usd"] == 1.3
+    assert out["marks"][1]["carried"] is False
+    assert out["marks"][1]["mark_value_usd"] == pytest.approx(-4200.0)
+    assert trade["close_cash_usd"] == pytest.approx(-18000.0)
+    assert trade["pnl_usd"] == pytest.approx(-16001.3)
+
+
+@pytest.mark.parametrize("change", [
+    {"root_after": "ABC1"},
+    {"deliverable_shares": 1000},
+    {"ratio": 1},
+    {"strike_divisor": 5},
+    {"multiplier": 10},
+    {"basis_after": 2.},
+    {"published": "2020-03-02"},
+])
+def test_standard_split_refuses_nonstandard_or_inconsistent_event(change):
+    """Only a same-root standard integer conversion may change held contracts."""
+    from dskit.pipeline.libs.option_ledger import StandardSplitAdjustment
+    event = {"symbol": "ABC", "root_before": "ABC", "root_after": "ABC",
+             "deliverable_shares": 100, "published": "2020-02-28",
+             "effective": "2020-03-01", "ratio": 10, "strike_divisor": 10,
+             "multiplier": 100, "basis_before": 0.1, "basis_after": 1.}
+    event.update(change)
+    with pytest.raises(ValueError, match="unsupported"):
+        StandardSplitAdjustment.parse([event], 100)
