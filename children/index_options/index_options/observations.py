@@ -798,8 +798,10 @@ class MIOPacketInputs(StudyNode):
                     basis_factors[day] = factor
             if ctx is not None and getattr(ctx, "run_dir", None):
                 quote_root = Path(ctx.run_dir) / "artifacts" / "mio-quotes"
-                cache_home = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-                reuse_root = Path(cache_home) / "dskit" / "sqlite-parquet-index"
+                cache_home = os.environ.get("XDG_CACHE_HOME")
+                cache_base = (Path(cache_home) if cache_home and Path(cache_home).is_absolute()
+                              else Path.home() / ".cache")
+                reuse_root = cache_base / "dskit" / "sqlite-parquet-index"
             else:
                 import tempfile
                 quote_root = Path(tempfile.mkdtemp(prefix="mio-quote-index-")) / "artifacts" / "mio-quotes"

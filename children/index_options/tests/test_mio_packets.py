@@ -200,6 +200,28 @@ def test_mio_quote_index_reuses_verified_bytes_across_run_dirs(study, tmp_path, 
     assert Path(first["path"]).stat().st_ino == Path(second["path"]).stat().st_ino
 
 
+def test_mio_quote_intake_runs_when_optional_cache_is_unavailable(study, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", "/proc/dskit-index-cache-unavailable")
+    _, _, permit = _open(study)
+    result = MIOPacketInputs("intake", {"study": study}).run(
+        NodeContext(name="intake", asof="2019-02-09", run_dir=str(tmp_path / "run")),
+        {"permit": permit})
+    descriptor = result["bounded_inputs"]["inputs"]["X"]["chain_index"]["index"]
+    assert Path(descriptor["path"]).is_file()
+
+
+def test_mio_quote_intake_ignores_relative_xdg_cache_home(study, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", "relative-cache")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _, _, permit = _open(study)
+    result = MIOPacketInputs("intake", {"study": study}).run(
+        NodeContext(name="intake", asof="2019-02-09", run_dir=str(tmp_path / "run")),
+        {"permit": permit})
+    descriptor = result["bounded_inputs"]["inputs"]["X"]["chain_index"]["index"]
+    cache = tmp_path / "home" / ".cache" / "dskit" / "sqlite-parquet-index"
+    assert Path(descriptor["path"]).is_file() and len(list(cache.rglob("*.sqlite"))) == 1
+
+
 def test_mio_cache_code_pin_identity_is_checkout_portable(tmp_path):
     portable = []
     for checkout in ("one", "two"):

@@ -272,7 +272,7 @@ class SQLiteParquetIndex:
             raise ValueError("invalid index cache manifest")
         try:
             record = json.loads(path.read_text())
-        except (OSError, ValueError) as exc:
+        except ValueError as exc:
             raise ValueError("invalid index cache manifest") from exc
         if (not isinstance(record, dict) or set(record) != {"input_sha256", "sha256", "metadata"}
                 or record["input_sha256"] != path.stem
@@ -311,8 +311,7 @@ class SQLiteParquetIndex:
 
     @classmethod
     def _link_run(cls, blob, destination, validator=None, cache_kib=None):
-        """Atomically install a cache inode at the run path; report cross-device misses."""
-        import errno
+        """Atomically install a cache inode at the run path; report link misses."""
         import os
         import uuid
 
@@ -320,10 +319,8 @@ class SQLiteParquetIndex:
         try:
             try:
                 os.link(blob, candidate)
-            except OSError as exc:
-                if exc.errno == errno.EXDEV:
-                    return False
-                raise
+            except OSError:
+                return False
             cls._replay_validator(blob, validator, cache_kib)
             os.replace(candidate, destination)
             return True
@@ -362,7 +359,10 @@ class SQLiteParquetIndex:
     @classmethod
     def _reuse_hit(cls, root, key, destination, expected, validator, cache_kib):
         """Verify an input-key hit and install it, or request a source rebuild."""
-        record = cls._read_manifest(cls._cache_manifest(root, key))
+        try:
+            record = cls._read_manifest(cls._cache_manifest(root, key))
+        except OSError:
+            return None
         if record is None:
             return None
         metadata = record["metadata"]
@@ -371,9 +371,12 @@ class SQLiteParquetIndex:
                 or type(metadata["rows"]) is not int or metadata["rows"] < 0):
             raise ValueError("index cache metadata mismatch")
         blob = cls._cache_blob(root, record["sha256"])
-        if not blob.exists():
+        try:
+            if not blob.exists():
+                return None
+            cls._verify_cache_blob(blob, record["sha256"], metadata, key)
+        except OSError:
             return None
-        cls._verify_cache_blob(blob, record["sha256"], metadata, key)
         if not cls._link_run(blob, destination, validator, cache_kib):
             return None
         return {**metadata, "path": str(destination), "sha256": record["sha256"]}
@@ -483,7 +486,8 @@ class SQLiteParquetIndex:
         skips the Parquet scan; callers must verify source bytes before and
         after a hit. A keyed miss rehashes the source after scanning, before
         publishing the index. Concurrent replacement and restoration during
-        a scan is outside this check.
+        a scan is outside this check. Cache I/O failures keep a verified
+        run-local index; corrupt cache content still refuses.
         """
         import datetime
         import json
@@ -598,7 +602,11 @@ class SQLiteParquetIndex:
             descriptor = {**metadata, "path": str(destination),
                           "sha256": path_hash(str(temp), evict=True)}
             temp.chmod(0o444)
-            cls._publish_cache(root, key, temp, descriptor)
+            try:
+                cls._publish_cache(root, key, temp, descriptor)
+            except OSError:
+                # Reuse is optional; the verified local index can still finish.
+                pass
             os.replace(temp, destination)
             return descriptor
         except BaseException:
