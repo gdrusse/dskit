@@ -908,6 +908,45 @@ def test_sqlite_index_cache_refuses_corruption_before_publishing_run_path(tmp_pa
         index.close()
 
 
+def test_sqlite_index_refuses_source_drift_before_cache_publication(tmp_path, monkeypatch):
+    source = tmp_path / "quotes.parquet"
+    def write_price(price):
+        pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],
+                                 "expiration": ["2019-02-01"], "price": [price]}), source)
+    write_price(1.0)
+    identity = {"verified_source_sha256": path_hash(str(source)), "filter": "all"}
+    cache = tmp_path / "cache"
+    destination = tmp_path / "occupied.sqlite"
+    destination.write_bytes(b"prior run-local output")
+    kwargs = {"unique_by": ("symbol", "date", "expiration"),
+              "partition_by": ("date", "expiration"), "reuse_root": cache,
+              "reuse_identity": identity}
+    columns = ["symbol", "date", "expiration", "price"]
+    bounds = {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}}
+    original_batches = pack.DateBoundedParquet.batches
+    drifted = []
+    def drift_at_scan_end(self, *args, **kwargs):
+        yield from original_batches(self, *args, **kwargs)
+        if not drifted:
+            write_price(2.0)
+            drifted.append(True)
+    monkeypatch.setattr(pack.DateBoundedParquet, "batches", drift_at_scan_end)
+    with pytest.raises(ValueError, match="source digest drift"):
+        pack.SQLiteParquetIndex.build(str(source), str(destination), columns, bounds, **kwargs)
+    assert destination.read_bytes() == b"prior run-local output"
+    assert not Path(str(destination) + ".building").exists()
+    assert not list(cache.rglob("*.sqlite")) and not list(cache.rglob("*.json"))
+    write_price(1.0)
+    clean = pack.SQLiteParquetIndex.build(str(source), str(tmp_path / "clean.sqlite"),
+        columns, bounds, **kwargs)
+    index = pack.SQLiteParquetIndex(clean)
+    try:
+        assert index.get({"symbol": "X", "date": "2019-01-02",
+                          "expiration": "2019-02-01"})["price"] == 1.0
+    finally:
+        index.close()
+
+
 def test_sqlite_index_cross_device_hit_builds_locally(tmp_path, monkeypatch):
     source = tmp_path / "quotes.parquet"
     pq.write_table(pa.table({"symbol": ["X"], "date": ["2019-01-02"],

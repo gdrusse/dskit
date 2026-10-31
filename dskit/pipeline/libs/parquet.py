@@ -480,7 +480,10 @@ class SQLiteParquetIndex:
         Notes
         -----
         Numeric ``float_keys`` match Python tuple-key equality. A cache hit
-        skips the Parquet scan; callers must verify the source bytes first.
+        skips the Parquet scan; callers must verify source bytes before and
+        after a hit. A keyed miss rehashes the source after scanning, before
+        publishing the index. Concurrent replacement and restoration during
+        a scan is outside this check.
         """
         import datetime
         import json
@@ -507,6 +510,7 @@ class SQLiteParquetIndex:
         destination = Path(index_path)
         root = None
         key = None
+        verified_source_sha = None
         expected = {"version": 1, "columns": list(columns), "unique_by": list(unique_by),
                     "partition_by": list(partition_by), "float_keys": list(float_keys),
                     "batch_size": int(batch_size), "cache_kib": int(cache_kib)}
@@ -517,6 +521,7 @@ class SQLiteParquetIndex:
             if reuse_identity is not None:
                 key = cls._reuse_key(reuse_identity, columns, bounds, unique_by,
                                      partition_by, float_keys, batch_size, cache_kib)
+                verified_source_sha = reuse_identity["verified_source_sha256"]
         destination.parent.mkdir(parents=True, exist_ok=True)
         temp = destination.with_name(destination.name + ".building")
         for candidate in (temp, Path(str(temp)+"-journal"), Path(str(temp)+"-wal"), Path(str(temp)+"-shm")):
@@ -588,6 +593,8 @@ class SQLiteParquetIndex:
             os.replace(temp, destination)
             return {**metadata, "path": str(destination), "sha256": path_hash(str(destination))}
         try:
+            if key is not None and path_hash(str(source_path), evict=True) != verified_source_sha:
+                raise ValueError("source digest drift before index cache publication")
             descriptor = {**metadata, "path": str(destination),
                           "sha256": path_hash(str(temp), evict=True)}
             temp.chmod(0o444)
