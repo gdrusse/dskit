@@ -1,38 +1,33 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-10-30 by GPT-6 Astra. Q1 top-three amended replay and standardized reports complete and delivered.
+Updated: 2026-10-31 by GPT-6 Astra. ADR-0285 quote-index storage repair reviewed and ready to land.
 
 ## Now
 
-- User-selected broad212 top three by 2019 net profit: w1_003_shock10_lp, nominal_lp, w1_003_lp. New separate 2021-01-04..2021-03-31 accounts, 61 sessions/13 decisions each.
-- Frozen selected_mlp64_s29 base fit/early-stop labels settle by end-2019; causal M53 forecasts verified. No 2020 fit labels, HPO, provider pull, new stress or protected 2024+ data.
-- First Q1 MIO receipt failed all three after four weeks on GME projection QUADPACK roundoff at tolerance1e-8. Published failure remains immutable and exposed. Owner approved narrow tolerance1e-6 amended replay with no ADR; all11,196-group read-only sweep passed below payoff gate. Reviewed runtime candidate c0e5bc6d; two independent C0/M0/m0/n0 lenses and26 focused tests.
-- Amended replay receipt ce39e206... is complete=true, three completed methods and exact recorded replay. Independent cash, holdings, reserve, funding, settlement, fee and P&L checks cover each account day. Net marked P&L after fees: -$107.50, -$3,827.85, -$207.55 in requested order.
-- Existing comparison and protocol review disposed the new claim once. Shared exposure registry revision70 inactive; new claim reviewed_closed; failed prior claim retry_superseded_exposed. Never repeat disposition.
-- Report-only JSON report-top3-2021q1-amended-replay.json completed all31 nodes. All21 totals checks and 3x61 daybooks pass; three HTML/Markdown/CSV reports and four exact saved-field exports mirrored at docs/reports/mio-standard-2021q1-top3-20261030/ (40 indexed files). Source result and receipt SHA ce39e206....
-- Two fresh report lenses: correctness C0/M0/m0/n0, integration C0/M0/m0/n1 (duplicate stress caveat deferred). Config SHA51f62c10, mirror index SHAa21adf37. Detailed retained reviews in /home/russell/data/index_options/mio-2021q1-top3-20261029/reviews.
-- Durable state: /home/russell/data/index_options/mio-2021q1-top3-20261029/state.json. Original 2019 MIO, stress and report/skill outputs remain complete and unchanged.
+- Disk cause: 2,066 repeated `artifacts/mio-quotes/*.sqlite` paths occupied about 46.4 logical GiB. A verified one-time hardlink pass recovered about 34 GiB inside WSL without removing completed evidence. The writer is fixed to reuse a verified index before another large build.
+- Reviewed code candidate `49946bcbbb130a639268144d24dc76a31a0c9299` from base `802cf5ba`: optional XDG/home SQLite cache, full verified source/predicate/validator/code/dependency identity, portable code pins, embedded input key, post-scan source hash, validator replay, atomic hardlink reuse, cache I/O fallback and page-cache eviction. Run-local paths and SHA checks stay intact.
+- Final independent correctness and integration lenses: C0/M0/m0/n0 each. Focused checks: 124 core/onboarding, 69 MIO, 4 docs tests; Ruff and `git diff --check` passed. No real market or protected-data execution.
+- Windows C: had about 7 GiB free at this handoff. WSL has 224 GiB free internally; `ext4.vhdx` remains 869,610,291,200 bytes. `fstrim` did not return blocks to Windows.
+- Q1 top-three amended replay remains complete and reviewed: 61 sessions and 13 decisions per account, three standardized reports and exact CSV mirror. Original failed receipt and final receipt `ce39e206...` remain immutable; Q1 stress was not run. Registry revision 70 is inactive; never repeat disposition.
 
 ## Next
 
-- Use the distinct report mirror to inspect the three marked results and daily books. Q1 stress was not run.
-- Owner interpretation of the completed Q1 evidence; no further market run is implied.
+- Reclaim Windows space with an offline VHDX compact after recorders and WSL can stop, using elevated Windows maintenance. Verify C: free space afterward. The current execution policy blocked a DiskPart probe; WSL sparse conversion also refused with a corruption warning, so do not force it.
+- New MIO runs can fast-hit the cache; the first new input still needs full temporary build space. No market run is implied by this storage work.
 
 ## Blocked / owner decisions
 
-- No unresolved in-scope Critical/Major review finding.
-- Reporter event charts value open books at cost; saved marked curve/profit are authoritative. Daily refused-order selected-contract count may be reduced at fill stage; exact selected_quantity and filled_quantity are in orders-and-fills.csv.
-- Integration review Nit: Q1 stress caveat repeats in summaries; editorial, no financial effect. Browser pixel layout was not checked; HTML structure, anchors, Markdown and CSVs were inspected.
+- Physical C: recovery remains pending offline compact. Unique cache blobs persist after the last run is removed and may need later offline retention cleanup.
+- Cooperative local/WORM snapshot trust boundary: coordinated hostile same-user rewriting of both a blob and its manifest, or source replacement and restoration during one scan, is outside the check.
 
 ## Read first
 
-- memos/2026-10-30-mio-2021q1-top3.md - source, failure/amendment, run, report and review evidence.
-- reports/mio-standard-2021q1-top3-20261030/README.md - GitHub report navigation and saved-field exports.
-- ../configs/mio-2021q1-top3-20261029/request-contract.json - bounded owner request.
-- ../../../docs/skills/mio-report.md - canonical run/report procedure.
+- ../../../docs/architecture/decision-log.md — ADR-0285 and review ledger.
+- memos/2026-10-30-mio-2021q1-top3.md — existing Q1 run and report evidence.
+- reports/mio-standard-2021q1-top3-20261030/README.md — report and CSV mirror.
+- ../../../docs/skills/wrap.md — integration and handoff procedure.
 
 ## Do not
 
-- Rerun completed Q1 or 2019 fits, M53, MIO or stress; repeat registry publication/disposition; mutate original failure or source evidence.
-- Change Path A0003/A0008, TDD, viewer, other sessions' worktrees/branches or Claude.
-- Present generic comparison 'development' as the actual permit. It is amended_replay; Q1 execution stress is unrun.
+- Rerun completed Q1 or 2019 fits, M53, MIO or stress; repeat registry publication/disposition; mutate source evidence or original failure.
+- Change Path A0003/A0008, market protocol, TDD, other sessions' worktrees/branches or force WSL sparse conversion.
