@@ -1,6 +1,6 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-10-31 by GPT-6 Astra. ADR-0285 quote-index storage repair reviewed and ready to land.
+Updated: 2026-10-31 by GPT-6 Astra. ADR-0285 quote-index storage repair reviewed and integrated on main.
 
 ## Now
 
