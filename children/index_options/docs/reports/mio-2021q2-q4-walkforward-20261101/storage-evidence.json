@@ -1,0 +1,28 @@
+{
+  "latest": {
+    "at": "2026-11-01T09:45:03.962030+00:00",
+    "windows_free_gib": 18.625,
+    "wsl_free_gib": 190.5,
+    "vhdx_logical_gib": 811.88671875,
+    "actions": [
+      "lossless compression of Codex session files and installed binaries",
+      "lossless compression of installed VS Code extensions",
+      "lossless compression of Windows pmquant archives/environment, GitHub Desktop, Python, PycharmProjects"
+    ],
+    "evidence": [
+      "verification/storage-pressure-20261101T0938.json",
+      "verification/storage-pressure-20261101T0941.json"
+    ],
+    "note": "Observed net free-space change exceeds the savings reported by these compression actions; do not attribute the entire increase to this task. VHDX logical length remained 811.88671875 GiB. All actions preserved file contents and stopped no services."
+  },
+  "source_evidence": [
+    {
+      "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/storage-pressure-20261101T0938.json",
+      "sha256": "01329c24204aaecdfc1e0911b981c8355d45ca6031e234471f71ba735fa93196"
+    },
+    {
+      "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/storage-pressure-20261101T0941.json",
+      "sha256": "31cff9a80a4a2e3868076327073689b5eaf678c67b868080e46a2c508b8d51d2"
+    }
+  ]
+}

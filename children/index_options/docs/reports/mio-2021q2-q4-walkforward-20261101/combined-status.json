@@ -1,0 +1,13 @@
+{
+  "updated_at": "2026-11-01T09:47:18.769054+00:00",
+  "completed_quarters": [
+    2
+  ],
+  "verified_method_reports": 3,
+  "required_method_reports": 9,
+  "complete": false,
+  "classification": "retrospective development",
+  "comparison_sha256": "142d2d32e7489bb07de8e6089db3737dd235e2676afcfe96635d2390fb207db8",
+  "learning_sha256": "03f375f805c0f8eb2f434a6f2ff3f056fcaaa37238d2902ea61a0c91455179ee",
+  "report_index_sha256": "5a47bda3f8c448fadb4bb6957e7971037dc519fefc0c39d7b93163be031a8b8f"
+}
