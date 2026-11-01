@@ -1,6 +1,6 @@
 {
   "name": "mio-2021q4-tail-v2-walkforward-frozen-m53-development",
-  "notes": "Corrected retrospective Q4 replay. Restore observed AVAV/CMCSA/HAL settlement inputs via existing converter and reader; use consistent full-interval CMCSA normalization. Original raw price units and nonprice fields preserved; 210 source files identical to first correction. No model, method, economic, code or universe changes. Original failed run and first correction remain retained. See q4-tail-v2-correction.json.",
+  "notes": "Corrected retrospective Q4 replay. Restore observed AVAV/CMCSA/HAL settlement inputs via existing converter and reader; use consistent full-interval CMCSA normalization. Original raw price units and nonprice fields preserved; 210 source files identical to first correction. No model, method, economic, code or universe changes. Original failed run and first correction remain retained. See q4-tail-v2-correction.json. Final source was independently regenerated using physically bounded two-name chain files with the existing sealed_from guard; all values matched. Earlier stronger Arrow row-group exclusion assertion was false and is corrected in q4-bounded-regeneration.json.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2"
   },

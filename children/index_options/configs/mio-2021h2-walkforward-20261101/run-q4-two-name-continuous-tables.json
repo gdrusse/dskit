@@ -1,6 +1,6 @@
 {
   "name": "mio-q4-two-name-continuous-settlement-inputs",
-  "notes": "Restore omitted CMCSA/HAL January-March 2022 observations with the existing bounded reader and continuous-basis converter. Same canonical interval and quality rules; this preparation fits no predictive model and runs no MIO method.",
+  "notes": "SUPERSEDED preparation retained for history. The completed run returned only dates before 2022-03-10, but its claim of protected row-group exclusion was false. Use run-q4-two-name-bounded-tables.json for a physically bounded regeneration. Original executed config is retained in run artifacts and git candidate 2bd81e2c.",
   "outputs": {
     "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/q4-two-name-tables"
   },
@@ -46,7 +46,7 @@
           "20261017T031113Z-backfill-e926b2ea.parquet"
         ]
       },
-      "notes": "Frozen six-member list; existing Arrow date predicate returns only 2016-01-04 <= date < 2022-03-10. Footer inspection proves surviving row groups in the two additional members end no later than 2023-05-25; 2024+ row groups are excluded. Metadata is not market-row exposure."
+      "notes": "Historical mixed-horizon reader. Arrow date predicate bounds returned records before 2022-03-10; it does not exclude all protected-date groups from date/symbol-only scans. No protected price/outcome rows entered the converter. Superseded by four-member physically bounded config with sealed_from guard."
     },
     "tables": {
       "uses": "index_options.theta_exact_expiry:ThetaExactExpiryTables",

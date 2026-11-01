@@ -28,7 +28,7 @@ Quarter-end values mark open books on the final session of the named quarter. Se
 
 ## Training and early stopping
 
-The accepted selected65 MLP64 seed29 recipe uses patience 50 and maximum 150. The earlier screening recipe with patience 10 was a different experiment. M53 had no separate formal HPO; it was chosen among 67 saved methods using pooled 2020–2023 scores. These are retrospective development results. No 2024+ data were read for this study.
+The accepted selected65 MLP64 seed29 recipe uses patience 50 and maximum 150. The earlier screening recipe with patience 10 was a different experiment. M53 had no separate formal HPO; it was chosen among 67 saved methods using pooled 2020–2023 scores. These are retrospective development results. No 2024+ price or outcome records entered model fitting or evaluation.
 
 Epochs were selected on chronological pre-quarter monitoring data. The outer diagnostic validation bands below did not select epochs. Q3 and Q4 were never epoch-selection validation bands. After selection, the model was freshly fitted on all mature pre-quarter training rows for the selected number of epochs. The final refit transfers epochs, not the number of optimizer updates; the larger training set yields more updates.
 
@@ -57,3 +57,5 @@ Q4 includes mature Q3 outcomes in training and retains the pre-Q3 choice of 36 e
 ## Q4 settlement input correction
 
 The first Q4 attempt failed at AVAV expiry on 2022-02-18. Its closing price existed, but compact chain inputs omitted later-expiry observations used to establish the settlement-day adjustment basis. The failed run remains exposed and retained. The first correction restored retained post-quarter rows outside forecast expiries. A subsequent coverage check found omitted CMCSA/HAL source members. The final source adds their observed settlement-tail quotes and uses one consistent CMCSA adjustment factor; its raw price units and nonprice fields are preserved. CMCSA adjusted prices change by about 0.000005% because the full-interval measured factor changed. Models, 212 names, three methods and trading settings are unchanged. [Initial correction](q4-tail-input-correction.json) and [final correction](q4-tail-v2-correction.json) preserve the original failure, source revisions and exposure linkage.
+
+The supplemental source review found that an earlier claim of protected row-group exclusion was false: Arrow could scan protected-date date/symbol columns before filtering. No protected price/outcome records entered conversion. An independent regeneration using physically pre-2024 chain files and the existing sealed_from guard reproduced every market value exactly. [Boundary correction and regeneration evidence](q4-bounded-regeneration.json) retains this distinction and the original failed review.

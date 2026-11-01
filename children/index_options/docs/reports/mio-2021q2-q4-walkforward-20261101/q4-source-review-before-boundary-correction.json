@@ -1,0 +1,2579 @@
+{
+  "status": "complete_with_blocking_finding",
+  "reviewer": "/root/q4_final_source_correctness",
+  "lens": "correctness/authority",
+  "model": "GPT-6 Astra",
+  "checks": {
+    "candidate": "2bd81e2c61fe44900e7140067dc5b781e27b9353",
+    "base": "cbd429d974eb04ed74472f54f6ed5dfd1ca86421",
+    "changed_files": [
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/abandon-q4-settlement-input.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/initialize-q4-tail-complete-development.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-tail-complete.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-tail-v2.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-two-name-continuous-tables.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-tail-complete.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-tail-v2.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-two-name-continuous.json",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/README.md",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/combined-status.json",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/protocol-evidence.json",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-first-correctness.json",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-input-correction.json",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-input-verification.json",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-v2-correction.json",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-v2-input-verification.json"
+    ],
+    "runtime_or_tests_changed": false,
+    "all_six_study_copies_equal": true,
+    "code_pins_verified": 270,
+    "methods": [
+      "w1_003_shock10_lp",
+      "nominal_lp",
+      "w1_003_lp"
+    ],
+    "symbol_count": 212,
+    "all_economic_predictive_and_nonchain_inputs_equal": true,
+    "source_pins": [
+      {
+        "source": "mio-q4-tail-v2-20261101",
+        "snapshot": "20261101T111540Z-backfill-09d71fc2",
+        "manifest_sha256": "09d71fc276b6123c9012b9d8a5a4311493689e7b9207038e4ecb5e317b65e123",
+        "files": 213,
+        "payload_hashes_verified": true
+      },
+      {
+        "source": "mio-q4-tail-complete-20261101",
+        "snapshot": "20261101T105742Z-backfill-9a52d605",
+        "manifest_sha256": "9a52d6051bf1a89666118733f296f22107bd680078bc6b35190a412d13fd6bd1",
+        "files": 213,
+        "payload_hashes_verified": true
+      },
+      {
+        "source": "mio-q4-two-name-continuous-20261101",
+        "snapshot": "20261101T111519Z-backfill-052aa34a",
+        "manifest_sha256": "052aa34ab0c17bbeabe732bf64b352583415235f80eda822a394ae4cff12905a",
+        "files": 14,
+        "payload_hashes_verified": true
+      },
+      {
+        "source": "mio-market-complete-20261101",
+        "snapshot": "20261101T075314Z-backfill-80cf3c49",
+        "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+        "files": 426,
+        "payload_hashes_verified": true
+      },
+      {
+        "source": "mio-2021q4-complete-inputs",
+        "snapshot": "20261101T083207Z-backfill-a67e9c4a",
+        "manifest_sha256": "a67e9c4aa5a8e4812d13c5c53779891f9375bfe0021e256391f5a5f57f81362d",
+        "files": 14,
+        "payload_hashes_verified": true
+      }
+    ],
+    "210_chain_files_byte_identical_to_reviewed_first_source": true,
+    "coverage": {
+      "forecast_rows": 81943,
+      "symbol_expiry_pairs": 3587,
+      "symbols": [
+        {
+          "symbol": "AAPL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ABBV",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ABT",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ABUS",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ACN",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ADBE",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ADI",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AEO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AGNC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AKAM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ALB",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ALLY",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AMAT",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AMC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AMD",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AMGN",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AMKR",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AMZN",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ANET",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "APA",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "APH",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "APO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AVAV",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AVGO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "AXP",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BA",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BAC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BB",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BBY",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BIDU",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BLK",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BMY",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BP",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BSX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BTG",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "BX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "C",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CAG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CAT",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CCJ",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CCL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CDE",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CHTR",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CIEN",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CLF",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CLS",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CMCSA",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CME",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CMG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CNC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "COF",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "COP",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "COST",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CPB",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CRM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CSCO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CVE",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CVNA",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CVS",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "CVX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "DAL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "DE",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "DHR",
+          "forecast_rows": 408,
+          "expiries": 19,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "DHT",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "DIS",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "DKS",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "DUK",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "DVN",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "EIX",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ENPH",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "EOG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "EPD",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "EQT",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "EXPE",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "F",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "FCEL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "FCX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "FDX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "FISV",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "FRO",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "FSLR",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "FTNT",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GE",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GEO",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GILD",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GIS",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GLW",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GME",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GOOG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GOOGL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GPRO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "GS",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "HAL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "HD",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "HL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "HON",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "HPE",
+          "forecast_rows": 383,
+          "expiries": 15,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "HPQ",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "HUM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "IBM",
+          "forecast_rows": 446,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "INTC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "INTU",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "IOVA",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ISRG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "JBLU",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "JNJ",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "JPM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KGC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KHC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KKR",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KLAC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KMI",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KR",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KSS",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "KTOS",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "LLY",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "MDT",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "MGM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "MO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "MOS",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "MPC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "MRK",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "NAT",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "NEE",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "NEM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "NLY",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "NOK",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "NOW",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "NRG",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "NVO",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "O",
+          "forecast_rows": 123,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "OKTA",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ON",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "ORCL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "OXY",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PAAS",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PACB",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PANW",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PBF",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PBR",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PCG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PEP",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PFE",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PLAY",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PLUG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PNC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PSX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "PYPL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "QCOM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "RARE",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "RCL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "REGN",
+          "forecast_rows": 383,
+          "expiries": 15,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "RIG",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "RIOT",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "RUN",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SBUX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SCHW",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SEDG",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SHOP",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SIRI",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SLB",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SMCI",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SNAP",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SNPS",
+          "forecast_rows": 165,
+          "expiries": 8,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "SO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "STM",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "T",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TEAM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TER",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TEVA",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TGT",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TJX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TMO",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TMUS",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TRIP",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TSLA",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TSM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TTD",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TTWO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TWLO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "TXN",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "UAA",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "UAL",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "UAMY",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "UEC",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "UMC",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "UNH",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "UPS",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "USB",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "UUUU",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "V",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "VALE",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "VFC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "VLO",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "VRTX",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "VST",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "VZ",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "W",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "WDC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "WEN",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "WFC",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "WHR",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "WMB",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "WMT",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "WU",
+          "forecast_rows": 125,
+          "expiries": 5,
+          "earliest_expiry": "2021-10-15",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "WYNN",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        },
+        {
+          "symbol": "XOM",
+          "forecast_rows": 454,
+          "expiries": 20,
+          "earliest_expiry": "2021-10-08",
+          "last_expiry": "2022-02-18",
+          "missing_basis": [],
+          "missing_bars": [],
+          "inconsistent_basis": []
+        }
+      ],
+      "gaps": [],
+      "factor_changes_between_origin_and_expiry": {
+        "ANET": {
+          "pairs": 137,
+          "examples": [
+            [
+              "2021-10-01",
+              "2021-11-19"
+            ],
+            [
+              "2021-10-04",
+              "2021-11-19"
+            ],
+            [
+              "2021-10-05",
+              "2021-11-19"
+            ]
+          ]
+        },
+        "IBM": {
+          "pairs": 120,
+          "examples": [
+            [
+              "2021-10-01",
+              "2021-11-05"
+            ],
+            [
+              "2021-10-01",
+              "2021-11-12"
+            ],
+            [
+              "2021-10-01",
+              "2021-11-19"
+            ]
+          ]
+        },
+        "ISRG": {
+          "pairs": 14,
+          "examples": [
+            [
+              "2021-10-01",
+              "2021-10-08"
+            ],
+            [
+              "2021-10-01",
+              "2021-10-15"
+            ],
+            [
+              "2021-10-01",
+              "2021-10-22"
+            ]
+          ]
+        },
+        "O": {
+          "pairs": 51,
+          "examples": [
+            [
+              "2021-10-01",
+              "2021-11-19"
+            ],
+            [
+              "2021-10-04",
+              "2021-11-19"
+            ],
+            [
+              "2021-10-05",
+              "2021-11-19"
+            ]
+          ]
+        }
+      }
+    },
+    "two_name_values": [
+      {
+        "symbol": "CMCSA",
+        "old_rows_preserved": 104330,
+        "new_rows": 119708,
+        "new_postquarter_rows": 15378,
+        "raw_price_max_abs_differences": {
+          "strike": 1.4210854715202004e-14,
+          "bid": 7.105427357601002e-15,
+          "ask": 7.105427357601002e-15,
+          "underlying_price": 7.105427357601002e-15
+        },
+        "nonprice_values_exact": true,
+        "all_final_rows_equal_onboarded_converter_output": true,
+        "old_basis": [
+          0.9372070256901717
+        ],
+        "new_basis": [
+          0.937207072858969
+        ]
+      },
+      {
+        "symbol": "HAL",
+        "old_rows_preserved": 109634,
+        "new_rows": 131214,
+        "new_postquarter_rows": 21580,
+        "raw_price_max_abs_differences": {
+          "strike": 0.0,
+          "bid": 0.0,
+          "ask": 0.0,
+          "underlying_price": 0.0
+        },
+        "nonprice_values_exact": true,
+        "all_final_rows_equal_onboarded_converter_output": true,
+        "old_basis": [
+          1.0
+        ],
+        "new_basis": [
+          1.0
+        ]
+      }
+    ],
+    "date_boundary": {
+      "original_reader_and_converter_parameters_preserved": true,
+      "explicit_guard_removed": false,
+      "additional_members": [
+        {
+          "file": "20261016T015950Z-backfill-9b76f1e2.parquet",
+          "date_type": "date32[day]",
+          "actual_predicate": "((cast(date, {to_type=date32[day], allow_int_overflow=false, allow_time_truncate=false, allow_time_overflow=false, allow_decimal_truncate=false, allow_float_truncate=false, allow_invalid_utf8=false}) >= 2016-01-04) and (cast(date, {to_type=date32[day], allow_int_overflow=false, allow_time_truncate=false, allow_time_overflow=false, allow_decimal_truncate=false, allow_float_truncate=false, allow_invalid_utf8=false}) < 2022-03-10))",
+          "selected_row_groups": [
+            {
+              "group": 0,
+              "min": "2024-07-29",
+              "max": "2025-12-31",
+              "rows": 262144
+            },
+            {
+              "group": 1,
+              "min": "2023-01-17",
+              "max": "2024-07-29",
+              "rows": 262144
+            },
+            {
+              "group": 2,
+              "min": "2022-01-12",
+              "max": "2023-01-17",
+              "rows": 175424
+            }
+          ],
+          "no_2024_plus_row_groups_eligible": false,
+          "reviewer_payload_read": false
+        },
+        {
+          "file": "20261017T031113Z-backfill-e926b2ea.parquet",
+          "date_type": "date32[day]",
+          "actual_predicate": "((cast(date, {to_type=date32[day], allow_int_overflow=false, allow_time_truncate=false, allow_time_overflow=false, allow_decimal_truncate=false, allow_float_truncate=false, allow_invalid_utf8=false}) >= 2016-01-04) and (cast(date, {to_type=date32[day], allow_int_overflow=false, allow_time_truncate=false, allow_time_overflow=false, allow_decimal_truncate=false, allow_float_truncate=false, allow_invalid_utf8=false}) < 2022-03-10))",
+          "selected_row_groups": [
+            {
+              "group": 0,
+              "min": "2024-09-25",
+              "max": "2025-12-31",
+              "rows": 262144
+            },
+            {
+              "group": 1,
+              "min": "2023-05-25",
+              "max": "2024-09-25",
+              "rows": 262144
+            },
+            {
+              "group": 2,
+              "min": "2022-02-11",
+              "max": "2023-05-25",
+              "rows": 262144
+            },
+            {
+              "group": 3,
+              "min": "2022-01-10",
+              "max": "2022-02-11",
+              "rows": 19217
+            }
+          ],
+          "no_2024_plus_row_groups_eligible": false,
+          "reviewer_payload_read": false
+        }
+      ],
+      "scope": "Reviewer inspected metadata only after actual predicate left protected row groups eligible. Existing ChainRowSource order_by path scans date and symbol to rank groups; filtered empty groups do not reach conversion. The completed converter has no I/O trace establishing protected row-group exclusion. Returned rows are bounded by Arrow, but the stronger no-protected-row-group-access acceptance claim is unsupported and actual enumeration contradicts it."
+    },
+    "registry": {
+      "current": {
+        "active": null,
+        "claims": {},
+        "development_import_reasons": {},
+        "development_imports": [],
+        "dispositions": {},
+        "end_before": "2024-01-01",
+        "event": "d22d280ab2ae7df3f292fd0c2fd5d2c3c144fc125c26a2cbc5c6f8cafe30d4bf",
+        "freezes": {},
+        "frontier": 0,
+        "identity": {
+          "domain": "index_options_MIO_q4_settlement_20261101",
+          "id": "5b6924e9-2cf7-486f-90f5-62db8fb60b38",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-exposure-registry.sqlite"
+        },
+        "packets": [
+          {
+            "end_before": "2022-01-01",
+            "id": "dev_2021q4_tail_complete_20261101",
+            "predecessor": null,
+            "purpose": "development",
+            "start": "2021-10-01"
+          }
+        ],
+        "prior": [
+          {
+            "end_before": "2024-01-01",
+            "evidence": "All model-selection and evaluation exposure retained, including Q2/Q3 reviewed and Q4 failed/abandoned in registry df32f3df-3963-4de0-b1d8-04016c246fb4 revision 16 sha256 bd584e8b1078bf65b0fd59bc40ed0dad74ad1fa092aaca894746becd826d4f50. See /home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-prior-exposure.json. No fresh holdout classification.",
+            "start": "2017-01-03"
+          }
+        ],
+        "revision": 0
+      },
+      "old_revision": 16,
+      "old_dispositions": {
+        "dev_2021q2_complete_20261101": {
+          "action": "review",
+          "claim": "91f7e0b5-eba8-4ae8-89b9-68b33c048b25",
+          "packet_id": "dev_2021q2_complete_20261101",
+          "reason": "Attested complete Q2 development result, all three methods, replay parity, exact quarter calendar and verified accounting/report gates.",
+          "revision": 5,
+          "sha256": "010b5c17c523e6bcc418e4a96e14cdb4d58725894b7d99340484973a786bc924"
+        },
+        "dev_2021q3_complete_20261101": {
+          "action": "review",
+          "claim": "2fd8f63a-2629-411a-933d-a7041493b07e",
+          "packet_id": "dev_2021q3_complete_20261101",
+          "reason": "Attested complete Q3 development result, all three methods, replay parity, exact quarter calendar and verified accounting/report gates.",
+          "revision": 11,
+          "sha256": "173b0849f93d7cf010d84cf40f180581fb5ecee7a05f28fadc9d491e38f82037"
+        },
+        "dev_2021q4_complete_20261101": {
+          "action": "abandon",
+          "claim": "b0f5314f-bf4d-437e-a592-dd3dee402a03",
+          "packet_id": "dev_2021q4_complete_20261101",
+          "reason": "Stopped after Q4 shock method failed at AVAV 2022-02-18: underlying close exists but compact source omitted later-expiry observations needed for settlement-day basis. Preserve this exposed partial run; correct only retained post-quarter input rows in a distinct retrospective Q4 study, with all methods and models unchanged.",
+          "revision": 15,
+          "sha256": "4819de737d899f22f243fd061e3c14474c29b1e57b53a14abce1c31ff3bb0242"
+        }
+      },
+      "prior_link_sha256": "830f1df00fcf87df88660f4cebae2820737402b68c91a7ad124c164ed0eef180",
+      "failed_log_preserved": true,
+      "unlaunched_first_version_retained": true,
+      "first_version_run_directory_absent": true
+    },
+    "checked_at": "2026-11-01T11:24:54.284762+00:00"
+  },
+  "candidate": "2bd81e2c61fe44900e7140067dc5b781e27b9353",
+  "base": "cbd429d974eb04ed74472f54f6ed5dfd1ca86421",
+  "scope": "Final Q4 source/config input readiness, including two-name correction and overall forecast-expiry coverage; this is not approval of completed simulations or reports.",
+  "authority": {
+    "user": "Authorized config/data correction and Q2-Q4 runs; no new runtime code, ADR, protected 2024+ data, or replacement of failed evidence.",
+    "path_rows": [
+      "A0002",
+      "A0003",
+      "A0008"
+    ],
+    "workflow": "Two fresh sequential independent lenses; a boundary-invalidating finding stops this candidate."
+  },
+  "verdict": "C0/M1/Minor0/Nit0. Do not launch this candidate under its asserted no-protected-row-group-access contract. Source values and settlement coverage checks pass; correct the false stronger access claim and establish the intended boundary before a new reviewed candidate.",
+  "counts": {
+    "Critical": 0,
+    "Major": 1,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "unresolved_counts": {
+    "Critical": 0,
+    "Major": 1,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "findings": [
+    {
+      "id": "Q4FINAL-COR-MAJ-001",
+      "severity": "Major",
+      "invariant": "The candidate explicitly promises no 2024+ row groups or records read, using preserved temporal isolation; approval must bind the actual reader predicate and access path.",
+      "locations": [
+        "children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-two-name-continuous-tables.json pipeline.chain.notes",
+        "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-v2-correction.json footer_date_isolation and acceptance[1]",
+        "dskit/pipeline/libs/parquet.py:122 and 186-192",
+        "dskit/pipeline/libs/chain_parquet.py:309-310"
+      ],
+      "evidence": "With pyarrow 25.0.1, DateBoundedParquet._predicate casts an already date32 field to date32. Arrow split_by_row_group with that exact predicate retains every group in both added files, including CMCSA groups 0/1 and HAL groups 0/1 with 2024-2025 dates. Full eligible group metadata is retained in checks.date_boundary. The author evidence instead selected by manually comparing footer minima and does not represent the actual reader.",
+      "reproducer": "Construct DateBoundedParquet(file,[date],{date:{start:2016-01-04,end_before:2022-03-10}}), call _predicate(), then ds.dataset(file,format=parquet).get_fragments(filter=predicate), followed by piece.split_by_row_group(filter=predicate,schema=dataset.schema). Inspect each fragment.row_groups date statistics. This is metadata-only and does not read protected payload.",
+      "worked_consequence": "The existing chronological reader asks each retained fragment for its date column and the symbol predicate during _ranked_groups. Thus the stronger proof that protected row groups were excluded before access is false; the already completed preparation has no I/O trace proving otherwise. Treating the source as having passed that gate would misstate the protected-data boundary.",
+      "important_limit": "No 2024+ economic rows or model contamination is demonstrated. ChainRowSource supplies order_by=date; _ranked_groups only returns fragments with nonempty date-filtered results. Protected-only groups therefore do not proceed to the full projected market columns or ThetaExactExpiryTables. Returned converter rows are bounded before 2022-03-10. Footer hashing or date/symbol access is distinct from price/outcome exposure.",
+      "defect_family": "Input access-scope evidence differs from the actual Arrow predicate; inherited reader behavior newly relevant to mixed-horizon input members.",
+      "introduced_by_candidate": "The reader implementation is unchanged; the new mixed-horizon members and unsupported stronger access assertion are in this candidate.",
+      "disposition": "Unresolved. Stop this candidate; preserve preparation, failed-run, and review history. Parent is investigating a config/data-only bounded source and an explicit correction of the earlier claim. Fresh final lenses must cover the resulting candidate."
+    }
+  ],
+  "assigned_matrix": [
+    {
+      "case": "Immutable candidate and allowed paths",
+      "result": "pass: only 16 JSON/Markdown files changed; no runtime or tests changed; all actual code hashes match pins"
+    },
+    {
+      "case": "Three methods, 212 names, economic and predictive inputs",
+      "result": "pass: whole domain except chain pin exactly equals original Q4; all six study copies equal"
+    },
+    {
+      "case": "Onboarding and exact source bindings",
+      "result": "pass: source snapshots, manifest hashes, and all declared payload hashes independently verified"
+    },
+    {
+      "case": "Previously reviewed retained-tail correction",
+      "result": "pass by retained independent evidence plus hash lock; 210 final chain files byte identical to first source"
+    },
+    {
+      "case": "CMCSA and HAL old/new quote values",
+      "result": "pass: all final rows exactly match onboarded converter output; 213,964 old rows retained; 36,958 observed post-quarter additions; nonprice values exact and CMCSA raw units preserved within 1.43e-14 max absolute error"
+    },
+    {
+      "case": "Every possible forecast expiry has basis and bars",
+      "result": "pass: 81,943 forecasts, 3,587 symbol-expiry pairs, 212 names; zero missing/invalid settlement basis or bars and no inconsistent daily factors"
+    },
+    {
+      "case": "Date isolation and protected files",
+      "result": "fail Major Q4FINAL-COR-MAJ-001; actual cast predicate does not prove row-group pruning"
+    },
+    {
+      "case": "Registry authority and exposure retention",
+      "result": "pass: new registry revision 0 with no freeze/claim/disposition, matching schedule; prior registry revision 16 verified with Q4 abandonment and all prior exposure hashes"
+    },
+    {
+      "case": "Completed replay/report gate",
+      "result": "pending by design; not claimed complete and no market replay launched by reviewer"
+    }
+  ],
+  "closed_prior_finding": {
+    "id": "Q4TAIL-COR-MIN-001",
+    "disposition": "The final source supplies the 12 previously missing CMCSA/HAL expiry basis dates; independent 212-name coverage probe found no remaining gaps. The first review remains immutable."
+  },
+  "limits": [
+    "No MIO replay, training, fitting, model selection, registry transition, runtime/config mutation, or full suite was performed.",
+    "No protected raw payload was read by this reviewer; the actual predicate failure was detected from metadata before any attempted bounded read.",
+    "Full original-to-first-source row equality relies on retained independent q4-tail-correctness evidence. Its exact hash was verified, and all unchanged final source files were rehashed; the two changed names were checked independently in full.",
+    "ANET/ISRG authorized split changes and IBM/O existing unsupported basis changes remain present; unchanged guards and refusal behavior are not removed. Input coverage does not promise every candidate book will trade.",
+    "The broader CDF review minor backlog remains outside this correction scope.",
+    "Neither the first unlaunched corrected source nor the failed original Q4 run was removed or rewritten."
+  ],
+  "tests_and_probes": [
+    "Python in WSL via SSH using /home/russell/dskit/.venv/bin/python; actual git candidate/paths/code/config hashes and deep dictionary comparisons.",
+    "payload_files(...,verify=True) for final/first/two-name sources and unchanged bars/forecast bundle; independently matched all snapshots/manifests/file hashes.",
+    "Pandas/NumPy exact/tolerance comparisons of every CMCSA/HAL row and all 212 symbols expiry-factor/bar coverage.",
+    "Metadata-only actual DateBoundedParquet predicate/Arrow row-group enumeration for both mixed-horizon new files.",
+    "Existing ExposureRegistry.snapshot verified both registry event chains and prior exposure linkage.",
+    "No suite run; a preliminary review script had an unused value_hash import error before any checks, removed; then actual predicate assertion failed as the retained Major."
+  ],
+  "dependency_versions": {
+    "pyarrow": "25.0.1",
+    "numpy": "2.5.2",
+    "pandas": "2.3.3"
+  },
+  "reviewed_paths_sha256": {
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/abandon-q4-settlement-input.json": "207aa2c74e463442b9935e1da608d57f8e5f0783ed6668cc3b7f8f0cc30b1c30",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/initialize-q4-tail-complete-development.json": "fad889977a5172c349d62f9275ee2f3e13496774552350e09233c1dfd19d6bcb",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-tail-complete.json": "3f93645b39ad987c6de3fbe26f55e5c7c8b81c5ea2d0840548e229b519cad048",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-tail-v2.json": "8f9e203017adc6d4ad975718a472a9335f9295bbd129fff4d7e2c3dd5af38890",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-two-name-continuous-tables.json": "0d31fbe096a604922543fc283329d1f241cc4a97f42e91d71dda4cc9c8f829aa",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-tail-complete.json": "9fe433751b9cd8eb5a28824143d1bc8c2dda5f779da5d421364f30d285edba69",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-tail-v2.json": "b7c24c9cb317d525c478946847865ebf6a02da09676e8a694b6fac50abe60f92",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-two-name-continuous.json": "89db2d02afee3e2c877aa7fb0bfa29e0092a40f3b9f36bd3d0dea33fe6721f8f",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/README.md": "064b2be7a10b0eb12c60b15c4c8996434f356e89d92cbb8eae0a1dff1bea0c84",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/combined-status.json": "7eed77f5c5f3389b0fa4997aec060ca1a1142b651bdc5d8f9fe310b3575a9ecf",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/protocol-evidence.json": "a137663b3e11c065a0803e8011aa10972439b0a4a8afc5cbdcfe36ca15ac018a",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-first-correctness.json": "2e98cd0994e185a16e49b1b354db46522e59bc38aa067d3bb4b59ff1482ab9fb",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-input-correction.json": "3b8b7fc43193e5d1b216685e616084c42e5a0313da7098fd3652c0de11301aae",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-input-verification.json": "4bee847de8111b931c4ec57fe8044170c1491bd5db13c04e487e9c6bca5ddd05",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-v2-correction.json": "22bc16561e8c243ff8f013b2bcf735b904b24c6f607b7f7813e52b248639db5d",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-v2-input-verification.json": "4f2625ec795e2749214bbce1a7cfd61f583f240f29916cfd124e089e2915283b"
+  },
+  "retained_prior_review_sha256": "2e98cd0994e185a16e49b1b354db46522e59bc38aa067d3bb4b59ff1482ab9fb",
+  "completed_at": "2026-11-01T11:26:45.937487+00:00",
+  "candidate_head_verified": true,
+  "worktree_clean": true
+}

@@ -1,0 +1,199 @@
+{
+  "verified_at": "2026-11-01T11:30:59.020604+00:00",
+  "bounded_converter_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/q4-two-name-bounded/mio-q4-two-name-physically-bounded-settlement-inputs-2021-12-31-c8da6920",
+  "document_hash": "72ed65b51e4eb381eef02a4cd3370540d965a2c114f36f31bcf86736aeed9f54",
+  "bounded_source_pin": {
+    "root": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/ob",
+    "source": "mio-q4-raw-tail-bounded-20261101",
+    "stream": "files",
+    "snapshot": "20261101T112752Z-backfill-a487e9cc",
+    "manifest_sha256": "a487e9cc988ca963a4e6a54bffd20532b442e2be10df077e13d963256929afc5",
+    "files": {
+      "CMCSA-bounded-20220310.parquet": "8abac7dd92c3b9078643bcb19fdee0420e77d3a1410b1b6d60ebcf82bec569be",
+      "CMCSA-projection.json": "403deab69db31d389da70e4b1e1a0b26cf21362e7a78963ab4f3b3b282809cce",
+      "HAL-bounded-20220310.parquet": "b1230fb74d865ea3397b52d87b7964f40bf5b75f539f0abada39488da19a36df",
+      "HAL-projection.json": "87ecc1f09eadf43b82d908c6ac514b90f0cccdfaa921ea53f8c828c71f60f799",
+      "projection-verification.json": "2b60968de145b1fabf9c67aabb55478fe817008cfea508493a32a04b0b6505a0"
+    }
+  },
+  "projection_verification": {
+    "files": [
+      {
+        "symbol": "CMCSA",
+        "file": "CMCSA-bounded-20220310.parquet",
+        "sha256": "8abac7dd92c3b9078643bcb19fdee0420e77d3a1410b1b6d60ebcf82bec569be",
+        "rows": 26640,
+        "first": "2022-01-12",
+        "last": "2022-03-09",
+        "recipe_sha256": "403deab69db31d389da70e4b1e1a0b26cf21362e7a78963ab4f3b3b282809cce",
+        "selected_row_groups": [
+          {
+            "id": 2,
+            "min": "2022-01-12",
+            "max": "2023-01-17",
+            "rows": 175424
+          }
+        ],
+        "excluded_row_groups": [
+          {
+            "id": 0,
+            "min": "2024-07-29",
+            "max": "2025-12-31",
+            "rows": 262144
+          },
+          {
+            "id": 1,
+            "min": "2023-01-17",
+            "max": "2024-07-29",
+            "rows": 262144
+          }
+        ]
+      },
+      {
+        "symbol": "HAL",
+        "file": "HAL-bounded-20220310.parquet",
+        "sha256": "b1230fb74d865ea3397b52d87b7964f40bf5b75f539f0abada39488da19a36df",
+        "rows": 34106,
+        "first": "2022-01-10",
+        "last": "2022-03-09",
+        "recipe_sha256": "87ecc1f09eadf43b82d908c6ac514b90f0cccdfaa921ea53f8c828c71f60f799",
+        "selected_row_groups": [
+          {
+            "id": 2,
+            "min": "2022-02-11",
+            "max": "2023-05-25",
+            "rows": 262144
+          },
+          {
+            "id": 3,
+            "min": "2022-01-10",
+            "max": "2022-02-11",
+            "rows": 19217
+          }
+        ],
+        "excluded_row_groups": [
+          {
+            "id": 0,
+            "min": "2024-09-25",
+            "max": "2025-12-31",
+            "rows": 262144
+          },
+          {
+            "id": 1,
+            "min": "2023-05-25",
+            "max": "2024-09-25",
+            "rows": 262144
+          }
+        ]
+      }
+    ],
+    "no_protected_row_groups_opened": true,
+    "all_output_dates_before": "2022-03-10",
+    "runtime_code_changed": false
+  },
+  "equivalent_files": [
+    {
+      "path": "archive/cmcsa/options_2020.parquet",
+      "rows": 37536,
+      "original_sha256": "abdebe44568fdb4ce72c0756e0ae6a09c74a1d79afaaf15a9fbdba3277c03293",
+      "bounded_sha256": "abdebe44568fdb4ce72c0756e0ae6a09c74a1d79afaaf15a9fbdba3277c03293",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "archive/cmcsa/options_2021.parquet",
+      "rows": 101714,
+      "original_sha256": "7775cb41a291a9969781b341dfa97487630d82caa0e7dc6007883da5c154e809",
+      "bounded_sha256": "9322d48b8cbef3f7a1c03a3832ce727184446f0800363bffa2657f1e4f5e168b",
+      "bytes_identical": false,
+      "all_values_exact": true
+    },
+    {
+      "path": "archive/cmcsa/options_2022.parquet",
+      "rows": 17994,
+      "original_sha256": "5619c3cf9471e005ac57ba1fe70ede7fb3e518d8f6ba8ea93f48348d9d02e9a4",
+      "bounded_sha256": "5619c3cf9471e005ac57ba1fe70ede7fb3e518d8f6ba8ea93f48348d9d02e9a4",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "archive/hal/options_2020.parquet",
+      "rows": 37680,
+      "original_sha256": "266b387080516304e7e5e102c8cfab7d6bbb714ccfd387709092bc94be271977",
+      "bounded_sha256": "266b387080516304e7e5e102c8cfab7d6bbb714ccfd387709092bc94be271977",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "archive/hal/options_2021.parquet",
+      "rows": 107440,
+      "original_sha256": "8b49fab98850d77d97b5334273475a40c37cc24549ba3153e8fd29792f2aac30",
+      "bounded_sha256": "8b49fab98850d77d97b5334273475a40c37cc24549ba3153e8fd29792f2aac30",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "archive/hal/options_2022.parquet",
+      "rows": 23774,
+      "original_sha256": "7f16527d6bbc355f8dbd9dd046204c7a7f138da78c60be42e65cd04661ca2b3c",
+      "bounded_sha256": "bbd97f71219a8b1b0886c94ad8a8ce61df865480b8d4ab3dc286d6f34c91a74a",
+      "bytes_identical": false,
+      "all_values_exact": true
+    },
+    {
+      "path": "lifecycle.parquet",
+      "rows": 5496,
+      "original_sha256": "e646e27c590aaac203e63437ee5475916d5999f09ceb6ec3ba65612602eac9ae",
+      "bounded_sha256": "e646e27c590aaac203e63437ee5475916d5999f09ceb6ec3ba65612602eac9ae",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "own_iv/index_daily/CMCSA.parquet",
+      "rows": 383,
+      "original_sha256": "6fdb57daa93d3adf6f63a838f55d7fbc9e1f5a54405a9cca1b837d6703ef73d8",
+      "bounded_sha256": "6fdb57daa93d3adf6f63a838f55d7fbc9e1f5a54405a9cca1b837d6703ef73d8",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "own_iv/index_daily/HAL.parquet",
+      "rows": 383,
+      "original_sha256": "5f729082e21bde9c0de59e989c0ce1508ba22f251e73684c4f81f3d80c0a112f",
+      "bounded_sha256": "5f729082e21bde9c0de59e989c0ce1508ba22f251e73684c4f81f3d80c0a112f",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "prices/index_daily/CMCSA.parquet",
+      "rows": 1557,
+      "original_sha256": "7ac83b794c6ff4a91b7488aa2669ed52080585d4e789e66fc4b8ce4f18331209",
+      "bounded_sha256": "7ac83b794c6ff4a91b7488aa2669ed52080585d4e789e66fc4b8ce4f18331209",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "prices/index_daily/HAL.parquet",
+      "rows": 1557,
+      "original_sha256": "1e2e05bced8651998ad81fcce77585c4120fa75061c3ad4d0d3d050d311db4b3",
+      "bounded_sha256": "1e2e05bced8651998ad81fcce77585c4120fa75061c3ad4d0d3d050d311db4b3",
+      "bytes_identical": true,
+      "all_values_exact": true
+    },
+    {
+      "path": "surface.parquet",
+      "rows": 5496,
+      "original_sha256": "a4249ef61272b7323e2242de61bb002cd4c14c38e6f275008f8f5548907518d8",
+      "bounded_sha256": "a4249ef61272b7323e2242de61bb002cd4c14c38e6f275008f8f5548907518d8",
+      "bytes_identical": true,
+      "all_values_exact": true
+    }
+  ],
+  "all_market_archive_values_exact": true,
+  "all_basis_factors_exact": true,
+  "other_differences": [],
+  "review_finding": "Q4FINAL-COR-MAJ-001: original Arrow cast predicate did not exclude protected-date row groups from date/symbol-only scans. Prior footer eligibility claim was false. Review traced nonempty bounded groups only reaching economic-column reads in the two added tail files; no 2024+ price/outcome rows entered conversion.",
+  "resolution": "Regenerated from four physically pre-2024 chain members, including two bounded projections made from explicit safe row-group IDs with typed date32 predicates. Existing whole-file sealed_from=2024-01-01 guard enabled. Every market archive value and basis factor exactly matches earlier output; final onboarded market source is value-equivalent to isolated regeneration. Original false claim and M1 review retained and superseded by this evidence. This assurance concerns the two-name chain correction; unchanged bar-source readers retain their existing record-bounded contract, not a new byte-isolation claim.",
+  "recipe_wording_note": "Projection recipes call the ISO cutoff a string date filter. The initial string/date32 binding attempt refused before payload access; successful projection used datetime.date typed scalars for the same cutoffs. Actual file statistics and attested bounded converter prove the output limits.",
+  "six_member_draft_refusal": "Existing sealed_from guard refused older mixed-root files containing protected other-symbol dates before creating a run; retained superseded-configs/run-q4-two-name-bounded-sixmembers.json and q4-two-name-bounded.log. Removing only unnecessary pre-2017 history members does not change any 2020-2022 market archive value."
+}

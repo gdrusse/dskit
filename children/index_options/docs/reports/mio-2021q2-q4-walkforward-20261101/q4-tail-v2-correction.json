@@ -1,6 +1,6 @@
 {
   "base_candidate": "2a3f780e2058dec3f40d4d0e6c7a9aa500c4fb3a",
-  "status": "Prepared source and validated configuration; two fresh independent supplemental reviews required before market replay",
+  "status": "Boundary evidence corrected; physically bounded regeneration matches all market values. Correctness re-review and fresh sequential integration required before launch.",
   "scope": "JSON/data correction only; no runtime or test code change",
   "authorizing_user": "Complete authorized Q2-Q4 same methods with correct real-world chronological inputs; no additional ADR. Configs/runs/reports/merge/purge already authorized.",
   "binding_path_rows": [
@@ -327,7 +327,8 @@
         }
       ],
       "scan_end_before": "2022-03-10",
-      "no_2024_plus_row_groups_eligible": true
+      "manual_minimum_selection_not_actual_cast_predicate": true,
+      "original_no_2024_plus_row_groups_eligible_claim_was_false": true
     },
     "20261017T031113Z-backfill-e926b2ea.parquet": {
       "selected_row_groups": [
@@ -345,7 +346,8 @@
         }
       ],
       "scan_end_before": "2022-03-10",
-      "no_2024_plus_row_groups_eligible": true
+      "manual_minimum_selection_not_actual_cast_predicate": true,
+      "original_no_2024_plus_row_groups_eligible_claim_was_false": true
     }
   },
   "changed_symbols": [
@@ -504,17 +506,34 @@
   "registry_note": "Reuse unclaimed revision-0 registry initialized for Q4 tail packet. No freeze, claim, run or economic result exists for first tail candidate. Identity, schedule and prior exposure unchanged; final candidate is pinned by first freeze/open.",
   "input_difference_note": "CMCSA measured factor changes 0.9372070256901717 -> 0.937207072858969 (relative 5.0329111989100284e-08). Use new converter values consistently across its old quotes and settlement tails; do not splice factors or weaken guard. Raw price units match rtol 2e-15/atol 1e-12, all nonprice values exact. HAL factor remains 1.0. Added post-quarter quotes can affect post-quarter marks.",
   "configs": {
-    "run-mio-2021q4-tail-v2.json": "8f9e203017adc6d4ad975718a472a9335f9295bbd129fff4d7e2c3dd5af38890",
-    "run-q4-two-name-continuous-tables.json": "0d31fbe096a604922543fc283329d1f241cc4a97f42e91d71dda4cc9c8f829aa",
+    "run-mio-2021q4-tail-v2.json": "2acce9d9b7dffc33fe6d4092035f8f3ad910907840fa855982b04ee04382c241",
     "source-q4-two-name-continuous.json": "89db2d02afee3e2c877aa7fb0bfa29e0092a40f3b9f36bd3d0dea33fe6721f8f",
-    "source-q4-tail-v2.json": "b7c24c9cb317d525c478946847865ebf6a02da09676e8a694b6fac50abe60f92"
+    "source-q4-tail-v2.json": "b7c24c9cb317d525c478946847865ebf6a02da09676e8a694b6fac50abe60f92",
+    "run-q4-two-name-bounded-tables.json": "bbe08d3410ec3b1c07129464adccb0405a4e2160caefd4968d0c4b5366dcc7c9",
+    "source-q4-raw-tail-bounded.json": "465703d181a8a17174e137c8e2b31297fe1f32dd642c36d627f0b244756bd697",
+    "run-q4-two-name-continuous-tables.json": "866085862dbf9d824e64fbb2af3371dc035ae5e35fb977dc7e6d0349e978891d"
   },
   "acceptance": [
     "All 212 symbols, three methods, model artifacts and economic settings unchanged",
-    "No 2024+ records or row groups read; existing reader temporal predicates preserved",
+    "No protected price/outcome records enter conversion; final two-name chain regeneration additionally uses physically pre-2024 files and existing whole-file sealed_from guard. Prior stronger claim explicitly corrected.",
     "All Q4 forecast expiries have observed daily basis and underlying bars",
     "Raw-unit preservation and consistent adjustment factors; no invented observations",
     "Failed original Q4 and both prepared input versions retained with exposure linkage",
     "Fresh sequential correctness and integration C0/M0 before launch; attested full results and report gates before merge"
-  ]
+  ],
+  "superseded_candidate": "2bd81e2c61fe44900e7140067dc5b781e27b9353",
+  "boundary_correction": {
+    "finding": "Q4FINAL-COR-MAJ-001",
+    "review_file": "q4-source-review-before-boundary-correction.json",
+    "review_sha256": "5494a70085c8c9f82edcd4d725f0248f3e0a96a00cba75ca5f626a56c3d9a7f2",
+    "evidence_file": "q4-bounded-regeneration.json",
+    "evidence_sha256": "b35d8dc06a87cd1e0394c8ab58bcb78210d2303af2e9cc06afbe84136340bced",
+    "prior_claim_false": "Earlier manual footer-minimum selection was incorrectly described as the actual Arrow row-group access boundary. Actual cast predicate retains all groups during date/symbol scans.",
+    "prior_economic_boundary": "No 2024+ price/outcome records reached the converter. For the two new tail files, protected-only groups became empty under the date filter before full economic-column reads. This is not a byte-isolation guarantee for all unchanged readers.",
+    "current_chain_protection": "Four chain members now all end before 2024; two projected files physically end 2022-03-09. Existing sealed_from whole-file guard passes. All 12 converter Parquet values are exact matches, including market archives, prices and basis factors.",
+    "market_source_reuse": "The final source pin is retained because bounded regeneration proves identical economic inputs; no additional data normalization, model fit or market replay was run."
+  },
+  "historical_config_hashes": {
+    "run-q4-two-name-continuous-tables.json": "0d31fbe096a604922543fc283329d1f241cc4a97f42e91d71dda4cc9c8f829aa"
+  }
 }
