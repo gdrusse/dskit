@@ -1,0 +1,16 @@
+symbol,dte_band,reason,refusals
+AMAT,50-60,missing_fill_quote,1
+DKS,22-28,repriced_shared_cap,1
+DKS,43-49,missing_fill_quote,1
+DKS,50-60,missing_fill_quote,1
+DKS,50-60,repriced_shared_cap,1
+FDX,8-14,missing_fill_quote,1
+GOOG,36-42,missing_fill_quote,1
+HD,36-42,missing_fill_quote,1
+QCOM,29-35,insufficient_fill_size,1
+QCOM,36-42,insufficient_fill_size,1
+SEDG,50-60,missing_fill_quote,1
+T,29-35,insufficient_fill_size,1
+UPS,36-42,missing_fill_quote,1
+WEN,15-21,insufficient_fill_size,1
+WEN,50-60,insufficient_fill_size,1

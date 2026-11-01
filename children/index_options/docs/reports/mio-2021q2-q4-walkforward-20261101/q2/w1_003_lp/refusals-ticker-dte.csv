@@ -1,0 +1,11 @@
+symbol,dte_band,reason,refusals
+BB,36-42,repriced_shared_cap,1
+BB,43-49,insufficient_fill_size,1
+BB,50-60,repriced_shared_cap,1
+DKS,50-60,repriced_shared_cap,1
+ENPH,36-42,missing_fill_quote,1
+GEO,29-35,missing_fill_quote,1
+GEO,50-60,insufficient_fill_size,1
+GEO,50-60,missing_fill_quote,1
+GPRO,50-60,missing_fill_quote,1
+WEN,50-60,insufficient_fill_size,1

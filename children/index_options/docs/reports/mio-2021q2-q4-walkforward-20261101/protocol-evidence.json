@@ -1,5 +1,5 @@
 {
-  "status": "execution_in_progress",
+  "status": "Q2 verified and reported; Q3 executing; Q4 prepared",
   "classification": "retrospective development",
   "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2",
   "proofs": {
@@ -685,5 +685,15 @@
     "2021Q2",
     "2021Q3",
     "2021Q4"
-  ]
+  ],
+  "completed_execution": {
+    "2021Q2": {
+      "verification": "q2/mio-verification.json",
+      "report_verification": "q2/reports-verification.json",
+      "reports": "q2/README.md",
+      "artifact_index": "q2/artifact-index.json",
+      "result_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+      "scope": "63 quarter sessions, 109 sessions including padded settlement calendar; 3 methods; replay parity and accounting verified"
+    }
+  }
 }

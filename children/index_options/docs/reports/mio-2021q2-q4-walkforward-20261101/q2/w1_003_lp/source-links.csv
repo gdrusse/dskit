@@ -1,0 +1,5 @@
+id,key,path,status,sha256,bytes
+result,,/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q2/mio-2021q2-complete-walkforward-frozen-m53-development-2021-06-30-7ef19de4/artifacts/json/d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d.json,present,d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d,16140337
+receipt,,/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q2/mio-2021q2-complete-walkforward-frozen-m53-development-2021-06-30-7ef19de4/nodes/06-close_packet.json,present,ecae3c578a2faa466e9d582e216249995e034031dabc2f3164bbec162e528148,533
+resolved,,/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q2/mio-2021q2-complete-walkforward-frozen-m53-development-2021-06-30-7ef19de4/resolved.json,present,65f39bc09d3ac1451cea59b585baca8691972f5c52d62c5f1400a9f24bd4c1ea,308
+run_report,,/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q2/mio-2021q2-complete-walkforward-frozen-m53-development-2021-06-30-7ef19de4/report.md,present,82b46272cb21bde309e67828fa7698926deb6db859eda18a8a7fcdccf924cb76,515
