@@ -1,0 +1,686 @@
+{
+  "schema": "dskit-final-output-independent-review/v1",
+  "candidate": "6b795948d83b36393410532c6ca60b5c89c2ed79",
+  "contract_path": "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/final-output-review-contract.json",
+  "contract_sha256": "a06543b17d247711abe9c1a637faba1ee6f63781e857fa497dd732a1e4da945a",
+  "reviewer": "/root/final_output_correctness",
+  "model": "GPT-6 Astra",
+  "lens": "Fresh independent correctness/accounting; first sequential final-output lens",
+  "scope": "Nine final quarterly method reports, Q4 accepted actual close/accounting/coverage, combined evaluation and execution memo. Previously closed runtime, fitting and eligibility-source scopes retained only after identity checks.",
+  "verdict": "PASS_FINAL_OUTPUT_CORRECTNESS_C0_M0; independent integration/provenance lens remains required. This is a scoped report gate, not live deployment approval.",
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 1,
+    "Nit": 1
+  },
+  "new_counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 0,
+    "Nit": 1
+  },
+  "unresolved_critical": 0,
+  "unresolved_major": 0,
+  "findings": [
+    {
+      "id": "OUT-MINOR-01",
+      "severity": "Minor",
+      "status": "Previously disclosed, confirmed, nonblocking backlog",
+      "invariant": "Session coverage labels should distinguish weekly decision dates from daily account sessions.",
+      "location": "q2/q3/q4/*/summary.md, What happened and decision window; corresponding report.html generic prose",
+      "reproducer": "Q4 nominal summary says '25 round trips over 14 sessions (14 decisions)'; attested calendar and ledger contain 64 Q4 account sessions and 109 with settlement tail. Same renderer convention appears in the other standard reports.",
+      "consequence": "Readers of generic headline prose can mistake the decision-day count for account coverage. Explicit quarter-boundary tables, daily ledger and combined reports correctly report full 63/64/64 sessions, so no missing data or incorrect financial result was demonstrated.",
+      "family": "Generic renderer session terminology",
+      "disposition": "Retain known Minor; no runtime edit or rerun requested for this output closure."
+    },
+    {
+      "id": "OUT-NIT-01",
+      "severity": "Nit",
+      "status": "Open editorial correction",
+      "invariant": "A stated historical measurement time should match its retained observation.",
+      "location": "children/index_options/docs/memos/2026-11-01-mio-q2-q4-walkforward.md:71",
+      "reproducer": "Memo attributes about 10.01 GiB Windows free space to 14:58 UTC. continuation.json last_live_check records windows_free_gib=10.008 at 2026-11-01T15:09:26.384182+00:00. No 14:58 measurement was provided for that number.",
+      "consequence": "Historical measurement timestamp is imprecise; storage quantities, financial outputs, source identities and authorization are unaffected.",
+      "family": "Historical observation timestamp",
+      "disposition": "Replace 14:58 with 15:09 UTC (or remove unsupported precision) and retain the observation. This is editorial and does not change the reviewed contract or reset unchanged final lenses."
+    }
+  ],
+  "matrix": [
+    {
+      "row": 1,
+      "status": "covered",
+      "evidence": "Independently loaded each 06-close_packet.json, hashed artifact bytes and required complete=true, development classification, exact three method IDs, completed statuses and replay_parity=true. Prior partial Q4 correctly remains complete=false with failed nominal."
+    },
+    {
+      "row": 2,
+      "status": "covered",
+      "evidence": "Compared complete audit calendars with exchange_calendars XNYS sessions, not only author proofs. Q2/Q3/Q4 63/64/64 quarter sessions, 109/110/109 full curve rows per method, 14 decisions each, 212 input names each."
+    },
+    {
+      "row": 3,
+      "status": "covered",
+      "evidence": "All 137 filled books, 227 leg rows, 2147 original executed contracts, 170 refusals and 984 curve rows reconciled directly. Per-contract fees, premium/credit relation, all trade PnL sums, final equity minus deposits, zero open/unsettled books verified. All 676 optimizer-selected leg records joined to exact filled/refused quantities."
+    },
+    {
+      "row": 4,
+      "status": "covered",
+      "evidence": "Recomputed all daily NAV/TWR and drawdown using beginning-of-day deposits: NAV_t=NAV_prev*equity_t/(equity_prev+deposit_t). Independent reset accounts and quarter boundary/open books versus settled totals checked; event at-cost limitations explicit. No compounding claim."
+    },
+    {
+      "row": 5,
+      "status": "covered",
+      "evidence": "All 63 gates across nine reports independently checked for actual expected/observed totals and tolerances; Q4's 21 included. Events and HTML embed final receipt/document identity and Q4 eligibility policy hash. Every source-links.csv file hash verified."
+    },
+    {
+      "row": 6,
+      "status": "covered",
+      "evidence": "All nine comparison rows and quarter-boundary CSVs equal direct result-derived values; all 138 final index member hashes/sizes and 101 relative links checked. Historical partial Q4's 33 indexed files retained unchanged and separate."
+    },
+    {
+      "row": 7,
+      "status": "covered with retained closed training/source review",
+      "evidence": "Manual evaluation/memo reading confirms Q4 policy differs from original Q2/Q3, post-exposure adoption, M53's 67-method 2020-2023 selection history, 2019/Q1 limits and no fresh holdout claim. Actual model summaries/metadata/state and byte hashes validate reported chronology, early stopping and fresh refits; prior boundary/source locks preserved."
+    },
+    {
+      "row": 8,
+      "status": "covered",
+      "evidence": "Readonly SQLite inspection: original registry revision16, tail registry6, new eligibility registry6; active None for all. New claim exactly one publish_attested_close and one review. Original two reviewed quarters and both Q4 failures retained; prior registry files match linkage hashes."
+    },
+    {
+      "row": 9,
+      "status": "covered via identity-preserved dependency closure",
+      "evidence": "270 runtime files, 10 launch files, 34 prior canonical configs, two prior CDF code/test blobs, seven package versions, 19 Q4 source bundle files all match immutable locks/pins. No new runtime/config mutations during review. Full market payload processing is inherited from unchanged reviewed source plus successful intake rather than repeated here."
+    },
+    {
+      "row": 10,
+      "status": "covered",
+      "evidence": "Memo arithmetic and concentration checked directly: Q4 nominal 2/25 positive books, COST 2021-10-18/2021-11-19 +22287.10 exceeds total +19190.15. HPO/learning records, archived storage measurements, retained failures and automation boundary inspected. One timestamp Nit recorded above."
+    }
+  ],
+  "uncovered_matrix_rows": [],
+  "checks": [
+    {
+      "name": "Candidate and contract",
+      "command": "WSL Python pathlib/hashlib + git rev-parse HEAD/status --short; exact contract SHA plus 150 listed files and nine dependency files",
+      "result": "PASS; clean immutable candidate throughout review"
+    },
+    {
+      "name": "Financial, calendar and report reconciliation",
+      "command": "Readonly WSL Python json/csv/hashlib; direct close artifacts, XNYS calendar, independent arithmetic, all daily curves, per-book fills and grouped ticker/DTE tables",
+      "result": "PASS; all nine authoritative comparisons and all 63 gates"
+    },
+    {
+      "name": "Selected demand and actual fills",
+      "command": "Readonly keyed join of every source decision book leg to filled/refused source result and orders-and-fills.csv",
+      "result": "PASS; 676 rows; original optimizer quantities distinct from executed quantities"
+    },
+    {
+      "name": "Output provenance",
+      "command": "Readonly checks of run result/config/close node content hashes, run_start embedded source identity, HTML source/policy hashes, source-links.csv and artifact indexes",
+      "result": "PASS; all nine standard reports use intended actual source"
+    },
+    {
+      "name": "Training and learning",
+      "command": "Readonly actual fit/completed/summary.json, fit/metadata.json, fit/model/state.json and weights.pt; M53 fit.json and current bundle hashes",
+      "result": "PASS; selected46/96 and36/86, patience50/max150; minima at46/36 and exactly50 subsequent epochs; fresh46/36/36 fits; 1220953/1302290/1383824 mature rows; distinct quarter weight hashes; one M53 block at each quarter start"
+    },
+    {
+      "name": "Chronology/protocol history",
+      "command": "sqlite3 mode=ro state/events queries and historical registry byte hash comparison; read retained partial close artifact",
+      "result": "PASS; once-only new successful lifecycle, prior failed evidence retained"
+    },
+    {
+      "name": "Sweep before reviewer evidence",
+      "command": "tools/sweep/sweep final-output-correctness q2-q4-final-output-review",
+      "result": "exit0; 48 refs,111 other worktrees searched; reused authorized retained-review destination"
+    },
+    {
+      "name": "Full suite",
+      "command": "Not run",
+      "result": "No runtime changes; focused prior test evidence remains scoped and retained"
+    }
+  ],
+  "falsification_attempts": [
+    "Direct source-versus-report joins would detect stale template receipts, wrong Q4 source bundle, omitted/refused books, selected/filled quantity substitution, and fee/contract double counts; no mismatch remained.",
+    "Recomputed NAV using the documented beginning-of-day deposit convention; an initial end-of-day-deposit hypothesis did not match the protocol and was rejected after checking ledger_studies.py:2097 and 08:00 report cashflow slots. Beginning-of-day recomputation matched every curve row.",
+    "Independent XNYS dates falsified neither quarter coverage nor settlement-tail calendar completeness.",
+    "Direct actual monitor-loss argmin and model hashes reject an epoch1/no-learning or Q4 frozen-old-weights explanation.",
+    "Historical complete=false IBM receipt remains distinct from final complete=true eligibility-v2 result; no invented nominal total was present in partial evidence.",
+    "Checked rounded win-rate prose numerically; fixed-two-decimal string probes initially rejected legitimate display formatting, not results."
+  ],
+  "limitations": [
+    "No new simulation, model fit, registry disposition, full suite, or independent payoff engine was run. Replay parity is the recorded attested runtime result, not a fresh replay by this reviewer.",
+    "Model source/label predicates and the full 427-file market source design remain covered by unchanged prior closed reviews. This review authenticated relevant artifacts, actual fit metadata and bundle bytes rather than re-reading every raw price/outcome row.",
+    "Generic event-based Sharpe/PSR/DSR and other inferential statistics were not independently rederived from a separate statistics implementation; they are explicitly at-cost, sample-size-qualified, and UNJUDGED. They do not establish strategy significance.",
+    "American early assignment, actual broker fills, intraday execution, new stress campaigns, corrected 2019/Q1 coverage, generalized future-date automation and real-world profitability are outside this output gate and disclosed.",
+    "Storage historical quantities are traced to archived evidence and retained observations; no new disk compaction or attribution experiment performed.",
+    "Integration review, merge/push and safe cleanup are parent tasks still pending and are not approved as completed by this record."
+  ],
+  "accounting": {
+    "issues": [],
+    "verified_methods": [
+      {
+        "quarter": "2021Q2",
+        "method": "w1_003_shock10_lp",
+        "sessions": 63,
+        "decisions": 14,
+        "filled_books": 22,
+        "filled_legs": 52,
+        "filled_contracts": 291,
+        "refused_books": 13,
+        "fees": 189.15,
+        "contributions": 16000,
+        "quarter_end_date": "2021-06-30",
+        "quarter_end_equity": 22515.85,
+        "quarter_end_open_books": 10,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 1.2722472546296275,
+        "quarter_end_twr": 0.2722472546296275,
+        "quarter_end_pnl_marked": 6515.8499999999985,
+        "quarter_max_drawdown": -0.5631876229357693,
+        "settled_pnl": 1853.8499999999995,
+        "settled_equity": 17853.85,
+        "settled_twr": 0.008823191088462856,
+        "settled_max_drawdown": -0.5631876229357693,
+        "last_trade_settlement": "2021-08-20",
+        "last_curve_date": "2021-09-03",
+        "replay_parity": true,
+        "artifact": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7892,
+          "order": 35,
+          "refusal": 13,
+          "fill": 44,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": "2021Q2",
+        "method": "nominal_lp",
+        "sessions": 63,
+        "decisions": 14,
+        "filled_books": 11,
+        "filled_legs": 13,
+        "filled_contracts": 207,
+        "refused_books": 15,
+        "fees": 134.55,
+        "contributions": 16000,
+        "quarter_end_date": "2021-06-30",
+        "quarter_end_equity": 7035.449999999993,
+        "quarter_end_open_books": 4,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 0.36395188894075364,
+        "quarter_end_twr": -0.6360481110592464,
+        "quarter_end_pnl_marked": -8964.550000000007,
+        "quarter_max_drawdown": -0.7499193775867083,
+        "settled_pnl": -9242.550000000005,
+        "settled_equity": 6757.449999999995,
+        "settled_twr": -0.6504293695609099,
+        "settled_max_drawdown": -0.7594072019518932,
+        "last_trade_settlement": "2021-07-16",
+        "last_curve_date": "2021-09-03",
+        "replay_parity": true,
+        "artifact": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7892,
+          "order": 26,
+          "refusal": 15,
+          "fill": 22,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": "2021Q2",
+        "method": "w1_003_lp",
+        "sessions": 63,
+        "decisions": 14,
+        "filled_books": 12,
+        "filled_legs": 24,
+        "filled_contracts": 191,
+        "refused_books": 10,
+        "fees": 124.15,
+        "contributions": 16000,
+        "quarter_end_date": "2021-06-30",
+        "quarter_end_equity": 30381.35,
+        "quarter_end_open_books": 6,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 1.7935471489538082,
+        "quarter_end_twr": 0.7935471489538082,
+        "quarter_end_pnl_marked": 14381.349999999999,
+        "quarter_max_drawdown": -0.569488016297619,
+        "settled_pnl": -3473.150000000002,
+        "settled_equity": 12526.849999999999,
+        "settled_twr": -0.2604839448256244,
+        "settled_max_drawdown": -0.6040597579557595,
+        "last_trade_settlement": "2021-08-20",
+        "last_curve_date": "2021-09-03",
+        "replay_parity": true,
+        "artifact": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7892,
+          "order": 22,
+          "refusal": 10,
+          "fill": 24,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": "2021Q3",
+        "method": "w1_003_shock10_lp",
+        "sessions": 64,
+        "decisions": 14,
+        "filled_books": 21,
+        "filled_legs": 40,
+        "filled_contracts": 161,
+        "refused_books": 11,
+        "fees": 104.65,
+        "contributions": 16000,
+        "quarter_end_date": "2021-09-30",
+        "quarter_end_equity": 12351.849999999999,
+        "quarter_end_open_books": 8,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 0.7376022641200358,
+        "quarter_end_twr": -0.2623977358799642,
+        "quarter_end_pnl_marked": -3648.1500000000015,
+        "quarter_max_drawdown": -0.3629628992865147,
+        "settled_pnl": -5193.650000000002,
+        "settled_equity": 10806.349999999999,
+        "settled_twr": -0.3546887124703143,
+        "settled_max_drawdown": -0.4398592437421798,
+        "last_trade_settlement": "2021-11-19",
+        "last_curve_date": "2021-12-06",
+        "replay_parity": true,
+        "artifact": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 8018,
+          "order": 32,
+          "refusal": 11,
+          "fill": 42,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": "2021Q3",
+        "method": "nominal_lp",
+        "sessions": 64,
+        "decisions": 14,
+        "filled_books": 16,
+        "filled_legs": 18,
+        "filled_contracts": 395,
+        "refused_books": 28,
+        "fees": 256.75,
+        "contributions": 16000,
+        "quarter_end_date": "2021-09-30",
+        "quarter_end_equity": 12135.25,
+        "quarter_end_open_books": 8,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 0.7089580680433003,
+        "quarter_end_twr": -0.2910419319566997,
+        "quarter_end_pnl_marked": -3864.75,
+        "quarter_max_drawdown": -0.44913013379938027,
+        "settled_pnl": -1303.7500000000045,
+        "settled_equity": 14696.249999999996,
+        "settled_twr": -0.14142477431603329,
+        "settled_max_drawdown": -0.6578072335644652,
+        "last_trade_settlement": "2021-11-19",
+        "last_curve_date": "2021-12-06",
+        "replay_parity": true,
+        "artifact": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 8018,
+          "order": 44,
+          "refusal": 28,
+          "fill": 32,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": "2021Q3",
+        "method": "w1_003_lp",
+        "sessions": 64,
+        "decisions": 14,
+        "filled_books": 6,
+        "filled_legs": 9,
+        "filled_contracts": 56,
+        "refused_books": 15,
+        "fees": 36.4,
+        "contributions": 16000,
+        "quarter_end_date": "2021-09-30",
+        "quarter_end_equity": 13009.099999999999,
+        "quarter_end_open_books": 4,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 0.7644446933198512,
+        "quarter_end_twr": -0.2355553066801488,
+        "quarter_end_pnl_marked": -2990.9000000000015,
+        "quarter_max_drawdown": -0.2446785024366115,
+        "settled_pnl": -3636.4,
+        "settled_equity": 12363.6,
+        "settled_twr": -0.27348637412816346,
+        "settled_max_drawdown": -0.2737550847468071,
+        "last_trade_settlement": "2021-10-29",
+        "last_curve_date": "2021-12-06",
+        "replay_parity": true,
+        "artifact": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 8018,
+          "order": 21,
+          "refusal": 15,
+          "fill": 12,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": "2021Q4",
+        "method": "w1_003_shock10_lp",
+        "sessions": 64,
+        "decisions": 14,
+        "filled_books": 20,
+        "filled_legs": 31,
+        "filled_contracts": 167,
+        "refused_books": 25,
+        "fees": 108.55,
+        "contributions": 16000,
+        "quarter_end_date": "2021-12-31",
+        "quarter_end_equity": 12845.449999999999,
+        "quarter_end_open_books": 8,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 0.8645223057362246,
+        "quarter_end_twr": -0.13547769426377543,
+        "quarter_end_pnl_marked": -3154.550000000001,
+        "quarter_max_drawdown": -0.7439706055882847,
+        "settled_pnl": -8133.55,
+        "settled_equity": 7866.45,
+        "settled_twr": -0.4705735110907968,
+        "settled_max_drawdown": -0.7791729103640677,
+        "last_trade_settlement": "2022-02-18",
+        "last_curve_date": "2022-03-08",
+        "replay_parity": true,
+        "artifact": "5c40cc22f0bfd0b291caa3339912df55e134787559d49b09ad44ee61b6fbf649",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7915,
+          "order": 45,
+          "refusal": 25,
+          "fill": 40,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": "2021Q4",
+        "method": "nominal_lp",
+        "sessions": 64,
+        "decisions": 14,
+        "filled_books": 25,
+        "filled_legs": 33,
+        "filled_contracts": 609,
+        "refused_books": 34,
+        "fees": 395.85,
+        "contributions": 16000,
+        "quarter_end_date": "2021-12-31",
+        "quarter_end_equity": 42057.64999999998,
+        "quarter_end_open_books": 9,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 3.150600408578637,
+        "quarter_end_twr": 2.150600408578637,
+        "quarter_end_pnl_marked": 26057.64999999998,
+        "quarter_max_drawdown": -0.2847677166392212,
+        "settled_pnl": 19190.14999999998,
+        "settled_equity": 35190.14999999998,
+        "settled_twr": 1.6361458847069081,
+        "settled_max_drawdown": -0.3244068893090446,
+        "last_trade_settlement": "2022-02-18",
+        "last_curve_date": "2022-03-08",
+        "replay_parity": true,
+        "artifact": "5c40cc22f0bfd0b291caa3339912df55e134787559d49b09ad44ee61b6fbf649",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7915,
+          "order": 59,
+          "refusal": 34,
+          "fill": 50,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": "2021Q4",
+        "method": "w1_003_lp",
+        "sessions": 64,
+        "decisions": 14,
+        "filled_books": 4,
+        "filled_legs": 7,
+        "filled_contracts": 70,
+        "refused_books": 19,
+        "fees": 45.5,
+        "contributions": 16000,
+        "quarter_end_date": "2021-12-31",
+        "quarter_end_equity": 14231,
+        "quarter_end_open_books": 2,
+        "quarter_end_contributions": 16000,
+        "quarter_end_nav": 0.9622469812810535,
+        "quarter_end_twr": -0.03775301871894654,
+        "quarter_end_pnl_marked": -1769,
+        "quarter_max_drawdown": -0.7826987887553578,
+        "settled_pnl": -8135.5,
+        "settled_equity": 7864.5,
+        "settled_twr": -0.46823193139731245,
+        "settled_max_drawdown": -0.807603109954012,
+        "last_trade_settlement": "2022-02-18",
+        "last_curve_date": "2022-03-08",
+        "replay_parity": true,
+        "artifact": "5c40cc22f0bfd0b291caa3339912df55e134787559d49b09ad44ee61b6fbf649",
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7915,
+          "order": 23,
+          "refusal": 19,
+          "fill": 8,
+          "run_end": 1
+        }
+      }
+    ],
+    "contract_files": 150,
+    "dependency_files": 9
+  },
+  "identity_and_registry_checks": {
+    "issues": [],
+    "launch_files": 10,
+    "runtime_pins": 270,
+    "closed_code_blobs": 2,
+    "closed_configs": 34,
+    "dependencies": {
+      "exchange_calendars": "4.13.2",
+      "highspy": "1.15.1",
+      "numpy": "2.5.2",
+      "pandas": "2.3.3",
+      "pyarrow": "25.0.1",
+      "pyomo": "6.10.1",
+      "scipy": "1.18.1"
+    },
+    "registries": [
+      {
+        "file": "exposure-registry.sqlite",
+        "sha256": "bd584e8b1078bf65b0fd59bc40ed0dad74ad1fa092aaca894746becd826d4f50",
+        "revision": 16,
+        "active": null,
+        "events": {
+          "initialize": 1,
+          "freeze": 3,
+          "claim": 3,
+          "bind_inputs": 3,
+          "bind_execution": 2,
+          "publish_attested_close": 2,
+          "review": 2,
+          "abandon": 1
+        },
+        "dispositions": [
+          {
+            "action": "review",
+            "claim": "91f7e0b5-eba8-4ae8-89b9-68b33c048b25",
+            "packet_id": "dev_2021q2_complete_20261101",
+            "sha256": "010b5c17c523e6bcc418e4a96e14cdb4d58725894b7d99340484973a786bc924"
+          },
+          {
+            "action": "review",
+            "claim": "2fd8f63a-2629-411a-933d-a7041493b07e",
+            "packet_id": "dev_2021q3_complete_20261101",
+            "sha256": "173b0849f93d7cf010d84cf40f180581fb5ecee7a05f28fadc9d491e38f82037"
+          },
+          {
+            "action": "abandon",
+            "claim": "b0f5314f-bf4d-437e-a592-dd3dee402a03",
+            "packet_id": "dev_2021q4_complete_20261101",
+            "sha256": "4819de737d899f22f243fd061e3c14474c29b1e57b53a14abce1c31ff3bb0242"
+          }
+        ]
+      },
+      {
+        "file": "q4-tail-exposure-registry.sqlite",
+        "sha256": "38140d8fc8273e128dec7ac740fe14174f4aecb60c169339fc418f469638ae1e",
+        "revision": 6,
+        "active": null,
+        "events": {
+          "initialize": 1,
+          "freeze": 1,
+          "claim": 1,
+          "bind_inputs": 1,
+          "bind_execution": 1,
+          "publish_attested_close": 1,
+          "abandon": 1
+        },
+        "dispositions": [
+          {
+            "action": "abandon",
+            "claim": "d2bcc77d-e3f7-4def-91e1-e1432ed840b3",
+            "packet_id": "dev_2021q4_tail_complete_20261101",
+            "sha256": "860773edad03884f5fd97e6a0344816e5f3afafa5c8618ce1770d0226d90ba64"
+          }
+        ]
+      },
+      {
+        "file": "q4-eligibility-exposure-registry.sqlite",
+        "sha256": "678378aff8eb7bb707822792431db5cd4f24edde91100db8ebe012b7d0cb8895",
+        "revision": 6,
+        "active": null,
+        "events": {
+          "initialize": 1,
+          "freeze": 1,
+          "claim": 1,
+          "bind_inputs": 1,
+          "bind_execution": 1,
+          "publish_attested_close": 1,
+          "review": 1
+        },
+        "dispositions": [
+          {
+            "action": "review",
+            "claim": "f5b146da-eedb-4d2a-99c6-43c7559e96c2",
+            "packet_id": "dev_2021q4_eligibility_v1_20261101",
+            "sha256": "178e7c346c55492751c4defa58aa9854569115a099b41be3e395055ed110d345"
+          }
+        ]
+      }
+    ]
+  },
+  "execution_detail_checks": {
+    "issues": [],
+    "orders_checked": 676,
+    "extract_totals": {
+      "2": {
+        "selected_leg_rows": 189,
+        "books": 45,
+        "refused": 38,
+        "curve_rows": 327
+      },
+      "3": {
+        "selected_leg_rows": 216,
+        "books": 43,
+        "refused": 54,
+        "curve_rows": 330
+      },
+      "4": {
+        "selected_leg_rows": 271,
+        "books": 49,
+        "refused": 78,
+        "curve_rows": 327
+      }
+    },
+    "relative_links_checked": 101,
+    "historical_partial_files_verified": 33,
+    "percentage_format_followup": "All nine displayed win rates match direct attested wins/books, within 0.05 percentage point display rounding; original fixed-two-decimal string probe rejected valid formatting."
+  },
+  "training_selection_evidence": {
+    "preq2": {
+      "best": 46,
+      "epochs": 96,
+      "summary_sha256": "332b9803970f19019f163949e2ffb48e6bb5aeecabaa246e3989369de536e9ee",
+      "metadata_sha256": "9a67a11741af700e8e845d6403795452054e85bb4ad94fd3cd30dbe2913eaa03",
+      "state_sha256": "a0f52ee3a167e7899f4816955560cc3810788094f646aac64e6571cd7d8e06fd"
+    },
+    "preq3": {
+      "best": 36,
+      "epochs": 86,
+      "summary_sha256": "6c4ac486c125f57a48bd8cde543775860bee7760eb38b99b0182080dba9de459",
+      "metadata_sha256": "eae337180dd1aa91ae7ffef0112ab7e112a4aa7e0fcad2f075021eaba19754e8",
+      "state_sha256": "98a6f8678cda612c3d57a3fe05553417e6fa6a415932ae70684f707cc0a9e1dd"
+    }
+  },
+  "reviewed_at": "2026-11-01T15:36:36.090567+00:00",
+  "storage_observation_for_editorial_correction": {
+    "at": "2026-11-01T15:09:26.384182+00:00",
+    "attested_complete": false,
+    "process": "PID ELAPSED   RSS %CPU COMMAND\n 118423    4266 6285912 94.1 /home/russell/dskit/.venv/bin/python -m dskit.pipeline run /home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-eligibility-v2.json --asof 2021-12-31",
+    "windows_free_gib": 10.008,
+    "wsl_free_gib": 182.699,
+    "log_tail": [
+      "group screen kept 84 of 703 groups",
+      "group screen kept 86 of 703 groups",
+      "group screen kept 83 of 703 groups",
+      "group screen kept 128 of 698 groups",
+      "group screen kept 117 of 695 groups",
+      "group screen kept 99 of 694 groups",
+      "group screen kept 93 of 700 groups",
+      "group screen kept 82 of 699 groups"
+    ]
+  },
+  "evidence_hashes": {
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/README.md": "521694738b9d16d7513b56b75b0e18d8c3c6f72bab85276c4625b3d0e194ce3e",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/comparison.csv": "a145610216164c5682a1dd798927cc13b5cd2cea7017f0e559f1a4930181ea14",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/learning.csv": "03f375f805c0f8eb2f434a6f2ff3f056fcaaa37238d2902ea61a0c91455179ee",
+    "children/index_options/docs/memos/2026-11-01-mio-q2-q4-walkforward.md": "e07924c3d05555555784dba5539b319a13f2894a9e578732333c652064b0f0bd",
+    "docs/archive/re-entry/index_options.md": "6fc0b25336a543bed033f4e97c7fd6e652e03dd3e65fdf885b2c8272fb35c8c8"
+  }
+}

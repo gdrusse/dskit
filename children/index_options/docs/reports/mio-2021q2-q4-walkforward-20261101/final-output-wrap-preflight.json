@@ -1,0 +1,150 @@
+{
+  "at": "2026-11-01T15:25:26.482239+00:00",
+  "candidate": "6b795948d83b36393410532c6ca60b5c89c2ed79",
+  "runtime_files_unchanged": 270,
+  "canonical_configs_unchanged": 34,
+  "code_test_blobs_unchanged": 2,
+  "dependencies_unchanged": {
+    "exchange_calendars": "4.13.2",
+    "highspy": "1.15.1",
+    "numpy": "2.5.2",
+    "pandas": "2.3.3",
+    "pyarrow": "25.0.1",
+    "pyomo": "6.10.1",
+    "scipy": "1.18.1"
+  },
+  "registries": {
+    "exposure-registry.sqlite": {
+      "sha256": "bd584e8b1078bf65b0fd59bc40ed0dad74ad1fa092aaca894746becd826d4f50",
+      "revision": 16,
+      "active": null,
+      "event_actions": [
+        "initialize",
+        "freeze",
+        "claim",
+        "bind_inputs",
+        "bind_execution",
+        "publish_attested_close",
+        "review",
+        "freeze",
+        "claim",
+        "bind_inputs",
+        "bind_execution",
+        "publish_attested_close",
+        "review",
+        "freeze",
+        "claim",
+        "bind_inputs",
+        "abandon"
+      ],
+      "dispositions": {
+        "dev_2021q2_complete_20261101": {
+          "action": "review",
+          "claim": "91f7e0b5-eba8-4ae8-89b9-68b33c048b25",
+          "packet_id": "dev_2021q2_complete_20261101",
+          "reason": "Attested complete Q2 development result, all three methods, replay parity, exact quarter calendar and verified accounting/report gates.",
+          "revision": 5,
+          "sha256": "010b5c17c523e6bcc418e4a96e14cdb4d58725894b7d99340484973a786bc924"
+        },
+        "dev_2021q3_complete_20261101": {
+          "action": "review",
+          "claim": "2fd8f63a-2629-411a-933d-a7041493b07e",
+          "packet_id": "dev_2021q3_complete_20261101",
+          "reason": "Attested complete Q3 development result, all three methods, replay parity, exact quarter calendar and verified accounting/report gates.",
+          "revision": 11,
+          "sha256": "173b0849f93d7cf010d84cf40f180581fb5ecee7a05f28fadc9d491e38f82037"
+        },
+        "dev_2021q4_complete_20261101": {
+          "action": "abandon",
+          "claim": "b0f5314f-bf4d-437e-a592-dd3dee402a03",
+          "packet_id": "dev_2021q4_complete_20261101",
+          "reason": "Stopped after Q4 shock method failed at AVAV 2022-02-18: underlying close exists but compact source omitted later-expiry observations needed for settlement-day basis. Preserve this exposed partial run; correct only retained post-quarter input rows in a distinct retrospective Q4 study, with all methods and models unchanged.",
+          "revision": 15,
+          "sha256": "4819de737d899f22f243fd061e3c14474c29b1e57b53a14abce1c31ff3bb0242"
+        }
+      }
+    },
+    "q4-tail-exposure-registry.sqlite": {
+      "sha256": "38140d8fc8273e128dec7ac740fe14174f4aecb60c169339fc418f469638ae1e",
+      "revision": 6,
+      "active": null,
+      "event_actions": [
+        "initialize",
+        "freeze",
+        "claim",
+        "bind_inputs",
+        "bind_execution",
+        "publish_attested_close",
+        "abandon"
+      ],
+      "dispositions": {
+        "dev_2021q4_tail_complete_20261101": {
+          "action": "abandon",
+          "claim": "d2bcc77d-e3f7-4def-91e1-e1432ed840b3",
+          "packet_id": "dev_2021q4_tail_complete_20261101",
+          "reason": "Owner approved config-only eligibility for publicly announced unsupported spinoffs. Preserve this attested partial Q4 result: nominal_lp could not settle IBM/Kyndryl mixed deliverable, while two methods completed. New eligibility changes candidate trades uniformly across methods, so replay receives a separate retrospective development identity and imports this exposure.",
+          "revision": 5,
+          "sha256": "860773edad03884f5fd97e6a0344816e5f3afafa5c8618ce1770d0226d90ba64"
+        }
+      }
+    },
+    "q4-eligibility-exposure-registry.sqlite": {
+      "sha256": "678378aff8eb7bb707822792431db5cd4f24edde91100db8ebe012b7d0cb8895",
+      "revision": 6,
+      "active": null,
+      "event_actions": [
+        "initialize",
+        "freeze",
+        "claim",
+        "bind_inputs",
+        "bind_execution",
+        "publish_attested_close",
+        "review"
+      ],
+      "dispositions": {
+        "dev_2021q4_eligibility_v1_20261101": {
+          "action": "review",
+          "claim": "f5b146da-eedb-4d2a-99c6-43c7559e96c2",
+          "packet_id": "dev_2021q4_eligibility_v1_20261101",
+          "reason": "Attested complete Q4 development result, all three methods, replay parity, exact quarter calendar and verified accounting/report gates.",
+          "revision": 5,
+          "sha256": "178e7c346c55492751c4defa58aa9854569115a099b41be3e395055ed110d345"
+        }
+      }
+    }
+  },
+  "ignored_checkout_files": {
+    ".pytest_cache": {
+      "count": 5,
+      "bytes": 59645
+    },
+    ".ruff_cache": {
+      "count": 6,
+      "bytes": 1038
+    },
+    "children": {
+      "count": 18,
+      "bytes": 2124808
+    },
+    "dskit": {
+      "count": 163,
+      "bytes": 8185691
+    },
+    "tests": {
+      "count": 7,
+      "bytes": 394175
+    },
+    "tools": {
+      "count": 2,
+      "bytes": 12314
+    }
+  },
+  "remote_main": "978d72fa14294ba00fdb0251195540b0ab0d9004",
+  "retained_storage_observation": {
+    "source": "continuation.json last_live_check before final wrap",
+    "observed_at": "2026-11-01T15:09:26.384182+00:00",
+    "windows_free_gib": 10.008,
+    "wsl_free_gib": 182.699,
+    "note": "Retained prior observation, not a new free-space measurement. Memo 14:58 wording should use this retained15:09UTC record."
+  }
+}

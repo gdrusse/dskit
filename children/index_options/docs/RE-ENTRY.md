@@ -1,34 +1,42 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-10-31 by GPT-6 Astra. ADR-0288 split-aware Q2 replay code and source are reviewed; market execution waits for physical disk space.
+Updated: 2026-11-01 by GPT-6 Astra; wrapped by Claude Opus 5.5. Q2-Q4 2021 evaluation and execution memo complete.
 
 ## Now
 
-- ADR-0288 (owner approved) maps TTD's 2021-06-17 OCC 10:1 option split across the shared ledger, funded account, shock, marks and settlement. Original entry credit, fees and contract counts stay audited; active terms convert before daily activity. Nonstandard events refuse.
-- Frozen candidate `85e9187e` from base `978d72fa`; economic code snapshot `e5a01d9d` at `/home/russell/data/index_options/mio-2021q2-split-aware-20261031/code4`. Source registration and a distinct exploratory Q2 run document are under `children/index_options/configs/mio-2021q2-top3-frozen2019-20261030/`.
-- OCC memo #48744 PDF is onboarded with SHA-256 `c30f23c4...`; checked event `426cb918...`, source manifest `2629156d...`. Pinned archive proves June 16 old strike 610/factor 0.1, June 17 live strike 61/factor 1.0 and unquoted old 610.
-- Candidate plan `60d71e21...` is runnable under code4; 402 focused tests and diff check passed. Independent final lenses `q2_final_correctness` and `q2_final_integration`: C0/M0/minor0 each. Actual Q2 market replay has not run.
-- Shared exposure registry revision 102, active none. An unused readiness freeze advanced revision 101 to 102; refresh/freeze immediately before any new claim. Previous Q2 claim `aa3fab17...` remains `abandoned_exposed`; original failed run is immutable.
-- ADR-0285 storage fix remains on main: about 34 GiB of duplicate SQLite indexes deduplicated inside WSL, future indexes reuse verified cache. Windows `ext4.vhdx` remains about 870 GB; C: has about 3.3 GiB free.
+- All three accepted methods completed Q2, Q3 and Q4 with attested close receipts and replay parity. Nine standard reports plus combined evaluation and memo are complete; all 63 accounting/report gates passed.
+- Final output candidate `6b795948` passed fresh sequential correctness/accounting and integration/provenance reviews, both C0/M0. Source/config candidate `ae2c9f98` and CDF candidate `159ce6aa` retain their prior closed reviews; all 270 runtime pins and 34 prior configs remain unchanged.
+- Fully settled gains occurred only for Q2 shock (+$1,853.85) and Q4 nominal (+$19,190.15). All three Q3 methods lost. Q4 nominal won 2 of 25 books; one COST book contributed +$22,287.10. No method was positive in every quarter.
+- Accounts reset separately each quarter with $16,000 total deposits. Marked quarter-end and fully settled cohort results are distinct; do not compound quarterly returns. Q2 W1's positive quarter-end mark became a settled loss.
+- Corrected fits selected 46/96 and 36/86 epochs with patience 50 / max 150; fresh final fits 46/36/36. Q4 includes mature Q3 labels but Q3/Q4 never choose epochs. M53 is refitted before each quarter and frozen during it. No separate formal M53 HPO; selection among 67 methods on 2020-2023 makes these retrospective development results.
+- Q4 alone uses owner-approved public-notice spinoff eligibility, excluding 122 paired IBM/O candidates with existing JSON filters while preserving full quote/basis history. Original Q2/Q3 eligibility differs. All original/failed attempts and exposure history remain retained.
+- Registry revisions 16 (original), 6 (tail failure), 6 (eligibility success), none with an active claim. Each completed quarter was published and reviewed once. Failed Q4 attempts were abandoned once. Never repeat dispositions.
+- Disk investigation identified repeated quote indexes; verified hardlink dedup recovered about 34 GiB inside WSL. Lossless Windows compression provided headroom. VHDX compaction was not performed; live recorders were preserved.
+- Durable delivery: `/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/delivery`. The main push and cleanup receipts are written after this commit to `delivery/wrap-receipt.json` and the parent `continuation.json`. Original absolute source paths can be restored from the reviewed Git candidate.
 
 ## Next
 
-- When Administrator access and recorder shutdown are available, offline compact the WSL VHDX and verify Windows C: free space. Do not interrupt the 24/7 pmquant recorder just to compact.
-- Recheck matching processes and registry, then launch only the new split-aware Q2 development document from code4 with adequate Windows headroom. Verify attested close receipt, all three methods, replay parity, cash/fees/reserve and report each account separately.
+- Requested evaluations, reports and memo are complete. No further simulation is scheduled by this task after wrap.
+- Future work needs a separately scoped decision: earlier 2019/Q1 coverage remains truncated; arbitrary date-change preparation/reporting is not yet one automatic entrypoint.
 
 ## Blocked / owner decisions
 
-- Owner cannot approve UAC now. Physical VHDX compact and the Q2 run remain pending; no development claim or new market read was made in this handoff.
-- Ruff reports seven pre-existing D102/E731/E702 findings in touched files; no new lint defect was identified.
+- None for this completed retrospective evaluation. No live deployment or fresh holdout approval is implied.
+- Storage, outside this task: the WSL VHDX is still uncompacted (about 812 GiB logical; C: free was about 10 GiB on 2026-11-01). Compaction needs administrator approval and a recorder pause.
+- Nonblocking backlog: generic report 14 sessions means 14 decision dates (actual quarter coverage 63/64/64); unsettled-label regression fixture enhancement; Q4 selection hash names a wrapper with the actual summary hash nested. Storage timestamp corrected to 15:09 UTC.
 
 ## Read first
 
-- ../../../docs/architecture/decision-log.md — ADR-0288 and its implementation evidence.
-- ../configs/mio-2021q2-top3-frozen2019-20261030/run-mio-top3-2021q2-split-aware-exploratory-20261031.json — new Q2 document.
-- ../../../docs/skills/wrap.md and ../../../docs/skills/mio-report.md — integration and MIO reporting workflow.
-- ../../../docs/archive/re-entry/index_options.md — previous storage/Q1 handoffs.
+- [Combined evaluation and all nine reports](reports/mio-2021q2-q4-walkforward-20261101/README.md).
+- [Execution and correction memo](memos/2026-11-01-mio-q2-q4-walkforward.md).
+- [Final output review lock](reports/mio-2021q2-q4-walkforward-20261101/final-output-review-lock.json).
+- [Training and protocol evidence](reports/mio-2021q2-q4-walkforward-20261101/protocol-evidence.json).
+- [Approved Q4 source review](reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-v2-review-lock.json).
+- [Decision log](../../../docs/architecture/decision-log.md): ADR-0288 and its implementation evidence.
+- [Archived handoffs](../../../docs/archive/re-entry/index_options.md): previous storage/Q1/Q2 lane notes.
 
 ## Do not
 
-- Resume old Q2 queue or claim, repeat Q1 or 2019 fits, rewrite source/failed evidence, read protected 2024+ data, or force WSL sparse conversion.
-- Change Path A0002/A0003/A0008, other sessions' worktrees, or the live recorder without a safe shutdown window.
+- Reopen completed claims, overwrite failed evidence, read protected 2024+ price/outcome data, or claim 2021 was a fresh holdout.
+- Change Path A0002/A0003/A0008, other sessions' checkouts, raw/model artifacts, exposure registries or live recorders.
+- Purge necessary source/caches or interrupt WSL for compaction. Only the finished contained task branch/checkout is eligible for this wrap cleanup.

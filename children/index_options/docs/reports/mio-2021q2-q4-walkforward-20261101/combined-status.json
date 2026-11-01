@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-01T15:23:41.955170+00:00",
+  "updated_at": "2026-11-01T15:47:28.988617+00:00",
   "completed_quarters": [
     2,
     3,
@@ -11,5 +11,9 @@
   "classification": "retrospective development",
   "comparison_sha256": "a145610216164c5682a1dd798927cc13b5cd2cea7017f0e559f1a4930181ea14",
   "learning_sha256": "03f375f805c0f8eb2f434a6f2ff3f056fcaaa37238d2902ea61a0c91455179ee",
-  "report_index_sha256": "521694738b9d16d7513b56b75b0e18d8c3c6f72bab85276c4625b3d0e194ce3e"
+  "report_index_sha256": "f10f11a4733044ac73363448cfb71c45c350bc7f519c153b2eea041d0302079f",
+  "independent_output_review_complete": true,
+  "reviewed_candidate": "6b795948d83b36393410532c6ca60b5c89c2ed79",
+  "unresolved_critical": 0,
+  "unresolved_major": 0
 }

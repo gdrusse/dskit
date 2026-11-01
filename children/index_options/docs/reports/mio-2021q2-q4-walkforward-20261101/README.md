@@ -87,3 +87,9 @@ IBM exclusions start October13 following the October12 announcement and end when
 [Corrected source and exact subset evidence](q4-eligibility-v2-source.json), [independent design assessment](q4-eligibility-forecast-phase0.json) and [prior-exposure linkage](q4-eligibility-prior-exposure.json) retain the approved scope, all original producer/training evidence and historical limitations. The revised policy was adopted after prior Q4 outcomes were exposed; all results remain retrospective development.
 
 [Execution and correction memo](../../memos/2026-11-01-mio-q2-q4-walkforward.md) records storage causes, training/HPO findings, retained failures, automation limits and reproducibility.
+
+## Final output review
+
+The nine final reports, combined evaluation and execution memo passed fresh sequential [correctness/accounting](final-output-correctness.json) and [integration/provenance](final-output-integration.json) reviews with zero unresolved Critical/Major findings. [Final output lock](final-output-review-lock.json) records the candidate, checks and preserved dependencies.
+
+The generic report phrase “14 sessions” refers to decision dates; the explicit quarter tables and daily ledgers correctly show 63/64/64 account sessions. This known wording Minor remains disclosed. The memo's storage-observation timestamp was corrected to the retained 15:09 UTC observation; no financial result changed. The lock hashes the reviewed `6b795948` versions of this README, the memo and combined-status.json; this closure section and the memo Closure were added afterwards and checked separately. Earlier scoped reviews remain intact, and earlier pending-state text is in Git history.

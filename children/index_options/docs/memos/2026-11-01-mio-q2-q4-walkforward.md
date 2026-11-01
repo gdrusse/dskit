@@ -4,7 +4,7 @@
 
 All three methods lost money on the fully settled Q3 cohort, so none was profitable in every quarter of this Q2–Q4 comparison. These are retrospective development results, and Q4 uses a newly approved contract-eligibility policy.
 
-All three quarterly simulations and all nine standard method reports are complete and locally verified. Final independent output review, integration and cleanup remain to be recorded.
+All three quarterly simulations and all nine standard method reports are complete and independently verified. Both final output reviews have zero unresolved Critical or Major findings.
 
 ## Execution contract
 
@@ -68,7 +68,7 @@ The selections supersede the earlier epoch-4 attempt. Pre-Q2 monitor loss fell f
 
 The investigation found 2,066 repeated run-local quote-index paths under artifacts/mio-quotes, totaling about 46.4 logical GiB. Byte-identical SQLite indexes were rebuilt across runs. Verified hardlink deduplication recovered about 34 GiB inside WSL. The existing ADR-0285 cache repair reuses indexes only when full source, predicates, validators, code, dependencies and content hashes match. The current Q4 run can reuse all 212 existing quote indexes.
 
-Free Linux blocks did not shrink the Windows virtual-disk file, whose recorded logical size remained about 811.89 GiB. Offline compaction required administrator approval and a recorder pause; it was not performed in this continuation. Lossless compression of selected Windows files restored headroom without deleting source data or stopping recorders. Windows free space was observed at 18.625 GiB at 09:45 UTC and about 10.01 GiB at 14:58 UTC on November 1. Concurrent writes and other changes mean the entire net change cannot be attributed to compression.
+Free Linux blocks did not shrink the Windows virtual-disk file, whose recorded logical size remained about 811.89 GiB. Offline compaction required administrator approval and a recorder pause; it was not performed in this continuation. Lossless compression of selected Windows files restored headroom without deleting source data or stopping recorders. Windows free space was observed at 18.625 GiB at 09:45 UTC and about 10.01 GiB at 15:09 UTC on November 1. Concurrent writes and other changes mean the entire net change cannot be attributed to compression.
 
 Unique cache indexes persist after run links disappear. Deleting a hardlink is not necessarily a physical saving, and WSL deletion does not promise immediate C: recovery. [Storage evidence](../reports/mio-2021q2-q4-walkforward-20261101/storage-evidence.json) and existing ADR-0285 retain the measurements and limitations.
 
@@ -105,4 +105,12 @@ The executed command uses the existing CLI: /home/russell/dskit/.venv/bin/python
 
 Quarterly indexes bind receipts, generated reports, numerical CSVs and orders/fills. Reuse immutable results for report regeneration. A new authorized replay needs a new identity and prior-exposure linkage.
 
-**Handoff at 2026-11-01T15:15:16.992931+00:00:** All three quarterly simulations and all nine standard method reports are complete and locally verified. Final independent output review, integration and cleanup remain to be recorded. Final wrap requires two clean independent output reviews, lane/root note updates, nonforce main push and remote verification. Only then may the contained task branch/worktree and proven-unreferenced derived caches be removed. Reports, configs and evidence must be mirrored outside the worktree first. The final continuation record will carry actual merge and cleanup receipts.
+## Closure
+
+The final output candidate is 6b795948d83b36393410532c6ca60b5c89c2ed79. Fresh sequential correctness/accounting and integration/provenance reviews both passed with zero Critical/Major findings. They reconciled all 63 report gates, 137 filled books, 227 leg rows, 2,147 executed contracts, 170 refusals, 676 selected-leg records and 984 daily account rows. [Final review lock](../reports/mio-2021q2-q4-walkforward-20261101/final-output-review-lock.json) retains both independent verdicts, exact artifact identities and limits.
+
+The reported storage-observation time is corrected to 15:09 UTC using the retained observation. The generic report headline's “14 sessions” means decision dates; explicit coverage tables and daily ledgers correctly show 63/64/64 quarterly account sessions. That wording remains a disclosed nonblocking Minor, alongside the two earlier CDF evidence/fixture minors. Financial outputs, methods, models, sources and runtime are unchanged by this closure.
+
+Reports, all task configs and this memo are retained outside the checkout under coverage-v2/delivery, preserving repository-relative links. Original and failed runs, raw sources, model artifacts, exposure registries and live recorders are retained. The completed claim must not be rerun. Restore the committed report candidate at the original checkout path when exact absolute runtime pins are needed for reproduction.
+
+The requested wrap includes a nonforce main push, remote containment verification and removal of the contained task branch/checkout. The push and cleanup receipts are written after this commit to coverage-v2/continuation.json and coverage-v2/delivery/wrap-receipt.json, outside the repository. Those operational receipts are separate from the immutable reviewed simulation and report artifacts. General future-date automation, repaired 2019/Q1 coverage and live execution remain outside this completed evaluation.

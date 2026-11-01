@@ -1,0 +1,543 @@
+{
+  "schema": "dskit-final-output-review-v1",
+  "candidate": "6b795948d83b36393410532c6ca60b5c89c2ed79",
+  "contract": "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/final-output-review-contract.json",
+  "contract_sha256": "a06543b17d247711abe9c1a637faba1ee6f63781e857fa497dd732a1e4da945a",
+  "reviewer": "/root/final_output_integration",
+  "model": "GPT-6 Astra",
+  "lens": "Fresh second sequential independent integration/provenance",
+  "first_lens": {
+    "path": "verification/final-output-correctness.json",
+    "sha256": "d23b78a8917cd0580650850f659ed1fa9b6ece253a6ff5a27eb5db5ed6749cf5",
+    "completed_before_this_lens": true
+  },
+  "scope": "Nine final method report mirrors and equivalent external reports/HTML/events/CSV entrypoints; new Q4 attested result, eligibility/source identities, lifecycle, combined evaluation, execution/correction memo, durable delivery and unchanged prior dependency locks.",
+  "verdict": "PASS_FINAL_OUTPUT_INTEGRATION_C0_M0; all assigned matrix rows covered within stated limits. No unresolved in-scope Critical/Major. Parent may record the two-lens output lock and proceed with authorized wrap/integration after preserving unchanged identities. This is retrospective development evidence, not deployment approval.",
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 1,
+    "Nit": 1
+  },
+  "new_material_findings": 0,
+  "findings": [
+    {
+      "id": "OUT-MINOR-01",
+      "severity": "Minor",
+      "invariant": "Report session labels distinguish weekly decisions from daily account coverage.",
+      "location": "q2/q3/q4/*/summary.md and report.html generic prose",
+      "reproducer": "Q4 nominal says 25 round trips over 14 sessions (14 decisions), while the authoritative calendar has 64 Q4 sessions and 109 including settlement tail. All nine run-identity/quarter-boundary tables and combined coverage correctly disclose 63/64/64 account sessions.",
+      "consequence": "Generic headline prose may be misread as truncated account coverage. Complete daily rows and explicit coverage tables are correct; no material result error.",
+      "family": "Previously disclosed generic renderer terminology",
+      "disposition": "Confirmed existing nonblocking Minor. Retain disclosure; do not change runtime or rerun to address this output wording."
+    },
+    {
+      "id": "OUT-NIT-01",
+      "severity": "Nit",
+      "invariant": "Historical storage measurement time matches retained observation.",
+      "location": "children/index_options/docs/memos/2026-11-01-mio-q2-q4-walkforward.md:71",
+      "reproducer": "Memo says about 10.01 GiB at14:58 UTC. Retained preflight observation binds10.008 GiB at2026-11-01T15:09:26.384182+00:00.",
+      "consequence": "Timestamp imprecision only; quantities, conclusions, source identity and accounting unchanged.",
+      "family": "Previously identified editorial storage timestamp",
+      "disposition": "Parent may make the stated15:09 UTC editorial correction and append factual closure evidence without resetting unchanged review. Preserve this original verdict."
+    }
+  ],
+  "matrix": [
+    {
+      "row": 1,
+      "status": "covered",
+      "evidence": "Hashed actual three close artifacts and their close node receipts; complete=true, development classification, exact accepted method set, completed statuses and replay parity. Historical partial Q4 remains complete=false."
+    },
+    {
+      "row": 2,
+      "status": "covered",
+      "evidence": "Direct artifact audit calendars show63/64/64 quarter sessions and14decisions; Q4 tail109rows per method, all212source names. Compared all984 account extract rows to exact original curve fields. Calendar correctness beyond these source identities is closed by the first lens's independent XNYS check."
+    },
+    {
+      "row": 3,
+      "status": "covered",
+      "evidence": "All137books,227leg rows,2147executed contracts,170refusals and676selected-to-filled records reconcile with direct source results. Final open_ids empty, settled trade sum equals final net, money tolerance0.005/count0."
+    },
+    {
+      "row": 4,
+      "status": "covered",
+      "evidence": "Quarter-boundary and combined data equal direct daily mark and final settled results. Read all evaluation/memo disclosures on open books, independent account resets, no compounding and event-at-cost limitations. First lens supplies full daily NAV recomputation; no reliance on generic event drawdown as authoritative marks."
+    },
+    {
+      "row": 5,
+      "status": "covered",
+      "evidence": "Recomputed all63gates from event cashflows/fills/counts and direct result totals; every report depends on its gate. Verified36source-link file hashes and actual source/config/result/close identities in all events,run-identity tables and HTML; Q4 policy hash matches pinned source."
+    },
+    {
+      "row": 6,
+      "status": "covered",
+      "evidence": "All138final indexed files and308durable delivery members match exact byte hashes/sizes;101relative links exist. Nine comparison rows bind final results. Historical partialQ4's33indexed files and failed receipt retained separately."
+    },
+    {
+      "row": 7,
+      "status": "covered with unchanged source/model closure",
+      "evidence": "Memo/evaluation explicitly disclose originalQ2/Q3 versus revisedQ4 eligibility, post-exposure adoption,67-method2020–2023selection,no separateM53HPO,2019/Q1truncation and no fresh holdout. Selection summaries,fit configurations,three distinct weights andM53evidence hashes verified;46/36/36fresh fits and mature labels; quarter-start single-block M53."
+    },
+    {
+      "row": 8,
+      "status": "covered",
+      "evidence": "Readonly direct SQLite state/events show registry revisions16/6/6,activeNone. New successful claim has exactly one publish_attested_close and one review, binding actual final receipt. Prior registry hashes/dispositions match retained linkage and preflight; bothQ4failed histories remain."
+    },
+    {
+      "row": 9,
+      "status": "covered through preserved dependency identity",
+      "evidence": "150contract files,nine dependency files,10launch files,270runtime hashes,34canonical config hashes,twoCDFcode/testGitblobs and seveninstalleddependencyversions match. All270runtimefiles recoverable byte-exact from source candidateae2c9f9.47model/source bundle members match; successful intake and unchanged source review cover full market payload content."
+    },
+    {
+      "row": 10,
+      "status": "covered",
+      "evidence": "Memo numeric claims reconcile to direct source, includingQ4nominal2/25wins andCOST22287.10exceedingcohort19190.15. Archived storage inventory confirms2066paths/46.4logicalGiB/~34GiBrecovered; source measurement hashes match. Memo admits incompleteautomation and initialfiltererror,retainsfailures/protectedmetadata correction. Only disclosed timestampNit remains."
+    }
+  ],
+  "checks": [
+    {
+      "name": "Independent report and interface verification",
+      "command": "WSL Python pathlib/hashlib/json/csv; read exact close receipts, indexed final/external/durable reports, direct events and all selected-to-filled joins",
+      "result": "PASS",
+      "details": {
+        "contract_files": 150,
+        "dependency_files": 9,
+        "launch_files": 10,
+        "runtime_files": 270,
+        "canonical_configs": 34,
+        "code_test_blobs": 2,
+        "libraries": {
+          "exchange_calendars": "4.13.2",
+          "highspy": "1.15.1",
+          "numpy": "2.5.2",
+          "pandas": "2.3.3",
+          "pyarrow": "25.0.1",
+          "pyomo": "6.10.1",
+          "scipy": "1.18.1"
+        },
+        "delivery_files": 308,
+        "index_members": 138,
+        "report_gates": 63,
+        "source_links": 36,
+        "bundle_files": 47,
+        "selected_rows": 676,
+        "filled_books": 137,
+        "filled_legs": 227,
+        "executed_contracts": 2147,
+        "refused_books": 170,
+        "account_rows": 984
+      }
+    },
+    {
+      "name": "Dependency and Git restoration verification",
+      "command": "WSL Python hashlib/importlib.metadata plus git hash-object and git show ae2c9f9:path for all270 runtime files",
+      "result": "PASS; exact source/runtime/config/library identity; no checkout mutation"
+    },
+    {
+      "name": "Protocol history",
+      "command": "sqlite3 file:...?mode=ro state/events reads for all three registries; byte hash comparison with retained preflight/prior exposure linkage",
+      "result": "PASS; once-only final publication/review and retained failures"
+    },
+    {
+      "name": "Training/memo/link verification",
+      "command": "Readonly actual fit weights, selection summaries, M53 fit/output records, stored measurement files and report/memo Markdown links",
+      "result": "PASS with one existing timestamp Nit",
+      "details": {
+        "historical_partial_files": 33,
+        "relative_links": 101,
+        "retained_storage_archive_matches": [
+          "- Disk cause: 2,066 repeated `artifacts/mio-quotes/*.sqlite` paths occupied about 46.4 logical GiB. A verified one-time hardlink pass recovered about 34 GiB inside WSL without removing completed evidence. The writer is fixed to reuse a verified index before another large build."
+        ],
+        "candidate_clean_at_end": true
+      }
+    },
+    {
+      "name": "Required sweep",
+      "command": "tools/sweep/sweep final-output-integration q2-q4-final-output-provenance",
+      "result": "exit0;48refs111otherworktrees; reused authorized review destination"
+    },
+    {
+      "name": "Candidate immutability",
+      "command": "git rev-parse HEAD and git status --short before/after review; exact contract and first lens hash",
+      "result": "PASS; clean6b795948d83b36393410532c6ca60b5c89c2ed79"
+    },
+    {
+      "name": "Test/compute restrictions",
+      "command": "No simulations, fits, raw conversion, external acquisition, protocol mutation or full suite",
+      "result": "Prior focused runtime/source/model checks retained only after dependency identity checks"
+    }
+  ],
+  "untested_limits": [
+    "Report reconciliation proves faithful representation of the pinned replay, not an independently rebuilt payoff, historical fill or deliverable model.",
+    "Full market payload transformation and empirical PIT reproduction were not rerun; identity-preserved prior source/model reviews and successful intake remain their evidence.",
+    "Training chronology was checked through actual configuration, summary, weights and frozen M53 output identity; no fresh fit or exhaustive underlying training-row scan.",
+    "External historical issuer/OCC/vendor notices were not refetched in this output-only review; pinned source review and disclosed exact-symbol assumption remain unchanged.",
+    "Calendar count/row identities were independently checked here; exchange holiday recomputation and full daily NAV arithmetic belong to the completed independent correctness lens.",
+    "Actual future main integration, remote push, cleanup and automation pause are parent tasks still pending; this review does not assert they occurred.",
+    "After authorized cleanup, report/config paths referencing the original worktree require restoration at that path from preserved Git state;270runtimefiles and308deliveryfiles verified recoverable."
+  ],
+  "independent_results": {
+    "issues": [],
+    "checks": {
+      "contract_files": 150,
+      "dependency_files": 9,
+      "launch_files": 10,
+      "runtime_files": 270,
+      "canonical_configs": 34,
+      "code_test_blobs": 2,
+      "libraries": {
+        "exchange_calendars": "4.13.2",
+        "highspy": "1.15.1",
+        "numpy": "2.5.2",
+        "pandas": "2.3.3",
+        "pyarrow": "25.0.1",
+        "pyomo": "6.10.1",
+        "scipy": "1.18.1"
+      },
+      "delivery_files": 308,
+      "index_members": 138,
+      "report_gates": 63,
+      "source_links": 36,
+      "bundle_files": 47,
+      "selected_rows": 676,
+      "filled_books": 137,
+      "filled_legs": 227,
+      "executed_contracts": 2147,
+      "refused_books": 170,
+      "account_rows": 984
+    },
+    "reports": [
+      {
+        "quarter": 2,
+        "method": "w1_003_shock10_lp",
+        "gates": 7,
+        "receipt_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+        "document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7892,
+          "order": 35,
+          "refusal": 13,
+          "fill": 44,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": 2,
+        "method": "nominal_lp",
+        "gates": 7,
+        "receipt_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+        "document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7892,
+          "order": 26,
+          "refusal": 15,
+          "fill": 22,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": 2,
+        "method": "w1_003_lp",
+        "gates": 7,
+        "receipt_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+        "document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7892,
+          "order": 22,
+          "refusal": 10,
+          "fill": 24,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": 3,
+        "method": "w1_003_shock10_lp",
+        "gates": 7,
+        "receipt_sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+        "document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 8018,
+          "order": 32,
+          "refusal": 11,
+          "fill": 42,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": 3,
+        "method": "nominal_lp",
+        "gates": 7,
+        "receipt_sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+        "document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 8018,
+          "order": 44,
+          "refusal": 28,
+          "fill": 32,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": 3,
+        "method": "w1_003_lp",
+        "gates": 7,
+        "receipt_sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+        "document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 8018,
+          "order": 21,
+          "refusal": 15,
+          "fill": 12,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": 4,
+        "method": "w1_003_shock10_lp",
+        "gates": 7,
+        "receipt_sha256": "5c40cc22f0bfd0b291caa3339912df55e134787559d49b09ad44ee61b6fbf649",
+        "document_hash": "4f1bed0c95e02f20548eef8b462df50e583d3c1c4dc33f1110839624efde3987",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7915,
+          "order": 45,
+          "refusal": 25,
+          "fill": 40,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": 4,
+        "method": "nominal_lp",
+        "gates": 7,
+        "receipt_sha256": "5c40cc22f0bfd0b291caa3339912df55e134787559d49b09ad44ee61b6fbf649",
+        "document_hash": "4f1bed0c95e02f20548eef8b462df50e583d3c1c4dc33f1110839624efde3987",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7915,
+          "order": 59,
+          "refusal": 34,
+          "fill": 50,
+          "run_end": 1
+        }
+      },
+      {
+        "quarter": 4,
+        "method": "w1_003_lp",
+        "gates": 7,
+        "receipt_sha256": "5c40cc22f0bfd0b291caa3339912df55e134787559d49b09ad44ee61b6fbf649",
+        "document_hash": "4f1bed0c95e02f20548eef8b462df50e583d3c1c4dc33f1110839624efde3987",
+        "source_links": 4,
+        "event_counts": {
+          "run_start": 1,
+          "cashflow": 7,
+          "solve": 14,
+          "decision": 14,
+          "skip": 7915,
+          "order": 23,
+          "refusal": 19,
+          "fill": 8,
+          "run_end": 1
+        }
+      }
+    ]
+  },
+  "history": {
+    "issues": [],
+    "checks": {
+      "historical_partial_files": 33,
+      "relative_links": 101,
+      "retained_storage_archive_matches": [
+        "- Disk cause: 2,066 repeated `artifacts/mio-quotes/*.sqlite` paths occupied about 46.4 logical GiB. A verified one-time hardlink pass recovered about 34 GiB inside WSL without removing completed evidence. The writer is fixed to reuse a verified index before another large build."
+      ],
+      "candidate_clean_at_end": true
+    },
+    "registries": [
+      {
+        "file": "exposure-registry.sqlite",
+        "sha256": "bd584e8b1078bf65b0fd59bc40ed0dad74ad1fa092aaca894746becd826d4f50",
+        "revision": 16,
+        "active": null,
+        "events": {
+          "initialize": 1,
+          "freeze": 3,
+          "claim": 3,
+          "bind_inputs": 3,
+          "bind_execution": 2,
+          "publish_attested_close": 2,
+          "review": 2,
+          "abandon": 1
+        },
+        "dispositions": {
+          "dev_2021q2_complete_20261101": {
+            "action": "review",
+            "claim": "91f7e0b5-eba8-4ae8-89b9-68b33c048b25",
+            "packet_id": "dev_2021q2_complete_20261101",
+            "reason": "Attested complete Q2 development result, all three methods, replay parity, exact quarter calendar and verified accounting/report gates.",
+            "revision": 5,
+            "sha256": "010b5c17c523e6bcc418e4a96e14cdb4d58725894b7d99340484973a786bc924"
+          },
+          "dev_2021q3_complete_20261101": {
+            "action": "review",
+            "claim": "2fd8f63a-2629-411a-933d-a7041493b07e",
+            "packet_id": "dev_2021q3_complete_20261101",
+            "reason": "Attested complete Q3 development result, all three methods, replay parity, exact quarter calendar and verified accounting/report gates.",
+            "revision": 11,
+            "sha256": "173b0849f93d7cf010d84cf40f180581fb5ecee7a05f28fadc9d491e38f82037"
+          },
+          "dev_2021q4_complete_20261101": {
+            "action": "abandon",
+            "claim": "b0f5314f-bf4d-437e-a592-dd3dee402a03",
+            "packet_id": "dev_2021q4_complete_20261101",
+            "reason": "Stopped after Q4 shock method failed at AVAV 2022-02-18: underlying close exists but compact source omitted later-expiry observations needed for settlement-day basis. Preserve this exposed partial run; correct only retained post-quarter input rows in a distinct retrospective Q4 study, with all methods and models unchanged.",
+            "revision": 15,
+            "sha256": "4819de737d899f22f243fd061e3c14474c29b1e57b53a14abce1c31ff3bb0242"
+          }
+        }
+      },
+      {
+        "file": "q4-tail-exposure-registry.sqlite",
+        "sha256": "38140d8fc8273e128dec7ac740fe14174f4aecb60c169339fc418f469638ae1e",
+        "revision": 6,
+        "active": null,
+        "events": {
+          "initialize": 1,
+          "freeze": 1,
+          "claim": 1,
+          "bind_inputs": 1,
+          "bind_execution": 1,
+          "publish_attested_close": 1,
+          "abandon": 1
+        },
+        "dispositions": {
+          "dev_2021q4_tail_complete_20261101": {
+            "action": "abandon",
+            "claim": "d2bcc77d-e3f7-4def-91e1-e1432ed840b3",
+            "packet_id": "dev_2021q4_tail_complete_20261101",
+            "reason": "Owner approved config-only eligibility for publicly announced unsupported spinoffs. Preserve this attested partial Q4 result: nominal_lp could not settle IBM/Kyndryl mixed deliverable, while two methods completed. New eligibility changes candidate trades uniformly across methods, so replay receives a separate retrospective development identity and imports this exposure.",
+            "revision": 5,
+            "sha256": "860773edad03884f5fd97e6a0344816e5f3afafa5c8618ce1770d0226d90ba64"
+          }
+        }
+      },
+      {
+        "file": "q4-eligibility-exposure-registry.sqlite",
+        "sha256": "678378aff8eb7bb707822792431db5cd4f24edde91100db8ebe012b7d0cb8895",
+        "revision": 6,
+        "active": null,
+        "events": {
+          "initialize": 1,
+          "freeze": 1,
+          "claim": 1,
+          "bind_inputs": 1,
+          "bind_execution": 1,
+          "publish_attested_close": 1,
+          "review": 1
+        },
+        "dispositions": {
+          "dev_2021q4_eligibility_v1_20261101": {
+            "action": "review",
+            "claim": "f5b146da-eedb-4d2a-99c6-43c7559e96c2",
+            "packet_id": "dev_2021q4_eligibility_v1_20261101",
+            "reason": "Attested complete Q4 development result, all three methods, replay parity, exact quarter calendar and verified accounting/report gates.",
+            "revision": 5,
+            "sha256": "178e7c346c55492751c4defa58aa9854569115a099b41be3e395055ed110d345"
+          }
+        }
+      }
+    ],
+    "training": [
+      {
+        "q": 2,
+        "selected_epochs": 46,
+        "run_epochs": [
+          96
+        ],
+        "training_rows": 1220953,
+        "mature_through": "2021-03-26",
+        "weights_sha256": "fd2f3a087bd6ade50ccbe0afda2d770e2684b25991f207286e6c59988a40baf9",
+        "m53_quarter_start": "2021-04-01",
+        "m53_blocks": 1
+      },
+      {
+        "q": 3,
+        "selected_epochs": 36,
+        "run_epochs": [
+          86
+        ],
+        "training_rows": 1302290,
+        "mature_through": "2021-06-25",
+        "weights_sha256": "3020381079b3b024e59dfb1d653d739e85f20c1e6d51af7ca7b97e1b3e52d1b3",
+        "m53_quarter_start": "2021-07-01",
+        "m53_blocks": 1
+      },
+      {
+        "q": 4,
+        "selected_epochs": 36,
+        "run_epochs": [
+          86
+        ],
+        "training_rows": 1383824,
+        "mature_through": "2021-09-24",
+        "weights_sha256": "92d4a1d020bbf5c925116deeaa1ed1707a632d8fa2488189649bbabee626f785",
+        "m53_quarter_start": "2021-10-01",
+        "m53_blocks": 1
+      }
+    ],
+    "concentration": {
+      "positive_books": 2,
+      "books": 25,
+      "largest_book": "2021-10-18:COST:2021-11-19",
+      "largest_pnl": 22287.099999999977,
+      "total_net_pnl": 19190.14999999998
+    },
+    "retained_storage_observation": {
+      "source": "continuation.json last_live_check before final wrap",
+      "observed_at": "2026-11-01T15:09:26.384182+00:00",
+      "windows_free_gib": 10.008,
+      "wsl_free_gib": 182.699,
+      "note": "Retained prior observation, not a new free-space measurement. Memo 14:58 wording should use this retained15:09UTC record."
+    }
+  },
+  "editorial_followup": "Change unsupported14:58storage timestamp to retained15:09UTC and append factual final closure; neither changes economic/report/config/runtime/contract invariants. Verify unchanged reviewed identities when locking.",
+  "convergence": "Assigned matrix complete; zero Critical/Major, no optional further scans or runtime fixes requested.",
+  "reviewed_at": "2026-11-01T15:45:08.583820+00:00"
+}
