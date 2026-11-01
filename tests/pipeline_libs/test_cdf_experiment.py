@@ -151,6 +151,31 @@ def experiment_config(tmp_path):
     return cfg
 
 
+
+def test_full_train_refit_is_configured_and_purges_unsettled_labels(experiment_config):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    config = experiment_config
+    config["refit_full_train"] = True
+    exp = CDFExperiment(config)
+    frame = exp.load_panel()
+    fold = exp.study.plan.ids()[0]
+    bands, groups, _ = exp._bands(frame, exp.study.plan.calendar(frame), fold,
+                                  config["arms"]["base"])
+    fit, diagnostic, scored = bands
+    assert groups == ["AAA", "BBB"]
+    assert set(fit.quote_date) == {f"2001-01-{day:02d}" for day in range(1, 26)}
+    assert set(diagnostic.quote_date).issubset(set(fit.quote_date))
+    assert fit.settlement_date.max() < scored.quote_date.min()
+    assert diagnostic.settlement_date.max() < scored.quote_date.min()
+
+
+def test_full_train_refit_refuses_patience(experiment_config):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    experiment_config["refit_full_train"] = True
+    experiment_config["training"]["patience"] = 5
+    with pytest.raises(ValueError, match="patience"):
+        CDFExperiment(experiment_config)
+
 def test_pooled_crash_after_first_shard_resumes_checkpoint_without_refit(experiment_config, monkeypatch):
     from pathlib import Path
     from dskit.pipeline.libs.cdf_experiment import CDFExperiment, AtomicFitStore

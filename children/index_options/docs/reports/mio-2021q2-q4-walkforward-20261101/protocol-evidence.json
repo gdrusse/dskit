@@ -1,0 +1,689 @@
+{
+  "status": "execution_in_progress",
+  "classification": "retrospective development",
+  "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2",
+  "proofs": {
+    "select-preq2.json": {
+      "summary": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/fits/select-preq2-deterministic/pooled/context_chain/selected_mlp64_s29/2/pooled/completed/summary.json",
+      "summary_sha256": "332b9803970f19019f163949e2ffb48e6bb5aeecabaa246e3989369de536e9ee",
+      "selected_epochs": [
+        46
+      ],
+      "total_epochs": [
+        96
+      ],
+      "diagnostics": [
+        {
+          "epoch_zero_monitor_loss": 1.0499352543640366,
+          "finite_gradients": true,
+          "optimizer_steps": 217920,
+          "parameter_delta_l2": 8.558624438108072,
+          "parameters": 3073,
+          "step_path": "cuda_graph"
+        }
+      ],
+      "band_counts": [
+        1162237,
+        29113,
+        8278
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2020-12-23"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2020-12-24"
+          ]
+        },
+        {
+          "quote_date": [
+            "2020-12-28",
+            "2021-02-25"
+          ],
+          "settlement_date": [
+            "2020-12-31",
+            "2021-02-26"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-03-01",
+            "2021-03-25"
+          ],
+          "settlement_date": [
+            "2021-03-05",
+            "2021-03-26"
+          ]
+        }
+      ],
+      "monitor_losses": [
+        [
+          1.020467041805674,
+          1.019365209259977,
+          1.0204606424693512,
+          1.0203330868418932,
+          1.018510298190569,
+          1.018342093983747,
+          1.0189721945599084,
+          1.0187004694979607,
+          1.0176282200721103,
+          1.01587573865447,
+          1.0224670624410293,
+          1.0168973375518036,
+          1.017250688559157,
+          1.016029771275831,
+          1.0190440750174223,
+          1.0193467590750331,
+          1.014990252733683,
+          1.0173719389270717,
+          1.0158662369255447,
+          1.0189936148412475,
+          1.0171555758275097,
+          1.017391109179831,
+          1.0198522474800376,
+          1.015294357689821,
+          1.0154703780285477,
+          1.0222465715457512,
+          1.0156199957202365,
+          1.020539396817416,
+          1.017776791308848,
+          1.0203853236683373,
+          1.014393106208568,
+          1.0166742802116138,
+          1.0153445410567674,
+          1.0165327430086193,
+          1.0154185077859577,
+          1.0185632934185616,
+          1.0172952478406099,
+          1.0187349958410987,
+          1.0211496003099707,
+          1.0192458805340698,
+          1.0162546730097257,
+          1.0166066901495308,
+          1.0180716264111027,
+          1.015197920584168,
+          1.0174019912220555,
+          1.0139743338558567,
+          1.01905351375663,
+          1.0181413472412124,
+          1.0223284891750388,
+          1.0192347726660675,
+          1.0180476022539304,
+          1.0179322243693987,
+          1.0178772506116782,
+          1.0156760615991776,
+          1.0175912148672057,
+          1.0168214348551488,
+          1.0162498485200422,
+          1.0208574175505853,
+          1.0221971173474371,
+          1.014305311620068,
+          1.0165030001958635,
+          1.015291335562017,
+          1.0165458450762308,
+          1.017495365097555,
+          1.0174418920373545,
+          1.016626946611156,
+          1.0175370326427835,
+          1.018452822429613,
+          1.0203218171881558,
+          1.016577959862541,
+          1.0151544022080385,
+          1.0189078213770137,
+          1.0196303978528698,
+          1.0153633056334928,
+          1.0210001372643762,
+          1.0174070617539104,
+          1.015944375614833,
+          1.0187219477791933,
+          1.0203473395000469,
+          1.0185248078376146,
+          1.018111174976826,
+          1.0148033510619676,
+          1.0158534821999807,
+          1.01815691747954,
+          1.0181050104864087,
+          1.0162722721710091,
+          1.018460014535264,
+          1.0203207329956763,
+          1.0213242230197965,
+          1.0190136473622198,
+          1.0162813359753122,
+          1.0192432478401254,
+          1.0208633494510702,
+          1.0202972211205892,
+          1.016582510802248,
+          1.0179486273574399
+        ]
+      ],
+      "cuda_environment": {
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8"
+      }
+    },
+    "select-preq3.json": {
+      "summary": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/fits/select-preq3-deterministic/pooled/context_chain/selected_mlp64_s29/3/pooled/completed/summary.json",
+      "summary_sha256": "6c4ac486c125f57a48bd8cde543775860bee7760eb38b99b0182080dba9de459",
+      "selected_epochs": [
+        36
+      ],
+      "total_epochs": [
+        86
+      ],
+      "diagnostics": [
+        {
+          "epoch_zero_monitor_loss": 0.8225751467637515,
+          "finite_gradients": true,
+          "optimizer_steps": 205110,
+          "parameter_delta_l2": 8.521923365776795,
+          "parameters": 3073,
+          "step_path": "cuda_graph"
+        }
+      ],
+      "band_counts": [
+        1220953,
+        31528,
+        7627
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2021-03-25"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2021-03-26"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-04-01",
+            "2021-05-27"
+          ],
+          "settlement_date": [
+            "2021-04-09",
+            "2021-05-28"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-06-01",
+            "2021-06-24"
+          ],
+          "settlement_date": [
+            "2021-06-04",
+            "2021-06-25"
+          ]
+        }
+      ],
+      "monitor_losses": [
+        [
+          0.7931737693036317,
+          0.7944905559419904,
+          0.796576864279662,
+          0.796617818677993,
+          0.7939504228863481,
+          0.7957893397317448,
+          0.7918719792732275,
+          0.7938971533200462,
+          0.7977804737449081,
+          0.7942024519429929,
+          0.796318757793425,
+          0.8016029630839172,
+          0.7972973522750416,
+          0.7992155028950585,
+          0.7990603045649257,
+          0.7967054590519137,
+          0.7947348447117173,
+          0.7972463217904716,
+          0.7992219725685374,
+          0.7975726505070531,
+          0.8002212136708252,
+          0.8021579064352988,
+          0.7968855128885071,
+          0.7965747913727187,
+          0.7948583933820607,
+          0.8015669114479238,
+          0.7949163795871013,
+          0.800931904653122,
+          0.7994303004714909,
+          0.7960914427018521,
+          0.7949216119579273,
+          0.7956130955751918,
+          0.7956813224820813,
+          0.8015952314833263,
+          0.7955689363485579,
+          0.789470144223643,
+          0.7984768687159873,
+          0.7967563975850342,
+          0.7949447457559428,
+          0.8024692245139723,
+          0.7989565954273614,
+          0.7978381632462963,
+          0.7993744705300339,
+          0.8003901964312348,
+          0.8027978847795083,
+          0.7994835771418864,
+          0.8043588136309148,
+          0.7989747598030684,
+          0.7988603151464023,
+          0.8037424763549574,
+          0.8011697110541017,
+          0.7973445342640099,
+          0.7980075473357693,
+          0.7956111234342319,
+          0.7928123554675656,
+          0.7948367714481891,
+          0.8021566548885981,
+          0.7966290461376186,
+          0.7935310724816651,
+          0.7974945503902129,
+          0.798571105240499,
+          0.8075827906576903,
+          0.7981637096607419,
+          0.7995689071609957,
+          0.8027108903267128,
+          0.7952190556779395,
+          0.7993642926694964,
+          0.7967205944956856,
+          0.7979290729645119,
+          0.8015882671976344,
+          0.7985722661811244,
+          0.8034759365477105,
+          0.7959854288797997,
+          0.8002039704740117,
+          0.7974753607393005,
+          0.7990048493242853,
+          0.8035119171918749,
+          0.8026320708365318,
+          0.7952042196413118,
+          0.7986986116995026,
+          0.7981143717978317,
+          0.800269347076457,
+          0.796761567203535,
+          0.7950746171890728,
+          0.795267244822579,
+          0.7969981635243141
+        ]
+      ],
+      "cuda_environment": {
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8"
+      },
+      "q4_policy": "Reuse this pre-Q3 selected epoch count; train Q4 on all matured pre-October labels without using Q3/Q4 for epoch selection."
+    },
+    "fit-q2.json": {
+      "schema": "mio-quarter-refit-verification/v1",
+      "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q2-complete-cuda.json",
+      "config_sha256": "af74f00ac667ac036a0671db42242e83ec82c1b1e866a6a21188c7bbd951adcc",
+      "fold_sha256": "358e931c07f510a212cc8ce9d180b942a6d195fb860c39a14c7ec4c7bfe24585",
+      "cell": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/fits/refit-2021q2/pooled/context_chain/selected_mlp64_s29/2/pooled",
+      "weights_sha256": "fd2f3a087bd6ade50ccbe0afda2d770e2684b25991f207286e6c59988a40baf9",
+      "band_counts": [
+        1220953,
+        27878,
+        81269
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2021-03-25"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2021-03-26"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-02-02",
+            "2021-03-25"
+          ],
+          "settlement_date": [
+            "2021-02-05",
+            "2021-03-26"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-04-01",
+            "2021-06-30"
+          ],
+          "settlement_date": [
+            "2021-04-09",
+            "2021-08-27"
+          ]
+        }
+      ],
+      "total_epochs": [
+        46
+      ],
+      "best_epochs": [],
+      "diagnostics": [
+        {
+          "epoch_zero_monitor_loss": 0.8965672165633829,
+          "finite_gradients": true,
+          "optimizer_steps": 109710,
+          "parameter_delta_l2": 8.579757612226697,
+          "parameters": 3073,
+          "step_path": "cuda_graph"
+        }
+      ],
+      "selection_summary_sha256": "332b9803970f19019f163949e2ffb48e6bb5aeecabaa246e3989369de536e9ee",
+      "full_refit": true,
+      "training_labels_before_quarter_start": true
+    },
+    "fit-q3.json": {
+      "schema": "mio-quarter-refit-verification/v1",
+      "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q3-complete-cuda.json",
+      "config_sha256": "91d5735bddde3ecbf1524669f9e22b3b91187ce21e0c5ecfe971813a7701a591",
+      "fold_sha256": "fd698e477b51496cbed3333c3dc6b23bf522478353410426f44b2b41c8bb87fe",
+      "cell": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/fits/refit-2021q3/pooled/context_chain/selected_mlp64_s29/3/pooled",
+      "weights_sha256": "3020381079b3b024e59dfb1d653d739e85f20c1e6d51af7ca7b97e1b3e52d1b3",
+      "band_counts": [
+        1302290,
+        28525,
+        83028
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2021-06-24"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2021-06-25"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-05-04",
+            "2021-06-24"
+          ],
+          "settlement_date": [
+            "2021-05-07",
+            "2021-06-25"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-07-01",
+            "2021-09-30"
+          ],
+          "settlement_date": [
+            "2021-07-02",
+            "2021-11-19"
+          ]
+        }
+      ],
+      "total_epochs": [
+        36
+      ],
+      "best_epochs": [],
+      "diagnostics": [
+        {
+          "epoch_zero_monitor_loss": 0.877429916330578,
+          "finite_gradients": true,
+          "optimizer_steps": 91584,
+          "parameter_delta_l2": 8.157907583860391,
+          "parameters": 3073,
+          "step_path": "cuda_graph"
+        }
+      ],
+      "selection_summary_sha256": "6c4ac486c125f57a48bd8cde543775860bee7760eb38b99b0182080dba9de459",
+      "full_refit": true,
+      "training_labels_before_quarter_start": true
+    },
+    "fit-q4.json": {
+      "schema": "mio-quarter-refit-verification/v1",
+      "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q4-complete-cuda.json",
+      "config_sha256": "ec9ffdef534aa5001be689a4066f173f29ecce4664e3feac1887c0c7410df47f",
+      "fold_sha256": "3de8b7109f78ecba6f77ae0c2e593547c3c3ff13d69c54a18abef024e97ac262",
+      "cell": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/fits/refit-2021q4/pooled/context_chain/selected_mlp64_s29/4/pooled",
+      "weights_sha256": "92d4a1d020bbf5c925116deeaa1ed1707a632d8fa2488189649bbabee626f785",
+      "band_counts": [
+        1383824,
+        27461,
+        81943
+      ],
+      "band_dates": [
+        {
+          "quote_date": [
+            "2017-01-03",
+            "2021-09-23"
+          ],
+          "settlement_date": [
+            "2017-01-06",
+            "2021-09-24"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-08-04",
+            "2021-09-23"
+          ],
+          "settlement_date": [
+            "2021-08-06",
+            "2021-09-24"
+          ]
+        },
+        {
+          "quote_date": [
+            "2021-10-01",
+            "2021-12-31"
+          ],
+          "settlement_date": [
+            "2021-10-08",
+            "2022-02-18"
+          ]
+        }
+      ],
+      "total_epochs": [
+        36
+      ],
+      "best_epochs": [],
+      "diagnostics": [
+        {
+          "epoch_zero_monitor_loss": 0.8955601015327479,
+          "finite_gradients": true,
+          "optimizer_steps": 97308,
+          "parameter_delta_l2": 8.098053824359978,
+          "parameters": 3073,
+          "step_path": "cuda_graph"
+        }
+      ],
+      "selection_summary_sha256": "e4df8a2b80403c5d78d7867230d8ed019b561e7d136ac31ff12c6cee9c24f579",
+      "full_refit": true,
+      "training_labels_before_quarter_start": true
+    },
+    "m53-q2.json": {
+      "schema": "mio-m53-verification/v2",
+      "verified_at": "2026-11-01T08:04:52.778077+00:00",
+      "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q2-complete.json",
+      "config_sha256": "31ea2da51ce4e7a82dceb2f22b8ccc2609d9c419e6121489b2d9b7fd22bebaba",
+      "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/m53-q2/mio-2021q2-m53-quarter-frozen-complete-2021-06-30-f241df37",
+      "run_hash": "f241df3717220d4b26981c8653f0a58f8e257db72b0694772bc493dcd7862220",
+      "document_hash": "19d4c6f28641a31b6304a6f4273b895b3180814ff2d06751179fd42430d953a5",
+      "output": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/scores/m53-q2",
+      "files": {
+        "fit.json": {
+          "sha256": "6ded830f20056d324f9b8adcfe7dc95e9f1e871317db1bf2472957239f52eec1",
+          "bytes": 8383
+        },
+        "forecasts.parquet": {
+          "sha256": "16e30e16f54a6bea275411b7f25178358cdbfc4292aa5db877f49aba962e4afc",
+          "bytes": 37660130
+        },
+        "summary.json": {
+          "sha256": "240a17a17729a6be2297b0439159f0e9f5dd45d11387eb6a1342659338c889ff",
+          "bytes": 837
+        }
+      },
+      "rows": 324415,
+      "rows_by_fold": {
+        "1": 149226,
+        "2": 175189
+      },
+      "expected_learning_rows": 33850,
+      "quarter_start": "2021-04-01",
+      "blocks": 1,
+      "rows_fitted": 102151,
+      "identity_rows_exact": true,
+      "pit_maps_exact_reproduction": true,
+      "rolling_masks_verified": true,
+      "fitted_flags_exact": true,
+      "all_unfitted_rows_equal_model_fallback_exactly": true,
+      "reproduction": "Independent pipeline rerun has byte-identical forecasts and fit state. Empirical PIT maps, matured prior-row masks and fitted/fallback flags separately checked from source arrays."
+    },
+    "m53-q3.json": {
+      "schema": "mio-m53-verification/v2",
+      "verified_at": "2026-11-01T08:30:49.009120+00:00",
+      "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q3-complete.json",
+      "config_sha256": "f42ed1b1beab538516d1077073c5b04788c28452b817e0c189d9e7475ff1b639",
+      "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/m53-q3/mio-2021q3-m53-quarter-frozen-complete-2021-09-30-bc6b3b7b",
+      "run_hash": "bc6b3b7b32f5b379b9d35777a160fbbac428592da1a1af0010140f6f2d391204",
+      "document_hash": "b8f1605309a23f170451a317d97f4a63e7dfbb553240332d13b09fcc44302124",
+      "output": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/scores/m53-q3",
+      "files": {
+        "fit.json": {
+          "sha256": "dd96c9da8d04d28c5d970cdb76068af5ba15ef279b71f60bbfe9a0bc85d933ff",
+          "bytes": 15249
+        },
+        "forecasts.parquet": {
+          "sha256": "ce179e548f2106b3dbe8952571ba57b381f5a5a3f03ba262877c48b9c890fdb1",
+          "bytes": 53600073
+        },
+        "summary.json": {
+          "sha256": "9d4ea230fd840ae0f0558c2b524e69ea6d45b1740d4c9192ab06bc4c6c9cca20",
+          "bytes": 877
+        }
+      },
+      "rows": 475799,
+      "rows_by_fold": {
+        "1": 149226,
+        "2": 150524,
+        "3": 176049
+      },
+      "expected_learning_rows": 70729,
+      "quarter_start": "2021-07-01",
+      "blocks": 1,
+      "rows_fitted": 100865,
+      "identity_rows_exact": true,
+      "pit_maps_exact_reproduction": true,
+      "rolling_masks_verified": true,
+      "fitted_flags_exact": true,
+      "all_unfitted_rows_equal_model_fallback_exactly": true,
+      "reproduction": "Empirical PIT maps, matured prior-row masks and fitted/fallback flags independently checked from source arrays. Shared method pipeline was separately reproduced byte-for-byte for Q2."
+    },
+    "m53-q4.json": {
+      "schema": "mio-m53-verification/v2",
+      "verified_at": "2026-11-01T08:32:06.391550+00:00",
+      "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q4-complete.json",
+      "config_sha256": "0efcf3b014fb5865e7e98107a5bc016ca1214df3b93d6a6cfad28d822d87d5bc",
+      "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/m53-q4/mio-2021q4-m53-quarter-frozen-complete-2021-12-31-740d7842",
+      "run_hash": "740d784253f8a7eb4b0e0de14e6ae233080e469317fb7b0f7ea38407c9938f29",
+      "document_hash": "6ec52c9ef16371a8383a66f7f63856d764fe09c86b50c05bffff3a41547210a2",
+      "output": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/scores/m53-q4",
+      "files": {
+        "fit.json": {
+          "sha256": "e7916d0e7576f49463ee60c4303468d9f070d517ef55336e32e0a95a3d36ff2a",
+          "bytes": 22237
+        },
+        "forecasts.parquet": {
+          "sha256": "c6e5bf26d0957bb4dbc97809fa79ee8a0aaddc576c412e9cacc36d851a213f66",
+          "bytes": 72492893
+        },
+        "summary.json": {
+          "sha256": "155e67b8b8bdcdd2e32df48c8f2fcb34858520292ad4ecfa7713706aab977a3e",
+          "bytes": 917
+        }
+      },
+      "rows": 655220,
+      "rows_by_fold": {
+        "1": 149226,
+        "2": 175189,
+        "3": 150017,
+        "4": 180788
+      },
+      "expected_learning_rows": 123261,
+      "quarter_start": "2021-10-01",
+      "blocks": 1,
+      "rows_fitted": 103784,
+      "identity_rows_exact": true,
+      "pit_maps_exact_reproduction": true,
+      "rolling_masks_verified": true,
+      "fitted_flags_exact": true,
+      "all_unfitted_rows_equal_model_fallback_exactly": true,
+      "reproduction": "Empirical PIT maps, matured prior-row masks and fitted/fallback flags independently checked from source arrays. Shared method pipeline was separately reproduced byte-for-byte for Q2."
+    },
+    "hpo-provenance.json": {
+      "finding": "M53 is the saved complete forecast selected from 67 methods on pooled 2020-2023 twCRPS. The documented neural component uses max 150 epochs and patience 50; documentation explicitly says no additional HPO search was performed. Earlier L1/matrix screening used patience 10, a different training recipe. This rerun retains the selected seed29 recipe and does not invent a new patience setting.",
+      "sources": {
+        "children/index_options/docs/decisioning/technical-design.json": "2a07d74428becfabd5b6244307c3e4e8f9d6bc20b5dbf9f7f5325e39f45aa0f4",
+        "children/index_options/configs/run-strike-screen-fits-wf-wide-mlp64-s29.json": "fae9d0d3fd58b4a502d6b58c3e5c3d28b1d14ce66416a78eab53fa7406bafdce",
+        "children/index_options/configs/run-strike-screen-fits-L1.json": "f9f886039f2c1cc7722c0f650bf3f64d48716289570378821b4e609adb16921e",
+        "children/index_options/configs/run-edge-method-53-qa-mlp64-rolling-by-dispersion.json": "979efd9511c6522ee30156556328c5c10d984e51bd34d53bb8d60e8cde8946c1"
+      },
+      "classification": "retrospective development; 2024+ sealed",
+      "owner_constraints": [
+        "config changes only",
+        "Q3 and Q4 never epoch-selection validation",
+        "retrain Q4 with mature Q3 labels",
+        "freeze M53 weights at each quarter start"
+      ]
+    }
+  },
+  "prior_exposure_link": {
+    "previous_registry": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/protocol/exposure-registry.sqlite",
+    "previous_registry_id": "a3a3704c-94c0-442b-87e8-b377926c86cb",
+    "previous_registry_sha256": "ca4c727c00b2dedf4d39d58d40eebd5057a47dc18c71bbf6ebe610e29d05e6d9",
+    "previous_revision": 6,
+    "previous_dispositions": {
+      "dev_2021q2_walkforward_20261101": {
+        "action": "abandon",
+        "claim": "2f4635dc-7caf-496b-9e3d-494088dfac94",
+        "packet_id": "dev_2021q2_walkforward_20261101",
+        "reason": "Stopped before completion: inherited forecast panel truncates Q2 labels at quarter end, omitting the final decision week and later expiries. Repair data bounds via existing JSON machinery before a separate corrected replay; retain this claim and partial evidence.",
+        "revision": 3,
+        "sha256": "ddde57640a6527aa3a91fb3c5d35729ba721d569de06634e87ba5b118a3eca26"
+      },
+      "dev_2021q3_walkforward_20261101": {
+        "action": "retire",
+        "claim": null,
+        "packet_id": "dev_2021q3_walkforward_20261101",
+        "reason": "Unread forecast source superseded by full decision-window and settlement-tail coverage. Preserve the schedule and append corrected development packets after this disposition.",
+        "revision": 4,
+        "sha256": "f079830d97866f05179117c673b51188970430df20eca28f13d65a3552f2efb8"
+      },
+      "dev_2021q4_walkforward_20261101": {
+        "action": "retire",
+        "claim": null,
+        "packet_id": "dev_2021q4_walkforward_20261101",
+        "reason": "Unread forecast source superseded by full decision-window and settlement-tail coverage. Preserve the schedule and append corrected development packets after this disposition.",
+        "revision": 5,
+        "sha256": "c7b5d5267857782b594d6b4d0d30b33a4271ca5bcfa87ad83f308b8edd0db3ee"
+      }
+    },
+    "corrected_registry": {
+      "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/exposure-registry.sqlite",
+      "id": "df32f3df-3963-4de0-b1d8-04016c246fb4",
+      "domain": "index_options_MIO_complete_coverage_20261101"
+    },
+    "reason": "Existing StudyContract.re_exposed allows a non-development window to be repeated as development, but not development-to-development. Corrected source/forecast inputs are a separately identified retrospective study; do not rewrite or reset the disposed prior registry. All historical development exposure remains explicitly declared.",
+    "classification": "development, never fresh confirmation or holdout"
+  },
+  "methods": [
+    "w1_003_shock10_lp",
+    "nominal_lp",
+    "w1_003_lp"
+  ],
+  "quarters": [
+    "2021Q2",
+    "2021Q3",
+    "2021Q4"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "base": "978d72fa14294ba00fdb0251195540b0ab0d9004",
+  "owner": "Russell",
+  "authorization": "Owner approved Q2-Q4 reruns, configs only from current machinery, no new ADR, then evaluation reports, wrap, merge and purge. Earlier generic full-refit option is pending in this branch; no new runtime code written during this continuation.",
+  "scope": [
+    "dskit/pipeline/libs/cdf_experiment.py optional full-train refit",
+    "tests/pipeline_libs/test_cdf_experiment.py",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/*complete*.json and referenced folds/sources",
+    "Preserved original/exposed configs and Q3/Q4 original-date runs in mio-2021h2-exact-q2-20261031"
+  ],
+  "prior_reviews": {
+    "candidate": "85e9187e",
+    "correctness": "q2_final_correctness C0/M0",
+    "integration": "q2_final_integration C0/M0, 402 focused checks",
+    "new_scope": "Generic CDF full-refit option and corrected quarterly config/data/protocol bindings; prior split-ledger review remains evidence, not approval of new scope."
+  },
+  "invariants": [
+    "Legacy CDF behavior unchanged with refit_full_train omitted/false. Flag must be bool; true requires patience=None.",
+    "Full fit includes mature fit/calibration rows with settlement strictly before quarter start. Same-quarter scored labels never teach its fit.",
+    "Pre-Q2 selection46/96epochs; pre-Q3 selection36/86, patience50 max150. Final fits46/36/36. Q4 trains mature Q3 with no Q3/Q4 epoch selection.",
+    "Neural and M53 identities/source receipts agree. Single blend at quarter start; learning only from settled earlier forecast outcomes.",
+    "Same212-name cohort and exactlythree portfolio methods; economic settings unchanged except dates/folds/predictive/data identities.",
+    "All actualquarter sessions covered includingquarterend and settlementtail through2022-03-09; continuous market basis acrossyearboundary.",
+    "Old exposure registry remains terminal/preserved. Distinct corrected study conservatively declares2017-2023exposure and links oldregistry; no freshholdout claim.",
+    "Q3/Q4 bind ISRG/ANET actions acrosssettlementtail; unsupported actions refuse.",
+    "No2024+ data,providerpulls,liveorders,recorderinterruption,newADR."
+  ],
+  "checks": {
+    "focused_tests": "tests/pipeline_libs/test_cdf_experiment.py:86passed,2skipped earlier in task; no fullsuite",
+    "artifacts": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification",
+    "pending": [
+      "Q2-Q4 attested close receipts",
+      "9 standard reports with totals/countgates",
+      "quarterend marked metrics versussettledcohort metrics",
+      "merge,push,purge"
+    ]
+  },
+  "matrix": [
+    "config schema/default/flag",
+    "maturity boundaries including missing/unsettled labels",
+    "calibration/refit identity/sourcepins",
+    "epoch selection/optimizer diagnostics",
+    "M53 masks/PITmaps/freeze/fallback",
+    "quote/settlement coverage/corporateactions",
+    "prior exposure and serialquarterclaims",
+    "method/accountparameter parity",
+    "focused test quality/compatibility"
+  ],
+  "review_request": "Try to falsify these invariants across all listed entry points. Return every proven finding with consequence and severity, tests run, untested limits, and unresolved counts. Do not stop at the first finding or expand scope for cosmetic preferences. Execution/report gates remain pending; review covers runnable implementation/config candidate only."
+}

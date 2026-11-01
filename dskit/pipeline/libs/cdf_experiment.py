@@ -98,6 +98,7 @@ class CDFExperiment:
     KEYS = {"study", "panel", "panel_sha256", "output", "tickers", "arms",
             "candidates", "training", "capacity", "source_hashes", "dependencies",
             "date_upper_exclusive", "end_upper_exclusive"}
+    OPTIONAL_KEYS = {"refit_full_train"}
     ARM_KEYS = {"features", "sequence_indices", "context_indices", "observed_columns",
                 "min_fit", "min_cal", "min_disjoint"}
     CANDIDATE_KEYS = {"name", "adapters", "skip_reason"}
@@ -105,8 +106,11 @@ class CDFExperiment:
     DEFAULT_TICKER_HEADS = True
 
     def __init__(self, config):
-        if set(config) != self.KEYS:
+        if (set(config)-self.OPTIONAL_KEYS != self.KEYS
+                or type(config.get("refit_full_train", False)) is not bool):
             raise ValueError("invalid experiment keys")
+        if config.get("refit_full_train") and config["training"].get("patience") is not None:
+            raise ValueError("full training refit requires patience=None; select epochs in a prior fit")
         self.config = copy.deepcopy(config)
         self.study = ChronologicalCDFStudy(config["study"])
         self.output = Path(config["output"])
@@ -314,6 +318,12 @@ class CDFExperiment:
     def _bands(self, frame, calendar, fold, arm):
         s = self.config["study"]
         fit, cal, val = self.study.plan.bands(frame, fold, calendar)
+        if self.config.get("refit_full_train"):
+            from dskit.pipeline.kinds_split import label_reaches
+            window = self.study.plan.folds[fold]
+            dates, ends = frame[s["date"]], frame[s["end"]]
+            fit = frame[(dates >= window["train_start"]) & (dates <= window["train_end"])
+                        & ~label_reaches(ends, window["val_start"])]
         if arm["observed_columns"]:
             fit, cal, val = [b[b[arm["observed_columns"]].notna().any(axis=1)]
                              for b in (fit, cal, val)]
@@ -328,9 +338,16 @@ class CDFExperiment:
             if eligible:
                 groups.append(ticker)
         bands = tuple(b[b[s["group"]].isin(groups)] for b in (fit, cal, val))
-        if groups and not (bands[0][s["end"]].max() < bands[1][s["date"]].min()
-                           and bands[1][s["end"]].max() < bands[2][s["date"]].min()):
-            raise IntegrityError("chronological purge boundary violated")
+        if groups:
+            fit_end = bands[0][s["end"]].max()
+            cal_end = bands[1][s["end"]].max()
+            val_start = bands[2][s["date"]].min()
+            if self.config.get("refit_full_train"):
+                ordered = fit_end < val_start and cal_end < val_start
+            else:
+                ordered = fit_end < bands[1][s["date"]].min() and cal_end < val_start
+            if not ordered:
+                raise IntegrityError("chronological purge boundary violated")
         return bands, groups, admission
 
     def _settings(self, arm, adapter, regime, groups, nfit, hidden):

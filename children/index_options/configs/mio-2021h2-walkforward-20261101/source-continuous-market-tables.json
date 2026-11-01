@@ -1,0 +1,11 @@
+{
+  "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/continuous-market-tables-complete",
+  "as_of": "2026-11-01T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "archive/*/options_2021.parquet",
+    "archive/*/options_2022.parquet",
+    "manifest.json",
+    "run.json"
+  ]
+}
