@@ -43,6 +43,10 @@ Epochs were selected on chronological pre-quarter monitoring data. The outer dia
 
 Q4 includes mature Q3 outcomes in training and retains the pre-Q3 choice of 36 epochs. Its model does not reuse old fitted weights. M53 is fitted once at each quarter start using only prior forecast outcomes already settled at that time, then frozen during the quarter. A prior quarter forecast row named val may teach the next quarter once its outcome is known; it does not select the next quarter neural epoch count.
 
+## Q4 settlement input correction
+
+The first Q4 attempt failed when AVAV expired on 2022-02-18: its closing price existed, but compact chain inputs omitted later-expiry rows used to observe that day's adjustment basis. The failed run and exposure are retained and abandoned. A corrected source restores retained post-quarter rows outside forecast expiries; all original 2021 values, forecast-expiry quotes, fitted models and trading settings are unchanged. The corrected replay is pending supplemental review. [Correction and failure evidence](q4-tail-input-correction.json).
+
 ## Verification and limits
 
 - Each quarterly result requires an attested close receipt, all three completed methods, recorded replay parity, complete quarter calendars, no remaining open books after settlement, and reconciled trade profit, fees, contract counts and equity. The standard reports use MioRunRows → RowsToEvents → EventTotalsGate → EvaluationReport → ArtifactLinks. Money gates allow $0.005; count gates are exact.
