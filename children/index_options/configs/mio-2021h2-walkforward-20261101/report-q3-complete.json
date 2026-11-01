@@ -1,0 +1,2594 @@
+{
+  "name": "mio-2021q3-complete-quarter-evaluation",
+  "notes": "All three accepted methods; complete-quarter and settlement-tail replay. Money/count gates bind the attested source. Retrospective development.",
+  "pipeline": {
+    "result": {
+      "uses": "table-file",
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e/artifacts/json/378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786.json",
+        "source": "attested Q3 complete close_packet receipt; read only",
+        "retrieved": "2026-11-01",
+        "sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+        "expect": 6
+      },
+      "notes": "The method results this report restates; pinned by sha256."
+    },
+    "w1_003_lp_rows": {
+      "uses": "index_options.mio_run_events:MioRunRows",
+      "inputs": {
+        "table": "$result.table"
+      },
+      "params": {
+        "method": "w1_003_lp",
+        "tz": "America/New_York",
+        "multiplier": 100,
+        "tolerance": 0.005,
+        "times": {
+          "decision": "16:00",
+          "fill": "09:30",
+          "expiry": "16:00",
+          "deposit": "08:00"
+        },
+        "actions": {
+          "selected": "enter",
+          "cash": "hold",
+          "no_eligible_candidates": "hold",
+          "existing_cap_breach_cash": "skip",
+          "timeout_skipped": "skip"
+        }
+      },
+      "notes": "Restates the saved method result as event rows: each book is one unit bought at -premium (+ saved fees) on fill_date and sold at pnl - credit on close_date; refusals keep their saved reason."
+    },
+    "w1_003_lp_solve_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$w1_003_lp_rows.decisions"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "certificates",
+            "op": "!=",
+            "value": []
+          }
+        ]
+      },
+      "notes": "Decisions that carry solver certificates; mapping.explode refuses a row without the field, so empty-certificate decisions are dropped here."
+    },
+    "w1_003_lp_events": {
+      "uses": "dskit.evaluation.nodes:RowsToEvents",
+      "inputs": {
+        "decisions": "$w1_003_lp_rows.decisions",
+        "orders": "$w1_003_lp_rows.orders",
+        "refusals": "$w1_003_lp_rows.refusals",
+        "skips": "$w1_003_lp_rows.skips",
+        "fills": "$w1_003_lp_rows.fills",
+        "cashflows": "$w1_003_lp_rows.cashflows",
+        "solves": "$w1_003_lp_solve_rows.records"
+      },
+      "params": {
+        "run_start": {
+          "tz": "America/New_York",
+          "project": "index_options",
+          "title": "MIO 2021 Q3 exact Q2 replay: w1_003_lp",
+          "units": {
+            "score": "raw",
+            "money": "USD"
+          },
+          "signed_prices": true,
+          "code": {
+            "scope": "pinned Q2 method runtime, code4 snapshot",
+            "document_hash": "8116c558d8355c2fa343f540ac7cc195cb47761c78992d590e62367a12d7e5a7"
+          },
+          "data": {
+            "mio_receipt": {
+              "run_dir": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/runs/mio-q3/mio-2021q3-top2-frozen2019-exact-q2-development-2021-09-30-d96f54e8",
+              "document_hash": "8116c558d8355c2fa343f540ac7cc195cb47761c78992d590e62367a12d7e5a7",
+              "node": "close_packet",
+              "port": "receipt"
+            },
+            "mio_result_sha256": "3fced825df24681c719c6a112c287a5a211feac9f047c9a151841570ffe3476f",
+            "mio_config_sha256": "7b77a608c9c56ebac209f909ef6210d881d2c4d4db8ef22a9c6db5047cf75277",
+            "predictive_selection": "Q2 frozen 2019 recipe, Q3 dates",
+            "coverage": {
+              "start": "2021-07-01",
+              "end_before": "2021-10-01",
+              "account_sessions": 64,
+              "decision_dates": 14,
+              "reused_sessions": 0,
+              "new_sessions": 64,
+              "source": "attested Q3 calendar and completed method, receipt verified"
+            }
+          }
+        },
+        "map": {
+          "decisions": {
+            "fields": {
+              "decision_id": "decision_id",
+              "action": "action",
+              "reason": "reason",
+              "detail": "detail",
+              "model": "model"
+            }
+          },
+          "orders": {
+            "instrument": "instrument",
+            "fields": {
+              "order_id": "order_id",
+              "decision_id": "decision_id",
+              "side": "side",
+              "qty": "qty"
+            }
+          },
+          "refusals": {
+            "instrument": "instrument",
+            "fields": {
+              "decision_id": "decision_id",
+              "order_id": "order_id",
+              "reason": "reason",
+              "detail": "detail"
+            }
+          },
+          "skips": {
+            "instrument": "instrument",
+            "fields": {
+              "decision_id": "decision_id",
+              "reason": "reason",
+              "detail": "detail"
+            }
+          },
+          "fills": {
+            "instrument": "instrument",
+            "fields": {
+              "fill_id": "fill_id",
+              "order_id": "order_id",
+              "side": "side",
+              "qty": "qty",
+              "price": "price",
+              "fee": "fee",
+              "tag": "tag"
+            }
+          },
+          "cashflows": {
+            "fields": {
+              "amount": "amount",
+              "rule": "rule",
+              "detail": "detail"
+            }
+          },
+          "solves": {
+            "explode": "certificates",
+            "fields": {
+              "solver": "solver",
+              "status": "status",
+              "termination": "termination",
+              "objective": "objective",
+              "bound": "bound",
+              "gap": "gap",
+              "seconds": "seconds",
+              "variables": "variables",
+              "constraints": "constraints"
+            }
+          }
+        }
+      },
+      "notes": "Event equity between a fill and its expiry is at cost (the unit is held at its premium); the marked daily curve is the day-by-day ledger table."
+    },
+    "w1_003_lp_gate": {
+      "uses": "dskit.evaluation.gate:EventTotalsGate",
+      "inputs": {
+        "events": "$w1_003_lp_events.events",
+        "expected": "$w1_003_lp_rows.expected"
+      },
+      "params": {
+        "checks": {
+          "net_pnl": {
+            "expected": "pnl",
+            "tolerance": 0.005
+          },
+          "final_equity": {
+            "expected": "final_equity",
+            "tolerance": 0.005
+          },
+          "contributions": {
+            "expected": "contributions",
+            "tolerance": 0.005
+          },
+          "fees": {
+            "expected": "fees",
+            "tolerance": 0.005
+          },
+          "fill_count": {
+            "expected": "fills",
+            "tolerance": 0
+          },
+          "refusal_count": {
+            "expected": "refusals",
+            "tolerance": 0
+          },
+          "decision_count": {
+            "expected": "decisions",
+            "tolerance": 0
+          }
+        }
+      },
+      "notes": "Exact-match gate (ADR-0283): refuses, and no report is written, unless the events' net P&L, final equity, contributions and fees equal the pinned result.json's for this method to the cent, and the event counts (fills, refusals, decisions) equal the saved ones. The net P&L is built from the saved per-book pnl, so the gate proves the event book reproduces the saved totals and counts, not an independent settlement."
+    },
+    "w1_003_lp_filled_band": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$w1_003_lp_rows.filled"
+      },
+      "params": {
+        "field": "dte_band",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 1
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 7
+              }
+            ],
+            "value": "1-7"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 8
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 14
+              }
+            ],
+            "value": "8-14"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 15
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 21
+              }
+            ],
+            "value": "15-21"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 22
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 28
+              }
+            ],
+            "value": "22-28"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 29
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 35
+              }
+            ],
+            "value": "29-35"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 36
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 42
+              }
+            ],
+            "value": "36-42"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 43
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 49
+              }
+            ],
+            "value": "43-49"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 50
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 60
+              }
+            ],
+            "value": "50-60"
+          },
+          {
+            "when": [],
+            "value": "other"
+          }
+        ]
+      }
+    },
+    "w1_003_lp_refused_band": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$w1_003_lp_rows.refused"
+      },
+      "params": {
+        "field": "dte_band",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 1
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 7
+              }
+            ],
+            "value": "1-7"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 8
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 14
+              }
+            ],
+            "value": "8-14"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 15
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 21
+              }
+            ],
+            "value": "15-21"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 22
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 28
+              }
+            ],
+            "value": "22-28"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 29
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 35
+              }
+            ],
+            "value": "29-35"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 36
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 42
+              }
+            ],
+            "value": "36-42"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 43
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 49
+              }
+            ],
+            "value": "43-49"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 50
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 60
+              }
+            ],
+            "value": "50-60"
+          },
+          {
+            "when": [],
+            "value": "other"
+          }
+        ]
+      }
+    },
+    "w1_003_lp_filled_ticker_dte": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$w1_003_lp_filled_band.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "dte_band"
+        ],
+        "aggregates": {
+          "books": {
+            "op": "count"
+          },
+          "contracts": {
+            "op": "sum",
+            "field": "contracts"
+          },
+          "fees": {
+            "op": "sum",
+            "field": "fees"
+          },
+          "net_pnl": {
+            "op": "sum",
+            "field": "pnl"
+          }
+        }
+      }
+    },
+    "w1_003_lp_refused_ticker_dte": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$w1_003_lp_refused_band.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "dte_band",
+          "reason"
+        ],
+        "aggregates": {
+          "refusals": {
+            "op": "count"
+          }
+        }
+      }
+    },
+    "w1_003_lp_report": {
+      "uses": "dskit.evaluation.nodes:EvaluationReport",
+      "inputs": {
+        "events": "$w1_003_lp_gate.events"
+      },
+      "params": {
+        "out_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/reports/q3/w1_003_lp",
+        "sections": [
+          "summary",
+          "overview",
+          "equity",
+          "trades",
+          "decisions",
+          "optimizer",
+          "cash",
+          "distributions",
+          "periods",
+          "provenance"
+        ],
+        "tables": {
+          "ledger": {
+            "title": "Day-by-day ledger (marked daily curve)",
+            "columns": [
+              "date",
+              "deposit",
+              "selected_books",
+              "selected_contracts",
+              "filled_books",
+              "filled_contracts",
+              "entry_fees",
+              "refused_books",
+              "refusal_reasons",
+              "expired_books",
+              "expiry_pnl",
+              "cash",
+              "reserve",
+              "funding",
+              "open_books",
+              "realized",
+              "equity",
+              "nav",
+              "drawdown"
+            ],
+            "rows": "$w1_003_lp_rows.ledger",
+            "formats": {
+              "deposit": "money",
+              "selected_books": "count",
+              "selected_contracts": "count",
+              "filled_books": "count",
+              "filled_contracts": "count",
+              "entry_fees": "money",
+              "refused_books": "count",
+              "expired_books": "count",
+              "expiry_pnl": "pnl",
+              "cash": "money",
+              "reserve": "money",
+              "funding": "money",
+              "open_books": "count",
+              "realized": "pnl",
+              "equity": "money"
+            },
+            "note": "One row per account session. Cash, reserve, funding, equity, NAV and drawdown are the run saved marked daily curve. Other columns join selected, filled, refused and expiring books. Selection columns are grouped by attempted fill date; rejected books may show reduced selected quantities."
+          },
+          "marked-figures": {
+            "title": "Saved marked figures (authoritative)",
+            "columns": [
+              "figure",
+              "value"
+            ],
+            "rows": "$w1_003_lp_rows.marked",
+            "note": "From the pinned result.json, never recomputed. The event-based statistics above (TWR, drawdown, Sharpe) value an open book at cost between its fill and expiry, so they differ from twr and max_drawdown here; the MIO marked figures are authoritative. See children/index_options/docs/explanations/mio-glossary.md."
+          },
+          "gate-comparison": {
+            "title": "Exact-match gate: events against the saved result",
+            "columns": [
+              "measure",
+              "expected",
+              "actual",
+              "diff",
+              "tolerance",
+              "ok"
+            ],
+            "rows": "$w1_003_lp_gate.comparison",
+            "note": "expected is result.json's value; actual is recomputed from the events. Net P&L is built from the saved per-book pnl, so this proves the event book reproduces the saved totals and counts, not an independent settlement."
+          },
+          "ticker-dte": {
+            "title": "Filled books by ticker and DTE",
+            "columns": [
+              "symbol",
+              "dte_band",
+              "books",
+              "contracts",
+              "fees",
+              "net_pnl"
+            ],
+            "rows": "$w1_003_lp_filled_ticker_dte.records",
+            "formats": {
+              "books": "count",
+              "contracts": "count",
+              "fees": "money",
+              "net_pnl": "pnl"
+            }
+          },
+          "refusals-ticker-dte": {
+            "title": "Fill-stage refusals by ticker, DTE and reason",
+            "columns": [
+              "symbol",
+              "dte_band",
+              "reason",
+              "refusals"
+            ],
+            "rows": "$w1_003_lp_refused_ticker_dte.records",
+            "formats": {
+              "refusals": "count"
+            },
+            "note": "Books selected by a decision but refused at the next session's fill. Decision-stage refusals have no DTE and sit in the decision log."
+          },
+          "run-identity": {
+            "title": "Run identity and reused coverage",
+            "columns": [
+              "field",
+              "value"
+            ],
+            "rows": [
+              {
+                "field": "MIO method",
+                "value": "w1_003_lp"
+              },
+              {
+                "field": "cohort",
+                "value": "212 accepted names"
+              },
+              {
+                "field": "account window",
+                "value": "2021-07-01 through 2021-09-30; 64 sessions"
+              },
+              {
+                "field": "decision dates",
+                "value": "14"
+              },
+              {
+                "field": "coverage action",
+                "value": "new complete coverage; independent reset account"
+              },
+              {
+                "field": "source MIO result SHA256",
+                "value": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786"
+              },
+              {
+                "field": "source MIO document hash",
+                "value": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7"
+              },
+              {
+                "field": "source MIO config SHA256",
+                "value": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93"
+              },
+              {
+                "field": "predictive recipe",
+                "value": "M53 frozen at quarter start; mature pre-quarter MLP64 seed29 refit; selected epochs 36"
+              },
+              {
+                "field": "source run",
+                "value": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e"
+              }
+            ],
+            "note": "Attested completed replay and verified source identities. Standard report totals/counts are gated against the saved result."
+          },
+          "quarter-boundary": {
+            "title": "Quarter-end marked account and later settled cohort",
+            "columns": [
+              "figure",
+              "value"
+            ],
+            "rows": [
+              {
+                "figure": "quarter",
+                "value": "2021Q3"
+              },
+              {
+                "figure": "method",
+                "value": "w1_003_lp"
+              },
+              {
+                "figure": "sessions",
+                "value": 64
+              },
+              {
+                "figure": "decisions",
+                "value": 14
+              },
+              {
+                "figure": "filled_books",
+                "value": 6
+              },
+              {
+                "figure": "filled_legs",
+                "value": 9
+              },
+              {
+                "figure": "filled_contracts",
+                "value": 56
+              },
+              {
+                "figure": "refused_books",
+                "value": 15
+              },
+              {
+                "figure": "fees",
+                "value": 36.4
+              },
+              {
+                "figure": "contributions",
+                "value": 16000.0
+              },
+              {
+                "figure": "quarter_end_date",
+                "value": "2021-09-30"
+              },
+              {
+                "figure": "quarter_end_equity",
+                "value": 13009.099999999999
+              },
+              {
+                "figure": "quarter_end_open_books",
+                "value": 4
+              },
+              {
+                "figure": "quarter_end_contributions",
+                "value": 16000.0
+              },
+              {
+                "figure": "quarter_end_nav",
+                "value": 0.7644446933198512
+              },
+              {
+                "figure": "quarter_end_twr",
+                "value": -0.2355553066801488
+              },
+              {
+                "figure": "quarter_end_pnl_marked",
+                "value": -2990.9000000000015
+              },
+              {
+                "figure": "quarter_max_drawdown",
+                "value": -0.2446785024366115
+              },
+              {
+                "figure": "settled_pnl",
+                "value": -3636.4
+              },
+              {
+                "figure": "settled_equity",
+                "value": 12363.6
+              },
+              {
+                "figure": "settled_twr",
+                "value": -0.27348637412816346
+              },
+              {
+                "figure": "settled_max_drawdown",
+                "value": -0.2737550847468071
+              },
+              {
+                "figure": "last_trade_settlement",
+                "value": "2021-10-29"
+              },
+              {
+                "figure": "last_curve_date",
+                "value": "2021-12-06"
+              },
+              {
+                "figure": "replay_parity",
+                "value": true
+              }
+            ],
+            "note": "Quarter figures stop on the last trading day of the named quarter. Settled figures include later expiries of positions opened in that quarter; open books are marked daily in the MIO ledger."
+          }
+        },
+        "narrative_driver": false,
+        "caveats": [
+          "Simulated 2021 Q3 fills against displayed depth. Retrospective development; prior method selection used 2020\u20132023, so this is not an untouched historical holdout.",
+          "Statistics below come from the event book, which values open books at cost between fills (TWR, drawdown, Sharpe, exposure). The MIO result's marked figures are authoritative: see 'Saved marked figures' and the day-by-day ledger.",
+          "Each book is one unit at its net premium; a credit book appears as a buy at a negative price. Totals are exact; direction and notional statistics are not meaningful per book.",
+          "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
+          "Outer portfolio solve: 900-second limit, one thread, relative gap 0.01 and absolute gap $50; a usable incumbent may be returned on timeout. Inner book construction has separate tighter limits.",
+          "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md.",
+          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times.",
+          "Ledger selected_contracts can include reduced quantities for refused orders; use the linked report index orders-and-fills.csv selected_quantity for exact optimizer demand.",
+          "Each quarter is an independent $10,000 starting account plus $1,000 every 14 days. Do not compound returns across these independent accounts.",
+          "The report includes settlement after quarter end. See the quarter-end versus settled-cohort table for the requested quarter boundary."
+        ],
+        "statistic_labels": {
+          "twr": "twr (at cost)",
+          "max_drawdown": "max_drawdown (at cost)",
+          "max_drawdown_pct": "max_drawdown_pct (at cost)",
+          "max_drawdown_minutes": "max_drawdown_minutes (at cost)",
+          "daily_mean_return": "daily_mean_return (at cost)",
+          "daily_sharpe": "daily_sharpe (at cost)",
+          "daily_sharpe_ci_low": "daily_sharpe_ci_low (at cost)",
+          "daily_sharpe_ci_high": "daily_sharpe_ci_high (at cost)",
+          "psr": "psr (at cost)",
+          "dsr": "dsr (at cost)",
+          "turnover_per_day": "turnover_per_day (at cost)",
+          "avg_exposure": "avg_exposure (at cost)",
+          "refusal_rate": "refusal_rate (decisions)",
+          "skip_rate": "skip_rate (decisions)"
+        },
+        "title": "MIO 2021 Q3: w1_003_lp \u2014 complete coverage, quarter-start M53"
+      },
+      "notes": "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md. Simulated EOD displayed-depth fills, not broker liquidity or proof of profitability."
+    },
+    "w1_003_shock10_lp_rows": {
+      "uses": "index_options.mio_run_events:MioRunRows",
+      "inputs": {
+        "table": "$result.table"
+      },
+      "params": {
+        "method": "w1_003_shock10_lp",
+        "tz": "America/New_York",
+        "multiplier": 100,
+        "tolerance": 0.005,
+        "times": {
+          "decision": "16:00",
+          "fill": "09:30",
+          "expiry": "16:00",
+          "deposit": "08:00"
+        },
+        "actions": {
+          "selected": "enter",
+          "cash": "hold",
+          "no_eligible_candidates": "hold",
+          "existing_cap_breach_cash": "skip",
+          "timeout_skipped": "skip"
+        }
+      },
+      "notes": "Restates the saved method result as event rows: each book is one unit bought at -premium (+ saved fees) on fill_date and sold at pnl - credit on close_date; refusals keep their saved reason."
+    },
+    "w1_003_shock10_lp_solve_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$w1_003_shock10_lp_rows.decisions"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "certificates",
+            "op": "!=",
+            "value": []
+          }
+        ]
+      },
+      "notes": "Decisions that carry solver certificates; mapping.explode refuses a row without the field, so empty-certificate decisions are dropped here."
+    },
+    "w1_003_shock10_lp_events": {
+      "uses": "dskit.evaluation.nodes:RowsToEvents",
+      "inputs": {
+        "decisions": "$w1_003_shock10_lp_rows.decisions",
+        "orders": "$w1_003_shock10_lp_rows.orders",
+        "refusals": "$w1_003_shock10_lp_rows.refusals",
+        "skips": "$w1_003_shock10_lp_rows.skips",
+        "fills": "$w1_003_shock10_lp_rows.fills",
+        "cashflows": "$w1_003_shock10_lp_rows.cashflows",
+        "solves": "$w1_003_shock10_lp_solve_rows.records"
+      },
+      "params": {
+        "run_start": {
+          "tz": "America/New_York",
+          "project": "index_options",
+          "title": "MIO 2021 Q3 exact Q2 replay: w1_003_shock10_lp",
+          "units": {
+            "score": "raw",
+            "money": "USD"
+          },
+          "signed_prices": true,
+          "code": {
+            "scope": "pinned Q2 method runtime, code4 snapshot",
+            "document_hash": "8116c558d8355c2fa343f540ac7cc195cb47761c78992d590e62367a12d7e5a7"
+          },
+          "data": {
+            "mio_receipt": {
+              "run_dir": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/runs/mio-q3/mio-2021q3-top2-frozen2019-exact-q2-development-2021-09-30-d96f54e8",
+              "document_hash": "8116c558d8355c2fa343f540ac7cc195cb47761c78992d590e62367a12d7e5a7",
+              "node": "close_packet",
+              "port": "receipt"
+            },
+            "mio_result_sha256": "3fced825df24681c719c6a112c287a5a211feac9f047c9a151841570ffe3476f",
+            "mio_config_sha256": "7b77a608c9c56ebac209f909ef6210d881d2c4d4db8ef22a9c6db5047cf75277",
+            "predictive_selection": "Q2 frozen 2019 recipe, Q3 dates",
+            "coverage": {
+              "start": "2021-07-01",
+              "end_before": "2021-10-01",
+              "account_sessions": 64,
+              "decision_dates": 14,
+              "reused_sessions": 0,
+              "new_sessions": 64,
+              "source": "attested Q3 calendar and completed method, receipt verified"
+            }
+          }
+        },
+        "map": {
+          "decisions": {
+            "fields": {
+              "decision_id": "decision_id",
+              "action": "action",
+              "reason": "reason",
+              "detail": "detail",
+              "model": "model"
+            }
+          },
+          "orders": {
+            "instrument": "instrument",
+            "fields": {
+              "order_id": "order_id",
+              "decision_id": "decision_id",
+              "side": "side",
+              "qty": "qty"
+            }
+          },
+          "refusals": {
+            "instrument": "instrument",
+            "fields": {
+              "decision_id": "decision_id",
+              "order_id": "order_id",
+              "reason": "reason",
+              "detail": "detail"
+            }
+          },
+          "skips": {
+            "instrument": "instrument",
+            "fields": {
+              "decision_id": "decision_id",
+              "reason": "reason",
+              "detail": "detail"
+            }
+          },
+          "fills": {
+            "instrument": "instrument",
+            "fields": {
+              "fill_id": "fill_id",
+              "order_id": "order_id",
+              "side": "side",
+              "qty": "qty",
+              "price": "price",
+              "fee": "fee",
+              "tag": "tag"
+            }
+          },
+          "cashflows": {
+            "fields": {
+              "amount": "amount",
+              "rule": "rule",
+              "detail": "detail"
+            }
+          },
+          "solves": {
+            "explode": "certificates",
+            "fields": {
+              "solver": "solver",
+              "status": "status",
+              "termination": "termination",
+              "objective": "objective",
+              "bound": "bound",
+              "gap": "gap",
+              "seconds": "seconds",
+              "variables": "variables",
+              "constraints": "constraints"
+            }
+          }
+        }
+      },
+      "notes": "Event equity between a fill and its expiry is at cost (the unit is held at its premium); the marked daily curve is the day-by-day ledger table."
+    },
+    "w1_003_shock10_lp_gate": {
+      "uses": "dskit.evaluation.gate:EventTotalsGate",
+      "inputs": {
+        "events": "$w1_003_shock10_lp_events.events",
+        "expected": "$w1_003_shock10_lp_rows.expected"
+      },
+      "params": {
+        "checks": {
+          "net_pnl": {
+            "expected": "pnl",
+            "tolerance": 0.005
+          },
+          "final_equity": {
+            "expected": "final_equity",
+            "tolerance": 0.005
+          },
+          "contributions": {
+            "expected": "contributions",
+            "tolerance": 0.005
+          },
+          "fees": {
+            "expected": "fees",
+            "tolerance": 0.005
+          },
+          "fill_count": {
+            "expected": "fills",
+            "tolerance": 0
+          },
+          "refusal_count": {
+            "expected": "refusals",
+            "tolerance": 0
+          },
+          "decision_count": {
+            "expected": "decisions",
+            "tolerance": 0
+          }
+        }
+      },
+      "notes": "Exact-match gate (ADR-0283): refuses, and no report is written, unless the events' net P&L, final equity, contributions and fees equal the pinned result.json's for this method to the cent, and the event counts (fills, refusals, decisions) equal the saved ones. The net P&L is built from the saved per-book pnl, so the gate proves the event book reproduces the saved totals and counts, not an independent settlement."
+    },
+    "w1_003_shock10_lp_filled_band": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$w1_003_shock10_lp_rows.filled"
+      },
+      "params": {
+        "field": "dte_band",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 1
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 7
+              }
+            ],
+            "value": "1-7"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 8
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 14
+              }
+            ],
+            "value": "8-14"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 15
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 21
+              }
+            ],
+            "value": "15-21"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 22
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 28
+              }
+            ],
+            "value": "22-28"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 29
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 35
+              }
+            ],
+            "value": "29-35"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 36
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 42
+              }
+            ],
+            "value": "36-42"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 43
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 49
+              }
+            ],
+            "value": "43-49"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 50
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 60
+              }
+            ],
+            "value": "50-60"
+          },
+          {
+            "when": [],
+            "value": "other"
+          }
+        ]
+      }
+    },
+    "w1_003_shock10_lp_refused_band": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$w1_003_shock10_lp_rows.refused"
+      },
+      "params": {
+        "field": "dte_band",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 1
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 7
+              }
+            ],
+            "value": "1-7"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 8
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 14
+              }
+            ],
+            "value": "8-14"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 15
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 21
+              }
+            ],
+            "value": "15-21"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 22
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 28
+              }
+            ],
+            "value": "22-28"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 29
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 35
+              }
+            ],
+            "value": "29-35"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 36
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 42
+              }
+            ],
+            "value": "36-42"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 43
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 49
+              }
+            ],
+            "value": "43-49"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 50
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 60
+              }
+            ],
+            "value": "50-60"
+          },
+          {
+            "when": [],
+            "value": "other"
+          }
+        ]
+      }
+    },
+    "w1_003_shock10_lp_filled_ticker_dte": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$w1_003_shock10_lp_filled_band.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "dte_band"
+        ],
+        "aggregates": {
+          "books": {
+            "op": "count"
+          },
+          "contracts": {
+            "op": "sum",
+            "field": "contracts"
+          },
+          "fees": {
+            "op": "sum",
+            "field": "fees"
+          },
+          "net_pnl": {
+            "op": "sum",
+            "field": "pnl"
+          }
+        }
+      }
+    },
+    "w1_003_shock10_lp_refused_ticker_dte": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$w1_003_shock10_lp_refused_band.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "dte_band",
+          "reason"
+        ],
+        "aggregates": {
+          "refusals": {
+            "op": "count"
+          }
+        }
+      }
+    },
+    "w1_003_shock10_lp_report": {
+      "uses": "dskit.evaluation.nodes:EvaluationReport",
+      "inputs": {
+        "events": "$w1_003_shock10_lp_gate.events"
+      },
+      "params": {
+        "out_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/reports/q3/w1_003_shock10_lp",
+        "sections": [
+          "summary",
+          "overview",
+          "equity",
+          "trades",
+          "decisions",
+          "optimizer",
+          "cash",
+          "distributions",
+          "periods",
+          "provenance"
+        ],
+        "tables": {
+          "ledger": {
+            "title": "Day-by-day ledger (marked daily curve)",
+            "columns": [
+              "date",
+              "deposit",
+              "selected_books",
+              "selected_contracts",
+              "filled_books",
+              "filled_contracts",
+              "entry_fees",
+              "refused_books",
+              "refusal_reasons",
+              "expired_books",
+              "expiry_pnl",
+              "cash",
+              "reserve",
+              "funding",
+              "open_books",
+              "realized",
+              "equity",
+              "nav",
+              "drawdown"
+            ],
+            "rows": "$w1_003_shock10_lp_rows.ledger",
+            "formats": {
+              "deposit": "money",
+              "selected_books": "count",
+              "selected_contracts": "count",
+              "filled_books": "count",
+              "filled_contracts": "count",
+              "entry_fees": "money",
+              "refused_books": "count",
+              "expired_books": "count",
+              "expiry_pnl": "pnl",
+              "cash": "money",
+              "reserve": "money",
+              "funding": "money",
+              "open_books": "count",
+              "realized": "pnl",
+              "equity": "money"
+            },
+            "note": "One row per account session. Cash, reserve, funding, equity, NAV and drawdown are the run saved marked daily curve. Other columns join selected, filled, refused and expiring books. Selection columns are grouped by attempted fill date; rejected books may show reduced selected quantities."
+          },
+          "marked-figures": {
+            "title": "Saved marked figures (authoritative)",
+            "columns": [
+              "figure",
+              "value"
+            ],
+            "rows": "$w1_003_shock10_lp_rows.marked",
+            "note": "From the pinned result.json, never recomputed. The event-based statistics above (TWR, drawdown, Sharpe) value an open book at cost between its fill and expiry, so they differ from twr and max_drawdown here; the MIO marked figures are authoritative. See children/index_options/docs/explanations/mio-glossary.md."
+          },
+          "gate-comparison": {
+            "title": "Exact-match gate: events against the saved result",
+            "columns": [
+              "measure",
+              "expected",
+              "actual",
+              "diff",
+              "tolerance",
+              "ok"
+            ],
+            "rows": "$w1_003_shock10_lp_gate.comparison",
+            "note": "expected is result.json's value; actual is recomputed from the events. Net P&L is built from the saved per-book pnl, so this proves the event book reproduces the saved totals and counts, not an independent settlement."
+          },
+          "ticker-dte": {
+            "title": "Filled books by ticker and DTE",
+            "columns": [
+              "symbol",
+              "dte_band",
+              "books",
+              "contracts",
+              "fees",
+              "net_pnl"
+            ],
+            "rows": "$w1_003_shock10_lp_filled_ticker_dte.records",
+            "formats": {
+              "books": "count",
+              "contracts": "count",
+              "fees": "money",
+              "net_pnl": "pnl"
+            }
+          },
+          "refusals-ticker-dte": {
+            "title": "Fill-stage refusals by ticker, DTE and reason",
+            "columns": [
+              "symbol",
+              "dte_band",
+              "reason",
+              "refusals"
+            ],
+            "rows": "$w1_003_shock10_lp_refused_ticker_dte.records",
+            "formats": {
+              "refusals": "count"
+            },
+            "note": "Books selected by a decision but refused at the next session's fill. Decision-stage refusals have no DTE and sit in the decision log."
+          },
+          "run-identity": {
+            "title": "Run identity and reused coverage",
+            "columns": [
+              "field",
+              "value"
+            ],
+            "rows": [
+              {
+                "field": "MIO method",
+                "value": "w1_003_shock10_lp"
+              },
+              {
+                "field": "cohort",
+                "value": "212 accepted names"
+              },
+              {
+                "field": "account window",
+                "value": "2021-07-01 through 2021-09-30; 64 sessions"
+              },
+              {
+                "field": "decision dates",
+                "value": "14"
+              },
+              {
+                "field": "coverage action",
+                "value": "new complete coverage; independent reset account"
+              },
+              {
+                "field": "source MIO result SHA256",
+                "value": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786"
+              },
+              {
+                "field": "source MIO document hash",
+                "value": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7"
+              },
+              {
+                "field": "source MIO config SHA256",
+                "value": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93"
+              },
+              {
+                "field": "predictive recipe",
+                "value": "M53 frozen at quarter start; mature pre-quarter MLP64 seed29 refit; selected epochs 36"
+              },
+              {
+                "field": "source run",
+                "value": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e"
+              }
+            ],
+            "note": "Attested completed replay and verified source identities. Standard report totals/counts are gated against the saved result."
+          },
+          "quarter-boundary": {
+            "title": "Quarter-end marked account and later settled cohort",
+            "columns": [
+              "figure",
+              "value"
+            ],
+            "rows": [
+              {
+                "figure": "quarter",
+                "value": "2021Q3"
+              },
+              {
+                "figure": "method",
+                "value": "w1_003_shock10_lp"
+              },
+              {
+                "figure": "sessions",
+                "value": 64
+              },
+              {
+                "figure": "decisions",
+                "value": 14
+              },
+              {
+                "figure": "filled_books",
+                "value": 21
+              },
+              {
+                "figure": "filled_legs",
+                "value": 40
+              },
+              {
+                "figure": "filled_contracts",
+                "value": 161
+              },
+              {
+                "figure": "refused_books",
+                "value": 11
+              },
+              {
+                "figure": "fees",
+                "value": 104.65
+              },
+              {
+                "figure": "contributions",
+                "value": 16000.0
+              },
+              {
+                "figure": "quarter_end_date",
+                "value": "2021-09-30"
+              },
+              {
+                "figure": "quarter_end_equity",
+                "value": 12351.849999999999
+              },
+              {
+                "figure": "quarter_end_open_books",
+                "value": 8
+              },
+              {
+                "figure": "quarter_end_contributions",
+                "value": 16000.0
+              },
+              {
+                "figure": "quarter_end_nav",
+                "value": 0.7376022641200358
+              },
+              {
+                "figure": "quarter_end_twr",
+                "value": -0.2623977358799642
+              },
+              {
+                "figure": "quarter_end_pnl_marked",
+                "value": -3648.1500000000015
+              },
+              {
+                "figure": "quarter_max_drawdown",
+                "value": -0.3629628992865147
+              },
+              {
+                "figure": "settled_pnl",
+                "value": -5193.650000000002
+              },
+              {
+                "figure": "settled_equity",
+                "value": 10806.349999999999
+              },
+              {
+                "figure": "settled_twr",
+                "value": -0.3546887124703143
+              },
+              {
+                "figure": "settled_max_drawdown",
+                "value": -0.4398592437421798
+              },
+              {
+                "figure": "last_trade_settlement",
+                "value": "2021-11-19"
+              },
+              {
+                "figure": "last_curve_date",
+                "value": "2021-12-06"
+              },
+              {
+                "figure": "replay_parity",
+                "value": true
+              }
+            ],
+            "note": "Quarter figures stop on the last trading day of the named quarter. Settled figures include later expiries of positions opened in that quarter; open books are marked daily in the MIO ledger."
+          }
+        },
+        "narrative_driver": false,
+        "caveats": [
+          "Simulated 2021 Q3 fills against displayed depth. Retrospective development; prior method selection used 2020\u20132023, so this is not an untouched historical holdout.",
+          "Statistics below come from the event book, which values open books at cost between fills (TWR, drawdown, Sharpe, exposure). The MIO result's marked figures are authoritative: see 'Saved marked figures' and the day-by-day ledger.",
+          "Each book is one unit at its net premium; a credit book appears as a buy at a negative price. Totals are exact; direction and notional statistics are not meaningful per book.",
+          "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
+          "Outer portfolio solve: 900-second limit, one thread, relative gap 0.01 and absolute gap $50; a usable incumbent may be returned on timeout. Inner book construction has separate tighter limits.",
+          "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md.",
+          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times.",
+          "Ledger selected_contracts can include reduced quantities for refused orders; use the linked report index orders-and-fills.csv selected_quantity for exact optimizer demand.",
+          "Each quarter is an independent $10,000 starting account plus $1,000 every 14 days. Do not compound returns across these independent accounts.",
+          "The report includes settlement after quarter end. See the quarter-end versus settled-cohort table for the requested quarter boundary."
+        ],
+        "statistic_labels": {
+          "twr": "twr (at cost)",
+          "max_drawdown": "max_drawdown (at cost)",
+          "max_drawdown_pct": "max_drawdown_pct (at cost)",
+          "max_drawdown_minutes": "max_drawdown_minutes (at cost)",
+          "daily_mean_return": "daily_mean_return (at cost)",
+          "daily_sharpe": "daily_sharpe (at cost)",
+          "daily_sharpe_ci_low": "daily_sharpe_ci_low (at cost)",
+          "daily_sharpe_ci_high": "daily_sharpe_ci_high (at cost)",
+          "psr": "psr (at cost)",
+          "dsr": "dsr (at cost)",
+          "turnover_per_day": "turnover_per_day (at cost)",
+          "avg_exposure": "avg_exposure (at cost)",
+          "refusal_rate": "refusal_rate (decisions)",
+          "skip_rate": "skip_rate (decisions)"
+        },
+        "title": "MIO 2021 Q3: w1_003_shock10_lp \u2014 complete coverage, quarter-start M53"
+      },
+      "notes": "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md. Simulated EOD displayed-depth fills, not broker liquidity or proof of profitability."
+    },
+    "w1_003_shock10_lp_source_links": {
+      "uses": "dskit.evaluation.links:ArtifactLinks",
+      "params": {
+        "root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e",
+        "title": "Attested Q3 source files",
+        "csv_name": "source-links.csv",
+        "files": [
+          {
+            "id": "result",
+            "path": "artifacts/json/378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786.json"
+          },
+          {
+            "id": "receipt",
+            "path": "nodes/06-close_packet.json"
+          },
+          {
+            "id": "resolved",
+            "path": "resolved.json"
+          },
+          {
+            "id": "run_report",
+            "path": "report.md"
+          }
+        ]
+      },
+      "inputs": {
+        "paths": "$w1_003_shock10_lp_report.paths"
+      }
+    },
+    "w1_003_lp_source_links": {
+      "uses": "dskit.evaluation.links:ArtifactLinks",
+      "params": {
+        "root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e",
+        "title": "Attested Q3 source files",
+        "csv_name": "source-links.csv",
+        "files": [
+          {
+            "id": "result",
+            "path": "artifacts/json/378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786.json"
+          },
+          {
+            "id": "receipt",
+            "path": "nodes/06-close_packet.json"
+          },
+          {
+            "id": "resolved",
+            "path": "resolved.json"
+          },
+          {
+            "id": "run_report",
+            "path": "report.md"
+          }
+        ]
+      },
+      "inputs": {
+        "paths": "$w1_003_lp_report.paths"
+      }
+    },
+    "nominal_lp_rows": {
+      "uses": "index_options.mio_run_events:MioRunRows",
+      "inputs": {
+        "table": "$result.table"
+      },
+      "params": {
+        "method": "nominal_lp",
+        "tz": "America/New_York",
+        "multiplier": 100,
+        "tolerance": 0.005,
+        "times": {
+          "decision": "16:00",
+          "fill": "09:30",
+          "expiry": "16:00",
+          "deposit": "08:00"
+        },
+        "actions": {
+          "selected": "enter",
+          "cash": "hold",
+          "no_eligible_candidates": "hold",
+          "existing_cap_breach_cash": "skip",
+          "timeout_skipped": "skip"
+        }
+      },
+      "notes": "Restates the saved method result as event rows: each book is one unit bought at -premium (+ saved fees) on fill_date and sold at pnl - credit on close_date; refusals keep their saved reason."
+    },
+    "nominal_lp_solve_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$nominal_lp_rows.decisions"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "certificates",
+            "op": "!=",
+            "value": []
+          }
+        ]
+      },
+      "notes": "Decisions that carry solver certificates; mapping.explode refuses a row without the field, so empty-certificate decisions are dropped here."
+    },
+    "nominal_lp_events": {
+      "uses": "dskit.evaluation.nodes:RowsToEvents",
+      "inputs": {
+        "decisions": "$nominal_lp_rows.decisions",
+        "orders": "$nominal_lp_rows.orders",
+        "refusals": "$nominal_lp_rows.refusals",
+        "skips": "$nominal_lp_rows.skips",
+        "fills": "$nominal_lp_rows.fills",
+        "cashflows": "$nominal_lp_rows.cashflows",
+        "solves": "$nominal_lp_solve_rows.records"
+      },
+      "params": {
+        "run_start": {
+          "tz": "America/New_York",
+          "project": "index_options",
+          "title": "MIO 2021 Q3 exact Q2 replay: nominal_lp",
+          "units": {
+            "score": "raw",
+            "money": "USD"
+          },
+          "signed_prices": true,
+          "code": {
+            "scope": "pinned Q2 method runtime, code4 snapshot",
+            "document_hash": "8116c558d8355c2fa343f540ac7cc195cb47761c78992d590e62367a12d7e5a7"
+          },
+          "data": {
+            "mio_receipt": {
+              "run_dir": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/runs/mio-q3/mio-2021q3-top2-frozen2019-exact-q2-development-2021-09-30-d96f54e8",
+              "document_hash": "8116c558d8355c2fa343f540ac7cc195cb47761c78992d590e62367a12d7e5a7",
+              "node": "close_packet",
+              "port": "receipt"
+            },
+            "mio_result_sha256": "3fced825df24681c719c6a112c287a5a211feac9f047c9a151841570ffe3476f",
+            "mio_config_sha256": "7b77a608c9c56ebac209f909ef6210d881d2c4d4db8ef22a9c6db5047cf75277",
+            "predictive_selection": "Q2 frozen 2019 recipe, Q3 dates",
+            "coverage": {
+              "start": "2021-07-01",
+              "end_before": "2021-10-01",
+              "account_sessions": 64,
+              "decision_dates": 14,
+              "reused_sessions": 0,
+              "new_sessions": 64,
+              "source": "attested Q3 calendar and completed method, receipt verified"
+            }
+          }
+        },
+        "map": {
+          "decisions": {
+            "fields": {
+              "decision_id": "decision_id",
+              "action": "action",
+              "reason": "reason",
+              "detail": "detail",
+              "model": "model"
+            }
+          },
+          "orders": {
+            "instrument": "instrument",
+            "fields": {
+              "order_id": "order_id",
+              "decision_id": "decision_id",
+              "side": "side",
+              "qty": "qty"
+            }
+          },
+          "refusals": {
+            "instrument": "instrument",
+            "fields": {
+              "decision_id": "decision_id",
+              "order_id": "order_id",
+              "reason": "reason",
+              "detail": "detail"
+            }
+          },
+          "skips": {
+            "instrument": "instrument",
+            "fields": {
+              "decision_id": "decision_id",
+              "reason": "reason",
+              "detail": "detail"
+            }
+          },
+          "fills": {
+            "instrument": "instrument",
+            "fields": {
+              "fill_id": "fill_id",
+              "order_id": "order_id",
+              "side": "side",
+              "qty": "qty",
+              "price": "price",
+              "fee": "fee",
+              "tag": "tag"
+            }
+          },
+          "cashflows": {
+            "fields": {
+              "amount": "amount",
+              "rule": "rule",
+              "detail": "detail"
+            }
+          },
+          "solves": {
+            "explode": "certificates",
+            "fields": {
+              "solver": "solver",
+              "status": "status",
+              "termination": "termination",
+              "objective": "objective",
+              "bound": "bound",
+              "gap": "gap",
+              "seconds": "seconds",
+              "variables": "variables",
+              "constraints": "constraints"
+            }
+          }
+        }
+      },
+      "notes": "Event equity between a fill and its expiry is at cost (the unit is held at its premium); the marked daily curve is the day-by-day ledger table."
+    },
+    "nominal_lp_gate": {
+      "uses": "dskit.evaluation.gate:EventTotalsGate",
+      "inputs": {
+        "events": "$nominal_lp_events.events",
+        "expected": "$nominal_lp_rows.expected"
+      },
+      "params": {
+        "checks": {
+          "net_pnl": {
+            "expected": "pnl",
+            "tolerance": 0.005
+          },
+          "final_equity": {
+            "expected": "final_equity",
+            "tolerance": 0.005
+          },
+          "contributions": {
+            "expected": "contributions",
+            "tolerance": 0.005
+          },
+          "fees": {
+            "expected": "fees",
+            "tolerance": 0.005
+          },
+          "fill_count": {
+            "expected": "fills",
+            "tolerance": 0
+          },
+          "refusal_count": {
+            "expected": "refusals",
+            "tolerance": 0
+          },
+          "decision_count": {
+            "expected": "decisions",
+            "tolerance": 0
+          }
+        }
+      },
+      "notes": "Exact-match gate (ADR-0283): refuses, and no report is written, unless the events' net P&L, final equity, contributions and fees equal the pinned result.json's for this method to the cent, and the event counts (fills, refusals, decisions) equal the saved ones. The net P&L is built from the saved per-book pnl, so the gate proves the event book reproduces the saved totals and counts, not an independent settlement."
+    },
+    "nominal_lp_filled_band": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$nominal_lp_rows.filled"
+      },
+      "params": {
+        "field": "dte_band",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 1
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 7
+              }
+            ],
+            "value": "1-7"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 8
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 14
+              }
+            ],
+            "value": "8-14"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 15
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 21
+              }
+            ],
+            "value": "15-21"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 22
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 28
+              }
+            ],
+            "value": "22-28"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 29
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 35
+              }
+            ],
+            "value": "29-35"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 36
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 42
+              }
+            ],
+            "value": "36-42"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 43
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 49
+              }
+            ],
+            "value": "43-49"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 50
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 60
+              }
+            ],
+            "value": "50-60"
+          },
+          {
+            "when": [],
+            "value": "other"
+          }
+        ]
+      }
+    },
+    "nominal_lp_refused_band": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$nominal_lp_rows.refused"
+      },
+      "params": {
+        "field": "dte_band",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 1
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 7
+              }
+            ],
+            "value": "1-7"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 8
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 14
+              }
+            ],
+            "value": "8-14"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 15
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 21
+              }
+            ],
+            "value": "15-21"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 22
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 28
+              }
+            ],
+            "value": "22-28"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 29
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 35
+              }
+            ],
+            "value": "29-35"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 36
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 42
+              }
+            ],
+            "value": "36-42"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 43
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 49
+              }
+            ],
+            "value": "43-49"
+          },
+          {
+            "when": [
+              {
+                "field": "dte",
+                "op": ">=",
+                "value": 50
+              },
+              {
+                "field": "dte",
+                "op": "<=",
+                "value": 60
+              }
+            ],
+            "value": "50-60"
+          },
+          {
+            "when": [],
+            "value": "other"
+          }
+        ]
+      }
+    },
+    "nominal_lp_filled_ticker_dte": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$nominal_lp_filled_band.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "dte_band"
+        ],
+        "aggregates": {
+          "books": {
+            "op": "count"
+          },
+          "contracts": {
+            "op": "sum",
+            "field": "contracts"
+          },
+          "fees": {
+            "op": "sum",
+            "field": "fees"
+          },
+          "net_pnl": {
+            "op": "sum",
+            "field": "pnl"
+          }
+        }
+      }
+    },
+    "nominal_lp_refused_ticker_dte": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$nominal_lp_refused_band.records"
+      },
+      "params": {
+        "keys": [
+          "symbol",
+          "dte_band",
+          "reason"
+        ],
+        "aggregates": {
+          "refusals": {
+            "op": "count"
+          }
+        }
+      }
+    },
+    "nominal_lp_report": {
+      "uses": "dskit.evaluation.nodes:EvaluationReport",
+      "inputs": {
+        "events": "$nominal_lp_gate.events"
+      },
+      "params": {
+        "out_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/reports/q3/nominal_lp",
+        "sections": [
+          "summary",
+          "overview",
+          "equity",
+          "trades",
+          "decisions",
+          "optimizer",
+          "cash",
+          "distributions",
+          "periods",
+          "provenance"
+        ],
+        "tables": {
+          "ledger": {
+            "title": "Day-by-day ledger (marked daily curve)",
+            "columns": [
+              "date",
+              "deposit",
+              "selected_books",
+              "selected_contracts",
+              "filled_books",
+              "filled_contracts",
+              "entry_fees",
+              "refused_books",
+              "refusal_reasons",
+              "expired_books",
+              "expiry_pnl",
+              "cash",
+              "reserve",
+              "funding",
+              "open_books",
+              "realized",
+              "equity",
+              "nav",
+              "drawdown"
+            ],
+            "rows": "$nominal_lp_rows.ledger",
+            "formats": {
+              "deposit": "money",
+              "selected_books": "count",
+              "selected_contracts": "count",
+              "filled_books": "count",
+              "filled_contracts": "count",
+              "entry_fees": "money",
+              "refused_books": "count",
+              "expired_books": "count",
+              "expiry_pnl": "pnl",
+              "cash": "money",
+              "reserve": "money",
+              "funding": "money",
+              "open_books": "count",
+              "realized": "pnl",
+              "equity": "money"
+            },
+            "note": "One row per account session. Cash, reserve, funding, equity, NAV and drawdown are the run saved marked daily curve. Other columns join selected, filled, refused and expiring books. Selection columns are grouped by attempted fill date; rejected books may show reduced selected quantities."
+          },
+          "marked-figures": {
+            "title": "Saved marked figures (authoritative)",
+            "columns": [
+              "figure",
+              "value"
+            ],
+            "rows": "$nominal_lp_rows.marked",
+            "note": "From the pinned result.json, never recomputed. The event-based statistics above (TWR, drawdown, Sharpe) value an open book at cost between its fill and expiry, so they differ from twr and max_drawdown here; the MIO marked figures are authoritative. See children/index_options/docs/explanations/mio-glossary.md."
+          },
+          "gate-comparison": {
+            "title": "Exact-match gate: events against the saved result",
+            "columns": [
+              "measure",
+              "expected",
+              "actual",
+              "diff",
+              "tolerance",
+              "ok"
+            ],
+            "rows": "$nominal_lp_gate.comparison",
+            "note": "expected is result.json's value; actual is recomputed from the events. Net P&L is built from the saved per-book pnl, so this proves the event book reproduces the saved totals and counts, not an independent settlement."
+          },
+          "ticker-dte": {
+            "title": "Filled books by ticker and DTE",
+            "columns": [
+              "symbol",
+              "dte_band",
+              "books",
+              "contracts",
+              "fees",
+              "net_pnl"
+            ],
+            "rows": "$nominal_lp_filled_ticker_dte.records",
+            "formats": {
+              "books": "count",
+              "contracts": "count",
+              "fees": "money",
+              "net_pnl": "pnl"
+            }
+          },
+          "refusals-ticker-dte": {
+            "title": "Fill-stage refusals by ticker, DTE and reason",
+            "columns": [
+              "symbol",
+              "dte_band",
+              "reason",
+              "refusals"
+            ],
+            "rows": "$nominal_lp_refused_ticker_dte.records",
+            "formats": {
+              "refusals": "count"
+            },
+            "note": "Books selected by a decision but refused at the next session's fill. Decision-stage refusals have no DTE and sit in the decision log."
+          },
+          "run-identity": {
+            "title": "Run identity and reused coverage",
+            "columns": [
+              "field",
+              "value"
+            ],
+            "rows": [
+              {
+                "field": "MIO method",
+                "value": "nominal_lp"
+              },
+              {
+                "field": "cohort",
+                "value": "212 accepted names"
+              },
+              {
+                "field": "account window",
+                "value": "2021-07-01 through 2021-09-30; 64 sessions"
+              },
+              {
+                "field": "decision dates",
+                "value": "14"
+              },
+              {
+                "field": "coverage action",
+                "value": "new complete coverage; independent reset account"
+              },
+              {
+                "field": "source MIO result SHA256",
+                "value": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786"
+              },
+              {
+                "field": "source MIO document hash",
+                "value": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7"
+              },
+              {
+                "field": "source MIO config SHA256",
+                "value": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93"
+              },
+              {
+                "field": "predictive recipe",
+                "value": "M53 frozen at quarter start; mature pre-quarter MLP64 seed29 refit; selected epochs 36"
+              },
+              {
+                "field": "source run",
+                "value": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e"
+              }
+            ],
+            "note": "Attested completed replay and verified source identities. Standard report totals/counts are gated against the saved result."
+          },
+          "quarter-boundary": {
+            "title": "Quarter-end marked account and later settled cohort",
+            "columns": [
+              "figure",
+              "value"
+            ],
+            "rows": [
+              {
+                "figure": "quarter",
+                "value": "2021Q3"
+              },
+              {
+                "figure": "method",
+                "value": "nominal_lp"
+              },
+              {
+                "figure": "sessions",
+                "value": 64
+              },
+              {
+                "figure": "decisions",
+                "value": 14
+              },
+              {
+                "figure": "filled_books",
+                "value": 16
+              },
+              {
+                "figure": "filled_legs",
+                "value": 18
+              },
+              {
+                "figure": "filled_contracts",
+                "value": 395
+              },
+              {
+                "figure": "refused_books",
+                "value": 28
+              },
+              {
+                "figure": "fees",
+                "value": 256.75
+              },
+              {
+                "figure": "contributions",
+                "value": 16000.0
+              },
+              {
+                "figure": "quarter_end_date",
+                "value": "2021-09-30"
+              },
+              {
+                "figure": "quarter_end_equity",
+                "value": 12135.25
+              },
+              {
+                "figure": "quarter_end_open_books",
+                "value": 8
+              },
+              {
+                "figure": "quarter_end_contributions",
+                "value": 16000.0
+              },
+              {
+                "figure": "quarter_end_nav",
+                "value": 0.7089580680433003
+              },
+              {
+                "figure": "quarter_end_twr",
+                "value": -0.2910419319566997
+              },
+              {
+                "figure": "quarter_end_pnl_marked",
+                "value": -3864.75
+              },
+              {
+                "figure": "quarter_max_drawdown",
+                "value": -0.44913013379938027
+              },
+              {
+                "figure": "settled_pnl",
+                "value": -1303.7500000000045
+              },
+              {
+                "figure": "settled_equity",
+                "value": 14696.249999999996
+              },
+              {
+                "figure": "settled_twr",
+                "value": -0.14142477431603329
+              },
+              {
+                "figure": "settled_max_drawdown",
+                "value": -0.6578072335644652
+              },
+              {
+                "figure": "last_trade_settlement",
+                "value": "2021-11-19"
+              },
+              {
+                "figure": "last_curve_date",
+                "value": "2021-12-06"
+              },
+              {
+                "figure": "replay_parity",
+                "value": true
+              }
+            ],
+            "note": "Quarter figures stop on the last trading day of the named quarter. Settled figures include later expiries of positions opened in that quarter; open books are marked daily in the MIO ledger."
+          }
+        },
+        "narrative_driver": false,
+        "caveats": [
+          "Simulated 2021 Q3 fills against displayed depth. Retrospective development; prior method selection used 2020\u20132023, so this is not an untouched historical holdout.",
+          "Statistics below come from the event book, which values open books at cost between fills (TWR, drawdown, Sharpe, exposure). The MIO result's marked figures are authoritative: see 'Saved marked figures' and the day-by-day ledger.",
+          "Each book is one unit at its net premium; a credit book appears as a buy at a negative price. Totals are exact; direction and notional statistics are not meaningful per book.",
+          "refusal_rate and skip_rate count decisions, not orders; order refusals are in the refusal tables.",
+          "Outer portfolio solve: 900-second limit, one thread, relative gap 0.01 and absolute gap $50; a usable incumbent may be returned on timeout. Inner book construction has separate tighter limits.",
+          "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md.",
+          "Intraday timestamps are report ordering slots; the source records dates and simulated end-of-day quotes, not observed intraday execution times.",
+          "Ledger selected_contracts can include reduced quantities for refused orders; use the linked report index orders-and-fills.csv selected_quantity for exact optimizer demand.",
+          "Each quarter is an independent $10,000 starting account plus $1,000 every 14 days. Do not compound returns across these independent accounts.",
+          "The report includes settlement after quarter end. See the quarter-end versus settled-cohort table for the requested quarter boundary."
+        ],
+        "statistic_labels": {
+          "twr": "twr (at cost)",
+          "max_drawdown": "max_drawdown (at cost)",
+          "max_drawdown_pct": "max_drawdown_pct (at cost)",
+          "max_drawdown_minutes": "max_drawdown_minutes (at cost)",
+          "daily_mean_return": "daily_mean_return (at cost)",
+          "daily_sharpe": "daily_sharpe (at cost)",
+          "daily_sharpe_ci_low": "daily_sharpe_ci_low (at cost)",
+          "daily_sharpe_ci_high": "daily_sharpe_ci_high (at cost)",
+          "psr": "psr (at cost)",
+          "dsr": "dsr (at cost)",
+          "turnover_per_day": "turnover_per_day (at cost)",
+          "avg_exposure": "avg_exposure (at cost)",
+          "refusal_rate": "refusal_rate (decisions)",
+          "skip_rate": "skip_rate (decisions)"
+        },
+        "title": "MIO 2021 Q3: nominal_lp \u2014 complete coverage, quarter-start M53"
+      },
+      "notes": "Plain-language terms: children/index_options/docs/explanations/mio-glossary.md. Simulated EOD displayed-depth fills, not broker liquidity or proof of profitability."
+    },
+    "nominal_lp_source_links": {
+      "uses": "dskit.evaluation.links:ArtifactLinks",
+      "params": {
+        "root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e",
+        "title": "Attested Q3 source files",
+        "csv_name": "source-links.csv",
+        "files": [
+          {
+            "id": "result",
+            "path": "artifacts/json/378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786.json"
+          },
+          {
+            "id": "receipt",
+            "path": "nodes/06-close_packet.json"
+          },
+          {
+            "id": "resolved",
+            "path": "resolved.json"
+          },
+          {
+            "id": "run_report",
+            "path": "report.md"
+          }
+        ]
+      },
+      "inputs": {
+        "paths": "$nominal_lp_report.paths"
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q3"
+  }
+}

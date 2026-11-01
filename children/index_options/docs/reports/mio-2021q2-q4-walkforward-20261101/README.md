@@ -1,6 +1,6 @@
 # MIO 2021 Q2–Q4: quarterly walk-forward evaluation
 
-3 of nine standard method reports are verified. Remaining quarters: Q3, Q4.
+6 of nine standard method reports are verified. Remaining quarters: Q4.
 
 ## Evaluation
 
@@ -17,6 +17,14 @@ Quarter-end values mark open books on the final session of the named quarter. Se
 - [w1_003_shock10_lp](q2/w1_003_shock10_lp/summary.md) · [HTML](q2/w1_003_shock10_lp/report.html): quarter-end marked P&L $6,515.85, TWR 27.22%; settled cohort profit $1,853.85, TWR 0.88%; 22 filled books / 52 leg rows / 291 contracts.
 - [nominal_lp](q2/nominal_lp/summary.md) · [HTML](q2/nominal_lp/report.html): quarter-end marked P&L $-8,964.55, TWR -63.60%; settled cohort profit $-9,242.55, TWR -65.04%; 11 filled books / 13 leg rows / 207 contracts.
 - [w1_003_lp](q2/w1_003_lp/summary.md) · [HTML](q2/w1_003_lp/report.html): quarter-end marked P&L $14,381.35, TWR 79.35%; settled cohort profit $-3,473.15, TWR -26.05%; 12 filled books / 24 leg rows / 191 contracts.
+
+### Q3
+
+[Quarter report and execution detail](q3/README.md).
+
+- [w1_003_shock10_lp](q3/w1_003_shock10_lp/summary.md) · [HTML](q3/w1_003_shock10_lp/report.html): quarter-end marked P&L $-3,648.15, TWR -26.24%; settled cohort profit $-5,193.65, TWR -35.47%; 21 filled books / 40 leg rows / 161 contracts.
+- [nominal_lp](q3/nominal_lp/summary.md) · [HTML](q3/nominal_lp/report.html): quarter-end marked P&L $-3,864.75, TWR -29.10%; settled cohort profit $-1,303.75, TWR -14.14%; 16 filled books / 18 leg rows / 395 contracts.
+- [w1_003_lp](q3/w1_003_lp/summary.md) · [HTML](q3/w1_003_lp/report.html): quarter-end marked P&L $-2,990.90, TWR -23.56%; settled cohort profit $-3,636.40, TWR -27.35%; 6 filled books / 9 leg rows / 56 contracts.
 
 ## Training and early stopping
 

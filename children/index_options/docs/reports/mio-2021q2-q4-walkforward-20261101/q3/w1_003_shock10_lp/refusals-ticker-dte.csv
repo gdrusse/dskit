@@ -1,0 +1,12 @@
+symbol,dte_band,reason,refusals
+ABUS,15-21,insufficient_fill_size,1
+CSCO,1-7,fill_basis_or_session,1
+JPM,1-7,fill_basis_or_session,1
+PBR,29-35,missing_fill_quote,1
+UAMY,36-42,missing_fill_quote,1
+UUUU,29-35,missing_fill_quote,1
+VALE,29-35,missing_fill_quote,1
+VALE,43-49,insufficient_fill_size,1
+VALE,43-49,missing_fill_quote,1
+VALE,50-60,missing_fill_quote,1
+WEN,50-60,insufficient_fill_size,1

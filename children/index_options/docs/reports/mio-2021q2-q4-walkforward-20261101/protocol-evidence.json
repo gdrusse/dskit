@@ -694,6 +694,14 @@
       "artifact_index": "q2/artifact-index.json",
       "result_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
       "scope": "63 quarter sessions, 109 sessions including padded settlement calendar; 3 methods; replay parity and accounting verified"
+    },
+    "2021Q3": {
+      "verification": "q3/mio-verification.json",
+      "report_verification": "q3/reports-verification.json",
+      "reports": "q3/README.md",
+      "artifact_index": "q3/artifact-index.json",
+      "result_sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+      "scope": "64 quarter sessions, 110 sessions including padded settlement calendar; 3 methods; replay parity and accounting verified"
     }
   }
 }

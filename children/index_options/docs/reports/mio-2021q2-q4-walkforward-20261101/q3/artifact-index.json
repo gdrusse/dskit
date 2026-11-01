@@ -1,0 +1,237 @@
+{
+  "quarter": 3,
+  "classification": "retrospective development",
+  "source_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e",
+  "source_result": {
+    "bytes": 14666239,
+    "media_type": "application/json",
+    "path": "artifacts/json/378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786.json",
+    "sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786"
+  },
+  "source_receipt": {
+    "node": "close_packet",
+    "port": "receipt",
+    "document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7"
+  },
+  "report_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q3/mio-2021q3-complete-quarter-evaluation-2021-09-30-c783fabd",
+  "report_document_hash": "aea596022a463d502af6cbcab9d71de537c2fbb6234e4eb711e7fdd1a2746963",
+  "report_config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/report-q3-complete.json",
+  "report_config_sha256": "f9d74c90933c873d2d79b5196cd352b1d441ade84fc0b0e0c4b23d18752d559b",
+  "renderer_commit": "da9d0ae459ba008617df912ee48e663c742162e1",
+  "source_model_bundle": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/mio-inputs-q3",
+  "source_model_pin": {
+    "root": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/ob",
+    "source": "mio-2021q3-complete-inputs",
+    "stream": "files",
+    "snapshot": "20261101T083050Z-backfill-77dbfc42",
+    "manifest_sha256": "77dbfc42bb2e15f18f5cdb65426254f7494ddd858be7de4bfcd5a8f648ad4107",
+    "files": {
+      "contexts.parquet": "1e0e7b643b7f205d9b683cf80b75ab0ec4329386b1fd4c2896b627ef70d3fc60",
+      "forecasts.parquet": "7733bc6eab942a611cd11c469530416fc475e3c8dc6591a7b7e261852d6ec724",
+      "original/contexts.parquet": "1452a8904dc1269861c26a2111213ae9aa9da9486fcbc54b1666302bc96320ab",
+      "original/forecasts.parquet": "ce179e548f2106b3dbe8952571ba57b381f5a5a3f03ba262877c48b9c890fdb1",
+      "predictive-receipt.json": "43d69ad48500349879dc419867fd7f2b529837fdee666102293ab55115238647",
+      "preparation.json": "642afbe42dec7f640051789858e1dcc97c30eca772ed2b6f104c6066f2f379b3",
+      "training/epoch-selection.json": "e4df8a2b80403c5d78d7867230d8ed019b561e7d136ac31ff12c6cee9c24f579",
+      "training/fit-config.json": "91d5735bddde3ecbf1524669f9e22b3b91187ce21e0c5ecfe971813a7701a591",
+      "training/fit-verification.json": "7eea0359fbc1ba4c8bdd3fc884a2398707281f8c380841cef70559b53216373b",
+      "training/folds.jsonl": "fd698e477b51496cbed3333c3dc6b23bf522478353410426f44b2b41c8bb87fe",
+      "training/forecast-coverage.json": "b43af2ff4c6e5d3e110c6cf5f510c5cab7381658a15a635bd9fd9544d0020147",
+      "training/hpo-provenance.json": "a6a32bbeb579e114791a42a67f44ed0c0ffe5c03651e807ca12885fb73d6495b",
+      "training/m53-provenance.json": "c049b6aa5809094eaa45e414ac68808187f8188cc56c4bd620c3c197a1a065f8",
+      "training/m53-verification.json": "6c2ad9700f55c2d207d1e1002ef5e15fa3e03db75e11569cea626be79046a5cf"
+    }
+  },
+  "extract_counts": {
+    "selected_leg_rows": 216,
+    "filled_books": 43,
+    "refused_books": 54,
+    "account_rows": 330
+  },
+  "files": {
+    "README.md": {
+      "sha256": "7382991a4f71b262bb3f8e98cf187bf9ee795e463033550b97523904562b0f13",
+      "bytes": 4152
+    },
+    "daily-account.csv": {
+      "sha256": "c5ad6358e01f65e4d68ad019c43ae2307b7c3225e459e03f41806c0e94af6f36",
+      "bytes": 83606
+    },
+    "mio-verification.json": {
+      "sha256": "8f9e987e0422c8b14a32dbb708fa8fadad2ececf7b54efb628e2530ee0d435bb",
+      "bytes": 4325
+    },
+    "nominal_lp/decisions.csv": {
+      "sha256": "77c19c7fea77ac24f29db1d9bc5ac13c23c332330444a8fbce3d41d0e5e3dcab",
+      "bytes": 269740
+    },
+    "nominal_lp/events.jsonl": {
+      "sha256": "b1d20962d0393340dca914f9f306785cf0f836fa4150043a83b1381eb152768c",
+      "bytes": 1809458
+    },
+    "nominal_lp/gate-comparison.csv": {
+      "sha256": "ae0a9f8c16a30f2ec6bde611768a31addf2a9c85052f97f4515d4ae9a29aadb9",
+      "bytes": 380
+    },
+    "nominal_lp/ledger.csv": {
+      "sha256": "22e6bb7dc98c45b8e453635f88086b92e583fd0dd2f58f4abef1c56866443b03",
+      "bytes": 14974
+    },
+    "nominal_lp/marked-figures.csv": {
+      "sha256": "0c157fb6e7790e859e3f6b57cbedb2a55accf88b41378c8fa92a58aa5010a5ec",
+      "bytes": 168
+    },
+    "nominal_lp/quarter-boundary.csv": {
+      "sha256": "35a06bc37e44640c621c7bce443c1a8bdd65ebf1d15e39aa5566057fc9a096ed",
+      "bytes": 679
+    },
+    "nominal_lp/refusals-ticker-dte.csv": {
+      "sha256": "5725b86fa5ab92d5f5b4122491879b8e6cc63ebde95d0460d07cb5426f68f807",
+      "bytes": 960
+    },
+    "nominal_lp/report.html": {
+      "sha256": "1dddd49a1917ac03a91bbbfed7bee4c70cd93b0d6c936019c592e64e7349b557",
+      "bytes": 903145
+    },
+    "nominal_lp/run-identity.csv": {
+      "sha256": "c5d89ea765ae84ad889b41dca0bd92f3cd4d4f175677289d2c199eb334db699a",
+      "bytes": 762
+    },
+    "nominal_lp/source-links.csv": {
+      "sha256": "0d3982c10dad2af9ecb576e94993587a84f66d66c921136b37bdc738191d51a0",
+      "bytes": 1181
+    },
+    "nominal_lp/summary.md": {
+      "sha256": "db1c56cc7f2e7f9e9d012c2744819ac052e00ae8bce0b716a1d2a8079cf61f4d",
+      "bytes": 11134
+    },
+    "nominal_lp/ticker-dte.csv": {
+      "sha256": "1713400d4ddc023721d3f83f2176c8add363efe19b49d0bc4992090a0d4289dc",
+      "bytes": 520
+    },
+    "nominal_lp/trades.csv": {
+      "sha256": "bf41d44a4ddcd89b7552dc810dd90b85447fcd9b43f29a468e199d3cc2a215b4",
+      "bytes": 3301
+    },
+    "orders-and-fills.csv": {
+      "sha256": "63f26995c7c30ad4165c2c478a3727caf84f87c9a29a8eb8f59fe879c113143d",
+      "bytes": 28332
+    },
+    "rejected-orders.csv": {
+      "sha256": "ef8b366cacbacece0f32d37d4f66262d7221d07916d3a9f010a48c18ab301472",
+      "bytes": 45387
+    },
+    "reports-verification.json": {
+      "sha256": "b0745c3c35c6866ee095ba7177a2360ef0df0e240f6db7c6ce532fa36b76aadb",
+      "bytes": 14094
+    },
+    "trades.csv": {
+      "sha256": "e51efe1400bda611fed21bff0d7ea15aaa90d6bcb032fe9ed3caf90bc945821b",
+      "bytes": 29642
+    },
+    "w1_003_lp/decisions.csv": {
+      "sha256": "4b8689d7a5d3b24d5130b6dee79dfdb6ca310417c0c1e801ba5a698075036cc1",
+      "bytes": 268855
+    },
+    "w1_003_lp/events.jsonl": {
+      "sha256": "545a6b601cd1aa14d5818ba3db3be441ecad95a56b96fcbb54a88a3183d0e16f",
+      "bytes": 1794232
+    },
+    "w1_003_lp/gate-comparison.csv": {
+      "sha256": "2d0e09b7e4f3bc6d770fbb35248378789b2055969d06f027490cd11635f76096",
+      "bytes": 293
+    },
+    "w1_003_lp/ledger.csv": {
+      "sha256": "c15f61087cac1313e422a76225fdf0fdf43decdd334c1640b6e5e7734df42cd3",
+      "bytes": 14446
+    },
+    "w1_003_lp/marked-figures.csv": {
+      "sha256": "e7c2635f943be34d6226c846e499e05f21576046cf99f5ad8ad82d076f64bb0b",
+      "bytes": 143
+    },
+    "w1_003_lp/quarter-boundary.csv": {
+      "sha256": "87719264e4520390b94f5f8639c76b9c39bb501399222558934f4fb1ffb6db9c",
+      "bytes": 670
+    },
+    "w1_003_lp/refusals-ticker-dte.csv": {
+      "sha256": "fd4c2452b78f35a2cda0851c592c7ba64b4b04ec462475a1bc711ad951288438",
+      "bytes": 471
+    },
+    "w1_003_lp/report.html": {
+      "sha256": "17a93c99bbd4974a8309c82a3ec2847344a13e225f5c1506b3977b724bcb8515",
+      "bytes": 835517
+    },
+    "w1_003_lp/run-identity.csv": {
+      "sha256": "68d5ae421d688167272992c9bbbe57fb0148649a3d9bef517765ae237e233d4e",
+      "bytes": 761
+    },
+    "w1_003_lp/source-links.csv": {
+      "sha256": "0d3982c10dad2af9ecb576e94993587a84f66d66c921136b37bdc738191d51a0",
+      "bytes": 1181
+    },
+    "w1_003_lp/summary.md": {
+      "sha256": "5816309017188665e12c5e3ff6efb5e7a710bb8686e0cb2555a6aa30cd54560d",
+      "bytes": 11117
+    },
+    "w1_003_lp/ticker-dte.csv": {
+      "sha256": "2991b7e91bca2de4ea634cc328db5337a45510db0c391d44fdd5b1d366ee3ff1",
+      "bytes": 223
+    },
+    "w1_003_lp/trades.csv": {
+      "sha256": "78e3c968f1f12bb05f7ca895527d381f959757aa8fd71fb37b1d328f4a6e9b0c",
+      "bytes": 1333
+    },
+    "w1_003_shock10_lp/decisions.csv": {
+      "sha256": "ed371fec7cb84f1582c6974073e92556a73cd25240cd2c14f9fff55fcb1cda35",
+      "bytes": 268968
+    },
+    "w1_003_shock10_lp/events.jsonl": {
+      "sha256": "365ac6c1cd2c256f2bb05422336af860b681873bed345f2115bee543bc005b3a",
+      "bytes": 1804974
+    },
+    "w1_003_shock10_lp/gate-comparison.csv": {
+      "sha256": "2ec11fa5290a6fff06c4ca01e9bd44348db0b05be34af8320a771b35539d1655",
+      "bytes": 360
+    },
+    "w1_003_shock10_lp/ledger.csv": {
+      "sha256": "563668926954627c3e8d3c254d612c34853ca52b9a8aaa00fc9a86c7e7d025f7",
+      "bytes": 15932
+    },
+    "w1_003_shock10_lp/marked-figures.csv": {
+      "sha256": "61a3ab31a0d328cf84f79c5cd92bb3dfee7aa04504d8594fd36a1321c9a78367",
+      "bytes": 166
+    },
+    "w1_003_shock10_lp/quarter-boundary.csv": {
+      "sha256": "8d71240aa50e7024fd7d86a05e5359227765046445ac9debda71c2de87759bc6",
+      "bytes": 704
+    },
+    "w1_003_shock10_lp/refusals-ticker-dte.csv": {
+      "sha256": "78120b851dcc5fa78a0dd7857d96dae5870ea2c07df20a93af051ccf56a80d71",
+      "bytes": 407
+    },
+    "w1_003_shock10_lp/report.html": {
+      "sha256": "499e85d2af42431a4831e877a442cbe4c46b144f0ee89c3e89b96c642d29c0ca",
+      "bytes": 937956
+    },
+    "w1_003_shock10_lp/run-identity.csv": {
+      "sha256": "79f7e8e549be22c973c2d36a01d078038cccd3fa0e6b89358098956f4452732b",
+      "bytes": 769
+    },
+    "w1_003_shock10_lp/source-links.csv": {
+      "sha256": "0d3982c10dad2af9ecb576e94993587a84f66d66c921136b37bdc738191d51a0",
+      "bytes": 1181
+    },
+    "w1_003_shock10_lp/summary.md": {
+      "sha256": "a5de3fb0a3da6e8839bab3ffa1131e5e3541ba9e4e43ec6374192d7379bccec1",
+      "bytes": 11089
+    },
+    "w1_003_shock10_lp/ticker-dte.csv": {
+      "sha256": "74358e99988e14b0c6978a35ae51b619bb93ab23f7807b2eee830d6bb30f2da8",
+      "bytes": 697
+    },
+    "w1_003_shock10_lp/trades.csv": {
+      "sha256": "c2301a1b800b992ccd0c9f15688da3b078a53eb4017d09709d4684ac021e2971",
+      "bytes": 4474
+    }
+  }
+}
